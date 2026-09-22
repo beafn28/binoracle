@@ -29,6 +29,14 @@ and exploitation.
 - **Workflows**: triage, vulnerability hunt, exploitation-primitive reasoner, function
   explanation, pwntools skeleton generation, patch-diffing (radiff2), automatic
   verification, and AI enrichment (professional per-finding analysis + executive summary).
+- **Exploitation builders (pwntools)**: `rop` (ret2libc / execve syscall chain builder),
+  `shellcode` (execve /bin/sh, with a precompiled fallback when no cross-assembler is
+  present), `fmtstring` (format-string leak/write helper for infoleak), and `fuzz`
+  (libFuzzer harness / AFL command generator).
+- **Deeper static analysis**: modern hardening detection (FORTIFY, ASan, CFI, SafeStack,
+  UBSan), C++/vtable detection, and heap attack surface (UAF / double-free candidates).
+- **`analyze` one-shot**: give it a `.c`/`.cpp` source (it compiles) or a binary, and it
+  runs the full pipeline (triage -> hunt -> angr verification -> AI report -> HTML).
 - **CLI**: doctor, triage, hunt, ask, chat, report, primitives, gadgets, cyclic,
   exploit-skeleton, explain, diff, verify, view.
 - **Interactive HTML report**: self-contained, bilingual (ES/EN toggle), light/dark toggle,

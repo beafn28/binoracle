@@ -109,6 +109,10 @@ class R2Oracle(Oracle):
             Tool("r2_stackframe", "Report a function's stack frame: locals, arg vars and frame size (offset-to-return hints).",
                  [ToolParam("target", "function name or address, e.g. sym.main")],
                  lambda target: self._stackframe(target), self.name),
+            Tool("r2_vtables", "Detect C++ and virtual tables (vtables, RTTI). Useful for vptr-hijack / type-confusion analysis.",
+                 [], lambda: self._vtables(), self.name),
+            Tool("r2_heap", "Heap attack surface: allocation/free call sites, double-free and use-after-free candidates (static heuristic).",
+                 [], lambda: self._heap(), self.name),
             Tool("r2_cmd", "Escape hatch: run a raw radare2 command (read-only analysis).",
                  [ToolParam("cmd", "raw r2 command, e.g. 'pdf @ sym.main'")],
                  lambda cmd: self._raw(cmd), self.name),
@@ -241,3 +245,60 @@ class R2Oracle(Oracle):
             out = self._run(f"pdf @ {target}")
         return ToolResult(bool(out.strip()), f"radare2: afvd @ {target}",
                           out.strip() or f"(no frame info for {target})")
+
+    def _vtables(self) -> ToolResult:
+        av = self._run("av")
+        syms = self._run("is~_ZT")           # _ZTV vtable, _ZTI typeinfo, _ZTS typestring
+        is_cpp = bool(syms.strip()) or "vtable" in av.lower()
+        parts = []
+        parts.append("C++ detected: " + ("yes" if is_cpp else "no (or no RTTI symbols)"))
+        if av.strip():
+            parts.append("## radare2 vtable analysis (av)\n" + av.strip())
+        if syms.strip():
+            parts.append("## RTTI / vtable symbols (_ZT*)\n" + syms.strip()[:1500])
+        if not av.strip() and not syms.strip():
+            parts.append("(no vtables or RTTI symbols found)")
+        return ToolResult(True, "radare2: av + is~_ZT (vtables/C++)", "\n\n".join(parts),
+                          meta={"cpp": is_cpp})
+
+    def _heap(self) -> ToolResult:
+        allocs = ("malloc", "calloc", "realloc", "reallocarray")
+        frees = ("free", "cfree")
+        imports = self._run("ii")
+        present = [a for a in allocs + frees if a in imports]
+        if not present:
+            return ToolResult(True, "radare2: heap surface", "(no heap allocator calls imported)",
+                              meta={"heap": False})
+        # group call sites by caller function
+        by_func = {}
+        for fn in present:
+            xr = self._run(f"axt @ sym.imp.{fn}")
+            for line in xr.splitlines():
+                line = line.strip()
+                if not line or "no" == line[:2].lower():
+                    continue
+                caller = line.split()[0] if line.split() else "?"
+                by_func.setdefault(caller, {"alloc": 0, "free": 0, "lines": []})
+                if fn in frees:
+                    by_func[caller]["free"] += 1
+                else:
+                    by_func[caller]["alloc"] += 1
+                by_func[caller]["lines"].append(f"{fn}: {line}")
+        out = []
+        candidates = []
+        for func, d in by_func.items():
+            flags = []
+            if d["free"] >= 2:
+                flags.append("DOUBLE-FREE candidate")
+            if d["free"] >= 1 and d["alloc"] >= 1:
+                flags.append("alloc+free in same func (UAF surface)")
+            tag = ("  <-- " + ", ".join(flags)) if flags else ""
+            if flags:
+                candidates.append(func)
+            out.append(f"### {func} (alloc={d['alloc']}, free={d['free']}){tag}\n" +
+                       "\n".join("  " + l for l in d["lines"]))
+        body = "\n\n".join(out)
+        note = ("\n\nNOTE: these are STATIC heuristics (surface/candidates), not proven UAF/"
+                "double-free. Confirm with dbg_run_input or dynamic analysis.")
+        return ToolResult(True, "radare2: heap surface (ii + axt)", body + note,
+                          meta={"heap": True, "candidates": candidates})

@@ -23,8 +23,11 @@ TRIAGE_TOOLS = [
     ("elf_mitigations", "Exploit mitigations (checksec)"),
     ("r2_info", "radare2 binary info"),
     ("r2_checksec", "Exploit mitigations (cross-format: ELF/PE/Mach-O)"),
+    ("r2_hardening", "Modern hardening (FORTIFY/ASan/CFI/SafeStack)"),
     ("r2_imports", "Imports"),
     ("r2_sinks", "Dangerous sinks and their callers"),
+    ("r2_vtables", "C++ / vtables"),
+    ("r2_heap", "Heap attack surface (UAF/double-free candidates)"),
 ]
 
 

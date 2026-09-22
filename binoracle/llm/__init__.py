@@ -9,4 +9,14 @@ def make_backend(config) -> LLMBackend:
         return OllamaBackend(config)
     if config.backend in ("openai", "openai-compat", "llamacpp", "lmstudio", "vllm"):
         return OpenAICompatBackend(config)
-    raise LLMUnavailable(f"unknown backend '{config.backend}'")
+    # unknown/disabled backend -> a no-op backend that is simply "unavailable",
+    # so the rest of the tool degrades gracefully instead of crashing.
+    class _NullBackend(LLMBackend):
+        name = "none"
+        def available(self):
+            return False
+        def chat(self, messages):
+            raise LLMUnavailable("no LLM backend configured")
+        def info(self):
+            return "none (no local model configured)"
+    return _NullBackend()

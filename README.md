@@ -89,6 +89,7 @@ reachability can be *proven* rather than assumed:
 ```bash
 pip install -e ".[symbolic]"   # angr: turns 'grounded' findings into 'verified' ones
 pip install r2pipe             # persistent radare2 session (much faster on real binaries)
+pip install pwntools           # ROP chain builder + shellcode generation
 ```
 
 Everything degrades gracefully: if an oracle is missing, its tools report themselves
@@ -124,6 +125,17 @@ binoracle gadgets ./target -f "pop rdi"  # ROP gadget search
 binoracle cyclic -n 200                 # De Bruijn pattern (offset discovery)
 binoracle cyclic --find 0x6161616c      # find the offset from a crash value (== pwntools)
 binoracle exploit-skeleton ./target --offset 72 -o exp.py   # pwntools template, grounded
+binoracle rop ./target --goal execve       # build a real ROP chain (pwntools)
+binoracle shellcode --arch amd64 --kind sh # execve('/bin/sh') shellcode
+binoracle fmtstring ./target               # format-string leak/write helper (infoleak)
+binoracle fuzz ./target --mode afl         # fuzzing harness / AFL command
+```
+
+One-shot manager (give it a `.c` source or a binary, get the full verified report):
+
+```bash
+binoracle analyze ./chall.c                # compiles, analyzes, verifies, writes HTML
+binoracle analyze ./chall  -o report.html
 ```
 
 n-day / regression:

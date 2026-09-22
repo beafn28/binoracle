@@ -111,3 +111,29 @@ def test_gate_allows_verified_with_angr_proof():
                 evidence="REACHABLE from entry 0x401176", location="win")
     gated, notes = gate_findings([f], led)
     assert gated[0].verdict == "verified"
+
+
+def test_fuzz_harness_generation():
+    from binoracle.workflows.fuzz import afl_command, libfuzzer_harness
+    assert "afl-fuzz" in afl_command("./target")
+    h = libfuzzer_harness("parse_header")
+    assert "LLVMFuzzerTestOneInput" in h and "parse_header" in h
+
+
+def test_fmtstring_leak_probe():
+    from binoracle.workflows.fmtstring import leak_probe, leak_at
+    assert "%1$p" in leak_probe() and leak_at(7) == "%7$p"
+
+
+def test_shellcode_precompiled_table():
+    from binoracle.workflows.shellcode import _PRECOMPILED_SH
+    assert len(_PRECOMPILED_SH["amd64"]) == 23  # classic execve /bin/sh
+    assert "i386" in _PRECOMPILED_SH
+
+
+def test_patchdiff_parses_similarity():
+    from binoracle.workflows.patchdiff import DiffResult
+    # ensure the render path is stable for a changed function line
+    from binoracle.workflows.patchdiff import render_patchdiff
+    r = DiffResult(old="a", new="b", changed=["sym.f 6 0x1 | MATCH (0.833) | 0x2 6 sym.g"], raw="x")
+    assert "0.833" in render_patchdiff(r)

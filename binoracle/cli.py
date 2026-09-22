@@ -21,6 +21,10 @@ from .report.html import render_html
 from .report.render import findings_to_json
 from .workflows.verify import auto_verify, verify_address
 from .workflows.enrich import enrich_findings, executive_summary
+from .workflows.rop import build_rop_chain
+from .workflows.shellcode import gen_shellcode
+from .workflows.fuzz import generate_fuzz
+from .workflows.fmtstring import fmtstring_help
 from .agent.grounding import GroundingLedger
 
 
@@ -327,6 +331,67 @@ def cmd_verify(args, config):
     store.close()
 
 
+def cmd_rop(args, config):
+    binary = _require_binary(args.binary)
+    print(build_rop_chain(binary, goal=args.goal, libc_path=args.libc))
+
+
+def cmd_shellcode(args, config):
+    nx = None
+    binary = args.binary
+    if binary and Path(binary).exists():
+        reg = build_registry(binary)
+        cs = reg.get("r2_checksec")
+        if cs:
+            r = cs.run()
+            nx = str(r.meta.get("nx", "")).lower() in ("true", "1")
+    print(gen_shellcode(arch=args.arch, kind=args.kind, arg=args.arg, nx=nx))
+
+
+def cmd_fuzz(args, config):
+    binary = _require_binary(args.binary)
+    print(generate_fuzz(binary, target_func=args.func, mode=args.mode))
+
+
+def cmd_fmtstring(args, config):
+    print(fmtstring_help(offset=args.offset, target_addr=args.addr, value=args.value))
+
+
+def cmd_analyze(args, config):
+    """One-shot: accept a .c/.cpp source (compile it) OR a binary, then full report."""
+    src = args.file
+    binary = src
+    ext = Path(src).suffix.lower()
+    if ext in (".c", ".cc", ".cpp", ".cxx", ".c++"):
+        if not Path(src).exists():
+            _eprint(f"error: no such source: {src}")
+            sys.exit(2)
+        import subprocess, tempfile, shutil
+        cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+        if not cc:
+            _eprint("error: no C compiler on PATH (cc/gcc/clang)")
+            sys.exit(3)
+        out_bin = str(Path(tempfile.mkdtemp()) / (Path(src).stem))
+        cxx = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++") or cc
+        compiler = cxx if ext in (".cc", ".cpp", ".cxx", ".c++") else cc
+        flags = ["-fno-stack-protector", "-no-pie", "-w"]
+        _eprint(f"[compile] {compiler} {' '.join(flags)} -o {out_bin} {src}")
+        r = subprocess.run([compiler, *flags, "-o", out_bin, src], capture_output=True, text=True)
+        if r.returncode != 0:
+            _eprint("compilation failed:\n" + r.stderr)
+            sys.exit(4)
+        binary = out_bin
+        _eprint(f"[compile] ok -> {binary}")
+    # delegate to the full view pipeline
+    class _A:  # minimal args shim for cmd_view
+        pass
+    a = _A()
+    a.binary = binary
+    a.output = args.output
+    a.no_open = args.no_open
+    cmd_view(a, config)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -416,6 +481,38 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("-o", "--output", help="HTML output path (default binoracle_report.html)")
     v.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
     v.set_defaults(func=cmd_view)
+
+    rp2 = sub.add_parser("rop", help="build a ROP chain (ret2libc / execve) with pwntools")
+    rp2.add_argument("binary")
+    rp2.add_argument("--goal", default="auto", choices=["auto", "system", "execve", "ret2libc", "syscall"])
+    rp2.add_argument("--libc", help="path to libc.so.6 for ret2libc")
+    rp2.set_defaults(func=cmd_rop)
+
+    sc = sub.add_parser("shellcode", help="generate shellcode (execve /bin/sh, cat) with pwntools")
+    sc.add_argument("binary", nargs="?", help="optional target (reads NX to warn you)")
+    sc.add_argument("--arch", default="amd64", help="amd64|i386|aarch64|arm|mips")
+    sc.add_argument("--kind", default="sh", choices=["sh", "cat", "execve"])
+    sc.add_argument("--arg", help="argument for cat/execve, e.g. /flag")
+    sc.set_defaults(func=cmd_shellcode)
+
+    fz = sub.add_parser("fuzz", help="generate a fuzzing harness (libfuzzer) or afl command")
+    fz.add_argument("binary")
+    fz.add_argument("--mode", default="afl", choices=["afl", "libfuzzer"])
+    fz.add_argument("--func", help="target function for the libfuzzer harness")
+    fz.set_defaults(func=cmd_fuzz)
+
+    fs = sub.add_parser("fmtstring", help="format-string leak/write helper (infoleak)")
+    fs.add_argument("binary", nargs="?")
+    fs.add_argument("--offset", type=int, help="known printf arg offset")
+    fs.add_argument("--addr", help="target address for a write (e.g. GOT entry)")
+    fs.add_argument("--value", help="value to write")
+    fs.set_defaults(func=cmd_fmtstring)
+
+    an = sub.add_parser("analyze", help="one-shot: give a .c source or a binary, get the full report")
+    an.add_argument("file", help="path to a .c/.cpp source or a compiled binary")
+    an.add_argument("-o", "--output", help="HTML output path")
+    an.add_argument("--no-open", action="store_true")
+    an.set_defaults(func=cmd_analyze)
 
     return p
 
