@@ -61,7 +61,7 @@ def _parse_mitigations(triage) -> dict:
 
 
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
-                ledger=None, answer: str = "", lang: str = "es") -> str:
+                ledger=None, answer: str = "", lang: str = "es", embed: bool = False) -> str:
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
@@ -150,20 +150,21 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
     i18n = _json.dumps(_I18N)
 
-    return f'''<!doctype html>
-<html lang="{lang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>binoracle - {_esc(binary)}</title>
-<style>{_CSS}</style></head>
-<body>
-<header>
+    header_html = "" if embed else f'''<header>
   <div class="brand"><span class="dot"></span> binoracle <em data-i18n="subtitle"></em></div>
   <div class="hmeta"><code>{_esc(binary)}</code> &middot; {ts}</div>
   <div class="controls">
     <button id="lang" class="ctl" onclick="toggleLang()">EN</button>
     <button id="theme" class="ctl" onclick="toggleTheme()">&#9788;</button>
   </div>
-</header>
+</header>'''
+    return f'''<!doctype html>
+<html lang="{lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>binoracle - {_esc(binary)}</title>
+<style>{_CSS}</style></head>
+<body>
+{header_html}
 <main>
   <section class="dash">
     <div class="kpis">{kpis}</div>

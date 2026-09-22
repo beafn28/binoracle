@@ -192,7 +192,7 @@ def run_command(payload: dict) -> dict:
             for i, (ti, sr, tx) in enumerate(report.sections, 1):
                 ledger.record(i, ti, sr, tx)
         html = render_html(binary, triage=report, findings=findings, ledger=ledger,
-                           answer=answer, lang=config.lang)
+                           answer=answer, lang=config.lang, embed=True)
         store.close()
         return {"ok": True, "html": html, "text": f"{len(findings)} finding(s). Report rendered below."}
 
@@ -470,8 +470,10 @@ function gauge(score){const a=Math.PI*(score/100);const cx=90,cy=90,r=70;const x
  const fg='<path d="M20 90 A70 70 0 0 1 '+x.toFixed(1)+' '+y.toFixed(1)+'" fill="none" stroke="'+col+'" stroke-width="14" stroke-linecap="round"/>';
  return '<svg width="180" height="104" viewBox="0 0 180 104">'+bg+fg+'<text x="90" y="82" text-anchor="middle" font-size="30" font-weight="800" fill="'+col+'">'+score+'</text><text x="90" y="99" text-anchor="middle" font-size="10" fill="var(--mut)">EXPLOTABILIDAD</text></svg>';
 }
-function mitChip(k,v){let cls,txt;if(k==='RELRO'){txt=String(v).toUpperCase();cls=v==='Full'?'ok':(v==='Partial'?'warn':'bad');}
- else if(typeof v==='boolean'){const good=(k==='NX'||k==='PIE'||k==='Canary'||k==='FORTIFY'||k==='CFI'||k==='SafeStack')?v:!v;txt=v?'ON':'OFF';cls=good?'ok':'bad';}
+function mitChip(k,v){var cls,txt;
+ if(k==='RELRO'){txt=String(v).toUpperCase();cls=v==='Full'?'ok':(v==='Partial'?'warn':'bad');}
+ else if(k==='ASan'||k==='UBSan'){txt=v?'ON':'OFF';cls=v?'ok':'mut';}
+ else if(typeof v==='boolean'){txt=v?'ON':'OFF';cls=v?'ok':'bad';}
  else{txt=String(v);cls='mut';}
  return '<div class="mit"><span class="k">'+k+'</span><span class="b '+cls+'">'+txt+'</span></div>';}
 function renderDash(d){const out=document.getElementById('out');const s=d.findings.by_sev;const m=d.mitigations;
