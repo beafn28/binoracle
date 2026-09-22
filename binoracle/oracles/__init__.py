@@ -5,9 +5,10 @@ from .static_r2 import R2Oracle
 from .symbolic_angr import AngrOracle
 from .dynamic_dbg import DebuggerOracle
 from .exploit_helpers import ExploitHelperOracle
+from .exploit_actions import ExploitActionsOracle
 
 
-def build_registry(binary: str, enable_dynamic: bool = False) -> ToolRegistry:
+def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bool = False) -> ToolRegistry:
     """Assemble all oracles for a target binary.
 
     Dynamic (debugger) execution is opt-in because it actually runs the target."""
@@ -19,4 +20,6 @@ def build_registry(binary: str, enable_dynamic: bool = False) -> ToolRegistry:
     ]
     if enable_dynamic:
         oracles.append(DebuggerOracle(binary))
+    if enable_exploit:
+        oracles.append(ExploitActionsOracle(binary))
     return ToolRegistry(oracles)

@@ -18,7 +18,7 @@ from ..llm.base import LLMBackend, Message
 from ..oracles.base import ToolRegistry
 from ..store.session import SessionStore, Finding
 from .grounding import GroundingLedger, gate_findings
-from .prompts import ASK_SYSTEM, HUNT_SYSTEM
+from .prompts import ASK_SYSTEM, HUNT_SYSTEM, AUDIT_SYSTEM
 from .tools import extract_action, execute_action
 
 
@@ -43,7 +43,7 @@ class AgentLoop:
 
     def _system(self, mode: str) -> str:
         catalog = self.registry.catalog()
-        tmpl = HUNT_SYSTEM if mode == "hunt" else ASK_SYSTEM
+        tmpl = AUDIT_SYSTEM if mode == "audit" else (HUNT_SYSTEM if mode == "hunt" else ASK_SYSTEM)
         # templates contain literal JSON braces, so do a token replace, not str.format
         return tmpl.replace("{catalog}", catalog)
 

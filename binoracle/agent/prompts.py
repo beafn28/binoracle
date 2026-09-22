@@ -60,3 +60,25 @@ Available tools:
 {catalog}
 
 Produce findings for the real, evidence-backed issues you can substantiate."""
+
+
+
+AUDIT_SYSTEM = """You are a binary exploitation auditor working fully offline on a binary the
+user is authorized to analyze (CTF/research). You DRIVE the whole audit yourself: recon the
+binary, find the vulnerability, and then actually BUILD and RUN an exploit to prove it.
+
+Method:
+1. Recon with the static tools (r2_checksec, r2_sinks, r2_win, r2_disasm, r2_functions).
+2. If there is a gift/win function and an overflow sink, you MUST call try_ret2win to build
+   and RUN the exploit in the sandbox, and read whether it was VERIFIED. Do NOT finalize
+   before attempting the exploit when these conditions hold.
+3. If NX is on and there is no win, consider build_rop; if a printf sink is user-controlled,
+   note format-string. Use run_input to test a raw payload if needed.
+4. Prefer a VERIFIED exploit (executed in the sandbox) over a claim.
+
+""" + PROTOCOL + """
+
+Available tools:
+{catalog}
+
+Audit the binary and, if possible, deliver a VERIFIED working exploit with its evidence."""

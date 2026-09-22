@@ -156,6 +156,18 @@ def run_command(payload: dict) -> dict:
         off = opts.get("offset")
         return {"ok": True, "text": generate_skeleton(reg, binary,
                                                       offset=int(off) if off else None)}
+    if cmd == "audit":
+        from .workflows.audit import run_audit
+        llm = make_backend(config)
+        if not llm.available():
+            return {"ok": False, "text": "no hay modelo local disponible (arranca ollama)"}
+        store = SessionStore(config.db_path(), binary)
+        res = run_audit(binary, llm, config, store=store)
+        from .report.html import render_html
+        html = render_html(binary, findings=res.findings, ledger=res.ledger,
+                           answer=res.answer, lang=config.lang, embed=True)
+        store.close()
+        return {"ok": True, "html": html, "text": res.answer}
     if cmd == "autopwn":
         from .workflows.autopwn import autopwn, render_autopwn
         store = SessionStore(config.db_path(), binary)
@@ -457,6 +469,7 @@ const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',inf
 const CMDS=[
  {g:"Panel"},
  {c:"dashboard",n:"Dashboard",ic:"#",d:"Metricas, mitigaciones y superficie de ataque de un vistazo"},
+ {c:"audit",n:"Auditoria autonoma (IA)",ic:"*",d:"La IA conduce: recon, encuentra la vuln y construye+ejecuta el exploit paso a paso"},
  {c:"report",n:"Informe completo",ic:"=",d:"Informe con findings verificados (grounded/verified) y analisis"},
  {g:"Analisis"},
  {c:"triage",n:"Triage",ic:">",d:"Hechos base: formato, mitigaciones, imports y sinks peligrosos"},

@@ -27,6 +27,7 @@ from .workflows.fuzz import generate_fuzz
 from .workflows.fmtstring import fmtstring_help
 from .workflows.autopoc import autopoc, render_poc
 from .workflows.autopwn import autopwn, render_autopwn
+from .workflows.audit import run_audit
 from .agent.grounding import GroundingLedger
 
 
@@ -418,6 +419,22 @@ def cmd_autopwn(args, config):
     store.close()
 
 
+def cmd_audit(args, config):
+    binary = _require_binary(args.binary)
+    store = SessionStore(config.db_path(), binary)
+    llm = make_backend(config)
+    if not llm.available():
+        _eprint("error: no local model reachable. Run `binoracle doctor`.")
+        sys.exit(3)
+    res = run_audit(binary, llm, config, store=store, on_step=_step_printer)
+    out = render_agent_result(binary, res)
+    print(out)
+    _write_if(args.output, out)
+    if getattr(args, "html", None):
+        _write_html(args.html, binary, findings=res.findings, ledger=res.ledger, answer=res.answer, lang=config.lang)
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -558,6 +575,12 @@ def build_parser() -> argparse.ArgumentParser:
     aw.add_argument("--no-run", action="store_true", help="do not run PoCs in the sandbox")
     aw.add_argument("-o", "--output")
     aw.set_defaults(func=cmd_autopwn)
+
+    au = sub.add_parser("audit", help="let the local LLM autonomously audit AND exploit the binary")
+    au.add_argument("binary")
+    au.add_argument("-o", "--output")
+    au.add_argument("--html", help="also write an interactive HTML report here")
+    au.set_defaults(func=cmd_audit)
 
     return p
 

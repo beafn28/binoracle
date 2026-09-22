@@ -12,3 +12,4 @@ from .fuzz import generate_fuzz, libfuzzer_harness, afl_command
 from .fmtstring import fmtstring_help
 from .autopoc import autopoc, render_poc
 from .autopwn import autopwn, render_autopwn
+from .audit import run_audit
