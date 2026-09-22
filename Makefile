@@ -29,3 +29,6 @@ lint:
 clean:
 	rm -rf build dist *.egg-info .binoracle .pytest_cache
 	find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+
+pwn-image:
+	docker build --platform linux/amd64 -t binoracle-pwn -f .docker/Dockerfile.pwn .docker

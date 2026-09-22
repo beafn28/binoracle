@@ -14,3 +14,4 @@ from .autopoc import autopoc, render_poc
 from .autopwn import autopwn, render_autopwn
 from .audit import run_audit
 from .autopoc import autorop, render_rop_poc
+from .autolibc import autolibc, render_libc

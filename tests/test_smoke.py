@@ -155,3 +155,12 @@ def test_autopwn_render():
                       attempts=[("ret2win", True, "offset=72"), ("rop-chain", False, "no")])
     out = render_autopwn(r)
     assert "Auto-explotacion" in out and "ret2win" in out and "EXPLOIT VERIFICADO" in out
+
+
+def test_autolibc_render():
+    from binoracle.workflows.autolibc import render_libc
+    out = render_libc({"ok": True, "verified": True, "detail": "VERIFIED off=88 base=0x7f...",
+                       "note": "ret2libc con leak", "output": "shell"})
+    assert "ret2libc" in out and "SI" in out
+    out2 = render_libc({"ok": False, "note": "docker no disponible"})
+    assert "No disponible" in out2

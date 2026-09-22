@@ -29,6 +29,10 @@ and exploitation.
 - **Workflows**: triage, vulnerability hunt, exploitation-primitive reasoner, function
   explanation, pwntools skeleton generation, patch-diffing (radiff2), automatic
   verification, and AI enrichment (professional per-finding analysis + executive summary).
+- **ret2libc with leak (verified)**: leaks a libc address, computes the base and
+  runs system('/bin/sh'), confirming a real shell in an isolated sandbox (pwntools
+  image, ASLR off). Covers dynamic NX+ASLR binaries. Alongside ret2win and static
+  ROP/ret2syscall, three exploit classes are now verified by execution.
 - **Exploitation builders (pwntools)**: `rop` (ret2libc / execve syscall chain builder),
   `shellcode` (execve /bin/sh, with a precompiled fallback when no cross-assembler is
   present), `fmtstring` (format-string leak/write helper for infoleak), and `fuzz`

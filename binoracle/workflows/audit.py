@@ -64,6 +64,15 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
                 res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP (backstop)\n"
                                f"Cadena {rr.get('strategy')} (offset={rr.get('offset')}) ejecutada en "
                                f"sandbox: shell obtenida. [src: try_rop]")
+            else:
+                from .autolibc import autolibc
+                rl = autolibc(binary)
+                if rl.get("verified"):
+                    res.ledger.record(res.steps + 3, "try_ret2libc (backstop)", "autolibc (sandbox)",
+                                      rl.get("output") or "")
+                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ret2libc (backstop)\n"
+                                   f"{rl.get('detail','')}. Fuga de libc + system('/bin/sh') ejecutado en "
+                                   f"sandbox. [src: try_ret2libc]")
     except Exception:
         pass
     return res
