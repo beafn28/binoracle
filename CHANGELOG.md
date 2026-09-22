@@ -31,7 +31,8 @@ and exploitation.
   verification, and AI enrichment (professional per-finding analysis + executive summary).
 - **Format-string exploitation (verified)**: for a printf(user)-in-a-loop binary, it
   finds the format offset, overwrites printf@GOT with system and gets a real shell,
-  confirmed in the sandbox.
+  confirmed in the sandbox. Works on PIE binaries too (the PIE base is resolved in
+  the sandbox, so printf@GOT is overwritten at its real address).
 - **ret2libc with leak (verified)**: leaks a libc address, computes the base and
   runs system('/bin/sh'), confirming a real shell in an isolated sandbox (pwntools
   image, ASLR off). Covers dynamic NX+ASLR binaries. Alongside ret2win and static
