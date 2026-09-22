@@ -156,14 +156,26 @@ class R2Oracle(Oracle):
         found = [d for d in DANGEROUS if d in imports]
         if not found:
             return ToolResult(True, "radare2: ii+axt", "(no classic dangerous sinks imported)")
+        # map import name -> vaddr from `ii` (for PE/Mach-O where axt-by-name misses callers)
+        vaddr = {}
+        for line in imports.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].startswith("0x"):
+                vaddr[parts[-1]] = parts[1]
         lines = []
         for fn in found:
-            xr = self._run(f"axt @ sym.imp.{fn}")
-            xr = xr.strip()
+            xr = self._run(f"axt @ sym.imp.{fn}").strip()
+            if not xr or "no" in xr[:3].lower():
+                # fallback: cross-refs to the import's IAT/GOT address, then a raw search
+                va = vaddr.get(fn)
+                if va and va != "----------":
+                    xr = self._run(f"axt @ {va}").strip()
+                    if not xr or "no" in xr[:3].lower():
+                        xr = self._run(f"/r {va}").strip()
             if xr and "no" not in xr[:3].lower():
                 lines.append(f"### sink: {fn}\n{xr}")
             else:
-                lines.append(f"### sink: {fn}\n(imported; no direct xref resolved by r2)")
+                lines.append(f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
         body = "\n\n".join(lines)
         return ToolResult(True, "radare2: dangerous sinks (ii + axt @ sym.imp.*)", body,
                           meta={"sinks": found})
