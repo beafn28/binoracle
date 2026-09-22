@@ -156,6 +156,15 @@ def run_command(payload: dict) -> dict:
         off = opts.get("offset")
         return {"ok": True, "text": generate_skeleton(reg, binary,
                                                       offset=int(off) if off else None)}
+    if cmd == "autopwn":
+        from .workflows.autopwn import autopwn, render_autopwn
+        store = SessionStore(config.db_path(), binary)
+        techs = [t for t in ("ret2win", "rop-chain", "shellcode-stack", "format-string") if opts.get(t)]
+        res = autopwn(binary, config=config, store=store, run=not opts.get("norun"),
+                      llm=(make_backend(config) if opts.get("ai") else None),
+                      techniques=techs or None)
+        store.close()
+        return {"ok": True, "text": render_autopwn(res, lang=config.lang)}
     if cmd == "autopoc":
         from .workflows.autopoc import autopoc, render_poc
         off = opts.get("offset")
@@ -459,6 +468,7 @@ const CMDS=[
  {c:"vtables",n:"C++ / vtables",ic:"^",d:"Detecta C++ y tablas virtuales (vtables / RTTI)"},
  {c:"heap",n:"Heap surface",ic:":",d:"Llamadas a malloc/free y candidatos UAF / double-free"},
  {g:"Explotacion"},
+ {c:"autopwn",n:"Auto-explotar",ic:"*",d:"IA decide (toggle IA) o marca las combinaciones; ninguna marcada = todas. Verifica y alimenta la IA",opts:[{k:"ret2win",t:"check",label:"ret2win"},{k:"rop-chain",t:"check",label:"ROP"},{k:"shellcode-stack",t:"check",label:"shellcode"},{k:"format-string",t:"check",label:"fmt"}]},
  {c:"rop",n:"Cadena ROP",ic:"&",d:"Construye una cadena ROP real (ret2libc / execve) con pwntools",opts:[{k:"goal",t:"sel",label:"goal",vals:["auto","system","execve","ret2libc","syscall"]},{k:"libc",t:"text",label:"libc"}]},
  {c:"shellcode",n:"Shellcode",ic:"$",d:"Genera shellcode (execve /bin/sh, cat) para la arquitectura",nobin:true,opts:[{k:"arch",t:"sel",label:"arch",vals:["amd64","i386","aarch64","arm"]},{k:"kind",t:"sel",label:"kind",vals:["sh","cat","execve"]},{k:"arg",t:"text",label:"arg"}]},
  {c:"fmtstring",n:"Format-string",ic:"%",d:"Ayuda de format-string: encontrar offset, fuga y escritura (GOT)",opts:[{k:"offset",t:"text",label:"offset"},{k:"addr",t:"text",label:"addr"},{k:"value",t:"text",label:"value"}]},

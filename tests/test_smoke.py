@@ -147,3 +147,11 @@ def test_autopoc_script_and_render():
                   script=sc, payload_hex="4141", verified=True)
     out = render_poc(r)
     assert "Auto-PoC" in out and "offset" in out and "SI" in out
+
+
+def test_autopwn_render():
+    from binoracle.workflows.autopwn import AutopwnResult, render_autopwn
+    r = AutopwnResult(binary="/tmp/x", verified_findings=3, win_exploit=True,
+                      attempts=[("ret2win", True, "offset=72"), ("rop-chain", False, "no")])
+    out = render_autopwn(r)
+    assert "Auto-explotacion" in out and "ret2win" in out and "EXPLOIT VERIFICADO" in out

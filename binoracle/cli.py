@@ -26,6 +26,7 @@ from .workflows.shellcode import gen_shellcode
 from .workflows.fuzz import generate_fuzz
 from .workflows.fmtstring import fmtstring_help
 from .workflows.autopoc import autopoc, render_poc
+from .workflows.autopwn import autopwn, render_autopwn
 from .agent.grounding import GroundingLedger
 
 
@@ -406,6 +407,17 @@ def cmd_autopoc(args, config):
     _write_if(args.output, out)
 
 
+def cmd_autopwn(args, config):
+    binary = _require_binary(args.binary)
+    store = SessionStore(config.db_path(), binary)
+    res = autopwn(binary, config=config, store=store, on_step=lambda m: _eprint("  " + m),
+                  run=not args.no_run, llm=make_backend(config))
+    out = render_autopwn(res, lang=config.lang)
+    print(out)
+    _write_if(args.output, out)
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -540,6 +552,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-run", action="store_true", help="build the exploit but do not run it")
     ap.add_argument("-o", "--output")
     ap.set_defaults(func=cmd_autopoc)
+
+    aw = sub.add_parser("autopwn", help="autonomously try exploitation combinations and verify")
+    aw.add_argument("binary")
+    aw.add_argument("--no-run", action="store_true", help="do not run PoCs in the sandbox")
+    aw.add_argument("-o", "--output")
+    aw.set_defaults(func=cmd_autopwn)
 
     return p
 
