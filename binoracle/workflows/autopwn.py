@@ -236,3 +236,17 @@ def render_autopwn(res: AutopwnResult, lang: str = "es") -> str:
     out.append("\n### Traza\n```\n" + "\n".join(res.log) + "\n```")
     out.append("\nTodo lo descubierto se ha guardado en la base de conocimiento (retroalimentacion).")
     return "\n".join(out)
+
+
+def autopwn_to_json(res: "AutopwnResult") -> str:
+    import json
+    return json.dumps({
+        "binary": res.binary,
+        "verified_findings": res.verified_findings,
+        "exploit_verified": res.win_exploit,
+        "attempts": [{"technique": n, "result": ("works" if ok is True else
+                     ("no" if ok is False else "possible")), "detail": d}
+                     for n, ok, d in res.attempts],
+        "ai_plan": res.ai_plan, "ai_conclusion": res.ai_conclusion,
+        "log": res.log,
+    }, indent=2)

@@ -71,6 +71,14 @@ def run_command(payload: dict) -> dict:
     if cmd == "history":
         from .store.session import list_all_binaries
         return {"ok": True, "history": list_all_binaries(config.db_path())}
+    if cmd == "regress":
+        import os as _os
+        old = (opts.get("old") or "").strip()
+        if not old or not _os.path.exists(old) or not _os.path.exists(binary):
+            return {"ok": False, "text": "indica el binario OLD (opcion) y el NEW (arriba); ambos deben existir"}
+        from .workflows.regress import run_regress, render_regress
+        rr = run_regress(old, binary, config)
+        return {"ok": True, "text": render_regress(rr)}
 
     # everything else needs a real binary
     if not binary or not os.path.exists(binary):
@@ -647,6 +655,7 @@ const CMDS=[
  {g:"Utiles"},
  {c:"cyclic",n:"Cyclic / offset",ic:"@",d:"Patron De Bruijn y busqueda de offset (como pwntools cyclic)",nobin:true,opts:[{k:"length",t:"text",label:"length",def:"200"},{k:"find",t:"text",label:"find 0x.."}]},
  {c:"verify",n:"Verify reachability",ic:"?",d:"Prueba con angr si una direccion es alcanzable desde entry",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
+ {c:"regress",n:"Regresiones",ic:"=",d:"Compara dos builds (OLD vs el de arriba): findings y mitigaciones que cambian",opts:[{k:"old",t:"text",label:"binario OLD (ruta)"}]},
  {c:"doctor",n:"Doctor",ic:"+",d:"Estado de los oracles y del modelo LLM",nobin:true},
 ];
 const side=document.getElementById('side');

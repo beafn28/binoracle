@@ -417,6 +417,9 @@ def cmd_autopwn(args, config):
     out = render_autopwn(res, lang=config.lang)
     print(out)
     _write_if(args.output, out)
+    if getattr(args, "json", None):
+        from .workflows.autopwn import autopwn_to_json
+        Path(args.json).write_text(autopwn_to_json(res)); _eprint(f"(JSON -> {args.json})")
     store.close()
 
 
@@ -433,6 +436,8 @@ def cmd_audit(args, config):
     _write_if(args.output, out)
     if getattr(args, "html", None):
         _write_html(args.html, binary, triage=getattr(res, "triage", None), findings=res.findings, ledger=res.ledger, answer=res.answer, lang=config.lang)
+    if getattr(args, "json", None):
+        Path(args.json).write_text(findings_to_json(binary, res.findings, res.ledger)); _eprint(f"(JSON -> {args.json})")
     store.close()
 
 
@@ -583,12 +588,14 @@ def build_parser() -> argparse.ArgumentParser:
     aw.add_argument("binary")
     aw.add_argument("--no-run", action="store_true", help="do not run PoCs in the sandbox")
     aw.add_argument("-o", "--output")
+    aw.add_argument("--json", help="also write results as JSON")
     aw.set_defaults(func=cmd_autopwn)
 
     au = sub.add_parser("audit", help="let the local LLM autonomously audit AND exploit the binary")
     au.add_argument("binary")
     au.add_argument("-o", "--output")
     au.add_argument("--html", help="also write an interactive HTML report here")
+    au.add_argument("--json", help="also write findings as JSON")
     au.set_defaults(func=cmd_audit)
 
     rg = sub.add_parser("regress", help="compare two builds for security regressions")

@@ -78,12 +78,18 @@ def executive_summary(llm, binary: str, findings: List[Finding], mitigations: st
     verified = sum(1 for f in findings if f.verdict == "verified")
     inventory = "\n".join(f"- [{f.severity}/{f.verdict}] {f.title} ({f.location})" for f in findings)
     if lang == "es":
+        crit = sum(1 for f in findings if f.severity == "critical")
+        high = sum(1 for f in findings if f.severity == "high")
+        med = sum(1 for f in findings if f.severity == "medium")
+        low = sum(1 for f in findings if f.severity == "low")
+        risk = "critico" if crit else ("alto" if high else ("medio" if med else "bajo"))
         sys = (
             "Eres un analista de seguridad. Redacta en espanol un RESUMEN EJECUTIVO profesional "
             "(3-5 frases) para un CISO, basado SOLO en los hallazgos y mitigaciones dados. "
-            "Menciona el riesgo global, cuantos hallazgos estan verificados frente a pendientes, "
-            "y la prioridad de actuacion. No inventes hallazgos nuevos ni exageres: distingue lo "
-            "verificado de lo meramente grounded."
+            f"El riesgo global es {risk} (severidades: {crit} criticas, {high} altas, {med} medias, "
+            f"{low} bajas; {verified} verificadas de {len(findings)}). NO contradigas estos numeros: "
+            "no llames criticos a hallazgos medios/bajos, no digas prioridad alta si el riesgo es "
+            "medio/bajo. Distingue lo verificado de lo grounded (pendiente). No inventes ni exageres."
         )
         pr = (f"\n\nHechos verificados y conocimiento de targets similares (evidencia real por "
               f"angr/debugger; usalos como base, no los contradigas):\n{prior}") if prior else ""
