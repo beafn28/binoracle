@@ -161,7 +161,8 @@ def run_command(payload: dict) -> dict:
         return {"ok": True, "text": ("REACHABLE\n" if reachable else "no probada\n") + ev}
     if cmd == "primitives":
         store = SessionStore(config.db_path(), binary)
-        res = run_primitives(reg, binary, llm=None, config=config, store=store)
+        llm = make_backend(config) if opts.get("ai") else None
+        res = run_primitives(reg, binary, llm=llm, config=config, store=store)
         store.close()
         return {"ok": True, "text": res.answer}
 
@@ -215,6 +216,21 @@ def save_upload(payload: dict) -> dict:
         os.chmod(path, 0o755)
     except OSError:
         pass
+    # if a C/C++ source was uploaded, compile it so the dashboard can analyze it
+    ext = os.path.splitext(name)[1].lower()
+    if ext in (".c", ".cc", ".cpp", ".cxx"):
+        import shutil, subprocess
+        is_cpp = ext != ".c"
+        comp = (shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")) if is_cpp \
+               else (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang"))
+        if not comp:
+            return {"ok": False, "text": "no C/C++ compiler on PATH (cc/gcc/clang)"}
+        out_bin = os.path.join(d, os.path.splitext(name)[0])
+        r = subprocess.run([comp, "-fno-stack-protector", "-no-pie", "-w", "-o", out_bin, path],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return {"ok": False, "text": "compilation failed:\n" + r.stderr}
+        return {"ok": True, "path": out_bin, "size": os.path.getsize(out_bin), "compiled": True}
     return {"ok": True, "path": path, "size": len(data)}
 
 
@@ -267,20 +283,22 @@ INDEX_HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>binoracle</title>
 <style>
-:root{--bg:#0a0e14;--panel:#111722;--panel2:#0e131c;--fg:#e2e8f0;--mut:#7b8794;--line:#1e2632;--acc:#2ee6a6;--acc2:#4aa3ff;--code:#070a10;--codefg:#a9c7e8;--crit:#e5484d;--high:#f76808;--med:#f5b800;--low:#30a46c;--info:#5b8def}
-:root[data-theme=light]{--bg:#f4f6f9;--panel:#fff;--panel2:#f0f2f5;--fg:#0f1720;--mut:#64707d;--line:#e4e8ee;--acc:#0d9f6e;--acc2:#2f6feb;--code:#0d1117;--codefg:#a9c7e8}
+:root{--bg:#0a0e14;--panel:#111722;--panel2:#0e131c;--fg:#e2e8f0;--mut:#7b8794;--line:#1e2632;--acc:#2ee6a6;--acc2:#4aa3ff;--code:#070a10;--codefg:#a9c7e8;--field:#0b0e12;--crit:#e5484d;--high:#f76808;--med:#f5b800;--low:#30a46c;--info:#5b8def}
+:root[data-theme=light]{--bg:#f4f6f9;--panel:#fff;--panel2:#f0f2f5;--fg:#0f1720;--mut:#64707d;--line:#e4e8ee;--acc:#0d9f6e;--acc2:#2f6feb;--code:#0d1117;--codefg:#a9c7e8;--field:#ffffff}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--panel2))}
 .brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.3px}
 .brand .tag{font-weight:400;color:var(--mut);font:12px ui-monospace,monospace}
 .dot{width:11px;height:11px;border-radius:50%;background:var(--acc);box-shadow:0 0 12px var(--acc),0 0 4px var(--acc)}
-.prompt{flex:1;display:flex;align-items:center;gap:8px;background:var(--code);border:1px solid var(--line);border-radius:9px;padding:0 12px;min-width:180px}
+.prompt{flex:1;display:flex;align-items:center;gap:8px;background:var(--field);border:1px solid var(--line);border-radius:9px;padding:0 12px;min-width:180px}
 .prompt span{color:var(--acc);font:13px ui-monospace,monospace}
 #target{flex:1;background:none;border:none;color:var(--fg);padding:9px 0;font-family:ui-monospace,monospace;outline:none}
+.aitoggle{display:flex;align-items:center;gap:6px;color:var(--mut);font:12px ui-monospace,monospace;padding:0 6px;user-select:none}
+.aitoggle input{accent-color:var(--acc)}
 .go{background:linear-gradient(135deg,var(--acc),#1fbf8a);color:#04120c;border:none;border-radius:9px;padding:9px 16px;font-weight:700;cursor:pointer}
 .go:hover{filter:brightness(1.08)}
-.icon-btn{background:var(--code);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
+.icon-btn{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
 main{flex:1;display:flex;min-height:0}
 .side{width:210px;border-right:1px solid var(--line);background:var(--panel2);overflow:auto;padding:8px 8px 20px}
 .side .grp{color:var(--mut);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:12px 12px 4px}
@@ -294,7 +312,7 @@ main{flex:1;display:flex;min-height:0}
 .opts:empty{display:none}
 .f{display:flex;flex-direction:column;gap:3px}
 .f label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
-.f input,.f select{background:var(--code);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
+.f input,.f select{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
 .run{background:linear-gradient(135deg,var(--acc2),#3b8ee0);color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:700}
 .chk{display:flex;align-items:center;gap:6px}
 .out{flex:1;overflow:auto;padding:20px}
@@ -341,7 +359,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 <header>
   <div class="brand"><span class="dot"></span>binoracle<span class="tag">// local binary RE + exploitation</span></div>
   <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario  o  fuente.c" spellcheck="false"></div>
-  <button class="go" onclick="dash()">Analizar</button>
+  <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
   <input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
 <main>
@@ -357,10 +375,10 @@ const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',inf
 const CMDS=[
  {g:"Panel"},
  {c:"dashboard",n:"Dashboard",ic:"#"},
- {c:"report",n:"Informe completo",ic:"=",opts:[{k:"ai",t:"check",label:"usar IA"}]},
+ {c:"report",n:"Informe completo",ic:"="},
  {g:"Analisis"},
  {c:"triage",n:"Triage",ic:">"},
- {c:"hunt",n:"Hunt",ic:"*",opts:[{k:"ai",t:"check",label:"usar IA"}]},
+ {c:"hunt",n:"Hunt",ic:"*"},
  {c:"primitives",n:"Primitivas",ic:"%"},
  {c:"checksec",n:"Checksec + hardening",ic:"!"},
  {c:"disasm",n:"Disasm",ic:"~",opts:[{k:"target",t:"text",label:"funcion",def:"main"}]},
@@ -394,7 +412,8 @@ function select(it,btn){current=it;[...side.querySelectorAll('button')].forEach(
 }
 function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.getElementById('opt_'+x.k);o[x.k]=x.t==='check'?el.checked:el.value;});return o;}
 async function api(command,options){const binary=document.getElementById('target').value.trim();
- const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:options||{}})});return r.json();}
+ var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
+ const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:opt})});return r.json();}
 async function exec(command,options){const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
