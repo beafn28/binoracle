@@ -653,8 +653,9 @@ const side=document.getElementById('side');
 var _tb=document.createElement('div');_tb.className='sidetb';_tb.innerHTML='<button class="stb" id="collapse" title="colapsar menu">&laquo;</button><button class="stb" id="hist" title="historial de binarios">H</button>';side.appendChild(_tb);
 CMDS.forEach(it=>{ if(it.g){const d=document.createElement('div');d.className='grp';d.textContent=it.g;side.appendChild(d);return;}
  const b=document.createElement('button');b.innerHTML='<span class="ic">'+it.ic+'</span><span class="lab"><span class="cn">'+it.n+'</span><span class="cd">'+(it.d||'')+'</span></span>';b.title=it.d||'';b.onclick=()=>select(it,b);side.appendChild(b);});
-let current=null;
-function select(it,btn){current=it;[...side.querySelectorAll('button')].forEach(x=>x.classList.remove('active'));btn.classList.add('active');
+let current=null; var activeES=null;
+function closeStream(){if(activeES){try{activeES.close();}catch(e){} activeES=null;}}
+function select(it,btn){closeStream();current=it;[...side.querySelectorAll('button')].forEach(x=>x.classList.remove('active'));btn.classList.add('active');
  const opts=document.getElementById('opts');opts.innerHTML='';
  if(it.d){const dd=document.createElement('div');dd.className='cmddesc';dd.textContent=it.d;opts.appendChild(dd);}
  (it.opts||[]).forEach(o=>{const f=document.createElement('div');f.className='f';const lab=document.createElement('label');lab.textContent=o.label;let el;
@@ -663,7 +664,6 @@ function select(it,btn){current=it;[...side.querySelectorAll('button')].forEach(
   else{el=document.createElement('input');el.type='text';if(o.def)el.value=o.def;}
   el.id='opt_'+o.k; if(o.t==='check'){f.appendChild(el);f.appendChild(lab);}else{f.appendChild(lab);f.appendChild(el);} opts.appendChild(f);});
  const run=document.createElement('button');run.className='run';run.textContent='Ejecutar';run.onclick=()=>exec(it.c,collect());opts.appendChild(run);
- if(it.c==='dashboard') dash();
 }
 function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.getElementById('opt_'+x.k);o[x.k]=x.t==='check'?el.checked:el.value;});return o;}
 async function api(command,options){const binary=document.getElementById('target').value.trim();
@@ -672,14 +672,14 @@ async function api(command,options){const binary=document.getElementById('target
 function stream(command){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
  out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo<button id="stopstream" class="stopbtn">parar</button></div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
  var log=document.getElementById('livelog');
- var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai);
+ closeStream(); var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai); activeES=es;
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
  es.addEventListener('html',function(e){var d=document.getElementById('streamresult');var ifr=document.createElement('iframe');ifr.style.height='70vh';d.appendChild(ifr);ifr.srcdoc=JSON.parse(e.data);});
  es.addEventListener('dashboard',function(e){renderDash(JSON.parse(e.data));});
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';const ifr=document.createElement('iframe');out.appendChild(ifr);ifr.srcdoc=j.html;return;}

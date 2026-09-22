@@ -171,3 +171,11 @@ def test_autofmt_render():
     out = render_fmt({"ok": True, "verified": True, "detail": "VERIFIED offset=6",
                       "note": "format-string", "output": "shell"})
     assert "format-string" in out and "SI" in out
+
+
+def test_regress_render():
+    from binoracle.workflows.regress import RegressResult, render_regress
+    r = RegressResult(old="a", new="b", mit_changes=["Canary: false -> true"],
+                      new_findings=["X @ y [grounded]"])
+    out = render_regress(r)
+    assert "Regresiones" in out and "Canary" in out and "NUEVOS" in out

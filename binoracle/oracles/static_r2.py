@@ -179,12 +179,16 @@ class R2Oracle(Oracle):
         pic = field("pic")
         arch = field("arch")
         bits = field("bits")
+        fmt = field("bintype") if "bintype" in info else ""
+        relro = "N/A (solo ELF)" if fmt in ("pe", "mach0", "mach064") else "ver elf_mitigations"
         txt = (f"arch:   {arch} {bits}-bit\n"
+               f"format: {fmt or '?'}\n"
                f"NX:     {nx}\n"
                f"PIE/PIC:{pic}\n"
-               f"Canary: {canary}")
+               f"Canary: {canary}\n"
+               f"RELRO:  {relro}")
         return ToolResult(True, "radare2: iI (checksec)", txt,
-                          meta={"canary": canary, "nx": nx, "pic": pic, "arch": arch, "bits": bits})
+                          meta={"canary": canary, "nx": nx, "pic": pic, "arch": arch, "bits": bits, "format": fmt})
 
     def _hardening(self) -> ToolResult:
         syms = self._run("is~FUNC") + "\n" + self._run("ii")

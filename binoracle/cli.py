@@ -28,6 +28,7 @@ from .workflows.fmtstring import fmtstring_help
 from .workflows.autopoc import autopoc, render_poc
 from .workflows.autopwn import autopwn, render_autopwn
 from .workflows.audit import run_audit
+from .workflows.regress import run_regress, render_regress
 from .agent.grounding import GroundingLedger
 
 
@@ -435,6 +436,14 @@ def cmd_audit(args, config):
     store.close()
 
 
+def cmd_regress(args, config):
+    old = _require_binary(args.old); new = _require_binary(args.new)
+    res = run_regress(old, new, config)
+    out = render_regress(res)
+    print(out)
+    _write_if(args.output, out)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -581,6 +590,11 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("-o", "--output")
     au.add_argument("--html", help="also write an interactive HTML report here")
     au.set_defaults(func=cmd_audit)
+
+    rg = sub.add_parser("regress", help="compare two builds for security regressions")
+    rg.add_argument("old"); rg.add_argument("new")
+    rg.add_argument("-o", "--output")
+    rg.set_defaults(func=cmd_regress)
 
     return p
 
