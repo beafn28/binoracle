@@ -392,6 +392,11 @@ def cmd_analyze(args, config):
     cmd_view(a, config)
 
 
+def cmd_serve(args, config):
+    from .web import serve
+    serve(host=args.host, port=args.port, open_browser=not args.no_open)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -513,6 +518,12 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("-o", "--output", help="HTML output path")
     an.add_argument("--no-open", action="store_true")
     an.set_defaults(func=cmd_analyze)
+
+    sv = sub.add_parser("serve", help="launch the local web interface (dashboard)")
+    sv.add_argument("--host", default="127.0.0.1", help="bind host (localhost only by default)")
+    sv.add_argument("--port", type=int, default=8765)
+    sv.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
+    sv.set_defaults(func=cmd_serve)
 
     return p
 

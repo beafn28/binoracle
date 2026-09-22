@@ -37,6 +37,9 @@ and exploitation.
   UBSan), C++/vtable detection, and heap attack surface (UAF / double-free candidates).
 - **`analyze` one-shot**: give it a `.c`/`.cpp` source (it compiles) or a binary, and it
   runs the full pipeline (triage -> hunt -> angr verification -> AI report -> HTML).
+- **`serve` web dashboard** (stdlib http.server, localhost only): metric charts (severity
+  donut, exploitability gauge, KPI cards), a concrete mitigation grid, every command
+  runnable from the browser (including ROP chains), and binary/source file upload.
 - **CLI**: doctor, triage, hunt, ask, chat, report, primitives, gadgets, cyclic,
   exploit-skeleton, explain, diff, verify, view.
 - **Interactive HTML report**: self-contained, bilingual (ES/EN toggle), light/dark toggle,

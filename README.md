@@ -138,6 +138,12 @@ binoracle analyze ./chall.c                # compiles, analyzes, verifies, write
 binoracle analyze ./chall  -o report.html
 ```
 
+Local web dashboard (metrics, mitigation grid, all commands, file upload):
+
+```bash
+binoracle serve            # http://127.0.0.1:8765 (localhost only)
+```
+
 n-day / regression:
 
 ```bash
