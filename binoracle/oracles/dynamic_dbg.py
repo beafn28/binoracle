@@ -45,7 +45,12 @@ class DebuggerOracle(Oracle):
         with tempfile.NamedTemporaryFile(delete=False) as tf:
             tf.write(data)
             infile = tf.name
+        import sys as _sys
+        # On macOS prefer lldb (gdb is unreliable on Apple Silicon); on Linux prefer gdb.
+        prefer_lldb = _sys.platform == "darwin"
         try:
+            if self.lldb and (prefer_lldb or not self.gdb):
+                return self._run_lldb(infile)
             if self.gdb:
                 return self._run_gdb(infile)
             return self._run_lldb(infile)

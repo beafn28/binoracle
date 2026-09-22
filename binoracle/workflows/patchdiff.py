@@ -5,6 +5,7 @@ much. The LLM (optional) reasons about WHICH change looks like a silent security
 what bug it implies. The model never invents a diff; it only interprets radiff2 output."""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -42,20 +43,19 @@ def run_patchdiff(old: str, new: str, llm=None, config=None) -> DiffResult:
         res.raw = "radiff2 not found (ships with radare2). Install radare2 to enable patch-diffing."
         return res
     res.raw = raw
-    # radiff2 -C prints columns; non-1.00000 similarity == changed function.
+    # radiff2 -C columns: "<name> <size> <addr> | <TYPE> (<sim>) | <addr> <size> <name>".
+    # A function changed if similarity < 1.0, or it is NEW / UNMATCH (added/removed).
     for line in raw.splitlines():
-        parts = line.split()
-        if not parts:
+        if not line.strip():
             continue
-        # typical columns: <sim> <type> <addr> | <addr> <name>
-        for p in parts:
-            try:
-                sim = float(p)
-                if 0.0 <= sim < 1.0:
-                    res.changed.append(line.strip())
-                break
-            except ValueError:
-                continue
+        changed = False
+        m = re.search(r"\(([01]\.\d+)\)", line)
+        if m and float(m.group(1)) < 1.0:
+            changed = True
+        if re.search(r"\b(NEW|UNMATCH)\b", line):
+            changed = True
+        if changed:
+            res.changed.append(line.strip())
     if llm is not None and llm.available():
         res.narrative = _explain_diff(llm, res)
     return res

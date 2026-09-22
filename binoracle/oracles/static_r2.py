@@ -99,6 +99,8 @@ class R2Oracle(Oracle):
                  [], lambda: self._sinks(), self.name),
             Tool("r2_checksec", "Cross-platform exploit mitigations parsed from radare2 (NX, PIE/PIC, canary). Works on ELF and Mach-O.",
                  [], lambda: self._checksec(), self.name),
+            Tool("r2_hardening", "Detect MODERN hardening from symbols/imports: FORTIFY_SOURCE, AddressSanitizer, CFI, SafeStack, stack canary.",
+                 [], lambda: self._hardening(), self.name),
             Tool("r2_rop", "Search ROP gadgets (optionally matching a regex like 'pop rdi').",
                  [ToolParam("filter", "optional substring/regex to match, e.g. 'pop rdi'", required=False)],
                  lambda filter=None: self._rop(filter), self.name),
@@ -177,6 +179,26 @@ class R2Oracle(Oracle):
                f"Canary: {canary}")
         return ToolResult(True, "radare2: iI (checksec)", txt,
                           meta={"canary": canary, "nx": nx, "pic": pic, "arch": arch, "bits": bits})
+
+    def _hardening(self) -> ToolResult:
+        syms = self._run("is~FUNC") + "\n" + self._run("ii")
+        checks = {
+            "FORTIFY_SOURCE": ["_chk"],                         # __memcpy_chk, __printf_chk...
+            "AddressSanitizer": ["__asan_", "asan_report"],
+            "CFI (clang)":      ["__cfi_", "__cfi_check"],
+            "SafeStack":        ["__safestack", "safestack_"],
+            "Stack canary":     ["__stack_chk_fail", "__stack_chk_guard"],
+            "UBSan":            ["__ubsan_"],
+            "RELRO/bind_now":   ["__libc_start_main"],          # informative only
+        }
+        lines = []
+        for name, markers in checks.items():
+            hit = any(mk in syms for mk in markers)
+            if name == "RELRO/bind_now":
+                continue
+            lines.append(f"{name:18s}: {'DETECTED' if hit else 'not detected'}")
+        return ToolResult(True, "radare2: is/ii (modern hardening)", "\n".join(lines),
+                          meta={})
 
     def _rop(self, filt=None) -> ToolResult:
         # /Rl lists rop gadgets one per line; radare needs analysis off is fine.
