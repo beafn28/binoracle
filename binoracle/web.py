@@ -219,19 +219,45 @@ def save_upload(payload: dict) -> dict:
     # if a C/C++ source was uploaded, compile it so the dashboard can analyze it
     ext = os.path.splitext(name)[1].lower()
     if ext in (".c", ".cc", ".cpp", ".cxx"):
-        import shutil, subprocess
-        is_cpp = ext != ".c"
-        comp = (shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")) if is_cpp \
-               else (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang"))
-        if not comp:
-            return {"ok": False, "text": "no C/C++ compiler on PATH (cc/gcc/clang)"}
-        out_bin = os.path.join(d, os.path.splitext(name)[0])
-        r = subprocess.run([comp, "-fno-stack-protector", "-no-pie", "-w", "-o", out_bin, path],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            return {"ok": False, "text": "compilation failed:\n" + r.stderr}
-        return {"ok": True, "path": out_bin, "size": os.path.getsize(out_bin), "compiled": True}
+        return _compile_source(d, name, path, ext)
     return {"ok": True, "path": path, "size": len(data)}
+
+
+def _compile_source(d, name, path, ext):
+    import os, shutil, subprocess
+    is_cpp = ext != ".c"
+    out_bin = os.path.join(d, os.path.splitext(name)[0])
+    flags = ["-fno-stack-protector", "-no-pie", "-w", "-o", out_bin]
+    # 1) local compiler (fast, matches host arch)
+    comp = (shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")) if is_cpp \
+           else (shutil.which("cc") or shutil.which("gcc") or shutil.which("clang"))
+    local_err = ""
+    if comp:
+        r = subprocess.run([comp, *flags, path], capture_output=True, text=True)
+        if r.returncode == 0 and os.path.exists(out_bin):
+            return {"ok": True, "path": out_bin, "size": os.path.getsize(out_bin),
+                    "compiled": True, "how": "local"}
+        local_err = r.stderr
+    # 2) Docker x86-64 fallback (for Linux/x86-64 sources, e.g. inline asm on an arm64 host)
+    docker = shutil.which("docker")
+    if docker:
+        cc = "g++" if is_cpp else "gcc"
+        try:
+            up = subprocess.run(
+                [docker, "run", "--rm", "--platform", "linux/amd64", "-v", d + ":/w", "-w", "/w",
+                 "gcc:13", "bash", "-c",
+                 f"{cc} -fno-stack-protector -no-pie -w -o /w/{os.path.basename(out_bin)} /w/{name}"],
+                capture_output=True, text=True, timeout=180)
+            if up.returncode == 0 and os.path.exists(out_bin):
+                return {"ok": True, "path": out_bin, "size": os.path.getsize(out_bin),
+                        "compiled": True, "how": "docker/linux-amd64"}
+            docker_err = up.stderr or up.stdout
+        except Exception as e:
+            docker_err = str(e)
+        return {"ok": False, "text": "compilation failed.\n\n[local]\n" + (local_err or "(no local compiler)") +
+                "\n\n[docker x86-64]\n" + docker_err}
+    return {"ok": False, "text": ("compilation failed and Docker is not available for an "
+            "x86-64 fallback.\n\n[local]\n" + (local_err or "(no local compiler on PATH)"))}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -243,6 +269,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
 
