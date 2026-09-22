@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+from urllib.parse import urlparse, parse_qs
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -304,6 +305,62 @@ def _compile_source(d, name, path, ext):
             "x86-64 fallback.\n\n[local]\n" + (local_err or "(no local compiler on PATH)"))}
 
 
+
+
+def _fmt_step(step, action):
+    act = action.get("action")
+    if act == "tool":
+        args = action.get("args", {}) or {}
+        a = " ".join(f"{k}={v}" for k, v in args.items())
+        return f"paso {step}: {action.get('tool')} {a}".rstrip()
+    if act == "final":
+        return f"paso {step}: la IA da su respuesta final"
+    if act == "malformed":
+        return f"paso {step}: (reajustando protocolo)"
+    return f"paso {step}: {act}"
+
+
+def run_streaming(command, binary, ai, emit):
+    config = load_config()
+    import os
+    if not binary or not os.path.exists(binary):
+        emit("step", f"error: binario no encontrado: {binary}")
+        emit("done", "")
+        return
+    try:
+        if command == "audit":
+            from .workflows.audit import run_audit
+            llm = make_backend(config)
+            if not llm.available():
+                emit("step", "no hay modelo local (arranca ollama)")
+                emit("done", "")
+                return
+            emit("step", "arrancando auditoria autonoma: la IA va a conducir el analisis...")
+            store = SessionStore(config.db_path(), binary)
+            res = run_audit(binary, llm, config, store=store,
+                            on_step=lambda step, action: emit("step", _fmt_step(step, action)))
+            from .report.html import render_html
+            html = render_html(binary, findings=res.findings, ledger=res.ledger,
+                               answer=res.answer, lang=config.lang, embed=True)
+            store.close()
+            emit("step", "auditoria terminada; generando informe...")
+            emit("html", html)
+        elif command == "autopwn":
+            from .workflows.autopwn import autopwn, render_autopwn
+            store = SessionStore(config.db_path(), binary)
+            res = autopwn(binary, config=config, store=store, run=True,
+                          llm=(make_backend(config) if ai else None),
+                          on_step=lambda m: emit("step", m))
+            store.close()
+            emit("html", "<pre style='padding:16px;white-space:pre-wrap'>" +
+                 render_autopwn(res, lang=config.lang).replace("<", "&lt;") + "</pre>")
+        else:
+            emit("step", f"streaming no soportado para {command}")
+    except Exception as e:
+        emit("step", f"error: {e}")
+    emit("done", "")
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -320,6 +377,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, INDEX_HTML)
+        elif self.path.startswith("/api/stream"):
+            q = parse_qs(urlparse(self.path).query)
+            command = q.get("command", [""])[0]
+            binary = q.get("binary", [""])[0]
+            ai = q.get("ai", ["0"])[0] == "1"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            def emit(kind, text):
+                try:
+                    self.wfile.write(("event: " + kind + "\ndata: " + json.dumps(text) + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            run_streaming(command, binary, ai, emit)
         else:
             self._send(404, "not found", "text/plain")
 
@@ -390,11 +465,11 @@ main{flex:1;display:flex;min-height:0}
 .stb{flex:1;background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 0;cursor:pointer;font:13px ui-monospace,monospace}
 .stb:hover{border-color:var(--acc)}
 .side.collapsed .sidetb{flex-direction:column}
-.side .grp{color:var(--mut);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:12px 12px 4px}
-.side button{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;background:none;border:none;color:var(--fg);padding:8px 11px;border-radius:8px;cursor:pointer;border-left:2px solid transparent}
-.side .lab{display:flex;flex-direction:column;gap:1px;min-width:0}
+.side .grp{color:var(--mut);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:14px 12px 6px;margin-top:4px;border-top:1px solid var(--line)}
+.side button{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;background:none;border:none;color:var(--fg);padding:9px 11px 11px;border-radius:8px;cursor:pointer;border-left:2px solid transparent;margin-bottom:3px}
+.side .lab{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
 .side .cn{font-size:13px;font-weight:600}
-.side .cd{font-size:10.5px;color:var(--mut);line-height:1.25}
+.side .cd{font-size:10.5px;color:var(--mut);line-height:1.3;margin-top:2px;display:block}
 .side button .ic{width:16px;text-align:center;color:var(--mut);font-size:13px;margin-top:1px}
 .side button:hover{background:var(--panel)}
 .side button.active{background:var(--panel);border-left-color:var(--acc);color:var(--acc)}
@@ -440,6 +515,7 @@ h3{margin:0 0 14px;font-size:12px;color:var(--mut);text-transform:uppercase;lett
 .console{background:var(--code);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .console .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);color:var(--mut);font:12px ui-monospace,monospace}
 .console .bar .d{width:9px;height:9px;border-radius:50%}
+.console #livelog{max-height:48vh;overflow:auto}
 .console pre{margin:0;padding:16px;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--codefg);white-space:pre-wrap;word-break:break-word}
 .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--mut);gap:14px;text-align:center}
 .empty .big{font:700 40px ui-monospace,monospace;color:var(--acc);letter-spacing:2px;opacity:.8}
@@ -513,7 +589,15 @@ function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.g
 async function api(command,options){const binary=document.getElementById('target').value.trim();
  var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:opt})});return r.json();}
-async function exec(command,options){const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+function stream(command){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
+ out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo (lo que hace la IA por detras)</div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
+ var log=document.getElementById('livelog');
+ var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai);
+ es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
+ es.addEventListener('html',function(e){var d=document.getElementById('streamresult');var ifr=document.createElement('iframe');ifr.style.height='70vh';d.appendChild(ifr);ifr.srcdoc=JSON.parse(e.data);});
+ es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
+ es.onerror=function(){es.close();};}
+async function exec(command,options){if(command==='audit'){stream('audit');return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';const ifr=document.createElement('iframe');out.appendChild(ifr);ifr.srcdoc=j.html;return;}
