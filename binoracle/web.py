@@ -296,6 +296,10 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True):
     httpd = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}"
     print(f"binoracle web UI on {url}  (Ctrl-C to stop)")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print("WARNING: bound to a non-localhost address with NO authentication. This server "
+              "compiles uploaded code, analyzes binaries and can execute them. Only expose it on "
+              "a trusted network; never on the public internet.")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
