@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS annotations (
     value TEXT,
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS knowledge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bin_id TEXT,
+    kind TEXT,
+    content TEXT,
+    created_at REAL
+);
 """
 
 
@@ -123,5 +130,54 @@ class SessionStore:
         )
         self._conn.commit()
 
+    def add_knowledge(self, kind: str, content: str) -> None:
+        if not content or not content.strip():
+            return
+        self._conn.execute(
+            "INSERT INTO knowledge(bin_id, kind, content, created_at) VALUES (?,?,?,?)",
+            (self.bin_id, kind, content, time.time()),
+        )
+        self._conn.commit()
+
+    def get_knowledge(self, limit: int = 5):
+        rows = self._conn.execute(
+            "SELECT kind, content, created_at FROM knowledge WHERE bin_id=? ORDER BY id DESC LIMIT ?",
+            (self.bin_id, limit),
+        ).fetchall()
+        return [{"kind": r[0], "content": r[1], "created_at": r[2]} for r in rows]
+
+    def list_binaries(self):
+        rows = self._conn.execute(
+            """SELECT b.bin_id, b.path, b.first_seen,
+                      (SELECT COUNT(*) FROM findings f WHERE f.bin_id=b.bin_id) AS nf,
+                      (SELECT COUNT(*) FROM knowledge k WHERE k.bin_id=b.bin_id) AS nk
+               FROM binaries b ORDER BY b.first_seen DESC"""
+        ).fetchall()
+        import os
+        return [{"bin_id": r[0], "path": r[1], "name": os.path.basename(r[1]),
+                 "first_seen": r[2], "findings": r[3], "knowledge": r[4]} for r in rows]
+
     def close(self) -> None:
         self._conn.close()
+
+
+def list_all_binaries(db_path):
+    """List every analyzed binary in the DB (for history), without needing a target."""
+    import os, sqlite3
+    if not os.path.exists(str(db_path)):
+        return []
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            """SELECT b.bin_id, b.path, b.first_seen,
+                      (SELECT COUNT(*) FROM findings f WHERE f.bin_id=b.bin_id),
+                      (SELECT COUNT(*) FROM knowledge k WHERE k.bin_id=b.bin_id)
+               FROM binaries b ORDER BY b.first_seen DESC"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+    return [{"bin_id": r[0], "path": r[1], "name": os.path.basename(r[1]),
+             "first_seen": r[2], "findings": r[3], "knowledge": r[4],
+             "exists": os.path.exists(r[1])} for r in rows]

@@ -69,7 +69,7 @@ def _analyze_one(llm, f: Finding, lang: str) -> str:
 
 
 def executive_summary(llm, binary: str, findings: List[Finding], mitigations: str = "",
-                      lang: str = "es") -> str:
+                      lang: str = "es", prior: str = "") -> str:
     if llm is None or not llm.available():
         return ""
     counts = {}
@@ -85,14 +85,17 @@ def executive_summary(llm, binary: str, findings: List[Finding], mitigations: st
             "y la prioridad de actuacion. No inventes hallazgos nuevos ni exageres: distingue lo "
             "verificado de lo meramente grounded."
         )
+        pr = (f"\n\nAnalisis previos de este binario (retroalimentacion, tenlos en cuenta y "
+              f"refina):\n{prior}") if prior else ""
         user = (f"Binario: {binary}\nMitigaciones:\n{mitigations or '(desconocidas)'}\n\n"
-                f"Hallazgos ({len(findings)}, {verified} verificados):\n{inventory}")
+                f"Hallazgos ({len(findings)}, {verified} verificados):\n{inventory}{pr}")
     else:
         sys = ("You are a security analyst. Write a professional EXECUTIVE SUMMARY (3-5 sentences) "
                "for a CISO based ONLY on the given findings and mitigations. Distinguish verified "
                "from merely grounded. Do not invent findings.")
+        pr = (f"\n\nPrior analyses of this binary (feedback, refine on top of them):\n{prior}") if prior else ""
         user = (f"Binary: {binary}\nMitigations:\n{mitigations or '(unknown)'}\n\n"
-                f"Findings ({len(findings)}, {verified} verified):\n{inventory}")
+                f"Findings ({len(findings)}, {verified} verified):\n{inventory}{pr}")
     try:
         return llm.chat([Message("system", sys), Message("user", user)]).strip()
     except Exception:

@@ -67,6 +67,9 @@ def run_command(payload: dict) -> dict:
         return {"ok": True, "text": gen_shellcode(arch=opts.get("arch", "amd64"),
                                                   kind=opts.get("kind", "sh"),
                                                   arg=opts.get("arg") or None)}
+    if cmd == "history":
+        from .store.session import list_all_binaries
+        return {"ok": True, "history": list_all_binaries(config.db_path())}
 
     # everything else needs a real binary
     if not binary or not os.path.exists(binary):
@@ -182,9 +185,12 @@ def run_command(payload: dict) -> dict:
                 if llm.available() and findings:
                     findings = enrich_findings(llm, findings, lang=config.lang)
                     mit = next((t for (ti, sr, t) in report.sections if "checksec" in (sr+ti).lower()), "")
-                    s = executive_summary(llm, binary, findings, mitigations=mit, lang=config.lang)
+                    prior = "\n\n".join(k["content"] for k in store.get_knowledge())
+                    s = executive_summary(llm, binary, findings, mitigations=mit,
+                                          lang=config.lang, prior=prior)
                     if s:
                         answer = s
+                        store.add_knowledge("summary", s)  # feedback: accumulate AI insight
         # build a ledger from triage if none
         if ledger is None:
             from .agent.grounding import GroundingLedger
@@ -331,16 +337,31 @@ header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:
 .go:hover{filter:brightness(1.08)}
 .icon-btn{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
 main{flex:1;display:flex;min-height:0}
-.side{width:210px;border-right:1px solid var(--line);background:var(--panel2);overflow:auto;padding:8px 8px 20px}
+.side{width:250px;border-right:1px solid var(--line);background:var(--panel2);overflow:auto;padding:8px 8px 20px}
+.side.collapsed{width:54px}
+.side.collapsed .lab,.side.collapsed .grp{display:none}
+.side.collapsed button{justify-content:center;padding:9px 0}
+.side.collapsed .ic{width:auto;font-size:15px}
+.hrow{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:8px 0;background:var(--panel2)}
+.hrow:hover{border-color:var(--acc)}
+.hrow .hn{font-weight:600}
+.hrow .hp{color:var(--mut);font:11px ui-monospace,monospace;word-break:break-all;margin:2px 0}
+.hrow .hm{color:var(--mut);font-size:12px}
+.hrow .del{color:#e5484d}
 .side .grp{color:var(--mut);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:12px 12px 4px}
-.side button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:var(--fg);padding:8px 11px;border-radius:8px;cursor:pointer;font-size:13px;border-left:2px solid transparent}
-.side button .ic{width:18px;text-align:center;color:var(--mut);font-size:13px}
+.side button{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;background:none;border:none;color:var(--fg);padding:8px 11px;border-radius:8px;cursor:pointer;border-left:2px solid transparent}
+.side .lab{display:flex;flex-direction:column;gap:1px;min-width:0}
+.side .cn{font-size:13px;font-weight:600}
+.side .cd{font-size:10.5px;color:var(--mut);line-height:1.25}
+.side button .ic{width:16px;text-align:center;color:var(--mut);font-size:13px;margin-top:1px}
 .side button:hover{background:var(--panel)}
 .side button.active{background:var(--panel);border-left-color:var(--acc);color:var(--acc)}
 .side button.active .ic{color:var(--acc)}
+.side button.active .cn{color:var(--acc)}
 .work{flex:1;display:flex;flex-direction:column;min-width:0}
 .opts{padding:11px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;align-items:end;background:var(--panel2);min-height:0}
 .opts:empty{display:none}
+.cmddesc{flex-basis:100%;color:var(--mut);font-size:12px;margin-bottom:2px}
 .f{display:flex;flex-direction:column;gap:3px}
 .f label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .f input,.f select{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
@@ -391,7 +412,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
   <div class="brand"><span class="dot"></span>binoracle<span class="tag">// local binary RE + exploitation</span></div>
   <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario  o  fuente.c" spellcheck="false"></div>
   <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
-  <input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
+  <button class="icon-btn" id="hist" title="historial de binarios">H</button><button class="icon-btn" id="collapse" title="colapsar menu">&laquo;</button><input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
 <main>
   <nav class="side" id="side"></nav>
@@ -405,34 +426,35 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"Panel"},
- {c:"dashboard",n:"Dashboard",ic:"#"},
- {c:"report",n:"Informe completo",ic:"="},
+ {c:"dashboard",n:"Dashboard",ic:"#",d:"Metricas, mitigaciones y superficie de ataque de un vistazo"},
+ {c:"report",n:"Informe completo",ic:"=",d:"Informe con findings verificados (grounded/verified) y analisis"},
  {g:"Analisis"},
- {c:"triage",n:"Triage",ic:">"},
- {c:"hunt",n:"Hunt",ic:"*"},
- {c:"primitives",n:"Primitivas",ic:"%"},
- {c:"checksec",n:"Checksec + hardening",ic:"!"},
- {c:"disasm",n:"Disasm",ic:"~",opts:[{k:"target",t:"text",label:"funcion",def:"main"}]},
- {c:"gadgets",n:"Gadgets ROP",ic:"+",opts:[{k:"filter",t:"text",label:"filtro (pop rdi)"}]},
- {c:"vtables",n:"C++ / vtables",ic:"^"},
- {c:"heap",n:"Heap surface",ic:":"},
+ {c:"triage",n:"Triage",ic:">",d:"Hechos base: formato, mitigaciones, imports y sinks peligrosos"},
+ {c:"hunt",n:"Hunt",ic:"*",d:"Busca vulnerabilidades y las verifica con angr (promueve a verified)"},
+ {c:"primitives",n:"Primitivas",ic:"%",d:"Deduce la primitiva de explotacion: ret2win / ROP / shellcode / fmt"},
+ {c:"checksec",n:"Checksec + hardening",ic:"!",d:"NX/PIE/Canary/RELRO + FORTIFY/ASan/CFI/SafeStack"},
+ {c:"disasm",n:"Disasm",ic:"~",d:"Desensambla una funcion por nombre o direccion",opts:[{k:"target",t:"text",label:"funcion",def:"main"}]},
+ {c:"gadgets",n:"Gadgets ROP",ic:"+",d:"Busca gadgets ROP; filtra por instruccion (ej. pop rdi)",opts:[{k:"filter",t:"text",label:"filtro (pop rdi)"}]},
+ {c:"vtables",n:"C++ / vtables",ic:"^",d:"Detecta C++ y tablas virtuales (vtables / RTTI)"},
+ {c:"heap",n:"Heap surface",ic:":",d:"Llamadas a malloc/free y candidatos UAF / double-free"},
  {g:"Explotacion"},
- {c:"rop",n:"Cadena ROP",ic:"&",opts:[{k:"goal",t:"sel",label:"goal",vals:["auto","system","execve","ret2libc","syscall"]},{k:"libc",t:"text",label:"libc"}]},
- {c:"shellcode",n:"Shellcode",ic:"$",nobin:true,opts:[{k:"arch",t:"sel",label:"arch",vals:["amd64","i386","aarch64","arm"]},{k:"kind",t:"sel",label:"kind",vals:["sh","cat","execve"]},{k:"arg",t:"text",label:"arg"}]},
- {c:"fmtstring",n:"Format-string",ic:"%",opts:[{k:"offset",t:"text",label:"offset"},{k:"addr",t:"text",label:"addr"},{k:"value",t:"text",label:"value"}]},
- {c:"fuzz",n:"Fuzz harness",ic:"~",opts:[{k:"mode",t:"sel",label:"mode",vals:["afl","libfuzzer"]},{k:"func",t:"text",label:"func"}]},
- {c:"skeleton",n:"Exploit skeleton",ic:"|",opts:[{k:"offset",t:"text",label:"offset"}]},
- {c:"verify",n:"Verify reachability",ic:"?",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
+ {c:"rop",n:"Cadena ROP",ic:"&",d:"Construye una cadena ROP real (ret2libc / execve) con pwntools",opts:[{k:"goal",t:"sel",label:"goal",vals:["auto","system","execve","ret2libc","syscall"]},{k:"libc",t:"text",label:"libc"}]},
+ {c:"shellcode",n:"Shellcode",ic:"$",d:"Genera shellcode (execve /bin/sh, cat) para la arquitectura",nobin:true,opts:[{k:"arch",t:"sel",label:"arch",vals:["amd64","i386","aarch64","arm"]},{k:"kind",t:"sel",label:"kind",vals:["sh","cat","execve"]},{k:"arg",t:"text",label:"arg"}]},
+ {c:"fmtstring",n:"Format-string",ic:"%",d:"Ayuda de format-string: encontrar offset, fuga y escritura (GOT)",opts:[{k:"offset",t:"text",label:"offset"},{k:"addr",t:"text",label:"addr"},{k:"value",t:"text",label:"value"}]},
+ {c:"fuzz",n:"Fuzz harness",ic:"~",d:"Genera un harness de fuzzing (libFuzzer) o comando AFL",opts:[{k:"mode",t:"sel",label:"mode",vals:["afl","libfuzzer"]},{k:"func",t:"text",label:"func"}]},
+ {c:"skeleton",n:"Exploit skeleton",ic:"|",d:"Plantilla de exploit pwntools grounded en las mitigaciones",opts:[{k:"offset",t:"text",label:"offset"}]},
+ {c:"verify",n:"Verify reachability",ic:"?",d:"Prueba con angr si una direccion es alcanzable desde entry",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
  {g:"Utiles"},
- {c:"cyclic",n:"Cyclic / offset",ic:"@",nobin:true,opts:[{k:"length",t:"text",label:"length",def:"200"},{k:"find",t:"text",label:"find 0x.."}]},
- {c:"doctor",n:"Doctor",ic:"+",nobin:true},
+ {c:"cyclic",n:"Cyclic / offset",ic:"@",d:"Patron De Bruijn y busqueda de offset (como pwntools cyclic)",nobin:true,opts:[{k:"length",t:"text",label:"length",def:"200"},{k:"find",t:"text",label:"find 0x.."}]},
+ {c:"doctor",n:"Doctor",ic:"+",d:"Estado de los oracles y del modelo LLM",nobin:true},
 ];
 const side=document.getElementById('side');
 CMDS.forEach(it=>{ if(it.g){const d=document.createElement('div');d.className='grp';d.textContent=it.g;side.appendChild(d);return;}
- const b=document.createElement('button');b.innerHTML='<span class="ic">'+it.ic+'</span>'+it.n;b.onclick=()=>select(it,b);side.appendChild(b);});
+ const b=document.createElement('button');b.innerHTML='<span class="ic">'+it.ic+'</span><span class="lab"><span class="cn">'+it.n+'</span><span class="cd">'+(it.d||'')+'</span></span>';b.title=it.d||'';b.onclick=()=>select(it,b);side.appendChild(b);});
 let current=null;
 function select(it,btn){current=it;[...side.querySelectorAll('button')].forEach(x=>x.classList.remove('active'));btn.classList.add('active');
  const opts=document.getElementById('opts');opts.innerHTML='';
+ if(it.d){const dd=document.createElement('div');dd.className='cmddesc';dd.textContent=it.d;opts.appendChild(dd);}
  (it.opts||[]).forEach(o=>{const f=document.createElement('div');f.className='f';const lab=document.createElement('label');lab.textContent=o.label;let el;
   if(o.t==='sel'){el=document.createElement('select');o.vals.forEach(v=>{const op=document.createElement('option');op.value=v;op.textContent=v;el.appendChild(op);});}
   else if(o.t==='check'){f.className='f chk';el=document.createElement('input');el.type='checkbox';}
@@ -508,6 +530,16 @@ async function upload(inp){var f=inp.files[0];if(!f)return;var out=document.getE
  var buf=await f.arrayBuffer();var b64=b64enc(buf);
  var r=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:f.name,b64:b64})});var j=await r.json();
  if(j.ok){document.getElementById('target').value=j.path;dash();}else{out.innerHTML='<div class="console"><pre>'+(j.text||'error')+'</pre></div>';}}
+async function loadHistory(){var out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">cargando historial...</div></div>';
+ var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'history',binary:'',options:{}})});var j=await r.json();
+ var H=j.history||[];out.innerHTML='';
+ var card=document.createElement('div');card.className='card';var h=document.createElement('h3');h.textContent='Historial de binarios analizados';card.appendChild(h);
+ if(!H.length){var e=document.createElement('div');e.className='empty';e.style.height='auto';e.textContent='Sin binarios analizados todavia.';card.appendChild(e);}
+ H.forEach(function(b){var row=document.createElement('div');row.className='hrow';
+  row.innerHTML='<div class="hn">'+b.name+(b.exists?'':' <span class="del">(no disponible)</span>')+'</div><div class="hp">'+b.path+'</div><div class="hm">'+b.findings+' hallazgos, '+b.knowledge+' notas IA</div>';
+  if(b.exists){row.style.cursor='pointer';row.addEventListener('click',function(){document.getElementById('target').value=b.path;dash();});}
+  card.appendChild(row);});
+ out.appendChild(card);}
 function toggleTheme(){const r=document.documentElement;r.setAttribute('data-theme',r.getAttribute('data-theme')==='light'?'dark':'light');}
 async function loadStatus(){try{const j=await api('doctor','');const f=document.getElementById('footer');const lines=(j.text||'').split('\n');
  const pills=lines.filter(l=>l.includes('[ok]')||l.includes('[--]')).map(l=>{const on=l.includes('[ok]');const name=l.replace(/\[..\]/,'').split(':')[0].trim();return '<span class="pill '+(on?'on':'off')+'">'+name+'</span>';});
@@ -517,7 +549,9 @@ async function loadStatus(){try{const j=await api('doctor','');const f=document.
  document.getElementById('out').innerHTML='<div class="empty"><div class="big">&#10095;_</div><div>Pon la ruta de un binario arriba y pulsa <b>Analizar</b></div></div>';
  loadStatus();document.getElementById('target').addEventListener('keydown',e=>{if(e.key==='Enter')dash();});
  document.getElementById('attach').onclick=function(){document.getElementById('file').click();};
- document.getElementById('file').onchange=function(){upload(this);};})();
+ document.getElementById('file').onchange=function(){upload(this);};
+ document.getElementById('hist').onclick=loadHistory;
+ document.getElementById('collapse').onclick=function(){var sd=document.getElementById('side');sd.classList.toggle('collapsed');this.innerHTML=sd.classList.contains('collapsed')?'&raquo;':'&laquo;';};})();
 </script>
 </body></html>
 """

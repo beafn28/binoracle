@@ -36,6 +36,22 @@ def _md(s) -> str:
     return t
 
 
+def _evidence_html(ev: str) -> str:
+    """Render finding evidence as a labelled terminal block, with the oracle sources it
+    came from shown as chips and a colour cue for angr/debugger-proven evidence."""
+    import re as _re
+    ev = ev or ""
+    srcs = list(dict.fromkeys(_re.findall(r"\[([^\]\n]+)\]", ev)))
+    chips = "".join(f'<span class="evsrc">{_esc(s)}</span>' for s in srcs)
+    proven = ("reachable" in ev.lower()) or ("angr" in ev.lower()) or ("stop reason" in ev.lower())
+    dot = "#30a46c" if proven else "#5b8def"
+    tag = "probada por oracle" if proven else "evidencia estatica"
+    return (f'<div class="evbox"><div class="evbar"><span class="evdot" style="background:{dot}"></span>'
+            f'<span class="evlabel">evidencia real</span><span class="evtag">{tag}</span>'
+            f'{("<span class=evchips>"+chips+"</span>") if chips else ""}</div>'
+            f'<pre class="evpre">{_esc(ev) or "(sin evidencia)"}</pre></div>')
+
+
 def _parse_mitigations(triage) -> dict:
     """Pull NX/PIE/Canary/RELRO/arch out of the checksec triage section, if present."""
     m = {"NX": None, "PIE": None, "Canary": None, "RELRO": None, "Arch": None}
@@ -124,7 +140,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
           </div>
           <div class="card-b">
             <h4 data-i18n="rationale"></h4><div class="md">{_md(f.rationale)}</div>
-            <h4 data-i18n="evidence"></h4><pre>{_esc(f.evidence)}</pre>
+            <h4 data-i18n="evidence"></h4>{_evidence_html(f.evidence)}
             <h4 data-i18n="recommendation"></h4><div class="md">{_md(f.recommendation)}</div>
           </div>
         </div>'''
@@ -309,6 +325,14 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .sec .src{color:var(--mut);font-weight:400;font-size:11px;font-family:ui-monospace,monospace}
 .sec pre{margin:0 13px 13px}
 .md{white-space:pre-wrap}
+.evbox{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#0b0e12}
+.evbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0e131c;border-bottom:1px solid #1e2632;font:11px ui-monospace,monospace;color:#8b95a1;flex-wrap:wrap}
+.evdot{width:9px;height:9px;border-radius:50%}
+.evlabel{color:#e2e8f0;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.evtag{color:#8b95a1}
+.evchips{display:flex;gap:5px;flex-wrap:wrap;margin-left:auto}
+.evsrc{background:#070a10;border:1px solid #1e2632;border-radius:5px;padding:1px 7px;color:#a9c7e8}
+.evpre{margin:0;padding:12px;background:#0b0e12;color:#cfe3ff;white-space:pre;overflow:auto;font:12px/1.5 ui-monospace,monospace;border:0;border-radius:0}
 .md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
 .summary{margin-bottom:8px;border-left:3px solid var(--acc)}
 .empty{color:var(--mut);font-style:italic}
