@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS knowledge (
     content TEXT,
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS global_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    arch TEXT, bits TEXT, sink TEXT, mitig TEXT,
+    fact TEXT, verdict TEXT, created_at REAL
+);
 """
 
 
@@ -156,6 +161,55 @@ class SessionStore:
         import os
         return [{"bin_id": r[0], "path": r[1], "name": os.path.basename(r[1]),
                  "first_seen": r[2], "findings": r[3], "knowledge": r[4]} for r in rows]
+
+    def add_global_fact(self, arch, bits, sink, mitig, fact, verdict):
+        # de-dup: same (arch, sink, fact) is stored once
+        exists = self._conn.execute(
+            "SELECT 1 FROM global_facts WHERE arch=? AND sink=? AND fact=? LIMIT 1",
+            (arch, sink, fact),
+        ).fetchone()
+        if exists:
+            return
+        self._conn.execute(
+            "INSERT INTO global_facts(arch,bits,sink,mitig,fact,verdict,created_at) VALUES (?,?,?,?,?,?,?)",
+            (arch, bits, sink, mitig, fact, verdict, time.time()),
+        )
+        self._conn.commit()
+
+    def relevant_facts(self, arch, sinks, limit: int = 8):
+        """Cross-binary knowledge for a SIMILAR target: same arch and overlapping sinks.
+        Anonymized (no paths). This is what makes the system improve as the corpus grows."""
+        sinks = list(sinks or [])
+        if sinks:
+            q = ",".join("?" for _ in sinks)
+            rows = self._conn.execute(
+                f"SELECT DISTINCT fact FROM global_facts WHERE arch=? AND sink IN ({q}) "
+                f"ORDER BY id DESC LIMIT ?", (arch, *sinks, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT DISTINCT fact FROM global_facts WHERE arch=? ORDER BY id DESC LIMIT ?",
+                (arch, limit),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def save_verified_facts(self, findings, arch, bits, mitig):
+        """Curation: only VERIFIED findings become durable facts (per-binary + global,
+        anonymized). Feeding these back beats reinjecting the model's own prose."""
+        import re as _re
+        mit_short = _re.sub(r"\s+", " ", " ".join(l.strip() for l in (mitig or "").splitlines() if ":" in l)).strip()[:200]
+        n = 0
+        for f in findings:
+            if f.verdict != "verified":
+                continue
+            m = _re.search(r"'([^']+)'", f.title or "")
+            sink = m.group(1) if m else (f.location or "?")
+            fact = f"{sink}: {f.title} @ {f.location} [verified]"
+            self.add_knowledge("fact", fact)
+            gfact = f"'{sink}' verificado alcanzable ({arch} {bits}-bit; {mit_short})"
+            self.add_global_fact(arch, bits, sink, mit_short, gfact, "verified")
+            n += 1
+        return n
 
     def close(self) -> None:
         self._conn.close()

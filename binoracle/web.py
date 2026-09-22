@@ -185,12 +185,24 @@ def run_command(payload: dict) -> dict:
                 if llm.available() and findings:
                     findings = enrich_findings(llm, findings, lang=config.lang)
                     mit = next((t for (ti, sr, t) in report.sections if "checksec" in (sr+ti).lower()), "")
-                    prior = "\n\n".join(k["content"] for k in store.get_knowledge())
+                    cs = reg.get("r2_checksec").run()
+                    arch = cs.meta.get("arch", "?") if cs.ok else "?"
+                    bits = cs.meta.get("bits", "?") if cs.ok else "?"
+                    sk = reg.get("r2_sinks").run()
+                    sinks = sk.meta.get("sinks", []) if sk.ok else []
+                    # feedback context = VERIFIED facts (this binary) + global KB (similar targets)
+                    vfacts = [f"- {f.title} @ {f.location}" for f in findings if f.verdict == "verified"]
+                    ghints = store.relevant_facts(arch, sinks)
+                    ctx = ("Hechos verificados de este binario:\n" + "\n".join(vfacts)) if vfacts else ""
+                    if ghints:
+                        ctx += "\n\nTecnicas conocidas en targets similares:\n" + \
+                               "\n".join("- " + g for g in ghints)
                     s = executive_summary(llm, binary, findings, mitigations=mit,
-                                          lang=config.lang, prior=prior)
+                                          lang=config.lang, prior=ctx)
                     if s:
                         answer = s
-                        store.add_knowledge("summary", s)  # feedback: accumulate AI insight
+                    # curation: only VERIFIED findings become durable knowledge (per-binary + global)
+                    store.save_verified_facts(findings, arch, bits, mit)
         # build a ledger from triage if none
         if ledger is None:
             from .agent.grounding import GroundingLedger
@@ -325,7 +337,7 @@ INDEX_HTML = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--panel2))}
-.brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.3px}
+.brand{font-weight:800;font-size:18px;letter-spacing:.3px;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
 .brand .tag{font-weight:400;color:var(--mut);font:12px ui-monospace,monospace}
 .dot{width:11px;height:11px;border-radius:50%;background:var(--acc);box-shadow:0 0 12px var(--acc),0 0 4px var(--acc)}
 .prompt{flex:1;display:flex;align-items:center;gap:8px;background:var(--field);border:1px solid var(--line);border-radius:9px;padding:0 12px;min-width:180px}
@@ -348,6 +360,10 @@ main{flex:1;display:flex;min-height:0}
 .hrow .hp{color:var(--mut);font:11px ui-monospace,monospace;word-break:break-all;margin:2px 0}
 .hrow .hm{color:var(--mut);font-size:12px}
 .hrow .del{color:#e5484d}
+.sidetb{display:flex;gap:6px;padding:4px 6px 8px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.stb{flex:1;background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 0;cursor:pointer;font:13px ui-monospace,monospace}
+.stb:hover{border-color:var(--acc)}
+.side.collapsed .sidetb{flex-direction:column}
 .side .grp{color:var(--mut);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:12px 12px 4px}
 .side button{display:flex;align-items:flex-start;gap:9px;width:100%;text-align:left;background:none;border:none;color:var(--fg);padding:8px 11px;border-radius:8px;cursor:pointer;border-left:2px solid transparent}
 .side .lab{display:flex;flex-direction:column;gap:1px;min-width:0}
@@ -409,10 +425,10 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 </style></head>
 <body>
 <header>
-  <div class="brand"><span class="dot"></span>binoracle<span class="tag">// local binary RE + exploitation</span></div>
+  <div class="brand">binoracle</div>
   <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario  o  fuente.c" spellcheck="false"></div>
   <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
-  <button class="icon-btn" id="hist" title="historial de binarios">H</button><button class="icon-btn" id="collapse" title="colapsar menu">&laquo;</button><input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
+  <input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
 <main>
   <nav class="side" id="side"></nav>
@@ -449,6 +465,7 @@ const CMDS=[
  {c:"doctor",n:"Doctor",ic:"+",d:"Estado de los oracles y del modelo LLM",nobin:true},
 ];
 const side=document.getElementById('side');
+var _tb=document.createElement('div');_tb.className='sidetb';_tb.innerHTML='<button class="stb" id="collapse" title="colapsar menu">&laquo;</button><button class="stb" id="hist" title="historial de binarios">H</button>';side.appendChild(_tb);
 CMDS.forEach(it=>{ if(it.g){const d=document.createElement('div');d.className='grp';d.textContent=it.g;side.appendChild(d);return;}
  const b=document.createElement('button');b.innerHTML='<span class="ic">'+it.ic+'</span><span class="lab"><span class="cn">'+it.n+'</span><span class="cd">'+(it.d||'')+'</span></span>';b.title=it.d||'';b.onclick=()=>select(it,b);side.appendChild(b);});
 let current=null;
