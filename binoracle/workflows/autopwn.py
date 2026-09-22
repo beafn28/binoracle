@@ -178,6 +178,28 @@ def autopwn(binary: str, config=None, store=None,
             log("[ia] conclusion generada")
             learn("conclusion IA: " + res.ai_conclusion[:400])
 
+    # combo E: heap corruption confirmed dynamically
+    heap_tool = reg.get("r2_heap")
+    has_heap = False
+    if heap_tool:
+        _hr = heap_tool.run()
+        has_heap = _hr.ok and _hr.meta.get("heap", False)
+    if want("heap") and has_heap:
+        log("[combo] heap: confirmando corrupcion (double-free/overflow) en sandbox...")
+        try:
+            from .autoheap import autoheap
+            rh = autoheap(binary)
+            if rh.get("confirmed"):
+                kinds = ", ".join(sorted({h["kind"] for h in rh.get("hits", [])}))
+                res.attempts.append(("heap-corruption", True, f"confirmada ({kinds})"))
+                log(f"[combo] heap -> CORRUPCION CONFIRMADA ({kinds})")
+                learn(f"heap-corruption confirmed kinds={kinds}")
+            else:
+                res.attempts.append(("heap-corruption", None, rh.get("note", "")))
+                log("[combo] heap -> no disparada con entradas de prueba")
+        except Exception as e:
+            res.attempts.append(("heap-corruption", False, str(e)))
+
     log("[fin] combinaciones probadas: " + ", ".join(a[0] for a in res.attempts))
     return res
 

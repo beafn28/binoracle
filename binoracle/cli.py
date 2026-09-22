@@ -449,6 +449,12 @@ def cmd_regress(args, config):
     _write_if(args.output, out)
 
 
+def cmd_heap(args, config):
+    binary = _require_binary(args.binary)
+    from .workflows.autoheap import autoheap, render_heap
+    print(render_heap(autoheap(binary)))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -602,6 +608,10 @@ def build_parser() -> argparse.ArgumentParser:
     rg.add_argument("old"); rg.add_argument("new")
     rg.add_argument("-o", "--output")
     rg.set_defaults(func=cmd_regress)
+
+    hp = sub.add_parser("heap", help="confirm heap corruption (double-free/overflow) by execution")
+    hp.add_argument("binary")
+    hp.set_defaults(func=cmd_heap)
 
     return p
 

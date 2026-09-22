@@ -29,6 +29,10 @@ and exploitation.
 - **Workflows**: triage, vulnerability hunt, exploitation-primitive reasoner, function
   explanation, pwntools skeleton generation, patch-diffing (radiff2), automatic
   verification, and AI enrichment (professional per-finding analysis + executive summary).
+- **Heap corruption confirmed by execution**: autoheap runs the target with probe
+  inputs in the sandbox and confirms a real double-free / heap overflow via glibc's
+  allocator abort, promoting the static heap candidates to a confirmed bug. Wired
+  into autopwn, a try_heap tool and a `heap` CLI command.
 - **ret2win on PIE (verified)**: resolves the PIE base in the sandbox and jumps to
   win(), confirmed by execution.
 - **Format-string exploitation (verified)**: for a printf(user)-in-a-loop binary, it

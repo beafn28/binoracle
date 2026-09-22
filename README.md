@@ -81,8 +81,8 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 ### Scope
 
-Verified-by-execution today covers the six classes above. Not yet automated: ROP on PIE (base resolution is done for ret2win/format-string), and heap exploitation
-(UAF/double-free are detected statically but not yet driven to a verified shell). Everything
+Verified-by-execution today covers the six classes above. Not yet automated: ROP on PIE (base resolution is done for ret2win/format-string), and full heap exploitation (double-free/overflow are now confirmed by execution via
+glibc aborts, but not yet driven to a verified shell). Everything
 runs only against binaries you are authorized to analyze.
 
 ## Supported executable formats

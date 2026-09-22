@@ -181,7 +181,7 @@ def run_command(payload: dict) -> dict:
     if cmd == "autopwn":
         from .workflows.autopwn import autopwn, render_autopwn
         store = SessionStore(config.db_path(), binary)
-        techs = [t for t in ("ret2win", "rop-chain", "ret2libc", "shellcode-stack", "format-string") if opts.get(t)]
+        techs = [t for t in ("ret2win", "rop-chain", "ret2libc", "shellcode-stack", "format-string", "heap") if opts.get(t)]
         res = autopwn(binary, config=config, store=store, run=not opts.get("norun"),
                       llm=(make_backend(config) if opts.get("ai") else None),
                       techniques=techs or None)
@@ -645,7 +645,7 @@ const CMDS=[
  {c:"heap",n:"Heap surface",ic:":",d:"Llamadas a malloc/free y candidatos UAF / double-free"},
  {g:"Explotacion automatica"},
  {c:"audit",n:"Auditoria autonoma (IA)",ic:"*",d:"La IA conduce en vivo: recon, encuentra la vuln y construye+ejecuta el exploit"},
- {c:"autopwn",n:"Auto-explotar",ic:"&",d:"Prueba combinaciones (ret2win/ROP/shellcode/fmt), las ejecuta y verifica; marca las que quieras",opts:[{k:"ret2win",t:"check",label:"ret2win"},{k:"rop-chain",t:"check",label:"ROP"},{k:"ret2libc",t:"check",label:"ret2libc"},{k:"shellcode-stack",t:"check",label:"shellcode"},{k:"format-string",t:"check",label:"fmt"}]},
+ {c:"autopwn",n:"Auto-explotar",ic:"&",d:"Prueba combinaciones (ret2win/ROP/shellcode/fmt), las ejecuta y verifica; marca las que quieras",opts:[{k:"ret2win",t:"check",label:"ret2win"},{k:"rop-chain",t:"check",label:"ROP"},{k:"ret2libc",t:"check",label:"ret2libc"},{k:"shellcode-stack",t:"check",label:"shellcode"},{k:"format-string",t:"check",label:"fmt"},{k:"heap",t:"check",label:"heap"}]},
  {c:"primitives",n:"Primitivas",ic:"%",d:"Deduce la estrategia de explotacion: ret2win / ROP / shellcode / fmt"},
  {g:"Explotacion manual"},
  {c:"rop",n:"Cadena ROP",ic:"&",d:"Construye una cadena ROP real (ret2libc / execve) con pwntools",opts:[{k:"goal",t:"sel",label:"goal",vals:["auto","system","execve","ret2libc","syscall"]},{k:"libc",t:"text",label:"libc"}]},

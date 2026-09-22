@@ -179,3 +179,11 @@ def test_regress_render():
                       new_findings=["X @ y [grounded]"])
     out = render_regress(r)
     assert "Regresiones" in out and "Canary" in out and "NUEVOS" in out
+
+
+def test_autoheap_render():
+    from binoracle.workflows.autoheap import render_heap
+    out = render_heap({"ok": True, "confirmed": True,
+                       "hits": [{"kind": "double-free", "input": "f", "pattern": "free():",
+                                 "output": "free(): double free detected"}]})
+    assert "double-free" in out and "SI" in out

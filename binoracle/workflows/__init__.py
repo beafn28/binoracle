@@ -18,3 +18,4 @@ from .autolibc import autolibc, render_libc
 from .autofmt import autofmt, render_fmt
 from .autopie import autopie_ret2win
 from .regress import run_regress, render_regress
+from .autoheap import autoheap, render_heap
