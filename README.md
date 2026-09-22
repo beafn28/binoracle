@@ -38,6 +38,7 @@ verified exploit, not a claim.
 | Class | Mitigations handled | How it is verified |
 |-------|--------------------|--------------------|
 | ret2win | overflow + gift/win function | jumps to win() in the sandbox (angr finds the offset) |
+| ret2win on PIE | NX + PIE | resolves the PIE base, jumps to win() |
 | ROP / ret2syscall (static) | NX | builds an `execve('/bin/sh')` chain, spawns a shell |
 | ret2libc with leak | NX + ASLR (dynamic) | leaks libc (puts@GOT), computes the base, `system('/bin/sh')` |
 | format-string | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` |
@@ -79,8 +80,7 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 ### Scope
 
-Verified-by-execution today covers the five classes above. Not yet automated: ret2win/ROP on
-PIE (needs base resolution like the format-string path already does), and heap exploitation
+Verified-by-execution today covers the six classes above. Not yet automated: ROP on PIE (base resolution is done for ret2win/format-string), and heap exploitation
 (UAF/double-free are detected statically but not yet driven to a verified shell). Everything
 runs only against binaries you are authorized to analyze.
 

@@ -92,14 +92,24 @@ def autopwn(binary: str, config=None, store=None,
     win = find_win(binary)
 
     # combo A: ret2win (build + sandbox verify)
+    is_pie = str(mit.get("pic", "")).lower() in ("true", "1")
     if want("ret2win") and win is not None:
-        log("[combo] ret2win (autopoc): construyendo y verificando en sandbox...")
+        log("[combo] ret2win: construyendo y verificando en sandbox..." + (" (PIE)" if is_pie else ""))
         try:
-            r = autopoc(binary, run=run)
-            res.attempts.append(("ret2win", r.verified, f"offset={r.offset} win={hex(win)}"))
-            res.win_exploit = res.win_exploit or r.verified
-            log(f"[combo] ret2win -> {'FUNCIONA (verificado)' if r.verified else ('construido, no verificado' if r.ok else 'no aplicable')}")
-            learn(f"ret2win verified={r.verified} offset={r.offset} win={hex(win)}")
+            if is_pie:
+                from .autopie import autopie_ret2win
+                rp = autopie_ret2win(binary, run=run)
+                verdict = True if rp.get("verified") else (None if rp.get("ok") else False)
+                res.attempts.append(("ret2win", verdict, rp.get("detail") or rp.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rp.get("verified"))
+                log(f"[combo] ret2win (PIE) -> {'FUNCIONA (verificado)' if rp.get('verified') else 'no verificado'}")
+                learn(f"ret2win-pie verified={rp.get('verified')} {rp.get('detail','')}")
+            else:
+                r = autopoc(binary, run=run)
+                res.attempts.append(("ret2win", r.verified, f"offset={r.offset} win={hex(win)}"))
+                res.win_exploit = res.win_exploit or r.verified
+                log(f"[combo] ret2win -> {'FUNCIONA (verificado)' if r.verified else ('construido, no verificado' if r.ok else 'no aplicable')}")
+                learn(f"ret2win verified={r.verified} offset={r.offset} win={hex(win)}")
         except Exception as e:
             res.attempts.append(("ret2win", False, str(e)))
             log(f"[combo] ret2win error: {e}")

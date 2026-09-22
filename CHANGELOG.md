@@ -29,6 +29,8 @@ and exploitation.
 - **Workflows**: triage, vulnerability hunt, exploitation-primitive reasoner, function
   explanation, pwntools skeleton generation, patch-diffing (radiff2), automatic
   verification, and AI enrichment (professional per-finding analysis + executive summary).
+- **ret2win on PIE (verified)**: resolves the PIE base in the sandbox and jumps to
+  win(), confirmed by execution.
 - **Format-string exploitation (verified)**: for a printf(user)-in-a-loop binary, it
   finds the format offset, overwrites printf@GOT with system and gets a real shell,
   confirmed in the sandbox. Works on PIE binaries too (the PIE base is resolved in

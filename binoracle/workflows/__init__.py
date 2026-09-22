@@ -16,3 +16,4 @@ from .audit import run_audit
 from .autopoc import autorop, render_rop_poc
 from .autolibc import autolibc, render_libc
 from .autofmt import autofmt, render_fmt
+from .autopie import autopie_ret2win
