@@ -25,6 +25,7 @@ from .workflows.rop import build_rop_chain
 from .workflows.shellcode import gen_shellcode
 from .workflows.fuzz import generate_fuzz
 from .workflows.fmtstring import fmtstring_help
+from .workflows.autopoc import autopoc, render_poc
 from .agent.grounding import GroundingLedger
 
 
@@ -397,6 +398,14 @@ def cmd_serve(args, config):
     serve(host=args.host, port=args.port, open_browser=not args.no_open)
 
 
+def cmd_autopoc(args, config):
+    binary = _require_binary(args.binary)
+    r = autopoc(binary, offset=args.offset, run=not args.no_run)
+    out = render_poc(r, lang=config.lang)
+    print(out)
+    _write_if(args.output, out)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -524,6 +533,13 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--port", type=int, default=8765)
     sv.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
     sv.set_defaults(func=cmd_serve)
+
+    ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
+    ap.add_argument("binary")
+    ap.add_argument("--offset", type=int, help="offset to return address (else angr finds it)")
+    ap.add_argument("--no-run", action="store_true", help="build the exploit but do not run it")
+    ap.add_argument("-o", "--output")
+    ap.set_defaults(func=cmd_autopoc)
 
     return p
 

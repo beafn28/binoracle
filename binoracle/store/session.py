@@ -103,6 +103,20 @@ class SessionStore:
         self._conn.commit()
 
     def add_finding(self, f: Finding) -> int:
+        # de-dup: one row per (bin_id, title, location). Re-analysis updates in place so a
+        # promotion (grounded -> verified) persists without inflating counts.
+        row = self._conn.execute(
+            "SELECT id FROM findings WHERE bin_id=? AND title=? AND location=? LIMIT 1",
+            (self.bin_id, f.title, f.location),
+        ).fetchone()
+        if row:
+            self._conn.execute(
+                """UPDATE findings SET severity=?, verdict=?, evidence=?, rationale=?,
+                       recommendation=? WHERE id=?""",
+                (f.severity, f.verdict, f.evidence, f.rationale, f.recommendation, row[0]),
+            )
+            self._conn.commit()
+            return row[0]
         cur = self._conn.execute(
             """INSERT INTO findings(bin_id, title, severity, verdict, evidence, location,
                                     rationale, recommendation, created_at)

@@ -137,3 +137,13 @@ def test_patchdiff_parses_similarity():
     from binoracle.workflows.patchdiff import render_patchdiff
     r = DiffResult(old="a", new="b", changed=["sym.f 6 0x1 | MATCH (0.833) | 0x2 6 sym.g"], raw="x")
     assert "0.833" in render_patchdiff(r)
+
+
+def test_autopoc_script_and_render():
+    from binoracle.workflows.autopoc import build_script, render_poc, PoCResult
+    sc = build_script("/tmp/x", 72, 0x401176, 0x401016)
+    assert "flat({" in sc and "0x401176" in sc and "0x401016" in sc
+    r = PoCResult(ok=True, stage="built", offset=72, win=0x401176,
+                  script=sc, payload_hex="4141", verified=True)
+    out = render_poc(r)
+    assert "Auto-PoC" in out and "offset" in out and "SI" in out

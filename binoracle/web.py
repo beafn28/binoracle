@@ -156,6 +156,11 @@ def run_command(payload: dict) -> dict:
         off = opts.get("offset")
         return {"ok": True, "text": generate_skeleton(reg, binary,
                                                       offset=int(off) if off else None)}
+    if cmd == "autopoc":
+        from .workflows.autopoc import autopoc, render_poc
+        off = opts.get("offset")
+        r = autopoc(binary, offset=int(off) if off else None, run=not opts.get("norun"))
+        return {"ok": True, "text": render_poc(r, lang=config.lang)}
     if cmd == "verify":
         addr = opts.get("reach")
         if not addr:
@@ -459,6 +464,7 @@ const CMDS=[
  {c:"fmtstring",n:"Format-string",ic:"%",d:"Ayuda de format-string: encontrar offset, fuga y escritura (GOT)",opts:[{k:"offset",t:"text",label:"offset"},{k:"addr",t:"text",label:"addr"},{k:"value",t:"text",label:"value"}]},
  {c:"fuzz",n:"Fuzz harness",ic:"~",d:"Genera un harness de fuzzing (libFuzzer) o comando AFL",opts:[{k:"mode",t:"sel",label:"mode",vals:["afl","libfuzzer"]},{k:"func",t:"text",label:"func"}]},
  {c:"skeleton",n:"Exploit skeleton",ic:"|",d:"Plantilla de exploit pwntools grounded en las mitigaciones",opts:[{k:"offset",t:"text",label:"offset"}]},
+ {c:"autopoc",n:"Auto-PoC",ic:"&",d:"ret2win automatico: offset con angr, exploit y verificacion en sandbox",opts:[{k:"offset",t:"text",label:"offset (opcional)"}]},
  {c:"verify",n:"Verify reachability",ic:"?",d:"Prueba con angr si una direccion es alcanzable desde entry",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
  {g:"Utiles"},
  {c:"cyclic",n:"Cyclic / offset",ic:"@",d:"Patron De Bruijn y busqueda de offset (como pwntools cyclic)",nobin:true,opts:[{k:"length",t:"text",label:"length",def:"200"},{k:"find",t:"text",label:"find 0x.."}]},
