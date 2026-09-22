@@ -164,3 +164,10 @@ def test_autolibc_render():
     assert "ret2libc" in out and "SI" in out
     out2 = render_libc({"ok": False, "note": "docker no disponible"})
     assert "No disponible" in out2
+
+
+def test_autofmt_render():
+    from binoracle.workflows.autofmt import render_fmt
+    out = render_fmt({"ok": True, "verified": True, "detail": "VERIFIED offset=6",
+                      "note": "format-string", "output": "shell"})
+    assert "format-string" in out and "SI" in out

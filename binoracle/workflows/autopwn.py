@@ -142,11 +142,19 @@ def autopwn(binary: str, config=None, store=None,
         log("[combo] NX off -> shellcode en stack viable")
         learn("shellcode-stack viable (NX off)")
 
-    # combo D: format-string
+    # combo D: format-string (verified by GOT overwrite -> shell)
     if want("format-string") and any(s in sink_names for s in ("printf", "fprintf", "snprintf")):
-        res.attempts.append(("format-string", None, "sink printf presente -> fuga/escritura posible"))
-        log("[combo] printf sink -> format-string (leak/write) posible")
-        learn("format-string posible (printf sink)")
+        log("[combo] format-string: intentando GOT overwrite -> shell (sandbox)...")
+        try:
+            from .autofmt import autofmt
+            rf = autofmt(binary)
+            verdict = True if rf.get("verified") else (None if rf.get("ok") else False)
+            res.attempts.append(("format-string", verdict, rf.get("detail") or rf.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rf.get("verified"))
+            log(f"[combo] format-string -> {'SHELL VERIFICADA' if rf.get('verified') else 'no verificable (requiere printf en bucle)'}")
+            learn(f"format-string verified={rf.get('verified')} {rf.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("format-string", False, str(e)))
 
     if ai_order:
         rank = {t: i for i, t in enumerate(ai_order)}
