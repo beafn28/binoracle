@@ -75,6 +75,28 @@ The model recons the binary, forms hypotheses, and actually calls `try_ret2win` 
 run the exploit, step by step, until it can deliver a verified working exploit. Every tool
 call is recorded in the evidence trail, so you can follow exactly what it did.
 
+## 6b. Verified exploitation (real shells)
+
+Build the pwntools sandbox image once, then let binoracle build AND run exploits, confirming
+a shell in an isolated sandbox:
+
+```bash
+make pwn-image                                  # one-time: 'binoracle-pwn' image
+
+binoracle autopoc  samples/bin/ret2win          # ret2win  -> win() reached
+binoracle autopwn  samples/bin/ropme            # static ROP -> execve('/bin/sh') shell
+binoracle autopwn  samples/bin/ret2libc         # ret2libc with leak -> system('/bin/sh')
+binoracle autopwn  samples/bin/fmtstring        # format-string -> printf@GOT = system
+binoracle autopwn  samples/bin/fmtstring_pie    # format-string on a PIE binary
+```
+
+Each prints the technique that worked with `SHELL VERIFICADA` / `verificado en sandbox: SI`.
+The autonomous audit calls these as tools on its own:
+
+```bash
+binoracle audit samples/bin/ret2win
+```
+
 ## 7. The web dashboard
 
 ```bash

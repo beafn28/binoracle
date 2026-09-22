@@ -29,6 +29,61 @@ The result: you can point it at a stripped ELF, get a grounded triage in seconds
 any model at all, and then bring the local LLM in to reason on top of facts it cannot
 fake.
 
+## Verified exploitation
+
+binoracle does not stop at "this looks exploitable". For several bug classes it builds a
+real exploit and **runs it in an isolated sandbox to confirm a shell**, so the result is a
+verified exploit, not a claim.
+
+| Class | Mitigations handled | How it is verified |
+|-------|--------------------|--------------------|
+| ret2win | overflow + gift/win function | jumps to win() in the sandbox (angr finds the offset) |
+| ROP / ret2syscall (static) | NX | builds an `execve('/bin/sh')` chain, spawns a shell |
+| ret2libc with leak | NX + ASLR (dynamic) | leaks libc (puts@GOT), computes the base, `system('/bin/sh')` |
+| format-string | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` |
+| format-string on PIE | NX + PIE | resolves the PIE base in the sandbox, same overwrite |
+
+A shell is confirmed by having it echo a unique marker. Every run is isolated:
+`--network none`, memory and pid limits, and ASLR disabled (`setarch -R` / `aslr=False`) so
+the local proof-of-concept is deterministic.
+
+### Requirements
+
+The sandbox uses Docker (`gcc:13` for execution) and, for the ret2libc/format-string
+classes, a small pwntools image built once:
+
+```bash
+make pwn-image        # builds the 'binoracle-pwn' image (python + pwntools)
+```
+
+### Using it
+
+```bash
+# one-shot: try every technique, verify which actually work, feed the knowledge base
+binoracle autopwn ./chall
+
+# only specific techniques
+binoracle autopwn ./chall            # (the web UI exposes per-technique checkboxes)
+
+# a single class
+binoracle autopoc ./chall            # ret2win: offset + exploit + sandbox verification
+
+# the local LLM drives the whole audit and calls the exploit tools itself
+binoracle audit ./chall
+```
+
+In `autopwn` the local model (with the IA toggle) reads the observed facts and decides which
+techniques to try and in what order. In `audit` the model drives an agent loop with the
+exploitation tools (`try_ret2win`, `try_rop`, `try_ret2libc`, `try_fmt`) available, and a
+deterministic backstop guarantees a verified exploit when one exists.
+
+### Scope
+
+Verified-by-execution today covers the five classes above. Not yet automated: ret2win/ROP on
+PIE (needs base resolution like the format-string path already does), and heap exploitation
+(UAF/double-free are detected statically but not yet driven to a verified shell). Everything
+runs only against binaries you are authorized to analyze.
+
 ## Supported executable formats
 
 binoracle is not ELF-only. The static and symbolic layers are format-agnostic because they
