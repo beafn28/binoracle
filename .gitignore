@@ -1,0 +1,22 @@
+# byte-compiled / packaging
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# virtualenvs
+.venv/
+venv/
+
+# local runtime state
+.binoracle/
+*.sqlite
+*.sqlite-*
+.pytest_cache/
+
+# compiled practice binaries (sources + builder are versioned; binaries are not)
+samples/bin/
+
+# generated reports / scratch exploits
+binoracle_report.*

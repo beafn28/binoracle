@@ -1,0 +1,48 @@
+"""Triage workflow: run the cheap grounding oracles directly (NO model required) and
+produce a facts-only report. This is deliberately deterministic and offline."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+from ..oracles.base import ToolRegistry
+
+
+@dataclass
+class TriageReport:
+    binary: str
+    sections: List[tuple] = field(default_factory=list)  # (title, source, text)
+
+    def add(self, title: str, source: str, text: str) -> None:
+        self.sections.append((title, source, text))
+
+
+# Tools we run unconditionally during triage, in order, if available.
+TRIAGE_TOOLS = [
+    ("elf_info", "File / ELF header"),
+    ("elf_mitigations", "Exploit mitigations (checksec)"),
+    ("r2_info", "radare2 binary info"),
+    ("r2_checksec", "Exploit mitigations (cross-format: ELF/PE/Mach-O)"),
+    ("r2_imports", "Imports"),
+    ("r2_sinks", "Dangerous sinks and their callers"),
+]
+
+
+def run_triage(registry: ToolRegistry, binary: str, store=None) -> TriageReport:
+    report = TriageReport(binary=binary)
+    for tool_name, title in TRIAGE_TOOLS:
+        tool = registry.get(tool_name)
+        if tool is None:
+            continue
+        try:
+            res = tool.run()
+        except Exception as e:  # oracle-level failure should not kill triage
+            report.add(title, tool_name, f"[error running {tool_name}: {e}]")
+            continue
+        if res.ok:
+            report.add(title, res.source, res.data)
+            if store:
+                store.add_fact(tool_name, res.source, res.data)
+        else:
+            report.add(title, res.source, f"[unavailable: {res.error}]")
+    return report
