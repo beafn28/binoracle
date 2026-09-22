@@ -431,7 +431,7 @@ def cmd_audit(args, config):
     print(out)
     _write_if(args.output, out)
     if getattr(args, "html", None):
-        _write_html(args.html, binary, findings=res.findings, ledger=res.ledger, answer=res.answer, lang=config.lang)
+        _write_html(args.html, binary, triage=getattr(res, "triage", None), findings=res.findings, ledger=res.ledger, answer=res.answer, lang=config.lang)
     store.close()
 
 

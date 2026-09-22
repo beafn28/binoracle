@@ -165,7 +165,8 @@ def run_command(payload: dict) -> dict:
         store = SessionStore(config.db_path(), binary)
         res = run_audit(binary, llm, config, store=store)
         from .report.html import render_html
-        html = render_html(binary, findings=res.findings, ledger=res.ledger,
+        html = render_html(binary, triage=getattr(res, "triage", None),
+                           findings=res.findings, ledger=res.ledger,
                            answer=res.answer, lang=config.lang, embed=True)
         store.close()
         return {"ok": True, "html": html, "text": res.answer}
@@ -340,7 +341,8 @@ def run_streaming(command, binary, ai, emit):
             res = run_audit(binary, llm, config, store=store,
                             on_step=lambda step, action: emit("step", _fmt_step(step, action)))
             from .report.html import render_html
-            html = render_html(binary, findings=res.findings, ledger=res.ledger,
+            html = render_html(binary, triage=getattr(res, "triage", None),
+                               findings=res.findings, ledger=res.ledger,
                                answer=res.answer, lang=config.lang, embed=True)
             store.close()
             emit("step", "auditoria terminada; generando informe...")
