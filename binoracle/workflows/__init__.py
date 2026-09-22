@@ -13,3 +13,4 @@ from .fmtstring import fmtstring_help
 from .autopoc import autopoc, render_poc
 from .autopwn import autopwn, render_autopwn
 from .audit import run_audit
+from .autopoc import autorop, render_rop_poc

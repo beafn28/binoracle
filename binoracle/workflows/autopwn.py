@@ -110,11 +110,15 @@ def autopwn(binary: str, config=None, store=None,
     if want("rop-chain"):
       log("[combo] cadena ROP: intentando construir...")
       try:
-        rop = build_rop_chain(binary, goal="auto")
-        rop_ok = "chain layout" in rop
-        res.attempts.append(("rop-chain", rop_ok, "ver cadena" if rop_ok else "no automatica (falta leak/libc o gadgets)"))
-        log(f"[combo] cadena ROP -> {'construida' if rop_ok else 'no automatica'}")
-        learn(f"rop-chain built={rop_ok}")
+        from .autopoc import autorop
+        rr = autorop(binary, run=run)
+        verdict = True if rr.get("verified") else (None if rr.get("ok") else False)
+        detail = (rr.get("strategy", "") + (" -> SHELL verificada" if rr.get("verified") else
+                  " (construida)" if rr.get("ok") else "")) or rr.get("note", "")
+        res.attempts.append(("rop-chain", verdict, detail or rr.get("note", "")))
+        res.win_exploit = res.win_exploit or bool(rr.get("verified"))
+        log(f"[combo] cadena ROP -> {'SHELL VERIFICADA' if rr.get('verified') else ('construida' if rr.get('ok') else 'no automatica')}")
+        learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy')} offset={rr.get('offset')}")
       except Exception as e:
         res.attempts.append(("rop-chain", False, str(e)))
 
@@ -183,7 +187,9 @@ def _ai_conclude(llm, res) -> str:
 def render_autopwn(res: AutopwnResult, lang: str = "es") -> str:
     out = [f"## Auto-explotacion de `{res.binary}`\n"]
     if res.win_exploit:
-        out.append("> EXPLOIT VERIFICADO: se consiguio el objetivo (ret2win) en sandbox.\n")
+        techs = [n for n, ok, _ in res.attempts if ok is True]
+        out.append("> EXPLOIT VERIFICADO: se ejecuto un exploit (" + ", ".join(techs) +
+                   ") en sandbox y se consiguio el objetivo.\n")
     out.append(f"- hallazgos verificados: {res.verified_findings}")
     if res.ai_plan:
         out.append("\n### Plan de la IA (que probar segun lo observado)\n" + res.ai_plan)

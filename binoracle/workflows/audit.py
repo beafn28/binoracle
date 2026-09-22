@@ -53,6 +53,17 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
             elif r.ok:
                 res.answer += (f"\n\n---\n\n### Auto-PoC (backstop)\nExploit ret2win construido "
                                f"(offset={r.offset}, win={hex(r.win)}) pero no verificado en sandbox.")
+        # if still no verified exploit, try an autonomous ROP-to-shell
+        verified_now = "EXPLOIT VERIFICADO" in (res.answer or "") or "SHELL VERIFICADA" in (res.answer or "")
+        if not verified_now and find_win(binary) is None:
+            from .autopoc import autorop
+            rr = autorop(binary, run=True)
+            if rr.get("verified"):
+                res.ledger.record(res.steps + 2, "try_rop (backstop)", "autorop (sandbox)",
+                                  rr.get("run_output") or "")
+                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP (backstop)\n"
+                               f"Cadena {rr.get('strategy')} (offset={rr.get('offset')}) ejecutada en "
+                               f"sandbox: shell obtenida. [src: try_rop]")
     except Exception:
         pass
     return res
