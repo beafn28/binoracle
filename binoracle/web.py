@@ -354,6 +354,84 @@ def run_streaming(command, binary, ai, emit):
             store.close()
             emit("html", "<pre style='padding:16px;white-space:pre-wrap'>" +
                  render_autopwn(res, lang=config.lang).replace("<", "&lt;") + "</pre>")
+        elif command in ("report", "hunt", "dashboard"):
+            from .report.html import render_html
+            from .agent.grounding import GroundingLedger
+            reg = _reg(binary)
+            store = SessionStore(config.db_path(), binary)
+            emit("step", "recon del binario (radare2)...")
+            report = run_triage(reg, binary, store=store, on_step=lambda m: emit("step", m))
+            emit("step", "buscando sinks y vulnerabilidades...")
+            hunt = run_hunt(reg, binary, llm=None, config=config, store=store, lang=config.lang)
+            findings, _ = auto_verify(reg, hunt.findings, store=store,
+                                      on_step=lambda m: emit("step", m))
+            answer = hunt.answer
+            if command == "dashboard":
+                cs = reg.get("r2_checksec").run(); m = cs.meta if cs.ok else {}
+                sk = reg.get("r2_sinks").run(); sinks = sk.meta.get("sinks", []) if sk.ok else []
+                by = {k: 0 for k in ("critical", "high", "medium", "low", "info")}
+                verified = 0
+                for f in findings:
+                    by[f.severity] = by.get(f.severity, 0) + 1
+                    if f.verdict == "verified":
+                        verified += 1
+                fr = reg.get("r2_functions").run()
+                funcs = len([l for l in fr.data.splitlines() if l.strip() and l.strip()[0] == "0"]) if fr.ok else 0
+                info = reg.get("r2_info").run().data if reg.get("r2_info") else ""
+                fmt = next((l.split()[-1] for l in info.splitlines() if l.strip().startswith("bintype")), "?")
+                def hd(name):
+                    t = reg.get("r2_hardening").run().data
+                    for line in t.splitlines():
+                        if line.lower().startswith(name.lower()):
+                            return "not detected" not in line.lower()
+                    return False
+                relro = "unknown"
+                em = reg.get("elf_mitigations")
+                if em:
+                    r = em.run()
+                    if r.ok:
+                        import re as _re
+                        mm = _re.search(r"RELRO:\s*(\w+)", r.data)
+                        if mm: relro = mm.group(1)
+                data = {"arch": m.get("arch", "?"), "bits": m.get("bits", "?"), "format": fmt,
+                        "mitigations": {"NX": str(m.get("nx")).lower() in ("true","1"),
+                            "PIE": str(m.get("pic")).lower() in ("true","1"),
+                            "Canary": str(m.get("canary")).lower() in ("true","1"), "RELRO": relro,
+                            "FORTIFY": hd("FORTIFY"), "ASan": hd("AddressSanitizer"),
+                            "CFI": hd("CFI"), "SafeStack": hd("SafeStack")},
+                        "findings": {"total": len(findings), "verified": verified, "by_sev": by},
+                        "sinks": sinks, "functions": funcs}
+                store.close()
+                emit("dashboard", data)
+                emit("done", "")
+                return
+            if ai:
+                llm = make_backend(config)
+                if llm.available() and findings:
+                    emit("step", "IA: redactando analisis profesional de cada hallazgo...")
+                    findings = enrich_findings(llm, findings, lang=config.lang)
+                    emit("step", "IA: resumen ejecutivo (con conocimiento previo)...")
+                    mit = next((t for (ti, sr, t) in report.sections if "checksec" in (sr+ti).lower()), "")
+                    cs = reg.get("r2_checksec").run()
+                    arch = cs.meta.get("arch","?") if cs.ok else "?"; bits = cs.meta.get("bits","?") if cs.ok else "?"
+                    vfacts = [f"- {f.title} @ {f.location}" for f in findings if f.verdict == "verified"]
+                    sk = reg.get("r2_sinks").run(); sinks = sk.meta.get("sinks", []) if sk.ok else []
+                    ctx = ("Hechos verificados:\n" + "\n".join(vfacts)) if vfacts else ""
+                    ghints = store.relevant_facts(arch, sinks)
+                    if ghints:
+                        ctx += "\n\nTecnicas conocidas en targets similares:\n" + "\n".join("- "+g for g in ghints)
+                    sm = executive_summary(llm, binary, findings, mitigations=mit, lang=config.lang, prior=ctx)
+                    if sm: answer = sm
+                    store.save_verified_facts(findings, arch, bits, mit)
+            ledger = GroundingLedger()
+            for i, (ti, sr, tx) in enumerate(report.sections, 1):
+                ledger.record(i, ti, sr, tx)
+            html = render_html(binary, triage=(report if command == "report" else None),
+                               findings=findings, ledger=ledger, answer=answer,
+                               lang=config.lang, embed=True)
+            store.close()
+            emit("step", "informe listo.")
+            emit("html", html)
         else:
             emit("step", f"streaming no soportado para {command}")
     except Exception as e:
@@ -545,28 +623,26 @@ const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',inf
 const CMDS=[
  {g:"Panel"},
  {c:"dashboard",n:"Dashboard",ic:"#",d:"Metricas, mitigaciones y superficie de ataque de un vistazo"},
- {c:"audit",n:"Auditoria autonoma (IA)",ic:"*",d:"La IA conduce: recon, encuentra la vuln y construye+ejecuta el exploit paso a paso"},
- {c:"report",n:"Informe completo",ic:"=",d:"Informe con findings verificados (grounded/verified) y analisis"},
+ {c:"report",n:"Informe completo",ic:"=",d:"Informe con findings verificados (grounded/verified) y analisis IA"},
  {g:"Analisis"},
- {c:"triage",n:"Triage",ic:">",d:"Hechos base: formato, mitigaciones, imports y sinks peligrosos"},
+ {c:"triage",n:"Triage",ic:">",d:"Hechos base: formato, mitigaciones+hardening, imports y sinks"},
  {c:"hunt",n:"Hunt",ic:"*",d:"Busca vulnerabilidades y las verifica con angr (promueve a verified)"},
- {c:"primitives",n:"Primitivas",ic:"%",d:"Deduce la primitiva de explotacion: ret2win / ROP / shellcode / fmt"},
- {c:"checksec",n:"Checksec + hardening",ic:"!",d:"NX/PIE/Canary/RELRO + FORTIFY/ASan/CFI/SafeStack"},
  {c:"disasm",n:"Disasm",ic:"~",d:"Desensambla una funcion por nombre o direccion",opts:[{k:"target",t:"text",label:"funcion",def:"main"}]},
  {c:"gadgets",n:"Gadgets ROP",ic:"+",d:"Busca gadgets ROP; filtra por instruccion (ej. pop rdi)",opts:[{k:"filter",t:"text",label:"filtro (pop rdi)"}]},
  {c:"vtables",n:"C++ / vtables",ic:"^",d:"Detecta C++ y tablas virtuales (vtables / RTTI)"},
  {c:"heap",n:"Heap surface",ic:":",d:"Llamadas a malloc/free y candidatos UAF / double-free"},
- {g:"Explotacion"},
- {c:"autopwn",n:"Auto-explotar",ic:"*",d:"IA decide (toggle IA) o marca las combinaciones; ninguna marcada = todas. Verifica y alimenta la IA",opts:[{k:"ret2win",t:"check",label:"ret2win"},{k:"rop-chain",t:"check",label:"ROP"},{k:"shellcode-stack",t:"check",label:"shellcode"},{k:"format-string",t:"check",label:"fmt"}]},
+ {g:"Explotacion automatica"},
+ {c:"audit",n:"Auditoria autonoma (IA)",ic:"*",d:"La IA conduce en vivo: recon, encuentra la vuln y construye+ejecuta el exploit"},
+ {c:"autopwn",n:"Auto-explotar",ic:"&",d:"Prueba combinaciones (ret2win/ROP/shellcode/fmt), las ejecuta y verifica; marca las que quieras",opts:[{k:"ret2win",t:"check",label:"ret2win"},{k:"rop-chain",t:"check",label:"ROP"},{k:"shellcode-stack",t:"check",label:"shellcode"},{k:"format-string",t:"check",label:"fmt"}]},
+ {c:"primitives",n:"Primitivas",ic:"%",d:"Deduce la estrategia de explotacion: ret2win / ROP / shellcode / fmt"},
+ {g:"Explotacion manual"},
  {c:"rop",n:"Cadena ROP",ic:"&",d:"Construye una cadena ROP real (ret2libc / execve) con pwntools",opts:[{k:"goal",t:"sel",label:"goal",vals:["auto","system","execve","ret2libc","syscall"]},{k:"libc",t:"text",label:"libc"}]},
  {c:"shellcode",n:"Shellcode",ic:"$",d:"Genera shellcode (execve /bin/sh, cat) para la arquitectura",nobin:true,opts:[{k:"arch",t:"sel",label:"arch",vals:["amd64","i386","aarch64","arm"]},{k:"kind",t:"sel",label:"kind",vals:["sh","cat","execve"]},{k:"arg",t:"text",label:"arg"}]},
  {c:"fmtstring",n:"Format-string",ic:"%",d:"Ayuda de format-string: encontrar offset, fuga y escritura (GOT)",opts:[{k:"offset",t:"text",label:"offset"},{k:"addr",t:"text",label:"addr"},{k:"value",t:"text",label:"value"}]},
  {c:"fuzz",n:"Fuzz harness",ic:"~",d:"Genera un harness de fuzzing (libFuzzer) o comando AFL",opts:[{k:"mode",t:"sel",label:"mode",vals:["afl","libfuzzer"]},{k:"func",t:"text",label:"func"}]},
- {c:"skeleton",n:"Exploit skeleton",ic:"|",d:"Plantilla de exploit pwntools grounded en las mitigaciones",opts:[{k:"offset",t:"text",label:"offset"}]},
- {c:"autopoc",n:"Auto-PoC",ic:"&",d:"ret2win automatico: offset con angr, exploit y verificacion en sandbox",opts:[{k:"offset",t:"text",label:"offset (opcional)"}]},
- {c:"verify",n:"Verify reachability",ic:"?",d:"Prueba con angr si una direccion es alcanzable desde entry",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
  {g:"Utiles"},
  {c:"cyclic",n:"Cyclic / offset",ic:"@",d:"Patron De Bruijn y busqueda de offset (como pwntools cyclic)",nobin:true,opts:[{k:"length",t:"text",label:"length",def:"200"},{k:"find",t:"text",label:"find 0x.."}]},
+ {c:"verify",n:"Verify reachability",ic:"?",d:"Prueba con angr si una direccion es alcanzable desde entry",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
  {c:"doctor",n:"Doctor",ic:"+",d:"Estado de los oracles y del modelo LLM",nobin:true},
 ];
 const side=document.getElementById('side');
@@ -595,9 +671,10 @@ function stream(command){var out=document.getElementById('out');var g=document.g
  var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai);
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
  es.addEventListener('html',function(e){var d=document.getElementById('streamresult');var ifr=document.createElement('iframe');ifr.style.height='70vh';d.appendChild(ifr);ifr.srcdoc=JSON.parse(e.data);});
+ es.addEventListener('dashboard',function(e){renderDash(JSON.parse(e.data));});
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};}
-async function exec(command,options){if(command==='audit'){stream('audit');return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';const ifr=document.createElement('iframe');out.appendChild(ifr);ifr.srcdoc=j.html;return;}
@@ -608,7 +685,7 @@ async function exec(command,options){if(command==='audit'){stream('audit');retur
 async function dash(){const out=document.getElementById('out');const bin=document.getElementById('target').value.trim();
  if(!bin){out.innerHTML='<div class="empty"><div class="big">&#10095;_</div><div>Pon la ruta de un binario arriba y pulsa Analizar</div></div>';return;}
  out.innerHTML='<div class="empty"><div class="spin">analizando '+bin.split('/').pop()+'...</div></div>';
- const j=await api('dashboard',{});if(j.data)renderDash(j.data);else out.innerHTML='<div class="console"><pre>'+(j.text||'error')+'</pre></div>';
+ stream('dashboard');
 }
 function donut(bySev,total){const r=52,c=2*Math.PI*r;let off=0;let segs='';
  ['critical','high','medium','low','info'].forEach(k=>{const v=bySev[k]||0;if(!v)return;const frac=v/total;const len=frac*c;

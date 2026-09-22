@@ -40,7 +40,7 @@ def _callsite_addr(evidence: str) -> Optional[str]:
 
 
 def auto_verify(registry: ToolRegistry, findings: List[Finding],
-                store=None) -> Tuple[List[Finding], List[str]]:
+                store=None, on_step=None) -> Tuple[List[Finding], List[str]]:
     """Try to promote each finding to 'verified' via angr reachability. Deterministic."""
     notes: List[str] = []
     if registry.get("angr_reachable") is None:
@@ -51,6 +51,8 @@ def auto_verify(registry: ToolRegistry, findings: List[Finding],
         addr = _callsite_addr(f.evidence or "")
         if not addr:
             continue
+        if on_step:
+            on_step(f"angr: verificando reachability de {addr} ({f.title})...")
         reachable, _inp, ev = verify_address(registry, addr)
         if reachable:
             f.verdict = "verified"

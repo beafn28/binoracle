@@ -31,12 +31,14 @@ TRIAGE_TOOLS = [
 ]
 
 
-def run_triage(registry: ToolRegistry, binary: str, store=None) -> TriageReport:
+def run_triage(registry: ToolRegistry, binary: str, store=None, on_step=None) -> TriageReport:
     report = TriageReport(binary=binary)
     for tool_name, title in TRIAGE_TOOLS:
         tool = registry.get(tool_name)
         if tool is None:
             continue
+        if on_step:
+            on_step(f"triage: {title} ({tool_name})...")
         try:
             res = tool.run()
         except Exception as e:  # oracle-level failure should not kill triage
