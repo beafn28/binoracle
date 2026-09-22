@@ -592,6 +592,8 @@ h3{margin:0 0 14px;font-size:12px;color:var(--mut);text-transform:uppercase;lett
 .qa button:hover{border-color:var(--acc)}
 .console{background:var(--code);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .console .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);color:var(--mut);font:12px ui-monospace,monospace}
+.stopbtn{margin-left:auto;background:var(--field);border:1px solid var(--line);color:var(--crit);border-radius:6px;padding:3px 12px;cursor:pointer;font:11px ui-monospace,monospace}
+.stopbtn:hover{border-color:var(--crit)}
 .console .bar .d{width:9px;height:9px;border-radius:50%}
 .console #livelog{max-height:48vh;overflow:auto}
 .console pre{margin:0;padding:16px;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--codefg);white-space:pre-wrap;word-break:break-word}
@@ -666,14 +668,15 @@ async function api(command,options){const binary=document.getElementById('target
  var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:opt})});return r.json();}
 function stream(command){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
- out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo (lo que hace la IA por detras)</div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
+ out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo<button id="stopstream" class="stopbtn">parar</button></div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
  var log=document.getElementById('livelog');
  var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai);
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
  es.addEventListener('html',function(e){var d=document.getElementById('streamresult');var ifr=document.createElement('iframe');ifr.style.height='70vh';d.appendChild(ifr);ifr.srcdoc=JSON.parse(e.data);});
  es.addEventListener('dashboard',function(e){renderDash(JSON.parse(e.data));});
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
- es.onerror=function(){es.close();};}
+ es.onerror=function(){es.close();};
+ var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
 async function exec(command,options){if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}

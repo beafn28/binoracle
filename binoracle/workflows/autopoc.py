@@ -123,7 +123,8 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
         f.write(payload + b"\n")
     try:
         out = subprocess.run(
-            [docker, "run", "--rm", "--platform", "linux/amd64", "-v", d + ":/w", "-w", "/w",
+            [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
+             "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
              "gcc:13", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_payload 2>&1 | head -40"],
             capture_output=True, text=True, timeout=120)
         return (True, out.stdout + out.stderr)
@@ -209,7 +210,8 @@ def _docker_run_raw(binary: str, data: bytes):
         f.write(data)
     try:
         out = subprocess.run(
-            [docker, "run", "--rm", "--platform", "linux/amd64", "-v", d + ":/w", "-w", "/w",
+            [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
+             "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
              "gcc:13", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60"],
             capture_output=True, text=True, timeout=120)
         return (True, out.stdout + out.stderr)
