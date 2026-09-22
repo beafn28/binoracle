@@ -113,6 +113,8 @@ class R2Oracle(Oracle):
                  [], lambda: self._vtables(), self.name),
             Tool("r2_heap", "Heap attack surface: allocation/free call sites, double-free and use-after-free candidates (static heuristic).",
                  [], lambda: self._heap(), self.name),
+            Tool("r2_indirect", "Indirect control flow: find call/jmp through a register or memory (function pointers, vtable dispatch) and show how the target was stored before it is invoked.",
+                 [], lambda: self._indirect(), self.name),
             Tool("r2_cmd", "Escape hatch: run a raw radare2 command (read-only analysis).",
                  [ToolParam("cmd", "raw r2 command, e.g. 'pdf @ sym.main'")],
                  lambda cmd: self._raw(cmd), self.name),
@@ -302,3 +304,46 @@ class R2Oracle(Oracle):
                 "double-free. Confirm with dbg_run_input or dynamic analysis.")
         return ToolResult(True, "radare2: heap surface (ii + axt)", body + note,
                           meta={"heap": True, "candidates": candidates})
+
+    def _indirect(self) -> ToolResult:
+        """Locate indirect calls/jumps and show the few instructions that set the target,
+        so you can see how a pointer is stored (heap/stack/struct/vtable) and then invoked."""
+        funcs = self._run("afl")
+        names = []
+        for line in funcs.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[0].startswith("0x"):
+                names.append(parts[-1])
+        import re as _re
+        # register/memory indirect targets (not a resolved sym)
+        indir = _re.compile(r"\b(call|jmp)\s+(r[a-z0-9]+|\[[^\]]+\])", _re.IGNORECASE)
+        blocks = []
+        heap_regs = ("malloc", "calloc", "realloc")
+        for fn in names[:60]:
+            pdf = self._run(f"pdf @ {fn}")
+            lines = pdf.splitlines()
+            for i, l in enumerate(lines):
+                m = indir.search(l)
+                if not m:
+                    continue
+                op = m.group(2)
+                # skip PLT-resolved indirect (call qword [sym.imp.x]) which is a normal import call
+                if "sym.imp." in l or "reloc." in l:
+                    continue
+                ctx = lines[max(0, i - 5):i + 1]
+                tag = ""
+                joined = "\n".join(ctx)
+                if any(h in joined for h in heap_regs):
+                    tag = "  <-- objetivo proviene de una reserva de heap (posible hijack de puntero/vtable)"
+                elif "vtable" in joined.lower() or "0x" in op:
+                    tag = "  <-- posible dispatch por vtable / puntero en memoria"
+                blocks.append(f"### {fn}: {m.group(1)} {op}{tag}\n" + "\n".join(ctx))
+        if not blocks:
+            return ToolResult(True, "radare2: indirect control flow",
+                              "(no se hallaron call/jmp indirectos; el flujo es directo)")
+        body = "\n\n".join(blocks[:40])
+        note = ("\n\nCada bloque muestra las instrucciones que CARGAN el objetivo (de donde sale "
+                "el puntero: heap/stack/struct) justo antes de la llamada/salto INDIRECTA. Un "
+                "puntero de heap invocado indirectamente es el patron de UAF -> control de flujo.")
+        return ToolResult(True, "radare2: indirect control flow (pdf scan)", body + note,
+                          meta={"indirect": len(blocks)})

@@ -28,6 +28,7 @@ TRIAGE_TOOLS = [
     ("r2_sinks", "Dangerous sinks and their callers"),
     ("r2_vtables", "C++ / vtables"),
     ("r2_heap", "Heap attack surface (UAF/double-free candidates)"),
+    ("r2_indirect", "Control de flujo indirecto (punteros a funcion / vtables)"),
 ]
 
 
