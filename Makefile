@@ -32,3 +32,6 @@ clean:
 
 pwn-image:
 	docker build --platform linux/amd64 -t binoracle-pwn -f .docker/Dockerfile.pwn .docker
+
+clean-docker:
+	docker builder prune -f && docker image prune -f

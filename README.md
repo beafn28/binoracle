@@ -54,7 +54,8 @@ The sandbox uses Docker (`gcc:13` for execution) and, for the ret2libc/format-st
 classes, a small pwntools image built once:
 
 ```bash
-make pwn-image        # builds the 'binoracle-pwn' image (python + pwntools)
+make pwn-image        # builds the 'binoracle-pwn' image (python + pwntools + one_gadget)
+# make clean-docker   # if the Docker build cache fills the disk
 ```
 
 ### Using it
