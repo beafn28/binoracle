@@ -45,6 +45,49 @@ def _tool_text(reg, name, **kw):
     return r.data if r.ok else f"[unavailable] {r.error}"
 
 
+# Categorias para el indice navegable de la base de conocimiento (Conocimiento / RAG).
+_KB_CATS = [
+    ("Stack", ["ret2win", "rop", "ret2libc", "format-string", "canary-bypass", "advanced-rop"]),
+    ("Heap", ["heap", "modern-heap", "heap-grooming", "uaf-typeconfusion", "io-file"]),
+    ("Enlace y RCE al salir", ["got-plt", "exit-handlers"]),
+    ("Bugs de entrada", ["integer-bugs"]),
+    ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding"]),
+    ("Concurrencia", ["race-conditions"]),
+    ("Kernel", ["kernel-pwn"]),
+    ("Otras plataformas", ["browser-v8", "windows-exploit", "macos-macho", "arm-mips"]),
+    ("Reversing", ["anti-debug"]),
+    ("Metodologia y referencia", ["mitigations", "pie", "methodology", "tools", "references"]),
+]
+
+
+def _kb_index(kb) -> str:
+    """Indice navegable de los cheat sheets, agrupado por categoria."""
+    by_doc = {}
+    for c in kb.chunks:
+        by_doc.setdefault(c.doc, []).append(c.title)
+    listed = set()
+    lines = [f"# Base de conocimiento  -  {len(by_doc)} cheat sheets, {len(kb.chunks)} secciones",
+             "Escribe una consulta arriba (ej. \"double free tcache\", \"ret2libc leak\", "
+             "\"seccomp orw\") para recuperar las secciones mas relevantes.", ""]
+    for cat, docs in _KB_CATS:
+        present = [d for d in docs if d in by_doc]
+        if not present:
+            continue
+        lines.append(f"## {cat}")
+        for d in present:
+            listed.add(d)
+            titles = [t for t in by_doc[d] if not t.endswith("(cheat sheet)")]
+            sample = "; ".join(titles[:4])
+            lines.append(f"- {d}  ({len(by_doc[d])} secciones){(' - ' + sample) if sample else ''}")
+        lines.append("")
+    extra = sorted(set(by_doc) - listed)
+    if extra:
+        lines.append("## Otros")
+        for d in extra:
+            lines.append(f"- {d}  ({len(by_doc[d])} secciones)")
+    return "\n".join(lines)
+
+
 def run_command(payload: dict) -> dict:
     cmd = payload.get("command", "")
     binary = (payload.get("binary") or "").strip()
@@ -72,11 +115,7 @@ def run_command(payload: dict) -> dict:
         kb = get_kb()
         q = (opts.get("query") or "").strip()
         if not q:
-            docs = sorted({c.doc for c in kb.chunks})
-            body = "\n".join(f"  {d:<16} {sum(1 for c in kb.chunks if c.doc==d)} secciones"
-                             for d in docs)
-            return {"ok": True, "text": f"knowledge base: {len(kb.chunks)} secciones en "
-                    f"{len(docs)} cheat sheets\n\n{body}\n\nEscribe una consulta para recuperar."}
+            return {"ok": True, "text": _kb_index(kb)}
         hits = kb.retrieve(q, k=int(opts.get("k", 4) or 4))
         if not hits:
             return {"ok": True, "text": f"sin coincidencias para: {q}"}
@@ -596,6 +635,7 @@ main{flex:1;display:flex;min-height:0}
 .opts{padding:11px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;align-items:end;background:var(--panel2);min-height:0}
 .opts:empty{display:none}
 .cmddesc{flex-basis:100%;color:var(--mut);font-size:12px;margin-bottom:2px}
+.rptbar{display:flex;justify-content:flex-end;padding:0 0 10px 0}
 .f{display:flex;flex-direction:column;gap:3px}
 .f label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .f input,.f select{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
@@ -663,6 +703,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
+ {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Consulta los cheat sheets de explotacion",nobin:true,opts:[{k:"query",t:"text",label:"consulta"}]},
  {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
 ];
@@ -681,7 +722,18 @@ function select(it,btn){closeStream();current=it;[...side.querySelectorAll('butt
   else{el=document.createElement('input');el.type='text';if(o.def)el.value=o.def;}
   el.id='opt_'+o.k; if(o.t==='check'){f.appendChild(el);f.appendChild(lab);}else{f.appendChild(lab);f.appendChild(el);} opts.appendChild(f);});
  const run=document.createElement('button');run.className='run';run.textContent='Ejecutar';run.onclick=()=>exec(it.c,collect());opts.appendChild(run);
+ if(it.c==='kb'){exec('kb',{});}   // muestra el indice de cheat sheets al abrir el panel
 }
+function downloadReport(html){
+ var name='informe_'+((document.getElementById('target').value.trim().split('/').pop())||'binario')+'.html';
+ var blob=new Blob([html],{type:'text/html'});var url=URL.createObjectURL(blob);
+ var a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();
+ document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);}
+function reportView(container,html){
+ var bar=document.createElement('div');bar.className='rptbar';
+ var b=document.createElement('button');b.className='run';b.textContent='Descargar informe';
+ b.onclick=function(){downloadReport(html);};bar.appendChild(b);container.appendChild(bar);
+ var ifr=document.createElement('iframe');ifr.style.height='72vh';container.appendChild(ifr);ifr.srcdoc=html;}
 function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.getElementById('opt_'+x.k);o[x.k]=x.t==='check'?el.checked:el.value;});return o;}
 async function api(command,options){const binary=document.getElementById('target').value.trim();
  var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
@@ -691,7 +743,7 @@ function stream(command){var out=document.getElementById('out');var g=document.g
  var log=document.getElementById('livelog');
  closeStream(); var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai); activeES=es;
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
- es.addEventListener('html',function(e){var d=document.getElementById('streamresult');var ifr=document.createElement('iframe');ifr.style.height='70vh';d.appendChild(ifr);ifr.srcdoc=JSON.parse(e.data);});
+ es.addEventListener('html',function(e){var d=document.getElementById('streamresult');d.innerHTML='';reportView(d,JSON.parse(e.data));});
  es.addEventListener('dashboard',function(e){renderDash(JSON.parse(e.data));});
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
@@ -699,7 +751,7 @@ function stream(command){var out=document.getElementById('out');var g=document.g
 async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
- if(j.html){out.innerHTML='';const ifr=document.createElement('iframe');out.appendChild(ifr);ifr.srcdoc=j.html;return;}
+ if(j.html){out.innerHTML='';reportView(out,j.html);return;}
  out.innerHTML='';const box=document.createElement('div');box.className='console';
  box.innerHTML='<div class="bar"><span class="d" style="background:'+(j.ok?'#30a46c':'#e5484d')+'"></span>'+command+'</div>';
  const pre=document.createElement('pre');pre.textContent=j.text||'(sin salida)';box.appendChild(pre);out.appendChild(box);
