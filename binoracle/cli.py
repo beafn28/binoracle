@@ -460,6 +460,22 @@ def cmd_tools(args, config):
     print(render(check_tools(), lang=config.lang))
 
 
+def cmd_rag(args, config):
+    from .rag import get_kb, configure
+    def _tri(v):
+        if v is None:
+            return None
+        return v.lower() in ("1", "on", "true", "yes")
+    if any(x is not None for x in (args.embed, args.expand, args.rerank)):
+        status = configure(embed=_tri(args.embed), expand=_tri(args.expand),
+                           rerank=_tri(args.rerank))
+    else:
+        status = get_kb().status()
+    kb = get_kb()
+    print("RAG: " + status)
+    print("conocimiento: " + kb.sources_summary())
+
+
 def cmd_kb(args, config):
     from .rag import get_kb
     kb = get_kb()
@@ -639,6 +655,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     tl = sub.add_parser("tools", help="detect the installed binary-pentest toolchain")
     tl.set_defaults(func=cmd_tools)
+
+    rg2 = sub.add_parser("rag", help="show or toggle the RAG retrieval layers (status/sources)")
+    rg2.add_argument("--embed", choices=["on", "off"], help="force semantic embeddings")
+    rg2.add_argument("--expand", choices=["on", "off"], help="force LLM query expansion")
+    rg2.add_argument("--rerank", choices=["on", "off"], help="force LLM rerank")
+    rg2.set_defaults(func=cmd_rag)
 
     kbp = sub.add_parser("kb", help="query the local exploitation knowledge base (RAG)")
     kbp.add_argument("query", nargs="*", help="what to look up (empty = list cheat sheets)")
