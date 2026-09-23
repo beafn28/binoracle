@@ -43,6 +43,13 @@ def run_primitives(registry: ToolRegistry, binary: str, llm=None, config=None,
         narrative = _llm_narrative(llm, result)
         if narrative:
             result.answer += "\n\n---\n\n### analyst narrative (LLM, on top of the evidence above)\n\n" + narrative
+    # Show which cheat sheets the RAG selected for this binary, even with no model up.
+    refs = _kb_refs(result.answer)
+    if refs:
+        result.answer += ("\n\n---\n\n### referencias consultadas (RAG)\n"
+                          "Cheat sheets de tecnica recuperados para este binario "
+                          "(referencia, no evidencia; usa `binoracle kb \"...\"` para leerlos):\n"
+                          + "\n".join(f"- {r}" for r in refs))
     return result
 
 
@@ -73,6 +80,16 @@ def _kb_context(query: str, k: int = 3, max_chars: int = 1600) -> str:
         return get_kb().context_for(query, k=k, max_chars=max_chars)
     except Exception:
         return ""
+
+
+def _kb_refs(query: str, k: int = 4) -> list:
+    """The cheat-sheet sections the RAG selected (for a transparent 'sources' footer)."""
+    try:
+        from ..rag import get_kb
+        return [f"[{c.doc} / {c.title}] (score {s:.2f})"
+                for c, s in get_kb().retrieve(query, k=k)]
+    except Exception:
+        return []
 
 
 def _tool(registry, name):
