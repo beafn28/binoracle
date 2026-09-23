@@ -136,14 +136,24 @@ class KnowledgeBase:
         return out
 
     def retrieve(self, query: str, k: int = 4, min_score: float = 0.03):
-        """Devuelve [(Chunk, score)] top-k para la consulta."""
-        q_terms = self._expand(_tokens(query))
+        """Devuelve [(Chunk, score)] top-k para la consulta.
+
+        Al coseno TF-IDF se le suma un pequeno boost cuando los terminos de la consulta
+        coinciden con el NOMBRE del cheat sheet (p.ej. 'format string' -> doc 'format-string'):
+        una consulta que nombra una tecnica debe priorizar su propia hoja, no las que solo la
+        mencionan de pasada."""
+        q_raw = set(_tokens(query))
+        q_terms = self._expand(q_raw)
         if not q_terms:
             return []
         qvec = self._vec(Counter(q_terms))
         scored = []
         for c in self.chunks:
             s = self._cos(qvec, self._vec(c.tf))
+            name_tokens = set(re.split(r"[-_]", c.doc))
+            hit = q_raw & name_tokens
+            if hit:
+                s += 0.12 * len(hit)          # boost por coincidencia con el nombre del doc
             if s >= min_score:
                 scored.append((c, s))
         scored.sort(key=lambda x: x[1], reverse=True)
