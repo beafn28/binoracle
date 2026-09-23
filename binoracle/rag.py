@@ -270,6 +270,10 @@ class KnowledgeBase:
             return out if len(out) == len(texts) else None
         except Exception:
             pass
+        # Fallback uno-a-uno solo para pocos textos (p.ej. la query): con muchos seria lentisimo
+        # y bloquearia el build; ahi preferimos fallar rapido y quedarnos en TF-IDF.
+        if len(texts) > 16:
+            return None
         try:  # fallback: endpoint antiguo, uno por texto
             out = []
             for t in texts:
