@@ -803,6 +803,7 @@ header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:
 .ragpop label input{accent-color:var(--acc)}
 .ragpop .rst{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font:11px ui-monospace,Menlo,monospace;color:var(--acc);word-break:break-word}
 .ragpop .rhint{margin-top:8px;font-size:11px;color:var(--mut);line-height:1.4}
+.ragauto{display:inline-block;background:rgba(48,163,108,.16);color:#30a46c;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:20px;margin:2px 0 4px}
 .go{background:linear-gradient(135deg,var(--acc),#1fbf8a);color:#04120c;border:none;border-radius:9px;padding:9px 16px;font-weight:700;cursor:pointer}
 .go:hover{filter:brightness(1.08)}
 .icon-btn{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
@@ -909,11 +910,12 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 </header>
 <div id="ragpop" class="ragpop" style="display:none">
   <div class="rt">Retrieval del conocimiento</div>
+  <div id="ragauto" class="ragauto">Automatico &middot; activo</div>
+  <div class="rhint" style="margin:0 0 10px">Se configura solo con el mejor modelo local. No hay que tocar nada; las casillas son solo un override.</div>
   <label><input type="checkbox" id="rag_embed"> Semantico (embeddings)</label>
   <label><input type="checkbox" id="rag_expand"> Expandir consulta (IA)</label>
   <label><input type="checkbox" id="rag_rerank"> Rerank de candidatos (IA)</label>
   <div id="ragstatus" class="rst">TF-IDF (base)</div>
-  <div class="rhint">Automatico: si hay modelo local, se activan solos (embeddings se construyen en 2o plano y se cachean). Desmarca para forzar off.</div>
 </div>
 <main>
   <nav class="side" id="side"></nav>
