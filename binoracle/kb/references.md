@@ -24,9 +24,23 @@ cambian con el tiempo).
 - n132 Guide of Seccomp in CTF: https://n132.github.io/2022/07/03/Guide-of-Seccomp-in-CTF.html
 - pwnable.tw orw (ORW clasico): reto de referencia para open/read/write shellcode.
 
-## Heap glibc
+## Heap glibc y FSOP
 - how2heap (shellphish) — PoC ejecutables de cada tecnica house-of-* y bins, por version de
   glibc: https://github.com/shellphish/how2heap
+- angry-FSROP (kylebot) — bypass del vtable check en structs FILE:
+  https://blog.kylebot.net/2022/10/22/angry-FSROP/
+- House of Apple 2 (writeup) — FSOP via _wide_data en glibc 2.35+:
+  https://ian.nl/blog/htb-love-letter-house-of-apple-fsop
+- Deep Dive into FSOP (Niftic): https://niftic.ca/posts/fsop/
+
+## Kernel pwn
+- CTF Wiki (kernel): https://ctf-wiki.mahaloz.re/pwn/linux/kernel/
+- lkmidas — Learning Linux Kernel Exploitation (serie):
+  https://lkmidas.github.io/posts/20210123-linux-kernel-pwn-part-1/
+- lkmidas — modprobe_path:
+  https://lkmidas.github.io/posts/20210223-linux-kernel-pwn-modprobe/
+- n132 — Introduction of Kernel Pwn (stack):
+  https://n132.github.io/2022/05/16/Introduction-of-Kernel-Pwn-Stack.html
 - HeapLAB / max kamper — tcache, fastbin, unsorted, hooks (curso):
   referencia frecuente en la comunidad (buscar "HeapLAB").
 - glibc source (malloc/malloc.c) — la verdad ultima del asignador:
