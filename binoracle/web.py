@@ -274,7 +274,8 @@ def run_command(payload: dict) -> dict:
         lines = [f"LLM backend: {llm.info()}", ""] + reg.status()
         try:
             from .rag import get_kb
-            lines += ["", "RAG: " + get_kb().status()]
+            kb = get_kb()
+            lines += ["", "RAG: " + kb.status(), "conocimiento: " + kb.sources_summary()]
         except Exception:
             pass
         try:

@@ -201,6 +201,21 @@ class KnowledgeBase:
             return self._llm_model
         return "nomic-embed-text"   # ultimo recurso (se descargaria / o fallback a TF-IDF)
 
+    def sources(self) -> dict:
+        """Reparto de chunks por fuente (curados vs cada corpus de skills importado)."""
+        out: dict = {}
+        for c in self.chunks:
+            if c.doc.startswith("skills/"):
+                parts = c.doc.split("/")
+                key = "skills/" + (parts[1] if len(parts) > 1 else "?")
+            else:
+                key = "curados"
+            out[key] = out.get(key, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: kv[1], reverse=True))
+
+    def sources_summary(self) -> str:
+        return " | ".join(f"{k}: {v}" for k, v in self.sources().items())
+
     def status(self) -> str:
         """Resumen del modo del RAG (para doctor/tools)."""
         layers = [f"lexico TF-IDF ({len(self.chunks)} chunks)"]
