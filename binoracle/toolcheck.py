@@ -1,0 +1,138 @@
+"""Deteccion del toolchain de pentest de binarios que binoracle puede aprovechar.
+
+No reinventa las herramientas: detecta cuales estan instaladas en el entorno y explica
+para que las usa binoracle (o para que las usarias tu). Todo local; solo `which` y probes
+de import, sin ejecutar los binarios de forma intrusiva.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import shutil
+import subprocess
+from dataclasses import dataclass
+
+
+@dataclass
+class ToolStatus:
+    name: str
+    kind: str            # static | rop | dynamic | symbolic | exploit
+    present: bool
+    detail: str          # ruta / version corta
+    used_for: str        # para que lo usa binoracle
+
+
+def _which(*names: str) -> str:
+    for n in names:
+        p = shutil.which(n)
+        if p:
+            return p
+    return ""
+
+
+def _pymod(name: str) -> str:
+    try:
+        return "modulo python" if importlib.util.find_spec(name) else ""
+    except Exception:
+        return ""
+
+
+def _ver(path: str, *args: str) -> str:
+    if not path:
+        return ""
+    try:
+        out = subprocess.run([path, *args], capture_output=True, text=True, timeout=5)
+        line = (out.stdout or out.stderr).strip().splitlines()
+        return line[0][:60] if line else ""
+    except Exception:
+        return ""
+
+
+def check_tools() -> list[ToolStatus]:
+    st: list[ToolStatus] = []
+
+    r2 = _which("radare2", "r2")
+    st.append(ToolStatus("radare2/rizin", "static", bool(r2 or _which("rizin")),
+                         _ver(r2, "-v") or _which("rizin"),
+                         "recon estatico: info, imports, funciones, xrefs, sinks, ROP, checksec"))
+
+    st.append(ToolStatus("pyelftools", "static", bool(_pymod("elftools")), _pymod("elftools"),
+                         "parseo ELF: secciones, simbolos, GOT/PLT, relocs"))
+
+    st.append(ToolStatus("angr", "symbolic", bool(_pymod("angr")), _pymod("angr"),
+                         "ejecucion simbolica: offset a RIP, alcanzabilidad -> verdict 'verified'"))
+
+    st.append(ToolStatus("pwntools", "exploit", bool(_pymod("pwn")), _pymod("pwn"),
+                         "PoC ejecutable en sandbox: ELF, ROP, fmtstr_payload, cyclic, shellcraft"))
+
+    og = _which("one_gadget")
+    st.append(ToolStatus("one_gadget", "exploit", bool(og), og,
+                         "fallback ret2libc: gadget unico que da shell en libc"))
+
+    rg = _which("ROPgadget")
+    rp = _which("ropper")
+    st.append(ToolStatus("ROPgadget/ropper", "rop", bool(rg or rp), rg or rp,
+                         "listado/cadena de gadgets (complementa el /R de radare2)"))
+
+    gdb = _which("gdb")
+    pwndbg = ""
+    if gdb:
+        try:
+            out = subprocess.run([gdb, "-batch", "-ex", "version"], capture_output=True,
+                                 text=True, timeout=5)
+            if "pwndbg" in (out.stdout + out.stderr).lower():
+                pwndbg = "pwndbg"
+        except Exception:
+            pass
+    st.append(ToolStatus("gdb (+pwndbg/gef)", "dynamic", bool(gdb),
+                         (_ver(gdb, "--version") + (" +pwndbg" if pwndbg else "")) if gdb else "",
+                         "debug dinamico: breakpoints, heap, telescope, confirmar crashes"))
+
+    lldb = _which("lldb")
+    st.append(ToolStatus("lldb", "dynamic", bool(lldb), _ver(lldb, "--version"),
+                         "debug dinamico (macOS / cross)"))
+
+    st.append(ToolStatus("ltrace/strace", "dynamic", bool(_which("ltrace") or _which("strace")),
+                         _which("ltrace") or _which("strace"),
+                         "trazar llamadas a libc / syscalls en ejecucion"))
+
+    st.append(ToolStatus("checksec", "static", bool(_which("checksec")), _which("checksec"),
+                         "mitigaciones de un vistazo (binoracle ya trae r2_checksec propio)"))
+
+    st.append(ToolStatus("objdump/nm/strings", "static",
+                         bool(_which("objdump") or _which("nm") or _which("strings")),
+                         _which("objdump") or _which("nm") or _which("strings"),
+                         "desensamblado/simbolos/cadenas rapidos (binutils)"))
+
+    docker = _which("docker")
+    st.append(ToolStatus("docker", "exploit", bool(docker), _ver(docker, "--version"),
+                         "sandbox aislado (--network none) para ejecutar y VERIFICAR los PoC"))
+
+    return st
+
+
+def render(statuses: list[ToolStatus], lang: str = "es") -> str:
+    order = ["static", "rop", "symbolic", "dynamic", "exploit"]
+    titles = {"static": "Estatico / triage", "rop": "ROP / gadgets",
+              "symbolic": "Simbolico", "dynamic": "Dinamico / debug",
+              "exploit": "Explotacion / sandbox"}
+    have = sum(1 for s in statuses if s.present)
+    lines = [f"binoracle: toolchain de pentest de binarios  ({have}/{len(statuses)} disponibles)",
+             "=" * 62]
+    for k in order:
+        group = [s for s in statuses if s.kind == k]
+        if not group:
+            continue
+        lines.append(f"\n[{titles[k]}]")
+        for s in group:
+            mark = "ok " if s.present else "-- "
+            det = f"  ({s.detail})" if s.present and s.detail else ""
+            lines.append(f"  {mark}{s.name:<20}{det}")
+            lines.append(f"       -> {s.used_for}")
+    missing = [s.name for s in statuses if not s.present]
+    if missing:
+        lines.append("\nno instaladas (opcionales, mejoran cobertura):")
+        lines.append("  " + ", ".join(missing))
+    lines.append("\nbinoracle funciona con lo que haya: los oraculos base (radare2/angr/")
+    lines.append("pwntools/docker) dan el nucleo grounded; el resto suma cobertura.")
+    return "\n".join(lines)

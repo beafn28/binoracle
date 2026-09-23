@@ -455,6 +455,34 @@ def cmd_heap(args, config):
     print(render_heap(autoheap(binary)))
 
 
+def cmd_tools(args, config):
+    from .toolcheck import check_tools, render
+    print(render(check_tools(), lang=config.lang))
+
+
+def cmd_kb(args, config):
+    from .rag import get_kb
+    kb = get_kb()
+    if getattr(args, "list", False) or not args.query:
+        docs = sorted({c.doc for c in kb.chunks})
+        print(f"knowledge base: {len(kb.chunks)} secciones en {len(docs)} cheat sheets\n")
+        for d in docs:
+            titles = [c.title for c in kb.chunks if c.doc == d]
+            print(f"  {d:<16} {len(titles)} secciones")
+        print("\nuso: binoracle kb \"<consulta>\"   (p.ej. \"double free tcache glibc 2.35\")")
+        return
+    query = " ".join(args.query)
+    hits = kb.retrieve(query, k=args.k)
+    if not hits:
+        print(f"sin coincidencias para: {query}")
+        return
+    print(f"# RAG: top {len(hits)} para \"{query}\"\n")
+    for c, score in hits:
+        print(f"## [{c.doc} / {c.title}]  (score {score:.3f})")
+        print(c.text.strip())
+        print()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
@@ -608,6 +636,15 @@ def build_parser() -> argparse.ArgumentParser:
     rg.add_argument("old"); rg.add_argument("new")
     rg.add_argument("-o", "--output")
     rg.set_defaults(func=cmd_regress)
+
+    tl = sub.add_parser("tools", help="detect the installed binary-pentest toolchain")
+    tl.set_defaults(func=cmd_tools)
+
+    kbp = sub.add_parser("kb", help="query the local exploitation knowledge base (RAG)")
+    kbp.add_argument("query", nargs="*", help="what to look up (empty = list cheat sheets)")
+    kbp.add_argument("-k", type=int, default=4, help="number of snippets to return")
+    kbp.add_argument("--list", action="store_true", help="list available cheat sheets")
+    kbp.set_defaults(func=cmd_kb)
 
     hp = sub.add_parser("heap", help="confirm heap corruption (double-free/overflow) by execution")
     hp.add_argument("binary")

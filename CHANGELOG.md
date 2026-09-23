@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated
+  exploitation cheat sheets (ret2win, ROP/ret2syscall, ret2libc, format-string, heap/tcache,
+  PIE/leaks, mitigations, methodology, tools) indexed with a stdlib TF-IDF retriever (no
+  external deps). Retrieval is grounding for the model, never a source of verdicts.
+  - `binoracle kb [query]` — list cheat sheets or retrieve the most relevant snippets.
+  - Wired into `primitives` (LLM narrative) and `audit` (agent system prompt) so the model
+    reasons over real technique notes selected from the binary's own facts (checksec + sinks
+    + gift functions), via `AgentLoop(kb_hint=...)`.
+  - Exposed in the web dashboard (Utiles group) with a query field.
+- **`binoracle tools`**: detects the installed binary-pentest toolchain (radare2/rizin,
+  pyelftools, angr, pwntools, one_gadget, ROPgadget/ropper, gdb+pwndbg, lldb, ltrace/strace,
+  checksec, binutils, docker) and maps each to how binoracle uses it. Also in the web UI.
+- Tests: `tests/test_rag.py` (indexing, retrieval relevance, bounded context, fact queries).
+
 ## [0.1.0] - 2026-09-22
 
 First public release. A local, oracle-grounded LLM copilot for binary reverse engineering

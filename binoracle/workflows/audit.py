@@ -9,6 +9,37 @@ from __future__ import annotations
 from ..oracles import build_registry
 from ..agent.loop import AgentLoop, AgentResult
 
+
+def _kb_hint(reg) -> str:
+    """Retrieve exploitation cheat sheets relevant to this binary's real facts (checksec +
+    sinks + gift funcs) from the local RAG. Best-effort; never raises."""
+    try:
+        from ..rag import get_kb, query_from_facts
+        facts = {"mitigations": {}, "imports": [], "primitives": []}
+        cs = reg.get("r2_checksec")
+        if cs:
+            r = cs.run()
+            if r.ok:
+                facts["mitigations"] = {
+                    "NX": r.meta.get("nx", "unknown"),
+                    "PIE": r.meta.get("pic", "unknown"),
+                    "Canary": r.meta.get("canary", "unknown"),
+                    "RELRO": r.meta.get("relro", "unknown"),
+                }
+        sk = reg.get("r2_sinks")
+        if sk:
+            r = sk.run()
+            if r.ok:
+                facts["imports"] = r.meta.get("sinks", [])
+        win = reg.get("r2_win")
+        if win:
+            r = win.run()
+            if r.ok and (r.meta.get("win_funcs", 0) > 0 or "/bin/sh" in r.data):
+                facts["primitives"].append("ret2win")
+        return get_kb().context_for(query_from_facts(facts), k=4, max_chars=2000)
+    except Exception:
+        return ""
+
 AUDIT_TASK = (
     "Audita este binario de principio a fin como un pentester: primero recon (formato, "
     "mitigaciones, sinks peligrosos, funciones interesantes), luego localiza la "
@@ -21,7 +52,8 @@ AUDIT_TASK = (
 
 def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
     reg = build_registry(binary, enable_dynamic=True, enable_exploit=True)
-    loop = AgentLoop(llm, reg, config, store=store, on_step=on_step)
+    kb_hint = _kb_hint(reg)
+    loop = AgentLoop(llm, reg, config, store=store, on_step=on_step, kb_hint=kb_hint)
     res = loop.run(AUDIT_TASK, mode="audit")
 
     # Attach deterministic ground truth so the report has real evidence + mitigations,

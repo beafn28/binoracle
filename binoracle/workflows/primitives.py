@@ -54,9 +54,23 @@ def _llm_narrative(llm, result) -> str:
            "the primitive, and state the exact next concrete step. Use ONLY the evidence "
            "shown; never contradict a tool result (e.g. if r2_sinks lists gets, gets IS used). "
            "Cite sources as [src: <source>].")
+    kb_ctx = _kb_context(result.answer)
+    if kb_ctx:
+        sys += ("\n\nReference cheat sheets (technique knowledge base; use to refine the "
+                "plan, but it is reference not proof — do not present it as observed):\n"
+                + kb_ctx)
     user = f"{result.answer}\n\n{evidence}"
     try:
         return llm.chat([Message("system", sys), Message("user", user)])
+    except Exception:
+        return ""
+
+
+def _kb_context(query: str, k: int = 3, max_chars: int = 1600) -> str:
+    """Retrieve relevant exploitation cheat sheets from the local RAG. Never raises."""
+    try:
+        from ..rag import get_kb
+        return get_kb().context_for(query, k=k, max_chars=max_chars)
     except Exception:
         return ""
 

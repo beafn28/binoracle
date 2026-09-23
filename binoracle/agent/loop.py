@@ -34,18 +34,26 @@ class AgentResult:
 class AgentLoop:
     def __init__(self, llm: LLMBackend, registry: ToolRegistry, config,
                  store: Optional[SessionStore] = None,
-                 on_step: Optional[Callable[[int, dict], None]] = None):
+                 on_step: Optional[Callable[[int, dict], None]] = None,
+                 kb_hint: Optional[str] = None):
         self.llm = llm
         self.registry = registry
         self.config = config
         self.store = store
         self.on_step = on_step or (lambda i, a: None)
+        self.kb_hint = kb_hint            # RAG cheat-sheet context (reference, not proof)
 
     def _system(self, mode: str) -> str:
         catalog = self.registry.catalog()
         tmpl = AUDIT_SYSTEM if mode == "audit" else (HUNT_SYSTEM if mode == "hunt" else ASK_SYSTEM)
         # templates contain literal JSON braces, so do a token replace, not str.format
-        return tmpl.replace("{catalog}", catalog)
+        out = tmpl.replace("{catalog}", catalog)
+        if self.kb_hint:
+            out += ("\n\n# Reference cheat sheets (local knowledge base)\n"
+                    "Technique notes retrieved for this binary. Use them to choose and refine "
+                    "the exploitation plan. They are REFERENCE, not evidence: never cite them as "
+                    "an observation and never let them override a tool result.\n\n" + self.kb_hint)
+        return out
 
     def run(self, task: str, mode: str = "ask") -> AgentResult:
         ledger = GroundingLedger()

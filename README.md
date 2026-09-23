@@ -192,6 +192,20 @@ binoracle fmtstring ./target               # format-string leak/write helper (in
 binoracle fuzz ./target --mode afl         # fuzzing harness / AFL command
 ```
 
+Knowledge base (RAG) and tooling:
+
+```bash
+binoracle kb                               # list the bundled exploitation cheat sheets
+binoracle kb "double free tcache glibc"    # retrieve the most relevant technique snippets
+binoracle tools                            # detect the installed binary-pentest toolchain
+```
+
+The `kb` command exposes the same local RAG the model consults during `primitives` and
+`audit`: a set of curated exploitation cheat sheets (ret2win, ROP/ret2syscall, ret2libc,
+format-string, heap/tcache, PIE/leaks, mitigations, methodology, tools) indexed with a
+stdlib TF-IDF retriever. It is grounding for the model's reasoning, never a source of
+verdicts: the oracles remain the only thing that can promote a finding to `verified`.
+
 One-shot manager (give it a `.c` source or a binary, get the full verified report):
 
 ```bash

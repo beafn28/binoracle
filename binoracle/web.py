@@ -58,6 +58,30 @@ def run_command(payload: dict) -> dict:
         lines = [f"LLM backend: {llm.info()}", ""] + reg.status()
         return {"ok": True, "text": "\n".join(lines)}
 
+    if cmd == "tools":
+        from .toolcheck import check_tools, render
+        return {"ok": True, "text": render(check_tools(), lang=config.lang)}
+
+    if cmd == "kb":
+        from .rag import get_kb
+        kb = get_kb()
+        q = (opts.get("query") or "").strip()
+        if not q:
+            docs = sorted({c.doc for c in kb.chunks})
+            body = "\n".join(f"  {d:<16} {sum(1 for c in kb.chunks if c.doc==d)} secciones"
+                             for d in docs)
+            return {"ok": True, "text": f"knowledge base: {len(kb.chunks)} secciones en "
+                    f"{len(docs)} cheat sheets\n\n{body}\n\nEscribe una consulta para recuperar."}
+        hits = kb.retrieve(q, k=int(opts.get("k", 4) or 4))
+        if not hits:
+            return {"ok": True, "text": f"sin coincidencias para: {q}"}
+        parts = [f"# RAG: top {len(hits)} para \"{q}\"", ""]
+        for c, score in hits:
+            parts.append(f"## [{c.doc} / {c.title}]  (score {score:.3f})")
+            parts.append(c.text.strip())
+            parts.append("")
+        return {"ok": True, "text": "\n".join(parts)}
+
     if cmd == "cyclic":
         reg = build_registry(__file__)
         if opts.get("find"):
@@ -656,6 +680,8 @@ const CMDS=[
  {c:"cyclic",n:"Cyclic / offset",ic:"@",d:"Patron De Bruijn y busqueda de offset (como pwntools cyclic)",nobin:true,opts:[{k:"length",t:"text",label:"length",def:"200"},{k:"find",t:"text",label:"find 0x.."}]},
  {c:"verify",n:"Verify reachability",ic:"?",d:"Prueba con angr si una direccion es alcanzable desde entry",opts:[{k:"reach",t:"text",label:"addr 0x.."}]},
  {c:"regress",n:"Regresiones",ic:"=",d:"Compara dos builds (OLD vs el de arriba): findings y mitigaciones que cambian",opts:[{k:"old",t:"text",label:"binario OLD (ruta)"}]},
+ {c:"kb",n:"Conocimiento (RAG)",ic:"?",d:"Consulta los cheat sheets de explotacion que alimentan a la IA",nobin:true,opts:[{k:"query",t:"text",label:"consulta (ej. double free tcache)"}]},
+ {c:"tools",n:"Herramientas",ic:"+",d:"Toolchain de pentest de binarios detectado y para que lo usa binoracle",nobin:true},
  {c:"doctor",n:"Doctor",ic:"+",d:"Estado de los oracles y del modelo LLM",nobin:true},
 ];
 const side=document.getElementById('side');

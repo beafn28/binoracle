@@ -41,3 +41,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["binoracle*"]
+
+[tool.setuptools.package-data]
+binoracle = ["kb/*.md"]
