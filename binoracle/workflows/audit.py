@@ -10,33 +10,53 @@ from ..oracles import build_registry
 from ..agent.loop import AgentLoop, AgentResult
 
 
-def _kb_hint(reg) -> str:
-    """Retrieve exploitation cheat sheets relevant to this binary's real facts (checksec +
-    sinks + gift funcs) from the local RAG. Best-effort; never raises."""
+def _kb_hint(reg, store=None) -> str:
+    """Build the RAG hint for this binary: curated exploitation cheat sheets selected from the
+    binary's real facts (checksec + sinks + gift funcs) PLUS, if a store is given, facts
+    binoracle has already VERIFIED on similar targets (same arch, overlapping sinks). The
+    curated part is reference; the learned part is prior verified evidence. Never raises."""
     try:
         from ..rag import get_kb, query_from_facts
         facts = {"mitigations": {}, "imports": [], "primitives": []}
+        arch = "?"
         cs = reg.get("r2_checksec")
         if cs:
             r = cs.run()
             if r.ok:
+                arch = r.meta.get("arch", "?")
                 facts["mitigations"] = {
                     "NX": r.meta.get("nx", "unknown"),
                     "PIE": r.meta.get("pic", "unknown"),
                     "Canary": r.meta.get("canary", "unknown"),
                     "RELRO": r.meta.get("relro", "unknown"),
                 }
+        sinks = []
         sk = reg.get("r2_sinks")
         if sk:
             r = sk.run()
             if r.ok:
-                facts["imports"] = r.meta.get("sinks", [])
+                sinks = r.meta.get("sinks", [])
+                facts["imports"] = sinks
         win = reg.get("r2_win")
         if win:
             r = win.run()
             if r.ok and (r.meta.get("win_funcs", 0) > 0 or "/bin/sh" in r.data):
                 facts["primitives"].append("ret2win")
-        return get_kb().context_for(query_from_facts(facts), k=4, max_chars=2000)
+
+        hint = get_kb().context_for(query_from_facts(facts), k=4, max_chars=1800)
+
+        # Learned layer: verified facts from similar binaries in the local corpus.
+        if store is not None:
+            try:
+                learned = store.relevant_facts(arch, sinks, limit=6)
+            except Exception:
+                learned = []
+            if learned:
+                block = ("\n\n[aprendido / verificado en targets similares (misma arch, "
+                         "sinks solapados) — evidencia previa, no del binario actual]\n"
+                         + "\n".join("- " + x for x in learned))
+                hint = (hint + block) if hint else block.lstrip()
+        return hint
     except Exception:
         return ""
 
@@ -52,7 +72,7 @@ AUDIT_TASK = (
 
 def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
     reg = build_registry(binary, enable_dynamic=True, enable_exploit=True)
-    kb_hint = _kb_hint(reg)
+    kb_hint = _kb_hint(reg, store=store)
     loop = AgentLoop(llm, reg, config, store=store, on_step=on_step, kb_hint=kb_hint)
     res = loop.run(AUDIT_TASK, mode="audit")
 
@@ -121,4 +141,17 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
                                    f"sandbox. [src: try_ret2libc]")
     except Exception:
         pass
+
+    # Curation: verified findings become durable knowledge (per-binary + anonymized global),
+    # so the learned RAG layer improves on every audit. Only VERIFIED facts are kept.
+    if store is not None:
+        try:
+            cs = reg.get("r2_checksec")
+            csr = cs.run() if cs else None
+            arch = csr.meta.get("arch", "?") if (csr and csr.ok) else "?"
+            bits = csr.meta.get("bits", "?") if (csr and csr.ok) else "?"
+            mit = csr.data if (csr and csr.ok) else ""
+            store.save_verified_facts(res.findings or [], arch, bits, mit)
+        except Exception:
+            pass
     return res

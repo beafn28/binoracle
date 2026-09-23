@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format is based on
   - Wired into `primitives` (LLM narrative) and `audit` (agent system prompt) so the model
     reasons over real technique notes selected from the binary's own facts (checksec + sinks
     + gift functions), via `AgentLoop(kb_hint=...)`.
+  - **Learned layer**: the `audit` hint blends the curated cheat sheets with facts binoracle
+    has already VERIFIED on similar targets (`global_facts`, same arch + overlapping sinks),
+    and `run_audit` now curates its verified findings back into that corpus — so retrieval
+    improves on every audit (curated = reference, learned = prior verified evidence).
   - Exposed in the web dashboard (Utiles group) with a query field.
 - **`binoracle tools`**: detects the installed binary-pentest toolchain (radare2/rizin,
   pyelftools, angr, pwntools, one_gadget, ROPgadget/ropper, gdb+pwndbg, lldb, ltrace/strace,
