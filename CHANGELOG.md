@@ -24,6 +24,23 @@ All notable changes to this project are documented here. The format is based on
   pyelftools, angr, pwntools, one_gadget, ROPgadget/ropper, gdb+pwndbg, lldb, ltrace/strace,
   checksec, binutils, docker) and maps each to how binoracle uses it. Also in the web UI.
 - Tests: `tests/test_rag.py` (indexing, retrieval relevance, bounded context, fact queries).
+- **RAG references** (`binoracle/kb/references.md`): curated index of authoritative external
+  sources (ir0nstone, Practical CTF, how2heap, pwn.college, ROP Emporium, libc.rip, pwninit,
+  pwntools, GTFOBins, syscall tables) plus a glibc version-notes table (tcache 2.26,
+  key-check 2.29, safe-linking 2.32, hooks removed 2.34, FSOP 2.35+). Synthesized notes, not
+  copied text; the file points to the originals.
+
+### Changed
+- **AI-first workflow**: the autonomous `audit` agent now has the FULL tool catalog at its
+  disposal, including newly-wired `gen_shellcode` and `gen_fuzz_harness` helpers, so it
+  reasons over and drives every capability itself (recon, gadgets, cyclic/offset, shellcode,
+  fuzz, format-string index, reachability, and build+run+verify exploit actions) with the RAG
+  as technique context. AUDIT_SYSTEM prompt rewritten to make this explicit.
+- Web dashboard sidebar streamlined to be AI-centric: the autonomous audit is the primary
+  entry; the manual per-technique buttons (triage/hunt/disasm/gadgets/primitives/autopwn/rop/
+  shellcode/fmtstring/fuzz/cyclic/verify) were removed from the UI since the AI performs them
+  itself. Result views (dashboard, report), the 2-binary `regress`, and reference (kb, tools,
+  doctor) remain. The underlying commands still exist in the CLI.
 
 ## [0.1.0] - 2026-09-22
 
