@@ -54,7 +54,7 @@ _KB_CATS = [
     ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding"]),
     ("Concurrencia", ["race-conditions"]),
     ("Kernel", ["kernel-pwn"]),
-    ("Otras plataformas", ["browser-v8", "windows-exploit", "macos-macho", "arm-mips"]),
+    ("Otras plataformas", ["browser-v8", "windows-exploit", "pe-dll", "macos-macho", "arm-mips"]),
     ("Reversing", ["anti-debug"]),
     ("Metodologia y referencia", ["mitigations", "pie", "methodology", "tools", "references"]),
 ]

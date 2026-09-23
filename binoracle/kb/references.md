@@ -89,7 +89,11 @@ version del objetivo.
 - faith - *CTF oob-v8 en profundidad: https://faraz.faith/2019-12-13-starctf-oob-v8-indepth/
 - Google Project Zero (research de navegadores): https://googleprojectzero.blogspot.com
 
-## Windows
+## Windows / PE / DLL
+- Microsoft PE Format (spec oficial): https://learn.microsoft.com/windows/win32/debug/pe-format
+- Corkami PE - graficos y detalles del formato: https://github.com/corkami/pics/tree/master/binary/pe
+- PE-bear (inspector de PE): https://github.com/hasherezade/pe-bear
+- DLL hijacking / search order (Hijacklibs, referencia): https://hijacklibs.net
 - Corelan - Exploit writing tutorials (stack, SEH, egghunter, ROP): https://www.corelan.be/index.php/articles/
 - FuzzySecurity - Windows exploit dev: https://fuzzysecurity.com/tutorials.html
 - CyberArk - Modern Windows memory corruption: https://www.cyberark.com/resources/threat-research-blog/a-modern-exploration-of-windows-memory-corruption-exploits-part-i-stack-overflows
