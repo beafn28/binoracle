@@ -659,11 +659,6 @@ const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',inf
 const CMDS=[
  {g:"IA"},
  {c:"audit",n:"Auditoria autonoma (IA)",ic:"*",d:"La IA razona y conduce todo en vivo: recon, gadgets, offsets, encuentra la vuln y construye+ejecuta+verifica el exploit. Tiene el toolset completo + la base de conocimiento a su disposicion"},
- {g:"Resultados"},
- {c:"dashboard",n:"Dashboard",ic:"#",d:"Metricas, mitigaciones y superficie de ataque de un vistazo"},
- {c:"report",n:"Informe completo",ic:"=",d:"Informe con findings verificados (grounded/verified) y analisis IA"},
- {g:"Comparar"},
- {c:"regress",n:"Regresiones",ic:"=",d:"Compara dos builds (OLD vs el de arriba): findings y mitigaciones que cambian",opts:[{k:"old",t:"text",label:"binario OLD (ruta)"}]},
  {g:"Referencia"},
  {c:"kb",n:"Conocimiento (RAG)",ic:"?",d:"Consulta los cheat sheets de explotacion que la IA usa para razonar",nobin:true,opts:[{k:"query",t:"text",label:"consulta (ej. double free tcache)"}]},
  {c:"tools",n:"Herramientas",ic:"+",d:"Toolchain de pentest de binarios detectado y para que lo usa la IA",nobin:true},

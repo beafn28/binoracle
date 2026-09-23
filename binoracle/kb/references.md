@@ -15,6 +15,15 @@ cambian con el tiempo).
 - CTF101 pwn — introduccion a overflow, ROP, format string:
   https://ctf101.org/binary-exploitation/overview/
 
+## ROP avanzado y bypasses
+- ir0nstone SROP: https://ir0nstone.gitbook.io/notes/binexp/stack/syscalls/sigreturn-oriented-programming-srop
+- ir0nstone ret2csu: https://ir0nstone.gitbook.io/notes/binexp/stack/ret2csu
+- ir0nstone stack pivoting: https://ir0nstone.gitbook.io/notes/binexp/stack/stack-pivoting
+- Practical CTF ret2dlresolve: https://book.jorianwoltjer.com/binary-exploitation/return-oriented-programming-rop/ret2dlresolve
+- HackTricks (protecciones y bypasses): https://hacktricks.wiki/en/binary-exploitation/
+- n132 Guide of Seccomp in CTF: https://n132.github.io/2022/07/03/Guide-of-Seccomp-in-CTF.html
+- pwnable.tw orw (ORW clasico): reto de referencia para open/read/write shellcode.
+
 ## Heap glibc
 - how2heap (shellphish) — PoC ejecutables de cada tecnica house-of-* y bins, por version de
   glibc: https://github.com/shellphish/how2heap
