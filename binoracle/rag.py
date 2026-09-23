@@ -43,6 +43,30 @@ def _http_post_json(url: str, payload: dict, timeout: float = 120.0) -> dict:
         return json.loads(r.read().decode())
 
 
+def _rag_prefs_path() -> Path:
+    return Path.home() / ".cache" / "binoracle" / "rag_prefs.json"
+
+
+def _load_rag_prefs() -> dict:
+    try:
+        p = _rag_prefs_path()
+        if p.exists():
+            d = json.loads(p.read_text())
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_rag_prefs(prefs: dict) -> None:
+    try:
+        p = _rag_prefs_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(prefs))
+    except Exception:
+        pass
+
+
 def _cos_list(a, b) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -117,11 +141,21 @@ class KnowledgeBase:
         self._llm_model = (os.environ.get("BINORACLE_RAG_LLM_MODEL")
                            or os.environ.get("BINORACLE_MODEL") or "qwen2.5-coder:7b")
         self.embed_mode = "off"
+        # Preferencias: env var si esta puesta, si no lo guardado en disco (persistido desde el
+        # toggle de la web), si no off. Asi el estado sobrevive a reinicios.
+        prefs = _load_rag_prefs()
         _full = _truthy(os.environ.get("BINORACLE_RAG_FULL", ""))
-        self._use_expand_llm = _full or _truthy(os.environ.get("BINORACLE_RAG_EXPAND", ""))
-        self._use_rerank = _full or _truthy(os.environ.get("BINORACLE_RAG_RERANK", ""))
+
+        def _flag(env_name, pref_key):
+            v = os.environ.get(env_name)
+            if v is not None:
+                return _truthy(v)
+            return _full or bool(prefs.get(pref_key, False))
+
+        self._use_expand_llm = _flag("BINORACLE_RAG_EXPAND", "expand")
+        self._use_rerank = _flag("BINORACLE_RAG_RERANK", "rerank")
         self._expand_cache: dict = {}
-        if _full or _truthy(os.environ.get("BINORACLE_RAG_EMBED", "")):
+        if _flag("BINORACLE_RAG_EMBED", "embed"):
             self._init_embeddings()
 
     def status(self) -> str:
@@ -419,6 +453,9 @@ def configure(embed=None, expand=None, rerank=None) -> str:
         elif not embed:
             kb.embeds = None
             kb.embed_mode = "off"
+    # Persistir el estado para que sobreviva a reinicios del servidor.
+    _save_rag_prefs({"embed": kb.embeds is not None,
+                     "expand": kb._use_expand_llm, "rerank": kb._use_rerank})
     return kb.status()
 
 
