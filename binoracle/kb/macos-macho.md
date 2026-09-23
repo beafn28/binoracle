@@ -30,7 +30,19 @@ proceso; un AUT fallido corrompe el puntero -> crash al usarlo.
 - Tambien hay BTI (ARMv8.5): los saltos indirectos deben caer en un `bti` -> limita los
   gadgets (JOP) validos.
 
+## Syscalls (detalle)
+- x86-64: numero = 0x2000000 | n (clase Unix=2); `syscall`. execve = 0x2000003b.
+- arm64: numero en x16, `svc #0x80`. execve = 59 en la clase Unix (mismo esquema BSD).
+- Mach traps (numeros negativos) para IPC/puertos; distintos de los syscalls BSD.
+
+## Objetivos de escritura (sin hooks estilo glibc)
+- __DATA_CONST (a veces __got): punteros de import; con arb write y sin RO estricto, GOT-like
+  overwrite. dyld chained fixups complican el layout.
+- vtables de C++/Obj-C (isa pointer del objeto -> clase -> metodos): type confusion Obj-C.
+- Obj-C: el dispatch pasa por objc_msgSend(self, selector); controlar isa/selector redirige.
+
 ## Flujo tipico CTF/research
-Reversing con Hopper/IDA, entender el sandbox (sandbox-exec / entitlements), en arm64e asumir
-PAC (buscar leak+reuse de punteros o un bug de logica), y para userland x86-64/arm64 sin PAC
-aplicar ROP/ret2libc contra el dyld_shared_cache.
+Reversing con Hopper/IDA/Ghidra, entender el sandbox (sandbox-exec / entitlements / seatbelt),
+en arm64e asumir PAC (buscar leak+reuse de punteros firmados o un bug de logica que evite el
+AUT), y para userland x86-64/arm64 sin PAC aplicar ROP/ret2libc contra el dyld_shared_cache.
+Herramientas extra: `dyld_shared_cache_util` para extraer libs de la cache, LLDB para debug.

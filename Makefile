@@ -1,15 +1,19 @@
 # binoracle - developer tasks
 PY ?= python3
 
-.PHONY: help install install-all test samples lint clean
+.PHONY: help install install-all install-tools test samples lint clean
 
 help:
-	@echo 'make install      - editable install (core, stdlib only)'
-	@echo 'make install-all  - install with r2pipe + angr + pyelftools + capstone'
-	@echo 'make test         - run the offline test suite'
-	@echo 'make samples      - build the practice ELF/PE corpus via Docker'
-	@echo 'make lint         - byte-compile the package'
-	@echo 'make clean        - remove build artifacts and local state'
+	@echo 'make install       - editable install (core, stdlib only)'
+	@echo 'make install-all   - install with r2pipe + angr + pyelftools + capstone'
+	@echo 'make install-tools - install the optional pentest toolchain (see binoracle tools)'
+	@echo 'make test          - run the offline test suite'
+	@echo 'make samples       - build the practice ELF/PE corpus via Docker'
+	@echo 'make lint          - byte-compile the package'
+	@echo 'make clean         - remove build artifacts and local state'
+
+install-tools:
+	bash scripts/install-tools.sh
 
 install:
 	$(PY) -m pip install -e .

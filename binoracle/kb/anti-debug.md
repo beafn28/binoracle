@@ -41,6 +41,28 @@ reversing. (Lado defensivo/analista, para retos y malware autorizado.)
 - Estrategia general de unpack: ejecutar hasta el "tail jump" al OEP, volcar la memoria,
   reconstruir la IAT.
 
+## Bypass practico (ejemplos)
+gdb - neutralizar ptrace(PTRACE_TRACEME) para que siempre "tenga exito":
+```
+catch syscall ptrace
+commands
+  set $rax = 0
+  continue
+end
+```
+LD_PRELOAD - suplantar ptrace desde una .so:
+```
+long ptrace(int r, int p, void*a, void*d){ return 0; }   // gcc -shared -fPIC -o p.so p.c
+# LD_PRELOAD=./p.so ./chall
+```
+frida - anular una comprobacion (p.ej. IsDebuggerPresent / una funcion de check):
+```
+Interceptor.attach(Module.getExportByName(null,'ptrace'), { onLeave(r){ r.replace(0); }});
+```
+parche estatico - NOP a la llamada de anti-debug o invertir el salto condicional (jz<->jnz)
+con radare2: `r2 -w chall` ; `s sym.check` ; `wa nop` o `wx 9090...`.
+
 ## Herramientas
-gdb+gef/pwndbg, x64dbg+ScyllaHide, IDA/Ghidra, frida (hook dinamico), ltrace/strace,
-qiling/unicorn (emulacion), angr (desofuscacion simbolica).
+gdb+gef/pwndbg, x64dbg+ScyllaHide/TitanHide, IDA/Ghidra, frida (hook dinamico), ltrace/strace,
+qiling/unicorn (emulacion), angr/miasm (desofuscacion simbolica), Detect It Easy (identificar
+packer/protector).

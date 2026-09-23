@@ -147,6 +147,15 @@ def check_tools() -> list[ToolStatus]:
                          _which("ropr") or _pymod("angrop"),
                          "busqueda rapida de gadgets (ropr) y cadenas ROP automaticas (angrop)"))
 
+    # --- libs de asm/disasm y gadgets extra ---
+    st.append(ToolStatus("capstone", "static", bool(_pymod("capstone")), _pymod("capstone"),
+                         "motor de desensamblado multi-arch (base de muchas tools)"))
+    st.append(ToolStatus("keystone", "static", bool(_pymod("keystone")), _pymod("keystone"),
+                         "ensamblador multi-arch (asm() sin depender de binutils)"))
+    st.append(ToolStatus("rp++", "rop", bool(_which("rp++") or _which("rp-lin") or _which("rp")),
+                         _which("rp++") or _which("rp-lin") or _which("rp"),
+                         "buscador de gadgets ROP rapido (alternativa a ROPgadget)"))
+
     # --- fuzzing / simbolico ---
     st.append(ToolStatus("AFL++", "symbolic", bool(_which("afl-fuzz")), _which("afl-fuzz"),
                          "fuzzing guiado por cobertura (harness + corpus)"))
