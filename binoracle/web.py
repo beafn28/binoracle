@@ -60,6 +60,176 @@ _KB_CATS = [
 ]
 
 
+_LIB_TEMPLATE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Biblioteca</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--line:#e5e7eb;--tx:#1c2024;--mut:#6b7280;--acc:#3757e0;--code:#f1f3f5;--codetx:#0b3d2e}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1116;--panel:#151a21;--line:#242b34;--tx:#e6e9ee;--mut:#8b97a6;--acc:#6f9bff;--code:#0b0f14;--codetx:#7ee2b8}}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--tx);display:flex;height:100vh;overflow:hidden}
+#nav{width:280px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;height:100vh}
+#navhead{padding:16px 16px 10px}
+#navhead h1{font-size:15px;margin:0 0 3px}
+#navhead .sub{color:var(--mut);font-size:12px}
+#search{width:100%;margin-top:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--tx);font-size:13px;outline:none}
+#search:focus{border-color:var(--acc)}
+#navlist{overflow-y:auto;padding:6px 8px 24px;flex:1}
+.cat{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 8px 4px;font-weight:600}
+.doc{display:block;padding:6px 10px;border-radius:7px;color:var(--tx);text-decoration:none;cursor:pointer;font-size:13px}
+.doc:hover{background:var(--bg)}
+.doc.active{background:var(--acc);color:#fff}
+#main{flex:1;overflow-y:auto;padding:34px 46px 80px;max-width:900px}
+#main h2{font-size:24px;margin:0 0 18px;border-bottom:1px solid var(--line);padding-bottom:12px}
+#main h3{font-size:17px;margin:26px 0 8px;color:var(--acc)}
+#main h4{font-size:14px;margin:18px 0 6px}
+#main p{margin:8px 0}
+#main ul{margin:8px 0;padding-left:22px}
+#main li{margin:3px 0}
+#main code{background:var(--code);color:var(--codetx);padding:1px 5px;border-radius:4px;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+#main pre{background:var(--code);border:1px solid var(--line);border-radius:9px;padding:13px 15px;overflow-x:auto;margin:12px 0}
+#main pre code{background:none;padding:0;color:var(--tx)}
+.xref{color:var(--acc);cursor:pointer;text-decoration:none;border-bottom:1px dotted var(--acc)}
+.empty{color:var(--mut);padding:40px 0}
+mark{background:#ffe08a;color:#000;border-radius:2px}
+</style></head><body>
+<aside id="nav">
+ <div id="navhead"><h1>Biblioteca de explotacion</h1><div class="sub">__NDOCS__ temas, __NSEC__ secciones</div>
+  <input id="search" placeholder="Buscar (ej. tcache, ret2libc, seccomp)..."></div>
+ <div id="navlist"></div>
+</aside>
+<main id="main"><div class="empty">Selecciona un tema del menu.</div></main>
+<script>
+const DOCS=__DATA__;
+const nav=document.getElementById('navlist'),main=document.getElementById('main'),search=document.getElementById('search');
+function buildNav(filter){
+ nav.innerHTML='';const f=(filter||'').toLowerCase();let cat=null,shown=0;
+ DOCS.forEach(d=>{
+  if(f && d.title.toLowerCase().indexOf(f)<0 && d.text.indexOf(f)<0) return;
+  if(d.cat!==cat){cat=d.cat;const h=document.createElement('div');h.className='cat';h.textContent=cat;nav.appendChild(h);}
+  const a=document.createElement('a');a.className='doc';a.textContent=d.title;a.dataset.id=d.id;
+  a.onclick=()=>show(d.id,f);nav.appendChild(a);shown++;});
+ if(!shown){const e=document.createElement('div');e.className='cat';e.textContent='sin resultados';nav.appendChild(e);}
+ return shown;
+}
+function show(id,hl){
+ const d=DOCS.find(x=>x.id===id);if(!d)return;
+ [...nav.querySelectorAll('.doc')].forEach(x=>x.classList.toggle('active',x.dataset.id===id));
+ main.innerHTML=d.html;main.scrollTop=0;
+ main.querySelectorAll('.xref').forEach(x=>x.onclick=()=>{const t=x.dataset.doc;buildNav(search.value.trim());show(t);});
+ if(hl && hl.length>1) highlight(hl);
+}
+function highlight(term){
+ const rx=new RegExp('('+term.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')+')','gi');
+ const walk=n=>{if(n.nodeType===3){const m=n.nodeValue;if(rx.test(m)){const s=document.createElement('span');s.innerHTML=m.replace(rx,'<mark>$1</mark>');n.replaceWith(s);}}
+  else if(n.nodeType===1 && n.tagName!=='MARK' && n.childNodes) [...n.childNodes].forEach(walk);};
+ [...main.childNodes].forEach(walk);
+}
+let t=null;
+search.oninput=()=>{clearTimeout(t);t=setTimeout(()=>{const n=buildNav(search.value.trim());
+ const f=search.value.trim();if(f.length>1){const first=DOCS.find(d=>d.title.toLowerCase().indexOf(f.toLowerCase())>=0||d.text.indexOf(f.toLowerCase())>=0);if(first)show(first.id,f);}},180);};
+buildNav('');
+if(DOCS.length)show(DOCS[0].id);
+</script></body></html>"""
+
+
+def _md_inline(s: str) -> str:
+    import re as _re
+    s = (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    s = _re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = _re.sub(r"\[\[([a-z0-9-]+)\]\]", r'<a class="xref" data-doc="\1">\1</a>', s)
+    return s
+
+
+def _md_to_html(text: str) -> str:
+    """Mini renderer markdown -> HTML (headings, code fences, listas, parrafos)."""
+    out = []
+    lines = text.split("\n")
+    i = 0
+    in_list = False
+    para = []  # buffer de lineas planas consecutivas -> un solo parrafo fluido
+
+    def flush_para():
+        if para:
+            out.append(f"<p>{_md_inline(' '.join(para))}</p>")
+            para.clear()
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            out.append("</ul>"); in_list = False
+
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("```"):
+            flush_para(); close_list()
+            code = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                code.append(lines[i]); i += 1
+            i += 1
+            esc = "\n".join(code).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            out.append(f"<pre><code>{esc}</code></pre>")
+            continue
+        if line.startswith("### "):
+            flush_para(); close_list(); out.append(f"<h4>{_md_inline(line[4:])}</h4>")
+        elif line.startswith("## "):
+            flush_para(); close_list(); out.append(f"<h3>{_md_inline(line[3:])}</h3>")
+        elif line.startswith("# "):
+            flush_para(); close_list(); out.append(f"<h2>{_md_inline(line[2:])}</h2>")
+        elif line.strip().startswith("- "):
+            flush_para()
+            if not in_list: out.append("<ul>"); in_list = True
+            out.append(f"<li>{_md_inline(line.strip()[2:])}</li>")
+        elif line.strip() == "":
+            flush_para(); close_list()
+        else:
+            import re as _re
+            close_list()
+            if _re.match(r"\d+\.\s", line.strip()):
+                flush_para()   # cada paso numerado empieza parrafo nuevo
+            para.append(line.strip())
+        i += 1
+    flush_para(); close_list()
+    return "\n".join(out)
+
+
+def _kb_library_html(kb) -> str:
+    """Pagina 'biblioteca': menu por categoria + contenido de teoria + buscador. Self-contained."""
+    from pathlib import Path
+    kbdir = Path(__file__).parent / "kb"
+    docs = {}
+    for c in kb.chunks:
+        docs.setdefault(c.doc, True)
+    # orden por categoria
+    cat_of = {}
+    order = []
+    for cat, dl in _KB_CATS:
+        for d in dl:
+            if d in docs:
+                cat_of[d] = cat; order.append(d)
+    for d in sorted(docs):
+        if d not in cat_of:
+            cat_of[d] = "Otros"; order.append(d)
+    items = []
+    for d in order:
+        raw = ""
+        p = kbdir / f"{d}.md"
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        title = d
+        for ln in raw.splitlines():
+            if ln.startswith("# "):
+                title = ln[2:].replace(" (cheat sheet)", "").strip(); break
+        items.append({"id": d, "title": title, "cat": cat_of[d],
+                      "html": _md_to_html(raw), "text": raw.lower()})
+    data = json.dumps(items, ensure_ascii=False)
+    total_sec = len(kb.chunks)
+    return _LIB_TEMPLATE.replace("__DATA__", data).replace("__NDOCS__", str(len(items))).replace("__NSEC__", str(total_sec))
+
+
 def _kb_index(kb) -> str:
     """Indice navegable de los cheat sheets, agrupado por categoria."""
     by_doc = {}
@@ -112,19 +282,7 @@ def run_command(payload: dict) -> dict:
 
     if cmd == "kb":
         from .rag import get_kb
-        kb = get_kb()
-        q = (opts.get("query") or "").strip()
-        if not q:
-            return {"ok": True, "text": _kb_index(kb)}
-        hits = kb.retrieve(q, k=int(opts.get("k", 4) or 4))
-        if not hits:
-            return {"ok": True, "text": f"sin coincidencias para: {q}"}
-        parts = [f"# RAG: top {len(hits)} para \"{q}\"", ""]
-        for c, score in hits:
-            parts.append(f"## [{c.doc} / {c.title}]  (score {score:.3f})")
-            parts.append(c.text.strip())
-            parts.append("")
-        return {"ok": True, "text": "\n".join(parts)}
+        return {"ok": True, "html": _kb_library_html(get_kb()), "kind": "library"}
 
     if cmd == "cyclic":
         reg = build_registry(__file__)
@@ -471,6 +629,16 @@ def run_streaming(command, binary, ai, emit):
                         import re as _re
                         mm = _re.search(r"RELRO:\s*(\w+)", r.data)
                         if mm: relro = mm.group(1)
+                sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+                items = sorted(
+                    [{"title": f.title, "severity": f.severity, "verdict": f.verdict,
+                      "location": (f.location or "")[:120],
+                      "rationale": (f.rationale or "").strip()[:400],
+                      "recommendation": (f.recommendation or "").strip()[:400]}
+                     for f in findings],
+                    key=lambda x: (sev_rank.get(x["severity"], 9), x["verdict"] != "verified"))
+                # imports peligrosos con quien los alcanza (superficie de ataque detallada)
+                sink_detail = reg.get("r2_sinks").run()
                 data = {"arch": m.get("arch", "?"), "bits": m.get("bits", "?"), "format": fmt,
                         "mitigations": {"NX": str(m.get("nx")).lower() in ("true","1"),
                             "PIE": str(m.get("pic")).lower() in ("true","1"),
@@ -478,7 +646,8 @@ def run_streaming(command, binary, ai, emit):
                             "FORTIFY": hd("FORTIFY"), "ASan": hd("AddressSanitizer"),
                             "CFI": hd("CFI"), "SafeStack": hd("SafeStack")},
                         "findings": {"total": len(findings), "verified": verified, "by_sev": by},
-                        "sinks": sinks, "functions": funcs}
+                        "items": items, "sinks": sinks, "functions": funcs,
+                        "sink_detail": (sink_detail.data.strip()[:1500] if sink_detail.ok else "")}
                 store.close()
                 emit("dashboard", data)
                 emit("done", "")
@@ -636,6 +805,21 @@ main{flex:1;display:flex;min-height:0}
 .opts:empty{display:none}
 .cmddesc{flex-basis:100%;color:var(--mut);font-size:12px;margin-bottom:2px}
 .rptbar{display:flex;justify-content:flex-end;padding:0 0 10px 0}
+.fhdr{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.fhdr h3{margin:0}
+.find{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:8px 0;background:var(--panel2)}
+.frow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.sdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.ftit{font-weight:600;font-size:13.5px}
+.floc{color:var(--mut);font:12px ui-monospace,Menlo,monospace;margin-left:auto}
+.vb{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:20px}
+.vb.ok{background:rgba(48,163,108,.16);color:#30a46c}
+.vb.gr{background:rgba(91,141,239,.16);color:#5b8def}
+.vb.mut{background:var(--line);color:var(--mut)}
+.frat{color:var(--tx);font-size:12.5px;margin-top:7px;white-space:pre-wrap;opacity:.9}
+.frec{color:var(--mut);font-size:12.5px;margin-top:5px}
+.sinkdetail{margin-top:12px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font:11.5px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:220px;overflow:auto;color:var(--mut)}
+.libframe{width:100%;height:calc(100vh - 150px);min-height:520px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
 .f{display:flex;flex-direction:column;gap:3px}
 .f label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .f input,.f select{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
@@ -704,7 +888,7 @@ const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',inf
 const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
- {c:"kb",n:"Conocimiento",ic:"?",d:"Consulta los cheat sheets de explotacion",nobin:true,opts:[{k:"query",t:"text",label:"consulta"}]},
+ {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
  {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
 ];
 const side=document.getElementById('side');
@@ -751,7 +935,10 @@ function stream(command){var out=document.getElementById('out');var g=document.g
 async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
- if(j.html){out.innerHTML='';reportView(out,j.html);return;}
+ if(j.html){out.innerHTML='';
+  if(j.kind==='library'){const ifr=document.createElement('iframe');ifr.className='libframe';out.appendChild(ifr);ifr.srcdoc=j.html;}
+  else{reportView(out,j.html);}
+  return;}
  out.innerHTML='';const box=document.createElement('div');box.className='console';
  box.innerHTML='<div class="bar"><span class="d" style="background:'+(j.ok?'#30a46c':'#e5484d')+'"></span>'+command+'</div>';
  const pre=document.createElement('pre');pre.textContent=j.text||'(sin salida)';box.appendChild(pre);out.appendChild(box);
@@ -797,13 +984,24 @@ function renderDash(d){const out=document.getElementById('out');const s=d.findin
  +'<div class="grid row2" style="margin-bottom:16px">'
  +'<div class="card"><h3>Mitigaciones</h3><div class="mit-grid">'+Object.keys(m).map(k=>mitChip(k,m[k])).join('')+'</div></div>'
  +'<div class="card"><h3>Sinks peligrosos</h3><div class="chips">'+(d.sinks.length?d.sinks.map(x=>'<div class="chip">'+x+'</div>').join(''):'<span style="color:var(--mut)">ninguno</span>')+'</div>'
- +'<h3 style="margin-top:18px">Acciones</h3><div class="qa">'
- +'<button onclick="exec(\'report\',{ai:false})">Informe completo</button>'
- +'<button onclick="exec(\'rop\',{goal:\'auto\'})">Construir cadena ROP</button>'
- +'<button onclick="exec(\'gadgets\',{})">Gadgets</button>'
- +'<button onclick="exec(\'primitives\',{})">Primitivas</button>'
- +'</div></div>'
+ +(d.sink_detail?'<pre class="sinkdetail">'+esc(d.sink_detail)+'</pre>':'')
+ +'</div>'
+ +'</div>'
+ +'<div class="card" style="margin-bottom:16px"><div class="fhdr"><h3>Hallazgos ('+d.findings.total+')</h3>'
+ +'<button class="run" onclick="exec(\'audit\')">Auditar con la IA (exploit verificado)</button></div>'
+ +(d.items&&d.items.length?d.items.map(findRow).join(''):'<div style="color:var(--mut);padding:8px 0">Sin hallazgos deterministas. Lanza <b>Auditar con la IA</b> para el analisis completo y la explotacion.</div>')
  +'</div>';
+}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function findRow(it){
+ var col=SEVC[it.severity]||'#8b97a6';
+ var vb=it.verdict==='verified'?'<span class="vb ok">verificado</span>':(it.verdict==='grounded'?'<span class="vb gr">grounded</span>':'<span class="vb mut">'+esc(it.verdict||'')+'</span>');
+ var body='';
+ if(it.rationale)body+='<div class="frat">'+esc(it.rationale)+'</div>';
+ if(it.recommendation)body+='<div class="frec"><b>Recomendacion:</b> '+esc(it.recommendation)+'</div>';
+ return '<div class="find"><div class="frow"><span class="sdot" style="background:'+col+'"></span>'
+  +'<span class="ftit">'+esc(it.title)+'</span>'+vb
+  +(it.location?'<span class="floc">'+esc(it.location)+'</span>':'')+'</div>'+body+'</div>';
 }
 function kpi(v,l,c){return '<div class="card kpi"><div class="v" style="color:'+c+'">'+v+'</div><div class="l">'+l+'</div><div class="bar" style="background:'+c+'"></div></div>';}
 function b64enc(buf){var bytes=new Uint8Array(buf);var bin='';var chunk=0x8000;for(var i=0;i<bytes.length;i+=chunk){bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+chunk));}return btoa(bin);}
