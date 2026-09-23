@@ -219,7 +219,10 @@ class KnowledgeBase:
         try:
             if not self.chunks:
                 return
-            payloads = [f"{c.doc} :: {c.title}\n{c.text}" for c in self.chunks]
+            # Trunca cada chunk: los modelos de embeddings tienen limite de contexto y un
+            # chunk enorme da HTTP 400. Titulo + inicio del cuerpo basta para la similitud.
+            _cap = int(os.environ.get("BINORACLE_EMBED_MAXCHARS", "1800"))
+            payloads = [f"{c.doc} :: {c.title}\n{c.text}"[:_cap] for c in self.chunks]
             key = hashlib.sha256(
                 (self._embed_model + "\x00" + "\x00".join(payloads)).encode()
             ).hexdigest()[:16]
