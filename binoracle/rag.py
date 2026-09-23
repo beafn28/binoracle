@@ -137,10 +137,12 @@ class KnowledgeBase:
         # Capa semantica opcional (embeddings del modelo local). Off por defecto: el retrieval
         # base es TF-IDF puro y determinista. Se activa con BINORACLE_RAG_EMBED=1.
         self.embeds: Optional[list] = None
-        self._embed_model = os.environ.get("BINORACLE_EMBED_MODEL", "nomic-embed-text")
         self._ollama = os.environ.get("BINORACLE_OLLAMA_URL", "http://localhost:11434").rstrip("/")
+        # Elige el mejor embedder disponible: el fijado por env, si no el mejor instalado
+        # (bge-m3 multilingue es superior para consultas en espanol contra contenido en ingles).
         self._llm_model = (os.environ.get("BINORACLE_RAG_LLM_MODEL")
                            or os.environ.get("BINORACLE_MODEL") or "qwen2.5-coder:7b")
+        self._embed_model = os.environ.get("BINORACLE_EMBED_MODEL") or self._pick_embed_model()
         self.embed_mode = "off"
         # Prioridad de cada capa: env var explicita > preferencia persistida (toggle web) >
         # AUTOMATICO. Automatico = si hay modelo local disponible, se enciende semantico +
@@ -169,12 +171,28 @@ class KnowledgeBase:
             self.embed_mode = "construyendo..."
             threading.Thread(target=self._init_embeddings, daemon=True).start()
 
-    def _model_reachable(self) -> bool:
+    def _installed_models(self) -> list:
         try:
             with urllib.request.urlopen(self._ollama + "/api/tags", timeout=1.5) as r:
-                return r.status == 200
+                data = json.loads(r.read().decode())
+            return [m.get("name", "") for m in data.get("models", [])]
         except Exception:
-            return False
+            return []
+
+    def _model_reachable(self) -> bool:
+        return bool(self._installed_models())
+
+    def _pick_embed_model(self) -> str:
+        """Elige el mejor modelo de embeddings instalado. Preferencia multilingue > EN;
+        si no hay ninguno dedicado, usa el LLM (que suele soportar /api/embed)."""
+        installed = [m.split(":")[0] for m in self._installed_models()]
+        for pref in ("bge-m3", "mxbai-embed-large", "snowflake-arctic-embed2",
+                     "nomic-embed-text", "all-minilm"):
+            if pref in installed:
+                return pref
+        if self._llm_model.split(":")[0] in installed:
+            return self._llm_model
+        return "nomic-embed-text"   # ultimo recurso (se descargaria / o fallback a TF-IDF)
 
     def status(self) -> str:
         """Resumen del modo del RAG (para doctor/tools)."""

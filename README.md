@@ -205,16 +205,23 @@ The `kb` command exposes the same local RAG the model consults during `primitive
 recursively from `binoracle/kb/`. It is grounding for the model's reasoning, never a source of
 verdicts: the oracles remain the only thing that can promote a finding to `verified`.
 
-Retrieval is hybrid and layered. The core is a dependency-free TF-IDF cosine retriever (always
-on, deterministic). Optional layers use the local model and fall back automatically if it is
-unreachable:
+Retrieval is hybrid and layered, and turns itself on automatically. The core is a
+dependency-free TF-IDF cosine retriever (always on, deterministic). When a local model is
+reachable, semantic embeddings and LLM query-expansion enable by themselves (embeddings build
+in a background thread and cache to disk, so nothing blocks); with no model it stays TF-IDF.
+The best installed embedder is auto-selected (bge-m3 multilingual > nomic-embed-text > the LLM
+itself) - bge-m3 is recommended because it matches Spanish queries against English content far
+better. Reranking stays opt-in (heaviest layer).
+
+Override anything with env vars or the dashboard's "RAG" toggle (persisted):
 
 ```bash
-export BINORACLE_RAG_EMBED=1     # semantic embeddings (Ollama), cached on disk
-export BINORACLE_EMBED_MODEL=nomic-embed-text   # or any model that supports /api/embed
+export BINORACLE_RAG_AUTO=0      # disable the automatic behaviour (pure TF-IDF)
+export BINORACLE_RAG_EMBED=1     # force semantic embeddings on/off
+export BINORACLE_EMBED_MODEL=bge-m3   # force a specific embedder (else auto-selected)
 export BINORACLE_RAG_EXPAND=1    # LLM query expansion (related technical terms)
 export BINORACLE_RAG_RERANK=1    # LLM reranking of the candidate pool
-export BINORACLE_RAG_FULL=1      # enable all three
+export BINORACLE_RAG_FULL=1      # force all three on
 ```
 
 `binoracle doctor` (and the web dashboard's Estado) print the active RAG mode.
