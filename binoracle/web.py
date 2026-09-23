@@ -56,6 +56,11 @@ def run_command(payload: dict) -> dict:
         llm = make_backend(config)
         reg = _reg(binary) if binary and os.path.exists(binary) else build_registry(__file__)
         lines = [f"LLM backend: {llm.info()}", ""] + reg.status()
+        try:
+            from .toolcheck import check_tools, render
+            lines += ["", render(check_tools(), lang=config.lang)]
+        except Exception:
+            pass
         return {"ok": True, "text": "\n".join(lines)}
 
     if cmd == "tools":
@@ -657,12 +662,9 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 <script>
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
- {g:"IA"},
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
- {g:"Referencia"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Consulta los cheat sheets de explotacion",nobin:true,opts:[{k:"query",t:"text",label:"consulta"}]},
- {c:"tools",n:"Herramientas",ic:"+",d:"Toolchain de pentest detectado",nobin:true},
- {c:"doctor",n:"Estado",ic:"+",d:"Oracles y modelo LLM disponibles",nobin:true},
+ {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
 ];
 const side=document.getElementById('side');
 var _tb=document.createElement('div');_tb.className='sidetb';_tb.innerHTML='<button class="stb" id="collapse" title="colapsar menu">&laquo;</button><button class="stb" id="hist" title="historial de binarios">H</button>';side.appendChild(_tb);
