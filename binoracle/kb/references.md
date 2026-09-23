@@ -46,6 +46,29 @@ cambian con el tiempo).
 - glibc source (malloc/malloc.c) — la verdad ultima del asignador:
   https://elixir.bootlin.com/glibc/latest/source/malloc/malloc.c
 
+## Browser / V8
+- ir0nstone browser exploitation (oob-v8):
+  https://ir0nstone.gitbook.io/notes/binexp/browser-exploitation/ctf-2019-oob-v8/the-challenge
+- addrof/fakeobj explicados (TrustFoundry):
+  https://trustfoundry.net/2025/03/28/browser-exploitation-basics-explaining-the-addrof-and-fakeobj-primitives/
+- faith - *CTF oob-v8 en profundidad: https://faraz.faith/2019-12-13-starctf-oob-v8-indepth/
+
+## Windows exploit dev
+- cranelab exploit-development: https://github.com/cranelab/exploit-development
+- CyberArk - Modern Windows memory corruption (stack):
+  https://www.cyberark.com/resources/threat-research-blog/a-modern-exploration-of-windows-memory-corruption-exploits-part-i-stack-overflows
+- mona.py (Corelan) para ROP/SEH en Immunity/WinDbg.
+
+## ARM / MIPS
+- CTF Wiki arm_rop: https://ctf-wiki.mahaloz.re/pwn/linux/arm/arm_rop/
+- CTF Recipes AArch64 calling convention: https://www.ctfrecipes.com/pwn/architectures/aarch64/calling-convention
+- HackTricks ret2syscall arm64: https://hacktricks.wiki/en/binary-exploitation/rop-return-oriented-programing/rop-syscall-execv/ret2syscall-arm64.html
+- easy-linux-pwn (xairy, multi-arch): https://github.com/xairy/easy-linux-pwn
+
+## Anti-debug / reversing
+- yo-yo-yo-jbo anti_debugging_intro: https://github.com/yo-yo-yo-jbo/anti_debugging_intro
+- UPX: https://upx.github.io  (upx -d para desempaquetar)
+
 ## Practica
 - pwn.college — curso estructurado (ASU), desde asm hasta kernel:
   https://pwn.college
