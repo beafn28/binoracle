@@ -913,7 +913,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
   <label><input type="checkbox" id="rag_expand"> Expandir consulta (IA)</label>
   <label><input type="checkbox" id="rag_rerank"> Rerank de candidatos (IA)</label>
   <div id="ragstatus" class="rst">TF-IDF (base)</div>
-  <div class="rhint">Usan el modelo local. La 1a vez que activas semantico construye los embeddings (se cachea).</div>
+  <div class="rhint">Automatico: si hay modelo local, se activan solos (embeddings se construyen en 2o plano y se cachean). Desmarca para forzar off.</div>
 </div>
 <main>
   <nav class="side" id="side"></nav>

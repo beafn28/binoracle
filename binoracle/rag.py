@@ -163,7 +163,7 @@ class KnowledgeBase:
             return _full or (auto_default and self._auto)
 
         self._use_expand_llm = _flag("BINORACLE_RAG_EXPAND", "expand", auto_default=True)
-        self._use_rerank = _flag("BINORACLE_RAG_RERANK", "rerank", auto_default=False)
+        self._use_rerank = _flag("BINORACLE_RAG_RERANK", "rerank", auto_default=True)
         self._expand_cache: dict = {}
         if _flag("BINORACLE_RAG_EMBED", "embed", auto_default=True):
             # No bloquear el arranque: construir/cargar embeddings en un hilo de fondo. Hasta
