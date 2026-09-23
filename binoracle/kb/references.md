@@ -32,6 +32,16 @@ cambian con el tiempo).
 - House of Apple 2 (writeup) — FSOP via _wide_data en glibc 2.35+:
   https://ian.nl/blog/htb-love-letter-house-of-apple-fsop
 - Deep Dive into FSOP (Niftic): https://niftic.ca/posts/fsop/
+- AngelBoy - Play with FILE Structure (fundacional):
+  https://www.slideshare.net/AngelBoy1/play-with-file-structure-yet-another-binary-exploit-technique
+- 0x434b - Overview of glibc heap exploitation:
+  https://0x434b.dev/overview-of-glibc-heap-exploitation-techniques/
+
+## GOT / PLT / dynamic linking
+- MaskRay - All about the PLT: https://maskray.me/blog/2021-09-19-all-about-procedure-linkage-table
+- syst3mfailure - ret2dl_resolve x64: https://syst3mfailure.io/ret2dl_resolve/
+- 4xura - Hijack libc internal GOT/PLT as RCE:
+  https://4xura.com/binex/pwn-got-hijack-libcs-internal-got-plt-as-rce-primitives/
 
 ## Kernel pwn
 - CTF Wiki (kernel): https://ctf-wiki.mahaloz.re/pwn/linux/kernel/

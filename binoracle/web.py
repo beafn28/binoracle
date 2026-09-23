@@ -658,11 +658,11 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"IA"},
- {c:"audit",n:"Auditoria autonoma (IA)",ic:"*",d:"La IA razona y conduce todo en vivo: recon, gadgets, offsets, encuentra la vuln y construye+ejecuta+verifica el exploit. Tiene el toolset completo + la base de conocimiento a su disposicion"},
+ {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
  {g:"Referencia"},
- {c:"kb",n:"Conocimiento (RAG)",ic:"?",d:"Consulta los cheat sheets de explotacion que la IA usa para razonar",nobin:true,opts:[{k:"query",t:"text",label:"consulta (ej. double free tcache)"}]},
- {c:"tools",n:"Herramientas",ic:"+",d:"Toolchain de pentest de binarios detectado y para que lo usa la IA",nobin:true},
- {c:"doctor",n:"Doctor",ic:"+",d:"Estado de los oracles y del modelo LLM",nobin:true},
+ {c:"kb",n:"Conocimiento",ic:"?",d:"Consulta los cheat sheets de explotacion",nobin:true,opts:[{k:"query",t:"text",label:"consulta"}]},
+ {c:"tools",n:"Herramientas",ic:"+",d:"Toolchain de pentest detectado",nobin:true},
+ {c:"doctor",n:"Estado",ic:"+",d:"Oracles y modelo LLM disponibles",nobin:true},
 ];
 const side=document.getElementById('side');
 var _tb=document.createElement('div');_tb.className='sidetb';_tb.innerHTML='<button class="stb" id="collapse" title="colapsar menu">&laquo;</button><button class="stb" id="hist" title="historial de binarios">H</button>';side.appendChild(_tb);
