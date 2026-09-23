@@ -80,8 +80,11 @@ class KnowledgeBase:
     def _load(self, kb_dir: Path) -> None:
         if not kb_dir.is_dir():
             return
-        for md in sorted(kb_dir.glob("*.md")):
-            doc = md.stem
+        # Recursivo: los cheat sheets curados estan en la raiz; los skills importados
+        # (ctf-pwn/ctf-reverse) en subdirectorios. El doc id es la ruta relativa sin .md,
+        # asi "skills/pwn/heap-techniques" no colisiona con el curado "heap".
+        for md in sorted(kb_dir.rglob("*.md")):
+            doc = str(md.relative_to(kb_dir).with_suffix("")).replace("\\", "/")
             raw = md.read_text(encoding="utf-8", errors="replace")
             # Partir por secciones "## ". El preambulo (titulo #) va como seccion 0.
             parts = re.split(r"^##\s+", raw, flags=re.MULTILINE)
@@ -97,8 +100,22 @@ class KnowledgeBase:
                 if body:
                     self._add(doc, title, body)
 
+    _NOISE_TITLES = {"table of contents", "contents", "index", "additional resources",
+                     "see also", "references", "further reading"}
+
     def _add(self, doc: str, title: str, text: str) -> None:
+        # Descarta secciones de indice/navegacion (TOC, listas de enlaces) que solo meten ruido.
+        t = title.strip().lower().lstrip("# ")
+        if t in self._NOISE_TITLES:
+            return
+        lines = [l for l in text.splitlines() if l.strip()]
+        if lines:
+            linkish = sum(1 for l in lines if l.lstrip().startswith(("- [", "* [", "[")) or "](" in l)
+            if linkish / len(lines) > 0.6:      # seccion mayormente enlaces -> es un indice
+                return
         tf = Counter(_tokens(title + " " + text))
+        if not tf:
+            return
         self.chunks.append(Chunk(doc=doc, title=title, text=text, tf=tf))
 
     def _build_idf(self) -> None:
@@ -150,7 +167,7 @@ class KnowledgeBase:
         scored = []
         for c in self.chunks:
             s = self._cos(qvec, self._vec(c.tf))
-            name_tokens = set(re.split(r"[-_]", c.doc))
+            name_tokens = set(re.split(r"[-_/]", c.doc))
             hit = q_raw & name_tokens
             if hit:
                 s += 0.12 * len(hit)          # boost por coincidencia con el nombre del doc

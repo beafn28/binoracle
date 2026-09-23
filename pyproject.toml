@@ -43,4 +43,4 @@ where = ["."]
 include = ["binoracle*"]
 
 [tool.setuptools.package-data]
-binoracle = ["kb/*.md"]
+binoracle = ["kb/*.md", "kb/**/*.md", "kb/skills/LICENSE"]

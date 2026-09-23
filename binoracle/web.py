@@ -53,9 +53,10 @@ _KB_CATS = [
     ("Bugs de entrada", ["integer-bugs"]),
     ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding"]),
     ("Concurrencia", ["race-conditions"]),
-    ("Kernel", ["kernel-pwn"]),
+    ("Kernel", ["kernel-pwn", "ebpf"]),
     ("Otras plataformas", ["browser-v8", "windows-exploit", "pe-dll", "macos-macho", "arm-mips"]),
-    ("Reversing", ["anti-debug"]),
+    ("Sistemas y embebido", ["android-native", "firmware-embedded", "vm-escape"]),
+    ("Reversing", ["anti-debug", "go-rust-reversing"]),
     ("Metodologia y referencia", ["mitigations", "pie", "methodology", "tools", "references"]),
 ]
 
@@ -200,6 +201,8 @@ def _kb_library_html(kb) -> str:
     kbdir = Path(__file__).parent / "kb"
     docs = {}
     for c in kb.chunks:
+        if "/" in c.doc:        # los skills importados (kb/skills/**) no van en la biblioteca navegable
+            continue
         docs.setdefault(c.doc, True)
     # orden por categoria
     cat_of = {}
