@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import threading
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass
@@ -141,22 +142,39 @@ class KnowledgeBase:
         self._llm_model = (os.environ.get("BINORACLE_RAG_LLM_MODEL")
                            or os.environ.get("BINORACLE_MODEL") or "qwen2.5-coder:7b")
         self.embed_mode = "off"
-        # Preferencias: env var si esta puesta, si no lo guardado en disco (persistido desde el
-        # toggle de la web), si no off. Asi el estado sobrevive a reinicios.
+        # Prioridad de cada capa: env var explicita > preferencia persistida (toggle web) >
+        # AUTOMATICO. Automatico = si hay modelo local disponible, se enciende semantico +
+        # expansion solos (el mejor retrieval sin que el usuario toque nada); si no, TF-IDF.
+        # Rerank NO es automatico (es la capa mas lenta): solo por toggle/env. Poner
+        # BINORACLE_RAG_AUTO=0 desactiva el automatico (util para entornos deterministas).
         prefs = _load_rag_prefs()
         _full = _truthy(os.environ.get("BINORACLE_RAG_FULL", ""))
+        auto_allowed = os.environ.get("BINORACLE_RAG_AUTO", "1") != "0"
+        self._auto = auto_allowed and self._model_reachable()
 
-        def _flag(env_name, pref_key):
+        def _flag(env_name, pref_key, auto_default):
             v = os.environ.get(env_name)
             if v is not None:
                 return _truthy(v)
-            return _full or bool(prefs.get(pref_key, False))
+            if pref_key in prefs:
+                return bool(prefs[pref_key])
+            return _full or (auto_default and self._auto)
 
-        self._use_expand_llm = _flag("BINORACLE_RAG_EXPAND", "expand")
-        self._use_rerank = _flag("BINORACLE_RAG_RERANK", "rerank")
+        self._use_expand_llm = _flag("BINORACLE_RAG_EXPAND", "expand", auto_default=True)
+        self._use_rerank = _flag("BINORACLE_RAG_RERANK", "rerank", auto_default=False)
         self._expand_cache: dict = {}
-        if _flag("BINORACLE_RAG_EMBED", "embed"):
-            self._init_embeddings()
+        if _flag("BINORACLE_RAG_EMBED", "embed", auto_default=True):
+            # No bloquear el arranque: construir/cargar embeddings en un hilo de fondo. Hasta
+            # que esten listos el retrieval usa TF-IDF; luego pasa a hibrido solo.
+            self.embed_mode = "construyendo..."
+            threading.Thread(target=self._init_embeddings, daemon=True).start()
+
+    def _model_reachable(self) -> bool:
+        try:
+            with urllib.request.urlopen(self._ollama + "/api/tags", timeout=1.5) as r:
+                return r.status == 200
+        except Exception:
+            return False
 
     def status(self) -> str:
         """Resumen del modo del RAG (para doctor/tools)."""
