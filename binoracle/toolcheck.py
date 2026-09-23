@@ -108,6 +108,49 @@ def check_tools() -> list[ToolStatus]:
     st.append(ToolStatus("docker", "exploit", bool(docker), _ver(docker, "--version"),
                          "sandbox aislado (--network none) para ejecutar y VERIFICAR los PoC"))
 
+    # --- decompiladores / analisis profundo ---
+    ghidra = _which("ghidra", "ghidraRun", "analyzeHeadless")
+    st.append(ToolStatus("Ghidra", "static", bool(ghidra), ghidra,
+                         "decompilador (headless con analyzeHeadless para batch)"))
+    st.append(ToolStatus("rizin/cutter", "static", bool(_which("rizin") or _which("cutter")),
+                         _which("rizin") or _which("cutter"),
+                         "fork de radare2 + GUI cutter (decompilador Ghidra integrado)"))
+    st.append(ToolStatus("Detect It Easy", "static", bool(_which("diec") or _which("die")),
+                         _which("diec") or _which("die"),
+                         "identifica compilador/packer/protector (UPX, Themida, VMProtect)"))
+    st.append(ToolStatus("binwalk", "static", bool(_which("binwalk")), _which("binwalk"),
+                         "extraccion de firmware/blobs (carve de imagenes empotradas)"))
+
+    # --- emulacion / instrumentacion dinamica ---
+    st.append(ToolStatus("qemu-user", "dynamic",
+                         bool(_which("qemu-x86_64") or _which("qemu-aarch64") or _which("qemu-mips")),
+                         _which("qemu-x86_64") or _which("qemu-aarch64") or _which("qemu-mips"),
+                         "ejecutar binarios de otra arquitectura (ARM/MIPS) + gdbstub (-g)"))
+    st.append(ToolStatus("unicorn", "dynamic", bool(_pymod("unicorn")), _pymod("unicorn"),
+                         "emulador de CPU multi-arch (emular trozos, resolver flujos)"))
+    st.append(ToolStatus("qiling", "dynamic", bool(_pymod("qiling")), _pymod("qiling"),
+                         "framework de emulacion (syscalls/OS) sobre unicorn"))
+    st.append(ToolStatus("frida", "dynamic", bool(_which("frida") or _pymod("frida")),
+                         _which("frida") or _pymod("frida"),
+                         "instrumentacion dinamica: hooks en runtime (anti-debug, tracing)"))
+    st.append(ToolStatus("valgrind", "dynamic", bool(_which("valgrind")), _which("valgrind"),
+                         "memcheck: detecta UAF, double-free, OOB y leaks en dinamico"))
+
+    # --- exploit / heap / libc ---
+    st.append(ToolStatus("seccomp-tools", "exploit", bool(_which("seccomp-tools")), _which("seccomp-tools"),
+                         "dump del filtro seccomp (que syscalls estan ALLOW/KILL)"))
+    st.append(ToolStatus("pwninit", "exploit", bool(_which("pwninit")), _which("pwninit"),
+                         "parchea el binario con su libc/loader para depurar en local"))
+    st.append(ToolStatus("patchelf", "exploit", bool(_which("patchelf")), _which("patchelf"),
+                         "cambia interprete/RPATH del ELF (usar la libc del reto)"))
+    st.append(ToolStatus("ropr/angrop", "rop", bool(_which("ropr") or _pymod("angrop")),
+                         _which("ropr") or _pymod("angrop"),
+                         "busqueda rapida de gadgets (ropr) y cadenas ROP automaticas (angrop)"))
+
+    # --- fuzzing / simbolico ---
+    st.append(ToolStatus("AFL++", "symbolic", bool(_which("afl-fuzz")), _which("afl-fuzz"),
+                         "fuzzing guiado por cobertura (harness + corpus)"))
+
     return st
 
 
