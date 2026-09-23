@@ -273,6 +273,11 @@ def run_command(payload: dict) -> dict:
         reg = _reg(binary) if binary and os.path.exists(binary) else build_registry(__file__)
         lines = [f"LLM backend: {llm.info()}", ""] + reg.status()
         try:
+            from .rag import get_kb
+            lines += ["", "RAG: " + get_kb().status()]
+        except Exception:
+            pass
+        try:
             from .toolcheck import check_tools, render
             lines += ["", render(check_tools(), lang=config.lang)]
         except Exception:

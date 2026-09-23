@@ -201,10 +201,23 @@ binoracle tools                            # detect the installed binary-pentest
 ```
 
 The `kb` command exposes the same local RAG the model consults during `primitives` and
-`audit`: a set of curated exploitation cheat sheets (ret2win, ROP/ret2syscall, ret2libc,
-format-string, heap/tcache, PIE/leaks, mitigations, methodology, tools) indexed with a
-stdlib TF-IDF retriever. It is grounding for the model's reasoning, never a source of
+`audit`: curated exploitation cheat sheets plus an imported CTF pwn/reverse corpus, indexed
+recursively from `binoracle/kb/`. It is grounding for the model's reasoning, never a source of
 verdicts: the oracles remain the only thing that can promote a finding to `verified`.
+
+Retrieval is hybrid and layered. The core is a dependency-free TF-IDF cosine retriever (always
+on, deterministic). Optional layers use the local model and fall back automatically if it is
+unreachable:
+
+```bash
+export BINORACLE_RAG_EMBED=1     # semantic embeddings (Ollama), cached on disk
+export BINORACLE_EMBED_MODEL=nomic-embed-text   # or any model that supports /api/embed
+export BINORACLE_RAG_EXPAND=1    # LLM query expansion (related technical terms)
+export BINORACLE_RAG_RERANK=1    # LLM reranking of the candidate pool
+export BINORACLE_RAG_FULL=1      # enable all three
+```
+
+`binoracle doctor` (and the web dashboard's Estado) print the active RAG mode.
 
 One-shot manager (give it a `.c` source or a binary, get the full verified report):
 
