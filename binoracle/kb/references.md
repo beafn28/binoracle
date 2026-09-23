@@ -69,6 +69,21 @@ cambian con el tiempo).
 - yo-yo-yo-jbo anti_debugging_intro: https://github.com/yo-yo-yo-jbo/anti_debugging_intro
 - UPX: https://upx.github.io  (upx -d para desempaquetar)
 
+## Exit handlers / race / macOS
+- Abusing exit handlers + pointer mangling (binholic):
+  https://m101.github.io/binholic/2017/05/20/notes-on-abusing-exit-handlers.html
+- nobodyisnobody - code execution on last libc (exit funcs, FSOP):
+  https://github.com/nobodyisnobody/docs/tree/main/code.execution.on.last.libc
+- HackTricks WWW2Exec atexit:
+  https://hacktricks.wiki/en/binary-exploitation/arbitrary-write-2-exec/www2exec-atexit.html
+- userfaultfd + setxattr heap spray (ETenal):
+  https://etenal.me/archives/1336
+- Will's Root - userfaultfd race kernel UAF:
+  https://www.willsroot.io/2020/10/cuctf-2020-hotrod-kernel-writeup.html
+- HackTricks iOS exploiting: https://hacktricks.wiki/en/binary-exploitation/ios-exploiting/index.html
+- Anatomy of a Mach-O (PAC/code signing):
+  https://oliviagallucci.com/the-anatomy-of-a-mach-o-structure-code-signing-and-pac/
+
 ## Practica
 - pwn.college — curso estructurado (ASU), desde asm hasta kernel:
   https://pwn.college
