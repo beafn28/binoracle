@@ -65,7 +65,14 @@ def split_sections(raw, cap=4000):
 
 def main():
     files = [l.strip() for l in open("/tmp/cn_list.txt") if l.strip()]
-    log(f"== traduccion CN->EN: {len(files)} ficheros | modelo {MODEL} ==")
+    # Sharding para varios workers en paralelo: cada worker procesa un subconjunto disjunto.
+    shard_i = int(os.environ.get("SHARD_I", "0"))
+    shard_n = int(os.environ.get("SHARD_N", "1"))
+    if shard_n > 1:
+        files = [f for k, f in enumerate(files) if k % shard_n == shard_i]
+        log(f"== worker {shard_i}/{shard_n}: {len(files)} ficheros | modelo {MODEL} ==")
+    else:
+        log(f"== traduccion CN->EN: {len(files)} ficheros | modelo {MODEL} ==")
     done = 0
     for i, src in enumerate(files, 1):
         rel = os.path.relpath(src, SRC_ROOT)

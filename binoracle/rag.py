@@ -44,8 +44,15 @@ def _http_post_json(url: str, payload: dict, timeout: float = 120.0) -> dict:
         return json.loads(r.read().decode())
 
 
+def _cache_dir() -> Path:
+    """Directorio de cache (prefs + embeddings). Configurable con BINORACLE_CACHE_DIR
+    (util para tests hermeticos)."""
+    d = os.environ.get("BINORACLE_CACHE_DIR")
+    return Path(d) if d else (Path.home() / ".cache" / "binoracle")
+
+
 def _rag_prefs_path() -> Path:
-    return Path.home() / ".cache" / "binoracle" / "rag_prefs.json"
+    return _cache_dir() / "rag_prefs.json"
 
 
 def _load_rag_prefs() -> dict:
@@ -300,7 +307,7 @@ class KnowledgeBase:
             key = hashlib.sha256(
                 (self._embed_model + "\x00" + "\x00".join(payloads)).encode()
             ).hexdigest()[:16]
-            cache = Path.home() / ".cache" / "binoracle" / f"emb_{key}.json"
+            cache = _cache_dir() / f"emb_{key}.json"
             if cache.exists():
                 vecs = json.loads(cache.read_text())
                 if isinstance(vecs, list) and len(vecs) == len(self.chunks):
