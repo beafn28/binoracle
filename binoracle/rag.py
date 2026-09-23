@@ -277,7 +277,13 @@ class KnowledgeBase:
     def _add(self, doc: str, title: str, text: str) -> None:
         # Descarta secciones de indice/navegacion (TOC, listas de enlaces) que solo meten ruido.
         t = title.strip().lower().lstrip("# ")
-        if t in self._NOISE_TITLES:
+        if t in self._NOISE_TITLES or t.startswith("---"):   # TOC o frontmatter YAML
+            return
+        body = f"{title}\n{text}"
+        # Descarta contenido dominado por CJK (chino): binoracle trabaja en ES/EN y ese texto
+        # solo mete ruido en el retrieval.
+        cjk = sum(1 for ch in body if "一" <= ch <= "鿿")
+        if cjk / max(len(body), 1) > 0.05:
             return
         lines = [l for l in text.splitlines() if l.strip()]
         if lines:
@@ -396,6 +402,24 @@ def get_kb() -> KnowledgeBase:
     if _CACHE is None:
         _CACHE = KnowledgeBase()
     return _CACHE
+
+
+def configure(embed=None, expand=None, rerank=None) -> str:
+    """Reconfigura el RAG en caliente (desde la web, sin reiniciar). Cada flag None se deja
+    igual. Al activar embeddings, carga de cache (instantaneo) o los construye. Devuelve el
+    status resultante."""
+    kb = get_kb()
+    if expand is not None:
+        kb._use_expand_llm = bool(expand)
+    if rerank is not None:
+        kb._use_rerank = bool(rerank)
+    if embed is not None:
+        if embed and kb.embeds is None:
+            kb._init_embeddings()          # carga cache o construye
+        elif not embed:
+            kb.embeds = None
+            kb.embed_mode = "off"
+    return kb.status()
 
 
 def query_from_facts(facts: dict) -> str:

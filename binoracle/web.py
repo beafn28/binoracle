@@ -292,6 +292,24 @@ def run_command(payload: dict) -> dict:
         from .rag import get_kb
         return {"ok": True, "html": _kb_library_html(get_kb()), "kind": "library"}
 
+    if cmd == "rag":
+        from .rag import get_kb, configure
+        if any(k in opts for k in ("embed", "expand", "rerank")):
+            def _b(v):
+                return None if v is None else (str(v).lower() in ("1", "true", "on", "yes"))
+            status = configure(embed=_b(opts.get("embed")), expand=_b(opts.get("expand")),
+                               rerank=_b(opts.get("rerank")))
+        else:
+            status = get_kb().status()
+        kb = get_kb()
+        return {"ok": True, "rag": {
+            "status": status,
+            "embed": kb.embeds is not None,
+            "expand": kb._use_expand_llm,
+            "rerank": kb._use_rerank,
+            "embed_mode": kb.embed_mode,
+        }}
+
     if cmd == "cyclic":
         reg = build_registry(__file__)
         if opts.get("find"):
@@ -779,6 +797,12 @@ header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:
 #target{flex:1;background:none;border:none;color:var(--fg);padding:9px 0;font-family:ui-monospace,monospace;outline:none}
 .aitoggle{display:flex;align-items:center;gap:6px;color:var(--mut);font:12px ui-monospace,monospace;padding:0 6px;user-select:none}
 .aitoggle input{accent-color:var(--acc)}
+.ragpop{position:absolute;top:52px;right:14px;z-index:50;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.25);width:288px}
+.ragpop .rt{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin-bottom:10px}
+.ragpop label{display:flex;align-items:center;gap:8px;font-size:13px;padding:5px 0;cursor:pointer}
+.ragpop label input{accent-color:var(--acc)}
+.ragpop .rst{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font:11px ui-monospace,Menlo,monospace;color:var(--acc);word-break:break-word}
+.ragpop .rhint{margin-top:8px;font-size:11px;color:var(--mut);line-height:1.4}
 .go{background:linear-gradient(135deg,var(--acc),#1fbf8a);color:#04120c;border:none;border-radius:9px;padding:9px 16px;font-weight:700;cursor:pointer}
 .go:hover{filter:brightness(1.08)}
 .icon-btn{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
@@ -881,8 +905,16 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
   <div class="brand">binoracle</div>
   <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario  o  fuente.c" spellcheck="false"></div>
   <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
-  <input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
+  <input type="file" id="file" style="display:none"><button class="icon-btn" id="ragbtn" title="RAG: busqueda del conocimiento">RAG</button><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
+<div id="ragpop" class="ragpop" style="display:none">
+  <div class="rt">Retrieval del conocimiento</div>
+  <label><input type="checkbox" id="rag_embed"> Semantico (embeddings)</label>
+  <label><input type="checkbox" id="rag_expand"> Expandir consulta (IA)</label>
+  <label><input type="checkbox" id="rag_rerank"> Rerank de candidatos (IA)</label>
+  <div id="ragstatus" class="rst">TF-IDF (base)</div>
+  <div class="rhint">Usan el modelo local. La 1a vez que activas semantico construye los embeddings (se cachea).</div>
+</div>
 <main>
   <nav class="side" id="side"></nav>
   <section class="work">
@@ -1031,6 +1063,26 @@ async function loadHistory(){var out=document.getElementById('out');out.innerHTM
   card.appendChild(row);});
  out.appendChild(card);}
 function toggleTheme(){const r=document.documentElement;r.setAttribute('data-theme',r.getAttribute('data-theme')==='light'?'dark':'light');}
+async function applyRag(setk){
+ var st=document.getElementById('ragstatus'); if(st) st.textContent='aplicando...';
+ var o={}; if(setk){o[setk]=document.getElementById('rag_'+setk).checked?1:0;}
+ try{
+  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'rag',binary:'',options:o})});
+  var j=await r.json();
+  if(j.rag){document.getElementById('rag_embed').checked=j.rag.embed;
+   document.getElementById('rag_expand').checked=j.rag.expand;
+   document.getElementById('rag_rerank').checked=j.rag.rerank;
+   if(st) st.textContent=j.rag.status;}
+ }catch(e){ if(st) st.textContent='error'; }
+}
+(function(){
+ var btn=document.getElementById('ragbtn'), pop=document.getElementById('ragpop');
+ if(btn&&pop){
+  btn.onclick=function(){var vis=pop.style.display!=='none';pop.style.display=vis?'none':'block';if(!vis)applyRag();};
+  ['embed','expand','rerank'].forEach(function(k){var el=document.getElementById('rag_'+k);if(el)el.addEventListener('change',function(){applyRag(k);});});
+  document.addEventListener('click',function(e){if(pop.style.display!=='none'&&!pop.contains(e.target)&&e.target!==btn)pop.style.display='none';});
+ }
+})();
 async function loadStatus(){try{const j=await api('doctor','');const f=document.getElementById('footer');const lines=(j.text||'').split('\n');
  const pills=lines.filter(l=>l.includes('[ok]')||l.includes('[--]')).map(l=>{const on=l.includes('[ok]');const name=l.replace(/\[..\]/,'').split(':')[0].trim();return '<span class="pill '+(on?'on':'off')+'">'+name+'</span>';});
  const llm=(lines.find(l=>l.startsWith('LLM'))||'').replace('LLM backend:','LLM:').trim();
