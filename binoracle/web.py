@@ -899,7 +899,8 @@ let current=null; var activeES=null;
 function closeStream(){if(activeES){try{activeES.close();}catch(e){} activeES=null;}}
 function select(it,btn){closeStream();current=it;[...side.querySelectorAll('button')].forEach(x=>x.classList.remove('active'));btn.classList.add('active');
  const opts=document.getElementById('opts');opts.innerHTML='';
- if(it.c==='kb'){exec('kb',{});return;}   // la biblioteca ocupa toda el area, sin barra de accion
+ const out=document.getElementById('out');out.innerHTML='';   // limpia el panel al instante (no arrastrar la opcion anterior)
+ if(it.c==='kb'||it.c==='doctor'){exec(it.c,{});return;}   // opciones baratas: se cargan solas, sin barra
  if(it.d){const dd=document.createElement('div');dd.className='cmddesc';dd.textContent=it.d;opts.appendChild(dd);}
  (it.opts||[]).forEach(o=>{const f=document.createElement('div');f.className='f';const lab=document.createElement('label');lab.textContent=o.label;let el;
   if(o.t==='sel'){el=document.createElement('select');o.vals.forEach(v=>{const op=document.createElement('option');op.value=v;op.textContent=v;el.appendChild(op);});}
@@ -907,6 +908,8 @@ function select(it,btn){closeStream();current=it;[...side.querySelectorAll('butt
   else{el=document.createElement('input');el.type='text';if(o.def)el.value=o.def;}
   el.id='opt_'+o.k; if(o.t==='check'){f.appendChild(el);f.appendChild(lab);}else{f.appendChild(lab);f.appendChild(el);} opts.appendChild(f);});
  const run=document.createElement('button');run.className='run';run.textContent='Ejecutar';run.onclick=()=>exec(it.c,collect());opts.appendChild(run);
+ const bin=document.getElementById('target').value.trim();
+ out.innerHTML='<div class="empty"><div>'+ (it.n) +': pulsa <b>Ejecutar</b>'+(it.nobin?'':(bin?' para '+bin.split('/').pop():' tras poner la ruta del binario arriba'))+'</div></div>';
 }
 function downloadReport(html){
  var name='informe_'+((document.getElementById('target').value.trim().split('/').pop())||'binario')+'.html';
