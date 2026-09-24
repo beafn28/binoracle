@@ -134,7 +134,60 @@ def scan_file_perms(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fi
             "uses rutas /tmp fijas ni sigas symlinks (O_NOFOLLOW).",
             "Create temp files with mkstemp(3) (unpredictable name + O_EXCL) and 0600 perms; do not "
             "use fixed /tmp paths and do not follow symlinks (O_NOFOLLOW).", lang))
+
+    # (c) RPATH/RUNPATH inseguro -> secuestro de libreria (carga un .so desde ruta controlable)
+    for tag, rp in _rpaths(binary):
+        insecure = [p for p in rp.split(":") if p and (not p.startswith("/") or p.startswith("."))]
+        if insecure:
+            findings.append(_f(
+                f"{tag} inseguro (secuestro de libreria)", f"Insecure {tag} (library hijacking)", "high",
+                f"[dynamic]\n{tag}: {rp}",
+                f"El {tag} incluye rutas relativas/no absolutas ({', '.join(insecure)}): el loader "
+                "puede cargar una libreria maliciosa desde un directorio que controle el atacante.",
+                f"The {tag} includes relative/non-absolute paths ({', '.join(insecure)}): the loader "
+                "may load a malicious library from an attacker-controlled directory.",
+                "Usa rutas absolutas y de confianza en RPATH/RUNPATH (o elimínalos); no uses rutas "
+                "relativas ni directorios escribibles.",
+                "Use absolute, trusted RPATH/RUNPATH paths (or drop them); no relative paths or "
+                "writable directories.", lang))
+
+    # (d) inyeccion por entorno: getenv cuyo valor llega a system/exec
+    if "getenv" in low_imp and any(x in low_imp for x in ("system", "popen", "execl", "execlp", "execvp")):
+        findings.append(_f(
+            "Posible inyeccion de comando via variable de entorno",
+            "Possible command injection via environment variable", "medium",
+            "[radare2: ii]\ngetenv + system/exec",
+            "El binario lee variables de entorno (getenv) y ejecuta comandos (system/exec): si el "
+            "valor del entorno llega al comando sin sanear, es inyeccion (especialmente peligroso "
+            "si el binario es SUID).",
+            "The binary reads environment variables (getenv) and executes commands (system/exec): "
+            "if the env value reaches the command unsanitized, it is injection (especially "
+            "dangerous if the binary is SUID).",
+            "No pases entrada del entorno a system/exec; usa execve con argv fijo y una lista de "
+            "argumentos, valida/escapa, y limpia el entorno en binarios privilegiados.",
+            "Do not pass environment input to system/exec; use execve with a fixed argv list, "
+            "validate/escape, and sanitize the environment in privileged binaries.", lang))
     return findings
+
+
+def _rpaths(binary: str):
+    """Devuelve [(RPATH|RUNPATH, valor)] leidos del .dynamic con pyelftools (best-effort)."""
+    out = []
+    try:
+        from elftools.elf.elffile import ELFFile
+        from elftools.elf.dynamic import DynamicSection
+        with open(binary, "rb") as fh:
+            elf = ELFFile(fh)
+            for sec in elf.iter_sections():
+                if isinstance(sec, DynamicSection):
+                    for tag in sec.iter_tags():
+                        if tag.entry.d_tag == "DT_RPATH":
+                            out.append(("RPATH", tag.rpath))
+                        elif tag.entry.d_tag == "DT_RUNPATH":
+                            out.append(("RUNPATH", tag.runpath))
+    except Exception:
+        pass
+    return out
 
 
 def _re_tmp(text: str):

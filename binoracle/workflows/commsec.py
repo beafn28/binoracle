@@ -108,4 +108,20 @@ def scan_comms(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[Fi
                 "SHA-256+ para hash, y firma (Ed25519/RSA-PSS) para autenticidad.",
                 "Use modern primitives: AES-GCM/ChaCha20-Poly1305 for authenticated encryption, "
                 "SHA-256+ for hashing, and signatures (Ed25519/RSA-PSS) for authenticity.", lang))
+
+    # 4) PRNG inseguro para uso de seguridad (rand/srand/random no son criptograficos)
+    if re.search(r"\bsym\.imp\.(rand|srand|random|srandom|rand_r|drand48)\b", imports) and \
+       not re.search(r"getrandom|RAND_bytes|arc4random|/dev/urandom", blob, re.I):
+        mm = re.search(r"\b(rand|srand|random|srandom|rand_r|drand48)\b", imports)
+        findings.append(_f(
+            "Generador de aleatorios inseguro (PRNG no criptografico)",
+            "Insecure randomness (non-cryptographic PRNG)", "medium",
+            f"[radare2: ii]\n{mm.group(0) if mm else 'rand/srand'}",
+            "El binario usa rand()/random() (PRNG predecible). Si se usa para tokens, claves, IVs, "
+            "nonces o IDs de sesion, un atacante puede predecirlos.",
+            "The binary uses rand()/random() (predictable PRNG). If used for tokens, keys, IVs, "
+            "nonces or session IDs, an attacker can predict them.",
+            "Para uso de seguridad usa un CSPRNG: getrandom(2), /dev/urandom, RAND_bytes o "
+            "arc4random.",
+            "For security use a CSPRNG: getrandom(2), /dev/urandom, RAND_bytes or arc4random.", lang))
     return findings
