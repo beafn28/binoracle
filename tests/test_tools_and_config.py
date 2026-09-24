@@ -44,6 +44,27 @@ def test_rag_excludes_readme_manifests():
     assert "README" not in kb.sources_summary()
 
 
+def test_rag_index_has_no_duplicate_chunks():
+    # El mismo tema aparece en varios corpus importados; el dedup exacto en _add debe evitar
+    # que un chunk identico gaste un slot del top-k con contenido repetido.
+    import collections
+    kb = get_kb()
+    seen = collections.Counter((c.title.strip(), c.text.strip()) for c in kb.chunks)
+    dups = [t for (t, _), n in seen.items() if n > 1]
+    assert not dups, f"chunks duplicados exactos en el indice: {dups[:5]}"
+
+
+def test_rag_index_has_no_cjk_noise():
+    # binoracle trabaja en ES/EN: ningun chunk debe quedar dominado por CJK (traducciones
+    # parciales que dejaron titulos/terminos en chino).
+    import re
+    cjk = re.compile(r"[一-鿿]")
+    kb = get_kb()
+    noisy = [c.doc for c in kb.chunks
+             if len(cjk.findall(c.title + c.text)) / max(len(c.title + c.text), 1) > 0.02]
+    assert not noisy, f"chunks con CJK residual >2%: {noisy[:5]}"
+
+
 def test_web_rag_command():
     from binoracle.web import run_command
     r = run_command({"command": "rag", "options": {"expand": 1}})
