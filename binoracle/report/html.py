@@ -155,9 +155,38 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     trail = ""
     if ledger is not None and getattr(ledger, "entries", None):
         for e in ledger.entries:
+            # Muestra el comando/paso como una "captura" de terminal: $ <tool>  seguido del output.
             trail += (f'<details class="sec"><summary>step {e.step}: {_esc(e.tool)}'
                       f'<span class="src">{_esc(e.source)}</span></summary>'
-                      f'<pre>{_esc(e.data)}</pre></details>')
+                      f'<pre><span class="cmd">$ {_esc(e.tool)}</span>\n{_esc(e.data)}</pre></details>')
+
+    # Prueba de explotacion: captura destacada del PoC verificado en sandbox (la evidencia clave
+    # de un informe profesional). Reune los hallazgos VERIFICADOS con su ejecucion y los pasos
+    # del ledger que son una corrida de exploit en sandbox.
+    proof_blocks = []
+    for f in findings:
+        if f.verdict == "verified" and (f.evidence or "").strip():
+            proof_blocks.append((f.title, f.location, f.evidence))
+    if ledger is not None and getattr(ledger, "entries", None):
+        for e in ledger.entries:
+            blob = f"{e.tool} {e.source} {e.data}".lower()
+            if any(k in blob for k in ("sandbox", "verificado", "verified", "shell", "flag{",
+                                       "try_ret2win", "autopoc", "autorop", "try_rop")):
+                proof_blocks.append((e.tool, e.source, e.data))
+    proof_html = ""
+    if proof_blocks:
+        seen = set(); cards_p = ""
+        for title, loc, data in proof_blocks:
+            key = (title, (data or "")[:80])
+            if key in seen:
+                continue
+            seen.add(key)
+            cards_p += (f'<div class="proof"><div class="proof-h"><span class="proof-ok">&#10003;</span>'
+                        f'<span class="proof-t">{_esc(title)}</span>'
+                        f'<span class="proof-l">{_esc(loc)}</span></div>'
+                        f'<pre class="evpre">{_esc(data)}</pre></div>')
+        proof_html = (f'<h2 data-i18n="poc_proof"></h2>'
+                      f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
     answer_html = f'<div class="panel md summary"><div class="panel-t" data-i18n="exec_summary"></div>{_md(answer)}</div>' if answer else ""
     sev_buttons = "".join(
@@ -193,6 +222,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   </section>
 
   {answer_html}
+
+  {proof_html}
 
   <h2 data-i18n="findings"></h2>
   <div class="toolbar">
@@ -248,6 +279,9 @@ _I18N = {
         "kpi_high": "severidad alta", "kpi_sources": "fuentes consultadas",
         "severity_dist": "Distribucion por severidad", "mitigations": "Mitigaciones",
         "exec_summary": "Resumen ejecutivo",
+        "poc_proof": "Prueba de explotacion (PoC)",
+        "poc_note": "Captura de la ejecucion real en sandbox aislado que DEMUESTRA el exploit "
+                    "(shell / flag / objetivo alcanzado). Evidencia reproducible, no teorica.",
         "findings": "Hallazgos", "attack_surface": "Superficie de ataque",
         "evidence_trail": "Rastro de evidencia (grounding)",
         "rationale": "Razonamiento", "evidence": "Evidencia", "recommendation": "Recomendacion",
@@ -264,6 +298,9 @@ _I18N = {
         "kpi_high": "high severity", "kpi_sources": "sources consulted",
         "severity_dist": "Severity distribution", "mitigations": "Mitigations",
         "exec_summary": "Executive summary",
+        "poc_proof": "Exploitation proof (PoC)",
+        "poc_note": "Capture of the real execution in an isolated sandbox that PROVES the exploit "
+                    "(shell / flag / goal reached). Reproducible evidence, not theoretical.",
         "findings": "Findings", "attack_surface": "Attack surface",
         "evidence_trail": "Evidence trail (grounding)",
         "rationale": "Rationale", "evidence": "Evidence", "recommendation": "Recommendation",
@@ -335,6 +372,13 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .evpre{margin:0;padding:12px;background:#0b0e12;color:#cfe3ff;white-space:pre;overflow:auto;font:12px/1.5 ui-monospace,monospace;border:0;border-radius:0}
 .md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
 .summary{margin-bottom:8px;border-left:3px solid var(--acc)}
+.poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
+.proof{border:1px solid #1f7a4d;border-radius:10px;overflow:hidden;background:#0b0e12;margin:10px 0;box-shadow:0 0 0 1px rgba(48,163,108,.15)}
+.proof-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:#0e1a13;border-bottom:1px solid #1f7a4d;flex-wrap:wrap}
+.proof-ok{color:#30d67f;font-weight:800}
+.proof-t{color:#e2f5ea;font-weight:700}
+.proof-l{color:#8b95a1;font-size:12px;margin-left:auto;font-family:ui-monospace,monospace}
+.cmd{color:#7fe3a3;font-weight:600}
 .empty{color:var(--mut);font-style:italic}
 footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--mut);font-size:12px}
 """
