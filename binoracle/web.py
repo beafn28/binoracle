@@ -53,7 +53,7 @@ _KB_CATS = [
     ("Bugs de entrada", ["integer-bugs"]),
     ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding"]),
     ("Concurrencia", ["race-conditions"]),
-    ("Kernel", ["kernel-pwn", "ebpf"]),
+    ("Kernel", ["kernel-pwn", "kernel-mitigations", "ebpf"]),
     ("Otras plataformas", ["browser-v8", "windows-exploit", "pe-dll", "macos-macho", "arm-mips"]),
     ("Sistemas y embebido", ["android-native", "firmware-embedded", "vm-escape"]),
     ("Reversing", ["anti-debug", "go-rust-reversing", "ghidra-rpc"]),
