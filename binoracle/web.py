@@ -630,6 +630,15 @@ def run_streaming(command, binary, ai, emit):
             hunt = run_hunt(reg, binary, llm=None, config=config, store=store, lang=config.lang)
             findings, _ = auto_verify(reg, hunt.findings, store=store,
                                       on_step=lambda m: emit("step", m))
+            try:
+                from .workflows.secrets import scan_secrets
+                emit("step", "buscando credenciales/secretos hardcodeados...")
+                sfind = scan_secrets(reg, binary, lang=config.lang)
+                for sf in sfind:
+                    store.add_finding(sf)
+                findings = findings + sfind
+            except Exception:
+                pass
             answer = hunt.answer
             if command == "dashboard":
                 cs = reg.get("r2_checksec").run(); m = cs.meta if cs.ok else {}

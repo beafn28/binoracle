@@ -34,6 +34,30 @@ def test_rag_status_string():
     assert "TF-IDF" in s and "chunks" in s
 
 
+def test_secrets_scanner():
+    # El scanner de credenciales detecta patrones reales y no dispara con placeholders.
+    from binoracle.workflows.secrets import scan_secrets
+    from binoracle.oracles.base import ToolResult
+
+    class _Tool:
+        def run(self):
+            return ToolResult(True, "radare2: izz",
+                              "AKIAIOSFODNN7EXAMPLE\npassword=SuperSecret123\n"
+                              "password=changeme\napi_key=your_key_here")
+
+    class _Reg:
+        def get(self, name):
+            return _Tool() if name == "r2_strings" else None
+
+    fs = scan_secrets(_Reg(), "x")
+    titles = " ".join(f.title.lower() for f in fs)
+    assert any("aws" in t.lower() for t in [f.title for f in fs]), "no detecto la AWS key"
+    assert any("credencial" in f.title.lower() for f in fs), "no detecto la password real"
+    # placeholders (changeme / your_key_here) NO deben generar hallazgo
+    joined = " ".join(f.evidence for f in fs)
+    assert "changeme" not in joined and "your_key_here" not in joined
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
