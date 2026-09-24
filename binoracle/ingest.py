@@ -32,12 +32,24 @@ _DROP_SUBSTR = (
     "llm-agent", "mass-assignment", "browser-env", "browser-runtime", "hybrid-webview",
     "airline", "ecommerce", "finance-market", "government-procurement", "hotel-travel",
     "logistics-query", "media-streaming", "mobile-pentest", "proxy-traffic",
+    # Active Directory / Windows-identidad / red interna (no binario):
+    "kerberos", "ad-certificate", "certificate-abuse", "relay-coercion", "credential-pivot",
+    "credential-chain", "dpapi", "identity-windows", "windows-pivot", "mailbox", "ntlm-relay",
+    # cloud / k8s / contenedores / supply-chain / colas (no binario):
+    "k8s", "kubernetes", "control-plane", "container-runtime", "agent-cloud", "supply-chain",
+    "queue-worker", "cloud-metadata",
+    # web / smuggling / render / forense / stego (no binario):
+    "smuggling", "template-render", "normalization", "forensic", "stego", "mailbox-abuse",
+    # andamiaje / doc-tooling / web-bundling (no conocimiento de reversing):
+    "router-matrix", "src-hunter", "sourcemap", "diagram-generator", "docs-generator",
+    "api-security",
 )
 # Basenames que nunca son conocimiento (manifiestos/plantillas/indices/meta de repo).
 _DROP_BASENAME = {
     "readme", "index", "_index", "_template", "contribute-back", "tool-index",
     "agents", "claude", "changelog", "contributing", "git_commit_checklist",
     "task-artifacts", "task-input-template", "mcp-task-template",
+    "rules", "routing", "router-matrix", "reporting", "master-routing",
 }
 # SKILL.md es ambiguo: unas veces es un ROUTER (fuera) y otras el propio modulo de
 # conocimiento (se queda). Se distingue por contenido: un router da ordenes de orquestacion.
