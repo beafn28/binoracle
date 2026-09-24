@@ -36,11 +36,12 @@ def gen(prompt, timeout=300):
 
 
 def translate_block(text):
-    prompt = ("Translate the following binary reverse-engineering / CTF technique note from "
-              "Chinese to English. Keep ALL code, shell commands, hex, addresses, tool names "
-              "and technical terms verbatim; translate only the prose. Keep the Markdown "
-              "structure (headings, lists, code fences). Output ONLY the translated Markdown, "
-              "no preamble.\n\n" + text)
+    prompt = ("You are a professional Chinese-to-English translator for binary reverse-"
+              "engineering / CTF notes. Translate EVERYTHING below from Chinese to English, "
+              "INCLUDING all Markdown headings and list items. Every Chinese character must "
+              "become English; do not leave any Chinese character in the output. Keep code, "
+              "shell commands, hex, addresses, tool names and paths verbatim. Preserve the "
+              "Markdown structure. Output ONLY the translated Markdown, no preamble.\n\n" + text)
     for attempt in range(2):
         try:
             out = gen(prompt)
