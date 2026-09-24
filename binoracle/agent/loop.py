@@ -63,12 +63,14 @@ class AgentLoop:
         ]
         seen: dict = {}          # signature -> cached observation
         dup_total = 0            # total duplicate tool calls
+        malformed = 0            # replies en fila sin una accion parseable
         forced = False
         budget = self.config.max_steps
 
         for step in range(1, budget + 1):
-            # If we are on the last step, or the model keeps repeating, force a final answer.
-            if not forced and (step == budget or dup_total >= 3):
+            # If we are on the last step, or the model keeps repeating or emitting junk, force
+            # a final answer (no quemar el presupuesto haciendo nudge sin fin).
+            if not forced and (step == budget or dup_total >= 3 or malformed >= 3):
                 messages.append(Message(
                     "user",
                     "STOP investigating. You have enough tool results. Emit action=final NOW "
@@ -81,14 +83,17 @@ class AgentLoop:
             action = extract_action(reply)
 
             if action is None:
+                malformed += 1
                 messages.append(Message("assistant", reply))
                 messages.append(Message(
                     "user",
-                    "That was not a single valid JSON action. Reply with ONE JSON object only.",
+                    "That was not a single valid JSON action. Reply with ONE JSON object only, "
+                    'like {"action":"tool","tool":"r2_checksec","args":{}}. No text outside it.',
                 ))
                 self.on_step(step, {"action": "malformed"})
                 continue
 
+            malformed = 0            # una accion valida rompe la racha de malformados
             self.on_step(step, action)
 
             if action.get("action") == "final":

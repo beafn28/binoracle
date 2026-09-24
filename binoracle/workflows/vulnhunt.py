@@ -43,21 +43,35 @@ def _heuristic_hunt(registry: ToolRegistry, store=None, lang: str = "es") -> Age
             mitig_txt = mres.data
             ledger.record(0, "elf_mitigations", mres.source, mres.data)
 
+    # Si existe una funcion gift (win/backdoor) que ya da shell, los sinks de ejecucion
+    # (system/execve) son el gadget/objetivo del exploit, no una vulnerabilidad a reportar.
+    has_gift = False
+    win_tool = registry.get("r2_win")
+    if win_tool:
+        wres = win_tool.run()
+        if wres.ok and (wres.meta.get("win_funcs", 0) > 0 or "/bin/sh" in (wres.data or "")):
+            has_gift = True
+            ledger.record(2, "r2_win", wres.source, wres.data)
+
     if sinks_tool:
         sres = sinks_tool.run()
         if sres.ok:
             ledger.record(1, "r2_sinks", sres.source, sres.data)
             for sink in sres.meta.get("sinks", []):
-                sev = _severity_for(sink, mitig_txt)
+                sl = _slice_for(sres.data, sink)
+                sev, kind = _classify_sink(sink, mitig_txt, sl, has_gift)
+                if kind is None:
+                    continue           # no aporta como hallazgo (ruido), se omite
+                tk = T[kind]
                 f = Finding(
-                    title=T["title"].format(sink=sink),
+                    title=tk["title"].format(sink=sink),
                     severity=sev,
                     verdict="grounded",  # static evidence, reachability not proven
-                    evidence=f"[{sres.source}]\n{_slice_for(sres.data, sink)}",
+                    evidence=f"[{sres.source}]\n{sl}",
                     location=T["loc"].format(sink=sink),
-                    rationale=T["rationale"].format(sink=sink, mit=mitig_txt or T["unknown"],
-                                                    desc=_SINK_DESC.get(lang, {}).get(sink, "")),
-                    recommendation=T["reco"],
+                    rationale=tk["rationale"].format(sink=sink, mit=mitig_txt or T["unknown"],
+                                                     desc=_SINK_DESC.get(lang, {}).get(sink, "")),
+                    recommendation=tk["reco"],
                 )
                 if store:
                     store.add_finding(f)
@@ -67,14 +81,35 @@ def _heuristic_hunt(registry: ToolRegistry, store=None, lang: str = "es") -> Age
     return AgentResult(ledger.annotate(answer), findings, ledger, 1, "heuristic")
 
 
-def _severity_for(sink: str, mitig: str) -> str:
-    high = {"system", "execve", "gets", "strcpy", "sprintf", "popen"}
-    if sink in high:
-        # no canary makes classic overflows worse
-        if "canary: false" in mitig.lower() or "canary:false" in mitig.lower():
-            return "high"
-        return "medium"
-    return "low"
+# Sinks que SON superficie de corrupcion de memoria (el bug de verdad esta aqui).
+_OVERFLOW_SINKS = {"gets", "scanf", "sscanf", "fscanf", "strcpy", "strncpy", "strcat", "strncat",
+                   "sprintf", "vsprintf", "read", "fread", "recv", "memcpy", "memmove"}
+# Sinks de EJECUCION: en un reto suelen ser el OBJETIVO/gadget (system("/bin/sh")), no el bug.
+_EXEC_SINKS = {"system", "execve", "execl", "execlp", "execvp", "popen"}
+# Sinks de FORMATO: solo son bug si el formato lo controla el usuario.
+_FMT_SINKS = {"printf", "fprintf", "snprintf", "vprintf", "vfprintf", "syslog"}
+
+
+def _classify_sink(sink: str, mitig: str, sl: str, has_gift: bool = False):
+    """Devuelve (severidad, kind) o (None, None) si no merece ser un hallazgo (ruido).
+
+    Evita el falso positivo clasico de 'usa X -> FINDING': un sink de ejecucion con argumento
+    constante (p.ej. system("/bin/sh")) o cuando existe una funcion gift es un gadget/objetivo,
+    NO una vulnerabilidad; se degrada a informativo. La superficie real de bug son los overflow."""
+    no_canary = "canary: false" in mitig.lower() or "canary:false" in mitig.lower()
+    if sink in _OVERFLOW_SINKS:
+        if sink == "gets":
+            return "high", "overflow"            # desbordamiento inevitable
+        return ("high" if no_canary else "medium"), "overflow"
+    if sink in _EXEC_SINKS:
+        const_arg = has_gift or any(x in sl.lower() for x in
+                                    ("/bin/sh", "bin_sh", "/bin/", "str.", "sh\";", "cat flag",
+                                     "\"sh\"", "'sh'"))
+        # arg constante o hay gift -> gadget/objetivo, no bug: informativo. Si no, posible RCE.
+        return ("info", "exec_const") if const_arg else ("medium", "exec_var")
+    if sink in _FMT_SINKS:
+        return "low", "fmt"                       # solo bug si el formato es controlable
+    return "low", "other"
 
 
 def _slice_for(text: str, sink: str) -> str:
@@ -86,31 +121,77 @@ def _slice_for(text: str, sink: str) -> str:
     return text[idx:end if end != -1 else idx + 800]
 
 
+_RECO_ES = ("Rastrea la entrada controlada por el atacante hasta esta llamada; verifica la "
+            "reachability con angr_reachable o un PoC con dbg_run_input antes de tratarlo como "
+            "explotable.")
+_RECO_EN = ("Trace attacker-controlled input into this call; verify reachability with "
+            "angr_reachable or a dbg_run_input PoC before treating it as exploitable.")
+
 _STR = {
     "es": {
-        "title": "Uso de funcion peligrosa '{sink}'",
         "loc": "llamadas a sym.imp.{sink}",
-        "rationale": ("'{sink}' es un sink peligroso presente en el binario. {desc}\n\n"
-                      "Mitigaciones observadas:\n{mit}"),
-        "reco": ("Rastrea la entrada controlada por el atacante hasta esta llamada; verifica "
-                 "la reachability con angr_reachable o un PoC con dbg_run_input antes de "
-                 "tratarlo como explotable."),
+        "unknown": "(desconocidas)",
         "answer": ("Analisis heuristico (sin modelo): los candidatos de abajo estan respaldados "
                    "estaticamente (grounded) pero su reachability NO esta probada. Levanta un "
                    "modelo local o ejecuta angr/debugger para promoverlos a verified. [src: r2_sinks]"),
-        "unknown": "(desconocidas)",
+        "overflow": {
+            "title": "Posible desbordamiento via '{sink}'",
+            "rationale": ("'{sink}' escribe en un buffer sin garantizar el tamano: superficie de "
+                          "desbordamiento de memoria. {desc}\n\nMitigaciones observadas:\n{mit}"),
+            "reco": _RECO_ES},
+        "exec_const": {
+            "title": "Sink de ejecucion '{sink}' con argumento constante",
+            "rationale": ("'{sink}' se llama con un argumento CONSTANTE (p.ej. \"/bin/sh\"): es un "
+                          "gadget/objetivo de explotacion (ret2*), NO una vulnerabilidad por si "
+                          "mismo. {desc}\n\nMitigaciones observadas:\n{mit}"),
+            "reco": "Util como destino de un exploit (ret2win/ret2system); no es un bug a reportar."},
+        "exec_var": {
+            "title": "Posible command injection via '{sink}'",
+            "rationale": ("'{sink}' ejecuta con un argumento que NO parece constante: si incluye "
+                          "entrada del usuario, es command injection / RCE. {desc}\n\n"
+                          "Mitigaciones observadas:\n{mit}"),
+            "reco": _RECO_ES},
+        "fmt": {
+            "title": "Posible format string en '{sink}'",
+            "rationale": ("'{sink}' es un format string SOLO si el formato lo controla el usuario "
+                          "(fuga con %p, escritura con %n). {desc}\n\nMitigaciones observadas:\n{mit}"),
+            "reco": _RECO_ES},
+        "other": {
+            "title": "Sink presente '{sink}'",
+            "rationale": ("'{sink}' presente en el binario. {desc}\n\nMitigaciones observadas:\n{mit}"),
+            "reco": _RECO_ES},
     },
     "en": {
-        "title": "Use of dangerous function '{sink}'",
         "loc": "callers of sym.imp.{sink}",
-        "rationale": ("'{sink}' is a memory-unsafe/command-exec sink in the binary. {desc}\n\n"
-                      "Mitigations observed:\n{mit}"),
-        "reco": ("Trace attacker-controlled input into this call; verify reachability with "
-                 "angr_reachable or a dbg_run_input PoC before treating it as exploitable."),
+        "unknown": "(unknown)",
         "answer": ("Heuristic (no-LLM) hunt: candidates below are statically grounded but NOT "
                    "proven reachable. Bring up a local model or run angr/debugger to promote "
                    "them to verified. [src: r2_sinks]"),
-        "unknown": "(unknown)",
+        "overflow": {
+            "title": "Possible overflow via '{sink}'",
+            "rationale": ("'{sink}' writes to a buffer without a guaranteed size: memory-overflow "
+                          "surface. {desc}\n\nMitigations observed:\n{mit}"),
+            "reco": _RECO_EN},
+        "exec_const": {
+            "title": "Execution sink '{sink}' with a constant argument",
+            "rationale": ("'{sink}' is called with a CONSTANT argument (e.g. \"/bin/sh\"): it is an "
+                          "exploitation gadget/target (ret2*), NOT a vulnerability by itself. "
+                          "{desc}\n\nMitigations observed:\n{mit}"),
+            "reco": "Useful as an exploit target (ret2win/ret2system); not a bug to report."},
+        "exec_var": {
+            "title": "Possible command injection via '{sink}'",
+            "rationale": ("'{sink}' executes with a non-constant argument: if it includes user "
+                          "input it is command injection / RCE. {desc}\n\nMitigations observed:\n{mit}"),
+            "reco": _RECO_EN},
+        "fmt": {
+            "title": "Possible format string in '{sink}'",
+            "rationale": ("'{sink}' is a format string ONLY if the format is user-controlled "
+                          "(leak with %p, write with %n). {desc}\n\nMitigations observed:\n{mit}"),
+            "reco": _RECO_EN},
+        "other": {
+            "title": "Sink present '{sink}'",
+            "rationale": "'{sink}' present in the binary. {desc}\n\nMitigations observed:\n{mit}",
+            "reco": _RECO_EN},
     },
 }
 
