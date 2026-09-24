@@ -67,6 +67,19 @@ def cmd_doctor(args, config):
     for line in reg.status():
         print("  " + line)
     print()
+    # Conocimiento que la IA consulta (todo hilado: cheat sheets + herramientas + ingesta).
+    try:
+        from .rag import get_kb
+        kb = get_kb()
+        tools = sum(1 for c in kb.chunks if c.doc.startswith("tools/"))
+        print("Conocimiento (RAG):")
+        print("  " + kb.status())
+        print("  fuentes: " + kb.sources_summary())
+        print(f"  herramientas hiladas en el RAG: {tools}")
+        print("  aprende material nuevo con: binoracle learn <carpeta> --apply")
+        print()
+    except Exception:
+        pass
     if not llm.available():
         print("hint: no local model reachable. `ollama serve` + `ollama pull <model>`,")
         print("      or set BINORACLE_BACKEND=openai for an OpenAI-compatible local server.")
