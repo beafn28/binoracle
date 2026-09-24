@@ -177,6 +177,68 @@ def _os_basename(p: str) -> str:
     return _os.path.basename(p) or "binary"
 
 
+# Explicacion en lenguaje claro de cada seccion de la superficie de ataque (por palabra clave).
+_SURFACE_HELP = [
+    (("elf header", "header", "file /"),
+     "Cabecera del ejecutable: arquitectura, tipo (EXEC/DYN), punto de entrada. Es lo primero "
+     "para saber QUE es el binario y como esta construido.",
+     "Executable header: architecture, type (EXEC/DYN), entry point. The first thing to know "
+     "WHAT the binary is and how it is built."),
+    (("checksec", "mitigation", "mitigaciones"),
+     "Mitigaciones de explotacion activas (NX, PIE, canary, RELRO). Deciden que rutas de ataque "
+     "son viables: sin canary el overflow pisa el retorno directo; sin PIE las direcciones son fijas.",
+     "Active exploit mitigations (NX, PIE, canary, RELRO). They decide which attack paths are "
+     "viable: no canary means the overflow overwrites the return directly; no PIE means fixed addresses."),
+    (("binary info", "iI", "info radare"),
+     "Metadatos de radare2: formato, bits, compilador, si esta 'stripped' (sin simbolos). Contexto "
+     "general del binario.",
+     "radare2 metadata: format, bits, compiler, whether it is stripped. General context of the binary."),
+    (("hardening", "fortify", "asan", "cfi", "safestack"),
+     "Protecciones modernas del compilador (FORTIFY_SOURCE, AddressSanitizer, CFI, SafeStack). "
+     "Endurecen el binario frente a corrupcion de memoria y desvio de flujo.",
+     "Modern compiler protections (FORTIFY_SOURCE, AddressSanitizer, CFI, SafeStack). They harden "
+     "the binary against memory corruption and control-flow hijacking."),
+    (("imports",),
+     "Funciones que el binario importa de librerias: su 'capacidad' (que puede hacer: red, "
+     "ficheros, exec, cripto). Delatan la superficie y las funciones peligrosas.",
+     "Functions the binary imports from libraries: its 'capability' (what it can do: network, "
+     "files, exec, crypto). They reveal the surface and the dangerous functions."),
+    (("dangerous sinks", "sinks"),
+     "Funciones PELIGROSAS (gets, strcpy, system, read...) y desde donde se llaman. Es el punto de "
+     "partida: cada sink alcanzable por entrada del usuario es un candidato a vulnerabilidad.",
+     "DANGEROUS functions (gets, strcpy, system, read...) and where they are called from. The "
+     "starting point: every sink reachable by user input is a vulnerability candidate."),
+    (("vtable", "c++"),
+     "Tablas virtuales de C++ (vtables): punteros a metodos. Si se corrompen (UAF/type-confusion), "
+     "una llamada virtual salta a codigo del atacante.",
+     "C++ virtual tables (vtables): pointers to methods. If corrupted (UAF/type-confusion), a "
+     "virtual call jumps to attacker code."),
+    (("heap",),
+     "Superficie de heap: llamadas a malloc/free/realloc. Candidatos a use-after-free, "
+     "double-free y overflow de heap.",
+     "Heap surface: malloc/free/realloc calls. Candidates for use-after-free, double-free and "
+     "heap overflow."),
+    (("indirect control", "indirect", "punteros a funcion"),
+     "Saltos y llamadas INDIRECTAS (call/jmp rax): el destino sale de un registro/puntero (heap, "
+     "pila, vtable). Si controlas ese puntero, desvias el flujo de ejecucion.",
+     "INDIRECT jumps and calls (call/jmp rax): the target comes from a register/pointer (heap, "
+     "stack, vtable). If you control that pointer, you hijack execution flow."),
+    (("strings", "izz"),
+     "Cadenas del binario: rutas, formatos, mensajes, posibles secretos o URLs. Utiles para "
+     "entender el comportamiento y encontrar credenciales.",
+     "Binary strings: paths, formats, messages, possible secrets or URLs. Useful to understand "
+     "behavior and find credentials."),
+]
+
+
+def _surface_help(key: str, lang: str) -> str:
+    k = key.lower()
+    for kws, es, en in _SURFACE_HELP:
+        if any(w in k for w in kws):
+            return es if lang == "es" else en
+    return ""
+
+
 def _cfg_html(cfg, lang: str) -> str:
     """Grafo de flujo interactivo (mover/zoom/arrastrar) de una funcion: nodos = bloques
     basicos, aristas = saltos coloreados por tipo, con leyenda explicativa. Self-contained."""
@@ -405,9 +467,11 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     triage_sections = ""
     if triage is not None:
         for title, source, text in triage.sections:
+            help_txt = _surface_help(f"{title} {source}", lang)
+            help_html = f'<p class="sechelp">{_esc(help_txt)}</p>' if help_txt else ""
             triage_sections += (f'<details class="sec"><summary>{_esc(title)}'
                                 f'<span class="src">{_esc(source)}</span></summary>'
-                                f'<pre>{_esc(text)}</pre></details>')
+                                f'{help_html}<pre>{_esc(text)}</pre></details>')
 
     trail = ""
     if ledger is not None and getattr(ledger, "entries", None):
@@ -839,6 +903,7 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .sec>summary{padding:10px 13px;cursor:pointer;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:10px}
 .sec .src{color:var(--mut);font-weight:400;font-size:11px;font-family:ui-monospace,monospace}
 .sec pre{margin:0 13px 13px}
+.sechelp{margin:2px 13px 8px;color:var(--mut);font-size:12.5px;line-height:1.5;border-left:2px solid var(--acc);padding-left:9px}
 .md{white-space:pre-wrap}
 .evbox{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#0b0e12}
 .evbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0e131c;border-bottom:1px solid #1e2632;font:11px ui-monospace,monospace;color:#8b95a1;flex-wrap:wrap}
