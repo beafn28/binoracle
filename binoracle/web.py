@@ -56,7 +56,7 @@ _KB_CATS = [
     ("Kernel", ["kernel-pwn", "ebpf"]),
     ("Otras plataformas", ["browser-v8", "windows-exploit", "pe-dll", "macos-macho", "arm-mips"]),
     ("Sistemas y embebido", ["android-native", "firmware-embedded", "vm-escape"]),
-    ("Reversing", ["anti-debug", "go-rust-reversing"]),
+    ("Reversing", ["anti-debug", "go-rust-reversing", "ghidra-rpc"]),
     ("Metodologia y referencia", ["mitigations", "pie", "methodology", "tools", "references"]),
 ]
 
