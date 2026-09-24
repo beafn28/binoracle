@@ -130,9 +130,6 @@ def check_tools() -> list[ToolStatus]:
     st.append(ToolStatus("rizin/cutter", "static", bool(_which("rizin") or _which("cutter")),
                          _which("rizin") or _which("cutter"),
                          "fork de radare2 + GUI cutter (decompilador Ghidra integrado)"))
-    st.append(ToolStatus("Detect It Easy", "static", bool(_which("diec") or _which("die")),
-                         _which("diec") or _which("die"),
-                         "identifica compilador/packer/protector (UPX, Themida, VMProtect)"))
     st.append(ToolStatus("binwalk", "static", bool(_which("binwalk")), _which("binwalk"),
                          "extraccion de firmware/blobs (carve de imagenes empotradas)"))
 
@@ -167,29 +164,12 @@ def check_tools() -> list[ToolStatus]:
                          "motor de desensamblado multi-arch (base de muchas tools)"))
     st.append(ToolStatus("keystone", "static", bool(_pymod("keystone")), _pymod("keystone"),
                          "ensamblador multi-arch (asm() sin depender de binutils)"))
-    st.append(ToolStatus("rp++", "rop", bool(_which("rp++") or _which("rp-lin") or _which("rp")),
-                         _which("rp++") or _which("rp-lin") or _which("rp"),
-                         "buscador de gadgets ROP rapido (alternativa a ROPgadget)"))
 
     # --- fuzzing / simbolico ---
-    st.append(ToolStatus("AFL++", "symbolic", bool(_which("afl-fuzz")), _which("afl-fuzz"),
-                         "fuzzing guiado por cobertura (harness + corpus)"))
-    st.append(ToolStatus("honggfuzz", "symbolic", bool(_which("honggfuzz")), _which("honggfuzz"),
-                         "fuzzer guiado por cobertura (alternativa a AFL++, hardware counters)"))
-
-    # --- decompiladores / RE comerciales y de plataforma ---
-    ida = _which("idat64", "idat", "ida64", "ida")
-    st.append(ToolStatus("IDA Pro", "static", bool(ida), ida,
-                         "desensamblador/decompilador de referencia (idapython para batch)"))
-    st.append(ToolStatus("Binary Ninja", "static", bool(_pymod("binaryninja") or _which("binaryninja", "binja")),
-                         _pymod("binaryninja") or _which("binaryninja", "binja"),
-                         "decompilador + API headless (HLIL/MLIL, scripting de analisis)"))
+    # --- decompiladores open source ---
     st.append(ToolStatus("retdec", "static", bool(_which("retdec-decompiler", "retdec-decompiler.py")),
                          _which("retdec-decompiler", "retdec-decompiler.py"),
                          "decompilador open source (LLVM IR -> C), util para triaje rapido"))
-    st.append(ToolStatus("bindiff/diaphora", "static", bool(_which("bindiff") or _which("diaphora")),
-                         _which("bindiff") or _which("diaphora"),
-                         "diffing de funciones entre builds (analisis de parches 1-day)"))
 
     # --- Android / Java / .NET ---
     st.append(ToolStatus("jadx", "static", bool(_which("jadx", "jadx-gui")), _which("jadx", "jadx-gui"),
@@ -199,16 +179,10 @@ def check_tools() -> list[ToolStatus]:
     st.append(ToolStatus("dex2jar", "static", bool(_which("d2j-dex2jar", "d2j-dex2jar.sh")),
                          _which("d2j-dex2jar", "d2j-dex2jar.sh"),
                          "DEX -> JAR (para decompilar con herramientas Java)"))
-    st.append(ToolStatus("ILSpy/dnSpy", "static", bool(_which("ilspycmd") or _which("dnSpy")),
-                         _which("ilspycmd") or _which("dnSpy"),
-                         "decompilador .NET/CIL (malware y apps managed)"))
-
     # --- malware / capacidades / strings ---
     st.append(ToolStatus("yara", "static", bool(_which("yara") or _pymod("yara")),
                          _which("yara") or _pymod("yara"),
                          "reglas de deteccion (familias de malware, packers, patrones)"))
-    st.append(ToolStatus("floss", "static", bool(_which("floss")), _which("floss"),
-                         "extrae strings ofuscadas/stack/tight (FLARE), no solo las estaticas"))
     st.append(ToolStatus("capa", "static", bool(_which("capa") or _pymod("capa")),
                          _which("capa") or _pymod("capa"),
                          "detecta CAPACIDADES del binario (ATT&CK/MBC) a partir de reglas"))
@@ -216,17 +190,11 @@ def check_tools() -> list[ToolStatus]:
                          "identificacion rapida de formato/arquitectura del artefacto"))
 
     # --- simbolico / taint / emulacion extra ---
-    st.append(ToolStatus("Triton", "symbolic", bool(_pymod("triton")), _pymod("triton"),
-                         "ejecucion simbolica + taint dinamico (deofuscacion, SMT)"))
     st.append(ToolStatus("miasm", "symbolic", bool(_pymod("miasm")), _pymod("miasm"),
                          "IR + emulacion simbolica multi-arch (unpacking, deofuscacion)"))
     st.append(ToolStatus("manticore", "symbolic", bool(_pymod("manticore") or _which("manticore")),
                          _pymod("manticore") or _which("manticore"),
                          "ejecucion simbolica de binarios y smart contracts (Trail of Bits)"))
-
-    # --- instrumentacion dinamica (DBI) ---
-    st.append(ToolStatus("DynamoRIO", "dynamic", bool(_which("drrun")), _which("drrun"),
-                         "DBI: cobertura, tracing de instrucciones, tools drcov/drltrace"))
 
     # --- pwn: identificacion de libc ---
     st.append(ToolStatus("libc-database", "exploit",
