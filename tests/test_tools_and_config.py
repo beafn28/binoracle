@@ -34,6 +34,15 @@ def test_rag_status_string():
     assert "TF-IDF" in s and "chunks" in s
 
 
+def test_rag_excludes_readme_manifests():
+    # Los README son indices de navegacion del corpus, no cheat sheets:
+    # no deben indexarse ni aparecer en el desglose de fuentes.
+    kb = get_kb()
+    assert not any(c.doc.lower().endswith("readme") for c in kb.chunks), \
+        "un README quedo indexado como conocimiento"
+    assert "README" not in kb.sources_summary()
+
+
 def test_web_rag_command():
     from binoracle.web import run_command
     r = run_command({"command": "rag", "options": {"expand": 1}})

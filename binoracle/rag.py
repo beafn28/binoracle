@@ -352,6 +352,10 @@ class KnowledgeBase:
         # asi "skills/pwn/heap-techniques" no colisiona con el curado "heap".
         for md in sorted(kb_dir.rglob("*.md")):
             doc = str(md.relative_to(kb_dir).with_suffix("")).replace("\\", "/")
+            # Los README son manifiestos de navegacion del corpus (indice de skills),
+            # no cheat sheets: solo meten ruido en el retrieval, se saltan.
+            if doc.rsplit("/", 1)[-1].lower() == "readme":
+                continue
             raw = md.read_text(encoding="utf-8", errors="replace")
             # Partir por secciones "## ". El preambulo (titulo #) va como seccion 0.
             parts = re.split(r"^##\s+", raw, flags=re.MULTILINE)
