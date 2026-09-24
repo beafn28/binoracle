@@ -81,6 +81,10 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
+    # Texto por defecto renderizado en servidor: el informe es legible aunque NO corra JS (al
+    # abrirlo como fichero estatico). El JS luego solo cambia el idioma con el boton.
+    def L(k):
+        return _esc(_I18N.get(lang, _I18N["es"]).get(k, k))
 
     counts = {s: 0 for s in _SEV}
     verified = 0
@@ -102,7 +106,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     # KPI cards
     def kpi(labkey, val, color="var(--fg)"):
         return (f'<div class="kpi"><div class="kpi-v" style="color:{color}">{val}</div>'
-                f'<div class="kpi-l" data-i18n="{labkey}"></div></div>')
+                f'<div class="kpi-l" data-i18n="{labkey}">{L(labkey)}</div></div>')
     kpis = (
         kpi("kpi_total", total) +
         kpi("kpi_verified", verified, _VERDICT_COLOR["verified"]) +
@@ -191,7 +195,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     answer_html = f'<div class="panel md summary"><div class="panel-t" data-i18n="exec_summary"></div>{_md(answer)}</div>' if answer else ""
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
-        f'<span data-i18n="sev_{s}"></span> <b>{counts.get(s,0)}</b></button>' for s in _SEV)
+        f'<span data-i18n="sev_{s}">{L("sev_"+s)}</span> <b>{counts.get(s,0)}</b></button>' for s in _SEV)
 
     i18n = _json.dumps(_I18N)
 
@@ -203,7 +207,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     <button id="theme" class="ctl" onclick="toggleTheme()">&#9788;</button>
   </div>
 </header>'''
-    return f'''<!doctype html>
+    html = f'''<!doctype html>
 <html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>binoracle - {_esc(binary)}</title>
@@ -270,6 +274,11 @@ function search(){{const q=(document.getElementById('q').value||'').toLowerCase(
 }})();
 </script>
 </body></html>'''
+    # Rellena en servidor cualquier etiqueta data-i18n que quedara vacia, para que el informe
+    # sea legible como fichero estatico sin JS (los KPIs/titulos no salen como numeros sueltos).
+    html = re.sub(r'(data-i18n="([a-z0-9_]+)"[^>]*>)(</)',
+                  lambda m: m.group(1) + L(m.group(2)) + m.group(3), html)
+    return html
 
 
 _I18N = {
