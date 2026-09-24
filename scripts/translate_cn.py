@@ -81,7 +81,7 @@ def _hard_split(part, cap):
     return out
 
 
-def split_sections(raw, cap=2500):
+def split_sections(raw, cap=int(os.environ.get("BINORACLE_TR_CAP", "2500"))):
     """Trocea por '## ' para caber en contexto; agrupa hasta ~cap chars y ademas parte en
     duro cualquier seccion que por si sola supere el cap (docs largos sin subsecciones)."""
     parts = re.split(r"(?m)^(?=## )", raw)

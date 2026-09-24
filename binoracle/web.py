@@ -48,7 +48,7 @@ def _tool_text(reg, name, **kw):
 # Categorias para el indice navegable de la base de conocimiento (Conocimiento / RAG).
 _KB_CATS = [
     ("Stack", ["ret2win", "rop", "ret2libc", "format-string", "canary-bypass", "advanced-rop"]),
-    ("Heap", ["heap", "modern-heap", "heap-grooming", "uaf-typeconfusion", "io-file"]),
+    ("Heap", ["heap", "modern-heap", "heap-grooming", "heap-version-matrix", "uaf-typeconfusion", "io-file"]),
     ("Enlace y RCE al salir", ["got-plt", "exit-handlers"]),
     ("Bugs de entrada", ["integer-bugs"]),
     ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding"]),
