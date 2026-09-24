@@ -108,8 +108,9 @@ def test_web_kb_library():
     assert r["ok"] and r.get("kind") == "library"
     html = r["html"]
     assert "Biblioteca" in html and "const DOCS=" in html
-    # imported skills (subdirs) must NOT appear in the browsable library
-    assert "skills/" not in html
+    # imported skills (subdirs) must NOT appear as browsable library ENTRIES (its id has no
+    # "/"). El texto de un cheat sheet curado si puede mencionar "skills/" en su atribucion.
+    assert '"id": "skills/' not in html
 
 
 def test_web_tools_command():
