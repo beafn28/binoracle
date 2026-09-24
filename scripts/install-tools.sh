@@ -18,6 +18,11 @@ $PY -m pip install --user -q pyelftools capstone keystone-engine ropgadget roppe
   && echo "[ok] pip: pyelftools capstone keystone ropgadget ropper angr angrop unicorn qiling frida" \
   || echo "[--] pip: alguna libreria fallo (revisa el log)"
 
+# --- pip: reversing/malware/pwn (herramientas nuevas del catalogo) ---
+$PY -m pip install --user -q flare-floss flare-capa yara-python LibcSearcher 2>/dev/null \
+  && echo "[ok] pip: floss capa yara-python LibcSearcher" \
+  || echo "[--] pip: floss/capa/yara/LibcSearcher fallo (revisa el log)"
+
 # --- ruby gems ---
 if have gem; then
   gem list -i one_gadget >/dev/null 2>&1 || gem install one_gadget 2>/dev/null && echo "[ok] gem: one_gadget"
@@ -36,7 +41,7 @@ fi
 
 # --- gestor del sistema ---
 if [ "$os" = "Darwin" ] && have brew; then
-  for f in radare2 patchelf qemu binwalk aflplusplus; do
+  for f in radare2 patchelf qemu binwalk aflplusplus yara jadx apktool dex2jar honggfuzz; do
     brew list "$f" >/dev/null 2>&1 || brew install "$f" 2>/dev/null && echo "[ok] brew: $f"
   done
   brew list --cask detect-it-easy >/dev/null 2>&1 || brew install --cask detect-it-easy 2>/dev/null && echo "[ok] brew cask: detect-it-easy"
