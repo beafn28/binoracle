@@ -126,7 +126,7 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
         # insuficiente de ficheros/permisos, y seguridad de comunicaciones/criptografia.
         _lang = getattr(config, "lang", "es")
         for _mod, _fn in (("secrets", "scan_secrets"), ("fileperms", "scan_file_perms"),
-                          ("commsec", "scan_comms")):
+                          ("commsec", "scan_comms"), ("backdoors", "scan_backdoors")):
             try:
                 import importlib
                 extra = getattr(importlib.import_module(f".{_mod}", __package__), _fn)(

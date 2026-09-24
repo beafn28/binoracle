@@ -93,6 +93,26 @@ def test_commsec_scanner():
     assert "criptografia" in titles       # weak crypto
 
 
+def test_backdoors_scanner():
+    from binoracle.workflows.backdoors import scan_backdoors
+    # bind shell: socket + bind + listen + dup2/execve + /bin/sh
+    reg = _mock_reg(imports="sym.imp.socket\nsym.imp.bind\nsym.imp.listen\nsym.imp.dup2\nsym.imp.execve",
+                    strings="/bin/sh")
+    fs = scan_backdoors(reg, "x")
+    titles = " ".join(f.title.lower() for f in fs)
+    assert "bind shell" in titles, "no detecto la bind shell"
+    # reverse shell: socket + connect + execve
+    reg2 = _mock_reg(imports="sym.imp.socket\nsym.imp.connect\nsym.imp.execl", strings="")
+    ts2 = " ".join(f.title.lower() for f in scan_backdoors(reg2, "x"))
+    assert "reverse shell" in ts2, "no detecto la reverse shell"
+    # inyeccion por concatenacion: system + sprintf
+    reg3 = _mock_reg(imports="sym.imp.system\nsym.imp.sprintf", strings="")
+    ts3 = " ".join(f.title.lower() for f in scan_backdoors(reg3, "x"))
+    assert "concatenacion" in ts3, "no detecto la inyeccion por concatenacion"
+    # sin red y sin builders: sin falsos positivos
+    assert scan_backdoors(_mock_reg(imports="sym.imp.printf", strings=""), "x") == []
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
