@@ -192,23 +192,41 @@ def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
         return "?" if v is None else (("ON" if v else "OFF") if isinstance(v, bool) else str(v).upper())
     protec = f"NX {mstate('NX')}, PIE {mstate('PIE')}, Canary {mstate('Canary')}, RELRO {mstate('RELRO')}"
     arch = mit.get("Arch") or "?"
+    grounded = sum(1 for f in fs if f.verdict == "grounded")
+    unver = sum(1 for f in fs if f.verdict == "unverified")
     top = "; ".join(f.title for f in fs[:3]) or ("sin hallazgos" if lang == "es" else "no findings")
     if lang == "es":
-        p = [f"Se audito el binario **{name}** ({arch}). Protecciones: {protec}. "
-             f"Se identificaron **{total} hallazgos** ({verified} verificados por ejecucion)."]
+        p = [f"Binario **{name}** ({arch}). Protecciones: {protec}. "
+             f"**{total} hallazgos**: {verified} **verificados** (probados por ejecucion o "
+             f"alcanzabilidad), {grounded} grounded (evidencia estatica, explotabilidad NO probada)"
+             + (f", {unver} sin verificar" if unver else "") + "."]
         if vexp:
-            p.append(f"Resultado clave: se construyo y **VERIFICO un exploit** de forma automatica "
-                     f"({_esc(vexp.title.lower())}) que alcanza el objetivo en un sandbox Docker "
-                     f"aislado (evidencia reproducible en 'Prueba de explotacion').")
-        p.append(f"Hallazgos destacados: {top}.")
+            m = _re_mod.search(r"offset\s*=\s*(\d+)", vexp.evidence or "")
+            mw = _re_mod.search(r"win\s*=\s*(0x[0-9a-fA-F]+)", (vexp.location or "") + (vexp.evidence or ""))
+            det = (f" (offset={m.group(1)}" if m else "") + (f", win={mw.group(1)})" if mw and m else (")" if m else ""))
+            p.append(f"Se construyo y ejecuto un exploit ret2win en un sandbox Docker aislado y "
+                     f"**alcanzo el objetivo**{det}: la evidencia es la salida real de esa ejecucion "
+                     f"(ver 'Prueba de explotacion'), no una afirmacion.")
+        p.append(f"Mas severos: {top}.")
+        p.append("Metodologia: cada afirmacion esta respaldada por la salida del oraculo que la "
+                 "produjo (ver 'Rastro de evidencia'). Los hallazgos 'grounded' son candidatos con "
+                 "evidencia estatica: su explotabilidad no se ha probado y debe confirmarse.")
     else:
-        p = [f"Audited binary **{name}** ({arch}). Protections: {protec}. "
-             f"**{total} findings** identified ({verified} verified by execution)."]
+        p = [f"Binary **{name}** ({arch}). Protections: {protec}. "
+             f"**{total} findings**: {verified} **verified** (proven by execution or reachability), "
+             f"{grounded} grounded (static evidence, exploitability NOT proven)"
+             + (f", {unver} unverified" if unver else "") + "."]
         if vexp:
-            p.append(f"Key result: an **exploit was automatically built and VERIFIED** "
-                     f"({_esc(vexp.title.lower())}), reaching the goal in an isolated Docker sandbox "
-                     f"(reproducible evidence under 'Exploitation proof').")
-        p.append(f"Top findings: {top}.")
+            m = _re_mod.search(r"offset\s*=\s*(\d+)", vexp.evidence or "")
+            mw = _re_mod.search(r"win\s*=\s*(0x[0-9a-fA-F]+)", (vexp.location or "") + (vexp.evidence or ""))
+            det = (f" (offset={m.group(1)}" if m else "") + (f", win={mw.group(1)})" if mw and m else (")" if m else ""))
+            p.append(f"A ret2win exploit was built and executed in an isolated Docker sandbox and "
+                     f"**reached the goal**{det}: the evidence is the real output of that run (see "
+                     f"'Exploitation proof'), not a claim.")
+        p.append(f"Most severe: {top}.")
+        p.append("Methodology: every statement is backed by the output of the oracle that produced "
+                 "it (see 'Evidence trail'). 'grounded' findings are candidates with static "
+                 "evidence: their exploitability is not proven and must be confirmed.")
     return "\n\n".join(p)
 
 
