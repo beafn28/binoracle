@@ -428,7 +428,8 @@ def run_command(payload: dict) -> dict:
         from .report.html import render_html
         html = render_html(binary, triage=getattr(res, "triage", None),
                            findings=res.findings, ledger=res.ledger,
-                           answer=res.answer, lang=config.lang, embed=True)
+                           answer=res.answer, lang=config.lang, embed=True,
+                           decompiled=getattr(res, 'decompiled', None))
         store.close()
         return {"ok": True, "html": html, "text": res.answer}
     if cmd == "autopwn":
@@ -604,7 +605,8 @@ def run_streaming(command, binary, ai, emit):
             from .report.html import render_html
             html = render_html(binary, triage=getattr(res, "triage", None),
                                findings=res.findings, ledger=res.ledger,
-                               answer=res.answer, lang=config.lang, embed=True)
+                               answer=res.answer, lang=config.lang, embed=True,
+                           decompiled=getattr(res, 'decompiled', None))
             store.close()
             emit("step", "auditoria terminada; generando informe...")
             emit("html", html)
@@ -679,6 +681,29 @@ def run_streaming(command, binary, ai, emit):
                 emit("dashboard", data)
                 emit("done", "")
                 return
+            # Informe completo: como el audit, construye y VERIFICA el exploit en sandbox y
+            # decompila+anota la funcion vulnerable, para que el informe web sea profesional.
+            decompiled = None
+            if command == "report":
+                try:
+                    from .workflows.autopoc import autopoc, find_win
+                    from .store.session import Finding as _F
+                    if find_win(binary) is not None:
+                        emit("step", "construyendo y verificando el exploit en sandbox...")
+                        pr = autopoc(binary, run=True)
+                        if pr.verified:
+                            findings.insert(0, _F(
+                                title="Exploit ret2win VERIFICADO (shell en sandbox)",
+                                severity="critical", verdict="verified", location=f"win={hex(pr.win)}",
+                                evidence=f"offset={pr.offset}\n[try_ret2win sandbox-verified]\n"
+                                         f"{(pr.run_output or '').strip()}",
+                                rationale="Overflow que controla RIP -> ret2win a win() -> shell.",
+                                recommendation="Anadir stack canary y PIE; lectura acotada al buffer."))
+                    emit("step", "decompilando y anotando la funcion vulnerable...")
+                    from .workflows.audit import _decompile_vuln_funcs
+                    decompiled = _decompile_vuln_funcs(reg, binary, make_backend(config) if ai else None)
+                except Exception:
+                    pass
             if ai:
                 llm = make_backend(config)
                 if llm.available() and findings:
@@ -702,7 +727,7 @@ def run_streaming(command, binary, ai, emit):
                 ledger.record(i, ti, sr, tx)
             html = render_html(binary, triage=(report if command == "report" else None),
                                findings=findings, ledger=ledger, answer=answer,
-                               lang=config.lang, embed=True)
+                               lang=config.lang, embed=True, decompiled=decompiled)
             store.close()
             emit("step", "informe listo.")
             emit("html", html)
