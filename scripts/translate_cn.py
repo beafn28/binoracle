@@ -23,7 +23,7 @@ def log(msg):
         f.write(line + "\n")
 
 
-def gen(prompt, timeout=180):
+def gen(prompt, timeout=300):
     data = json.dumps({"model": MODEL, "prompt": prompt, "stream": False,
                        "options": {"temperature": 0.1, "num_ctx": 8192}}).encode()
     req = urllib.request.Request(OLLAMA + "/api/generate", data=data,
@@ -49,12 +49,45 @@ def translate_block(text):
     return None
 
 
-def split_sections(raw, cap=4000):
-    """Trocea por '## ' para caber en contexto; agrupa hasta ~cap chars."""
+def _hard_split(part, cap):
+    """Trocea una parte grande (sin '## ' internos) por parrafos/lineas para que ningun
+    bloque supere 'cap'. Evita mandar un doc de 16k chars entero (revienta num_ctx y timeout)."""
+    if len(part) <= cap:
+        return [part]
+    out, cur = [], ""
+    for para in part.split("\n\n"):
+        piece = para + "\n\n"
+        if len(piece) > cap:                      # parrafo gigante: parte por lineas
+            if cur:
+                out.append(cur); cur = ""
+            line_buf = ""
+            for ln in piece.splitlines(keepends=True):
+                if len(line_buf) + len(ln) > cap and line_buf:
+                    out.append(line_buf); line_buf = ""
+                line_buf += ln
+            if line_buf:
+                cur = line_buf
+            continue
+        if len(cur) + len(piece) > cap and cur:
+            out.append(cur); cur = piece
+        else:
+            cur += piece
+    if cur:
+        out.append(cur)
+    return out
+
+
+def split_sections(raw, cap=2500):
+    """Trocea por '## ' para caber en contexto; agrupa hasta ~cap chars y ademas parte en
+    duro cualquier seccion que por si sola supere el cap (docs largos sin subsecciones)."""
     parts = re.split(r"(?m)^(?=## )", raw)
     blocks, cur = [], ""
     for p in parts:
-        if len(cur) + len(p) > cap and cur:
+        if len(p) > cap:                          # seccion grande: agrupa lo pendiente y trocea
+            if cur:
+                blocks.append(cur); cur = ""
+            blocks.extend(_hard_split(p, cap))
+        elif len(cur) + len(p) > cap and cur:
             blocks.append(cur); cur = p
         else:
             cur += p
