@@ -239,26 +239,89 @@ def _surface_help(key: str, lang: str) -> str:
     return ""
 
 
+def _cfg_layout(cfg):
+    """Calcula posiciones (x,y,h) de cada bloque por profundidad BFS. En SERVIDOR, para que el
+    grafo se vea SIEMPRE (aunque no corra JS)."""
+    nodes = {n["id"]: dict(n) for n in cfg.nodes}
+    order = [n["id"] for n in cfg.nodes]
+    adj = {}
+    for e in cfg.edges:
+        adj.setdefault(e["src"], []).append(e["dst"])
+    depth = {order[0]: 0} if order else {}
+    q = list(order[:1])
+    while q:
+        u = q.pop(0)
+        for v in adj.get(u, []):
+            if v not in depth:
+                depth[v] = depth[u] + 1
+                q.append(v)
+    for nid in order:
+        depth.setdefault(nid, 0)
+    byd = {}
+    for nid in order:
+        byd.setdefault(depth[nid], []).append(nid)
+    W = 210
+    for nid in order:
+        n = nodes[nid]
+        n["h"] = 26 + min(len(n["insns"]), 6) * 15 + (15 if len(n["insns"]) > 6 else 0)
+    y = 0
+    for d in sorted(byd):
+        row = byd[d]
+        maxh = max(nodes[i]["h"] for i in row)
+        tot = len(row) * W + (len(row) - 1) * 48
+        for i, nid in enumerate(row):
+            nodes[nid]["x"] = i * (W + 48) - tot / 2
+            nodes[nid]["y"] = y
+        y += maxh + 64
+    return nodes, order, W
+
+
 def _cfg_html(cfg, lang: str) -> str:
-    """Grafo de flujo interactivo (mover/zoom/arrastrar) de una funcion: nodos = bloques
-    basicos, aristas = saltos coloreados por tipo, con leyenda explicativa. Self-contained."""
+    """Grafo de flujo de una funcion, RENDERIZADO EN SERVIDOR (visible sin JS) + interactividad
+    (mover/zoom/arrastrar) por JS encima. Nodos = bloques; aristas coloreadas por tipo de salto."""
     if cfg is None or not getattr(cfg, "ok", False):
         return ""
-    payload = _json.dumps({"func": cfg.func, "nodes": cfg.nodes, "edges": cfg.edges})
-    T = {"es": {"h": "Grafo de flujo interactivo", "func": "funcion",
-                "hint": "Arrastra el fondo para moverte, rueda para zoom, arrastra un bloque para recolocarlo. "
-                        "Cada arista es un salto:",
+    nodes, order, W = _cfg_layout(cfg)
+    _COL = {"taken": "#30a46c", "jump": "#4aa3ff", "fallthrough": "#8b95a1"}
+    # aristas (curvas bezier de la base del origen al techo del destino)
+    edges_svg = ""
+    for e in cfg.edges:
+        a, b = nodes.get(e["src"]), nodes.get(e["dst"])
+        if not a or not b:
+            continue
+        x1, y1 = a["x"] + W / 2, a["y"] + a["h"]
+        x2, y2 = b["x"] + W / 2, b["y"]
+        my = (y1 + y2) / 2
+        edges_svg += (f'<path class="cfge" data-s="{e["src"]}" data-d="{e["dst"]}" '
+                      f'd="M{x1:.0f},{y1:.0f} C{x1:.0f},{my:.0f} {x2:.0f},{my:.0f} {x2:.0f},{y2:.0f}" '
+                      f'fill="none" stroke="{_COL.get(e["kind"], "#8b95a1")}" stroke-width="2" '
+                      f'marker-end="url(#ah)"/>')
+    # nodos (rect + direccion + instrucciones)
+    nodes_svg = ""
+    for nid in order:
+        n = nodes[nid]
+        ins = "".join(f'<text x="9" y="{30 + i * 15}" class="cfgins">{_esc((op.get("txt") or "")[:28])}</text>'
+                      for i, op in enumerate(n["insns"][:6]))
+        if len(n["insns"]) > 6:
+            ins += f'<text x="9" y="{30 + 6 * 15}" class="cfgins">... +{len(n["insns"]) - 6}</text>'
+        nodes_svg += (f'<g class="cfgnode" data-id="{nid}" transform="translate({n["x"]:.0f},{n["y"]:.0f})">'
+                      f'<rect width="{W}" height="{n["h"]}" rx="7"/>'
+                      f'<text x="9" y="16" class="cfgaddr">{_esc(n["addr"])}</text>{ins}</g>')
+    T = {"es": {"func": "funcion", "hint": "Arrastra el fondo para moverte, rueda para zoom, "
+                "arrastra un bloque para recolocarlo. Cada arista es un salto:",
                 "taken": "rama tomada (condicion verdadera)", "fall": "caida / fall-through (condicion falsa)",
                 "jump": "salto incondicional", "reset": "centrar"},
-         "en": {"h": "Interactive control-flow graph", "func": "function",
-                "hint": "Drag the background to pan, wheel to zoom, drag a block to move it. "
-                        "Each edge is a jump:",
-                "taken": "branch taken (condition true)", "fall": "fall-through (condition false)",
-                "jump": "unconditional jump", "reset": "center"}}[lang if lang in ("es", "en") else "es"]
+         "en": {"func": "function", "hint": "Drag the background to pan, wheel to zoom, drag a "
+                "block to move it. Each edge is a jump:", "taken": "branch taken (condition true)",
+                "fall": "fall-through (condition false)", "jump": "unconditional jump", "reset": "center"}}[
+        lang if lang in ("es", "en") else "es"]
     legend = (f'<span class="cfg-lg"><i style="background:#30a46c"></i>{_esc(T["taken"])}</span>'
               f'<span class="cfg-lg"><i style="background:#8b95a1"></i>{_esc(T["fall"])}</span>'
               f'<span class="cfg-lg"><i style="background:#4aa3ff"></i>{_esc(T["jump"])}</span>')
-    js = _CFG_JS.replace("__CFGDATA__", payload)
+    # transform inicial: coloca el grafo desde arriba-izquierda con un margen (visible sin JS)
+    minx = min((n["x"] for n in nodes.values()), default=0)
+    init = f'translate({20 - minx:.0f},20)'
+    js = _CFG_JS.replace("__CFGW__", str(W))
     return (f'<h2 data-i18n="cfg_graph" id="sec-cfg"></h2>'
             f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["func"])} '
             f'<code>{_esc(cfg.func)}</code> &middot; {_esc(T["hint"])} {legend} '
@@ -266,7 +329,8 @@ def _cfg_html(cfg, lang: str) -> str:
             f'<div class="cfgwrap"><svg id="cfgsvg"><defs>'
             f'<marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
             f'<path d="M0,0 L7,3 L0,6 Z" fill="context-stroke"/></marker></defs>'
-            f'<g id="cfgvp"></g></svg></div><script>{js}</script>')
+            f'<g id="cfgvp" transform="{init}">{edges_svg}{nodes_svg}</g></svg></div>'
+            f'<script>{js}</script>')
 
 
 def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
@@ -790,63 +854,46 @@ _REF_STR = {
 
 _CFG_JS = r"""
 (function(){
-  var D = __CFGDATA__;
+  var W = __CFGW__;
   var svg = document.getElementById('cfgsvg'), vp = document.getElementById('cfgvp');
-  var NS = 'http://www.w3.org/2000/svg';
-  var nodes = D.nodes, edges = D.edges, nmap = {};
-  nodes.forEach(function(n){nmap[n.id]=n;});
-  var adj = {}; edges.forEach(function(e){(adj[e.src]=adj[e.src]||[]).push(e.dst);});
-  var depth = {};
-  if(nodes.length){ depth[nodes[0].id]=0; var q=[nodes[0].id];
-    while(q.length){ var u=q.shift(); (adj[u]||[]).forEach(function(v){ if(depth[v]==null){depth[v]=depth[u]+1;q.push(v);} }); } }
-  nodes.forEach(function(n){ if(depth[n.id]==null) depth[n.id]=0; });
-  var byd = {}; nodes.forEach(function(n){ (byd[depth[n.id]]=byd[depth[n.id]]||[]).push(n); });
-  var W=210, XG=48, YG=64, y=0;
-  nodes.forEach(function(n){ n.h = 26 + Math.min(n.insns.length,6)*15 + (n.insns.length>6?15:0); });
-  Object.keys(byd).map(Number).sort(function(a,b){return a-b;}).forEach(function(d){
-    var row=byd[d], maxh=Math.max.apply(null,row.map(function(n){return n.h;}));
-    var tot=row.length*W+(row.length-1)*XG;
-    row.forEach(function(n,i){ n.x=i*(W+XG)-tot/2; n.y=y; }); y += maxh + YG; });
-  function col(k){ return k==='taken' ? '#30a46c' : (k==='jump' ? '#4aa3ff' : '#8b95a1'); }
-  function draw(){
-    while(vp.firstChild) vp.removeChild(vp.firstChild);
-    edges.forEach(function(e){ var a=nmap[e.src], b=nmap[e.dst]; if(!a||!b) return;
-      var x1=a.x+W/2, y1=a.y+a.h, x2=b.x+W/2, y2=b.y, my=(y1+y2)/2;
-      var p=document.createElementNS(NS,'path');
-      p.setAttribute('d','M'+x1+','+y1+' C'+x1+','+my+' '+x2+','+my+' '+x2+','+y2);
-      p.setAttribute('fill','none'); p.setAttribute('stroke',col(e.kind));
-      p.setAttribute('stroke-width','2'); p.setAttribute('marker-end','url(#ah)'); vp.appendChild(p); });
-    nodes.forEach(function(n){
-      var g=document.createElementNS(NS,'g'); g.setAttribute('transform','translate('+n.x+','+n.y+')'); g.setAttribute('class','cfgnode');
-      var r=document.createElementNS(NS,'rect'); r.setAttribute('width',W); r.setAttribute('height',n.h); r.setAttribute('rx','7'); g.appendChild(r);
-      var t=document.createElementNS(NS,'text'); t.setAttribute('x','9'); t.setAttribute('y','16'); t.setAttribute('class','cfgaddr'); t.textContent=n.addr; g.appendChild(t);
-      n.insns.slice(0,6).forEach(function(ins,i){ var ln=document.createElementNS(NS,'text'); ln.setAttribute('x','9'); ln.setAttribute('y',30+i*15); ln.setAttribute('class','cfgins'); ln.textContent=(ins.txt||'').slice(0,28); g.appendChild(ln); });
-      if(n.insns.length>6){ var m=document.createElementNS(NS,'text'); m.setAttribute('x','9'); m.setAttribute('y',30+6*15); m.setAttribute('class','cfgins'); m.textContent='... +'+(n.insns.length-6); g.appendChild(m); }
-      g.addEventListener('mousedown',function(ev){ ev.stopPropagation(); var sx=ev.clientX,sy=ev.clientY,ox=n.x,oy=n.y;
-        function mv(e2){ n.x=ox+(e2.clientX-sx)/scale; n.y=oy+(e2.clientY-sy)/scale; draw(); }
-        function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
-        document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
-      vp.appendChild(g); });
-  }
+  if(!svg || !vp) return;
+  function tf(g){ var m=/translate\(([-\d.]+),\s*([-\d.]+)\)/.exec(g.getAttribute('transform')||''); return m?{x:+m[1],y:+m[2]}:{x:0,y:0}; }
+  function nh(g){ var r=g.querySelector('rect'); return r?+r.getAttribute('height'):40; }
   var tx=0, ty=0, scale=1;
+  (function(){ var p=tf(vp); tx=p.x; ty=p.y; })();
   function apply(){ vp.setAttribute('transform','translate('+tx+','+ty+') scale('+scale+')'); }
-  function fit(){ if(!nodes.length) return;
-    var minx=Math.min.apply(null,nodes.map(function(n){return n.x;}));
-    var maxx=Math.max.apply(null,nodes.map(function(n){return n.x+W;}));
-    var miny=Math.min.apply(null,nodes.map(function(n){return n.y;}));
-    var maxy=Math.max.apply(null,nodes.map(function(n){return n.y+n.h;}));
-    var bw=maxx-minx, bh=maxy-miny, cw=svg.clientWidth||800, ch=svg.clientHeight||460;
-    scale=Math.min(1, Math.min(cw/(bw+80), ch/(bh+80))) || 1;
-    tx=cw/2-(minx+bw/2)*scale; ty=24-miny*scale; apply(); }
-  window.cfgReset=fit;
-  svg.addEventListener('mousedown',function(ev){ var sx=ev.clientX,sy=ev.clientY,ox=tx,oy=ty;
+  function redraw(id){
+    vp.querySelectorAll('.cfge').forEach(function(e){
+      var s=e.getAttribute('data-s'), d=e.getAttribute('data-d');
+      if(s!==id && d!==id) return;
+      var sg=vp.querySelector('.cfgnode[data-id="'+s+'"]'), dg=vp.querySelector('.cfgnode[data-id="'+d+'"]');
+      if(!sg||!dg) return; var a=tf(sg), b=tf(dg), ah=nh(sg);
+      var x1=a.x+W/2, y1=a.y+ah, x2=b.x+W/2, y2=b.y, my=(y1+y2)/2;
+      e.setAttribute('d','M'+x1+','+y1+' C'+x1+','+my+' '+x2+','+my+' '+x2+','+y2);
+    });
+  }
+  svg.addEventListener('mousedown',function(ev){ if(ev.target.closest('.cfgnode')) return;
+    var sx=ev.clientX, sy=ev.clientY, ox=tx, oy=ty;
     function mv(e2){ tx=ox+(e2.clientX-sx); ty=oy+(e2.clientY-sy); apply(); }
     function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
     document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
   svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var f=ev.deltaY<0?1.1:0.9;
     var r=svg.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
     tx=mx-(mx-tx)*f; ty=my-(my-ty)*f; scale*=f; apply(); }, {passive:false});
-  draw(); fit();
+  vp.querySelectorAll('.cfgnode').forEach(function(g){
+    g.addEventListener('mousedown',function(ev){ ev.stopPropagation(); var p=tf(g), sx=ev.clientX, sy=ev.clientY;
+      function mv(e2){ var nx=p.x+(e2.clientX-sx)/scale, ny=p.y+(e2.clientY-sy)/scale;
+        g.setAttribute('transform','translate('+nx+','+ny+')'); redraw(g.getAttribute('data-id')); }
+      function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
+      document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
+  });
+  window.cfgReset=function(){ var gs=vp.querySelectorAll('.cfgnode'); if(!gs.length) return;
+    var minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    gs.forEach(function(g){ var p=tf(g), h=nh(g); minx=Math.min(minx,p.x); miny=Math.min(miny,p.y); maxx=Math.max(maxx,p.x+W); maxy=Math.max(maxy,p.y+h); });
+    var bw=maxx-minx, bh=maxy-miny, cw=svg.clientWidth||800, ch=svg.clientHeight||460;
+    scale=Math.min(1, Math.min(cw/(bw+80), ch/(bh+80))) || 1;
+    tx=cw/2-(minx+bw/2)*scale; ty=24-miny*scale; apply(); };
+  cfgReset();
 })();
 """
 
