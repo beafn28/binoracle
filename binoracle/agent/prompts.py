@@ -20,6 +20,13 @@ or, when you are done:
       "rationale": "...", "recommendation": "..."}
    ]}
 
+Concrete example of a valid FIRST turn (copy this exact shape, changing only the values):
+
+  {"thought": "start by checking the protections", "action": "tool", "tool": "r2_checksec", "args": {}}
+
+The whole reply must be that single JSON object: no text before it, no text after it, no
+markdown fences. Put your reasoning INSIDE the "thought" field, never outside the JSON.
+
 Rules:
 - One JSON object per turn. No prose outside the JSON.
 - Prefer verifying a hypothesis with an oracle over speculating.
