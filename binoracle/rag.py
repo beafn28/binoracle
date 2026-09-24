@@ -33,6 +33,12 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
+# Ficheros que NO son conocimiento de reversing sino navegacion/routing de un skill
+# (manifiestos y plantillas). Se excluyen del indice: solo meten ruido o instrucciones.
+_MANIFEST_DOCS = {"readme", "skill", "_index", "index", "_template",
+                  "contribute-back", "tool-index"}
+
+
 def _truthy(v: str) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
@@ -352,9 +358,10 @@ class KnowledgeBase:
         # asi "skills/pwn/heap-techniques" no colisiona con el curado "heap".
         for md in sorted(kb_dir.rglob("*.md")):
             doc = str(md.relative_to(kb_dir).with_suffix("")).replace("\\", "/")
-            # Los README son manifiestos de navegacion del corpus (indice de skills),
-            # no cheat sheets: solo meten ruido en el retrieval, se saltan.
-            if doc.rsplit("/", 1)[-1].lower() == "readme":
+            # README/SKILL/_index/_template son manifiestos de navegacion o routers de skill
+            # (instrucciones "ACTION REQUIRED / NOW: ejecuta ...", no conocimiento de reversing):
+            # solo meten ruido en el retrieval, se saltan.
+            if doc.rsplit("/", 1)[-1].lower() in _MANIFEST_DOCS:
                 continue
             raw = md.read_text(encoding="utf-8", errors="replace")
             # Partir por secciones "## ". El preambulo (titulo #) va como seccion 0.

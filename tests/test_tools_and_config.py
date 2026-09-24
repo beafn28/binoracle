@@ -38,8 +38,9 @@ def test_rag_excludes_readme_manifests():
     # Los README son indices de navegacion del corpus, no cheat sheets:
     # no deben indexarse ni aparecer en el desglose de fuentes.
     kb = get_kb()
-    assert not any(c.doc.lower().endswith("readme") for c in kb.chunks), \
-        "un README quedo indexado como conocimiento"
+    bad = {"readme", "skill", "index", "_index", "_template"}
+    offenders = [c.doc for c in kb.chunks if c.doc.rsplit("/", 1)[-1].lower() in bad]
+    assert not offenders, f"manifiestos/routers indexados como conocimiento: {offenders[:5]}"
     assert "README" not in kb.sources_summary()
 
 
