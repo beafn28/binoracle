@@ -198,6 +198,8 @@ Knowledge base (RAG) and tooling:
 binoracle kb                               # list the bundled exploitation cheat sheets
 binoracle kb "double free tcache glibc"    # retrieve the most relevant technique snippets
 binoracle tools                            # detect the installed binary-pentest toolchain
+binoracle rag                              # RAG status + retrieval layers (embeddings/expand/rerank)
+binoracle learn <folder>                   # learn a skills/docs folder into the KB (--apply to write)
 ```
 
 The `kb` command exposes the same local RAG the model consults during `primitives` and
