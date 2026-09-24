@@ -274,22 +274,30 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
     # findings cards
     cards = ""
+    def _bi(es, en):
+        """Bloque de texto bilingue: se renderizan ES y EN; el CSS muestra el activo segun el
+        idioma del <html> (el boton de idioma lo cambia). Asi el toggle ES/EN afecta tambien a
+        la EXPLICACION, no solo a las etiquetas, y funciona sin JS extra."""
+        en = en or es
+        return (f'<div class="md"><div class="lg lg-es">{_md(es)}</div>'
+                f'<div class="lg lg-en">{_md(en)}</div></div>')
     for f in sorted(findings, key=lambda x: _SEV.index(x.severity) if x.severity in _SEV else 9):
+        # <details> nativo: cada hallazgo se DESPLIEGA al pulsar, tambien como fichero estatico.
         cards += f'''
-        <div class="card" data-sev="{_esc(f.severity)}">
-          <div class="card-h" onclick="this.parentNode.classList.toggle('open')">
+        <details class="card" data-sev="{_esc(f.severity)}">
+          <summary class="card-h">
             {_badge(f.severity.upper(), _SEV_COLOR.get(f.severity,'#666'))}
             {_badge(f.verdict, _VERDICT_COLOR.get(f.verdict,'#666'))}
             <span class="title">{_esc(f.title)}</span>
             <span class="loc">{_esc(f.location)}</span>
             <span class="chev">&#9656;</span>
-          </div>
+          </summary>
           <div class="card-b">
-            <h4 data-i18n="rationale"></h4><div class="md">{_md(f.rationale)}</div>
-            <h4 data-i18n="evidence"></h4>{_evidence_html(f.evidence)}
-            <h4 data-i18n="recommendation"></h4><div class="md">{_md(f.recommendation)}</div>
+            <h4 data-i18n="rationale">{L("rationale")}</h4>{_bi(f.rationale, getattr(f, "rationale_en", ""))}
+            <h4 data-i18n="evidence">{L("evidence")}</h4>{_evidence_html(f.evidence)}
+            <h4 data-i18n="recommendation">{L("recommendation")}</h4>{_bi(f.recommendation, getattr(f, "recommendation_en", ""))}
           </div>
-        </div>'''
+        </details>'''
 
     triage_sections = ""
     if triage is not None:
@@ -631,12 +639,16 @@ h2{font-size:15px;border-bottom:1px solid var(--line);padding-bottom:7px;margin:
 .fbtn{display:flex;align-items:center;gap:6px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:16px;padding:5px 12px;cursor:pointer;font-size:12px;text-transform:capitalize}
 .fbtn i{width:9px;height:9px;border-radius:50%}.fbtn b{color:var(--fg)}.fbtn.boff{opacity:.35}
 .card{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
-.card-h{padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+summary.card-h{padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:7px;flex-wrap:wrap;list-style:none}
+summary.card-h::-webkit-details-marker{display:none}
+summary.card-h::marker{content:""}
 .card-h .title{font-weight:650}.card-h .loc{color:var(--mut);font-size:12px;margin-left:auto;font-family:ui-monospace,monospace}
 .card-h .chev{transition:transform .15s;color:var(--mut)}
-.card.open .card-h .chev{transform:rotate(90deg)}
-.card-b{display:none;padding:2px 15px 16px;border-top:1px solid var(--line)}
-.card.open .card-b{display:block}
+.card[open] .card-h .chev{transform:rotate(90deg)}
+.card-b{padding:2px 15px 16px;border-top:1px solid var(--line)}
+.lg-en{display:none}
+html[lang="en"] .lg-es{display:none}
+html[lang="en"] .lg-en{display:block}
 h4{margin:15px 0 5px;color:var(--mut);text-transform:uppercase;font-size:11px;letter-spacing:.05em}
 pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:11px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--codefg);white-space:pre}
 .sec{border:1px solid var(--line);border-radius:9px;margin:8px 0;background:var(--panel)}

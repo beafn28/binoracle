@@ -30,6 +30,10 @@ class Finding:
     location: str = ""       # function / address
     rationale: str = ""
     recommendation: str = ""
+    # Version en el otro idioma (opcional, solo para el informe; NO se persiste). rationale/
+    # recommendation son el idioma primario; estos, el ingles si el primario es ES (o viceversa).
+    rationale_en: str = ""
+    recommendation_en: str = ""
     id: Optional[int] = None
     created_at: float = 0.0
 

@@ -63,6 +63,9 @@ def _heuristic_hunt(registry: ToolRegistry, store=None, lang: str = "es") -> Age
                 if kind is None:
                     continue           # no aporta como hallazgo (ruido), se omite
                 tk = T[kind]
+                # version bilingue: el texto del hallazgo tambien en el otro idioma (para el toggle).
+                other = "en" if lang == "es" else "es"
+                To = _STR[other]; tko = To[kind]
                 f = Finding(
                     title=tk["title"].format(sink=sink),
                     severity=sev,
@@ -72,6 +75,9 @@ def _heuristic_hunt(registry: ToolRegistry, store=None, lang: str = "es") -> Age
                     rationale=tk["rationale"].format(sink=sink, mit=mitig_txt or T["unknown"],
                                                      desc=_SINK_DESC.get(lang, {}).get(sink, "")),
                     recommendation=tk["reco"],
+                    rationale_en=tko["rationale"].format(sink=sink, mit=mitig_txt or To["unknown"],
+                                                         desc=_SINK_DESC.get(other, {}).get(sink, "")),
+                    recommendation_en=tko["reco"],
                 )
                 if store:
                     store.add_finding(f)
