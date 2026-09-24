@@ -177,6 +177,36 @@ def _os_basename(p: str) -> str:
     return _os.path.basename(p) or "binary"
 
 
+def _cfg_html(cfg, lang: str) -> str:
+    """Grafo de flujo interactivo (mover/zoom/arrastrar) de una funcion: nodos = bloques
+    basicos, aristas = saltos coloreados por tipo, con leyenda explicativa. Self-contained."""
+    if cfg is None or not getattr(cfg, "ok", False):
+        return ""
+    payload = _json.dumps({"func": cfg.func, "nodes": cfg.nodes, "edges": cfg.edges})
+    T = {"es": {"h": "Grafo de flujo interactivo", "func": "funcion",
+                "hint": "Arrastra el fondo para moverte, rueda para zoom, arrastra un bloque para recolocarlo. "
+                        "Cada arista es un salto:",
+                "taken": "rama tomada (condicion verdadera)", "fall": "caida / fall-through (condicion falsa)",
+                "jump": "salto incondicional", "reset": "centrar"},
+         "en": {"h": "Interactive control-flow graph", "func": "function",
+                "hint": "Drag the background to pan, wheel to zoom, drag a block to move it. "
+                        "Each edge is a jump:",
+                "taken": "branch taken (condition true)", "fall": "fall-through (condition false)",
+                "jump": "unconditional jump", "reset": "center"}}[lang if lang in ("es", "en") else "es"]
+    legend = (f'<span class="cfg-lg"><i style="background:#30a46c"></i>{_esc(T["taken"])}</span>'
+              f'<span class="cfg-lg"><i style="background:#8b95a1"></i>{_esc(T["fall"])}</span>'
+              f'<span class="cfg-lg"><i style="background:#4aa3ff"></i>{_esc(T["jump"])}</span>')
+    js = _CFG_JS.replace("__CFGDATA__", payload)
+    return (f'<h2 data-i18n="cfg_graph" id="sec-cfg"></h2>'
+            f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["func"])} '
+            f'<code>{_esc(cfg.func)}</code> &middot; {_esc(T["hint"])} {legend} '
+            f'<button class="ctl cfg-reset" onclick="cfgReset()">{_esc(T["reset"])}</button></p>'
+            f'<div class="cfgwrap"><svg id="cfgsvg"><defs>'
+            f'<marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
+            f'<path d="M0,0 L7,3 L0,6 Z" fill="context-stroke"/></marker></defs>'
+            f'<g id="cfgvp"></g></svg></div><script>{js}</script>')
+
+
 def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
     """Resumen ejecutivo COHERENTE y profesional, derivado de los hechos (no de la narracion del
     modelo, que en modelos pequenos puede contradecirse). Bilingue."""
@@ -234,14 +264,16 @@ def _toc(lang: str, has) -> str:
     """Indice navegable del informe: solo las secciones presentes, con enlace a su ancla."""
     T = {"es": {"t": "Indice", "summary": "Resumen ejecutivo", "proof": "Prueba de explotacion",
                 "exploit": "Exploit paso a paso", "dec": "Decompilacion anotada",
+                "cfg": "Grafo de flujo interactivo",
                 "find": "Hallazgos", "mit": "Mitigaciones y remediacion",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
          "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
                 "exploit": "Exploit step by step", "dec": "Annotated decompilation",
+                "cfg": "Interactive control-flow graph",
                 "find": "Findings", "mit": "Mitigations & remediation",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
     order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
-             ("dec", "sec-dec"), ("find", "sec-find"), ("mit", "sec-mit"),
+             ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("mit", "sec-mit"),
              ("surface", "sec-surface"), ("refs", "sec-refs"), ("trail", "sec-trail")]
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
                     for key, aid in order if has.get(key))
@@ -290,7 +322,7 @@ def _parse_mitigations(triage) -> dict:
 
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
-                decompiled=None) -> str:
+                decompiled=None, cfg=None) -> str:
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
@@ -415,6 +447,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
                       f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
     decompiled_html = _decompiled_html(decompiled)
+    cfg_html = _cfg_html(cfg, lang)
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
     references_html = _references(findings, lang)
@@ -425,8 +458,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
                    f'<div class="panel-t" data-i18n="exec_summary"></div>{_md(summary_txt)}</div>')
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
-            "dec": bool(decompiled_html), "find": True, "mit": bool(mit_detail_html),
-            "surface": bool(triage_sections), "refs": bool(references_html), "trail": bool(trail)}
+            "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
+            "mit": bool(mit_detail_html), "surface": bool(triage_sections),
+            "refs": bool(references_html), "trail": bool(trail)}
     toc_html = _toc(lang, _has)
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
@@ -469,6 +503,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {exploit_html}
 
   {decompiled_html}
+
+  {cfg_html}
 
   <h2 data-i18n="findings" id="sec-find"></h2>
   <div class="toolbar">
@@ -537,6 +573,7 @@ _I18N = {
         "poc_note": "Captura de la ejecucion real en sandbox aislado que DEMUESTRA el exploit "
                     "(shell / flag / objetivo alcanzado). Evidencia reproducible, no teorica.",
         "decompiled": "Decompilacion anotada (funcion vulnerable)",
+        "cfg_graph": "Grafo de flujo interactivo",
         "exploit_steps": "Exploit paso a paso",
         "mit_detail": "Mitigaciones y remediacion",
         "references": "Referencias",
@@ -560,6 +597,7 @@ _I18N = {
         "poc_note": "Capture of the real execution in an isolated sandbox that PROVES the exploit "
                     "(shell / flag / goal reached). Reproducible evidence, not theoretical.",
         "decompiled": "Annotated decompilation (vulnerable function)",
+        "cfg_graph": "Interactive control-flow graph",
         "exploit_steps": "Exploit step by step",
         "mit_detail": "Mitigations and remediation",
         "references": "References",
@@ -686,6 +724,69 @@ _REF_STR = {
 }
 
 
+_CFG_JS = r"""
+(function(){
+  var D = __CFGDATA__;
+  var svg = document.getElementById('cfgsvg'), vp = document.getElementById('cfgvp');
+  var NS = 'http://www.w3.org/2000/svg';
+  var nodes = D.nodes, edges = D.edges, nmap = {};
+  nodes.forEach(function(n){nmap[n.id]=n;});
+  var adj = {}; edges.forEach(function(e){(adj[e.src]=adj[e.src]||[]).push(e.dst);});
+  var depth = {};
+  if(nodes.length){ depth[nodes[0].id]=0; var q=[nodes[0].id];
+    while(q.length){ var u=q.shift(); (adj[u]||[]).forEach(function(v){ if(depth[v]==null){depth[v]=depth[u]+1;q.push(v);} }); } }
+  nodes.forEach(function(n){ if(depth[n.id]==null) depth[n.id]=0; });
+  var byd = {}; nodes.forEach(function(n){ (byd[depth[n.id]]=byd[depth[n.id]]||[]).push(n); });
+  var W=210, XG=48, YG=64, y=0;
+  nodes.forEach(function(n){ n.h = 26 + Math.min(n.insns.length,6)*15 + (n.insns.length>6?15:0); });
+  Object.keys(byd).map(Number).sort(function(a,b){return a-b;}).forEach(function(d){
+    var row=byd[d], maxh=Math.max.apply(null,row.map(function(n){return n.h;}));
+    var tot=row.length*W+(row.length-1)*XG;
+    row.forEach(function(n,i){ n.x=i*(W+XG)-tot/2; n.y=y; }); y += maxh + YG; });
+  function col(k){ return k==='taken' ? '#30a46c' : (k==='jump' ? '#4aa3ff' : '#8b95a1'); }
+  function draw(){
+    while(vp.firstChild) vp.removeChild(vp.firstChild);
+    edges.forEach(function(e){ var a=nmap[e.src], b=nmap[e.dst]; if(!a||!b) return;
+      var x1=a.x+W/2, y1=a.y+a.h, x2=b.x+W/2, y2=b.y, my=(y1+y2)/2;
+      var p=document.createElementNS(NS,'path');
+      p.setAttribute('d','M'+x1+','+y1+' C'+x1+','+my+' '+x2+','+my+' '+x2+','+y2);
+      p.setAttribute('fill','none'); p.setAttribute('stroke',col(e.kind));
+      p.setAttribute('stroke-width','2'); p.setAttribute('marker-end','url(#ah)'); vp.appendChild(p); });
+    nodes.forEach(function(n){
+      var g=document.createElementNS(NS,'g'); g.setAttribute('transform','translate('+n.x+','+n.y+')'); g.setAttribute('class','cfgnode');
+      var r=document.createElementNS(NS,'rect'); r.setAttribute('width',W); r.setAttribute('height',n.h); r.setAttribute('rx','7'); g.appendChild(r);
+      var t=document.createElementNS(NS,'text'); t.setAttribute('x','9'); t.setAttribute('y','16'); t.setAttribute('class','cfgaddr'); t.textContent=n.addr; g.appendChild(t);
+      n.insns.slice(0,6).forEach(function(ins,i){ var ln=document.createElementNS(NS,'text'); ln.setAttribute('x','9'); ln.setAttribute('y',30+i*15); ln.setAttribute('class','cfgins'); ln.textContent=(ins.txt||'').slice(0,28); g.appendChild(ln); });
+      if(n.insns.length>6){ var m=document.createElementNS(NS,'text'); m.setAttribute('x','9'); m.setAttribute('y',30+6*15); m.setAttribute('class','cfgins'); m.textContent='... +'+(n.insns.length-6); g.appendChild(m); }
+      g.addEventListener('mousedown',function(ev){ ev.stopPropagation(); var sx=ev.clientX,sy=ev.clientY,ox=n.x,oy=n.y;
+        function mv(e2){ n.x=ox+(e2.clientX-sx)/scale; n.y=oy+(e2.clientY-sy)/scale; draw(); }
+        function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
+        document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
+      vp.appendChild(g); });
+  }
+  var tx=0, ty=0, scale=1;
+  function apply(){ vp.setAttribute('transform','translate('+tx+','+ty+') scale('+scale+')'); }
+  function fit(){ if(!nodes.length) return;
+    var minx=Math.min.apply(null,nodes.map(function(n){return n.x;}));
+    var maxx=Math.max.apply(null,nodes.map(function(n){return n.x+W;}));
+    var miny=Math.min.apply(null,nodes.map(function(n){return n.y;}));
+    var maxy=Math.max.apply(null,nodes.map(function(n){return n.y+n.h;}));
+    var bw=maxx-minx, bh=maxy-miny, cw=svg.clientWidth||800, ch=svg.clientHeight||460;
+    scale=Math.min(1, Math.min(cw/(bw+80), ch/(bh+80))) || 1;
+    tx=cw/2-(minx+bw/2)*scale; ty=24-miny*scale; apply(); }
+  window.cfgReset=fit;
+  svg.addEventListener('mousedown',function(ev){ var sx=ev.clientX,sy=ev.clientY,ox=tx,oy=ty;
+    function mv(e2){ tx=ox+(e2.clientX-sx); ty=oy+(e2.clientY-sy); apply(); }
+    function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
+    document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
+  svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var f=ev.deltaY<0?1.1:0.9;
+    var r=svg.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
+    tx=mx-(mx-tx)*f; ty=my-(my-ty)*f; scale*=f; apply(); }, {passive:false});
+  draw(); fit();
+})();
+"""
+
+
 _CSS = """
 :root{--bg:#f6f7f9;--panel:#ffffff;--fg:#1a2027;--mut:#6b7683;--line:#e3e7ec;--acc:#2f6feb;--code:#f0f2f5;--codefg:#243b53}
 :root[data-theme=dark]{--bg:#0d1117;--panel:#161b22;--fg:#d7dde4;--mut:#8b95a1;--line:#232a33;--acc:#4aa3ff;--code:#0b0e12;--codefg:#cfe3ff}
@@ -758,6 +859,18 @@ ol.toc-l a{color:var(--acc);text-decoration:none}
 ol.toc-l a:hover{text-decoration:underline}
 html{scroll-behavior:smooth}
 h2[id]{scroll-margin-top:16px}
+.cfgwrap{border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden;height:460px}
+#cfgsvg{width:100%;height:100%;cursor:grab;background:
+  radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0/22px 22px}
+#cfgsvg:active{cursor:grabbing}
+.cfgnode rect{fill:var(--panel);stroke:var(--line);stroke-width:1.5;filter:drop-shadow(0 1px 2px rgba(0,0,0,.12))}
+.cfgnode:hover rect{stroke:var(--acc)}
+.cfgnode{cursor:move}
+.cfgaddr{fill:var(--acc);font:700 11px ui-monospace,monospace}
+.cfgins{fill:var(--codefg);font:11px/1 ui-monospace,monospace}
+.cfg-lg{display:inline-flex;align-items:center;gap:4px;margin:0 8px}
+.cfg-lg i{width:16px;height:3px;border-radius:2px;display:inline-block}
+.cfg-reset{font-size:11px;padding:2px 8px;margin-left:6px}
 .poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
 .decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
 .decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}

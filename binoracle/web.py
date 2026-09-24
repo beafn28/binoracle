@@ -429,7 +429,7 @@ def run_command(payload: dict) -> dict:
         html = render_html(binary, triage=getattr(res, "triage", None),
                            findings=res.findings, ledger=res.ledger,
                            answer=res.answer, lang=config.lang, embed=True,
-                           decompiled=getattr(res, 'decompiled', None))
+                           decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None))
         store.close()
         return {"ok": True, "html": html, "text": res.answer}
     if cmd == "autopwn":
@@ -606,7 +606,7 @@ def run_streaming(command, binary, ai, emit):
             html = render_html(binary, triage=getattr(res, "triage", None),
                                findings=res.findings, ledger=res.ledger,
                                answer=res.answer, lang=config.lang, embed=True,
-                           decompiled=getattr(res, 'decompiled', None))
+                           decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None))
             store.close()
             emit("step", "auditoria terminada; generando informe...")
             emit("html", html)
@@ -737,9 +737,17 @@ def run_streaming(command, binary, ai, emit):
             ledger = GroundingLedger()
             for i, (ti, sr, tx) in enumerate(report.sections, 1):
                 ledger.record(i, ti, sr, tx)
+            cfg = None
+            if command == "report":
+                try:
+                    from .workflows.cfg import function_cfg
+                    _fn = decompiled[0].func if decompiled else "main"
+                    cfg = function_cfg(binary, _fn)
+                except Exception:
+                    cfg = None
             html = render_html(binary, triage=(report if command == "report" else None),
                                findings=findings, ledger=ledger, answer=answer,
-                               lang=config.lang, embed=True, decompiled=decompiled)
+                               lang=config.lang, embed=True, decompiled=decompiled, cfg=cfg)
             store.close()
             emit("step", "informe listo.")
             emit("html", html)

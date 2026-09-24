@@ -148,6 +148,13 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
         res.decompiled = _decompile_vuln_funcs(reg, binary, llm)
     except Exception:
         res.decompiled = None
+    # Grafo de flujo interactivo de la funcion vulnerable (o main) para el informe.
+    try:
+        from .cfg import function_cfg
+        fn = res.decompiled[0].func if getattr(res, "decompiled", None) else "main"
+        res.cfg = function_cfg(binary, fn)
+    except Exception:
+        res.cfg = None
 
     # Deterministic backstop: the AI drives, but if it did not actually verify an exploit and
     # the binary has a gift function reachable via overflow, we run the auto-PoC ourselves so
