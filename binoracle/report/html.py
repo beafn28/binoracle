@@ -36,6 +36,55 @@ def _md(s) -> str:
     return t
 
 
+def _md_rich(s: str) -> str:
+    """Markdown enriquecido para la decompilacion anotada: bloques ``` de codigo, cabeceras
+    ###, listas y **negrita**/`codigo`. Suficiente para el texto que produce el LLM."""
+    import re as _re
+    s = s or ""
+    out = []
+    parts = _re.split(r"```[a-zA-Z]*\n?", s)     # alterna prosa / codigo
+    for i, part in enumerate(parts):
+        if i % 2 == 1:                            # dentro de un bloque de codigo
+            out.append(f'<pre class="code">{_esc(part.rstrip())}</pre>')
+            continue
+        for ln in part.splitlines():
+            t = ln.strip()
+            if not t:
+                continue
+            if t.startswith("### "):
+                out.append(f'<h5>{_esc(t[4:])}</h5>')
+            elif t.startswith("## "):
+                out.append(f'<h4>{_esc(t[3:])}</h4>')
+            else:
+                h = _esc(t)
+                h = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
+                h = _re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
+                out.append(f"<p>{h}</p>")
+    return "".join(out)
+
+
+def _decompiled_html(decompiled) -> str:
+    """Seccion de decompilacion anotada: pseudo-C limpio + explicacion por funcion, con el
+    decompilado crudo de r2 plegable como evidencia."""
+    if not decompiled:
+        return ""
+    cards = ""
+    for d in decompiled:
+        ann = getattr(d, "annotated", "") or ""
+        raw = getattr(d, "raw", "") or ""
+        engine = getattr(d, "engine", "") or "r2"
+        func = getattr(d, "func", "?")
+        body = _md_rich(ann) if ann.strip() else (
+            '<p class="mut">Sin modelo local: solo decompilado crudo de r2 (levanta ollama para '
+            'la version anotada).</p>')
+        raw_block = (f'<details class="sec"><summary>decompilado crudo (r2 {_esc(engine)})</summary>'
+                     f'<pre>{_esc(raw)}</pre></details>') if raw.strip() else ""
+        cards += (f'<div class="decfn"><div class="decfn-h"><span class="decfn-t">{_esc(func)}</span>'
+                  f'<span class="decfn-e">r2 {_esc(engine)} + LLM</span></div>'
+                  f'<div class="md">{body}</div>{raw_block}</div>')
+    return f'<h2 data-i18n="decompiled"></h2>{cards}'
+
+
 def _evidence_html(ev: str) -> str:
     """Render finding evidence as a labelled terminal block, with the oracle sources it
     came from shown as chips and a colour cue for angr/debugger-proven evidence."""
@@ -77,7 +126,8 @@ def _parse_mitigations(triage) -> dict:
 
 
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
-                ledger=None, answer: str = "", lang: str = "es", embed: bool = False) -> str:
+                ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
+                decompiled=None) -> str:
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
@@ -192,6 +242,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         proof_html = (f'<h2 data-i18n="poc_proof"></h2>'
                       f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
+    decompiled_html = _decompiled_html(decompiled)
     answer_html = f'<div class="panel md summary"><div class="panel-t" data-i18n="exec_summary"></div>{_md(answer)}</div>' if answer else ""
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
@@ -228,6 +279,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {answer_html}
 
   {proof_html}
+
+  {decompiled_html}
 
   <h2 data-i18n="findings"></h2>
   <div class="toolbar">
@@ -291,6 +344,7 @@ _I18N = {
         "poc_proof": "Prueba de explotacion (PoC)",
         "poc_note": "Captura de la ejecucion real en sandbox aislado que DEMUESTRA el exploit "
                     "(shell / flag / objetivo alcanzado). Evidencia reproducible, no teorica.",
+        "decompiled": "Decompilacion anotada (funcion vulnerable)",
         "findings": "Hallazgos", "attack_surface": "Superficie de ataque",
         "evidence_trail": "Rastro de evidencia (grounding)",
         "rationale": "Razonamiento", "evidence": "Evidencia", "recommendation": "Recomendacion",
@@ -310,6 +364,7 @@ _I18N = {
         "poc_proof": "Exploitation proof (PoC)",
         "poc_note": "Capture of the real execution in an isolated sandbox that PROVES the exploit "
                     "(shell / flag / goal reached). Reproducible evidence, not theoretical.",
+        "decompiled": "Annotated decompilation (vulnerable function)",
         "findings": "Findings", "attack_surface": "Attack surface",
         "evidence_trail": "Evidence trail (grounding)",
         "rationale": "Rationale", "evidence": "Evidence", "recommendation": "Recommendation",
@@ -382,6 +437,15 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
 .summary{margin-bottom:8px;border-left:3px solid var(--acc)}
 .poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
+.decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
+.decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}
+.decfn-t{font-weight:700;font-family:ui-monospace,monospace}
+.decfn-e{color:var(--mut);font-size:11px;margin-left:auto;font-family:ui-monospace,monospace}
+.decfn .md{padding:6px 15px 14px}
+.decfn .md h4,.decfn .md h5{margin:13px 0 5px;color:var(--fg);text-transform:none;letter-spacing:0;font-size:13px}
+.decfn .md p{margin:5px 0}
+pre.code{background:#0b0e12;color:#cfe3ff;border:1px solid var(--line);border-radius:8px;padding:11px;overflow:auto;font:12px/1.5 ui-monospace,monospace;white-space:pre}
+.decfn .sec{margin:8px 15px 14px}
 .proof{border:1px solid #1f7a4d;border-radius:10px;overflow:hidden;background:#0b0e12;margin:10px 0;box-shadow:0 0 0 1px rgba(48,163,108,.15)}
 .proof-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:#0e1a13;border-bottom:1px solid #1f7a4d;flex-wrap:wrap}
 .proof-ok{color:#30d67f;font-weight:800}

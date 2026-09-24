@@ -72,6 +72,41 @@ AUDIT_TASK = (
 )
 
 
+_OVERFLOW_SINKS = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "strcpy", "strcat",
+                   "sprintf", "recv", "memcpy")
+
+
+def _decompile_vuln_funcs(reg, binary, llm, limit: int = 2):
+    """Decompila y anota las funciones que llaman a un sink de overflow (la superficie real).
+    Si no hay ninguna, cae a main. Devuelve lista de DecompiledFunc o None."""
+    from .decompile import decompile_explain
+    funcs = []
+    try:
+        import r2pipe
+        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        import json as _j
+        for sink in _OVERFLOW_SINKS:
+            xr = r.cmd(f"axtj @ sym.imp.{sink}") or ""
+            try:
+                for x in _j.loads(xr) if xr.strip() else []:
+                    fn = x.get("fcn_name")
+                    if fn and fn not in funcs:
+                        funcs.append(fn)
+            except Exception:
+                pass
+        if not funcs:
+            funcs = ["main"]
+        r.quit()
+    except Exception:
+        funcs = ["main"]
+    out = []
+    for fn in funcs[:limit]:
+        d = decompile_explain(binary, fn, llm=llm)
+        if d.ok:
+            out.append(d)
+    return out or None
+
+
 def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
     reg = build_registry(binary, enable_dynamic=True, enable_exploit=True)
     kb_hint = _kb_hint(reg, store=store)
@@ -91,6 +126,13 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
         res.triage = triage               # so the report shows arch + mitigations
     except Exception:
         res.triage = None
+
+    # Decompilacion aumentada de la funcion vulnerable: pseudo-C limpio + explicacion (para el
+    # informe). Best-effort; no rompe la auditoria si falla.
+    try:
+        res.decompiled = _decompile_vuln_funcs(reg, binary, llm)
+    except Exception:
+        res.decompiled = None
 
     # Deterministic backstop: the AI drives, but if it did not actually verify an exploit and
     # the binary has a gift function reachable via overflow, we run the auto-PoC ourselves so
