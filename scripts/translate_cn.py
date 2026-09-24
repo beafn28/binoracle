@@ -10,9 +10,12 @@ from pathlib import Path
 
 OLLAMA = os.environ.get("BINORACLE_OLLAMA_URL", "http://localhost:11434").rstrip("/")
 MODEL = os.environ.get("BINORACLE_RAG_LLM_MODEL", "qwen2.5-coder:7b")
-SRC_ROOT = "/tmp/cn_stage"
-DST_ROOT = str(Path(__file__).resolve().parent.parent / "binoracle" / "kb" / "skills" / "reverse-skill")
-LOG = "/tmp/translate_cn.log"
+# Configurable por env para reutilizar el pipeline con otros corpus (p.ej. r0crawl).
+_KB = Path(__file__).resolve().parent.parent / "binoracle" / "kb" / "skills"
+SRC_ROOT = os.environ.get("BINORACLE_TR_SRC", "/tmp/cn_stage")
+LIST_FILE = os.environ.get("BINORACLE_TR_LIST", "/tmp/cn_list.txt")
+DST_ROOT = os.environ.get("BINORACLE_TR_DST", str(_KB / "reverse-skill"))
+LOG = os.environ.get("BINORACLE_TR_LOG", "/tmp/translate_cn.log")
 CJK = re.compile(r"[一-鿿]")
 
 
@@ -97,7 +100,7 @@ def split_sections(raw, cap=2500):
 
 
 def main():
-    files = [l.strip() for l in open("/tmp/cn_list.txt") if l.strip()]
+    files = [l.strip() for l in open(LIST_FILE) if l.strip()]
     # Sharding para varios workers en paralelo: cada worker procesa un subconjunto disjunto.
     shard_i = int(os.environ.get("SHARD_I", "0"))
     shard_n = int(os.environ.get("SHARD_N", "1"))
