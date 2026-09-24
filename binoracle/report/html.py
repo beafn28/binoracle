@@ -308,9 +308,10 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
     trail = ""
     if ledger is not None and getattr(ledger, "entries", None):
-        for e in ledger.entries:
-            # Muestra el comando/paso como una "captura" de terminal: $ <tool>  seguido del output.
-            trail += (f'<details class="sec"><summary>step {e.step}: {_esc(e.tool)}'
+        # Renumera secuencial (1..N): el contador interno del bucle salta (pasos internos/
+        # dedup + backstop en res.steps+N); en el informe se lee limpio y sin huecos.
+        for i, e in enumerate(ledger.entries, 1):
+            trail += (f'<details class="sec"><summary>paso {i}: {_esc(e.tool)}'
                       f'<span class="src">{_esc(e.source)}</span></summary>'
                       f'<pre><span class="cmd">$ {_esc(e.tool)}</span>\n{_esc(e.data)}</pre></details>')
 
