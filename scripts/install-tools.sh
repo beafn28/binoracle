@@ -18,15 +18,22 @@ $PY -m pip install --user -q pyelftools capstone keystone-engine ropgadget roppe
   && echo "[ok] pip: pyelftools capstone keystone ropgadget ropper angr angrop unicorn qiling frida" \
   || echo "[--] pip: alguna libreria fallo (revisa el log)"
 
-# --- pip: reversing/malware/pwn (herramientas nuevas del catalogo) ---
-$PY -m pip install --user -q flare-floss flare-capa yara-python LibcSearcher 2>/dev/null \
-  && echo "[ok] pip: floss capa yara-python LibcSearcher" \
-  || echo "[--] pip: floss/capa/yara/LibcSearcher fallo (revisa el log)"
+# --- pip: reversing/malware/pwn (individual: un fallo no tumba al resto) ---
+for p in yara-python LibcSearcher flare-capa miasm manticore flare-floss; do
+  $PY -m pip install --user -q "$p" 2>/dev/null && echo "[ok] pip: $p" \
+    || echo "[--] pip: $p fallo (dep nativa que no compila en este host; opcional)"
+done
 
 # --- ruby gems ---
 if have gem; then
   gem list -i one_gadget >/dev/null 2>&1 || gem install one_gadget 2>/dev/null && echo "[ok] gem: one_gadget"
   gem list -i seccomp-tools >/dev/null 2>&1 || gem install seccomp-tools 2>/dev/null && echo "[ok] gem: seccomp-tools"
+  # los ejecutables de gem suelen quedar fuera del PATH: enlaza one_gadget a un dir del PATH.
+  if ! have one_gadget; then
+    ogp="$(gem contents one_gadget 2>/dev/null | grep -m1 '/bin/one_gadget$')"
+    [ -n "$ogp" ] && have brew && ln -sf "$ogp" "$(brew --prefix)/bin/one_gadget" 2>/dev/null \
+      && echo "[ok] one_gadget enlazado al PATH"
+  fi
 else
   echo "[--] gem no encontrado (one_gadget / seccomp-tools). Instala Ruby."
 fi
@@ -41,7 +48,7 @@ fi
 
 # --- gestor del sistema ---
 if [ "$os" = "Darwin" ] && have brew; then
-  for f in radare2 patchelf qemu binwalk aflplusplus yara jadx apktool dex2jar honggfuzz; do
+  for f in radare2 patchelf qemu binwalk aflplusplus yara jadx apktool dex2jar; do
     brew list "$f" >/dev/null 2>&1 || brew install "$f" 2>/dev/null && echo "[ok] brew: $f"
   done
   brew list --cask detect-it-easy >/dev/null 2>&1 || brew install --cask detect-it-easy 2>/dev/null && echo "[ok] brew cask: detect-it-easy"
