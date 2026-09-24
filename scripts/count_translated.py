@@ -8,6 +8,6 @@ for s in files:
     d = os.path.join(DST, os.path.relpath(s, SRC))
     if os.path.exists(d):
         t = open(d, encoding="utf-8", errors="replace").read()
-        if t and len(cjk.findall(t)) / max(len(t), 1) < 0.05:
+        if t and len(cjk.findall(t)) / max(len(t), 1) < 0.02:
             done += 1
 print(done)

@@ -36,7 +36,9 @@ from typing import Iterable, Optional
 # Ficheros que NO son conocimiento de reversing sino navegacion/routing de un skill
 # (manifiestos y plantillas). Se excluyen del indice: solo meten ruido o instrucciones.
 _MANIFEST_DOCS = {"readme", "skill", "_index", "index", "_template",
-                  "contribute-back", "tool-index"}
+                  "contribute-back", "tool-index",
+                  # andamiaje de orquestacion de tareas (plantillas MCP/task), no conocimiento:
+                  "task-artifacts", "task-input-template", "mcp-task-template"}
 
 
 def _truthy(v: str) -> bool:
@@ -144,6 +146,7 @@ class KnowledgeBase:
 
     def __init__(self, kb_dir: Path = _KB_DIR):
         self.chunks: list[Chunk] = []
+        self._seen_chunks: set = set()   # dedup exacto (title, text) durante la carga
         self.idf: dict[str, float] = {}
         self._load(kb_dir)
         self._build_idf()
@@ -387,16 +390,23 @@ class KnowledgeBase:
         if t in self._NOISE_TITLES or t.startswith("---"):   # TOC o frontmatter YAML
             return
         body = f"{title}\n{text}"
-        # Descarta contenido dominado por CJK (chino): binoracle trabaja en ES/EN y ese texto
-        # solo mete ruido en el retrieval.
+        # Descarta contenido con CJK (chino) residual: binoracle trabaja en ES/EN. El umbral es
+        # bajo (2%) para cazar traducciones parciales que dejaron titulos/terminos en chino.
         cjk = sum(1 for ch in body if "一" <= ch <= "鿿")
-        if cjk / max(len(body), 1) > 0.05:
+        if cjk / max(len(body), 1) > 0.02:
             return
         lines = [l for l in text.splitlines() if l.strip()]
         if lines:
             linkish = sum(1 for l in lines if l.lstrip().startswith(("- [", "* [", "[")) or "](" in l)
             if linkish / len(lines) > 0.6:      # seccion mayormente enlaces -> es un indice
                 return
+        # Dedup exacto: el mismo tema aparece en varios corpus importados (p.ej. anti-analysis
+        # esta en ctf-reverse y en reverse-skill). Un chunk identico repetido gasta un slot del
+        # top-k con contenido que ya tienes; nos quedamos con la primera aparicion.
+        key = (title.strip(), text.strip())
+        if key in self._seen_chunks:
+            return
+        self._seen_chunks.add(key)
         tf = Counter(_tokens(title + " " + text))
         if not tf:
             return

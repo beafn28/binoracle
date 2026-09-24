@@ -41,7 +41,7 @@ def translate_block(text):
     for attempt in range(2):
         try:
             out = gen(prompt)
-            if out and CJK.findall(out).__len__() / max(len(out), 1) < 0.05:
+            if out and CJK.findall(out).__len__() / max(len(out), 1) < 0.02:
                 return out
         except Exception as e:
             log(f"  retry ({e})")
@@ -112,7 +112,7 @@ def main():
         dst = os.path.join(DST_ROOT, rel)
         if os.path.exists(dst):
             body = open(dst, encoding="utf-8", errors="replace").read()
-            if body and CJK.findall(body).__len__() / max(len(body), 1) < 0.05:
+            if body and CJK.findall(body).__len__() / max(len(body), 1) < 0.02:
                 done += 1
                 continue  # ya traducido
         raw = open(src, encoding="utf-8", errors="replace").read()
