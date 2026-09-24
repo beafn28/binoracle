@@ -321,15 +321,22 @@ def _cfg_html(cfg, lang: str) -> str:
     # transform inicial: coloca el grafo desde arriba-izquierda con un margen (visible sin JS)
     minx = min((n["x"] for n in nodes.values()), default=0)
     init = f'translate({20 - minx:.0f},20)'
-    js = _CFG_JS.replace("__CFGW__", str(W))
+    # detalles por bloque para el panel de inspeccion (instrucciones completas + what-if)
+    info = {nid: {"addr": nodes[nid]["addr"],
+                  "insns": [op.get("txt", "") for op in nodes[nid]["insns"]],
+                  "note": nodes[nid].get("note", "")} for nid in order}
+    tip = ("Pulsa un bloque para ver sus instrucciones y que decide el salto."
+           if lang == "es" else "Click a block to see its instructions and what its jump decides.")
+    js = _CFG_JS.replace("__CFGW__", str(W)).replace("__CFGINFO__", _json.dumps(info))
     return (f'<h2 data-i18n="cfg_graph" id="sec-cfg"></h2>'
             f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["func"])} '
             f'<code>{_esc(cfg.func)}</code> &middot; {_esc(T["hint"])} {legend} '
             f'<button class="ctl cfg-reset" onclick="cfgReset()">{_esc(T["reset"])}</button></p>'
-            f'<div class="cfgwrap"><svg id="cfgsvg"><defs>'
+            f'<div class="cfgflex"><div class="cfgwrap"><svg id="cfgsvg"><defs>'
             f'<marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
             f'<path d="M0,0 L7,3 L0,6 Z" fill="context-stroke"/></marker></defs>'
             f'<g id="cfgvp" transform="{init}">{edges_svg}{nodes_svg}</g></svg></div>'
+            f'<div id="cfginfo" class="cfginfo"><p class="mut">{_esc(tip)}</p></div></div>'
             f'<script>{js}</script>')
 
 
@@ -855,8 +862,18 @@ _REF_STR = {
 _CFG_JS = r"""
 (function(){
   var W = __CFGW__;
+  var INFO = __CFGINFO__;
   var svg = document.getElementById('cfgsvg'), vp = document.getElementById('cfgvp');
+  var panel = document.getElementById('cfginfo');
   if(!svg || !vp) return;
+  function esc(s){ return (s+'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function showInfo(id){
+    var d = INFO[id]; if(!d || !panel) return;
+    var ins = d.insns.map(function(x){ return '<div class="cfgi-l">'+esc(x)+'</div>'; }).join('');
+    panel.innerHTML = '<div class="cfgi-a">'+esc(d.addr)+'</div><div class="cfgi-code">'+ins+'</div>'+
+      '<div class="cfgi-note">'+esc(d.note||'')+'</div>';
+    vp.querySelectorAll('.cfgnode').forEach(function(g){ g.classList.toggle('sel', g.getAttribute('data-id')===id); });
+  }
   function tf(g){ var m=/translate\(([-\d.]+),\s*([-\d.]+)\)/.exec(g.getAttribute('transform')||''); return m?{x:+m[1],y:+m[2]}:{x:0,y:0}; }
   function nh(g){ var r=g.querySelector('rect'); return r?+r.getAttribute('height'):40; }
   var tx=0, ty=0, scale=1;
@@ -881,10 +898,12 @@ _CFG_JS = r"""
     var r=svg.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
     tx=mx-(mx-tx)*f; ty=my-(my-ty)*f; scale*=f; apply(); }, {passive:false});
   vp.querySelectorAll('.cfgnode').forEach(function(g){
-    g.addEventListener('mousedown',function(ev){ ev.stopPropagation(); var p=tf(g), sx=ev.clientX, sy=ev.clientY;
-      function mv(e2){ var nx=p.x+(e2.clientX-sx)/scale, ny=p.y+(e2.clientY-sy)/scale;
+    g.addEventListener('mousedown',function(ev){ ev.stopPropagation(); var p=tf(g), sx=ev.clientX, sy=ev.clientY, moved=false;
+      function mv(e2){ if(Math.abs(e2.clientX-sx)+Math.abs(e2.clientY-sy)>3) moved=true;
+        var nx=p.x+(e2.clientX-sx)/scale, ny=p.y+(e2.clientY-sy)/scale;
         g.setAttribute('transform','translate('+nx+','+ny+')'); redraw(g.getAttribute('data-id')); }
-      function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
+      function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up);
+        if(!moved) showInfo(g.getAttribute('data-id')); }
       document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
   });
   window.cfgReset=function(){ var gs=vp.querySelectorAll('.cfgnode'); if(!gs.length) return;
@@ -971,6 +990,14 @@ ol.toc-l a{color:var(--acc);text-decoration:none}
 ol.toc-l a:hover{text-decoration:underline}
 html{scroll-behavior:smooth}
 h2[id]{scroll-margin-top:16px}
+.cfgflex{display:grid;grid-template-columns:1fr 260px;gap:12px}
+@media(max-width:760px){.cfgflex{grid-template-columns:1fr}}
+.cfginfo{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:12px;height:460px;overflow:auto}
+.cfgi-a{font:700 12px ui-monospace,monospace;color:var(--acc);margin-bottom:6px}
+.cfgi-code{background:var(--code);border-radius:7px;padding:8px;margin-bottom:8px}
+.cfgi-l{font:11.5px/1.55 ui-monospace,monospace;color:var(--codefg);white-space:pre}
+.cfgi-note{font-size:12.5px;line-height:1.5;color:var(--fg);border-left:2px solid var(--acc);padding-left:9px}
+.cfgnode.sel rect{stroke:var(--acc);stroke-width:2.5}
 .cfgwrap{border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden;height:460px}
 #cfgsvg{width:100%;height:100%;cursor:grab;background:
   radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0/22px 22px}
