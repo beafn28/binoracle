@@ -166,6 +166,9 @@ def check_tools() -> list[ToolStatus]:
     ida = _which("idat64", "idat", "ida64", "ida")
     st.append(ToolStatus("IDA Pro", "static", bool(ida), ida,
                          "desensamblador/decompilador de referencia (idapython para batch)"))
+    st.append(ToolStatus("Binary Ninja", "static", bool(_pymod("binaryninja") or _which("binaryninja", "binja")),
+                         _pymod("binaryninja") or _which("binaryninja", "binja"),
+                         "decompilador + API headless (HLIL/MLIL, scripting de analisis)"))
     st.append(ToolStatus("retdec", "static", bool(_which("retdec-decompiler", "retdec-decompiler.py")),
                          _which("retdec-decompiler", "retdec-decompiler.py"),
                          "decompilador open source (LLVM IR -> C), util para triaje rapido"))
