@@ -122,16 +122,21 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
         triage = run_triage(reg, binary, store=store)
         hunt = run_hunt(reg, binary, llm=None, config=config, store=store)
         dfindings, _ = auto_verify(reg, hunt.findings, store=store)
-        # credenciales/secretos hardcodeados (parte de una auditoria de pentest completa)
-        try:
-            from .secrets import scan_secrets
-            sfindings = scan_secrets(reg, binary, lang=getattr(config, "lang", "es"))
-            for sf in sfindings:
-                if store:
-                    store.add_finding(sf)
-            dfindings = dfindings + sfindings
-        except Exception:
-            pass
+        # Capas extra de una auditoria de pentest completa: credenciales/secretos, proteccion
+        # insuficiente de ficheros/permisos, y seguridad de comunicaciones/criptografia.
+        _lang = getattr(config, "lang", "es")
+        for _mod, _fn in (("secrets", "scan_secrets"), ("fileperms", "scan_file_perms"),
+                          ("commsec", "scan_comms")):
+            try:
+                import importlib
+                extra = getattr(importlib.import_module(f".{_mod}", __package__), _fn)(
+                    reg, binary, lang=_lang)
+                for xf in extra:
+                    if store:
+                        store.add_finding(xf)
+                dfindings = dfindings + extra
+            except Exception:
+                pass
         res.findings = dfindings          # real evidence, code-verified verdicts
         res.triage = triage               # so the report shows arch + mitigations
     except Exception:

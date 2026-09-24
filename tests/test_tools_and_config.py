@@ -58,6 +58,41 @@ def test_secrets_scanner():
     assert "changeme" not in joined and "your_key_here" not in joined
 
 
+def _mock_reg(imports="", strings=""):
+    from binoracle.oracles.base import ToolResult
+
+    class _T:
+        def __init__(self, d): self.d = d
+        def run(self): return ToolResult(True, "r2", self.d)
+
+    class _R:
+        def get(self, name):
+            if name == "r2_imports": return _T(imports)
+            if name == "r2_strings": return _T(strings)
+            return None
+    return _R()
+
+
+def test_fileperms_scanner():
+    from binoracle.workflows.fileperms import scan_file_perms
+    reg = _mock_reg(imports="sym.imp.tmpnam\nsym.imp.fopen\nsym.imp.chmod",
+                    strings="/tmp/app_cache.dat")
+    fs = scan_file_perms(reg, "x")
+    titles = " ".join(f.title.lower() for f in fs)
+    assert "tmpnam" in titles and "temporal" in titles  # temp inseguro + despliegue en /tmp
+
+
+def test_commsec_scanner():
+    from binoracle.workflows.commsec import scan_comms
+    reg = _mock_reg(imports="sym.imp.MD5_Init",
+                    strings="http://updates.local/x\nCURLOPT_SSL_VERIFYPEER=0\nRC4")
+    fs = scan_comms(reg, "x")
+    titles = " ".join(f.title.lower() for f in fs)
+    assert "sin cifrar" in titles         # cleartext http
+    assert "certificado" in titles        # verify disabled
+    assert "criptografia" in titles       # weak crypto
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
