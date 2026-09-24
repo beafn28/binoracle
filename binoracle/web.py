@@ -51,11 +51,11 @@ _KB_CATS = [
     ("Heap", ["heap", "modern-heap", "heap-grooming", "heap-version-matrix", "uaf-typeconfusion", "io-file"]),
     ("Enlace y RCE al salir", ["got-plt", "exit-handlers"]),
     ("Bugs de entrada", ["integer-bugs"]),
-    ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding"]),
+    ("Syscalls y shellcode", ["syscalls-seccomp", "shellcoding", "syscall-table"]),
     ("Concurrencia", ["race-conditions"]),
     ("Kernel", ["kernel-pwn", "kernel-mitigations", "ebpf"]),
     ("Otras plataformas", ["browser-v8", "browser-v8-modern", "windows-exploit", "windows-mitigations", "pe-dll", "macos-macho", "arm-mips"]),
-    ("Sistemas y embebido", ["android-native", "firmware-embedded", "vm-escape"]),
+    ("Sistemas y embebido", ["android-native", "firmware-embedded", "vm-escape", "arm64-exploitation"]),
     ("Reversing", ["anti-debug", "go-rust-reversing", "ghidra-rpc"]),
     ("Metodologia y referencia", ["mitigations", "pie", "methodology", "tools", "references"]),
 ]
