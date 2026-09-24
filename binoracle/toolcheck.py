@@ -75,17 +75,17 @@ def check_tools() -> list[ToolStatus]:
                          "listado/cadena de gadgets (complementa el /R de radare2)"))
 
     gdb = _which("gdb")
-    pwndbg = ""
+    plugin = ""
     if gdb:
         try:
             out = subprocess.run([gdb, "-batch", "-ex", "version"], capture_output=True,
                                  text=True, timeout=5)
-            if "pwndbg" in (out.stdout + out.stderr).lower():
-                pwndbg = "pwndbg"
+            blob = (out.stdout + out.stderr).lower()
+            plugin = next((p for p in ("pwndbg", "gef", "peda") if p in blob), "")
         except Exception:
             pass
     st.append(ToolStatus("gdb (+pwndbg/gef)", "dynamic", bool(gdb),
-                         (_ver(gdb, "--version") + (" +pwndbg" if pwndbg else "")) if gdb else "",
+                         (_ver(gdb, "--version") + (f" +{plugin}" if plugin else "")) if gdb else "",
                          "debug dinamico: breakpoints, heap, telescope, confirmar crashes"))
 
     lldb = _which("lldb")
@@ -159,6 +159,62 @@ def check_tools() -> list[ToolStatus]:
     # --- fuzzing / simbolico ---
     st.append(ToolStatus("AFL++", "symbolic", bool(_which("afl-fuzz")), _which("afl-fuzz"),
                          "fuzzing guiado por cobertura (harness + corpus)"))
+    st.append(ToolStatus("honggfuzz", "symbolic", bool(_which("honggfuzz")), _which("honggfuzz"),
+                         "fuzzer guiado por cobertura (alternativa a AFL++, hardware counters)"))
+
+    # --- decompiladores / RE comerciales y de plataforma ---
+    ida = _which("idat64", "idat", "ida64", "ida")
+    st.append(ToolStatus("IDA Pro", "static", bool(ida), ida,
+                         "desensamblador/decompilador de referencia (idapython para batch)"))
+    st.append(ToolStatus("retdec", "static", bool(_which("retdec-decompiler", "retdec-decompiler.py")),
+                         _which("retdec-decompiler", "retdec-decompiler.py"),
+                         "decompilador open source (LLVM IR -> C), util para triaje rapido"))
+    st.append(ToolStatus("bindiff/diaphora", "static", bool(_which("bindiff") or _which("diaphora")),
+                         _which("bindiff") or _which("diaphora"),
+                         "diffing de funciones entre builds (analisis de parches 1-day)"))
+
+    # --- Android / Java / .NET ---
+    st.append(ToolStatus("jadx", "static", bool(_which("jadx", "jadx-gui")), _which("jadx", "jadx-gui"),
+                         "APK/DEX -> pseudo-Java (decompilado Android rapido)"))
+    st.append(ToolStatus("apktool", "static", bool(_which("apktool")), _which("apktool"),
+                         "desempaqueta APK: smali, recursos, AndroidManifest"))
+    st.append(ToolStatus("dex2jar", "static", bool(_which("d2j-dex2jar", "d2j-dex2jar.sh")),
+                         _which("d2j-dex2jar", "d2j-dex2jar.sh"),
+                         "DEX -> JAR (para decompilar con herramientas Java)"))
+    st.append(ToolStatus("ILSpy/dnSpy", "static", bool(_which("ilspycmd") or _which("dnSpy")),
+                         _which("ilspycmd") or _which("dnSpy"),
+                         "decompilador .NET/CIL (malware y apps managed)"))
+
+    # --- malware / capacidades / strings ---
+    st.append(ToolStatus("yara", "static", bool(_which("yara") or _pymod("yara")),
+                         _which("yara") or _pymod("yara"),
+                         "reglas de deteccion (familias de malware, packers, patrones)"))
+    st.append(ToolStatus("floss", "static", bool(_which("floss")), _which("floss"),
+                         "extrae strings ofuscadas/stack/tight (FLARE), no solo las estaticas"))
+    st.append(ToolStatus("capa", "static", bool(_which("capa") or _pymod("capa")),
+                         _which("capa") or _pymod("capa"),
+                         "detecta CAPACIDADES del binario (ATT&CK/MBC) a partir de reglas"))
+    st.append(ToolStatus("file", "static", bool(_which("file")), _which("file"),
+                         "identificacion rapida de formato/arquitectura del artefacto"))
+
+    # --- simbolico / taint / emulacion extra ---
+    st.append(ToolStatus("Triton", "symbolic", bool(_pymod("triton")), _pymod("triton"),
+                         "ejecucion simbolica + taint dinamico (deofuscacion, SMT)"))
+    st.append(ToolStatus("miasm", "symbolic", bool(_pymod("miasm")), _pymod("miasm"),
+                         "IR + emulacion simbolica multi-arch (unpacking, deofuscacion)"))
+    st.append(ToolStatus("manticore", "symbolic", bool(_pymod("manticore") or _which("manticore")),
+                         _pymod("manticore") or _which("manticore"),
+                         "ejecucion simbolica de binarios y smart contracts (Trail of Bits)"))
+
+    # --- instrumentacion dinamica (DBI) ---
+    st.append(ToolStatus("DynamoRIO", "dynamic", bool(_which("drrun")), _which("drrun"),
+                         "DBI: cobertura, tracing de instrucciones, tools drcov/drltrace"))
+
+    # --- pwn: identificacion de libc ---
+    st.append(ToolStatus("libc-database", "exploit",
+                         bool(_which("libc-database") or _pymod("LibcSearcher")),
+                         _which("libc-database") or _pymod("LibcSearcher"),
+                         "identifica la libc por simbolos filtrados -> offsets de system/one_gadget"))
 
     return st
 
