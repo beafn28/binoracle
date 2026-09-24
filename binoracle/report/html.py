@@ -82,7 +82,7 @@ def _decompiled_html(decompiled) -> str:
         cards += (f'<div class="decfn"><div class="decfn-h"><span class="decfn-t">{_esc(func)}</span>'
                   f'<span class="decfn-e">r2 {_esc(engine)} + LLM</span></div>'
                   f'<div class="md">{body}</div>{raw_block}</div>')
-    return f'<h2 data-i18n="decompiled"></h2>{cards}'
+    return f'<h2 data-i18n="decompiled" id="sec-dec"></h2>{cards}'
 
 
 import re as _re_mod
@@ -111,7 +111,7 @@ def _exploit_section(binary: str, findings, lang: str) -> str:
               f'# payload = b"A"*offset + p64(RET) + p64(elf.sym.win)\n\n'
               f'io.sendline(payload)\n'
               f'io.interactive()                  # -> shell')
-    return (f'<h2 data-i18n="exploit_steps"></h2>'
+    return (f'<h2 data-i18n="exploit_steps" id="sec-exploit"></h2>'
             f'<div class="expwrap"><div class="expcol"><div class="panel-t">{T["repro"]}</div>'
             f'<ol class="steps">{steps}</ol></div>'
             f'<div class="expcol"><div class="panel-t">{T["script"]}</div>'
@@ -131,7 +131,7 @@ def _mit_detail(mit: dict, lang: str) -> str:
                  f'<td class="mstate">{_esc(info["state"])}</td>'
                  f'<td>{_esc(info["impact"])}</td>'
                  f'<td class="mrem">{_esc(info["rem"])}</td></tr>')
-    return (f'<h2 data-i18n="mit_detail"></h2>'
+    return (f'<h2 data-i18n="mit_detail" id="sec-mit"></h2>'
             f'<table class="mittab"><thead><tr><th>{T["h_mit"]}</th><th>{T["h_state"]}</th>'
             f'<th>{T["h_impact"]}</th><th>{T["h_rem"]}</th></tr></thead><tbody>{rows}</tbody></table>')
 
@@ -167,7 +167,7 @@ def _references(findings, lang: str) -> str:
     chips = "".join(f'<code class="refchip">binoracle kb "{_esc(s)}"</code>' for s in sheets)
     extl = "".join(f'<li>{_esc(e)}</li>' for e in ext)
     ext_html = f'<div class="panel-t" style="margin-top:12px">{T["ext"]}</div><ul class="reflist">{extl}</ul>' if ext else ""
-    return (f'<h2 data-i18n="references"></h2>'
+    return (f'<h2 data-i18n="references" id="sec-refs"></h2>'
             f'<p class="mut" style="font-size:12px">{T["note"]}</p>'
             f'<div class="refchips">{chips}</div>{ext_html}')
 
@@ -175,6 +175,59 @@ def _references(findings, lang: str) -> str:
 def _os_basename(p: str) -> str:
     import os as _os
     return _os.path.basename(p) or "binary"
+
+
+def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
+    """Resumen ejecutivo COHERENTE y profesional, derivado de los hechos (no de la narracion del
+    modelo, que en modelos pequenos puede contradecirse). Bilingue."""
+    name = _os_basename(binary)
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    fs = sorted(findings, key=lambda x: sev_rank.get(x.severity, 9))
+    total = len(fs)
+    verified = sum(1 for f in fs if f.verdict == "verified")
+    vexp = next((f for f in fs if f.verdict == "verified"
+                 and "ret2" in (f.title + f.evidence).lower()), None)
+    def mstate(k):
+        v = mit.get(k)
+        return "?" if v is None else (("ON" if v else "OFF") if isinstance(v, bool) else str(v).upper())
+    protec = f"NX {mstate('NX')}, PIE {mstate('PIE')}, Canary {mstate('Canary')}, RELRO {mstate('RELRO')}"
+    arch = mit.get("Arch") or "?"
+    top = "; ".join(f.title for f in fs[:3]) or ("sin hallazgos" if lang == "es" else "no findings")
+    if lang == "es":
+        p = [f"Se audito el binario **{name}** ({arch}). Protecciones: {protec}. "
+             f"Se identificaron **{total} hallazgos** ({verified} verificados por ejecucion)."]
+        if vexp:
+            p.append(f"Resultado clave: se construyo y **VERIFICO un exploit** de forma automatica "
+                     f"({_esc(vexp.title.lower())}) que alcanza el objetivo en un sandbox Docker "
+                     f"aislado (evidencia reproducible en 'Prueba de explotacion').")
+        p.append(f"Hallazgos destacados: {top}.")
+    else:
+        p = [f"Audited binary **{name}** ({arch}). Protections: {protec}. "
+             f"**{total} findings** identified ({verified} verified by execution)."]
+        if vexp:
+            p.append(f"Key result: an **exploit was automatically built and VERIFIED** "
+                     f"({_esc(vexp.title.lower())}), reaching the goal in an isolated Docker sandbox "
+                     f"(reproducible evidence under 'Exploitation proof').")
+        p.append(f"Top findings: {top}.")
+    return "\n\n".join(p)
+
+
+def _toc(lang: str, has) -> str:
+    """Indice navegable del informe: solo las secciones presentes, con enlace a su ancla."""
+    T = {"es": {"t": "Indice", "summary": "Resumen ejecutivo", "proof": "Prueba de explotacion",
+                "exploit": "Exploit paso a paso", "dec": "Decompilacion anotada",
+                "find": "Hallazgos", "mit": "Mitigaciones y remediacion",
+                "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
+         "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
+                "exploit": "Exploit step by step", "dec": "Annotated decompilation",
+                "find": "Findings", "mit": "Mitigations & remediation",
+                "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
+    order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
+             ("dec", "sec-dec"), ("find", "sec-find"), ("mit", "sec-mit"),
+             ("surface", "sec-surface"), ("refs", "sec-refs"), ("trail", "sec-trail")]
+    items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
+                    for key, aid in order if has.get(key))
+    return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
 
 
 def _evidence_html(ev: str) -> str:
@@ -340,14 +393,23 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
                         f'<span class="proof-t">{_esc(title)}</span>'
                         f'<span class="proof-l">{_esc(loc)}</span></div>'
                         f'<pre class="evpre">{_esc(data)}</pre></div>')
-        proof_html = (f'<h2 data-i18n="poc_proof"></h2>'
+        proof_html = (f'<h2 data-i18n="poc_proof" id="sec-proof"></h2>'
                       f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
     decompiled_html = _decompiled_html(decompiled)
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
     references_html = _references(findings, lang)
-    answer_html = f'<div class="panel md summary"><div class="panel-t" data-i18n="exec_summary"></div>{_md(answer)}</div>' if answer else ""
+    # Resumen ejecutivo COHERENTE (deterministico) en vez de la narracion del modelo, que puede
+    # contradecirse ("no encontre vuln" + backstop verificado). Profesional y sin la nota de citas.
+    summary_txt = _auto_summary(binary, findings, mit, lang)
+    answer_html = (f'<div class="panel md summary" id="sec-summary">'
+                   f'<div class="panel-t" data-i18n="exec_summary"></div>{_md(summary_txt)}</div>')
+    # Indice: solo las secciones realmente presentes.
+    _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
+            "dec": bool(decompiled_html), "find": True, "mit": bool(mit_detail_html),
+            "surface": bool(triage_sections), "refs": bool(references_html), "trail": bool(trail)}
+    toc_html = _toc(lang, _has)
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
         f'<span data-i18n="sev_{s}">{L("sev_"+s)}</span> <b>{counts.get(s,0)}</b></button>' for s in _SEV)
@@ -380,6 +442,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     </div>
   </section>
 
+  {toc_html}
+
   {answer_html}
 
   {proof_html}
@@ -388,7 +452,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {decompiled_html}
 
-  <h2 data-i18n="findings"></h2>
+  <h2 data-i18n="findings" id="sec-find"></h2>
   <div class="toolbar">
     <input id="q" placeholder="" oninput="search()">
     {sev_buttons}
@@ -397,12 +461,12 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {mit_detail_html}
 
-  <h2 data-i18n="attack_surface"></h2>
+  <h2 data-i18n="attack_surface" id="sec-surface"></h2>
   {triage_sections or '<p class="empty" data-i18n="no_triage"></p>'}
 
   {references_html}
 
-  <h2 data-i18n="evidence_trail"></h2>
+  <h2 data-i18n="evidence_trail" id="sec-trail"></h2>
   {trail or '<p class="empty" data-i18n="no_trail"></p>'}
 
   <footer data-i18n="footer"></footer>
@@ -667,6 +731,15 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .evpre{margin:0;padding:12px;background:#0b0e12;color:#cfe3ff;white-space:pre;overflow:auto;font:12px/1.5 ui-monospace,monospace;border:0;border-radius:0}
 .md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
 .summary{margin-bottom:8px;border-left:3px solid var(--acc)}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:14px 0}
+.toc-t{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+ol.toc-l{margin:0;padding-left:20px;columns:2;column-gap:28px}
+@media(max-width:600px){ol.toc-l{columns:1}}
+ol.toc-l li{margin:3px 0}
+ol.toc-l a{color:var(--acc);text-decoration:none}
+ol.toc-l a:hover{text-decoration:underline}
+html{scroll-behavior:smooth}
+h2[id]{scroll-margin-top:16px}
 .poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
 .decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
 .decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}
