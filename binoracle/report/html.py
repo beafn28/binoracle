@@ -149,6 +149,79 @@ _REF_MAP = {
 }
 
 
+def _attack_chain(findings, mit: dict, lang: str) -> str:
+    """Cadenas de explotacion: encadena los fallos detectados en un camino de ataque paso a paso,
+    grounded en los hallazgos y mitigaciones (como un fallo habilita el siguiente hasta el objetivo)."""
+    tl = " ".join((f.title + " " + (f.location or "")).lower() for f in findings)
+    es = lang == "es"
+    def has(*ws): return any(w in tl for w in ws)
+    verified = next((f for f in findings if f.verdict == "verified" and "ret2" in (f.title + f.evidence).lower()), None)
+    chains = []  # (titulo, [(paso, detalle, kind)])
+    # 1) corrupcion de memoria -> RCE
+    if has("desbordamiento", "overflow", "ret2win", "read"):
+        steps = [("Entrada sin acotar" if es else "Unbounded input",
+                  "Un sink de lectura escribe mas alla del buffer: overflow controlable por el atacante."
+                  if es else "A read sink writes past the buffer: attacker-controllable overflow.", "grounded")]
+        if mit.get("Canary") is False:
+            steps.append(("Sin stack canary" if es else "No stack canary",
+                          "El overflow lineal alcanza y sobrescribe la direccion de retorno guardada."
+                          if es else "The linear overflow reaches and overwrites the saved return address.", "grounded"))
+        if mit.get("PIE") is False:
+            steps.append(("Sin PIE" if es else "No PIE",
+                          "El codigo esta en direcciones FIJAS: el objetivo se puede hardcodear sin leak."
+                          if es else "Code is at FIXED addresses: the target can be hardcoded, no leak needed.", "grounded"))
+        if has("gadget", "system", "win", "ret2win"):
+            steps.append(("Funcion objetivo (gift)" if es else "Target function (gift)",
+                          "Existe win()/system('/bin/sh') como destino del control de flujo."
+                          if es else "win()/system('/bin/sh') exists as the control-flow target.", "grounded"))
+        if verified:
+            steps.append(("Shell (VERIFICADO)" if es else "Shell (VERIFIED)",
+                          "Se sobrescribe RIP con la funcion objetivo y se obtiene shell en sandbox (uid=0)."
+                          if es else "RIP is overwritten with the target and a shell is obtained in the sandbox (uid=0).",
+                          "verified"))
+        chains.append((("Corrupcion de memoria -> RCE" if es else "Memory corruption -> RCE"), steps))
+    # 2) credenciales -> acceso no autorizado
+    if has("credencial", "secreto", "hardcod", "clave privada", "aws", "token", "jwt"):
+        chains.append((("Credenciales -> acceso no autorizado" if es else "Credentials -> unauthorized access"),
+            [("Secreto hardcodeado" if es else "Hardcoded secret",
+              "El binario embebe una credencial/clave/token extraible de las strings."
+              if es else "The binary embeds a credential/key/token extractable from strings.", "grounded"),
+             ("Auth bypass / acceso" if es else "Auth bypass / access",
+              "Con la credencial expuesta se accede a sistemas o datos protegidos (o se firma como legitimo)."
+              if es else "With the exposed credential, protected systems/data are accessed (or signed as legit).", "grounded")]))
+    # 3) SUID + inyeccion -> root
+    if has("setuid", "setgid") and has("inyeccion de comando", "command injection", "system"):
+        chains.append((("SUID + inyeccion -> root" if es else "SUID + injection -> root"),
+            [("Binario SUID" if es else "SUID binary", "Corre con privilegios elevados." if es else "Runs with elevated privileges.", "grounded"),
+             ("Inyeccion de comando" if es else "Command injection", "Entrada controlable llega a system/exec." if es else "Controllable input reaches system/exec.", "grounded"),
+             ("Root" if es else "Root", "El comando inyectado se ejecuta como root." if es else "The injected command runs as root.", "grounded")]))
+    # 4) sin TLS / cert -> MITM
+    if has("sin cifrar", "cleartext", "certificado", "certificate"):
+        chains.append((("Transporte inseguro -> MITM" if es else "Insecure transport -> MITM"),
+            [("Sin cifrado / sin validar cert" if es else "No encryption / no cert check",
+              "El trafico va en claro o se acepta cualquier certificado." if es else "Traffic is cleartext or any certificate is accepted.", "grounded"),
+             ("Interceptar / modificar" if es else "Intercept / modify",
+              "Un atacante en la red lee y altera la comunicacion (credenciales, actualizaciones)."
+              if es else "A network attacker reads and alters the communication (credentials, updates).", "grounded")]))
+    if not chains:
+        return ""
+    _KC = {"verified": "#30a46c", "grounded": "#5b8def"}
+    blocks = ""
+    for title, steps in chains:
+        row = ""
+        for i, (name, detail, kind) in enumerate(steps):
+            arrow = '<div class="chain-arr">&#8594;</div>' if i else ""
+            row += (arrow + f'<div class="chain-step" style="border-color:{_KC.get(kind, "#5b8def")}">'
+                    f'<div class="chain-n">{_esc(name)}</div><div class="chain-d">{_esc(detail)}</div></div>')
+        blocks += f'<div class="chain-t">{_esc(title)}</div><div class="chain-row">{row}</div>'
+    note = ("Cadena grounded: cada eslabon sale de un hallazgo o mitigacion reales; el paso "
+            "'VERIFICADO' esta probado por ejecucion, los demas son el razonamiento del encadenamiento."
+            if es else "Grounded chain: each link comes from a real finding or mitigation; the "
+            "'VERIFIED' step is proven by execution, the rest are the chaining rationale.")
+    return (f'<h2 data-i18n="attack_chain" id="sec-chain"></h2>'
+            f'<p class="mut" style="font-size:12px;margin:-4px 0 10px">{_esc(note)}</p>{blocks}')
+
+
 def _references(findings, lang: str) -> str:
     """Referencias: cheat sheets del RAG relevantes a lo detectado + fuentes autoritativas."""
     blob = " ".join((f.title + " " + (f.evidence or "") + " " + (f.location or "")) for f in findings).lower()
@@ -399,15 +472,17 @@ def _toc(lang: str, has) -> str:
                 "exploit": "Exploit paso a paso", "dec": "Decompilacion anotada",
                 "cfg": "Grafo de flujo interactivo",
                 "find": "Hallazgos", "mit": "Mitigaciones y remediacion",
+                "chain": "Cadena de explotacion",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
          "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
                 "exploit": "Exploit step by step", "dec": "Annotated decompilation",
                 "cfg": "Interactive control-flow graph",
                 "find": "Findings", "mit": "Mitigations & remediation",
+                "chain": "Exploitation chain",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
     order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
              ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("mit", "sec-mit"),
-             ("surface", "sec-surface"), ("refs", "sec-refs"), ("trail", "sec-trail")]
+             ("chain", "sec-chain"), ("surface", "sec-surface"), ("refs", "sec-refs"), ("trail", "sec-trail")]
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
                     for key, aid in order if has.get(key))
     return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
@@ -585,6 +660,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     cfg_html = _cfg_html(cfg, lang)
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
+    attack_chain_html = _attack_chain(findings, mit, lang)
     references_html = _references(findings, lang)
     # Resumen ejecutivo COHERENTE (deterministico) en vez de la narracion del modelo, que puede
     # contradecirse ("no encontre vuln" + backstop verificado). Profesional y sin la nota de citas.
@@ -594,7 +670,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
-            "mit": bool(mit_detail_html), "surface": bool(triage_sections),
+            "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
+            "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
     toc_html = _toc(lang, _has)
     sev_buttons = "".join(
@@ -649,6 +726,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   <div id="cards">{cards or '<p class="empty" data-i18n="no_findings"></p>'}</div>
 
   {mit_detail_html}
+
+  {attack_chain_html}
 
   <h2 data-i18n="attack_surface" id="sec-surface"></h2>
   {triage_sections or '<p class="empty" data-i18n="no_triage"></p>'}
@@ -709,6 +788,7 @@ _I18N = {
                     "(shell / flag / objetivo alcanzado). Evidencia reproducible, no teorica.",
         "decompiled": "Decompilacion anotada (funcion vulnerable)",
         "cfg_graph": "Grafo de flujo interactivo",
+        "attack_chain": "Cadena de explotacion",
         "exploit_steps": "Exploit paso a paso",
         "mit_detail": "Mitigaciones y remediacion",
         "references": "Referencias",
@@ -733,6 +813,7 @@ _I18N = {
                     "(shell / flag / goal reached). Reproducible evidence, not theoretical.",
         "decompiled": "Annotated decompilation (vulnerable function)",
         "cfg_graph": "Interactive control-flow graph",
+        "attack_chain": "Exploitation chain",
         "exploit_steps": "Exploit step by step",
         "mit_detail": "Mitigations and remediation",
         "references": "References",
@@ -990,6 +1071,14 @@ ol.toc-l a{color:var(--acc);text-decoration:none}
 ol.toc-l a:hover{text-decoration:underline}
 html{scroll-behavior:smooth}
 h2[id]{scroll-margin-top:16px}
+.chain-t{font-weight:700;font-size:13px;line-height:1.4;margin:14px 0 6px;color:var(--fg)}
+.chain-row{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin-bottom:8px}
+.chain-step{flex:1 1 150px;min-width:150px;border:1.5px solid var(--line);border-left-width:4px;
+  border-radius:10px;background:var(--panel);padding:9px 11px}
+.chain-n{font-weight:700;font-size:12.5px;color:var(--fg);margin-bottom:3px}
+.chain-d{font-size:11.5px;line-height:1.45;color:var(--mut)}
+.chain-arr{display:flex;align-items:center;padding:0 6px;color:var(--acc);font-size:20px;font-weight:700}
+@media(max-width:640px){.chain-row{flex-direction:column}.chain-arr{transform:rotate(90deg);padding:4px 0;justify-content:center}}
 .cfgflex{display:grid;grid-template-columns:1fr 260px;gap:12px}
 @media(max-width:760px){.cfgflex{grid-template-columns:1fr}}
 .cfginfo{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:12px;height:460px;overflow:auto}
