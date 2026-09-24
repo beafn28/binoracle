@@ -17,13 +17,15 @@ def _kb_hint(reg, store=None) -> str:
     curated part is reference; the learned part is prior verified evidence. Never raises."""
     try:
         from ..rag import get_kb, query_from_facts
-        facts = {"mitigations": {}, "imports": [], "primitives": []}
+        facts = {"mitigations": {}, "imports": [], "primitives": [], "arch": "", "format": ""}
         arch = "?"
         cs = reg.get("r2_checksec")
         if cs:
             r = cs.run()
             if r.ok:
                 arch = r.meta.get("arch", "?")
+                facts["arch"] = arch
+                facts["format"] = r.meta.get("format", "") or r.meta.get("bintype", "")
                 facts["mitigations"] = {
                     "NX": r.meta.get("nx", "unknown"),
                     "PIE": r.meta.get("pic", "unknown"),
@@ -43,7 +45,7 @@ def _kb_hint(reg, store=None) -> str:
             if r.ok and (r.meta.get("win_funcs", 0) > 0 or "/bin/sh" in r.data):
                 facts["primitives"].append("ret2win")
 
-        hint = get_kb().context_for(query_from_facts(facts), k=4, max_chars=1800)
+        hint = get_kb().context_for(query_from_facts(facts), k=5, max_chars=2200)
 
         # Learned layer: verified facts from similar binaries in the local corpus.
         if store is not None:

@@ -37,8 +37,11 @@ def _pymod(name: str) -> str:
         return ""
 
 
+_PROBE = True   # cuando es False, _ver no lanza subprocesos (catalogo rapido para el RAG)
+
+
 def _ver(path: str, *args: str) -> str:
-    if not path:
+    if not path or not _PROBE:
         return ""
     try:
         out = subprocess.run([path, *args], capture_output=True, text=True, timeout=5)
@@ -46,6 +49,18 @@ def _ver(path: str, *args: str) -> str:
         return line[0][:60] if line else ""
     except Exception:
         return ""
+
+
+def tool_catalog() -> list[ToolStatus]:
+    """check_tools() sin probes de version (rapido y sin efectos): la fuente UNICA del
+    saber-herramientas que el RAG inyecta como conocimiento (para que la IA sepa que
+    herramienta usar en cada situacion, ademas de detectar cuales estan instaladas)."""
+    global _PROBE
+    _PROBE = False
+    try:
+        return check_tools()
+    finally:
+        _PROBE = True
 
 
 def check_tools() -> list[ToolStatus]:

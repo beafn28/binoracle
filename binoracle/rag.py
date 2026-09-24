@@ -149,6 +149,7 @@ class KnowledgeBase:
         self._seen_chunks: set = set()   # dedup exacto (title, text) durante la carga
         self.idf: dict[str, float] = {}
         self._load(kb_dir)
+        self._load_tools()      # hila el saber-herramientas (toolcheck) dentro del RAG
         self._build_idf()
         # Capa semantica opcional (embeddings del modelo local). Off por defecto: el retrieval
         # base es TF-IDF puro y determinista. Se activa con BINORACLE_RAG_EMBED=1.
@@ -381,6 +382,26 @@ class KnowledgeBase:
                 if body:
                     self._add(doc, title, body)
 
+    def _load_tools(self) -> None:
+        """Inyecta el catalogo de herramientas (toolcheck) como conocimiento recuperable: un
+        chunk por herramienta con PARA QUE sirve y su categoria. Asi, al auditar, la IA no solo
+        tira de los cheat sheets sino que sabe QUE herramienta aplicar (todo hilado). Fuente
+        unica: si se anade una herramienta a toolcheck, aparece sola en el RAG. Best-effort."""
+        try:
+            from .toolcheck import tool_catalog
+            cats = {"static": "analisis estatico / triage", "rop": "ROP / gadgets",
+                    "symbolic": "simbolico / fuzzing", "dynamic": "dinamico / debug",
+                    "exploit": "explotacion / sandbox"}
+            for t in tool_catalog():
+                cat = cats.get(t.kind, t.kind)
+                title = f"{t.name} ({cat})"
+                text = (f"Herramienta de {cat}: {t.name}. Se usa para: {t.used_for}. "
+                        f"binoracle la detecta con el comando 'tools'.")
+                self._add("tools/" + re.sub(r"[^a-z0-9]+", "-", t.name.lower()).strip("-"),
+                          title, text)
+        except Exception:
+            pass
+
     _NOISE_TITLES = {"table of contents", "contents", "index", "additional resources",
                      "see also", "references", "further reading"}
 
@@ -521,6 +542,16 @@ def get_kb() -> KnowledgeBase:
     return _CACHE
 
 
+def reload_kb() -> KnowledgeBase:
+    """Reconstruye la base de conocimiento desde disco tras aprender material nuevo (comando
+    learn). Reindexa y, si las capas semanticas estaban activas (env/pref/auto), el nuevo
+    __init__ las vuelve a levantar solo; los embeddings se recalculan solo si el contenido
+    cambio (la cache va por hash de contenido)."""
+    global _CACHE
+    _CACHE = KnowledgeBase()
+    return _CACHE
+
+
 def configure(embed=None, expand=None, rerank=None) -> str:
     """Reconfigura el RAG en caliente (desde la web, sin reiniciar). Cada flag None se deja
     igual. Al activar embeddings, carga de cache (instantaneo) o los construye. Devuelve el
@@ -561,6 +592,12 @@ def query_from_facts(facts: dict) -> str:
         parts.append(str(imp))
     for prim in (facts.get("primitives") or []):
         parts.append(str(prim))
+    # Arch/formato: hacen que el audit tire tambien del conocimiento de REVERSING de la
+    # plataforma (Mach-O, PE/DLL, DEX/APK, ARM/MIPS, .NET...), no solo de los cheat sheets pwn.
+    for key in ("arch", "format"):
+        v = str(facts.get(key) or "").strip()
+        if v and v not in ("?", "unknown"):
+            parts.append(v)
     if facts.get("category"):
         parts.append(str(facts["category"]))
     return " ".join(parts)

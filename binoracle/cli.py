@@ -476,6 +476,20 @@ def cmd_rag(args, config):
     print("conocimiento: " + kb.sources_summary())
 
 
+def cmd_learn(args, config):
+    from .ingest import learn
+    rep = learn(args.path, name=args.name, apply=args.apply)
+    print(rep.summary())
+    if rep.applied:
+        from .rag import reload_kb
+        kb = reload_kb()
+        print("\nRAG recargado con lo aprendido: " + kb.status())
+        print("conocimiento: " + kb.sources_summary())
+    elif rep.kept:
+        print("\n(dry-run) para que lo aprenda de verdad: "
+              f"binoracle learn {args.path} --apply")
+
+
 def cmd_kb(args, config):
     from .rag import get_kb
     kb = get_kb()
@@ -667,6 +681,13 @@ def build_parser() -> argparse.ArgumentParser:
     kbp.add_argument("-k", type=int, default=4, help="number of snippets to return")
     kbp.add_argument("--list", action="store_true", help="list available cheat sheets")
     kbp.set_defaults(func=cmd_kb)
+
+    lp = sub.add_parser("learn", help="aprende de una carpeta de skills/docs: filtra binario-RE, "
+                                      "descarta web/routers, y lo mete en el conocimiento")
+    lp.add_argument("path", help="carpeta con material (.md) a aprender")
+    lp.add_argument("--name", help="nombre del corpus en kb/skills (por defecto, el de la carpeta)")
+    lp.add_argument("--apply", action="store_true", help="aplica (por defecto es dry-run)")
+    lp.set_defaults(func=cmd_learn)
 
     hp = sub.add_parser("heap", help="confirm heap corruption (double-free/overflow) by execution")
     hp.add_argument("binary")
