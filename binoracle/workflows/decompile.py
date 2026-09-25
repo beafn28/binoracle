@@ -26,6 +26,20 @@ class DecompiledFunc:
         return bool(self.raw.strip())
 
 
+def _best_decompile(binary: str, func: str) -> tuple[str, str]:
+    """Mejor decompilacion disponible: Ghidra (si hay servidor GhidraMCP arriba con el binario
+    cargado) primero, y si no, r2 (pdg/pdc/pdf). Ghidra da pseudo-C de mas calidad."""
+    try:
+        from ..oracles import ghidra as _gh
+        if _gh.available():
+            code = _gh.decompile_function(func)
+            if code and len(code.strip()) > 80:
+                return code, "ghidra"
+    except Exception:
+        pass
+    return _r2_decompile(binary, func)
+
+
 def _r2_decompile(binary: str, func: str) -> tuple[str, str]:
     """Devuelve (texto, engine) con la mejor decompilacion de r2 disponible para la funcion."""
     try:
@@ -50,7 +64,8 @@ def _r2_decompile(binary: str, func: str) -> tuple[str, str]:
 
 
 _SYS = ("You are a senior reverse engineer. You are given the decompilation/disassembly of ONE "
-        "function produced by radare2. Produce, in this order and nothing else:\n"
+        "function produced by a decompiler (radare2 or Ghidra). Produce, in this order and "
+        "nothing else:\n"
         "1. A `c` code block with clean, readable C-like pseudocode for the function, using "
         "meaningful variable names (e.g. buf, len, user_input) and correct types (buffer sizes, "
         "etc.). Keep it faithful to the code shown.\n"
@@ -62,7 +77,7 @@ _SYS = ("You are a senior reverse engineer. You are given the decompilation/disa
 
 def decompile_explain(binary: str, func: str, llm=None, lang: str = "es") -> DecompiledFunc:
     """Decompila `func` con r2 y, si hay modelo, la anota (pseudo-C limpio + explicacion)."""
-    raw, engine = _r2_decompile(binary, func)
+    raw, engine = _best_decompile(binary, func)
     d = DecompiledFunc(func=func, raw=raw, engine=engine)
     if not d.ok:
         d.notes.append(f"r2 no pudo decompilar {func} (funcion no encontrada o binario ilegible)")
@@ -75,7 +90,7 @@ def decompile_explain(binary: str, func: str, llm=None, lang: str = "es") -> Dec
     try:
         d.annotated = llm.chat([
             Message("system", _SYS + "\n" + ask),
-            Message("user", f"Funcion: {func}\nEngine: r2 {engine}\n\n```\n{raw[:6000]}\n```"),
+            Message("user", f"Funcion: {func}\nEngine: {engine}\n\n```\n{raw[:6000]}\n```"),
         ]).strip()
     except Exception as e:
         d.notes.append(f"el modelo no pudo anotar la decompilacion: {e}")

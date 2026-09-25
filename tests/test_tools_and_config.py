@@ -224,6 +224,24 @@ def test_cvss_mapping():
         assert rv.base is None   # degrada sin romper
 
 
+def test_ghidra_client_extract_and_fallback():
+    from binoracle.oracles import ghidra as g
+    # extraccion de codigo desde respuesta JSON envuelta (formato del plugin GhidraMCP)
+    j = ('{"success":true,"name":"main","address":"0x401136",'
+         '"decompilation":"undefined8 main(void){ char buf[64]; read(0, buf, 256); return 0; }"}')
+    code = g._extract_code(j)
+    assert code and "read(0, buf, 256)" in code
+    # ruido no-C -> None (no se inventa decompilacion)
+    assert g._extract_code("ok connected") is None
+    assert g._extract_code("") is None
+    # sin servidor arriba: indisponible y None, sin excepcion (fallback a r2)
+    import os
+    os.environ["BINORACLE_GHIDRA_URL"] = "http://127.0.0.1:1"   # puerto imposible
+    assert g.available(timeout=1.0) is False
+    assert g.decompile_function("main", timeout=1.0) is None
+    os.environ.pop("BINORACLE_GHIDRA_URL", None)
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
