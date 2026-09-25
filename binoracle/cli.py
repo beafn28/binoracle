@@ -76,6 +76,19 @@ def cmd_doctor(args, config):
         print("  " + kb.status())
         print("  fuentes: " + kb.sources_summary())
         print(f"  herramientas hiladas en el RAG: {tools}")
+        # Salud/integridad del conocimiento: evita que el RAG meta 'cosas falsas' (dups/chino sin
+        # traducir). El RAG es SOLO referencia; los hallazgos salen de oraculos, no del RAG.
+        try:
+            h = kb.health()
+            estado = "LIMPIO" if h["clean"] else "REVISAR"
+            print(f"  salud: [{estado}] {h['docs']} docs, {h['sources']} fuentes, "
+                  f"duplicados={h['duplicates']}, chunks con chino sin traducir={h['cjk_chunks']}")
+            if not h["clean"] and h.get("cjk_docs"):
+                print("    revisar (CJK): " + ", ".join(h["cjk_docs"]))
+        except Exception:
+            pass
+        print("  el RAG es referencia; cada hallazgo del informe se ata a un oraculo (verified = "
+              "probado por ejecucion, grounded = evidencia estatica).")
         print("  aprende material nuevo con: binoracle learn <carpeta> --apply")
         print()
     except Exception:

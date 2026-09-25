@@ -359,6 +359,17 @@ def test_chain_badchars():
     assert c2.break_points == []
 
 
+def test_rag_health():
+    # El conocimiento debe estar LIMPIO: sin duplicados exactos ni chino sin traducir (>2% CJK),
+    # para no alimentar 'cosas falsas'. El RAG es referencia; los hallazgos salen de oraculos.
+    from binoracle.rag import get_kb
+    h = get_kb().health()
+    assert h["chunks"] > 0 and h["docs"] > 0 and h["sources"] > 0
+    assert h["duplicates"] == 0, f"hay {h['duplicates']} chunks duplicados en el RAG"
+    assert h["cjk_chunks"] == 0, f"chino sin traducir en: {h['cjk_docs']}"
+    assert h["clean"] is True
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

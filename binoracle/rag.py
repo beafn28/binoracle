@@ -234,6 +234,29 @@ class KnowledgeBase:
         layers.append("rerank LLM: " + ("on" if self._use_rerank else "off"))
         return " | ".join(layers)
 
+    def health(self) -> dict:
+        """Chequeo de integridad del conocimiento (para evitar 'cosas falsas'): cuenta chunks/docs,
+        duplicados exactos y fuga de chino sin traducir (CJK >2%). clean=True si no hay ninguno."""
+        import hashlib
+        seen, dups = set(), 0
+        cjk_docs = []
+        for c in self.chunks:
+            t = (c.text or "").strip()
+            h = hashlib.sha256(t.encode("utf-8", "ignore")).hexdigest()
+            if h in seen:
+                dups += 1
+            else:
+                seen.add(h)
+            if t:
+                n = sum(1 for ch in t if "一" <= ch <= "鿿")
+                if n / max(1, len(t)) > 0.02:
+                    cjk_docs.append(c.doc)
+        docs = {(c.doc.split("#", 1)[0]) for c in self.chunks}
+        return {"chunks": len(self.chunks), "docs": len(docs), "duplicates": dups,
+                "cjk_chunks": len(cjk_docs), "cjk_docs": sorted(set(cjk_docs))[:5],
+                "sources": len(self.sources()),
+                "clean": dups == 0 and len(cjk_docs) == 0}
+
     def _ollama_generate(self, prompt: str, timeout: float = 30.0) -> Optional[str]:
         try:
             r = _http_post_json(self._ollama + "/api/generate",
