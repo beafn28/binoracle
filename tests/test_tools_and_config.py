@@ -296,6 +296,38 @@ def test_decompile_crosscheck():
     assert "coinciden" in _crosscheck(agree, "es").lower()
 
 
+def test_sarif_export():
+    import json
+    from binoracle.report.render import findings_to_sarif
+    from binoracle.store.session import Finding
+    fs = [
+        Finding(title="Exploit ret2win verificado", severity="critical", verdict="verified",
+                location="win=0x401156", evidence="offset=72", rationale="ret2win alcanzado",
+                recommendation="canary+PIE"),
+        Finding(title="Comunicacion sin cifrar (cleartext)", severity="medium", verdict="grounded",
+                location=".text", evidence="http://x", rationale="trafico en claro", recommendation="TLS"),
+    ]
+    doc = json.loads(findings_to_sarif("/tmp/vuln", fs))
+    assert doc["version"] == "2.1.0"
+    run = doc["runs"][0]
+    assert run["tool"]["driver"]["name"] == "binoracle"
+    assert len(run["results"]) == 2
+    r0 = run["results"][0]
+    assert r0["level"] == "error"                 # critical -> error
+    assert run["results"][1]["level"] == "warning"  # medium -> warning
+    assert r0["properties"]["verdict"] == "verified"
+    # si cvss esta, el vector 4.0 y security-severity aparecen
+    try:
+        import cvss  # noqa: F401
+        assert r0["properties"]["cvss_v4_vector"].startswith("CVSS:4.0/")
+        assert "security-severity" in r0["properties"]
+    except ImportError:
+        pass
+    # cada result referencia una rule declarada
+    rule_ids = {rule["id"] for rule in run["tool"]["driver"]["rules"]}
+    assert all(res["ruleId"] in rule_ids for res in run["results"])
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

@@ -127,6 +127,93 @@ def render_agent_result(binary: str, result) -> str:
     return "\n".join(out)
 
 
+_SARIF_LEVEL = {"critical": "error", "high": "error", "medium": "warning",
+                "low": "note", "info": "note"}
+
+
+def _slug(text: str) -> str:
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:48] or "finding"
+
+
+def findings_to_sarif(binary: str, findings, ledger=None) -> str:
+    """Exporta los hallazgos en SARIF 2.1.0 (estandar de code-scanning: GitHub, CI, dashboards).
+
+    Cada hallazgo es un `result` con nivel por severidad (critical/high->error, medium->warning,
+    low/info->note), su `ruleId` (clase de vulnerabilidad), y propiedades con el veredicto y, si el
+    paquete cvss esta disponible, el vector + score (`security-severity`, que GitHub usa para pintar
+    la severidad). Grounded: el veredicto verified/grounded del hallazgo se conserva tal cual."""
+    import json
+    import os
+    from datetime import datetime, timezone
+    try:
+        from .cvss import cvss_for, classify
+    except Exception:
+        cvss_for = classify = None
+
+    rules = {}          # ruleId -> rule object
+    results = []
+    uri = os.path.basename(binary) or "binary"
+    for f in (findings or []):
+        cls = classify(f) if classify else None
+        rule_id = cls or _slug(f.title)
+        cv = cvss_for(f) if cvss_for else None
+        if rule_id not in rules:
+            props = {"tags": ["binoracle", "reverse-engineering"]}
+            if cv and cv.base is not None:
+                props["security-severity"] = f"{cv.base:.1f}"
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": rule_id.replace("-", " ").title().replace(" ", ""),
+                "shortDescription": {"text": f.title},
+                "defaultConfiguration": {"level": _SARIF_LEVEL.get(f.severity, "note")},
+                "properties": props,
+            }
+        msg = f.rationale or f.title
+        result = {
+            "ruleId": rule_id,
+            "level": _SARIF_LEVEL.get(f.severity, "note"),
+            "message": {"text": msg},
+            "locations": [{
+                "physicalLocation": {"artifactLocation": {"uri": uri}},
+                "logicalLocations": [{"fullyQualifiedName": f.location or "?",
+                                      "kind": "function"}],
+            }],
+            "properties": {
+                "verdict": f.verdict,
+                "severity": f.severity,
+                "recommendation": f.recommendation,
+            },
+        }
+        if cv:
+            result["properties"]["cvss_v4_vector"] = cv.vector
+            if cv.base is not None:
+                result["properties"]["cvss_v4_base"] = cv.base
+                result["properties"]["security-severity"] = f"{cv.base:.1f}"
+        results.append(result)
+
+    sarif = {
+        "version": "2.1.0",
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "binoracle",
+                "informationUri": "https://github.com/beafn28/binoracle",
+                "rules": list(rules.values()),
+            }},
+            "results": results,
+            "invocations": [{
+                "executionSuccessful": True,
+                "endTimeUtc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }],
+            "properties": {"target": binary,
+                           "sources_consulted": ledger.sources() if ledger is not None else []},
+        }],
+    }
+    return json.dumps(sarif, indent=2)
+
+
 def findings_to_json(binary: str, findings, ledger=None) -> str:
     """Machine-readable export for CI / programmatic use."""
     import json
