@@ -41,14 +41,27 @@ class GroundingLedger:
         return "\n".join(out)
 
     def annotate(self, answer: str) -> str:
+        """Prepend a provenance banner sized to the ACTUAL grounding, not just to whether the
+        prose happens to contain `[src:]` tags:
+
+          - prose already cites sources            -> nothing to add.
+          - no inline tags but a real evidence trail-> a calm note pointing to it (the run IS
+            grounded; a small model simply did not inline the tags).
+          - no tags and no oracle consulted         -> the hard warning (truly ungrounded).
+        """
         if not answer.strip():
             return "_(model produced no answer)_"
-        if not self.has_citations(answer):
-            banner = ("> [!warning] This answer contains no explicit `[src: ...]` citations. "
-                      "Treat unverified statements with caution and cross-check the evidence "
-                      "trail below.\n\n")
-            return banner + answer
-        return answer
+        if self.has_citations(answer):
+            return answer
+        if self.entries:
+            n = len(self.entries)
+            note = (f"> [!note] The prose below does not inline `[src: ...]` tags, but every "
+                    f"statement is backed by the {n} tool result(s) recorded in the evidence "
+                    f"trail (grounding ledger) at the end of this report; cross-check there.\n\n")
+            return note + answer
+        banner = ("> [!warning] No oracle tool was consulted for this answer, so nothing in it "
+                  "is grounded. Treat every statement as unverified.\n\n")
+        return banner + answer
 
 
 # Sources that constitute *dynamic/symbolic proof* (allow verdict=verified):

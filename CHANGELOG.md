@@ -23,6 +23,10 @@ All notable changes to this project are documented here. The format is based on
   confirmed in the sandbox (`sandbox-verified` / `sandbox-confirmed`) now counts as a proof
   source for the `verified` verdict, alongside angr/debugger. Previously a genuinely
   executed ret2win/ROP/fmt/ret2libc finding was wrongly downgraded to `grounded`.
+- **Provenance banner sized to real grounding**: the answer no longer shows a scary
+  "no citations" warning when a full evidence trail exists — it shows a calm note pointing to
+  the grounding ledger. The hard warning now fires only when no oracle was consulted at all.
+  The agent prompt also reinforces inline `[src: ...]` citation with a concrete example.
 
 ### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated

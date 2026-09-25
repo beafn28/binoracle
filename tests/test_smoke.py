@@ -253,3 +253,20 @@ def test_gate_allows_verified_with_sandbox_exploit():
     gated, notes = gate_findings([f], led)
     assert gated[0].verdict == "verified"
     assert not any("verified->grounded" in n for n in notes)
+
+
+def test_annotate_banner_tiers():
+    # El banner se ajusta al grounding real, no a si la prosa lleva tags [src:].
+    from binoracle.agent.grounding import GroundingLedger
+    # 1) prosa ya citada -> sin banner
+    led = GroundingLedger()
+    led.record(1, "r2_checksec", "radare2: iI", "NX true")
+    cited = "NX is enabled [src: radare2: iI]."
+    assert led.annotate(cited) == cited
+    # 2) sin tags pero con rastro de evidencia -> nota tranquila, no warning
+    out = led.annotate("NX is enabled.")
+    assert "[!note]" in out and "evidence trail" in out and "[!warning]" not in out
+    # 3) sin tags y sin oraculos consultados -> warning duro
+    empty = GroundingLedger()
+    out2 = empty.annotate("The binary is safe.")
+    assert "[!warning]" in out2 and "unverified" in out2
