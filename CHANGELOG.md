@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Heap-to-shell (tcache-UAF) exploit**: `autoheap.autoheap_shell` drives a menu-style
+  use-after-free (new/free/edit/show, e.g. the `heapexp` sample) to a verified shell — it
+  defeats glibc safe-linking without needing exact heap offsets (freeing one chunk into an
+  empty tcache bin makes its fd = `mangle(NULL)` = `&chunk >> 12`, so `show` leaks the key
+  directly), poisons the tcache to allocate over `free@GOT` (no-PIE / partial RELRO) and
+  overwrites it with `win`, then triggers a `free` to spawn the shell. Wired into the `audit`
+  backstop (runs regardless of `find_win`) and the `try_heap` agent tool, alongside the
+  existing corruption-confirming `autoheap`. Runs in the `binoracle-pwn` image; degrades
+  cleanly without it.
 - **Dangerous-sink detection now covers statically-linked binaries**: `r2_sinks` previously
   keyed only off PLT imports, so a static binary (no imports) reported "no sinks" even when it
   calls `read`/`gets`. It now also detects compiled-in sink symbols and keeps those reached

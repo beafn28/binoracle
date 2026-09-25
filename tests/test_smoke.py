@@ -375,3 +375,13 @@ def test_find_win_gift_regex_no_substring_false_positive():
     assert hit("sym.__libc_start_main") is False
     # los nombres gift reales siguen detectandose
     assert hit("sym.win") and hit("sym.get_flag") and hit("sym.give_shell") and hit("sym.backdoor")
+
+
+def test_autoheap_shell_degrades_cleanly():
+    # heap->shell se apoya en el sandbox binoracle-pwn; sin docker/imagen debe devolver un dict
+    # con ok=False y una nota, nunca lanzar (degradacion elegante).
+    from binoracle.workflows.autoheap import autoheap_shell
+    r = autoheap_shell("samples/bin/heapexp")
+    assert isinstance(r, dict) and "ok" in r
+    if not r["ok"]:
+        assert r.get("note")

@@ -303,6 +303,25 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                                f"{summ}. Ejecutado en sandbox: shell obtenida. [src: {tag}]")
                 _add_verified(title, summ, f"{summ}\n{out}",
                               f"Exploit {label} construido y ejecutado en sandbox: shell obtenida.", rec)
+        # heap-to-shell: run regardless of find_win (a heap binary often has a win() but is not
+        # a stack overflow, so neither the ret2win attempt nor the cascade above covers it).
+        if not _verified_now():
+            try:
+                from .autoheap import autoheap_shell
+                rh = autoheap_shell(binary)
+            except Exception:
+                rh = {}
+            if rh.get("verified"):
+                res.ledger.record(res.steps + 6, "try_heap (backstop)",
+                                  "autoheap (sandbox-verified)",
+                                  rh.get("output") or rh.get("detail") or "")
+                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via heap (tcache-UAF, backstop)\n"
+                               f"{rh.get('detail','')}. Envenenamiento de tcache + free@GOT=win "
+                               f"ejecutado en sandbox: shell obtenida. [src: try_heap]")
+                _add_verified("Exploit heap (tcache-UAF) a shell verificado", rh.get("detail", ""),
+                              f"{rh.get('detail','')}\n{rh.get('output','')}",
+                              "tcache poisoning + free@GOT=win ejecutado en sandbox: shell obtenida.",
+                              "Limpia el puntero al liberar (evita UAF); full RELRO para que free@GOT no sea escribible.")
     except Exception:
         pass
 

@@ -83,13 +83,14 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 Verified-by-execution today covers the six classes above, plus ROP on PIE (`autopie_rop`
 resolves the ASLR-off PIE base in the sandbox, rebases the chain and confirms a shell; the
-`ropme_pie` static-PIE sample is the target). Not yet automated: full heap exploitation.
-Double-free / heap-overflow are confirmed by execution via glibc's allocator aborts, but
-driving heap corruption all the way to a verified shell is still bespoke per binary. The
-`heapexp` sample is a tcache-UAF target where every exploit step (heap leak, tcache
-poisoning, GOT overwrite) is reproducible; on an x86-64 host the final redirected jump lands
-natively, whereas under a Mac's x86-64 emulation the jump into never-executed binary code
-fails. Everything runs only against binaries you are authorized to analyze.
+`ropme_pie` static-PIE sample is the target), and heap-to-shell for the common menu-driven
+tcache-UAF shape (`autoheap_shell`: leaks the safe-linking key from a freed chunk, poisons
+the tcache to allocate over `free@GOT` on a no-PIE binary and overwrites it with `win`; the
+`heapexp` sample is the target). Double-free / heap-overflow are also confirmed by execution
+via glibc's allocator aborts (`autoheap`). Heap-to-shell runs natively on an x86-64 host;
+under a Mac's x86-64 emulation the final redirected jump into never-executed code can fail.
+Fully general heap exploitation (arbitrary layouts, libc-leak chains) remains bespoke per
+binary. Everything runs only against binaries you are authorized to analyze.
 
 ## Supported executable formats
 
