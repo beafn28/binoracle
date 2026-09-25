@@ -634,7 +634,8 @@ def run_streaming(command, binary, ai, emit):
                                       on_step=lambda m: emit("step", m))
             emit("step", "credenciales/secretos, permisos de fichero, comunicaciones y backdoors...")
             for _m, _fn in (("secrets", "scan_secrets"), ("fileperms", "scan_file_perms"),
-                            ("commsec", "scan_comms"), ("backdoors", "scan_backdoors")):
+                            ("commsec", "scan_comms"), ("backdoors", "scan_backdoors"),
+                            ("dotnet", "scan_dotnet")):
                 try:
                     import importlib
                     extra = getattr(importlib.import_module(f".workflows.{_m}", "binoracle"),
@@ -762,7 +763,7 @@ def run_streaming(command, binary, ai, emit):
                     cfg = None
                 try:
                     from .workflows.chainanalyzer import analyze_chains
-                    chains = analyze_chains(binary, reg, verify=False)
+                    chains = analyze_chains(binary, reg, verify=False, lang=config.lang)
                 except Exception:
                     chains = None
             html = render_html(binary, triage=(report if command == "report" else None),

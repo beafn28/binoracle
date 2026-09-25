@@ -99,8 +99,11 @@ def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
     # (a) bind shell: socket + bind + listen + (dup2 | execve/system)
     if has_socket and has_bind and spawn:
         ports = _hardcoded_ports(binary, ("bind",))
-        port_ev = ("\npuerto(s) hardcodeado(s): " + ", ".join(f"{p} @ {a}" for p, a in ports)) if ports else ""
-        sev = "critical" if (ports or has_shell_str) else "high"
+        port_ev = ("\ninmediato(s) compatible(s) con puerto (heuristico): "
+                   + ", ".join(f"{p} @ {a}" for p, a in ports)) if ports else ""
+        # critical solo con la cadena de shell presente (senal fuerte); el puerto es heuristico y
+        # puede dar falsos positivos, asi que por si solo no escala por encima de high.
+        sev = "critical" if has_shell_str else "high"
         findings.append(_f(
             "Posible bind shell / backdoor de red",
             "Possible bind shell / network backdoor", sev,
@@ -120,8 +123,9 @@ def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
     # (b) reverse shell: socket + connect + (dup2 | execve/system)
     if has_socket and has_connect and spawn:
         ports = _hardcoded_ports(binary, ("connect",))
-        port_ev = ("\npuerto(s) hardcodeado(s): " + ", ".join(f"{p} @ {a}" for p, a in ports)) if ports else ""
-        sev = "critical" if (ports or has_shell_str) else "high"
+        port_ev = ("\ninmediato(s) compatible(s) con puerto (heuristico): "
+                   + ", ".join(f"{p} @ {a}" for p, a in ports)) if ports else ""
+        sev = "critical" if has_shell_str else "high"
         findings.append(_f(
             "Posible reverse shell / callback a atacante",
             "Possible reverse shell / attacker callback", sev,

@@ -90,7 +90,7 @@ import re as _re_mod
 
 def _exploit_section(binary: str, findings, lang: str) -> str:
     """Reproduccion paso a paso + script pwntools del exploit verificado (si lo hay)."""
-    vf = next((f for f in findings if f.verdict == "verified" and "ret2win" in (f.title + f.evidence).lower()), None)
+    vf = next((f for f in findings if f.verdict == "verified" and "ret2win" in (f.title + (f.evidence or "")).lower()), None)
     if vf is None:
         return ""
     m = _re_mod.search(r"offset\s*=\s*(\d+)", vf.evidence or "")
@@ -155,7 +155,7 @@ def _attack_chain(findings, mit: dict, lang: str) -> str:
     tl = " ".join((f.title + " " + (f.location or "")).lower() for f in findings)
     es = lang == "es"
     def has(*ws): return any(w in tl for w in ws)
-    verified = next((f for f in findings if f.verdict == "verified" and "ret2" in (f.title + f.evidence).lower()), None)
+    verified = next((f for f in findings if f.verdict == "verified" and "ret2" in (f.title + (f.evidence or "")).lower()), None)
     chains = []  # (titulo, [(paso, detalle, kind)])
     # 1) corrupcion de memoria -> RCE
     if has("desbordamiento", "overflow", "ret2win", "read"):
@@ -414,7 +414,8 @@ def _cfg_html(cfg, lang: str) -> str:
                   "note": nodes[nid].get("note", "")} for nid in order}
     tip = ("Pulsa un bloque para ver sus instrucciones y que decide el salto."
            if lang == "es" else "Click a block to see its instructions and what its jump decides.")
-    js = _CFG_JS.replace("__CFGW__", str(W)).replace("__CFGINFO__", _json.dumps(info))
+    js = _CFG_JS.replace("__CFGW__", str(W)).replace(
+        "__CFGINFO__", _json.dumps(info, ensure_ascii=False).replace("</", "<\\/"))
     return (f'<h2 data-i18n="cfg_graph" id="sec-cfg"></h2>'
             f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["func"])} '
             f'<code>{_esc(cfg.func)}</code> &middot; {_esc(T["hint"])} {legend} '
@@ -436,7 +437,7 @@ def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
     total = len(fs)
     verified = sum(1 for f in fs if f.verdict == "verified")
     vexp = next((f for f in fs if f.verdict == "verified"
-                 and "ret2" in (f.title + f.evidence).lower()), None)
+                 and "ret2" in (f.title + (f.evidence or "")).lower()), None)
     def mstate(k):
         v = mit.get(k)
         return "?" if v is None else (("ON" if v else "OFF") if isinstance(v, bool) else str(v).upper())
@@ -543,6 +544,46 @@ def _parse_mitigations(triage) -> dict:
     return m
 
 
+_CVSS_SEV_COLOR = {"Critical": "#e5484d", "High": "#f5a623", "Medium": "#e2b53e",
+                   "Low": "#5b8def", "None": "#8b95a1"}
+
+
+def _cvss_html(f, lang: str):
+    """(badge, body) CVSS 4.0 de un hallazgo. El vector se asigna por clase de vulnerabilidad y el
+    score lo calcula el algoritmo oficial; None -> sin badge (no se inventa)."""
+    try:
+        from .cvss import cvss_for
+        r = cvss_for(f)
+    except Exception:
+        r = None
+    if not r:
+        return "", ""
+    es = lang == "es"
+    if r.base is not None:
+        col = _CVSS_SEV_COLOR.get(r.severity, "#8b95a1")
+        badge = (f'<span class="cvssb" style="background:{col}" title="{_esc(r.vector)}">'
+                 f'CVSS 4.0 {r.base:.1f}</span>')
+    else:
+        badge = '<span class="cvssb" style="background:#8b95a1">CVSS 4.0</span>'
+    mat = {"A": ("verificado (E:A, Attacked)" if es else "verified (E:A, Attacked)"),
+           "P": ("grounded (E:P, Proof-of-Concept)" if es else "grounded (E:P, Proof-of-Concept)"),
+           "U": ("sin verificar (E:U)" if es else "unverified (E:U)")}[r.exploit_maturity]
+    sev_txt = (f"{r.base:.1f} ({r.severity})" if r.base is not None
+               else ("score no disponible (instala el paquete `cvss`)" if es
+                     else "score unavailable (install the `cvss` package)"))
+    note = ("Vector asignado por clase de vulnerabilidad; score calculado por el algoritmo oficial "
+            "CVSS 4.0. Madurez de explotacion: " if es else
+            "Vector assigned by vulnerability class; score computed by the official CVSS 4.0 "
+            "algorithm. Exploit maturity: ") + mat + "."
+    body = (f'<h4>CVSS 4.0</h4><div class="cvssbox">'
+            f'<div class="cvssrow"><b>{_esc(sev_txt)}</b> '
+            f'<span class="cvssmat" style="background:{_CVSS_SEV_COLOR.get(r.severity, "#8b95a1")}">'
+            f'E:{r.exploit_maturity}</span></div>'
+            f'<code class="cvssvec">{_esc(r.vector)}</code>'
+            f'<p class="mut" style="font-size:11.5px;margin:6px 0 0">{_esc(note)}</p></div>')
+    return badge, body
+
+
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
                 decompiled=None, cfg=None, chains=None) -> str:
@@ -608,12 +649,14 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         return (f'<div class="md"><div class="lg lg-es">{_md(es)}</div>'
                 f'<div class="lg lg-en">{_md(en)}</div></div>')
     for f in sorted(findings, key=lambda x: _SEV.index(x.severity) if x.severity in _SEV else 9):
+        cvbadge, cvbody = _cvss_html(f, lang)
         # <details> nativo: cada hallazgo se DESPLIEGA al pulsar, tambien como fichero estatico.
         cards += f'''
         <details class="card" data-sev="{_esc(f.severity)}">
           <summary class="card-h">
             {_badge(f.severity.upper(), _SEV_COLOR.get(f.severity,'#666'))}
             {_badge(f.verdict, _VERDICT_COLOR.get(f.verdict,'#666'))}
+            {cvbadge}
             <span class="title">{_esc(f.title)}</span>
             <span class="loc">{_esc(f.location)}</span>
             <span class="chev">&#9656;</span>
@@ -621,6 +664,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
           <div class="card-b">
             <h4 data-i18n="rationale">{L("rationale")}</h4>{_bi(f.rationale, getattr(f, "rationale_en", ""))}
             <h4 data-i18n="evidence">{L("evidence")}</h4>{_evidence_html(f.evidence)}
+            {cvbody}
             <h4 data-i18n="recommendation">{L("recommendation")}</h4>{_bi(f.recommendation, getattr(f, "recommendation_en", ""))}
           </div>
         </details>'''
@@ -1156,8 +1200,17 @@ def _exploit_html(an, lang: str) -> str:
         f'<span class="xg-lg"><i style="background:{_XK_COL[k]}"></i>{_esc(lbl)}</span>'
         for k, lbl in (("vuln", "vuln"), ("primitive", "primitiva" if es else "primitive"),
                        ("gadget", "gadget"), ("target", "objetivo" if es else "target")))
-    js = (_EXPLOIT_JS.replace("__XGW__", str(int(W_svg)))
-          .replace("__XGINFO__", _json.dumps(info, ensure_ascii=False)))
+    # etiquetas del inspector dependientes de idioma (para no hardcodear espanol en el JS)
+    xglbl = {"kind": {"vuln": "Vulnerabilidad" if es else "Vulnerability",
+                      "primitive": "Primitiva" if es else "Primitive",
+                      "control": "Control", "gadget": "Gadget",
+                      "target": "Objetivo" if es else "Target"},
+             "regs": "Registros" if es else "Registers", "stack": "Stack",
+             "constraints": "Restricciones" if es else "Constraints"}
+    js = (_EXPLOIT_JS
+          .replace("__XGW__", str(int(W_svg)))
+          .replace("__XGINFO__", _json.dumps(info, ensure_ascii=False).replace("</", "<\\/"))
+          .replace("__XGLBL__", _json.dumps(xglbl, ensure_ascii=False).replace("</", "<\\/")))
     prim = "".join(f"<li>{_esc(p)}</li>" for p in an.primitives)
     ctrl = an.control
     ctrl_txt = (f"RIP: {'si' if ctrl.get('RIP') else 'no'} &middot; "
@@ -1190,20 +1243,20 @@ def _exploit_html(an, lang: str) -> str:
 
 _EXPLOIT_JS = r"""
 (function(){
-  var W = __XGW__, INFO = __XGINFO__;
+  var W = __XGW__, INFO = __XGINFO__, LBL = __XGLBL__;
   var svg=document.getElementById('xgsvg'), vp=document.getElementById('xgvp'), panel=document.getElementById('xginfo');
   if(!svg||!vp) return;
   function esc(s){ return (s+'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-  var KIND={vuln:'Vulnerabilidad',primitive:'Primitiva',control:'Control',gadget:'Gadget',target:'Objetivo'};
   function row(l,v){ return v? '<div class="cfgi-note" style="border-color:var(--acc)"><b>'+esc(l)+':</b> '+esc(v)+'</div>':''; }
   function showInfo(id){
     var d=INFO[id]; if(!d||!panel) return;
-    panel.innerHTML='<div class="cfgi-a">'+esc(KIND[d.kind]||d.kind)+'</div>'+
+    panel.innerHTML='<div class="cfgi-a">'+esc((LBL.kind&&LBL.kind[d.kind])||d.kind)+'</div>'+
       '<div class="cfgi-code"><div class="cfgi-l">'+esc(d.label)+'</div></div>'+
       (d.detail?'<div class="cfgi-note">'+esc(d.detail)+'</div>':'')+
-      row('Registros',d.regs)+row('Stack',d.stack)+row('Restricciones',d.constraints);
+      row(LBL.regs,d.regs)+row(LBL.stack,d.stack)+row(LBL.constraints,d.constraints);
     vp.querySelectorAll('.xgnode').forEach(function(g){ g.classList.toggle('sel', g.getAttribute('data-id')===id); });
   }
+  function nodeX(g){ var m=/translate\(([-\d.]+)/.exec(g.getAttribute('transform')||''); return m?parseFloat(m[1]):0; }
   var tx=20,ty=20,scale=1;
   function apply(){ vp.setAttribute('transform','translate('+tx+','+ty+') scale('+scale+')'); }
   svg.addEventListener('mousedown',function(ev){ if(ev.target.closest('.xgnode')) return;
@@ -1231,7 +1284,7 @@ _EXPLOIT_JS = r"""
   function xgStepReset(){ stepIdx=-1; var c=activeChain();
     stepList=[].slice.call(vp.querySelectorAll('.xgnode')).filter(function(g){
       var gc=g.getAttribute('data-c'); return c<0? true : (gc===String(c)||g.getAttribute('data-id')==='vuln'); })
-      .sort(function(a,b){ return (+a.querySelector('rect')?0:0), (parseFloat(a.getAttribute('transform').split(',')[0].slice(10))-parseFloat(b.getAttribute('transform').split(',')[0].slice(10))); });
+      .sort(function(a,b){ return nodeX(a)-nodeX(b); });
     vp.querySelectorAll('.xgnode').forEach(function(g){ g.classList.remove('step'); }); }
   window.xgStep=function(d){ if(!stepList.length) xgStepReset(); if(!stepList.length) return;
     stepIdx=Math.max(0,Math.min(stepList.length-1,stepIdx+d));
@@ -1383,6 +1436,12 @@ h2[id]{scroll-margin-top:16px}
 .xgh{font:700 11px sans-serif;text-transform:uppercase;letter-spacing:.03em;color:var(--mut);margin-bottom:2px}
 .xgsim{padding:8px 0;border-top:1px solid var(--line);font-size:12.5px}
 .xgexp{margin:6px 0 12px}.xgexp>summary{cursor:pointer;font-size:12px;color:var(--acc)}
+.mut{color:var(--mut)}
+.cvssb{color:#fff;font:700 10px ui-monospace,monospace;padding:2px 7px;border-radius:5px;letter-spacing:.02em}
+.cvssbox{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--code);margin:2px 0 4px}
+.cvssrow{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:5px}
+.cvssmat{color:#fff;font:700 10px ui-monospace,monospace;padding:1px 6px;border-radius:4px}
+.cvssvec{display:block;font:11.5px ui-monospace,monospace;color:var(--codefg);word-break:break-all}
 .poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
 .decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
 .decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}

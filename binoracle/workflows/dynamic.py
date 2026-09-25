@@ -20,6 +20,7 @@ Grounded/verified: cada evento es una llamada real observada en ejecucion (no un
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -56,27 +57,27 @@ int listen(int fd,int b){ fprintf(stderr,"__BO__ listen\n");
   int(*r)(int,int)=dlsym(RTLD_NEXT,"listen"); return r(fd,b); }
 extern char** environ;
 int execve(const char* p,char* const av[],char* const ev[]){
-  fprintf(stderr,"__BO__ execve path=%s arg=%s\n",p?p:"",(av&&av[0])?av[0]:"");
+  fprintf(stderr,"__BO__ execve arg=%s path=%s\n",(av&&av[0])?av[0]:"",p?p:"");
   int(*r)(const char*,char* const*,char* const*)=dlsym(RTLD_NEXT,"execve"); return r(p,av,ev); }
 int execv(const char* p,char* const av[]){
-  fprintf(stderr,"__BO__ execve path=%s arg=%s\n",p?p:"",(av&&av[0])?av[0]:"");
+  fprintf(stderr,"__BO__ execve arg=%s path=%s\n",(av&&av[0])?av[0]:"",p?p:"");
   int(*r)(const char*,char* const*)=dlsym(RTLD_NEXT,"execv"); return r(p,av); }
 int execvp(const char* p,char* const av[]){
-  fprintf(stderr,"__BO__ execve path=%s arg=%s\n",p?p:"",(av&&av[0])?av[0]:"");
+  fprintf(stderr,"__BO__ execve arg=%s path=%s\n",(av&&av[0])?av[0]:"",p?p:"");
   int(*r)(const char*,char* const*)=dlsym(RTLD_NEXT,"execvp"); return r(p,av); }
 int execvpe(const char* p,char* const av[],char* const ev[]){
-  fprintf(stderr,"__BO__ execve path=%s arg=%s\n",p?p:"",(av&&av[0])?av[0]:"");
+  fprintf(stderr,"__BO__ execve arg=%s path=%s\n",(av&&av[0])?av[0]:"",p?p:"");
   int(*r)(const char*,char* const*,char* const*)=dlsym(RTLD_NEXT,"execvpe"); return r(p,av,ev); }
 /* execl/execlp: variadicas -> se reconstruye argv y se delega en execve/execvp real */
 int execl(const char* p,const char* a0,...){
-  fprintf(stderr,"__BO__ execve path=%s arg=%s\n",p?p:"",a0?a0:"");
+  fprintf(stderr,"__BO__ execve arg=%s path=%s\n",a0?a0:"",p?p:"");
   va_list ap,ap2; va_start(ap,a0); va_copy(ap2,ap);
   int n=1; while(va_arg(ap2,char*)) n++; va_end(ap2);
   char* argv[64]; int i=0; argv[0]=(char*)a0;
   for(i=1;i<n && i<63;i++) argv[i]=va_arg(ap,char*); argv[i]=0; va_end(ap);
   int(*r)(const char*,char* const*,char* const*)=dlsym(RTLD_NEXT,"execve"); return r(p,argv,environ); }
 int execlp(const char* p,const char* a0,...){
-  fprintf(stderr,"__BO__ execve path=%s arg=%s\n",p?p:"",a0?a0:"");
+  fprintf(stderr,"__BO__ execve arg=%s path=%s\n",a0?a0:"",p?p:"");
   va_list ap,ap2; va_start(ap,a0); va_copy(ap2,ap);
   int n=1; while(va_arg(ap2,char*)) n++; va_end(ap2);
   char* argv[64]; int i=0; argv[0]=(char*)a0;
@@ -94,7 +95,7 @@ int open64(const char* p,int fl,...){ mode_t m=0; if(fl&O_CREAT){va_list ap;va_s
   int(*r)(const char*,int,...)=dlsym(RTLD_NEXT,"open64"); return r(p,fl,m); }
 FILE* fopen(const char* p,const char* m){ fprintf(stderr,"__BO__ open path=%s\n",p?p:"");
   FILE*(*r)(const char*,const char*)=dlsym(RTLD_NEXT,"fopen"); return r(p,m); }
-int chmod(const char* p,mode_t m){ fprintf(stderr,"__BO__ chmod path=%s mode=%o\n",p?p:"",m);
+int chmod(const char* p,mode_t m){ fprintf(stderr,"__BO__ chmod mode=%o path=%s\n",m,p?p:"");
   int(*r)(const char*,mode_t)=dlsym(RTLD_NEXT,"chmod"); return r(p,m); }
 int unlink(const char* p){ fprintf(stderr,"__BO__ unlink path=%s\n",p?p:"");
   int(*r)(const char*)=dlsym(RTLD_NEXT,"unlink"); return r(p); }
@@ -122,32 +123,43 @@ class DynTrace:
         return self.ran
 
 
+# nombre FIJO del binario dentro del sandbox: elimina inyeccion de shell por el nombre del fichero
+# original y desacopla el analisis del nombre real del usuario.
+_SANDBOX_NAME = "target.bin"
+
+
 def dynamic_trace(binary: str, stdin: bytes = b"", timeout: int = 8) -> DynTrace:
-    """Corre el binario con el shim LD_PRELOAD en el sandbox y devuelve el comportamiento observado."""
+    """Corre el binario con el shim LD_PRELOAD en el sandbox y devuelve el comportamiento observado.
+
+    El binario se COPIA a un directorio temporal aislado que es lo unico que se monta en el
+    contenedor (nunca el directorio del usuario): asi un binario malicioso no puede escribir ni
+    alterar ficheros del host. Se ejecuta con nombre fijo (sin inyeccion por el nombre)."""
+    import tempfile
     docker = shutil.which("docker")
     if not docker:
         return DynTrace(note="docker no disponible")
     if subprocess.run([docker, "image", "inspect", _IMG], capture_output=True).returncode != 0:
         return DynTrace(note=f"imagen {_IMG} no construida")
-    d = os.path.dirname(os.path.abspath(binary))
-    name = os.path.basename(binary)
-    stdin_f = os.path.join(d, ".dyn_stdin")
-    hook_f = os.path.join(d, ".dyn_hook.c")
+    work = tempfile.mkdtemp(prefix="bo_dyn_")
     try:
-        with open(stdin_f, "wb") as f:
+        import shutil as _sh
+        _sh.copy2(binary, os.path.join(work, _SANDBOX_NAME))
+        with open(os.path.join(work, ".dyn_stdin"), "wb") as f:
             f.write(stdin)
-        with open(hook_f, "w") as f:
+        with open(os.path.join(work, ".dyn_hook.c"), "w") as f:
             f.write(_HOOK_C)
         # compila el shim, ejecuta el binario con LD_PRELOAD y captura stderr (donde va el log).
         # timeout(1) mata el binario; el log del shim va a fd 2, la salida del binario se descarta.
+        # nombre FIJO (_SANDBOX_NAME) -> no hay interpolacion de datos no confiables en el shell.
         inner = (f"gcc -shared -fPIC -o .dyn_hook.so .dyn_hook.c -ldl 2>/tmp/cc || echo __BO_CCFAIL__; "
-                 f"chmod +x ./{name}; "
-                 f"LD_PRELOAD=$PWD/.dyn_hook.so timeout {max(1, timeout - 2)} ./{name} "
+                 f"chmod +x ./{_SANDBOX_NAME}; "
+                 f"LD_PRELOAD=$PWD/.dyn_hook.so timeout {max(1, timeout - 2)} ./{_SANDBOX_NAME} "
                  f"< .dyn_stdin >/dev/null 2>/tmp/tr; head -c 60000 /tmp/tr")
         out = subprocess.run(
             [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "256m", "--pids-limit", "128",
-             "--security-opt", "no-new-privileges", "-v", d + ":/w", "-w", "/w",
+             "--memory", "256m", "--pids-limit", "128", "--cpus", "1",
+             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+             "--ulimit", "fsize=10000000", "-v", work + ":/w", "-w", "/w",
              _IMG, "bash", "-c", inner],
             capture_output=True, text=True, timeout=timeout + 20)
         raw = (out.stdout or "") + (out.stderr or "")
@@ -156,29 +168,31 @@ def dynamic_trace(binary: str, stdin: bytes = b"", timeout: int = 8) -> DynTrace
     except Exception as e:
         return DynTrace(note=f"error: {e.__class__.__name__}")
     finally:
-        for p in (stdin_f, hook_f, os.path.join(d, ".dyn_hook.so")):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        import shutil as _sh
+        _sh.rmtree(work, ignore_errors=True)
     if "__BO_CCFAIL__" in raw:
         return DynTrace(ran=False, note="no se pudo compilar el shim de interposicion")
     t = _parse(raw)
     # descarta el auto-exec del propio binario (bash lo lanza con execve -> lo intercepta el shim)
-    t.execs = [e for e in t.execs if os.path.basename(e.split()[0]) != name and f"./{name}" not in e]
+    t.execs = [e for e in t.execs
+               if e.split() and os.path.basename(e.split()[0]) != _SANDBOX_NAME
+               and f"./{_SANDBOX_NAME}" not in e]
     if not (t.connects or t.binds or t.execs or t.files or t.chmods or t.unlinks):
         t.note = ("sin eventos interceptados (binario estatico o sin llamadas de red/fichero/exec "
                   "via libc)")
     return t
 
 
-def _kv(rest: str) -> dict:
-    out = {}
-    for tok in rest.split():
-        if "=" in tok:
-            k, v = tok.split("=", 1)
-            out[k] = v
-    return out
+def _tok(rest: str, key: str) -> str:
+    """Valor de token unico (sin espacios): `key=<tok>`."""
+    m = re.search(r'\b' + re.escape(key) + r'=(\S+)', rest)
+    return m.group(1) if m else ""
+
+
+def _rest_after(rest: str, key: str) -> str:
+    """Valor libre HASTA FIN DE LINEA tras `key=` (puede contener espacios: comandos, rutas)."""
+    i = rest.find(key + "=")
+    return rest[i + len(key) + 1:].strip() if i >= 0 else ""
 
 
 def _parse(raw: str) -> DynTrace:
@@ -191,23 +205,24 @@ def _parse(raw: str) -> DynTrace:
         if not parts:
             continue
         ev = parts[0]
-        kv = _kv(parts[1]) if len(parts) > 1 else {}
+        body = parts[1] if len(parts) > 1 else ""
+        # el shim emite el valor con espacios (cmd/path) SIEMPRE al final -> se toma hasta fin de linea
         if ev == "connect":
-            t.connects.append({"ip": kv.get("ip", "?"), "port": kv.get("port", "?")})
+            t.connects.append({"ip": _tok(body, "ip") or "?", "port": _tok(body, "port") or "?"})
         elif ev == "bind":
-            t.binds.append({"ip": kv.get("ip", "?"), "port": kv.get("port", "?")})
+            t.binds.append({"ip": _tok(body, "ip") or "?", "port": _tok(body, "port") or "?"})
         elif ev == "listen":
             pass  # se refleja junto a bind
-        elif ev in ("execve",):
-            t.execs.append((kv.get("path", "") + " " + kv.get("arg", "")).strip())
+        elif ev == "execve":
+            t.execs.append((_tok(body, "arg") + " " + _rest_after(body, "path")).strip())
         elif ev in ("system", "popen"):
-            t.execs.append((kv.get("cmd", "")).strip())
+            t.execs.append(_rest_after(body, "cmd"))
         elif ev == "open":
-            t.files.append(kv.get("path", ""))
+            t.files.append(_rest_after(body, "path"))
         elif ev == "chmod":
-            t.chmods.append({"path": kv.get("path", ""), "mode": kv.get("mode", "")})
+            t.chmods.append({"path": _rest_after(body, "path"), "mode": _tok(body, "mode")})
         elif ev == "unlink":
-            t.unlinks.append(kv.get("path", ""))
+            t.unlinks.append(_rest_after(body, "path"))
     t.files = [f for f in dict.fromkeys(t.files) if f]
     t.execs = [e for e in dict.fromkeys(t.execs) if e]
     t.unlinks = [u for u in dict.fromkeys(t.unlinks) if u]

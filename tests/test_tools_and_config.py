@@ -116,20 +116,24 @@ def test_backdoors_scanner():
 def test_dynamic_parse_and_findings():
     # Parser del shim LD_PRELOAD + generacion de hallazgos (sin docker: se prueba _parse directo).
     from binoracle.workflows.dynamic import _parse, dynamic_findings
+    # formato del shim: el valor con espacios (cmd/path) va SIEMPRE al final de linea
     log = (
         "__BO__ connect ip=10.13.37.7 port=4444\n"
         "__BO__ bind ip=0.0.0.0 port=1337\n"
         "__BO__ open path=/etc/passwd\n"
-        "__BO__ chmod path=/tmp/x mode=777\n"
-        "__BO__ execve path=/bin/sh arg=sh\n"
+        "__BO__ chmod mode=777 path=/tmp/x\n"
+        "__BO__ execve arg=sh path=/bin/sh\n"
+        "__BO__ system cmd=cat /etc/passwd /tmp/notes.txt\n"
         "algo de ruido que no es evento\n"
     )
     t = _parse(log)
     assert t.connects and t.connects[0]["ip"] == "10.13.37.7" and t.connects[0]["port"] == "4444"
     assert t.binds and t.binds[0]["port"] == "1337"
     assert "/etc/passwd" in t.files
-    assert t.chmods and t.chmods[0]["mode"] == "777"
+    assert t.chmods and t.chmods[0]["mode"] == "777" and t.chmods[0]["path"] == "/tmp/x"
     assert any("/bin/sh" in e for e in t.execs)
+    # comando con espacios NO se trunca (regresion del bug de _kv)
+    assert any("cat /etc/passwd /tmp/notes.txt" in e for e in t.execs)
     titles = " ".join(f.title.lower() for f in dynamic_findings(t, "es"))
     assert "conexion saliente" in titles     # callback
     assert "shell" in titles                  # exec de shell
@@ -165,7 +169,7 @@ def test_chainanalyzer_classify_and_score():
     # _best_for elige el pop del registro pedido
     assert _best_for([g, gs], "rdi") is g and _best_for([gs], "rdi") is None
     # scoring: cadena con requisito faltante no es factible y puntua menos
-    c = ExploitChain(name="t", requirements=["[OK] a", "[FALTA] b"], gadgets_used=[1])
+    c = ExploitChain(name="t", requirements=["[OK] a", "[X] b"], gadgets_used=[1])
     _score(c)
     assert c.feasible is False and c.score < 100
     c2 = ExploitChain(name="ok", requirements=["[OK] a"], gadgets_used=[])
@@ -194,6 +198,30 @@ def test_dotnet_detect_and_secrets(tmp_path):
     assert any("User Id=sa" in v for v in hits)  # cadena de conexion
     assert "hello world" not in hits             # const generica: ignorada
     assert "changeme" not in hits                # placeholder: ignorado
+
+
+def test_cvss_mapping():
+    from binoracle.report.cvss import cvss_for, classify
+    from binoracle.store.session import Finding
+    def F(t, v): return Finding(title=t, severity="high", verdict=v, location="", evidence="")
+    # clasificacion por clase
+    assert classify(F("Exploit ret2win verificado", "verified")) == "mem_rce"
+    assert classify(F("Posible reverse shell", "grounded")) == "net_rce"
+    assert classify(F("Secreto hardcodeado: apikey", "grounded")) == "secret"
+    assert classify(F("Algo que no encaja en nada", "grounded")) is None
+    # verificado -> E:A ; grounded -> E:P ; el vector siempre presente
+    rv = cvss_for(F("Exploit ret2win verificado", "verified"))
+    rg = cvss_for(F("Desbordamiento de buffer overflow", "grounded"))
+    assert rv.exploit_maturity == "A" and "/E:A" in rv.vector
+    assert rg.exploit_maturity == "P" and "/E:P" in rg.vector
+    assert cvss_for(F("nada", "grounded")) is None    # no se inventa CVSS
+    # si la libreria cvss esta instalada, el score es el oficial (verificado >= grounded misma clase)
+    try:
+        import cvss  # noqa: F401
+        assert rv.base is not None and rg.base is not None and rv.base >= rg.base
+        assert rv.severity in ("Critical", "High", "Medium", "Low", "None")
+    except ImportError:
+        assert rv.base is None   # degrada sin romper
 
 
 def test_ingest_classify():

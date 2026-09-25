@@ -55,7 +55,7 @@ def _kb_hint(reg, store=None) -> str:
                 learned = []
             if learned:
                 block = ("\n\n[aprendido / verificado en targets similares (misma arch, "
-                         "sinks solapados) — evidencia previa, no del binario actual]\n"
+                         "sinks solapados): evidencia previa, no del binario actual]\n"
                          + "\n".join("- " + x for x in learned))
                 hint = (hint + block) if hint else block.lstrip()
         return hint
@@ -126,7 +126,8 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
         # insuficiente de ficheros/permisos, y seguridad de comunicaciones/criptografia.
         _lang = getattr(config, "lang", "es")
         for _mod, _fn in (("secrets", "scan_secrets"), ("fileperms", "scan_file_perms"),
-                          ("commsec", "scan_comms"), ("backdoors", "scan_backdoors")):
+                          ("commsec", "scan_comms"), ("backdoors", "scan_backdoors"),
+                          ("dotnet", "scan_dotnet")):
             try:
                 import importlib
                 extra = getattr(importlib.import_module(f".{_mod}", __package__), _fn)(
@@ -179,7 +180,7 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
     # puntuacion tecnica y simulacion en sandbox de las factibles. Best-effort.
     try:
         from .chainanalyzer import analyze_chains
-        res.chains = analyze_chains(binary, reg, verify=True)
+        res.chains = analyze_chains(binary, reg, verify=True, lang=getattr(config, "lang", "es"))
     except Exception:
         res.chains = None
 
