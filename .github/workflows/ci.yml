@@ -1,16 +1,18 @@
 name: ci
-on: [push, pull_request]
+# Minimo para no gastar minutos de Actions: una sola version de Python y solo en push a main o PRs
+# (no en cada push de rama). Las pruebas tambien se corren en local: .venv/bin/python -m pytest tests/ -q
+on:
+  push:
+    branches: [main]
+  pull_request:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
       - name: Install radare2
         run: sudo apt-get update && sudo apt-get install -y radare2
       - name: Install binoracle (+ optional oracles)
