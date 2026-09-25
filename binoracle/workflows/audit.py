@@ -246,6 +246,18 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
         def _verified_now():
             a = res.answer or ""
             return "EXPLOIT VERIFICADO" in a or "SHELL VERIFICADA" in a
+
+        def _add_verified(title, location, evidence, rationale, recommendation):
+            """A sandbox-verified backstop exploit is a critical VERIFIED finding, not just a
+            line in the prose (so the report, the findings JSON and the learned corpus all
+            record it consistently)."""
+            fnd = Finding(title=title, severity="critical", verdict="verified",
+                          location=location, evidence=(evidence or "")[:400],
+                          rationale=rationale, recommendation=recommendation)
+            res.findings.append(fnd)
+            if store:
+                store.add_finding(fnd)
+
         if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
             rr = autorop(binary, run=True)
@@ -255,6 +267,10 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                 res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP (backstop)\n"
                                f"Cadena {rr.get('strategy')} (offset={rr.get('offset')}) ejecutada en "
                                f"sandbox: shell obtenida. [src: try_rop]")
+                _add_verified("Exploit ROP a shell verificado", f"offset={rr.get('offset')}",
+                              f"estrategia={rr.get('strategy')}\n{rr.get('run_output','')}",
+                              "Cadena ROP construida y ejecutada en sandbox: shell obtenida.",
+                              "Habilitar PIE + full RELRO; evitar el overflow de pila.")
             if not _verified_now():
                 from .autolibc import autolibc
                 rl = autolibc(binary)
@@ -264,6 +280,10 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                     res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ret2libc (backstop)\n"
                                    f"{rl.get('detail','')}. Fuga de libc + system('/bin/sh') ejecutado en "
                                    f"sandbox. [src: try_ret2libc]")
+                    _add_verified("Exploit ret2libc a shell verificado", rl.get("detail", ""),
+                                  f"{rl.get('detail','')}\n{rl.get('output','')}",
+                                  "Fuga de libc + system('/bin/sh') ejecutado en sandbox: shell obtenida.",
+                                  "Habilitar PIE + full RELRO; evitar el overflow de pila.")
             if not _verified_now():
                 from .autofmt import autofmt
                 rf = autofmt(binary)
@@ -273,6 +293,10 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                     res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via format-string (backstop)\n"
                                    f"{rf.get('detail','')}. Sobrescritura de printf@GOT con system y "
                                    f"'/bin/sh' ejecutado en sandbox. [src: try_fmt]")
+                    _add_verified("Exploit format-string a shell verificado", rf.get("detail", ""),
+                                  f"{rf.get('detail','')}\n{rf.get('output','')}",
+                                  "Sobrescritura de printf@GOT con system y '/bin/sh' ejecutado en sandbox.",
+                                  "No pasar entrada del usuario como formato de printf; full RELRO.")
     except Exception:
         pass
 
