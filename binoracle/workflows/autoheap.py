@@ -98,14 +98,42 @@ except Exception as e:
 '''
 
 
+def _heap_shell_applicable(binary: str) -> bool:
+    """Cheap ELF pre-check (no container): the tcache-UAF->free@GOT->win exploit needs a `win`
+    symbol and a `free` symbol. If pyelftools is missing we cannot tell, so we let the driver
+    decide; if present and neither is found, skip the (costly) sandbox run entirely."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except Exception:
+        return True
+    try:
+        names = set()
+        with open(binary, "rb") as f:
+            elf = ELFFile(f)
+            for sec in elf.iter_sections():
+                if sec.name in (".symtab", ".dynsym"):
+                    for s in sec.iter_symbols():
+                        if s.name:
+                            names.add(s.name)
+        return "win" in names and any("free" in n for n in names)
+    except Exception:
+        return True
+
+
 def autoheap_shell(binary: str) -> dict:
     """Drive a menu tcache-UAF (heapexp shape) to a verified shell via tcache poisoning +
     free@GOT overwrite. Needs a `win` and a writable free@GOT (no-PIE). Runs in the
     binoracle-pwn sandbox; degrades cleanly if Docker or the image is absent."""
     if not shutil.which("docker"):
         return {"ok": False, "note": "docker no disponible"}
-    if subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                      capture_output=True).returncode != 0:
+    if not _heap_shell_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin win/free): heap->shell requiere win + free@GOT"}
+    try:
+        img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
+                             capture_output=True, timeout=15).returncode
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "note": "docker no responde (image inspect timeout)"}
+    if img != 0:
         return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
     d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
     if not os.path.isdir(d):
@@ -120,7 +148,8 @@ def autoheap_shell(binary: str) -> dict:
         r = subprocess.run(
             ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
              "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "python3", ".binoracle_heap.py", name],
+             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "bash", "-c",
+             f"chmod +x ./{name}; python3 .binoracle_heap.py {name}"],
             capture_output=True, text=True, timeout=200)
         out = r.stdout + r.stderr
     except subprocess.TimeoutExpired:

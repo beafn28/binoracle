@@ -378,10 +378,9 @@ def test_find_win_gift_regex_no_substring_false_positive():
 
 
 def test_autoheap_shell_degrades_cleanly():
-    # heap->shell se apoya en el sandbox binoracle-pwn; sin docker/imagen debe devolver un dict
-    # con ok=False y una nota, nunca lanzar (degradacion elegante).
+    # heap->shell se apoya en el sandbox binoracle-pwn. Usamos una ruta en un directorio
+    # inexistente para ejercer SIEMPRE la degradacion (dict ok=False + nota) sin arrancar el
+    # contenedor ni el exploit real, en cualquier entorno.
     from binoracle.workflows.autoheap import autoheap_shell
-    r = autoheap_shell("samples/bin/heapexp")
-    assert isinstance(r, dict) and "ok" in r
-    if not r["ok"]:
-        assert r.get("note")
+    r = autoheap_shell("/nonexistent/dir/heapexp")
+    assert isinstance(r, dict) and r.get("ok") is False and r.get("note")

@@ -114,8 +114,12 @@ def _run_pie_driver(binary: str, driver: str, tmpname: str) -> dict:
     sandbox (ASLR off, no network). Returns {ok, verified, detail, output, note}."""
     if not shutil.which("docker"):
         return {"ok": False, "note": "docker no disponible"}
-    if subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                      capture_output=True).returncode != 0:
+    try:
+        img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
+                             capture_output=True, timeout=15).returncode
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "note": "docker no responde (image inspect timeout)"}
+    if img != 0:
         return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
     d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
     if not os.path.isdir(d):
@@ -130,7 +134,8 @@ def _run_pie_driver(binary: str, driver: str, tmpname: str) -> dict:
         r = subprocess.run(
             ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
              "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "python3", tmpname, name],
+             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "bash", "-c",
+             f"chmod +x ./{name}; python3 {tmpname} {name}"],
             capture_output=True, text=True, timeout=200)
         out = r.stdout + r.stderr
     except subprocess.TimeoutExpired:
