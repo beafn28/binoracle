@@ -148,6 +148,31 @@ def test_attack_chain_runtime():
     assert "chain-step" in h
 
 
+def test_chainanalyzer_classify_and_score():
+    from binoracle.workflows.chainanalyzer import (_classify, _best_for, _score, ExploitChain, Gadget)
+    # gadget limpio: pop rdi; ret
+    g = _classify({"retaddr": 0x401234, "opcodes": [
+        {"addr": 0x401234, "opcode": "pop rdi", "type": "pop"},
+        {"addr": 0x401235, "opcode": "ret", "type": "ret"}]})
+    assert g and g.sets == ["rdi"] and g.stack_delta == 16 and g.kind == "pop"
+    # gadget sucio: contiene un salto condicional -> no utilizable
+    assert _classify({"retaddr": 0x1, "opcodes": [
+        {"opcode": "jrcxz 0x1", "type": "cjmp"}, {"opcode": "pop rdi", "type": "pop"},
+        {"opcode": "ret", "type": "ret"}]}) is None
+    # syscall
+    gs = _classify({"retaddr": 0x2, "opcodes": [{"opcode": "syscall", "type": "syscall"}]})
+    assert gs and gs.kind == "syscall"
+    # _best_for elige el pop del registro pedido
+    assert _best_for([g, gs], "rdi") is g and _best_for([gs], "rdi") is None
+    # scoring: cadena con requisito faltante no es factible y puntua menos
+    c = ExploitChain(name="t", requirements=["[OK] a", "[FALTA] b"], gadgets_used=[1])
+    _score(c)
+    assert c.feasible is False and c.score < 100
+    c2 = ExploitChain(name="ok", requirements=["[OK] a"], gadgets_used=[])
+    _score(c2)
+    assert c2.feasible is True and c2.score == 100
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

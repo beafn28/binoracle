@@ -175,6 +175,13 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
         res.cfg = function_cfg(binary, fn)
     except Exception:
         res.cfg = None
+    # Exploit Chain Analyzer: primitivas + gadgets reales + cadenas candidatas con factibilidad,
+    # puntuacion tecnica y simulacion en sandbox de las factibles. Best-effort.
+    try:
+        from .chainanalyzer import analyze_chains
+        res.chains = analyze_chains(binary, reg, verify=True)
+    except Exception:
+        res.chains = None
 
     # Deterministic backstop: the AI drives, but if it did not actually verify an exploit and
     # the binary has a gift function reachable via overflow, we run the auto-PoC ourselves so

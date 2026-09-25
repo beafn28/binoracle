@@ -429,7 +429,8 @@ def run_command(payload: dict) -> dict:
         html = render_html(binary, triage=getattr(res, "triage", None),
                            findings=res.findings, ledger=res.ledger,
                            answer=res.answer, lang=config.lang, embed=True,
-                           decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None))
+                           decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None),
+                           chains=getattr(res, 'chains', None))
         store.close()
         return {"ok": True, "html": html, "text": res.answer}
     if cmd == "autopwn":
@@ -606,7 +607,8 @@ def run_streaming(command, binary, ai, emit):
             html = render_html(binary, triage=getattr(res, "triage", None),
                                findings=res.findings, ledger=res.ledger,
                                answer=res.answer, lang=config.lang, embed=True,
-                           decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None))
+                           decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None),
+                           chains=getattr(res, 'chains', None))
             store.close()
             emit("step", "auditoria terminada; generando informe...")
             emit("html", html)
@@ -750,6 +752,7 @@ def run_streaming(command, binary, ai, emit):
             for i, (ti, sr, tx) in enumerate(report.sections, 1):
                 ledger.record(i, ti, sr, tx)
             cfg = None
+            chains = None
             if command == "report":
                 try:
                     from .workflows.cfg import function_cfg
@@ -757,9 +760,14 @@ def run_streaming(command, binary, ai, emit):
                     cfg = function_cfg(binary, _fn)
                 except Exception:
                     cfg = None
+                try:
+                    from .workflows.chainanalyzer import analyze_chains
+                    chains = analyze_chains(binary, reg, verify=False)
+                except Exception:
+                    chains = None
             html = render_html(binary, triage=(report if command == "report" else None),
                                findings=findings, ledger=ledger, answer=answer,
-                               lang=config.lang, embed=True, decompiled=decompiled, cfg=cfg)
+                               lang=config.lang, embed=True, decompiled=decompiled, cfg=cfg, chains=chains)
             store.close()
             emit("step", "informe listo.")
             emit("html", html)

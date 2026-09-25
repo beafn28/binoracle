@@ -486,17 +486,18 @@ def _toc(lang: str, has) -> str:
                 "exploit": "Exploit paso a paso", "dec": "Decompilacion anotada",
                 "cfg": "Grafo de flujo interactivo",
                 "find": "Hallazgos", "mit": "Mitigaciones y remediacion",
-                "chain": "Cadena de explotacion",
+                "chain": "Cadena de explotacion", "xchain": "Analizador de cadenas (grafo)",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
          "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
                 "exploit": "Exploit step by step", "dec": "Annotated decompilation",
                 "cfg": "Interactive control-flow graph",
                 "find": "Findings", "mit": "Mitigations & remediation",
-                "chain": "Exploitation chain",
+                "chain": "Exploitation chain", "xchain": "Chain analyzer (graph)",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
     order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
              ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("mit", "sec-mit"),
-             ("chain", "sec-chain"), ("surface", "sec-surface"), ("refs", "sec-refs"), ("trail", "sec-trail")]
+             ("chain", "sec-chain"), ("xchain", "sec-xchain"), ("surface", "sec-surface"),
+             ("refs", "sec-refs"), ("trail", "sec-trail")]
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
                     for key, aid in order if has.get(key))
     return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
@@ -544,7 +545,7 @@ def _parse_mitigations(triage) -> dict:
 
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
-                decompiled=None, cfg=None) -> str:
+                decompiled=None, cfg=None, chains=None) -> str:
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
@@ -672,6 +673,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
     decompiled_html = _decompiled_html(decompiled)
     cfg_html = _cfg_html(cfg, lang)
+    exploit_graph_html = _exploit_html(chains, lang)
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
     attack_chain_html = _attack_chain(findings, mit, lang)
@@ -685,7 +687,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
-            "surface": bool(triage_sections),
+            "xchain": bool(exploit_graph_html), "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
     toc_html = _toc(lang, _has)
     sev_buttons = "".join(
@@ -742,6 +744,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {mit_detail_html}
 
   {attack_chain_html}
+
+  {exploit_graph_html}
 
   <h2 data-i18n="attack_surface" id="sec-surface"></h2>
   {triage_sections or '<p class="empty" data-i18n="no_triage"></p>'}
@@ -803,6 +807,7 @@ _I18N = {
         "decompiled": "Decompilacion anotada (funcion vulnerable)",
         "cfg_graph": "Grafo de flujo interactivo",
         "attack_chain": "Cadena de explotacion",
+        "exploit_chains": "Analizador de cadenas de explotacion",
         "exploit_steps": "Exploit paso a paso",
         "mit_detail": "Mitigaciones y remediacion",
         "references": "Referencias",
@@ -828,6 +833,7 @@ _I18N = {
         "decompiled": "Annotated decompilation (vulnerable function)",
         "cfg_graph": "Interactive control-flow graph",
         "attack_chain": "Exploitation chain",
+        "exploit_chains": "Exploit chain analyzer",
         "exploit_steps": "Exploit step by step",
         "mit_detail": "Mitigations and remediation",
         "references": "References",
@@ -1012,6 +1018,233 @@ _CFG_JS = r"""
 """
 
 
+# colores por tipo de nodo del grafo de explotacion
+_XK_COL = {"vuln": "#e5484d", "primitive": "#f5a623", "control": "#4aa3ff",
+           "gadget": "#12a594", "target": "#8e4ec6"}
+
+
+def _exploit_html(an, lang: str) -> str:
+    """Exploit Chain Analyzer: grafo interactivo (Vulnerabilidad -> Primitiva -> Control -> Gadget...
+    -> Objetivo) renderizado en servidor + interactividad (pan/zoom/arrastrar, inspeccionar nodo,
+    filtrar por cadena, reproducir paso a paso), comparacion tecnica y tablas de factibilidad."""
+    if an is None or not getattr(an, "ok", False):
+        return ""
+    es = lang == "es"
+    g = an.graph
+    nodes = {n["id"]: dict(n) for n in g["nodes"]}
+    edges = g["edges"]
+    # layout columnar: vuln a la izquierda; cada cadena en su fila; pasos en columnas.
+    COLW, ROWH, NW = 200, 118, 168
+    # profundidad (columna) de cada nodo siguiendo las aristas desde vuln
+    col = {"vuln": 0}
+    rowof = {}
+    for e in edges:
+        col[e["dst"]] = max(col.get(e["dst"], 0), col.get(e["src"], 0) + 1)
+        rowof[e["dst"]] = e["chain"]
+    nchains = len(an.chains)
+    for nid in nodes:
+        c = rowof.get(nid, 0)
+        nodes[nid]["x"] = col.get(nid, 0) * COLW
+        nodes[nid]["y"] = (0 if nid == "vuln" else c * ROWH)
+    # centra el nodo vuln verticalmente
+    if nchains:
+        nodes["vuln"]["y"] = (nchains - 1) * ROWH / 2
+    # aristas
+    edges_svg = ""
+    for e in edges:
+        a, b = nodes.get(e["src"]), nodes.get(e["dst"])
+        if not a or not b:
+            continue
+        x1, y1 = a["x"] + NW, a["y"] + 28
+        x2, y2 = b["x"], b["y"] + 28
+        mx = (x1 + x2) / 2
+        col_e = "#30a46c" if e.get("ok") else "#e5484d"
+        dash = "" if e.get("ok") else ' stroke-dasharray="5,4"'
+        edges_svg += (f'<path class="xge" data-c="{e["chain"]}" d="M{x1:.0f},{y1:.0f} '
+                      f'C{mx:.0f},{y1:.0f} {mx:.0f},{y2:.0f} {x2:.0f},{y2:.0f}" fill="none" '
+                      f'stroke="{col_e}" stroke-width="2"{dash} marker-end="url(#xah)"/>')
+    # nodos
+    nodes_svg = ""
+    info = {}
+    for nid, n in nodes.items():
+        kind = n["kind"]
+        col_n = _XK_COL.get(kind, "#12a594")
+        lbl = (n["label"] or "").split("\n")
+        title = _esc(lbl[0][:22])
+        sub = _esc(lbl[1][:20]) if len(lbl) > 1 else ""
+        chain_attr = "" if nid == "vuln" else f' data-c="{rowof.get(nid, 0)}"'
+        nodes_svg += (f'<g class="xgnode" data-id="{nid}"{chain_attr} '
+                      f'transform="translate({n["x"]:.0f},{n["y"]:.0f})">'
+                      f'<rect width="{NW}" height="56" rx="9" style="stroke:{col_n}"/>'
+                      f'<rect width="6" height="56" rx="3" fill="{col_n}"/>'
+                      f'<text x="16" y="23" class="xgt">{title}</text>'
+                      f'<text x="16" y="42" class="xgsub">{sub}</text></g>')
+        regs = "; ".join(f"{k}={v}" for k, v in (n.get("regs") or {}).items())
+        info[nid] = {"label": n["label"], "kind": kind, "detail": n.get("detail", ""),
+                     "regs": regs, "stack": n.get("stack", ""), "constraints": n.get("constraints", "")}
+    W_svg = (max((n["x"] for n in nodes.values()), default=0) + NW + 40)
+    H_svg = (max((n["y"] for n in nodes.values()), default=0) + 90)
+    # botones de filtro por cadena
+    fbtns = "".join(
+        f'<button class="xgf" data-c="{i}" onclick="xgFilter({i},this)">'
+        f'<i style="background:{"#30a46c" if c.feasible else "#e5484d"}"></i>{_esc(c.name)} '
+        f'<b>{c.score}</b></button>' for i, c in enumerate(an.chains))
+    # tabla comparativa tecnica
+    th = (["Cadena", "Factible", "Puntuacion", "Gadgets", "Requisitos faltan", "Objetivo"] if es
+          else ["Chain", "Feasible", "Score", "Gadgets", "Missing reqs", "Target"])
+    rows = ""
+    for c in an.chains:
+        miss = c.score_detail.get("requisitos_incumplidos", 0)
+        fe = ("si" if c.feasible else "no") if es else ("yes" if c.feasible else "no")
+        fc = "#30a46c" if c.feasible else "#e5484d"
+        rows += (f'<tr><td><b>{_esc(c.name)}</b></td><td style="color:{fc};font-weight:700">{fe}</td>'
+                 f'<td>{c.score}</td><td>{len(c.gadgets_used)}</td><td>{miss}</td>'
+                 f'<td><code>{_esc(c.target)}</code></td></tr>')
+    cmp_tbl = (f'<table class="xgcmp"><thead><tr>' + "".join(f"<th>{_esc(h)}</th>" for h in th)
+               + f'</tr></thead><tbody>{rows}</tbody></table>')
+    # tarjetas de factibilidad detallada por cadena (con export)
+    cards = ""
+    for i, c in enumerate(an.chains):
+        L = ("Requisitos", "Registros", "Gadgets usados", "Restricciones", "Mitigaciones",
+             "Puntos de rotura", "Simulacion") if es else \
+            ("Requirements", "Registers", "Gadgets used", "Constraints", "Mitigations",
+             "Break points", "Simulation")
+        def _ul(items):
+            return "<ul class='xgul'>" + "".join(f"<li>{_esc(x)}</li>" for x in items) + "</ul>" if items else "<span class='mut'>-</span>"
+        gtxt = [hex(a) for a in c.gadgets_used] or []
+        steps_txt = " -> ".join((s.label + (f"@{hex(s.addr)}" if s.addr else "")) for s in c.steps)
+        export = (f"# {c.name} | objetivo={c.target} | factible={c.feasible} | score={c.score}\n"
+                  f"# SOLO laboratorio autorizado. Representacion reproducible del plan.\n"
+                  f"cadena: {steps_txt}\n"
+                  + "\n".join("req: " + r for r in c.requirements)
+                  + ("\ngadgets: " + ", ".join(gtxt) if gtxt else ""))
+        fe = ("FACTIBLE" if c.feasible else "INCOMPATIBLE") if es else ("FEASIBLE" if c.feasible else "INCOMPATIBLE")
+        fc = "#30a46c" if c.feasible else "#e5484d"
+        cards += (
+            f'<details class="xgcard"{" open" if i == 0 else ""}><summary>'
+            f'<span class="xgbadge" style="background:{fc}">{fe}</span> <b>{_esc(c.name)}</b> '
+            f'<span class="mut">-> {_esc(c.target)}</span> '
+            f'<span class="xgscore">{("puntuacion tecnica" if es else "technical score")}: {c.score}</span>'
+            f'</summary>'
+            f'<div class="xggrid">'
+            f'<div><div class="xgh">{L[0]}</div>{_ul(c.requirements)}</div>'
+            f'<div><div class="xgh">{L[1]}</div>{_ul(c.regs_needed)}</div>'
+            f'<div><div class="xgh">{L[2]}</div>{_ul(gtxt)}</div>'
+            f'<div><div class="xgh">{L[3]}</div>{_ul(c.constraints)}</div>'
+            f'<div><div class="xgh">{L[4]}</div>{_ul(c.mitigations)}</div>'
+            f'<div><div class="xgh">{L[5]}</div>{_ul(c.break_points)}</div>'
+            f'</div>'
+            f'<div class="xgsim"><b>{L[6]}:</b> {_esc(c.sim_result)}</div>'
+            f'<details class="xgexp"><summary>{("Exportar (uso autorizado)" if es else "Export (authorized use)")}</summary>'
+            f'<pre class="evpre">{_esc(export)}</pre></details>'
+            f'</details>')
+    T = {"hint": ("Arrastra el fondo para moverte, rueda para zoom. Pulsa un nodo para inspeccionar "
+                  "su estado (registros, stack, restricciones). Filtra por cadena y reproduce paso a paso."
+                  if es else "Drag the background to pan, wheel to zoom. Click a node to inspect its "
+                  "state (registers, stack, constraints). Filter by chain and replay step by step."),
+         "all": "todas" if es else "all", "prev": "< paso" if es else "< step",
+         "next": "paso >" if es else "step >", "reset": "centrar" if es else "center",
+         "tip": ("Pulsa un nodo para ver registros, stack y restricciones."
+                 if es else "Click a node to see registers, stack and constraints."),
+         "score_note": ("Puntuacion TECNICA por propiedades objetivas (gadgets, requisitos, "
+                        "mitigaciones, conflictos). No es una recomendacion para atacar sistemas reales; "
+                        "todo el analisis se limita al binario de laboratorio cargado."
+                        if es else "TECHNICAL score from objective properties (gadgets, requirements, "
+                        "mitigations, conflicts). Not a recommendation to attack real systems; all "
+                        "analysis is limited to the loaded lab binary.")}
+    legend = "".join(
+        f'<span class="xg-lg"><i style="background:{_XK_COL[k]}"></i>{_esc(lbl)}</span>'
+        for k, lbl in (("vuln", "vuln"), ("primitive", "primitiva" if es else "primitive"),
+                       ("gadget", "gadget"), ("target", "objetivo" if es else "target")))
+    js = (_EXPLOIT_JS.replace("__XGW__", str(int(W_svg)))
+          .replace("__XGINFO__", _json.dumps(info, ensure_ascii=False)))
+    prim = "".join(f"<li>{_esc(p)}</li>" for p in an.primitives)
+    ctrl = an.control
+    ctrl_txt = (f"RIP: {'si' if ctrl.get('RIP') else 'no'} &middot; "
+                f"pivote RSP: {'si' if ctrl.get('RSP_pivot') else 'no'} &middot; "
+                f"regs: {', '.join(ctrl.get('regs') or []) or '-'}") if es else \
+               (f"RIP: {'yes' if ctrl.get('RIP') else 'no'} &middot; "
+                f"RSP pivot: {'yes' if ctrl.get('RSP_pivot') else 'no'} &middot; "
+                f"regs: {', '.join(ctrl.get('regs') or []) or '-'}")
+    return (
+        f'<h2 data-i18n="exploit_chains" id="sec-xchain"></h2>'
+        f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["score_note"])}</p>'
+        f'<div class="xgmeta"><div><b>{"Primitivas" if es else "Primitives"}:</b><ul class="xgul">{prim}</ul></div>'
+        f'<div><b>{"Control" if es else "Control"}:</b> {ctrl_txt}<br><b>{"Objetivo" if es else "Target"}:</b> '
+        f'<code>{_esc(an.target)}</code> &middot; {len(an.gadgets)} gadgets</div></div>'
+        f'<div class="xgbar"><button class="xgf xgon" data-c="-1" onclick="xgFilter(-1,this)">{_esc(T["all"])}</button>'
+        f'{fbtns}<span class="xgsp"></span>'
+        f'<button class="ctl" onclick="xgStep(-1)">{_esc(T["prev"])}</button>'
+        f'<button class="ctl" onclick="xgStep(1)">{_esc(T["next"])}</button>'
+        f'<button class="ctl" onclick="xgReset()">{_esc(T["reset"])}</button></div>'
+        f'<p class="mut" style="font-size:11.5px;margin:6px 0 6px">{_esc(T["hint"])} {legend}</p>'
+        f'<div class="cfgflex"><div class="cfgwrap"><svg id="xgsvg" viewBox="0 0 {int(W_svg)} {int(H_svg)}"><defs>'
+        f'<marker id="xah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
+        f'<path d="M0,0 L7,3 L0,6 Z" fill="context-stroke"/></marker></defs>'
+        f'<g id="xgvp" transform="translate(20,20)">{edges_svg}{nodes_svg}</g></svg></div>'
+        f'<div id="xginfo" class="cfginfo"><p class="mut">{_esc(T["tip"])}</p></div></div>'
+        f'<h3 style="margin:16px 0 6px">{"Comparacion tecnica" if es else "Technical comparison"}</h3>{cmp_tbl}'
+        f'<h3 style="margin:16px 0 6px">{"Factibilidad por cadena" if es else "Per-chain feasibility"}</h3>{cards}'
+        f'<script>{js}</script>')
+
+
+_EXPLOIT_JS = r"""
+(function(){
+  var W = __XGW__, INFO = __XGINFO__;
+  var svg=document.getElementById('xgsvg'), vp=document.getElementById('xgvp'), panel=document.getElementById('xginfo');
+  if(!svg||!vp) return;
+  function esc(s){ return (s+'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  var KIND={vuln:'Vulnerabilidad',primitive:'Primitiva',control:'Control',gadget:'Gadget',target:'Objetivo'};
+  function row(l,v){ return v? '<div class="cfgi-note" style="border-color:var(--acc)"><b>'+esc(l)+':</b> '+esc(v)+'</div>':''; }
+  function showInfo(id){
+    var d=INFO[id]; if(!d||!panel) return;
+    panel.innerHTML='<div class="cfgi-a">'+esc(KIND[d.kind]||d.kind)+'</div>'+
+      '<div class="cfgi-code"><div class="cfgi-l">'+esc(d.label)+'</div></div>'+
+      (d.detail?'<div class="cfgi-note">'+esc(d.detail)+'</div>':'')+
+      row('Registros',d.regs)+row('Stack',d.stack)+row('Restricciones',d.constraints);
+    vp.querySelectorAll('.xgnode').forEach(function(g){ g.classList.toggle('sel', g.getAttribute('data-id')===id); });
+  }
+  var tx=20,ty=20,scale=1;
+  function apply(){ vp.setAttribute('transform','translate('+tx+','+ty+') scale('+scale+')'); }
+  svg.addEventListener('mousedown',function(ev){ if(ev.target.closest('.xgnode')) return;
+    var sx=ev.clientX,sy=ev.clientY,ox=tx,oy=ty;
+    function mv(e){ tx=ox+(e.clientX-sx); ty=oy+(e.clientY-sy); apply(); }
+    function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
+    document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
+  svg.addEventListener('wheel',function(ev){ ev.preventDefault(); var f=ev.deltaY<0?1.1:0.9;
+    var r=svg.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
+    tx=mx-(mx-tx)*f; ty=my-(my-ty)*f; scale*=f; apply(); }, {passive:false});
+  vp.querySelectorAll('.xgnode').forEach(function(g){
+    g.addEventListener('click',function(){ showInfo(g.getAttribute('data-id')); }); });
+  window.xgFilter=function(c,btn){
+    document.querySelectorAll('.xgf').forEach(function(b){ b.classList.remove('xgon'); });
+    if(btn) btn.classList.add('xgon');
+    vp.querySelectorAll('.xgnode,.xge').forEach(function(el){
+      var ec=el.getAttribute('data-c');
+      var show = (c<0) || ec===null || ec===String(c) || el.getAttribute('data-id')==='vuln';
+      el.style.display = show?'':'none';
+    });
+    xgStepReset();
+  };
+  var stepList=[], stepIdx=-1;
+  function activeChain(){ var b=document.querySelector('.xgf.xgon'); return b?+b.getAttribute('data-c'):-1; }
+  function xgStepReset(){ stepIdx=-1; var c=activeChain();
+    stepList=[].slice.call(vp.querySelectorAll('.xgnode')).filter(function(g){
+      var gc=g.getAttribute('data-c'); return c<0? true : (gc===String(c)||g.getAttribute('data-id')==='vuln'); })
+      .sort(function(a,b){ return (+a.querySelector('rect')?0:0), (parseFloat(a.getAttribute('transform').split(',')[0].slice(10))-parseFloat(b.getAttribute('transform').split(',')[0].slice(10))); });
+    vp.querySelectorAll('.xgnode').forEach(function(g){ g.classList.remove('step'); }); }
+  window.xgStep=function(d){ if(!stepList.length) xgStepReset(); if(!stepList.length) return;
+    stepIdx=Math.max(0,Math.min(stepList.length-1,stepIdx+d));
+    stepList.forEach(function(g,i){ g.classList.toggle('step', i<=stepIdx); });
+    var cur=stepList[stepIdx]; if(cur) showInfo(cur.getAttribute('data-id')); };
+  window.xgReset=function(){ tx=20; ty=20; scale=1; apply();
+    document.querySelectorAll('.xgf').forEach(function(b){ b.classList.toggle('xgon', b.getAttribute('data-c')==='-1'); });
+    window.xgFilter(-1,document.querySelector('.xgf[data-c="-1"]')); };
+  apply(); xgStepReset();
+})();
+"""
+
+
 _CSS = """
 :root{--bg:#f6f7f9;--panel:#ffffff;--fg:#1a2027;--mut:#6b7683;--line:#e3e7ec;--acc:#2f6feb;--code:#f0f2f5;--codefg:#243b53}
 :root[data-theme=dark]{--bg:#0d1117;--panel:#161b22;--fg:#d7dde4;--mut:#8b95a1;--line:#232a33;--acc:#4aa3ff;--code:#0b0e12;--codefg:#cfe3ff}
@@ -1113,6 +1346,43 @@ h2[id]{scroll-margin-top:16px}
 .cfg-lg{display:inline-flex;align-items:center;gap:4px;margin:0 8px}
 .cfg-lg i{width:16px;height:3px;border-radius:2px;display:inline-block}
 .cfg-reset{font-size:11px;padding:2px 8px;margin-left:6px}
+#xgsvg{width:100%;height:100%;cursor:grab;background:
+  radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0/22px 22px}
+#xgsvg:active{cursor:grabbing}
+.xgnode{cursor:pointer}
+.xgnode rect:first-of-type{fill:var(--panel);stroke-width:1.5;filter:drop-shadow(0 1px 2px rgba(0,0,0,.12))}
+.xgnode:hover rect:first-of-type{stroke-width:2.5}
+.xgnode.sel rect:first-of-type{stroke:var(--acc);stroke-width:2.5}
+.xgnode.step rect:first-of-type{stroke-width:2.5}
+.xgnode:not(.step) rect{opacity:1}
+.xgt{fill:var(--fg);font:700 12px -apple-system,sans-serif}
+.xgsub{fill:var(--mut);font:11px ui-monospace,monospace}
+.xgmeta{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:6px 0 10px;font-size:12.5px}
+@media(max-width:640px){.xgmeta{grid-template-columns:1fr}}
+.xgbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0}
+.xgsp{flex:1}
+.xgf{background:var(--panel);border:1px solid var(--line);color:var(--fg);border-radius:8px;
+  padding:4px 10px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.xgf i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.xgf b{color:var(--mut)}
+.xgf.xgon{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,var(--panel))}
+.xg-lg{display:inline-flex;align-items:center;gap:4px;margin:0 7px}
+.xg-lg i{width:11px;height:11px;border-radius:3px;display:inline-block}
+.xgul{margin:4px 0;padding-left:16px}.xgul li{font-size:12px;line-height:1.5;margin:2px 0}
+.xgcmp{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0}
+.xgcmp th,.xgcmp td{border:1px solid var(--line);padding:6px 9px;text-align:left}
+.xgcmp th{background:var(--code);color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.xgcmp code{background:var(--code);padding:1px 5px;border-radius:4px;color:var(--codefg)}
+.xgcard{border:1px solid var(--line);border-radius:11px;margin:8px 0;background:var(--panel);padding:0 13px}
+.xgcard>summary{cursor:pointer;padding:11px 0;list-style:none;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.xgcard>summary::-webkit-details-marker{display:none}
+.xgbadge{color:#fff;font:700 10px sans-serif;padding:2px 7px;border-radius:5px;letter-spacing:.03em}
+.xgscore{margin-left:auto;color:var(--mut);font-size:11.5px}
+.xggrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px 16px;padding:4px 0 10px}
+@media(max-width:760px){.xggrid{grid-template-columns:1fr}}
+.xgh{font:700 11px sans-serif;text-transform:uppercase;letter-spacing:.03em;color:var(--mut);margin-bottom:2px}
+.xgsim{padding:8px 0;border-top:1px solid var(--line);font-size:12.5px}
+.xgexp{margin:6px 0 12px}.xgexp>summary{cursor:pointer;font-size:12px;color:var(--acc)}
 .poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
 .decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
 .decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}
