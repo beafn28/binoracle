@@ -22,6 +22,9 @@ class Config:
     api_key: str = field(default_factory=lambda: _env("BINORACLE_API_KEY", "local"))
     temperature: float = field(default_factory=lambda: float(_env("BINORACLE_TEMPERATURE", "0.1")))
     lang: str = field(default_factory=lambda: _env("BINORACLE_LANG", "es"))  # es | en
+    # Constrain agent-loop replies to valid JSON (Ollama format:json / OpenAI response_format).
+    # On by default; set BINORACLE_JSON_MODE=0 for a model whose server does not support it.
+    json_mode: bool = field(default_factory=lambda: _env("BINORACLE_JSON_MODE", "1") != "0")
     request_timeout: int = field(default_factory=lambda: int(_env("BINORACLE_TIMEOUT", "600")))
 
     # --- agent budget (keeps the loop from running away) ---

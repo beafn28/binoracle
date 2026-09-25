@@ -25,7 +25,11 @@ class LLMBackend:
     def available(self) -> bool:  # pragma: no cover - overridden
         raise NotImplementedError
 
-    def chat(self, messages: List[Message]) -> str:  # pragma: no cover - overridden
+    def chat(self, messages: List[Message], *, json_mode: bool = False) -> str:  # pragma: no cover - overridden
+        """Return the model's reply. When json_mode is set, the backend constrains the
+        output to a single valid JSON value (Ollama `format:json` / OpenAI
+        `response_format`), which the agent loop uses to stop small models from wrapping
+        their action in prose. Prose calls (summaries, enrichment) leave it False."""
         raise NotImplementedError
 
     def info(self) -> str:

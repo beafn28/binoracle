@@ -79,7 +79,10 @@ class AgentLoop:
                 ))
                 forced = True
 
-            reply = self.llm.chat(messages)
+            # Ask for JSON-constrained output: the whole protocol is a single JSON object,
+            # so this stops small models from wrapping the action in prose (the main cause
+            # of 'not valid protocol' nudges). Falls back gracefully if the backend ignores it.
+            reply = self.llm.chat(messages, json_mode=True)
             action = extract_action(reply)
 
             if action is None:
