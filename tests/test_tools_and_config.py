@@ -328,6 +328,17 @@ def test_sarif_export():
     assert all(res["ruleId"] in rule_ids for res in run["results"])
 
 
+def test_chain_verify_proof_plumbing():
+    from binoracle.workflows.chainanalyzer import _proof_from_pie, ExploitChain
+    # parseo de la linea de autopie
+    p = _proof_from_pie("VERIFIED off=72 base=0x555555554000 strategy=rop-pie")
+    assert p["offset"] == 72 and p["base"] == "0x555555554000" and p["strategy"] == "rop-pie"
+    assert _proof_from_pie("NOT_VERIFIED") == {}
+    # el dataclass lleva los campos de prueba, por defecto sin verificar
+    c = ExploitChain(name="x")
+    assert c.verified is False and c.proof == {}
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

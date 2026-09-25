@@ -69,6 +69,8 @@ class ExploitChain:
     score: int = 0
     score_detail: dict = field(default_factory=dict)
     sim_result: str = "no simulada"
+    verified: bool = False                     # probado por ejecucion en sandbox
+    proof: dict = field(default_factory=dict)  # {strategy, offset, base, win, marker, output}
 
 
 @dataclass
@@ -313,7 +315,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                 "align the stack (16B) with a `ret` gadget if win() calls system"))]
     _score(c)
     if verify and c.feasible:
-        c.sim_result = _simulate(binary, "ret2win", lang)
+        c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2win", f, lang)
     chains.append(c)
 
     # 2) ret2libc: overflow -> pop rdi; ret -> system('/bin/sh')
@@ -349,7 +351,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                   addr=f.get("system"), regs={"rdi": "&'/bin/sh'"})]
     _score(c)
     if verify and c.feasible:
-        c.sim_result = _simulate(binary, "ret2libc", lang)
+        c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc", f, lang)
     chains.append(c)
 
     # 3) execve por syscall: pop rax=59; pop rdi=&/bin/sh; pop rsi=0; pop rdx=0; syscall
@@ -389,7 +391,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                              addr=g_sys.addr if g_sys else None, regs=dict(setregs)))
     _score(c)
     if verify and c.feasible:
-        c.sim_result = _simulate(binary, "execve", lang)
+        c.sim_result, c.verified, c.proof = _verify_chain(binary, "execve", f, lang)
     chains.append(c)
 
     # sim_result por defecto (bilingue) para las no simuladas
@@ -397,7 +399,8 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         if ch.sim_result == "no simulada":
             ch.sim_result = L("no simulada", "not simulated")
     # orden: factibles primero, luego por puntuacion tecnica
-    chains.sort(key=lambda x: (not x.feasible, -x.score))
+    # orden: VERIFICADAS primero (prueba real), luego factibles, luego por puntuacion tecnica
+    chains.sort(key=lambda x: (not x.verified, not x.feasible, -x.score))
     an.chains = chains
     an.lang = lang
     an.graph = _build_graph(an)
@@ -413,11 +416,12 @@ def _build_graph(an: ChainAnalysis) -> dict:
     nodes, edges = [], []
     ids = {}
 
-    def node(nid, label, kind, detail="", regs=None, stack="", constraints=""):
+    def node(nid, label, kind, detail="", regs=None, stack="", constraints="", verified=False):
         if nid not in ids:
             ids[nid] = True
             nodes.append({"id": nid, "label": label, "kind": kind, "detail": detail,
-                          "regs": regs or {}, "stack": stack, "constraints": constraints})
+                          "regs": regs or {}, "stack": stack, "constraints": constraints,
+                          "verified": verified})
         return nid
 
     es = getattr(an, "lang", "es") == "es"
@@ -430,7 +434,18 @@ def _build_graph(an: ChainAnalysis) -> dict:
                 continue
             nid = f"c{ci}s{si}"
             lbl = st.label + ("" if st.kind != "gadget" or st.addr is None else f"\n{hex(st.addr)}")
-            node(nid, lbl, st.kind, st.detail, st.regs, st.stack, st.constraints)
+            # el nodo objetivo de una cadena VERIFICADA se marca y lleva la prueba concreta
+            tgt_verified = st.kind == "target" and c.verified
+            detail = st.detail
+            if tgt_verified and c.proof:
+                pr = c.proof
+                detail = (detail + (" | " if detail else "")
+                          + f"VERIFICADO: {pr.get('strategy','')} offset={pr.get('offset')}"
+                          + (f" base={pr.get('base')}" if pr.get('base') else "")
+                          + (f" win={pr.get('win')}" if pr.get('win') else "")
+                          + f" (marcador {pr.get('marker','')})")
+            node(nid, lbl + ("  [OK]" if tgt_verified else ""), st.kind, detail,
+                 st.regs, st.stack, st.constraints, verified=tgt_verified)
             # arista rota si el gadget/simbolo falta (marcado como AUSENTE/ABSENT en ambos idiomas)
             bad = ("AUSENTE" in (st.detail or "")) or ("ABSENT" in (st.detail or "")) \
                 or ("ausente" in (st.constraints or "")) or ("absent" in (st.constraints or ""))
@@ -439,22 +454,77 @@ def _build_graph(an: ChainAnalysis) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def _simulate(binary: str, kind: str, lang: str = "es") -> str:
-    """Simulacion/verificacion real en el sandbox (opcional). Reutiliza autopoc/autorop."""
+import re as _re_cv
+
+
+def _proof_from_pie(detail: str) -> dict:
+    """Extrae offset/base/strategy de la linea 'VERIFIED off=.. base=0x.. strategy=..' de autopie."""
+    p = {}
+    m = _re_cv.search(r"off=(\d+)", detail or "")
+    if m: p["offset"] = int(m.group(1))
+    m = _re_cv.search(r"base=(0x[0-9a-fA-F]+)", detail or "")
+    if m: p["base"] = m.group(1)
+    m = _re_cv.search(r"strategy=([\w\-]+)", detail or "")
+    if m: p["strategy"] = m.group(1)
+    return p
+
+
+def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
+    """Verifica la cadena EJECUTANDOLA en el sandbox con el verificador adecuado segun el tipo y
+    las protecciones (PIE-aware, con fallback a ret2libc-con-leak). Devuelve (texto, verified, proof).
+    proof = {strategy, offset, base, win, marker, output}. Nunca lanza."""
     es = lang == "es"
+    pie = facts.get("pie") is True
+    OK = "VERIFICADA" if es else "VERIFIED"
+    NO = "no verificada" if es else "not verified"
     try:
         if kind == "ret2win":
+            if pie:
+                from .autopie import autopie_ret2win
+                r = autopie_ret2win(binary, run=True)
+                v = bool(r.get("verified"))
+                proof = _proof_from_pie(r.get("detail", ""))
+                proof.update({"win": hex(facts["win"]) if facts.get("win") else None,
+                              "marker": "BINORACLE_PWNED", "output": (r.get("output") or "")[-300:]})
+                proof.setdefault("strategy", "ret2win-pie")
+                return ((f"{OK} (ret2win PIE, base resuelta en sandbox)" if v
+                         else f"{NO}: {r.get('note','')}"), v, proof if v else {})
             from .autopoc import autopoc
             r = autopoc(binary, run=True)
-            return (("VERIFICADA (shell en sandbox)" if es else "VERIFIED (shell in sandbox)")
-                    if getattr(r, "verified", False)
-                    else ("construida; no verificada en sandbox" if es else "built; not verified in sandbox"))
-        else:
+            v = bool(getattr(r, "verified", False))
+            proof = {"strategy": "ret2win", "offset": getattr(r, "offset", None),
+                     "win": hex(r.win) if getattr(r, "win", None) else None,
+                     "marker": "BINORACLE_PWNED", "output": (getattr(r, "run_output", "") or "")[-300:]}
+            return ((f"{OK} (shell en sandbox, offset={proof['offset']}, win={proof['win']})" if v
+                     else (f"construida; {NO} en sandbox" if es else f"built; {NO} in sandbox")),
+                    v, proof if v else {})
+        else:  # ret2libc / execve
+            if pie:
+                from .autopie import autopie_rop
+                r = autopie_rop(binary, run=True)
+                v = bool(r.get("verified"))
+                proof = _proof_from_pie(r.get("detail", ""))
+                proof.update({"marker": "BINORACLE_PWNED", "output": (r.get("output") or "")[-300:]})
+                proof.setdefault("strategy", "rop-pie")
+                return ((f"{OK} (ROP PIE, base resuelta, offset={proof.get('offset')})" if v
+                         else f"{NO}: {r.get('note','')}"), v, proof if v else {})
             from .autopoc import autorop
             r = autorop(binary, run=True)
-            if r.get("verified"):
-                v = "VERIFICADA" if es else "VERIFIED"
-                return f"{v} ({r.get('strategy','')}, offset={r.get('offset')})"
-            return ("no verificada: " if es else "not verified: ") + (r.get("note", "") or "")
+            v = bool(r.get("verified"))
+            if not v and facts.get("system") is None:   # binario dinamico sin system: prueba leak
+                try:
+                    from .autolibc import autolibc
+                    rl = autolibc(binary, run=True)
+                    if rl.get("verified"):
+                        proof = {"strategy": "ret2libc+leak", "offset": rl.get("offset"),
+                                 "marker": "BINORACLE_PWNED", "output": (rl.get("output") or "")[-300:]}
+                        return f"{OK} (ret2libc con leak de libc, shell en sandbox)", True, proof
+                except Exception:
+                    pass
+            proof = {"strategy": r.get("strategy", "rop"), "offset": r.get("offset"),
+                     "marker": "BINORACLE_PWNED", "output": (r.get("run_output") or "")[-300:]}
+            return ((f"{OK} ({proof['strategy']}, offset={proof['offset']})" if v
+                     else (f"{NO}: " + (r.get('note', '') or ''))), v, proof if v else {})
     except Exception as e:
-        return (f"no simulada ({e.__class__.__name__})" if es else f"not simulated ({e.__class__.__name__})")
+        return ((f"no simulada ({e.__class__.__name__})" if es
+                 else f"not simulated ({e.__class__.__name__})"), False, {})

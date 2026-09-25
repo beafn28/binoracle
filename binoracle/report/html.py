@@ -1170,17 +1170,21 @@ def _exploit_html(an, lang: str) -> str:
     info = {}
     for nid, n in nodes.items():
         kind = n["kind"]
-        col_n = _XK_COL.get(kind, "#12a594")
+        vrf = bool(n.get("verified"))
+        col_n = "#30a46c" if vrf else _XK_COL.get(kind, "#12a594")   # verde si esta VERIFICADO
         lbl = (n["label"] or "").split("\n")
         title = _esc(lbl[0][:22])
         sub = _esc(lbl[1][:20]) if len(lbl) > 1 else ""
         chain_attr = "" if nid == "vuln" else f' data-c="{rowof.get(nid, 0)}"'
-        nodes_svg += (f'<g class="xgnode" data-id="{nid}"{chain_attr} '
+        badge = (f'<text x="{NW - 10}" y="20" class="xgok" text-anchor="end">&#10003;</text>'
+                 if vrf else "")
+        nodes_svg += (f'<g class="xgnode{" xgverified" if vrf else ""}" data-id="{nid}"{chain_attr} '
                       f'transform="translate({n["x"]:.0f},{n["y"]:.0f})">'
-                      f'<rect width="{NW}" height="56" rx="9" style="stroke:{col_n}"/>'
+                      f'<rect width="{NW}" height="56" rx="9" style="stroke:{col_n}"'
+                      f'{" stroke-width=2.5" if vrf else ""}/>'
                       f'<rect width="6" height="56" rx="3" fill="{col_n}"/>'
                       f'<text x="16" y="23" class="xgt">{title}</text>'
-                      f'<text x="16" y="42" class="xgsub">{sub}</text></g>')
+                      f'<text x="16" y="42" class="xgsub">{sub}</text>{badge}</g>')
         regs = "; ".join(f"{k}={v}" for k, v in (n.get("regs") or {}).items())
         info[nid] = {"label": n["label"], "kind": kind, "detail": n.get("detail", ""),
                      "regs": regs, "stack": n.get("stack", ""), "constraints": n.get("constraints", "")}
@@ -1220,14 +1224,33 @@ def _exploit_html(an, lang: str) -> str:
                   f"cadena: {steps_txt}\n"
                   + "\n".join("req: " + r for r in c.requirements)
                   + ("\ngadgets: " + ", ".join(gtxt) if gtxt else ""))
-        fe = ("FACTIBLE" if c.feasible else "INCOMPATIBLE") if es else ("FEASIBLE" if c.feasible else "INCOMPATIBLE")
-        fc = "#30a46c" if c.feasible else "#e5484d"
+        verified = getattr(c, "verified", False)
+        if verified:
+            fe, fc = ("VERIFICADA" if es else "VERIFIED"), "#30a46c"
+        else:
+            fe = ("FACTIBLE" if c.feasible else "INCOMPATIBLE") if es else ("FEASIBLE" if c.feasible else "INCOMPATIBLE")
+            fc = "#f5a623" if c.feasible else "#e5484d"
+        # bloque de PRUEBA para las cadenas verificadas por ejecucion
+        proof_html = ""
+        pr = getattr(c, "proof", None) or {}
+        if verified and pr:
+            plabel = "Prueba de ejecucion (sandbox)" if es else "Execution proof (sandbox)"
+            rows = "".join(
+                f"<li><b>{_esc(k)}:</b> {_esc(str(v))}</li>"
+                for k, v in (("strategy", pr.get("strategy")), ("offset", pr.get("offset")),
+                             ("base", pr.get("base")), ("win", pr.get("win")),
+                             ("marcador" if es else "marker", pr.get("marker"))) if v not in (None, ""))
+            out = pr.get("output", "")
+            proof_html = (f'<div class="xgproof"><div class="xgh" style="color:#30a46c">{plabel}</div>'
+                          f'<ul class="xgul">{rows}</ul>'
+                          + (f'<pre class="evpre">{_esc(out)}</pre>' if out else "") + '</div>')
         cards += (
             f'<details class="xgcard"{" open" if i == 0 else ""}><summary>'
             f'<span class="xgbadge" style="background:{fc}">{fe}</span> <b>{_esc(c.name)}</b> '
             f'<span class="mut">-> {_esc(c.target)}</span> '
             f'<span class="xgscore">{("puntuacion tecnica" if es else "technical score")}: {c.score}</span>'
             f'</summary>'
+            f'{proof_html}'
             f'<div class="xggrid">'
             f'<div><div class="xgh">{L[0]}</div>{_ul(c.requirements)}</div>'
             f'<div><div class="xgh">{L[1]}</div>{_ul(c.regs_needed)}</div>'
@@ -1464,6 +1487,10 @@ h2[id]{scroll-margin-top:16px}
 .xgnode rect:first-of-type{fill:var(--panel);stroke-width:1.5;filter:drop-shadow(0 1px 2px rgba(0,0,0,.12))}
 .xgnode:hover rect:first-of-type{stroke-width:2.5}
 .xgnode.sel rect:first-of-type{stroke:var(--acc);stroke-width:2.5}
+.xgnode.xgverified rect:first-of-type{stroke:#30a46c;stroke-width:2.5}
+.xgok{fill:#30a46c;font:700 14px sans-serif}
+.xgproof{border-left:3px solid #30a46c;background:color-mix(in srgb,#30a46c 8%,var(--panel));padding:8px 11px;border-radius:6px;margin:4px 0 8px}
+.xgproof pre{max-height:180px;overflow:auto;margin:6px 0 0}
 .xgnode.step rect:first-of-type{stroke-width:2.5}
 .xgnode:not(.step) rect{opacity:1}
 .xgt{fill:var(--fg);font:700 12px -apple-system,sans-serif}
