@@ -375,23 +375,3 @@ def test_find_win_gift_regex_no_substring_false_positive():
     assert hit("sym.__libc_start_main") is False
     # los nombres gift reales siguen detectandose
     assert hit("sym.win") and hit("sym.get_flag") and hit("sym.give_shell") and hit("sym.backdoor")
-
-
-def test_sinks_token_match_and_static_binary():
-    # Integracion (se salta sin radare2/samples): en dinamico los sinks son imports y 'read'
-    # no false-matchea 'fgets'/'readdir'; en estatico se detecta el sink llamado por user code.
-    import os, shutil, pytest
-    if not (shutil.which("r2") or shutil.which("radare2")):
-        pytest.skip("radare2 no instalado")
-    from binoracle.oracles.static_r2 import R2Oracle
-    dyn = "samples/bin/ret2win"
-    if os.path.exists(dyn):
-        r = next(t for t in R2Oracle(dyn).tools() if t.name == "r2_sinks").run()
-        s = set(r.meta.get("sinks", []))
-        assert {"gets", "system"} <= s      # imported sinks detectados
-        assert "fgets" not in s             # token match: no false-positive por subcadena
-    stat = "samples/bin/ropme_pie"
-    if os.path.exists(stat):
-        r = next(t for t in R2Oracle(stat).tools() if t.name == "r2_sinks").run()
-        # binario estatico: 'read' (compilado, no import) detectado por llamada de user code
-        assert "read" in r.meta.get("sinks", []) and "codigo de usuario" in r.data

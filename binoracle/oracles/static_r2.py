@@ -160,51 +160,67 @@ class R2Oracle(Oracle):
         imports = self._run("ii")
         # token match (not substring): 'read' must not be found inside 'fgets'/'readdir'/'pread'.
         dyn = [d for d in DANGEROUS if re.search(rf"\b{re.escape(d)}\b", imports)]
+        # a binary with no import rows at all is statically linked (or fully static-pie).
+        static_binary = not any("0x" in l for l in imports.splitlines())
         vaddr = {}
         for line in imports.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[1].startswith("0x"):
                 vaddr[parts[-1]] = parts[1]
+        # a real axt caller line carries an address; absence of "0x" means "no xrefs" (robust
+        # against caller names that merely start with 'no', e.g. notify_handler / node_read).
+        has_callers = lambda t: bool(t) and "0x" in t
         lines, found = [], []
         for fn in dyn:                                   # dynamic (imported) sinks
             xr = self._run(f"axt @ sym.imp.{fn}").strip()
-            if not xr or "no" in xr[:3].lower():
+            if not has_callers(xr):
                 va = vaddr.get(fn)
                 if va and va != "----------":
                     xr = self._run(f"axt @ {va}").strip()
-                    if not xr or "no" in xr[:3].lower():
+                    if not has_callers(xr):
                         xr = self._run(f"/r {va}").strip()
             found.append(fn)
-            if xr and "no" not in xr[:3].lower():
-                lines.append(f"### sink: {fn}\n{xr}")
-            else:
-                lines.append(f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
-        # static sinks: only for a binary with NO imported sinks (statically linked). Resolve
-        # every candidate in ONE r2 invocation (a single analysis pass, not one per sink -- the
-        # subprocess fallback would otherwise re-run `aa` 10+ times and hang on a glibc binary),
-        # and keep only sinks reached from USER code (not libc internals).
-        if not dyn:
-            static_candidates = ("read", "gets", "fgets", "scanf", "strcpy", "strcat",
-                                 "sprintf", "system", "execve", "memcpy", "recv")
-            cmd = ";".join(f"?e ==={fn}===;axt @ sym.{fn}" for fn in static_candidates)
-            out = self._run(cmd)
-            user_caller = re.compile(r"^sym\.(?!_)")     # sym.vuln / sym.main, not sym._IO_*/sym.__*
-            cur, buckets = None, {}
-            for line in out.splitlines():
-                m = re.match(r"===(\w+)===", line.strip())
-                if m:
-                    cur = m.group(1); buckets[cur] = []
-                elif cur and line.strip():
-                    buckets[cur].append(line.strip())
-            for fn, callers in buckets.items():
-                callers = [c for c in callers if "no " not in c[:3].lower()]
-                user = [c for c in callers if c.split() and user_caller.match(c.split()[0])]
-                if user:
-                    found.append(fn)
-                    more = (f"  (+{len(callers) - len(user)} llamadas internas de libc)"
-                            if len(callers) > len(user) else "")
-                    lines.append(f"### sink: {fn} (estatico; llamado por codigo de usuario){more}\n"
-                                 + "\n".join(user[:8]))
+            lines.append(f"### sink: {fn}\n{xr}" if has_callers(xr)
+                         else f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
+        # static sinks: only for a genuinely static binary. Resolve every DANGEROUS candidate in
+        # ONE r2 invocation (a single analysis pass, not one per sink -- the subprocess fallback
+        # would otherwise re-run `aa` 10+ times and hang on a glibc binary) and keep the sinks
+        # reached from USER code (any caller that is NOT a libc internal `sym._*`).
+        # Cheap gate (no analysis): only scan a static binary that actually has a `main` symbol.
+        # `is` lists the symbol table without triggering `aa`; \bmain\b matches the real `main`
+        # but not `__libc_start_main`. This keeps the scan off malformed/tiny/stripped inputs
+        # (a fake or no-main ELF must not reach `pdf @ main`, which would hang r2pipe), and
+        # scales: one light `is`, then a single analysis + one combined axt pass.
+        if static_binary and re.search(r"\bmain\b", self._run("is", analyze=False)):
+            # "user code" = main plus the functions main calls (one level). A static sink is
+            # kept only when a caller is in that set, which excludes glibc-internal call sites
+            # (glibc has plenty of non-`_`-prefixed functions, so filtering by name alone is
+            # not enough).
+            main_dis = self._run("pdf @ main")
+            user_funcs = {"main"} | set(re.findall(r"call\s+sym\.(\w+)", main_dis))
+            if len(user_funcs) > 1:
+                cmd = ";".join(f"?e ==={fn}===;axt @ sym.{fn}" for fn in DANGEROUS)
+                out = self._run(cmd)
+                cur, buckets = None, {}
+                for line in out.splitlines():
+                    m = re.match(r"===(\w+)===", line.strip())
+                    if m:
+                        cur = m.group(1); buckets[cur] = []
+                    elif cur and "0x" in line:           # only real caller lines
+                        buckets[cur].append(line.strip())
+
+                def _caller_name(c):
+                    tok = c.split()[0] if c.split() else ""
+                    return tok[4:] if tok.startswith("sym.") else tok
+
+                for fn, callers in buckets.items():
+                    user = [c for c in callers if _caller_name(c) in user_funcs]
+                    if user:
+                        found.append(fn)
+                        more = (f"  (+{len(callers) - len(user)} llamadas internas de libc)"
+                                if len(callers) > len(user) else "")
+                        lines.append(f"### sink: {fn} (estatico; alcanzado desde main/user code){more}\n"
+                                     + "\n".join(user[:8]))
         if not lines:
             return ToolResult(True, "radare2: ii+axt",
                               "(no classic dangerous sinks imported nor reached from user code)")
