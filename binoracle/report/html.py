@@ -63,25 +63,48 @@ def _md_rich(s: str) -> str:
     return "".join(out)
 
 
-def _decompiled_html(decompiled) -> str:
-    """Seccion de decompilacion anotada: pseudo-C limpio + explicacion por funcion, con el
-    decompilado crudo de r2 plegable como evidencia."""
+_ENGINE_LABEL = {"ghidra": "Ghidra", "decai": "decai (r2ai)", "pdg": "r2 (r2ghidra)",
+                 "pdc": "r2 (pdc)", "pdf": "r2 (disasm)"}
+
+
+def _decompiled_html(decompiled, lang: str = "es") -> str:
+    """Seccion de decompilacion: pseudo-C conciliado + explicacion por funcion, la COMPARATIVA lado a
+    lado de cada motor (Ghidra vs decai vs r2) y el contraste determinista entre ellos."""
     if not decompiled:
         return ""
+    es = lang == "es"
     cards = ""
     for d in decompiled:
         ann = getattr(d, "annotated", "") or ""
         raw = getattr(d, "raw", "") or ""
         engine = getattr(d, "engine", "") or "r2"
         func = getattr(d, "func", "?")
+        variants = getattr(d, "variants", []) or []
+        crosscheck = getattr(d, "crosscheck", "") or ""
+        elabel = _ENGINE_LABEL.get(engine, engine)
         body = _md_rich(ann) if ann.strip() else (
-            '<p class="mut">Sin modelo local: solo decompilado crudo de r2 (levanta ollama para '
-            'la version anotada).</p>')
-        raw_block = (f'<details class="sec"><summary>decompilado crudo (r2 {_esc(engine)})</summary>'
-                     f'<pre>{_esc(raw)}</pre></details>') if raw.strip() else ""
+            f'<p class="mut">{"Sin modelo local: solo decompilado crudo (levanta ollama para la version anotada)." if es else "No local model: raw decompilation only (start ollama for the annotated version)."}</p>')
+        # comparativa lado a lado de los motores disponibles
+        cmp_html = ""
+        if len(variants) >= 2:
+            cols = "".join(
+                f'<div class="deccol"><div class="deccol-h">{_esc(_ENGINE_LABEL.get(eng, eng))}</div>'
+                f'<pre>{_esc(code[:4000])}</pre></div>' for eng, code in variants)
+            title = "Comparativa de motores (lado a lado)" if es else "Engine comparison (side by side)"
+            cmp_html = (f'<details class="sec" open><summary>{_esc(title)} '
+                        f'<span class="src">{len(variants)}</span></summary>'
+                        f'<div class="deccmp">{cols}</div></details>')
+        elif raw.strip():
+            cmp_html = (f'<details class="sec"><summary>{"decompilado crudo" if es else "raw decompilation"} '
+                        f'({_esc(elabel)})</summary><pre>{_esc(raw)}</pre></details>')
+        cross_html = ""
+        if crosscheck:
+            lbl = "Contraste entre motores" if es else "Cross-check between engines"
+            cross_html = (f'<div class="deccross"><b>{_esc(lbl)}:</b> {_esc(crosscheck)}</div>')
+        suffix = " + LLM" if ann.strip() else ""
         cards += (f'<div class="decfn"><div class="decfn-h"><span class="decfn-t">{_esc(func)}</span>'
-                  f'<span class="decfn-e">r2 {_esc(engine)} + LLM</span></div>'
-                  f'<div class="md">{body}</div>{raw_block}</div>')
+                  f'<span class="decfn-e">{_esc(elabel)}{suffix}</span></div>'
+                  f'<div class="md">{body}</div>{cross_html}{cmp_html}</div>')
     return f'<h2 data-i18n="decompiled" id="sec-dec"></h2>{cards}'
 
 
@@ -715,7 +738,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         proof_html = (f'<h2 data-i18n="poc_proof" id="sec-proof"></h2>'
                       f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
-    decompiled_html = _decompiled_html(decompiled)
+    decompiled_html = _decompiled_html(decompiled, lang)
     cfg_html = _cfg_html(cfg, lang)
     exploit_graph_html = _exploit_html(chains, lang)
     exploit_html = _exploit_section(binary, findings, lang)
@@ -1437,6 +1460,11 @@ h2[id]{scroll-margin-top:16px}
 .xgsim{padding:8px 0;border-top:1px solid var(--line);font-size:12.5px}
 .xgexp{margin:6px 0 12px}.xgexp>summary{cursor:pointer;font-size:12px;color:var(--acc)}
 .mut{color:var(--mut)}
+.deccmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.deccol{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--code)}
+.deccol-h{font:700 11px sans-serif;padding:6px 9px;background:var(--panel);border-bottom:1px solid var(--line);color:var(--acc)}
+.deccol pre{margin:0;max-height:340px;overflow:auto}
+.deccross{border-left:3px solid var(--acc);background:var(--code);padding:8px 11px;border-radius:6px;font-size:12.5px;margin:8px 0}
 .cvssb{color:#fff;font:700 10px ui-monospace,monospace;padding:2px 7px;border-radius:5px;letter-spacing:.02em}
 .cvssbox{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--code);margin:2px 0 4px}
 .cvssrow{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:5px}

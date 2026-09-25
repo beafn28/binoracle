@@ -20,6 +20,8 @@ class DecompiledFunc:
     engine: str = ""         # pdc | pdg | pdf
     annotated: str = ""      # pseudo-C limpio + explicacion (LLM), o "" si no hubo modelo
     notes: list = field(default_factory=list)
+    variants: list = field(default_factory=list)   # [(engine, code)] de cada motor disponible
+    crosscheck: str = ""     # nota deterministica de contraste entre motores (retroalimentacion)
 
     @property
     def ok(self) -> bool:
@@ -60,6 +62,82 @@ def _best_decompile(binary: str, func: str) -> tuple[str, str]:
         pass
     # 4) resto de r2 (pdc/pdf)
     return _r2_decompile(binary, func)
+
+
+def _collect_variants(binary: str, func: str) -> list:
+    """Recoge la decompilacion de CADA motor disponible (Ghidra, r2 pdg, decai) para comparar en el
+    informe. Best-effort y acotado; devuelve [(engine, code)] no vacios y deduplicados."""
+    out = []
+    seen = set()
+
+    def add(engine, code):
+        if code and code.strip() and code.strip() not in seen:
+            seen.add(code.strip())
+            out.append((engine, code.strip()))
+
+    try:
+        from ..oracles import ghidra as _gh
+        if _gh.available():
+            add("ghidra", _gh.decompile_function(func) or "")
+    except Exception:
+        pass
+    try:
+        import r2pipe
+        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        pdg = r.cmd(f"pdg @ {func}") or ""
+        r.quit()
+        if len(pdg.strip()) > 60:
+            add("pdg", pdg)
+    except Exception:
+        pass
+    try:
+        from ..oracles import decai as _decai
+        if _decai.enabled():
+            add("decai", _decai.decompile_function(binary, func) or "")
+    except Exception:
+        pass
+    return out
+
+
+def _crosscheck(variants: list, lang: str = "es") -> str:
+    """Contraste determinista entre motores (retroalimentacion): senala si coinciden en las senales
+    clave (sinks de riesgo, tamanos de buffer). Grounded: solo mira el texto que cada motor produjo."""
+    if len(variants) < 2:
+        return ""
+    import re as _re
+    es = lang == "es"
+    sinks = ("read", "gets", "strcpy", "strcat", "sprintf", "memcpy", "scanf", "recv", "system",
+             "popen", "execve")
+    rows = []
+    agree_sink = None
+    for engine, code in variants:
+        low = code.lower()
+        found = sorted({s for s in sinks if s + "(" in low or s + " (" in low})
+        sizes = sorted(set(_re.findall(r"\[(\d{1,5})\]", code)) | set(_re.findall(r",\s*(\d{2,6})\s*\)", code)))
+        rows.append((engine, found, sizes))
+    all_sinks = [set(f) for _, f, _ in rows]
+    common = set.intersection(*all_sinks) if all_sinks else set()
+    union = set().union(*all_sinks) if all_sinks else set()
+    parts = []
+    n = len(variants)
+    if common:
+        parts.append((f"Los {n} motores coinciden en los sinks: {', '.join(sorted(common))}." if es
+                      else f"All {n} engines agree on sinks: {', '.join(sorted(common))}."))
+    disc = union - common
+    if disc:
+        det = "; ".join(f"{eng}: {', '.join(f) or '-'}" for eng, f, _ in rows)
+        parts.append((f"Discrepancia en sinks ({', '.join(sorted(disc))}) -> {det}. Revisa la funcion "
+                      "directamente para resolverlo." if es else
+                      f"Sink discrepancy ({', '.join(sorted(disc))}) -> {det}. Inspect the function "
+                      "directly to resolve."))
+    sizes_seen = {tuple(s) for _, _, s in rows if s}
+    if len(sizes_seen) > 1:
+        det = "; ".join(f"{eng}: {', '.join(s)}" for eng, _, s in rows if s)
+        parts.append((f"Los tamanos/constantes difieren entre motores ({det}): confirma el tamano real "
+                      "del buffer antes de calcular offsets." if es else
+                      f"Sizes/constants differ across engines ({det}): confirm the real buffer size "
+                      "before computing offsets."))
+    return " ".join(parts)
 
 
 def _r2_decompile(binary: str, func: str) -> tuple[str, str]:
@@ -104,15 +182,29 @@ def decompile_explain(binary: str, func: str, llm=None, lang: str = "es") -> Dec
     if not d.ok:
         d.notes.append(f"r2 no pudo decompilar {func} (funcion no encontrada o binario ilegible)")
         return d
+    # Comparativa multi-motor (Ghidra vs r2 vs decai) + contraste determinista (retroalimentacion).
+    try:
+        d.variants = _collect_variants(binary, func)
+        d.crosscheck = _crosscheck(d.variants, lang=lang)
+    except Exception:
+        pass
     if llm is None or not getattr(llm, "available", lambda: False)():
         d.notes.append("sin modelo local: se muestra el decompilado crudo de r2 (levanta ollama "
                        "para la version anotada).")
         return d
     ask = "Responde en espanol." if lang == "es" else "Answer in English."
+    # Retroalimentacion: si hay varios motores, el LLM ve TODAS las variantes (contrasta y concilia).
+    if len(d.variants) > 1:
+        blocks = "\n\n".join(f"[{eng}]\n```\n{code[:3500]}\n```" for eng, code in d.variants)
+        user = (f"Funcion: {func}\nHay varias decompilaciones de distintos motores; concilialas en UNA "
+                f"version fiel (si difieren, quedate con lo mas coherente y menciona la discrepancia en "
+                f"'Seguridad').\n\n{blocks}")
+    else:
+        user = f"Funcion: {func}\nEngine: {engine}\n\n```\n{raw[:6000]}\n```"
     try:
         d.annotated = llm.chat([
             Message("system", _SYS + "\n" + ask),
-            Message("user", f"Funcion: {func}\nEngine: {engine}\n\n```\n{raw[:6000]}\n```"),
+            Message("user", user),
         ]).strip()
     except Exception as e:
         d.notes.append(f"el modelo no pudo anotar la decompilacion: {e}")

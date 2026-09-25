@@ -282,6 +282,20 @@ def test_decai_parse_and_enable(monkeypatch):
     assert dc.enabled() is False
 
 
+def test_decompile_crosscheck():
+    from binoracle.workflows.decompile import _crosscheck
+    v = [("ghidra", "void vuln(){ char buf[64]; read(0,buf,256); }"),
+         ("decai", "int vuln(int fd,char*buf){ return read(fd,buf,256); }"),
+         ("pdg", "void vuln(){ char b[64]; gets(b); }")]
+    note = _crosscheck(v, "es")
+    assert "gets" in note and "read" in note        # discrepancia de sinks detectada
+    assert "tamano" in note.lower() or "confirm" in note.lower()
+    assert _crosscheck(v[:1], "es") == ""            # <2 motores -> sin contraste
+    # coincidencia total de sinks
+    agree = [("ghidra", "read(0,b,256);"), ("decai", "read(fd,b,256);")]
+    assert "coinciden" in _crosscheck(agree, "es").lower()
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
