@@ -103,8 +103,9 @@ def autolibc(binary: str, run: bool = True) -> dict:
             pass
     verified = "VERIFIED" in out
     line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line,
-            "output": out[-800:], "note": "ret2libc con leak (shell verificada, ASLR off en sandbox)"}
+    return {"ok": True, "verified": verified, "detail": line, "output": out[-800:],
+            "note": ("ret2libc con leak: shell verificada en sandbox" if verified
+                     else "ret2libc: no verificado (sin leak/gadget aplicable o timing)")}
 
 
 def render_libc(r: dict) -> str:

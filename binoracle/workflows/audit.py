@@ -286,6 +286,16 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                  "Exploit ROP en PIE a shell verificado",
                  "Full RELRO + stack canary; evitar el overflow de pila."),
             ]
+            # For a PIE binary the right technique is ROP-PIE; try it FIRST so it runs on a
+            # fresh sandbox (as it does standalone) instead of after autorop/ret2libc/fmt have
+            # loaded the machine -- which was making a standalone-verified exploit miss here.
+            try:
+                from elftools.elf.elffile import ELFFile
+                with open(binary, "rb") as _f:
+                    if ELFFile(_f)["e_type"] == "ET_DYN":
+                        backstops.sort(key=lambda b: 0 if b[1] == "try_rop_pie" else 1)
+            except Exception:
+                pass
             step = res.steps + 1
             for fn, tag, ledger_src, label, title, rec in backstops:
                 if _verified_now():
