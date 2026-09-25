@@ -113,6 +113,41 @@ def test_backdoors_scanner():
     assert scan_backdoors(_mock_reg(imports="sym.imp.printf", strings=""), "x") == []
 
 
+def test_dynamic_parse_and_findings():
+    # Parser del shim LD_PRELOAD + generacion de hallazgos (sin docker: se prueba _parse directo).
+    from binoracle.workflows.dynamic import _parse, dynamic_findings
+    log = (
+        "__BO__ connect ip=10.13.37.7 port=4444\n"
+        "__BO__ bind ip=0.0.0.0 port=1337\n"
+        "__BO__ open path=/etc/passwd\n"
+        "__BO__ chmod path=/tmp/x mode=777\n"
+        "__BO__ execve path=/bin/sh arg=sh\n"
+        "algo de ruido que no es evento\n"
+    )
+    t = _parse(log)
+    assert t.connects and t.connects[0]["ip"] == "10.13.37.7" and t.connects[0]["port"] == "4444"
+    assert t.binds and t.binds[0]["port"] == "1337"
+    assert "/etc/passwd" in t.files
+    assert t.chmods and t.chmods[0]["mode"] == "777"
+    assert any("/bin/sh" in e for e in t.execs)
+    titles = " ".join(f.title.lower() for f in dynamic_findings(t, "es"))
+    assert "conexion saliente" in titles     # callback
+    assert "shell" in titles                  # exec de shell
+    assert "sensibles" in titles              # /etc/passwd
+    assert all(f.verdict == "verified" for f in dynamic_findings(t, "es"))  # ejecucion real
+
+
+def test_attack_chain_runtime():
+    # La cadena de explotacion incluye el callback en runtime cuando hay conexion saliente.
+    from binoracle.report.html import _attack_chain
+    from binoracle.store.session import Finding
+    fs = [Finding(title="Conexion saliente en runtime a 10.13.37.7:4444", severity="high",
+                  verdict="verified", location="runtime / red", evidence="[dynamic] connect")]
+    h = _attack_chain(fs, {"Canary": None, "PIE": None}, "es")
+    assert "C2" in h or "exfiltracion" in h
+    assert "chain-step" in h
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

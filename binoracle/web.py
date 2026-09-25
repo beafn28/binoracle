@@ -642,6 +642,18 @@ def run_streaming(command, binary, ai, emit):
                     findings = findings + extra
                 except Exception:
                     pass
+            # analisis dinamico real (LD_PRELOAD en sandbox): red/ficheros/exec en runtime
+            try:
+                emit("step", "analisis dinamico (ejecucion + interceptacion en sandbox)...")
+                from .workflows.dynamic import dynamic_trace, dynamic_findings
+                dt = dynamic_trace(binary, stdin=b"A" * 64, timeout=8)
+                if dt.ok:
+                    dynf = dynamic_findings(dt, lang=config.lang)
+                    for xf in dynf:
+                        store.add_finding(xf)
+                    findings = findings + dynf
+            except Exception:
+                pass
             answer = hunt.answer
             if command == "dashboard":
                 cs = reg.get("r2_checksec").run(); m = cs.meta if cs.ok else {}

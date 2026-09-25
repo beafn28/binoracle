@@ -137,6 +137,26 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
                 dfindings = dfindings + extra
             except Exception:
                 pass
+        # Analisis dinamico real: ejecuta el binario en el sandbox e intercepta red/ficheros/exec
+        # (LD_PRELOAD). Lo observado es comportamiento VERIFICADO en ejecucion. Best-effort.
+        try:
+            from .dynamic import dynamic_trace, dynamic_findings
+            dt = dynamic_trace(binary, stdin=b"A" * 64, timeout=8)
+            if dt.ok:
+                dynf = dynamic_findings(dt, lang=_lang)
+                for xf in dynf:
+                    if store:
+                        store.add_finding(xf)
+                dfindings = dfindings + dynf
+                summary = (f"conexiones={len(dt.connects)} bind={len(dt.binds)} "
+                           f"exec={len(dt.execs)} ficheros_sensibles="
+                           f"{sum(1 for f in dt.files if any(s in f for s in ('passwd','shadow','.ssh','id_rsa')))}")
+                res.ledger.record(res.steps + 1, "dynamic_trace",
+                                  "analisis dinamico (LD_PRELOAD, sandbox)",
+                                  summary + ("\n" + dt.note if dt.note else ""))
+                res.dyntrace = dt
+        except Exception:
+            pass
         res.findings = dfindings          # real evidence, code-verified verdicts
         res.triage = triage               # so the report shows arch + mitigations
     except Exception:

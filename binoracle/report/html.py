@@ -195,7 +195,21 @@ def _attack_chain(findings, mit: dict, lang: str) -> str:
             [("Binario SUID" if es else "SUID binary", "Corre con privilegios elevados." if es else "Runs with elevated privileges.", "grounded"),
              ("Inyeccion de comando" if es else "Command injection", "Entrada controlable llega a system/exec." if es else "Controllable input reaches system/exec.", "grounded"),
              ("Root" if es else "Root", "El comando inyectado se ejecuta como root." if es else "The injected command runs as root.", "grounded")]))
-    # 4) sin TLS / cert -> MITM
+    # 4) callback en runtime -> C2 / exfiltracion (observado dinamicamente)
+    if has("conexion saliente en runtime", "runtime outbound", "reverse shell", "bind shell"):
+        rev = has("reverse shell") or has("conexion saliente")
+        chains.append((("Callback en runtime -> C2 / exfiltracion" if es else "Runtime callback -> C2 / exfiltration"),
+            [("Shell/socket a atacante" if es else "Shell/socket to attacker",
+              "El binario abre un canal de red hacia un atacante (reverse/bind shell)." if es
+              else "The binary opens a network channel to an attacker (reverse/bind shell).", "grounded"),
+             ("Conexion observada en runtime" if es else "Connection observed at runtime",
+              "En ejecucion (sandbox) se intercepto el intento de conexion al destino: comportamiento verificado."
+              if es else "At runtime (sandbox) the connection attempt to the destination was intercepted: verified behavior.",
+              "verified"),
+             ("Control remoto / robo de datos" if es else "Remote control / data theft",
+              "El canal da al atacante ejecucion de comandos o salida para exfiltrar." if es
+              else "The channel gives the attacker command execution or an egress path to exfiltrate.", "grounded")]))
+    # 5) sin TLS / cert -> MITM
     if has("sin cifrar", "cleartext", "certificado", "certificate"):
         chains.append((("Transporte inseguro -> MITM" if es else "Insecure transport -> MITM"),
             [("Sin cifrado / sin validar cert" if es else "No encryption / no cert check",
