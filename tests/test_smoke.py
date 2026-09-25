@@ -187,3 +187,54 @@ def test_autoheap_render():
                        "hits": [{"kind": "double-free", "input": "f", "pattern": "free():",
                                  "output": "free(): double free detected"}]})
     assert "double-free" in out and "SI" in out
+
+
+def test_cyclic_offset_rejects_bogus_small_value():
+    # Regresion: un modelo pequeno solia iterar cyclic_offset con 0,1,2,... quemando pasos.
+    # Ahora un valor que no vino de un crash devuelve un error correctivo, no un 'not found' mudo.
+    from binoracle.oracles.exploit_helpers import ExploitHelperOracle
+    off = next(t for t in ExploitHelperOracle("x").tools() if t.name == "cyclic_offset")
+    r = off.run(value=0)
+    assert r.ok is False and r.meta.get("bogus") is True
+    assert "not a value observed in a crash" in (r.error or "")
+    # un valor real del patron ciclico sigue resolviendo el offset
+    good = off.run(value="0x6161616c")
+    assert good.ok is True and "offset" in good.data
+
+
+def test_agent_loop_caps_repeated_tool_calls():
+    # Regresion: la misma tool con args distintos (cyclic_offset value=0,1,2,...) ya no se
+    # ejecuta sin fin; tras el tope por herramienta el loop empuja a otra cosa / final.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    calls = {"n": 0}
+
+    class _Echo(Oracle):
+        name = "echo"
+        def available(self):
+            return True
+        def tools(self):
+            def run(value):
+                calls["n"] += 1
+                return ToolResult(True, "echo", f"got {value}")
+            return [Tool("echo_tool", "echo", [ToolParam("value", "v")], run, self.name)]
+
+    class _SpamLLM:
+        # siempre pide la misma tool con un value incremental (nunca finaliza por si mismo)
+        def __init__(self):
+            self.i = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.i += 1
+            return '{"action":"tool","tool":"echo_tool","args":{"value":%d}}' % self.i
+
+    cfg = load_config()
+    cfg.max_steps = 12
+    reg = ToolRegistry([_Echo()])
+    res = AgentLoop(_SpamLLM(), reg, cfg).run("spam", mode="ask")
+    # el tope (4) impide que se ejecute mas de 4 veces aunque el modelo lo pida 12
+    assert calls["n"] <= 4
+    assert res.steps <= cfg.max_steps

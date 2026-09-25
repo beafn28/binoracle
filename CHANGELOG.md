@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **Agent protocol reliability**: the LLM backends now support a JSON-constrained output
+  mode (Ollama `format:json`, OpenAI-compatible `response_format`), and the agent loop
+  enables it for every action turn. Small local models (e.g. `qwen2.5-coder:7b`) no longer
+  wrap their action in prose after a long tool result, which was the main cause of the
+  "model reply was not valid protocol" nudges. Toggle with `BINORACLE_JSON_MODE=0`; prose
+  layers (executive summary, per-finding enrichment, synthesis) stay free-form.
+- **Anti-loop per tool**: the loop already refused byte-identical tool calls; it now also
+  caps how many times the same tool may be called with *different* arguments, so a model
+  can no longer burn the step budget scanning (e.g. `cyclic_offset value=0,1,2,...`).
+- **`cyclic_offset` guard**: passing a small integer that was never observed in a crash now
+  returns a corrective error (send the cyclic pattern with `dbg_run_input`, read the value
+  that overwrote RIP/EIP, or use `try_ret2win`/autopoc) instead of a silent "not found".
+
 ### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated
   exploitation cheat sheets (ret2win, ROP/ret2syscall, ret2libc, format-string, heap/tcache,
