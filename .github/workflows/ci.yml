@@ -1,10 +1,9 @@
 name: ci
-# Minimo para no gastar minutos de Actions: una sola version de Python y solo en push a main o PRs
-# (no en cada push de rama). Las pruebas tambien se corren en local: .venv/bin/python -m pytest tests/ -q
+# CERO gasto: el workflow NO se ejecuta solo (ni en push ni en PR). Solo corre si lo lanzas a mano
+# desde la pestana Actions ("Run workflow"). Asi no consume minutos de GitHub Actions ni sale en rojo.
+# Las pruebas se corren en LOCAL: .venv/bin/python -m pytest tests/ -q  (67 pasan).
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
