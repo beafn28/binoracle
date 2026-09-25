@@ -353,15 +353,3 @@ def test_agent_loop_does_not_cap_exploration_tools():
     cfg = load_config(); cfg.max_steps = 12
     AgentLoop(_LLM(), ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
     assert calls["n"] >= 8   # r2_disasm esta exento del cap: se ejecuta las 8 veces
-
-
-def test_gate_flags_invented_address():
-    # Fundamentado: una direccion citada que no aparece en ningun resultado de tool se marca.
-    from binoracle.agent.grounding import GroundingLedger
-    led = GroundingLedger()
-    led.record(1, "r2_disasm", "radare2: pdf @ sym.main", "0x00401197 call sym.imp.printf")
-    assert led.unverified_addresses("printf at 0x401197") == []       # real (con ceros) -> ok
-    assert led.unverified_addresses("gadget 0xdeadbeef") == ["0xdeadbeef"]  # inventada -> marcada
-    assert led.unverified_addresses("offset 0x48") == []              # constante pequena -> ignorada
-    out = led.annotate("jump to 0xdeadbeef for the win")
-    assert "[!warning]" in out and "0xdeadbeef" in out

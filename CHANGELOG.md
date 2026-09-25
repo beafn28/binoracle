@@ -49,10 +49,6 @@ All notable changes to this project are documented here. The format is based on
   format-string exploit produced by the audit backstop now becomes a `verified` critical
   Finding (like ret2win already did), so the report, the findings JSON and the learned corpus
   record it consistently instead of only mentioning it in the prose.
-- **Invented-address detection**: a hex address (≥ 0x1000) stated in the answer that appears
-  in no tool result is flagged as possibly invented — the address-level counterpart to the
-  fabricated-citation check, closing the last easy hallucination path. Small
-  offsets/constants and addresses present in the evidence trail are not flagged.
 
 ### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated

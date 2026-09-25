@@ -64,31 +64,6 @@ class GroundingLedger:
                 bad.append(c)
         return bad
 
-    def unverified_addresses(self, answer: str):
-        """Return hex addresses (>= 0x1000) stated in `answer` that appear in NO tool result.
-        A grounded claim about an address must trace to something an oracle printed; an address
-        the model never saw is invented. Conservative: skips small values (offsets/constants)
-        and only fires when at least one oracle ran, and matches with leading zeros stripped."""
-        if not self.entries:
-            return []
-        blob = " ".join(e.data for e in self.entries).lower()
-        def _norm(h):
-            return "0x" + h[2:].lstrip("0").rjust(1, "0")
-        blob_norm = set(re.findall(r"0x[0-9a-f]+", blob)) | {_norm(h) for h in re.findall(r"0x[0-9a-f]+", blob)}
-        bad = []
-        for a in re.findall(r"0x[0-9a-fA-F]+", answer):
-            al = a.lower()
-            try:
-                if int(al, 16) < 0x1000:      # offsets / small constants are not addresses
-                    continue
-            except ValueError:
-                continue
-            if al in blob or _norm(al) in blob_norm:
-                continue
-            if a not in bad:
-                bad.append(a)
-        return bad
-
     def evidence_trail(self) -> str:
         if not self.entries:
             return "_No oracle tools were consulted._"
@@ -116,11 +91,6 @@ class GroundingLedger:
             listed = ", ".join(f"`[src: {b}]`" for b in bad)
             prefix += ("> [!warning] These citations do not match any tool that was actually run "
                        f"and are unverified: {listed}. Trust only the evidence trail below.\n\n")
-        bad_addr = self.unverified_addresses(answer)
-        if bad_addr:
-            listed = ", ".join(f"`{a}`" for a in bad_addr)
-            prefix += ("> [!warning] These addresses do not appear in any tool result and may be "
-                       f"invented: {listed}. Verify them against the evidence trail below.\n\n")
         if self.has_citations(answer):
             return prefix + answer
         if self.entries:
