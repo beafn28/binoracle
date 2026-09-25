@@ -638,6 +638,26 @@ def _cvss_html(f, lang: str):
     return badge, body
 
 
+def render_chains_page(chains, lang: str = "es") -> str:
+    """Pagina HTML autocontenida (con su CSS) SOLO con la seccion del Exploit Chain Analyzer:
+    el grafo interactivo con las cadenas verificadas y su prueba. Para la vista en vivo de la web
+    (se sirve en un iframe). Si no hay cadenas, muestra un aviso."""
+    es = lang == "es"
+    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<style>{_CSS}</style></head><body><main style='padding:16px'>")
+    if chains is None or not getattr(chains, "ok", False):
+        msg = ("No se pudieron construir cadenas (binario no soportado o sin primitivas)."
+               if es else "Could not build chains (unsupported binary or no primitives).")
+        return head + f"<p class='mut'>{_esc(msg)}</p></main></body></html>"
+    section = _exploit_html(chains, lang)
+    # rellena el titulo de la seccion (data-i18n) para la vista standalone (sin el JS del informe)
+    title = _I18N.get(lang, _I18N["es"]).get("exploit_chains", "Exploit chains")
+    section = section.replace('data-i18n="exploit_chains" id="sec-xchain"></h2>',
+                              f'data-i18n="exploit_chains" id="sec-xchain">{_esc(title)}</h2>')
+    return head + section + "</main></body></html>"
+
+
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
                 decompiled=None, cfg=None, chains=None) -> str:

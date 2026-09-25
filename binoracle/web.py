@@ -621,6 +621,20 @@ def run_streaming(command, binary, ai, emit):
             store.close()
             emit("html", "<pre style='padding:16px;white-space:pre-wrap'>" +
                  render_autopwn(res, lang=config.lang).replace("<", "&lt;") + "</pre>")
+        elif command == "cadenas":
+            # Explorador de cadenas EN VIVO: construye las cadenas candidatas, las VERIFICA por
+            # ejecucion en sandbox y devuelve el grafo interactivo con la prueba de cada una.
+            from .workflows.chainanalyzer import analyze_chains
+            from .report.html import render_chains_page
+            emit("step", "analizando primitivas, gadgets reales y protecciones...")
+            emit("step", "construyendo cadenas candidatas (ret2win / ret2libc / execve)...")
+            emit("step", "verificando cada cadena factible por ejecucion en el sandbox...")
+            an = analyze_chains(binary, None, verify=True, lang=config.lang)
+            nver = sum(1 for c in an.chains if getattr(c, "verified", False))
+            nfea = sum(1 for c in an.chains if getattr(c, "feasible", False))
+            emit("step", f"cadenas: {len(an.chains)} candidatas, {nfea} factibles, "
+                         f"{nver} VERIFICADAS por ejecucion. Gadgets: {len(an.gadgets)}.")
+            emit("html", render_chains_page(an, config.lang))
         elif command in ("report", "hunt", "dashboard"):
             from .report.html import render_html
             from .agent.grounding import GroundingLedger
@@ -996,6 +1010,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
+ {c:"cadenas",n:"Cadenas",ic:"@",d:"Construye y VERIFICA las cadenas de ataque, con grafo interactivo"},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
  {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
@@ -1044,7 +1059,7 @@ function stream(command){var out=document.getElementById('out');var g=document.g
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';
