@@ -258,6 +258,7 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             if store:
                 store.add_finding(fnd)
 
+        tried = []   # (label, reason) of backstop exploits attempted but not verified
         if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
             from .autolibc import autolibc
@@ -291,10 +292,10 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                     break
                 try:
                     r = fn(binary)
-                except Exception:
-                    continue
+                except Exception as e:
+                    tried.append((label, f"error: {e}")); continue
                 if not r.get("verified"):
-                    continue
+                    tried.append((label, r.get("note") or "no verificado")); continue
                 step += 1
                 summ = _summary(r)
                 out = r.get("output") or r.get("run_output") or ""
@@ -309,8 +310,8 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             try:
                 from .autoheap import autoheap_shell
                 rh = autoheap_shell(binary)
-            except Exception:
-                rh = {}
+            except Exception as e:
+                rh = {"note": f"error: {e}"}
             if rh.get("verified"):
                 res.ledger.record(res.steps + 6, "try_heap (backstop)",
                                   "autoheap (sandbox-verified)",
@@ -322,6 +323,22 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                               f"{rh.get('detail','')}\n{rh.get('output','')}",
                               "tcache poisoning + free@GOT=win ejecutado en sandbox: shell obtenida.",
                               "Limpia el puntero al liberar (evita UAF); full RELRO para que free@GOT no sea escribible.")
+            elif rh.get("note") and "no aplicable" not in rh.get("note", ""):
+                tried.append(("heap (tcache-UAF)", rh.get("note")))
+
+        # Visibility: if the backstop actually attempted exploits but none verified, say so with
+        # the per-technique reason, instead of leaving the report silent about the attempts.
+        if not _verified_now() and tried:
+            notes = "; ".join(f"{l}: {n}" for l, n in tried)
+            res.ledger.record(res.steps + 7, "backstop (sin verificacion)",
+                              "backstop: intentos de exploit", notes)
+            res.answer += ("\n\n---\n\n### Backstop de explotacion (sin shell verificada)\n"
+                           "binoracle intento construir y ejecutar un exploit, pero no logro "
+                           "verificarlo en el sandbox:\n"
+                           + "\n".join(f"- **{l}**: {n}" for l, n in tried)
+                           + "\n\nComprueba la imagen `binoracle-pwn` (make pwn-image), o la "
+                             "emulacion (heap->shell necesita un host x86-64 nativo), o pasa el "
+                             "offset/objetivo manualmente.")
     except Exception:
         pass
 
