@@ -56,6 +56,7 @@ def generate_skeleton(registry: ToolRegistry, binary: str,
 # mitigations: NX={nx} PIE/PIC={pic} canary={canary} arch={pwn_arch}
 # NOTE: template for an AUTHORIZED target (your own / CTF). Fill in the payload.
 from pwn import *
+from binoracle import _quiet_pwn as _qp; _qp()
 
 context.update(arch={pwn_arch!r}, os='linux')
 elf = context.binary = ELF({binary!r})

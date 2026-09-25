@@ -13,6 +13,7 @@ import subprocess
 _DRIVER = r'''
 import sys, subprocess, struct
 from pwn import ELF, u64, ROP, context
+from binoracle import _quiet_pwn as _qp; _qp()
 context.log_level = "error"
 p64 = lambda x: struct.pack("<Q", x)
 name = sys.argv[1]

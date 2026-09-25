@@ -34,6 +34,17 @@ All notable changes to this project are documented here. The format is based on
   ROP → ret2libc → **format-string** for a binary with no gift function, so a pure
   `printf(user)` target reliably ends the audit with a sandbox-verified exploit (previously
   only ret2win/ROP/ret2libc were attempted, so a format-string binary got no verified PoC).
+- **Fabricated-citation detection**: `[src: ...]` tags in the model's prose that reference a
+  tool the agent never ran (e.g. a hallucinated `[src: r2_strings]`) are now detected against
+  the grounding ledger and flagged with a warning, so an invented citation can no longer pass
+  as grounded.
+- **Debugger surfaces a clear message when it cannot run the target**: an lldb debugserver /
+  gdb ptrace failure (macOS codesigning/SIP, ptrace-not-permitted, non-native binary) now
+  returns an actionable error pointing to the sandbox / angr, instead of a raw "Lost debug
+  server connection" dump that looked like a crash.
+- **Quiet pwntools**: pwntools' cosmetic WARNING noise (e.g. "Could not populate PLT: Cannot
+  allocate 1GB memory to run Unicorn Engine") is pinned out of reports via a `_quiet_pwn()`
+  helper called after each `from pwn import`, without hiding real errors.
 
 ### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated

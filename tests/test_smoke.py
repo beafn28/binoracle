@@ -282,3 +282,39 @@ def test_fmtstr_offset_robust_to_bad_word():
         assert r.ok is True and "index = 4" in r.data   # 32 // 8
     # un word valido de 4 (x86) sigue respetandose
     assert "index = 8" in fo.run(byte_offset=32, word=4).data
+
+
+def test_gate_flags_fabricated_citation():
+    # Fundamentado: una cita [src: X] que no corresponde a ninguna tool ejecutada se marca.
+    from binoracle.agent.grounding import GroundingLedger
+    led = GroundingLedger()
+    led.record(1, "r2_sinks", "radare2: dangerous sinks (ii + axt @ sym.imp.*)", "printf sink")
+    led.record(2, "r2_checksec", "radare2: iI (checksec)", "NX true")
+    ans = ("printf is a sink [src: radare2: dangerous sinks]. "
+           "There are strings [src: r2_strings].")   # r2_strings NUNCA se llamo
+    bad = led.fabricated_citations(ans)
+    assert bad == ["r2_strings"]
+    out = led.annotate(ans)
+    assert "[!warning]" in out and "r2_strings" in out
+    # una respuesta con solo citas reales no dispara el aviso
+    assert led.fabricated_citations("sink here [src: radare2: iI (checksec)].") == []
+
+
+def test_debugger_unrunnable_classifier():
+    # Fundamentado: distinguir "no pudo ejecutar" (debugserver/ptrace) de un crash util.
+    from binoracle.oracles.dynamic_dbg import _unrunnable, _LLDB_BROKEN, _GDB_BROKEN
+    assert _unrunnable("error: Lost debug server connection", False, _LLDB_BROKEN) is True
+    assert _unrunnable("ptrace: Operation not permitted", False, _GDB_BROKEN) is True
+    # si hubo crash real, NO se trata como irrejecutable (el crash es la evidencia util)
+    assert _unrunnable("stop reason = EXC_BAD_ACCESS", True, _LLDB_BROKEN) is False
+    # una ejecucion normal no dispara
+    assert _unrunnable("Process exited with status 0", False, _LLDB_BROKEN) is False
+
+
+def test_quiet_pwn_sets_error_level():
+    # El logger de pwnlib queda en ERROR tras _quiet_pwn (silencia el warning de Unicorn/PLT).
+    import logging
+    from binoracle import _quiet_pwn
+    logging.getLogger("pwnlib").setLevel(logging.DEBUG)
+    _quiet_pwn()
+    assert logging.getLogger("pwnlib").level == logging.ERROR

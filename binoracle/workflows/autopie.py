@@ -13,6 +13,7 @@ import subprocess
 _DRIVER = r'''
 import sys, os
 from pwn import *
+from binoracle import _quiet_pwn as _qp; _qp()
 elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
 win_off = None
 for n, a in (elf.symbols or {}).items():

@@ -11,6 +11,7 @@ try:
     import os as _os
     _os.environ.setdefault('PWNLIB_NOTERM','1')
     from pwn import context, asm, shellcraft  # type: ignore
+    from binoracle import _quiet_pwn as _qp; _qp()
     _HAVE_PWN = True
 except Exception:
     _HAVE_PWN = False

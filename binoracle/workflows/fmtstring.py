@@ -9,6 +9,7 @@ from typing import Optional
 
 try:
     from pwn import fmtstr_payload  # type: ignore
+    from binoracle import _quiet_pwn as _qp; _qp()
     _HAVE_PWN = True
 except Exception:
     _HAVE_PWN = False

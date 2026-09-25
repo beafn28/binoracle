@@ -31,6 +31,39 @@ class GroundingLedger:
     def has_citations(self, answer: str) -> bool:
         return bool(re.search(r"\[src:", answer))
 
+    def _known_tokens(self):
+        """Distinctive tokens (>=4 chars) from every tool name + source actually recorded."""
+        toks = set()
+        for e in self.entries:
+            for t in re.findall(r"[a-z0-9_]{4,}", (e.tool + " " + e.source).lower()):
+                toks.add(t)
+        return toks
+
+    def fabricated_citations(self, answer: str):
+        """Return the `[src: X]` citations in `answer` that do NOT correspond to any tool the
+        agent actually ran. This is the anti-hallucination check: a small model sometimes
+        invents a plausible source (e.g. `[src: r2_strings]`) for a tool it never called. A
+        citation counts as backed if it substring-matches a real source, or shares a
+        distinctive token with a recorded tool name/source. Matching is deliberately lenient
+        so only clearly-invented citations are flagged."""
+        cits = [c.strip() for c in re.findall(r"\[src:\s*([^\]]+)\]", answer)]
+        if not cits:
+            return []
+        sources = [e.source.lower() for e in self.entries]
+        tools = [e.tool.lower() for e in self.entries]
+        known = self._known_tokens()
+        bad = []
+        for c in cits:
+            cl = c.lower().strip()
+            if not cl:
+                continue
+            matched = any(cl in s or s in cl for s in sources) \
+                or any(cl == t or t in cl or cl in t for t in tools) \
+                or bool({tok for tok in re.findall(r"[a-z0-9_]{4,}", cl)} & known)
+            if not matched and c not in bad:
+                bad.append(c)
+        return bad
+
     def evidence_trail(self) -> str:
         if not self.entries:
             return "_No oracle tools were consulted._"
@@ -51,17 +84,24 @@ class GroundingLedger:
         """
         if not answer.strip():
             return "_(model produced no answer)_"
+        # Anti-hallucination: flag citations that reference a tool the agent never ran.
+        prefix = ""
+        bad = self.fabricated_citations(answer)
+        if bad:
+            listed = ", ".join(f"`[src: {b}]`" for b in bad)
+            prefix = ("> [!warning] These citations do not match any tool that was actually run "
+                      f"and are unverified: {listed}. Trust only the evidence trail below.\n\n")
         if self.has_citations(answer):
-            return answer
+            return prefix + answer
         if self.entries:
             n = len(self.entries)
             note = (f"> [!note] The prose below does not inline `[src: ...]` tags, but every "
                     f"statement is backed by the {n} tool result(s) recorded in the evidence "
                     f"trail (grounding ledger) at the end of this report; cross-check there.\n\n")
-            return note + answer
+            return prefix + note + answer
         banner = ("> [!warning] No oracle tool was consulted for this answer, so nothing in it "
                   "is grounded. Treat every statement as unverified.\n\n")
-        return banner + answer
+        return prefix + banner + answer
 
 
 # Sources that constitute *dynamic/symbolic proof* (allow verdict=verified):
