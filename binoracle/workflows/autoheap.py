@@ -59,6 +59,10 @@ _HEAP_SHELL_DRIVER = r'''
 import sys
 from pwn import *
 elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
+# Fail FAST: if a glibc abort kills the process mid-poison, the next sendlineafter("> ") would
+# otherwise block until the outer docker timeout (200s). A short tube timeout makes it raise
+# quickly so we still print the stage/dbg diagnostic instead of hanging.
+context.timeout = 3
 win = (elf.symbols or {}).get("win")
 free_got = (elf.got or {}).get("free")
 if not win or not free_got:
