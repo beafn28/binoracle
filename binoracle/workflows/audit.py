@@ -108,6 +108,28 @@ def _decompile_vuln_funcs(reg, binary, llm, limit: int = 2):
 
 
 def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
+    """Auditoria autonoma. Si Ghidra + el plugin estan instalados y no hay servidor arriba, binoracle
+    ARRANCA el servidor Ghidra headless automaticamente para este binario (decompilacion grado Ghidra
+    en recon e informe) y lo APAGA al terminar. Si falta algo, se sigue con r2 (fallback)."""
+    _gh = None
+    try:
+        from ..oracles import ghidra_server
+        _gh = ghidra_server.start(binary)
+        if _gh and on_step:
+            on_step("Ghidra headless arrancado automaticamente (decompilacion grado Ghidra)")
+    except Exception:
+        _gh = None
+    try:
+        return _run_audit_impl(binary, llm, config, store=store, on_step=on_step)
+    finally:
+        try:
+            from ..oracles import ghidra_server
+            ghidra_server.stop(_gh)
+        except Exception:
+            pass
+
+
+def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
     reg = build_registry(binary, enable_dynamic=True, enable_exploit=True)
     kb_hint = _kb_hint(reg, store=store)
     loop = AgentLoop(llm, reg, config, store=store, on_step=on_step, kb_hint=kb_hint)

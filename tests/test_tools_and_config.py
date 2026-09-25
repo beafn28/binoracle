@@ -242,6 +242,26 @@ def test_ghidra_client_extract_and_fallback():
     os.environ.pop("BINORACLE_GHIDRA_URL", None)
 
 
+def test_ghidra_server_config_logic(monkeypatch):
+    from binoracle.oracles import ghidra_server as gs
+    # autostart: env manda sobre config
+    monkeypatch.setenv("BINORACLE_GHIDRA_AUTOSTART", "0")
+    assert gs.autostart_enabled({"autostart": True}) is False
+    monkeypatch.setenv("BINORACLE_GHIDRA_AUTOSTART", "1")
+    assert gs.autostart_enabled({"autostart": False}) is True
+    monkeypatch.delenv("BINORACLE_GHIDRA_AUTOSTART", raising=False)
+    assert gs.autostart_enabled({"autostart": True}) is True
+    assert gs.autostart_enabled({}) is True          # default ON
+    # port: env > cfg > default
+    monkeypatch.setenv("BINORACLE_GHIDRA_PORT", "9999")
+    assert gs._port({"port": 8089}) == 9999
+    monkeypatch.delenv("BINORACLE_GHIDRA_PORT", raising=False)
+    assert gs._port({"port": 8100}) == 8100
+    assert gs._port({}) == 8089
+    # stop(None) no rompe
+    gs.stop(None)
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
