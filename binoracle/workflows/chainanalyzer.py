@@ -221,6 +221,76 @@ def _facts(binary: str, reg=None) -> dict:
     return f
 
 
+# bytes prohibidos por sink de entrada (el terminador del sink corta el payload ahi)
+_SINK_BADCHARS = {
+    "gets": {0x0a}, "fgets": {0x0a}, "gets_s": {0x0a},
+    "scanf": {0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20}, "isoc99_scanf": {0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20},
+    "strcpy": {0x00}, "strncpy": {0x00}, "strcat": {0x00}, "sprintf": {0x00}, "stpcpy": {0x00},
+    "read": set(), "fread": set(), "recv": set(), "recvfrom": set(),   # binario-safe
+}
+# prioridad para elegir el sink que gobierna los bad-chars (el mas restrictivo relevante)
+_SINK_ORDER = ("scanf", "isoc99_scanf", "gets", "fgets", "gets_s", "strcpy", "strncpy", "strcat",
+               "sprintf", "stpcpy", "read", "fread", "recv", "recvfrom")
+
+
+def _overflow_sink(binary: str):
+    """Sink de entrada de la funcion vulnerable (el que gobierna los bad-chars). Devuelve el nombre
+    o None. Busca la funcion que llama a un sink de lectura y toma el mas restrictivo presente."""
+    try:
+        import json
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return None
+        present = set()
+        for fn in json.loads(r.cmd("aflj") or "[]"):
+            nm = fn.get("name", "")
+            dis = r.cmd(f"pdf @ {nm}") or ""
+            for s in _SINK_ORDER:
+                if f"sym.imp.{s}" in dis or f" {s}\n" in dis or f"call {s}" in dis:
+                    present.add(s)
+        for s in _SINK_ORDER:            # el primero por prioridad manda
+            if s in present:
+                return s
+    except Exception:
+        return None
+    return None
+
+
+def _sig_bytes(addr):
+    """Bytes significativos (little-endian, sin ceros altos de relleno) de una direccion."""
+    if not isinstance(addr, int) or addr <= 0:
+        return []
+    out = []
+    v = addr
+    while v > 0:
+        out.append(v & 0xff)
+        v >>= 8
+    return out
+
+
+def _bad_in(addr, badset):
+    return sorted({b for b in _sig_bytes(addr) if b in badset})
+
+
+def _apply_badchars(chain: "ExploitChain", addrs, badset, sink: str, lang: str) -> None:
+    """Marca break-points si alguna direccion de la cadena contiene un byte prohibido por el sink."""
+    if not badset:
+        return
+    es = lang == "es"
+    for a in addrs:
+        bad = _bad_in(a, badset)
+        if bad:
+            bstr = ", ".join(hex(b) for b in bad)
+            chain.break_points.append(
+                (f"La direccion {hex(a)} contiene byte(s) prohibido(s) {bstr}: el sink de entrada "
+                 f"`{sink}` corta el payload ahi, asi que esa direccion no se puede escribir tal cual "
+                 "(hace falta stack pivot, otra gadget/direccion, o partial overwrite)." if es else
+                 f"Address {hex(a)} contains forbidden byte(s) {bstr}: the input sink `{sink}` "
+                 "truncates the payload there, so that address cannot be written as-is (needs a "
+                 "stack pivot, a different gadget/address, or a partial overwrite)."))
+
+
 def _score(chain: ExploitChain) -> None:
     """Puntuacion TECNICA (0-100) por propiedades objetivas. No es recomendacion de ataque."""
     unmet = sum(1 for r in chain.requirements if r.startswith("[X]"))
@@ -266,6 +336,9 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     gadgets = _enum_gadgets(binary)
     an = ChainAnalysis(arch=f["arch"], gadgets=gadgets)
     L = (lambda a, b: a) if es else (lambda a, b: b)
+    # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
+    _sink = _overflow_sink(binary)
+    _badset = _SINK_BADCHARS.get(_sink, set()) if (_sink and f.get("pie") is not True) else set()
 
     # --- primitivas y control ---
     rip = f.get("rip_offset") is not None or f.get("win") is not None
@@ -313,6 +386,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                   addr=winaddr or None, regs={"rip": hex(winaddr) if has_win else "?"},
                   constraints=L("alinear el stack (16B) con un gadget `ret` si win() llama a system",
                                 "align the stack (16B) with a `ret` gadget if win() calls system"))]
+    _apply_badchars(c, [f.get("win")] if f.get("win") else [], _badset, _sink, lang)
     _score(c)
     if verify and c.feasible:
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2win", f, lang)
@@ -349,6 +423,8 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                   (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
                    else L("requiere system()", "requires system()")),
                   addr=f.get("system"), regs={"rdi": "&'/bin/sh'"})]
+    _apply_badchars(c, [a for a in [g_rdi.addr if g_rdi else None, f.get("system"), f.get("binsh")] if a],
+                    _badset, _sink, lang)
     _score(c)
     if verify and c.feasible:
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc", f, lang)
@@ -389,6 +465,8 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                               else L("gadget ausente", "gadget absent"))))
     c.steps.append(ChainStep("target", "syscall -> execve", g_sys.text if g_sys else L("syscall AUSENTE", "syscall ABSENT"),
                              addr=g_sys.addr if g_sys else None, regs=dict(setregs)))
+    _apply_badchars(c, [g.addr for g in list(need.values()) + [g_sys] if g]
+                    + ([f["binsh"]] if f.get("binsh") else []), _badset, _sink, lang)
     _score(c)
     if verify and c.feasible:
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "execve", f, lang)

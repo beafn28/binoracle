@@ -339,6 +339,26 @@ def test_chain_verify_proof_plumbing():
     assert c.verified is False and c.proof == {}
 
 
+def test_chain_badchars():
+    from binoracle.workflows.chainanalyzer import (_sig_bytes, _bad_in, _apply_badchars,
+                                                   _SINK_BADCHARS, ExploitChain)
+    # bytes significativos (sin ceros altos) y deteccion del byte prohibido
+    assert _sig_bytes(0x40010a) == [0x0a, 0x01, 0x40]
+    assert _bad_in(0x40010a, _SINK_BADCHARS["gets"]) == [0x0a]     # newline en la direccion
+    assert _bad_in(0x401156, _SINK_BADCHARS["gets"]) == []          # limpia
+    assert _bad_in(0x401156, _SINK_BADCHARS["read"]) == []          # read es binario-safe
+    # scanf corta en espacio (0x20): 0x402041 lo contiene
+    assert 0x20 in _bad_in(0x402041, _SINK_BADCHARS["scanf"])
+    # _apply_badchars anade un break-point por cada direccion con byte prohibido
+    c = ExploitChain(name="t")
+    _apply_badchars(c, [0x40010a, 0x401156], _SINK_BADCHARS["gets"], "gets", "es")
+    assert len(c.break_points) == 1 and "0xa" in c.break_points[0]
+    # sin badset (read) no marca nada
+    c2 = ExploitChain(name="t2")
+    _apply_badchars(c2, [0x40010a], set(), "read", "es")
+    assert c2.break_points == []
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
