@@ -240,26 +240,39 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             elif r.ok:
                 res.answer += (f"\n\n---\n\n### Auto-PoC (backstop)\nExploit ret2win construido "
                                f"(offset={r.offset}, win={hex(r.win)}) pero no verificado en sandbox.")
-        # if still no verified exploit, try an autonomous ROP-to-shell
-        verified_now = "EXPLOIT VERIFICADO" in (res.answer or "") or "SHELL VERIFICADA" in (res.answer or "")
-        if not verified_now and find_win(binary) is None:
+        # if still no verified exploit and no gift function, cascade the shell backstops:
+        # ROP -> ret2libc -> format-string. Re-check after each so a pure format-string binary
+        # (no win, no ROP, no leak path) still ends the audit with a VERIFIED exploit.
+        def _verified_now():
+            a = res.answer or ""
+            return "EXPLOIT VERIFICADO" in a or "SHELL VERIFICADA" in a
+        if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
             rr = autorop(binary, run=True)
             if rr.get("verified"):
-                res.ledger.record(res.steps + 2, "try_rop (backstop)", "autorop (sandbox)",
+                res.ledger.record(res.steps + 2, "try_rop (backstop)", "autorop (sandbox-verified)",
                                   rr.get("run_output") or "")
                 res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP (backstop)\n"
                                f"Cadena {rr.get('strategy')} (offset={rr.get('offset')}) ejecutada en "
                                f"sandbox: shell obtenida. [src: try_rop]")
-            else:
+            if not _verified_now():
                 from .autolibc import autolibc
                 rl = autolibc(binary)
                 if rl.get("verified"):
-                    res.ledger.record(res.steps + 3, "try_ret2libc (backstop)", "autolibc (sandbox)",
+                    res.ledger.record(res.steps + 3, "try_ret2libc (backstop)", "autolibc (sandbox-verified)",
                                       rl.get("output") or "")
                     res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ret2libc (backstop)\n"
                                    f"{rl.get('detail','')}. Fuga de libc + system('/bin/sh') ejecutado en "
                                    f"sandbox. [src: try_ret2libc]")
+            if not _verified_now():
+                from .autofmt import autofmt
+                rf = autofmt(binary)
+                if rf.get("verified"):
+                    res.ledger.record(res.steps + 4, "try_fmt (backstop)", "autofmt (sandbox-verified)",
+                                      rf.get("output") or rf.get("detail") or "")
+                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via format-string (backstop)\n"
+                                   f"{rf.get('detail','')}. Sobrescritura de printf@GOT con system y "
+                                   f"'/bin/sh' ejecutado en sandbox. [src: try_fmt]")
     except Exception:
         pass
 

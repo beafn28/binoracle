@@ -27,6 +27,13 @@ All notable changes to this project are documented here. The format is based on
   "no citations" warning when a full evidence trail exists — it shows a calm note pointing to
   the grounding ledger. The hard warning now fires only when no oracle was consulted at all.
   The agent prompt also reinforces inline `[src: ...]` citation with a concrete example.
+- **`fmtstr_offset` robust to a bad `word`**: a small model passing `word=false`/`0`/garbage
+  used to divide by zero and fail the tool repeatedly; the pointer size now snaps to 8 (x64)
+  or 4 (x86) instead of crashing.
+- **Audit backstop cascades to format-string**: the deterministic shell backstop now tries
+  ROP → ret2libc → **format-string** for a binary with no gift function, so a pure
+  `printf(user)` target reliably ends the audit with a sandbox-verified exploit (previously
+  only ret2win/ROP/ret2libc were attempted, so a format-string binary got no verified PoC).
 
 ### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated

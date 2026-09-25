@@ -270,3 +270,15 @@ def test_annotate_banner_tiers():
     empty = GroundingLedger()
     out2 = empty.annotate("The binary is safe.")
     assert "[!warning]" in out2 and "unverified" in out2
+
+
+def test_fmtstr_offset_robust_to_bad_word():
+    # Regresion: un modelo pequeno pasaba word=False (-> int 0 -> division por cero).
+    # Ahora un 'word' invalido (bool/basura/0) se ajusta al tamano de puntero por defecto (8).
+    from binoracle.oracles.exploit_helpers import ExploitHelperOracle
+    fo = next(t for t in ExploitHelperOracle("x").tools() if t.name == "fmtstr_offset")
+    for bad in (False, True, 0, "x", None):
+        r = fo.run(byte_offset=32, word=bad)
+        assert r.ok is True and "index = 4" in r.data   # 32 // 8
+    # un word valido de 4 (x86) sigue respetandose
+    assert "index = 8" in fo.run(byte_offset=32, word=4).data
