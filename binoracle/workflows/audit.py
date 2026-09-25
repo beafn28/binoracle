@@ -260,57 +260,49 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
 
         if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
-            rr = autorop(binary, run=True)
-            if rr.get("verified"):
-                res.ledger.record(res.steps + 2, "try_rop (backstop)", "autorop (sandbox-verified)",
-                                  rr.get("run_output") or "")
-                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP (backstop)\n"
-                               f"Cadena {rr.get('strategy')} (offset={rr.get('offset')}) ejecutada en "
-                               f"sandbox: shell obtenida. [src: try_rop]")
-                _add_verified("Exploit ROP a shell verificado", f"offset={rr.get('offset')}",
-                              f"estrategia={rr.get('strategy')}\n{rr.get('run_output','')}",
-                              "Cadena ROP construida y ejecutada en sandbox: shell obtenida.",
-                              "Habilitar PIE + full RELRO; evitar el overflow de pila.")
-            if not _verified_now():
-                from .autolibc import autolibc
-                rl = autolibc(binary)
-                if rl.get("verified"):
-                    res.ledger.record(res.steps + 3, "try_ret2libc (backstop)", "autolibc (sandbox-verified)",
-                                      rl.get("output") or "")
-                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ret2libc (backstop)\n"
-                                   f"{rl.get('detail','')}. Fuga de libc + system('/bin/sh') ejecutado en "
-                                   f"sandbox. [src: try_ret2libc]")
-                    _add_verified("Exploit ret2libc a shell verificado", rl.get("detail", ""),
-                                  f"{rl.get('detail','')}\n{rl.get('output','')}",
-                                  "Fuga de libc + system('/bin/sh') ejecutado en sandbox: shell obtenida.",
-                                  "Habilitar PIE + full RELRO; evitar el overflow de pila.")
-            if not _verified_now():
-                from .autofmt import autofmt
-                rf = autofmt(binary)
-                if rf.get("verified"):
-                    res.ledger.record(res.steps + 4, "try_fmt (backstop)", "autofmt (sandbox-verified)",
-                                      rf.get("output") or rf.get("detail") or "")
-                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via format-string (backstop)\n"
-                                   f"{rf.get('detail','')}. Sobrescritura de printf@GOT con system y "
-                                   f"'/bin/sh' ejecutado en sandbox. [src: try_fmt]")
-                    _add_verified("Exploit format-string a shell verificado", rf.get("detail", ""),
-                                  f"{rf.get('detail','')}\n{rf.get('output','')}",
-                                  "Sobrescritura de printf@GOT con system y '/bin/sh' ejecutado en sandbox.",
-                                  "No pasar entrada del usuario como formato de printf; full RELRO.")
-            if not _verified_now():
-                from .autopie import autopie_rop
-                rp = autopie_rop(binary)
-                if rp.get("verified"):
-                    res.ledger.record(res.steps + 5, "try_rop_pie (backstop)",
-                                      "autopie_rop (sandbox-verified)",
-                                      rp.get("output") or rp.get("detail") or "")
-                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP en PIE (backstop)\n"
-                                   f"{rp.get('detail','')}. Base PIE resuelta y cadena ROP ejecutada en "
-                                   f"sandbox: shell obtenida. [src: try_rop_pie]")
-                    _add_verified("Exploit ROP en PIE a shell verificado", rp.get("detail", ""),
-                                  f"{rp.get('detail','')}\n{rp.get('output','')}",
-                                  "Base PIE resuelta en sandbox + cadena ROP rebasada: shell obtenida.",
-                                  "Full RELRO + stack canary; evitar el overflow de pila.")
+            from .autolibc import autolibc
+            from .autofmt import autofmt
+            from .autopie import autopie_rop
+
+            def _summary(r):
+                s = r.get("detail")
+                if not s and r.get("strategy"):
+                    s = f"estrategia={r.get('strategy')} offset={r.get('offset')}"
+                return (s or "").strip()
+
+            # (runner, src tag for the citation, ledger source, human label, finding title, fix)
+            backstops = [
+                (autorop, "try_rop", "autorop (sandbox-verified)", "ROP",
+                 "Exploit ROP a shell verificado",
+                 "Habilitar PIE + full RELRO; evitar el overflow de pila."),
+                (autolibc, "try_ret2libc", "autolibc (sandbox-verified)", "ret2libc",
+                 "Exploit ret2libc a shell verificado",
+                 "Habilitar PIE + full RELRO; evitar el overflow de pila."),
+                (autofmt, "try_fmt", "autofmt (sandbox-verified)", "format-string",
+                 "Exploit format-string a shell verificado",
+                 "No pasar entrada del usuario como formato de printf; full RELRO."),
+                (autopie_rop, "try_rop_pie", "autopie_rop (sandbox-verified)", "ROP en PIE",
+                 "Exploit ROP en PIE a shell verificado",
+                 "Full RELRO + stack canary; evitar el overflow de pila."),
+            ]
+            step = res.steps + 1
+            for fn, tag, ledger_src, label, title, rec in backstops:
+                if _verified_now():
+                    break
+                try:
+                    r = fn(binary)
+                except Exception:
+                    continue
+                if not r.get("verified"):
+                    continue
+                step += 1
+                summ = _summary(r)
+                out = r.get("output") or r.get("run_output") or ""
+                res.ledger.record(step, f"{tag} (backstop)", ledger_src, out or summ)
+                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via {label} (backstop)\n"
+                               f"{summ}. Ejecutado en sandbox: shell obtenida. [src: {tag}]")
+                _add_verified(title, summ, f"{summ}\n{out}",
+                              f"Exploit {label} construido y ejecutado en sandbox: shell obtenida.", rec)
     except Exception:
         pass
 

@@ -29,9 +29,10 @@ def resolve_base(io):
         if os.path.basename(path) == os.path.basename(elf.path) and b:
             return b
     try:
-        for line in open("/proc/%d/maps" % io.pid):
-            if os.path.basename(elf.path) in line and "r-xp" in line:
-                return int(line.split("-")[0], 16) & ~0xfff
+        bases = [int(line.split("-")[0], 16) for line in open("/proc/%d/maps" % io.pid)
+                 if os.path.basename(elf.path) in line]
+        if bases:
+            return min(bases) & ~0xfff       # lowest mapping = ELF load base (not the r-xp seg)
     except Exception:
         pass
     return 0x555555554000
@@ -60,9 +61,10 @@ def resolve_base(io):
         if os.path.basename(path) == os.path.basename(elf.path) and b:
             return b
     try:
-        for line in open("/proc/%d/maps" % io.pid):
-            if os.path.basename(elf.path) in line and "r-xp" in line:
-                return int(line.split("-")[0], 16) & ~0xfff
+        bases = [int(line.split("-")[0], 16) for line in open("/proc/%d/maps" % io.pid)
+                 if os.path.basename(elf.path) in line]
+        if bases:
+            return min(bases) & ~0xfff       # lowest mapping = ELF load base (not the r-xp seg)
     except Exception:
         pass
     return 0x555555554000
@@ -116,9 +118,14 @@ def _run_pie_driver(binary: str, driver: str, tmpname: str) -> dict:
                       capture_output=True).returncode != 0:
         return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
     d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
+    if not os.path.isdir(d):
+        return {"ok": False, "note": f"directorio del binario inexistente: {d}"}
     drv = os.path.join(d, tmpname)
-    with open(drv, "w") as f:
-        f.write(driver)
+    try:
+        with open(drv, "w") as f:
+            f.write(driver)
+    except OSError as e:
+        return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
     try:
         r = subprocess.run(
             ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
@@ -149,28 +156,8 @@ def autopie_rop(binary: str, run: bool = True) -> dict:
 
 
 def autopie_ret2win(binary: str, run: bool = True) -> dict:
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
-    if subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                      capture_output=True).returncode != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
-    drv = os.path.join(d, ".binoracle_pie.py")
-    with open(drv, "w") as f:
-        f.write(_DRIVER)
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "python3", ".binoracle_pie.py", name],
-            capture_output=True, text=True, timeout=150)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try: os.unlink(drv)
-        except OSError: pass
-    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-600:],
-            "note": "ret2win en PIE (base resuelta, shell/win verificada en sandbox)"}
+    """ret2win on a PIE binary, verified by execution (shares the sandbox runner)."""
+    res = _run_pie_driver(binary, _DRIVER, ".binoracle_pie.py")
+    if res.get("ok"):
+        res["note"] = "ret2win en PIE (base resuelta, shell/win verificada en sandbox)"
+    return res

@@ -83,14 +83,13 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 Verified-by-execution today covers the six classes above, plus ROP on PIE (`autopie_rop`
 resolves the ASLR-off PIE base in the sandbox, rebases the chain and confirms a shell; the
-`ropme_pie` static-PIE sample is the target). Not yet automated: full heap exploitation (double-free/overflow are now confirmed by execution via
-glibc aborts, confirmed by execution
-via glibc aborts, but driving heap corruption to a verified shell is bespoke per binary and
-is blocked here by the same Rosetta limitation as ROP on PIE. The `heapexp` sample is a
-tcache-UAF target where every exploit step (heap leak, tcache poisoning, GOT overwrite) is
-reproducible; only the final redirected jump into never-executed binary code fails under the
-Mac's x86-64 emulation, and would land on a native x86-64 host. Everything
-runs only against binaries you are authorized to analyze.
+`ropme_pie` static-PIE sample is the target). Not yet automated: full heap exploitation.
+Double-free / heap-overflow are confirmed by execution via glibc's allocator aborts, but
+driving heap corruption all the way to a verified shell is still bespoke per binary. The
+`heapexp` sample is a tcache-UAF target where every exploit step (heap leak, tcache
+poisoning, GOT overwrite) is reproducible; on an x86-64 host the final redirected jump lands
+natively, whereas under a Mac's x86-64 emulation the jump into never-executed binary code
+fails. Everything runs only against binaries you are authorized to analyze.
 
 ## Supported executable formats
 
