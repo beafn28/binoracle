@@ -238,3 +238,18 @@ def test_agent_loop_caps_repeated_tool_calls():
     # el tope (4) impide que se ejecute mas de 4 veces aunque el modelo lo pida 12
     assert calls["n"] <= 4
     assert res.steps <= cfg.max_steps
+
+
+def test_gate_allows_verified_with_sandbox_exploit():
+    # Un exploit ejecutado y confirmado en sandbox es prueba suficiente para 'verified'
+    # (mas fuerte que la alcanzabilidad de angr); no debe degradarse a 'grounded'.
+    from binoracle.agent.grounding import GroundingLedger, gate_findings
+    from binoracle.store.session import Finding
+    led = GroundingLedger()
+    led.record(1, "try_ret2win", "autopoc: ret2win (sandbox-verified)",
+               "EXPLOIT VERIFICADO offset=72 win=0x401176 ___POC_SHELL___ uid=0(root)")
+    f = Finding(title="ret2win", severity="critical", verdict="verified",
+                evidence="offset=72 win=0x401176 ___POC_SHELL___", location="win")
+    gated, notes = gate_findings([f], led)
+    assert gated[0].verdict == "verified"
+    assert not any("verified->grounded" in n for n in notes)

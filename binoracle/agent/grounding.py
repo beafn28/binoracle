@@ -51,8 +51,13 @@ class GroundingLedger:
         return answer
 
 
-# Sources that constitute *dynamic/symbolic proof* (allow verdict=verified).
-_PROOF_SOURCES = ("angr", "lldb", "gdb", "dbg")
+# Sources that constitute *dynamic/symbolic proof* (allow verdict=verified):
+#  - angr reachability, or a debugger-observed crash (lldb/gdb/dbg), or
+#  - an exploit actually executed and confirmed in the sandbox. The "sandbox-verified" /
+#    "sandbox-confirmed" markers are emitted ONLY on a real, execution-confirmed success
+#    (try_ret2win/try_rop/try_fmt/try_ret2libc/try_heap), which is the strongest proof of all
+#    -- stronger than reachability -- so it must not be downgraded to 'grounded'.
+_PROOF_SOURCES = ("angr", "lldb", "gdb", "dbg", "sandbox-verified", "sandbox-confirmed")
 
 
 def gate_findings(findings, ledger: "GroundingLedger"):
@@ -83,7 +88,8 @@ def gate_findings(findings, ledger: "GroundingLedger"):
         # 2) verified requires a proof source.
         if f.verdict == "verified" and not have_proof:
             f.verdict = "grounded"
-            notes.append(f"downgraded '{f.title}' verified->grounded (no angr/debugger proof of reachability)")
+            notes.append(f"downgraded '{f.title}' verified->grounded (no angr/debugger proof "
+                         "of reachability nor a sandbox-verified exploit)")
         gated.append(f)
     return gated, notes
 

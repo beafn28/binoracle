@@ -19,6 +19,10 @@ All notable changes to this project are documented here. The format is based on
 - **`cyclic_offset` guard**: passing a small integer that was never observed in a crash now
   returns a corrective error (send the cyclic pattern with `dbg_run_input`, read the value
   that overwrote RIP/EIP, or use `try_ret2win`/autopoc) instead of a silent "not found".
+- **Verdict gate recognises sandbox-verified exploits**: an exploit actually executed and
+  confirmed in the sandbox (`sandbox-verified` / `sandbox-confirmed`) now counts as a proof
+  source for the `verified` verdict, alongside angr/debugger. Previously a genuinely
+  executed ret2win/ROP/fmt/ret2libc finding was wrongly downgraded to `grounded`.
 
 ### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated
