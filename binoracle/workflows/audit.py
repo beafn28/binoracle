@@ -207,7 +207,46 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
     # puntuacion tecnica y simulacion en sandbox de las factibles. Best-effort.
     try:
         from .chainanalyzer import analyze_chains
-        res.chains = analyze_chains(binary, reg, verify=True, lang=getattr(config, "lang", "es"))
+        _lang2 = getattr(config, "lang", "es")
+        res.chains = analyze_chains(binary, reg, verify=True, lang=_lang2)
+        # Retroalimentacion: cada cadena VERIFICADA por el analizador se convierte en un hallazgo de
+        # primera clase (verdict=verified con su prueba), asi fluye a findings, CVSS, SARIF/JSON y el
+        # informe. Ademas marca el answer para que el backstop no meta un exploit duplicado.
+        from ..store.session import Finding as _F
+        _es2 = _lang2 == "es"
+        _any_verified = False
+        for ch in (res.chains.chains if res.chains else []):
+            if not getattr(ch, "verified", False):
+                continue
+            _any_verified = True
+            pr = ch.proof or {}
+            det = "  ".join(f"{k}={v}" for k, v in pr.items() if k != "output" and v not in (None, ""))
+            title = (f"Cadena de explotacion verificada: {ch.name}" if _es2
+                     else f"Verified exploit chain: {ch.name}")
+            if any(getattr(x, "title", "") == title for x in res.findings):
+                continue
+            fnd = _F(
+                title=title, severity="critical", verdict="verified",
+                location=f"{ch.target} ({pr.get('strategy', '')})",
+                evidence=f"[chainanalyzer]\n{det}\n{(pr.get('output', '') or '')[:300]}",
+                rationale=(f"La cadena {ch.name} hacia {ch.target} se construyo y EJECUTO en un sandbox "
+                           f"aislado y alcanzo el objetivo (marcador {pr.get('marker', '')}). La "
+                           "explotabilidad esta probada por ejecucion, no inferida." if _es2 else
+                           f"The {ch.name} chain to {ch.target} was built and EXECUTED in an isolated "
+                           f"sandbox and reached the goal (marker {pr.get('marker', '')}). Exploitability "
+                           "is proven by execution, not inferred."),
+                recommendation=("Corrige la causa raiz (canary + PIE + NX, eliminar el sink inseguro); "
+                                "el informe incluye un script pwntools reproducible de esta cadena." if _es2
+                                else "Fix the root cause (canary + PIE + NX, remove the unsafe sink); the "
+                                "report ships a reproducible pwntools script for this chain."),
+                rationale_en=(f"The {ch.name} chain to {ch.target} was built and EXECUTED in an isolated "
+                              "sandbox and reached the goal; exploitability is proven by execution."),
+                recommendation_en=("Fix the root cause (canary + PIE + NX, remove the unsafe sink)."))
+            res.findings.append(fnd)
+            if store:
+                store.add_finding(fnd)
+        if _any_verified:
+            res.answer = (res.answer or "") + "\n\nEXPLOIT VERIFICADO (analizador de cadenas)"
     except Exception:
         res.chains = None
 
