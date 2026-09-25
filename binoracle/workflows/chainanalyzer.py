@@ -159,8 +159,10 @@ def _enum_gadgets(binary: str) -> List[Gadget]:
     seen = set()
     try:
         import json
-        import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return out
         patterns = (["pop " + reg for reg in _ARG_REGS + ["rax", "rbx", "rbp", "rsp"]]
                     + ["syscall", "leave", "int 0x80"])
         for pat in patterns:
@@ -173,7 +175,6 @@ def _enum_gadgets(binary: str) -> List[Gadget]:
                 if g and g.addr not in seen:
                     seen.add(g.addr)
                     out.append(g)
-        r.quit()
     except Exception:
         return out
     return out
@@ -187,24 +188,24 @@ def _facts(binary: str, reg=None) -> dict:
          "win": None, "system": None, "binsh": None, "rip_offset": None}
     try:
         import json
-        import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
-        info = json.loads(r.cmd("ij") or "{}").get("bin", {})
-        f["canary"] = info.get("canary")
-        f["pie"] = info.get("pic")
-        f["nx"] = info.get("nx")
-        f["arch"] = f"{info.get('arch','x86')}_{info.get('bits',64)}"
-        for fn in json.loads(r.cmd("aflj") or "[]"):
-            nm = fn.get("name", "").lower()
-            if f["win"] is None and ("win" in nm or "shell" in nm or "backdoor" in nm or "giveshell" in nm):
-                f["win"] = fn.get("offset")
-            if f["system"] is None and nm.endswith("system"):
-                f["system"] = fn.get("offset")
-        # /bin/sh en strings
-        for s in json.loads(r.cmd("izzj") or "{}").get("strings", []):
-            if "/bin/sh" in (s.get("string", "") or ""):
-                f["binsh"] = s.get("vaddr"); break
-        r.quit()
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is not None:
+            info = json.loads(r.cmd("ij") or "{}").get("bin", {})
+            f["canary"] = info.get("canary")
+            f["pie"] = info.get("pic")
+            f["nx"] = info.get("nx")
+            f["arch"] = f"{info.get('arch','x86')}_{info.get('bits',64)}"
+            for fn in json.loads(r.cmd("aflj") or "[]"):
+                nm = fn.get("name", "").lower()
+                if f["win"] is None and ("win" in nm or "shell" in nm or "backdoor" in nm or "giveshell" in nm):
+                    f["win"] = fn.get("offset")
+                if f["system"] is None and nm.endswith("system"):
+                    f["system"] = fn.get("offset")
+            # /bin/sh en strings
+            for s in json.loads(r.cmd("izzj") or "{}").get("strings", []):
+                if "/bin/sh" in (s.get("string", "") or ""):
+                    f["binsh"] = s.get("vaddr"); break
     except Exception:
         pass
     # offset de control de RIP (reutiliza el detector estatico de autopoc)

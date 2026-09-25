@@ -127,6 +127,11 @@ def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult
             ghidra_server.stop(_gh)
         except Exception:
             pass
+        try:
+            from ..oracles.r2session import close_all
+            close_all()   # cierra la sesion r2 compartida de la auditoria
+        except Exception:
+            pass
 
 
 def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> AgentResult:

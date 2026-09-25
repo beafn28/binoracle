@@ -43,12 +43,12 @@ def _best_decompile(binary: str, func: str) -> tuple[str, str]:
         pass
     # 2) r2 pdg (r2ghidra) si da algo sustancioso
     try:
-        import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
-        pdg = r.cmd(f"pdg @ {func}") or ""
-        r.quit()
-        if len(pdg.strip()) > 120:
-            return pdg, "pdg"
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is not None:
+            pdg = r.cmd(f"pdg @ {func}") or ""
+            if len(pdg.strip()) > 120:
+                return pdg, "pdg"
     except Exception:
         pass
     # 3) decai (r2ai, LLM) como alternativa, si esta habilitado
@@ -82,12 +82,12 @@ def _collect_variants(binary: str, func: str) -> list:
     except Exception:
         pass
     try:
-        import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
-        pdg = r.cmd(f"pdg @ {func}") or ""
-        r.quit()
-        if len(pdg.strip()) > 60:
-            add("pdg", pdg)
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is not None:
+            pdg = r.cmd(f"pdg @ {func}") or ""
+            if len(pdg.strip()) > 60:
+                add("pdg", pdg)
     except Exception:
         pass
     try:

@@ -63,11 +63,11 @@ def _branch_note(insns) -> str:
 
 def function_cfg(binary: str, func: str, max_blocks: int = 60) -> CFG:
     try:
-        import r2pipe
-        r = r2pipe.open(binary, flags=["-2"])
-        r.cmd("aaa")
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return CFG(func=func)
         j = json.loads(r.cmd(f"agfj @ {func}") or "[]")
-        r.quit()
     except Exception:
         return CFG(func=func)
     if not j:
