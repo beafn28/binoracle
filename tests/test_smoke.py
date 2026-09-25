@@ -318,3 +318,38 @@ def test_quiet_pwn_sets_error_level():
     logging.getLogger("pwnlib").setLevel(logging.DEBUG)
     _quiet_pwn()
     assert logging.getLogger("pwnlib").level == logging.ERROR
+
+
+def test_agent_loop_does_not_cap_exploration_tools():
+    # Regresion: el cap por herramienta NO debe truncar tools de exploracion que aportan
+    # info nueva por argumento (p.ej. r2_disasm de varias funciones).
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    calls = {"n": 0}
+
+    class _Disasm(Oracle):
+        name = "d"
+        def available(self):
+            return True
+        def tools(self):
+            def run(target):
+                calls["n"] += 1
+                return ToolResult(True, "radare2: pdf", f"disasm {target}")
+            return [Tool("r2_disasm", "d", [ToolParam("target", "t")], run, self.name)]
+
+    class _LLM:
+        def __init__(self):
+            self.i = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.i += 1
+            if self.i > 8:
+                return '{"action":"final","answer":"done","findings":[]}'
+            return '{"action":"tool","tool":"r2_disasm","args":{"target":"fn%d"}}' % self.i
+
+    cfg = load_config(); cfg.max_steps = 12
+    AgentLoop(_LLM(), ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
+    assert calls["n"] >= 8   # r2_disasm esta exento del cap: se ejecuta las 8 veces

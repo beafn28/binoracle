@@ -103,7 +103,6 @@ def build_script(binary: str, offset: int, win: int, ret: Optional[int]) -> str:
     return f'''#!/usr/bin/env python3
 # binoracle auto-PoC (ret2win) for an AUTHORIZED target
 from pwn import *
-from binoracle import _quiet_pwn as _qp; _qp()
 context.binary = elf = ELF({binary!r})
 io = process(elf.path)
 payload = flat({{

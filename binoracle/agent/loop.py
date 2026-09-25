@@ -68,6 +68,10 @@ class AgentLoop:
         forced = False
         budget = self.config.max_steps
         per_tool_cap = 4         # misma tool >N veces = spam (p.ej. cyclic_offset value=0,1,2,...)
+        # Herramientas de exploracion que SI aportan info nueva en cada llamada (una funcion
+        # distinta, un simbolo distinto): no se limitan, para no truncar un analisis legitimo.
+        uncapped = {"r2_disasm", "r2_xrefs", "r2_stackframe", "elf_symbols", "elf_relocations",
+                    "ghidra_decompile", "decai_decompile", "r2_cmd"}
 
         for step in range(1, budget + 1):
             # If we are on the last step, or the model keeps repeating or emitting junk, force
@@ -131,7 +135,7 @@ class AgentLoop:
                 # distintos, p.ej. cyclic_offset value=0,1,2,...) no aporta y quema el presupuesto.
                 tname = action.get("tool", "?")
                 tool_counts[tname] = tool_counts.get(tname, 0) + 1
-                if tool_counts[tname] > per_tool_cap:
+                if tname not in uncapped and tool_counts[tname] > per_tool_cap:
                     dup_total += 1
                     messages.append(Message("assistant", _compact(action)))
                     messages.append(Message(

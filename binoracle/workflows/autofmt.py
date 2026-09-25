@@ -13,7 +13,6 @@ import subprocess
 _DRIVER = r'''
 import sys
 from pwn import *
-from binoracle import _quiet_pwn as _qp; _qp()
 name = sys.argv[1]
 elf = ELF(name, checksec=False); context.binary = elf; context.log_level = "error"
 prompt = sys.argv[2].encode() if len(sys.argv) > 2 else b"say: "

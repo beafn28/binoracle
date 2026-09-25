@@ -16,10 +16,13 @@ from .base import Oracle, Tool, ToolParam, ToolResult
 
 
 # Tokens that mean the debugger could not actually run the target (vs. a real, useful crash).
+# Only phrases that unambiguously mean "could not run/attach". Deliberately NOT the bare word
+# "debugserver" (appears in healthy lldb transcripts) nor "during startup program exited"
+# (a program that exits early ran fine -- it just did not crash).
 _LLDB_BROKEN = ("lost debug server connection", "unable to attach", "unable to launch",
-                "error: process launch failed", "operation not permitted", "debugserver")
+                "error: process launch failed")
 _GDB_BROKEN = ("ptrace: operation not permitted", "cannot access memory",
-               "during startup program exited", "no such file", "not in executable format")
+               "not in executable format", "no executable file specified")
 
 
 def _unrunnable(txt: str, crashed: bool, markers) -> bool:
