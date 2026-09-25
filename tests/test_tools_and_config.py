@@ -262,6 +262,26 @@ def test_ghidra_server_config_logic(monkeypatch):
     gs.stop(None)
 
 
+def test_decai_parse_and_enable(monkeypatch):
+    from binoracle.oracles import decai as dc
+    # _clean: extrae el bloque de codigo de la salida con fences markdown
+    out = "bla bla\n```c\nint f(int a){ return a+1; }\n```\nmas texto"
+    code = dc._clean(out)
+    assert code and "return a+1" in code and "bla bla" not in code
+    # sin codigo -> None (no se inventa)
+    assert dc._clean("solo texto sin codigo") is None
+    assert dc._clean("") is None
+    # enabled: env manda (si esta instalado)
+    monkeypatch.setattr(dc, "installed", lambda: True)
+    monkeypatch.setenv("BINORACLE_DECAI", "0")
+    assert dc.enabled() is False
+    monkeypatch.setenv("BINORACLE_DECAI", "1")
+    assert dc.enabled() is True
+    # si no esta instalado, siempre False
+    monkeypatch.setattr(dc, "installed", lambda: False)
+    assert dc.enabled() is False
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

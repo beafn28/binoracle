@@ -27,8 +27,10 @@ class DecompiledFunc:
 
 
 def _best_decompile(binary: str, func: str) -> tuple[str, str]:
-    """Mejor decompilacion disponible: Ghidra (si hay servidor GhidraMCP arriba con el binario
-    cargado) primero, y si no, r2 (pdg/pdc/pdf). Ghidra da pseudo-C de mas calidad."""
+    """Mejor decompilacion disponible, en orden: Ghidra (servidor GhidraMCP arriba) > r2 pdg
+    (r2ghidra) > decai (r2ai, LLM alternativo, si hay LLM) > r2 pdc/pdf. Grado de calidad
+    decreciente; cada fuente es opcional y cae a la siguiente si no esta disponible."""
+    # 1) Ghidra (deterministico, mejor)
     try:
         from ..oracles import ghidra as _gh
         if _gh.available():
@@ -37,6 +39,26 @@ def _best_decompile(binary: str, func: str) -> tuple[str, str]:
                 return code, "ghidra"
     except Exception:
         pass
+    # 2) r2 pdg (r2ghidra) si da algo sustancioso
+    try:
+        import r2pipe
+        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        pdg = r.cmd(f"pdg @ {func}") or ""
+        r.quit()
+        if len(pdg.strip()) > 120:
+            return pdg, "pdg"
+    except Exception:
+        pass
+    # 3) decai (r2ai, LLM) como alternativa, si esta habilitado
+    try:
+        from ..oracles import decai as _decai
+        if _decai.enabled():
+            code = _decai.decompile_function(binary, func)
+            if code and len(code.strip()) > 40:
+                return code, "decai"
+    except Exception:
+        pass
+    # 4) resto de r2 (pdc/pdf)
     return _r2_decompile(binary, func)
 
 

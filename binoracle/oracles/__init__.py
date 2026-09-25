@@ -7,6 +7,7 @@ from .dynamic_dbg import DebuggerOracle
 from .exploit_helpers import ExploitHelperOracle
 from .exploit_actions import ExploitActionsOracle
 from .ghidra import GhidraOracle
+from .decai import DecaiOracle
 
 
 def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bool = False) -> ToolRegistry:
@@ -19,6 +20,7 @@ def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bo
         AngrOracle(binary),
         ExploitHelperOracle(binary),
         GhidraOracle(binary),   # solo se registra si hay un servidor GhidraMCP arriba
+        DecaiOracle(binary),    # solo se registra si decai esta instalado y hay LLM listo
     ]
     if enable_dynamic:
         oracles.append(DebuggerOracle(binary))
