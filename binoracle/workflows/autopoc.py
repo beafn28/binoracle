@@ -53,11 +53,16 @@ def _r2(binary: str, cmd: str) -> str:
         return ""
 
 
+# Gift keyword as a DELIMITED token, not a bare substring: this must not match "win" inside
+# "_Unwind_Resume" / "winner" (glibc is full of such names in a static binary), which would
+# false-route the exploit to ret2win against a bogus target.
+_GIFT_RE = re.compile(r"(?:^|[^a-z])(win|shell|backdoor|flag|give)(?:[^a-z]|$)")
+
+
 def find_win(binary: str) -> Optional[int]:
     funcs = _r2(binary, "aa;afl")
     for line in funcs.splitlines():
-        low = line.lower()
-        if any(k in low for k in ("win", "shell", "backdoor", "flag", "give")):
+        if _GIFT_RE.search(line.lower()):
             m = re.match(r"\s*(0x[0-9a-fA-F]+)", line)
             if m:
                 return int(m.group(1), 16)
@@ -299,6 +304,7 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
         import os as _os
         _os.environ.setdefault("PWNLIB_NOTERM", "1")
         from pwn import context, ELF, ROP
+        from binoracle import _quiet_pwn as _qp; _qp()
     except Exception as e:
         return {"ok": False, "note": f"pwntools no disponible: {e}"}
     try:

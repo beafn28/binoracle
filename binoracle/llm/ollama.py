@@ -35,13 +35,17 @@ class OllamaBackend(LLMBackend):
         except Exception:
             return False
 
-    def chat(self, messages: List[Message]) -> str:
+    def chat(self, messages: List[Message], *, json_mode: bool = False) -> str:
         payload = {
             "model": self.config.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": False,
             "options": {"temperature": self.config.temperature},
         }
+        # Native JSON mode: forces the model to emit one valid JSON value, so a small model
+        # cannot narrate around its action. Prompt still asks for JSON (Ollama requirement).
+        if json_mode and getattr(self.config, "json_mode", True):
+            payload["format"] = "json"
         try:
             out = self._post("/api/chat", payload, self.config.request_timeout)
         except urllib.error.URLError as e:

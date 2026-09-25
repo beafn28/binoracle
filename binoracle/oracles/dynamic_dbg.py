@@ -15,6 +15,25 @@ from typing import List
 from .base import Oracle, Tool, ToolParam, ToolResult
 
 
+# Tokens that mean the debugger could not actually run the target (vs. a real, useful crash).
+# Only phrases that unambiguously mean "could not run/attach". Deliberately NOT the bare word
+# "debugserver" (appears in healthy lldb transcripts) nor "during startup program exited"
+# (a program that exits early ran fine -- it just did not crash).
+_LLDB_BROKEN = ("lost debug server connection", "unable to attach", "unable to launch",
+                "error: process launch failed")
+_GDB_BROKEN = ("ptrace: operation not permitted", "cannot access memory",
+               "not in executable format", "no executable file specified")
+
+
+def _unrunnable(txt: str, crashed: bool, markers) -> bool:
+    """True when the debugger transcript shows it could not run/attach and there is no crash
+    to report -- so we surface a clear, actionable message instead of a confusing raw dump."""
+    if crashed:
+        return False
+    low = (txt or "").lower()
+    return any(m in low for m in markers)
+
+
 class DebuggerOracle(Oracle):
     name = "dynamic_dbg"
 
@@ -82,6 +101,13 @@ class DebuggerOracle(Oracle):
         finally:
             os.unlink(spath)
         crashed = any(s in txt for s in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL"))
+        if _unrunnable(txt, crashed, _GDB_BROKEN):
+            return ToolResult(
+                False, "gdb: run", txt.strip(),
+                error=("gdb could not run the target here (ptrace not permitted, or the host "
+                       "cannot execute this binary). Dynamic run is unavailable; use the sandbox "
+                       "(run_input / autopoc) or angr_reachable for grounded results instead."),
+                meta={"crashed": False, "dbg_unavailable": True})
         return ToolResult(True, "gdb: run < input; info registers; bt", txt.strip(),
                           meta={"crashed": crashed})
 
@@ -107,5 +133,13 @@ class DebuggerOracle(Oracle):
         finally:
             os.unlink(spath)
         crashed = any(s in txt for s in ("EXC_BAD_ACCESS", "stop reason", "signal SIG"))
+        if _unrunnable(txt, crashed, _LLDB_BROKEN):
+            return ToolResult(
+                False, "lldb: run", txt.strip(),
+                error=("lldb's debugserver could not run the target (macOS codesigning/SIP, "
+                       "developer-mode not enabled, or a sandbox limit). Dynamic run under lldb "
+                       "is unavailable here; use the sandbox (run_input / autopoc) or "
+                       "angr_reachable for grounded results instead."),
+                meta={"crashed": False, "dbg_unavailable": True})
         return ToolResult(True, "lldb: run; register read; bt", txt.strip(),
                           meta={"crashed": crashed})

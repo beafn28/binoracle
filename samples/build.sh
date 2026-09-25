@@ -23,6 +23,8 @@ echo "[*] ret2win_pie (PIE)"
 run "gcc -fno-stack-protector -pie -fPIE -w -o bin/ret2win_pie src/ret2win.c"
 echo "[*] fmtstring_pie (PIE)"
 run "gcc -fno-stack-protector -pie -fPIE -w -o bin/fmtstring_pie src/fmtstring.c"
+echo "[*] ropme_pie (static-PIE, ROP sin win)"
+run "gcc -fno-stack-protector -static-pie -fPIE -w -o bin/ropme_pie src/ropme_pie.c"
 echo "[*] win_chall.exe (Windows PE via mingw)"
 docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
   'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"

@@ -62,10 +62,16 @@ class AgentLoop:
             Message("user", task),
         ]
         seen: dict = {}          # signature -> cached observation
-        dup_total = 0            # total duplicate tool calls
+        tool_counts: dict = {}   # tool name -> veces llamada (aunque cambien los args)
+        dup_total = 0            # total duplicate/wasteful tool calls
         malformed = 0            # replies en fila sin una accion parseable
         forced = False
         budget = self.config.max_steps
+        per_tool_cap = 4         # misma tool >N veces = spam (p.ej. cyclic_offset value=0,1,2,...)
+        # Herramientas de exploracion que SI aportan info nueva en cada llamada (una funcion
+        # distinta, un simbolo distinto): no se limitan, para no truncar un analisis legitimo.
+        uncapped = {"r2_disasm", "r2_xrefs", "r2_stackframe", "elf_symbols", "elf_relocations",
+                    "ghidra_decompile", "decai_decompile", "r2_cmd"}
 
         for step in range(1, budget + 1):
             # If we are on the last step, or the model keeps repeating or emitting junk, force
@@ -79,7 +85,10 @@ class AgentLoop:
                 ))
                 forced = True
 
-            reply = self.llm.chat(messages)
+            # Ask for JSON-constrained output: the whole protocol is a single JSON object,
+            # so this stops small models from wrapping the action in prose (the main cause
+            # of 'not valid protocol' nudges). Falls back gracefully if the backend ignores it.
+            reply = self.llm.chat(messages, json_mode=True)
             action = extract_action(reply)
 
             if action is None:
@@ -119,6 +128,21 @@ class AgentLoop:
                         "You ALREADY ran that exact call; the result is unchanged (see below). "
                         "Do NOT repeat it. Either call a DIFFERENT tool that makes progress, or "
                         f"emit action=final now.\n\nCACHED RESULT:\n{seen[sig]}",
+                    ))
+                    continue
+
+                # anti-loop por herramienta: la misma tool llamada muchas veces (aunque con args
+                # distintos, p.ej. cyclic_offset value=0,1,2,...) no aporta y quema el presupuesto.
+                tname = action.get("tool", "?")
+                tool_counts[tname] = tool_counts.get(tname, 0) + 1
+                if tname not in uncapped and tool_counts[tname] > per_tool_cap:
+                    dup_total += 1
+                    messages.append(Message("assistant", _compact(action)))
+                    messages.append(Message(
+                        "user",
+                        f"You have called '{tname}' {tool_counts[tname]} times; it will not reveal "
+                        "anything new. STOP using it. Call a DIFFERENT tool that advances the audit "
+                        "(e.g. try_ret2win / try_rop to build+run an exploit), or emit action=final now.",
                     ))
                     continue
 

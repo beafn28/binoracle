@@ -7,6 +7,80 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Heap-to-shell (tcache-UAF) exploit**: `autoheap.autoheap_shell` drives a menu-style
+  use-after-free (new/free/edit/show, e.g. the `heapexp` sample) to a verified shell — it
+  defeats glibc safe-linking without needing exact heap offsets (freeing one chunk into an
+  empty tcache bin makes its fd = `mangle(NULL)` = `&chunk >> 12`, so `show` leaks the key
+  directly), poisons the tcache to allocate over `free@GOT` (no-PIE / partial RELRO) and
+  overwrites it with `win`, then triggers a `free` to spawn the shell. Wired into the `audit`
+  backstop (runs regardless of `find_win`) and the `try_heap` agent tool, alongside the
+  existing corruption-confirming `autoheap`. Runs in the `binoracle-pwn` image; degrades
+  cleanly without it.
+- **Dangerous-sink detection now covers statically-linked binaries**: `r2_sinks` previously
+  keyed only off PLT imports, so a static binary (no imports) reported "no sinks" even when it
+  calls `read`/`gets`. It now also detects compiled-in sink symbols and keeps those reached
+  from USER code (`sym.vuln`, not glibc internals like `sym._IO_*`), resolving all candidates
+  in a single r2 pass (no per-sink re-analysis). Keyword matching is token-delimited so `read`
+  no longer matches `fgets`/`readdir`/`pread`.
+- **ROP on PIE (verified by execution)**: `autopie.autopie_rop` resolves the (ASLR-off) PIE
+  base in the sandbox, rebases the ELF, builds a ret2libc-`system` or execve-syscall ROP chain
+  with absolute addresses and confirms a real shell via a marker — closing the ROP-on-PIE gap
+  the scope table listed as not automated. Wired into the `audit` backstop cascade (ROP →
+  ret2libc → format-string → ROP-PIE) and covered by a `-static-pie` practice target
+  (`samples/src/ropme_pie.c`, no gift function). Runs in the `binoracle-pwn` image; degrades
+  cleanly (dict with `ok=False` + note) when Docker or the image is absent.
+
+### Fixed
+- **Gift-function detection no longer false-matches substrings**: `find_win` (and the
+  `r2_win` gift finder) matched the bare substring `win`, so a static binary's glibc symbol
+  like `_Unwind_Resume` was taken as a `win()` gift — false-routing the audit backstop to a
+  bogus ret2win instead of the correct ROP/ROP-PIE path. Keywords now match as delimited
+  tokens (`win`, `shell`, `backdoor`, `flag`, `give`), so `_Unwind_Resume`/`winner` don't hit
+  while `win`/`get_flag`/`give_shell` still do.
+- **Agent protocol reliability**: the LLM backends now support a JSON-constrained output
+  mode (Ollama `format:json`, OpenAI-compatible `response_format`), and the agent loop
+  enables it for every action turn. Small local models (e.g. `qwen2.5-coder:7b`) no longer
+  wrap their action in prose after a long tool result, which was the main cause of the
+  "model reply was not valid protocol" nudges. Toggle with `BINORACLE_JSON_MODE=0`; prose
+  layers (executive summary, per-finding enrichment, synthesis) stay free-form.
+- **Anti-loop per tool**: the loop already refused byte-identical tool calls; it now also
+  caps how many times the same tool may be called with *different* arguments, so a model
+  can no longer burn the step budget scanning (e.g. `cyclic_offset value=0,1,2,...`).
+- **`cyclic_offset` guard**: passing a small integer that was never observed in a crash now
+  returns a corrective error (send the cyclic pattern with `dbg_run_input`, read the value
+  that overwrote RIP/EIP, or use `try_ret2win`/autopoc) instead of a silent "not found".
+- **Verdict gate recognises sandbox-verified exploits**: an exploit actually executed and
+  confirmed in the sandbox (`sandbox-verified` / `sandbox-confirmed`) now counts as a proof
+  source for the `verified` verdict, alongside angr/debugger. Previously a genuinely
+  executed ret2win/ROP/fmt/ret2libc finding was wrongly downgraded to `grounded`.
+- **Provenance banner sized to real grounding**: the answer no longer shows a scary
+  "no citations" warning when a full evidence trail exists — it shows a calm note pointing to
+  the grounding ledger. The hard warning now fires only when no oracle was consulted at all.
+  The agent prompt also reinforces inline `[src: ...]` citation with a concrete example.
+- **`fmtstr_offset` robust to a bad `word`**: a small model passing `word=false`/`0`/garbage
+  used to divide by zero and fail the tool repeatedly; the pointer size now snaps to 8 (x64)
+  or 4 (x86) instead of crashing.
+- **Audit backstop cascades to format-string**: the deterministic shell backstop now tries
+  ROP → ret2libc → **format-string** for a binary with no gift function, so a pure
+  `printf(user)` target reliably ends the audit with a sandbox-verified exploit (previously
+  only ret2win/ROP/ret2libc were attempted, so a format-string binary got no verified PoC).
+- **Fabricated-citation detection**: `[src: ...]` tags in the model's prose that reference a
+  tool the agent never ran (e.g. a hallucinated `[src: r2_strings]`) are now detected against
+  the grounding ledger and flagged with a warning, so an invented citation can no longer pass
+  as grounded.
+- **Debugger surfaces a clear message when it cannot run the target**: an lldb debugserver /
+  gdb ptrace failure (macOS codesigning/SIP, ptrace-not-permitted, non-native binary) now
+  returns an actionable error pointing to the sandbox / angr, instead of a raw "Lost debug
+  server connection" dump that looked like a crash.
+- **Quiet pwntools**: pwntools' cosmetic WARNING noise (e.g. "Could not populate PLT: Cannot
+  allocate 1GB memory to run Unicorn Engine") is pinned out of reports via a `_quiet_pwn()`
+  helper called after each `from pwn import`, without hiding real errors.
+- **Backstop exploits recorded as verified findings**: a sandbox-verified ROP / ret2libc /
+  format-string exploit produced by the audit backstop now becomes a `verified` critical
+  Finding (like ret2win already did), so the report, the findings JSON and the learned corpus
+  record it consistently instead of only mentioning it in the prose.
+
+### Added
 - **Local RAG knowledge base** (`binoracle/kb/*.md` + `binoracle/rag.py`): curated
   exploitation cheat sheets (ret2win, ROP/ret2syscall, ret2libc, format-string, heap/tcache,
   PIE/leaks, mitigations, methodology, tools) indexed with a stdlib TF-IDF retriever (no

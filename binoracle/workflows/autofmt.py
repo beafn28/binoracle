@@ -90,7 +90,8 @@ def autofmt(binary: str, run: bool = True, prompt: str = "say: ") -> dict:
     verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
     line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
     return {"ok": True, "verified": verified, "detail": line, "output": out[-800:],
-            "note": "format-string -> printf@GOT=system (shell verificada, ASLR off en sandbox)"}
+            "note": ("format-string -> printf@GOT=system: shell verificada en sandbox" if verified
+                     else "format-string: no verificado (no aplica printf(user) en bucle o timing)")}
 
 
 def render_fmt(r: dict) -> str:

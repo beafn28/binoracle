@@ -187,3 +187,200 @@ def test_autoheap_render():
                        "hits": [{"kind": "double-free", "input": "f", "pattern": "free():",
                                  "output": "free(): double free detected"}]})
     assert "double-free" in out and "SI" in out
+
+
+def test_cyclic_offset_rejects_bogus_small_value():
+    # Regresion: un modelo pequeno solia iterar cyclic_offset con 0,1,2,... quemando pasos.
+    # Ahora un valor que no vino de un crash devuelve un error correctivo, no un 'not found' mudo.
+    from binoracle.oracles.exploit_helpers import ExploitHelperOracle
+    off = next(t for t in ExploitHelperOracle("x").tools() if t.name == "cyclic_offset")
+    r = off.run(value=0)
+    assert r.ok is False and r.meta.get("bogus") is True
+    assert "not a value observed in a crash" in (r.error or "")
+    # un valor real del patron ciclico sigue resolviendo el offset
+    good = off.run(value="0x6161616c")
+    assert good.ok is True and "offset" in good.data
+
+
+def test_agent_loop_caps_repeated_tool_calls():
+    # Regresion: la misma tool con args distintos (cyclic_offset value=0,1,2,...) ya no se
+    # ejecuta sin fin; tras el tope por herramienta el loop empuja a otra cosa / final.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    calls = {"n": 0}
+
+    class _Echo(Oracle):
+        name = "echo"
+        def available(self):
+            return True
+        def tools(self):
+            def run(value):
+                calls["n"] += 1
+                return ToolResult(True, "echo", f"got {value}")
+            return [Tool("echo_tool", "echo", [ToolParam("value", "v")], run, self.name)]
+
+    class _SpamLLM:
+        # siempre pide la misma tool con un value incremental (nunca finaliza por si mismo)
+        def __init__(self):
+            self.i = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.i += 1
+            return '{"action":"tool","tool":"echo_tool","args":{"value":%d}}' % self.i
+
+    cfg = load_config()
+    cfg.max_steps = 12
+    reg = ToolRegistry([_Echo()])
+    res = AgentLoop(_SpamLLM(), reg, cfg).run("spam", mode="ask")
+    # el tope (4) impide que se ejecute mas de 4 veces aunque el modelo lo pida 12
+    assert calls["n"] <= 4
+    assert res.steps <= cfg.max_steps
+
+
+def test_gate_allows_verified_with_sandbox_exploit():
+    # Un exploit ejecutado y confirmado en sandbox es prueba suficiente para 'verified'
+    # (mas fuerte que la alcanzabilidad de angr); no debe degradarse a 'grounded'.
+    from binoracle.agent.grounding import GroundingLedger, gate_findings
+    from binoracle.store.session import Finding
+    led = GroundingLedger()
+    led.record(1, "try_ret2win", "autopoc: ret2win (sandbox-verified)",
+               "EXPLOIT VERIFICADO offset=72 win=0x401176 ___POC_SHELL___ uid=0(root)")
+    f = Finding(title="ret2win", severity="critical", verdict="verified",
+                evidence="offset=72 win=0x401176 ___POC_SHELL___", location="win")
+    gated, notes = gate_findings([f], led)
+    assert gated[0].verdict == "verified"
+    assert not any("verified->grounded" in n for n in notes)
+
+
+def test_annotate_banner_tiers():
+    # El banner se ajusta al grounding real, no a si la prosa lleva tags [src:].
+    from binoracle.agent.grounding import GroundingLedger
+    # 1) prosa ya citada -> sin banner
+    led = GroundingLedger()
+    led.record(1, "r2_checksec", "radare2: iI", "NX true")
+    cited = "NX is enabled [src: radare2: iI]."
+    assert led.annotate(cited) == cited
+    # 2) sin tags pero con rastro de evidencia -> nota tranquila, no warning
+    out = led.annotate("NX is enabled.")
+    assert "[!note]" in out and "evidence trail" in out and "[!warning]" not in out
+    # 3) sin tags y sin oraculos consultados -> warning duro
+    empty = GroundingLedger()
+    out2 = empty.annotate("The binary is safe.")
+    assert "[!warning]" in out2 and "unverified" in out2
+
+
+def test_fmtstr_offset_robust_to_bad_word():
+    # Regresion: un modelo pequeno pasaba word=False (-> int 0 -> division por cero).
+    # Ahora un 'word' invalido (bool/basura/0) se ajusta al tamano de puntero por defecto (8).
+    from binoracle.oracles.exploit_helpers import ExploitHelperOracle
+    fo = next(t for t in ExploitHelperOracle("x").tools() if t.name == "fmtstr_offset")
+    for bad in (False, True, 0, "x", None):
+        r = fo.run(byte_offset=32, word=bad)
+        assert r.ok is True and "index = 4" in r.data   # 32 // 8
+    # un word valido de 4 (x86) sigue respetandose
+    assert "index = 8" in fo.run(byte_offset=32, word=4).data
+
+
+def test_gate_flags_fabricated_citation():
+    # Fundamentado: una cita [src: X] que no corresponde a ninguna tool ejecutada se marca.
+    from binoracle.agent.grounding import GroundingLedger
+    led = GroundingLedger()
+    led.record(1, "r2_sinks", "radare2: dangerous sinks (ii + axt @ sym.imp.*)", "printf sink")
+    led.record(2, "r2_checksec", "radare2: iI (checksec)", "NX true")
+    ans = ("printf is a sink [src: radare2: dangerous sinks]. "
+           "There are strings [src: r2_strings].")   # r2_strings NUNCA se llamo
+    bad = led.fabricated_citations(ans)
+    assert bad == ["r2_strings"]
+    out = led.annotate(ans)
+    assert "[!warning]" in out and "r2_strings" in out
+    # una respuesta con solo citas reales no dispara el aviso
+    assert led.fabricated_citations("sink here [src: radare2: iI (checksec)].") == []
+
+
+def test_debugger_unrunnable_classifier():
+    # Fundamentado: distinguir "no pudo ejecutar" (debugserver/ptrace) de un crash util.
+    from binoracle.oracles.dynamic_dbg import _unrunnable, _LLDB_BROKEN, _GDB_BROKEN
+    assert _unrunnable("error: Lost debug server connection", False, _LLDB_BROKEN) is True
+    assert _unrunnable("ptrace: Operation not permitted", False, _GDB_BROKEN) is True
+    # si hubo crash real, NO se trata como irrejecutable (el crash es la evidencia util)
+    assert _unrunnable("stop reason = EXC_BAD_ACCESS", True, _LLDB_BROKEN) is False
+    # una ejecucion normal no dispara
+    assert _unrunnable("Process exited with status 0", False, _LLDB_BROKEN) is False
+
+
+def test_quiet_pwn_sets_error_level():
+    # El logger de pwnlib queda en ERROR tras _quiet_pwn (silencia el warning de Unicorn/PLT).
+    import logging
+    from binoracle import _quiet_pwn
+    logging.getLogger("pwnlib").setLevel(logging.DEBUG)
+    _quiet_pwn()
+    assert logging.getLogger("pwnlib").level == logging.ERROR
+
+
+def test_agent_loop_does_not_cap_exploration_tools():
+    # Regresion: el cap por herramienta NO debe truncar tools de exploracion que aportan
+    # info nueva por argumento (p.ej. r2_disasm de varias funciones).
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    calls = {"n": 0}
+
+    class _Disasm(Oracle):
+        name = "d"
+        def available(self):
+            return True
+        def tools(self):
+            def run(target):
+                calls["n"] += 1
+                return ToolResult(True, "radare2: pdf", f"disasm {target}")
+            return [Tool("r2_disasm", "d", [ToolParam("target", "t")], run, self.name)]
+
+    class _LLM:
+        def __init__(self):
+            self.i = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.i += 1
+            if self.i > 8:
+                return '{"action":"final","answer":"done","findings":[]}'
+            return '{"action":"tool","tool":"r2_disasm","args":{"target":"fn%d"}}' % self.i
+
+    cfg = load_config(); cfg.max_steps = 12
+    AgentLoop(_LLM(), ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
+    assert calls["n"] >= 8   # r2_disasm esta exento del cap: se ejecuta las 8 veces
+
+
+def test_autopie_rop_degrades_cleanly():
+    # ROP-PIE se apoya en el sandbox binoracle-pwn; sin docker/imagen debe devolver un dict
+    # con ok=False y una nota, nunca lanzar (degradacion elegante como el resto de oraculos).
+    from binoracle.workflows.autopie import autopie_rop
+    r = autopie_rop("samples/bin/ropme_pie")
+    assert isinstance(r, dict) and "ok" in r
+    if not r["ok"]:
+        assert r.get("note")   # explica por que (sin docker / sin imagen)
+
+
+def test_find_win_gift_regex_no_substring_false_positive():
+    # Regresion: "win" dentro de "_Unwind_Resume" (o "winner") NO debe contar como gift function,
+    # o el backstop se desvia a un ret2win falso en binarios estaticos con glibc.
+    from binoracle.workflows.autopoc import _GIFT_RE
+    hit = lambda s: bool(_GIFT_RE.search(s.lower()))
+    assert hit("0x7fb20 sym._Unwind_Resume") is False
+    assert hit("sym.winner") is False
+    assert hit("sym.__libc_start_main") is False
+    # los nombres gift reales siguen detectandose
+    assert hit("sym.win") and hit("sym.get_flag") and hit("sym.give_shell") and hit("sym.backdoor")
+
+
+def test_autoheap_shell_degrades_cleanly():
+    # heap->shell se apoya en el sandbox binoracle-pwn. Usamos una ruta en un directorio
+    # inexistente para ejercer SIEMPRE la degradacion (dict ok=False + nota) sin arrancar el
+    # contenedor ni el exploit real, en cualquier entorno.
+    from binoracle.workflows.autoheap import autoheap_shell
+    r = autoheap_shell("/nonexistent/dir/heapexp")
+    assert isinstance(r, dict) and r.get("ok") is False and r.get("note")

@@ -27,13 +27,17 @@ class OpenAICompatBackend(LLMBackend):
         except Exception:
             return False
 
-    def chat(self, messages: List[Message]) -> str:
+    def chat(self, messages: List[Message], *, json_mode: bool = False) -> str:
         payload = {
             "model": self.config.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": self.config.temperature,
             "stream": False,
         }
+        # JSON mode: most OpenAI-compatible servers (llama.cpp, vLLM, LM Studio) honor
+        # response_format to constrain output to a JSON object. Prose calls leave it off.
+        if json_mode and getattr(self.config, "json_mode", True):
+            payload["response_format"] = {"type": "json_object"}
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.base + "/chat/completions",

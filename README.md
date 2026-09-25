@@ -81,14 +81,16 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 ### Scope
 
-Verified-by-execution today covers the six classes above. Not yet automated: ROP on PIE (base resolution is done for ret2win/format-string), and full heap exploitation (double-free/overflow are now confirmed by execution via
-glibc aborts, confirmed by execution
-via glibc aborts, but driving heap corruption to a verified shell is bespoke per binary and
-is blocked here by the same Rosetta limitation as ROP on PIE. The `heapexp` sample is a
-tcache-UAF target where every exploit step (heap leak, tcache poisoning, GOT overwrite) is
-reproducible; only the final redirected jump into never-executed binary code fails under the
-Mac's x86-64 emulation, and would land on a native x86-64 host. Everything
-runs only against binaries you are authorized to analyze.
+Verified-by-execution today covers the six classes above, plus ROP on PIE (`autopie_rop`
+resolves the ASLR-off PIE base in the sandbox, rebases the chain and confirms a shell; the
+`ropme_pie` static-PIE sample is the target), and heap-to-shell for the common menu-driven
+tcache-UAF shape (`autoheap_shell`: leaks the safe-linking key from a freed chunk, poisons
+the tcache to allocate over `free@GOT` on a no-PIE binary and overwrites it with `win`; the
+`heapexp` sample is the target). Double-free / heap-overflow are also confirmed by execution
+via glibc's allocator aborts (`autoheap`). Heap-to-shell runs natively on an x86-64 host;
+under a Mac's x86-64 emulation the final redirected jump into never-executed code can fail.
+Fully general heap exploitation (arbitrary layouts, libc-leak chains) remains bespoke per
+binary. Everything runs only against binaries you are authorized to analyze.
 
 ## Supported executable formats
 

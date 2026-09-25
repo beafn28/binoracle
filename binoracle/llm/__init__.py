@@ -15,7 +15,7 @@ def make_backend(config) -> LLMBackend:
         name = "none"
         def available(self):
             return False
-        def chat(self, messages):
+        def chat(self, messages, *, json_mode: bool = False):
             raise LLMUnavailable("no LLM backend configured")
         def info(self):
             return "none (no local model configured)"

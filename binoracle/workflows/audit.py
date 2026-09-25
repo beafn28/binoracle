@@ -240,26 +240,115 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             elif r.ok:
                 res.answer += (f"\n\n---\n\n### Auto-PoC (backstop)\nExploit ret2win construido "
                                f"(offset={r.offset}, win={hex(r.win)}) pero no verificado en sandbox.")
-        # if still no verified exploit, try an autonomous ROP-to-shell
-        verified_now = "EXPLOIT VERIFICADO" in (res.answer or "") or "SHELL VERIFICADA" in (res.answer or "")
-        if not verified_now and find_win(binary) is None:
+        # if still no verified exploit and no gift function, cascade the shell backstops:
+        # ROP -> ret2libc -> format-string. Re-check after each so a pure format-string binary
+        # (no win, no ROP, no leak path) still ends the audit with a VERIFIED exploit.
+        def _verified_now():
+            a = res.answer or ""
+            return "EXPLOIT VERIFICADO" in a or "SHELL VERIFICADA" in a
+
+        def _add_verified(title, location, evidence, rationale, recommendation):
+            """A sandbox-verified backstop exploit is a critical VERIFIED finding, not just a
+            line in the prose (so the report, the findings JSON and the learned corpus all
+            record it consistently)."""
+            fnd = Finding(title=title, severity="critical", verdict="verified",
+                          location=location, evidence=(evidence or "")[:400],
+                          rationale=rationale, recommendation=recommendation)
+            res.findings.append(fnd)
+            if store:
+                store.add_finding(fnd)
+
+        tried = []   # (label, reason) of backstop exploits attempted but not verified
+        if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
-            rr = autorop(binary, run=True)
-            if rr.get("verified"):
-                res.ledger.record(res.steps + 2, "try_rop (backstop)", "autorop (sandbox)",
-                                  rr.get("run_output") or "")
-                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP (backstop)\n"
-                               f"Cadena {rr.get('strategy')} (offset={rr.get('offset')}) ejecutada en "
-                               f"sandbox: shell obtenida. [src: try_rop]")
-            else:
-                from .autolibc import autolibc
-                rl = autolibc(binary)
-                if rl.get("verified"):
-                    res.ledger.record(res.steps + 3, "try_ret2libc (backstop)", "autolibc (sandbox)",
-                                      rl.get("output") or "")
-                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ret2libc (backstop)\n"
-                                   f"{rl.get('detail','')}. Fuga de libc + system('/bin/sh') ejecutado en "
-                                   f"sandbox. [src: try_ret2libc]")
+            from .autolibc import autolibc
+            from .autofmt import autofmt
+            from .autopie import autopie_rop
+
+            def _summary(r):
+                s = r.get("detail")
+                if not s and r.get("strategy"):
+                    s = f"estrategia={r.get('strategy')} offset={r.get('offset')}"
+                return (s or "").strip()
+
+            # (runner, src tag for the citation, ledger source, human label, finding title, fix)
+            backstops = [
+                (autorop, "try_rop", "autorop (sandbox-verified)", "ROP",
+                 "Exploit ROP a shell verificado",
+                 "Habilitar PIE + full RELRO; evitar el overflow de pila."),
+                (autolibc, "try_ret2libc", "autolibc (sandbox-verified)", "ret2libc",
+                 "Exploit ret2libc a shell verificado",
+                 "Habilitar PIE + full RELRO; evitar el overflow de pila."),
+                (autofmt, "try_fmt", "autofmt (sandbox-verified)", "format-string",
+                 "Exploit format-string a shell verificado",
+                 "No pasar entrada del usuario como formato de printf; full RELRO."),
+                (autopie_rop, "try_rop_pie", "autopie_rop (sandbox-verified)", "ROP en PIE",
+                 "Exploit ROP en PIE a shell verificado",
+                 "Full RELRO + stack canary; evitar el overflow de pila."),
+            ]
+            # For a PIE binary the right technique is ROP-PIE; try it FIRST so it runs on a
+            # fresh sandbox (as it does standalone) instead of after autorop/ret2libc/fmt have
+            # loaded the machine -- which was making a standalone-verified exploit miss here.
+            try:
+                from elftools.elf.elffile import ELFFile
+                with open(binary, "rb") as _f:
+                    if ELFFile(_f)["e_type"] == "ET_DYN":
+                        backstops.sort(key=lambda b: 0 if b[1] == "try_rop_pie" else 1)
+            except Exception:
+                pass
+            step = res.steps + 1
+            for fn, tag, ledger_src, label, title, rec in backstops:
+                if _verified_now():
+                    break
+                try:
+                    r = fn(binary)
+                except Exception as e:
+                    tried.append((label, f"error: {e}")); continue
+                if not r.get("verified"):
+                    tried.append((label, r.get("note") or "no verificado")); continue
+                step += 1
+                summ = _summary(r)
+                out = r.get("output") or r.get("run_output") or ""
+                res.ledger.record(step, f"{tag} (backstop)", ledger_src, out or summ)
+                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via {label} (backstop)\n"
+                               f"{summ}. Ejecutado en sandbox: shell obtenida. [src: {tag}]")
+                _add_verified(title, summ, f"{summ}\n{out}",
+                              f"Exploit {label} construido y ejecutado en sandbox: shell obtenida.", rec)
+        # heap-to-shell: run regardless of find_win (a heap binary often has a win() but is not
+        # a stack overflow, so neither the ret2win attempt nor the cascade above covers it).
+        if not _verified_now():
+            try:
+                from .autoheap import autoheap_shell
+                rh = autoheap_shell(binary)
+            except Exception as e:
+                rh = {"note": f"error: {e}"}
+            if rh.get("verified"):
+                res.ledger.record(res.steps + 6, "try_heap (backstop)",
+                                  "autoheap (sandbox-verified)",
+                                  rh.get("output") or rh.get("detail") or "")
+                res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via heap (tcache-UAF, backstop)\n"
+                               f"{rh.get('detail','')}. Envenenamiento de tcache + free@GOT=win "
+                               f"ejecutado en sandbox: shell obtenida. [src: try_heap]")
+                _add_verified("Exploit heap (tcache-UAF) a shell verificado", rh.get("detail", ""),
+                              f"{rh.get('detail','')}\n{rh.get('output','')}",
+                              "tcache poisoning + free@GOT=win ejecutado en sandbox: shell obtenida.",
+                              "Limpia el puntero al liberar (evita UAF); full RELRO para que free@GOT no sea escribible.")
+            elif rh.get("note") and "no aplicable" not in rh.get("note", ""):
+                tried.append(("heap (tcache-UAF)", rh.get("note")))
+
+        # Visibility: if the backstop actually attempted exploits but none verified, say so with
+        # the per-technique reason, instead of leaving the report silent about the attempts.
+        if not _verified_now() and tried:
+            notes = "; ".join(f"{l}: {n}" for l, n in tried)
+            res.ledger.record(res.steps + 7, "backstop (sin verificacion)",
+                              "backstop: intentos de exploit", notes)
+            res.answer += ("\n\n---\n\n### Backstop de explotacion (sin shell verificada)\n"
+                           "binoracle intento construir y ejecutar un exploit, pero no logro "
+                           "verificarlo en el sandbox:\n"
+                           + "\n".join(f"- **{l}**: {n}" for l, n in tried)
+                           + "\n\nComprueba la imagen `binoracle-pwn` (make pwn-image), o la "
+                             "emulacion (heap->shell necesita un host x86-64 nativo), o pasa el "
+                             "offset/objetivo manualmente.")
     except Exception:
         pass
 

@@ -151,34 +151,81 @@ class R2Oracle(Oracle):
         return ToolResult(True, f"radare2: {cmd}", txt.strip())
 
     def _sinks(self) -> ToolResult:
-        """For each dangerous import present, list the callers (grounded reachability seed)."""
+        """List dangerous sinks and who reaches them (grounded reachability seed).
+
+        Dynamic binaries: the sinks are PLT imports (`sym.imp.*`). Statically-linked binaries
+        have no imports, so the sinks are compiled-in symbols (`read` -> `sym.__read`); there
+        we key off symbols and keep only sinks a USER function calls (`sym.vuln`, not glibc
+        internals like `sym._IO_*` / `sym.__*`), which is the real attack surface."""
         imports = self._run("ii")
-        found = [d for d in DANGEROUS if d in imports]
-        if not found:
-            return ToolResult(True, "radare2: ii+axt", "(no classic dangerous sinks imported)")
-        # map import name -> vaddr from `ii` (for PE/Mach-O where axt-by-name misses callers)
+        # token match (not substring): 'read' must not be found inside 'fgets'/'readdir'/'pread'.
+        dyn = [d for d in DANGEROUS if re.search(rf"\b{re.escape(d)}\b", imports)]
+        # a binary with no import rows at all is statically linked (or fully static-pie).
+        static_binary = not any("0x" in l for l in imports.splitlines())
         vaddr = {}
         for line in imports.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[1].startswith("0x"):
                 vaddr[parts[-1]] = parts[1]
-        lines = []
-        for fn in found:
+        # a real axt caller line carries an address; absence of "0x" means "no xrefs" (robust
+        # against caller names that merely start with 'no', e.g. notify_handler / node_read).
+        has_callers = lambda t: bool(t) and "0x" in t
+        lines, found = [], []
+        for fn in dyn:                                   # dynamic (imported) sinks
             xr = self._run(f"axt @ sym.imp.{fn}").strip()
-            if not xr or "no" in xr[:3].lower():
-                # fallback: cross-refs to the import's IAT/GOT address, then a raw search
+            if not has_callers(xr):
                 va = vaddr.get(fn)
                 if va and va != "----------":
                     xr = self._run(f"axt @ {va}").strip()
-                    if not xr or "no" in xr[:3].lower():
+                    if not has_callers(xr):
                         xr = self._run(f"/r {va}").strip()
-            if xr and "no" not in xr[:3].lower():
-                lines.append(f"### sink: {fn}\n{xr}")
-            else:
-                lines.append(f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
-        body = "\n\n".join(lines)
-        return ToolResult(True, "radare2: dangerous sinks (ii + axt @ sym.imp.*)", body,
-                          meta={"sinks": found})
+            found.append(fn)
+            lines.append(f"### sink: {fn}\n{xr}" if has_callers(xr)
+                         else f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
+        # static sinks: only for a genuinely static binary. Resolve every DANGEROUS candidate in
+        # ONE r2 invocation (a single analysis pass, not one per sink -- the subprocess fallback
+        # would otherwise re-run `aa` 10+ times and hang on a glibc binary) and keep the sinks
+        # reached from USER code (any caller that is NOT a libc internal `sym._*`).
+        # Cheap gate (no analysis): only scan a static binary that actually has a `main` symbol.
+        # `is` lists the symbol table without triggering `aa`; \bmain\b matches the real `main`
+        # but not `__libc_start_main`. This keeps the scan off malformed/tiny/stripped inputs
+        # (a fake or no-main ELF must not reach `pdf @ main`, which would hang r2pipe), and
+        # scales: one light `is`, then a single analysis + one combined axt pass.
+        if static_binary and re.search(r"\bmain\b", self._run("is", analyze=False)):
+            # "user code" = main plus the functions main calls (one level). A static sink is
+            # kept only when a caller is in that set, which excludes glibc-internal call sites
+            # (glibc has plenty of non-`_`-prefixed functions, so filtering by name alone is
+            # not enough).
+            main_dis = self._run("pdf @ main")
+            user_funcs = {"main"} | set(re.findall(r"call\s+sym\.(\w+)", main_dis))
+            if len(user_funcs) > 1:
+                cmd = ";".join(f"?e ==={fn}===;axt @ sym.{fn}" for fn in DANGEROUS)
+                out = self._run(cmd)
+                cur, buckets = None, {}
+                for line in out.splitlines():
+                    m = re.match(r"===(\w+)===", line.strip())
+                    if m:
+                        cur = m.group(1); buckets[cur] = []
+                    elif cur and "0x" in line:           # only real caller lines
+                        buckets[cur].append(line.strip())
+
+                def _caller_name(c):
+                    tok = c.split()[0] if c.split() else ""
+                    return tok[4:] if tok.startswith("sym.") else tok
+
+                for fn, callers in buckets.items():
+                    user = [c for c in callers if _caller_name(c) in user_funcs]
+                    if user:
+                        found.append(fn)
+                        more = (f"  (+{len(callers) - len(user)} llamadas internas de libc)"
+                                if len(callers) > len(user) else "")
+                        lines.append(f"### sink: {fn} (estatico; alcanzado desde main/user code){more}\n"
+                                     + "\n".join(user[:8]))
+        if not lines:
+            return ToolResult(True, "radare2: ii+axt",
+                              "(no classic dangerous sinks imported nor reached from user code)")
+        src = "radare2: dangerous sinks (imports + static symbols, axt to user code)"
+        return ToolResult(True, src, "\n\n".join(lines), meta={"sinks": found})
 
     # ---- exploitation-oriented tools ----
     def _checksec(self) -> ToolResult:
@@ -239,10 +286,12 @@ class R2Oracle(Oracle):
     def _win(self) -> ToolResult:
         funcs = self._run("afl")
         interesting = []
-        for kw in ("win", "shell", "backdoor", "flag", "secret", "admin", "give", "vuln"):
-            for line in funcs.splitlines():
-                if kw in line.lower():
-                    interesting.append(line.strip())
+        # delimited token, not a bare substring, so "win" does not match "_Unwind_Resume"/"winner"
+        # nor "flag" match unrelated glibc internals in a static binary.
+        gift = re.compile(r"(?:^|[^a-z])(win|shell|backdoor|flag|secret|admin|give|vuln)(?:[^a-z]|$)")
+        for line in funcs.splitlines():
+            if gift.search(line.lower()):
+                interesting.append(line.strip())
         strings = self._run("izz", analyze=False)
         sh_lines = [l for l in strings.splitlines()
                     if "/bin/sh" in l or "/bin/bash" in l or "flag" in l.lower() or "cat " in l]

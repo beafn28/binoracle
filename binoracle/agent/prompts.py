@@ -34,6 +34,9 @@ Rules:
   verdict=grounded if static evidence supports it but reachability was not proven.
   verdict=unverified for anything you could not back with a tool (avoid these).
 - Keep findings tied to concrete evidence you pasted into the 'evidence' field.
+- CITE in the prose: end each factual sentence in "answer" with the tool source in brackets,
+  e.g. "main calls gets at 0x4011c3 [src: radare2: dangerous sinks]." An answer with no
+  [src: ...] tags is treated as weaker even when it is correct, so always cite.
 - NEVER contradict a tool result. If r2_sinks lists a function (e.g. gets), then it IS
   present; do not claim otherwise. Trust tool output over your prior assumptions.
 - NEVER emit a finding whose 'evidence' field is empty. No evidence -> no finding.
