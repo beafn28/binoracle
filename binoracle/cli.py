@@ -18,7 +18,7 @@ from .workflows.patchdiff import run_patchdiff, render_patchdiff
 from .agent.loop import AgentLoop
 from .report.render import render_triage, render_agent_result
 from .report.html import render_html
-from .report.render import findings_to_json
+from .report.render import findings_to_json, findings_to_sarif
 from .workflows.verify import auto_verify, verify_address
 from .workflows.enrich import enrich_findings, executive_summary
 from .workflows.rop import build_rop_chain
@@ -510,6 +510,8 @@ def cmd_audit(args, config):
                     chains=getattr(res, "chains", None))
     if getattr(args, "json", None):
         Path(args.json).write_text(findings_to_json(binary, res.findings, res.ledger)); _eprint(f"(JSON -> {args.json})")
+    if getattr(args, "sarif", None):
+        Path(args.sarif).write_text(findings_to_sarif(binary, res.findings, res.ledger)); _eprint(f"(SARIF -> {args.sarif})")
     store.close()
 
 
@@ -732,6 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("-o", "--output")
     au.add_argument("--html", help="also write an interactive HTML report here")
     au.add_argument("--json", help="also write findings as JSON")
+    au.add_argument("--sarif", help="also write findings as SARIF 2.1.0 (code-scanning/CI)")
     au.set_defaults(func=cmd_audit)
 
     rg = sub.add_parser("regress", help="compare two builds for security regressions")
