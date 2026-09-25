@@ -173,6 +173,29 @@ def test_chainanalyzer_classify_and_score():
     assert c2.feasible is True and c2.score == 100
 
 
+def test_dotnet_detect_and_secrets(tmp_path):
+    from binoracle.workflows.dotnet import is_dotnet, _scan_code_secrets, decompile_dotnet
+    # deteccion por firma: MZ + 'BSJB' -> .NET; MZ sin BSJB -> no
+    net = tmp_path / "a.exe"; net.write_bytes(b"MZ" + b"\x00" * 200 + b"BSJB" + b"\x00" * 50)
+    native = tmp_path / "b"; native.write_bytes(b"\x7fELF" + b"\x00" * 100)
+    plainpe = tmp_path / "c.exe"; plainpe.write_bytes(b"MZ" + b"\x00" * 300)
+    assert is_dotnet(str(net)) is True
+    assert is_dotnet(str(native)) is False
+    assert is_dotnet(str(plainpe)) is False
+    # decompile degrada bien si no es .NET
+    assert decompile_dotnet(str(native)).is_dotnet is False
+    # escaneo de secretos en codigo decompilado
+    code = ('class X { const string Password = "hunter2_backdoor";\n'
+            ' const string Greeting = "hello world";\n'
+            ' string conn = "Server=db;User Id=sa;Password=Str0ng!";\n'
+            ' const string ApiKey = "changeme"; }')
+    hits = {h["value"] for h in _scan_code_secrets(code)}
+    assert "hunter2_backdoor" in hits           # const con nombre sospechoso
+    assert any("User Id=sa" in v for v in hits)  # cadena de conexion
+    assert "hello world" not in hits             # const generica: ignorada
+    assert "changeme" not in hits                # placeholder: ignorado
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
