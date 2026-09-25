@@ -59,7 +59,8 @@ def _extract_code(payload: str) -> Optional[str]:
                     best[0] = o
             elif isinstance(o, dict):
                 # claves preferentes primero
-                for k in ("decompilation", "code", "pseudocode", "ccode", "c", "text", "result", "data"):
+                for k in ("decompiled", "decompilation", "code", "pseudocode", "ccode", "c",
+                          "text", "result", "data"):
                     if isinstance(o.get(k), str) and _looks_c(o[k]) and len(o[k]) > len(best[0]):
                         best[0] = o[k]
                 for v in o.values():
@@ -81,3 +82,44 @@ def decompile_function(func: str, timeout: float = 60.0) -> Optional[str]:
     payload = _get("/decompile_function", {"address": func, "timeout": int(timeout)},
                    timeout=timeout + 5)
     return _extract_code(payload) if payload else None
+
+
+# --- Oraculo para el agente LLM: expone la decompilacion de Ghidra como tool del recon ---
+from .base import Oracle, Tool, ToolParam, ToolResult   # noqa: E402
+
+
+class GhidraOracle(Oracle):
+    """Decompilacion grado Ghidra como oraculo del agente. Solo se registra (available=True) si hay
+    un servidor GhidraMCP respondiendo, asi que el LLM solo la ve cuando de verdad esta disponible;
+    si no, el recon sigue con r2 (nada se rompe)."""
+    name = "ghidra"
+
+    def __init__(self, binary: str):
+        self.binary = binary
+        self._ok = None
+
+    def available(self) -> bool:
+        if self._ok is None:
+            self._ok = available(timeout=2.0)
+        return self._ok
+
+    def why_unavailable(self) -> str:
+        return (f"sin servidor GhidraMCP en {base_url()} (abre Ghidra con el plugin y el binario "
+                "cargado; se usa r2 mientras tanto)")
+
+    def _decompile(self, func: str = "main") -> ToolResult:
+        code = decompile_function(func)
+        if not code:
+            return ToolResult(False, f"ghidra: decompile_function @ {func}", "",
+                              error="Ghidra no devolvio decompilacion (funcion no hallada o servidor "
+                                    "sin el programa cargado)")
+        return ToolResult(True, f"ghidra: decompile_function @ {func}", code,
+                          meta={"engine": "ghidra", "func": func})
+
+    def tools(self):
+        return [Tool(
+            name="ghidra_decompile",
+            description="Decompile ONE function to high-quality Ghidra pseudo-C (better than r2 pdg "
+                        "on large/C++/typed binaries). Arg: func = name or 0x<addr>.",
+            params=[ToolParam("func", "function name or address", required=False, default="main")],
+            run=self._decompile, oracle=self.name)]

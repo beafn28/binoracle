@@ -6,6 +6,7 @@ from .symbolic_angr import AngrOracle
 from .dynamic_dbg import DebuggerOracle
 from .exploit_helpers import ExploitHelperOracle
 from .exploit_actions import ExploitActionsOracle
+from .ghidra import GhidraOracle
 
 
 def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bool = False) -> ToolRegistry:
@@ -17,6 +18,7 @@ def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bo
         R2Oracle(binary),
         AngrOracle(binary),
         ExploitHelperOracle(binary),
+        GhidraOracle(binary),   # solo se registra si hay un servidor GhidraMCP arriba
     ]
     if enable_dynamic:
         oracles.append(DebuggerOracle(binary))
