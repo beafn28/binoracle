@@ -80,9 +80,63 @@ def cmd_doctor(args, config):
         print()
     except Exception:
         pass
+    _print_toolchain_status()
     if not llm.available():
         print("hint: no local model reachable. `ollama serve` + `ollama pull <model>`,")
         print("      or set BINORACLE_BACKEND=openai for an OpenAI-compatible local server.")
+
+
+def _print_toolchain_status() -> None:
+    """Estado de la cadena de reversing aumentada (Ghidra / decai / sandbox / cvss), con la accion
+    concreta para activar lo que falte. Best-effort: nunca rompe el doctor."""
+    import shutil
+    ok = lambda b: "[ok]  " if b else "[--]  "
+    print("Cadena de reversing aumentada:")
+    # Ghidra (decompilacion grado Ghidra + auto-arranque headless)
+    try:
+        from .oracles import ghidra as _gh, ghidra_server as _gs
+        cfg = _gs._cfg()
+        up = _gh.available(timeout=1.5)
+        install = _gs._install_dir(cfg)
+        jdk = _gs._jdk_home(cfg)
+        plugin = bool(install and _gs._plugin_installed(install))
+        auto = _gs.autostart_enabled(cfg)
+        print(f"  {ok(up)}Ghidra server: " + (f"activo en {_gh.base_url()}" if up else "no activo"))
+        print(f"  {ok(bool(install))}Ghidra install: " + (install or "no encontrado (instala Ghidra o define GHIDRA_INSTALL_DIR)"))
+        print(f"  {ok(plugin)}plugin GhidraMCP: " + ("instalado" if plugin else "no instalado (construye/instala la extension)"))
+        print(f"  {ok(bool(jdk))}JDK 21+: " + (jdk or "no encontrado (define BINORACLE_GHIDRA_JDK)"))
+        print(f"  {ok(auto)}auto-arranque: " + ("activado" if auto else "desactivado (BINORACLE_GHIDRA_AUTOSTART=1)")
+              + (" -> binoracle levantara Ghidra solo en el audit" if (auto and plugin and install and jdk and not up) else ""))
+    except Exception:
+        pass
+    # decai (fuente de decompilacion alternativa)
+    try:
+        from .oracles import decai as _dc
+        inst = _dc.installed()
+        ready = _dc._llm_ready() if inst else False
+        print(f"  {ok(inst)}decai (r2ai): " + ("instalado" if inst else "no instalado (r2pm -Uci decai)"))
+        if inst:
+            print(f"  {ok(_dc.enabled())}decai activo: " + ("si" if _dc.enabled() else "no (necesita ollama arriba o una API key)"))
+    except Exception:
+        pass
+    # sandbox dinamico (docker) + cvss
+    docker = shutil.which("docker")
+    img = False
+    if docker:
+        try:
+            import subprocess as _sp
+            img = _sp.run([docker, "image", "inspect", "binoracle-pwn"], capture_output=True).returncode == 0
+        except Exception:
+            img = False
+    print(f"  {ok(bool(docker))}docker (sandbox dinamico/exploits): " + ("disponible" if docker else "no (instala Docker)"))
+    if docker:
+        print(f"  {ok(img)}imagen binoracle-pwn: " + ("construida" if img else "no construida (docker build -f .docker/Dockerfile.pwn -t binoracle-pwn .)"))
+    try:
+        import cvss  # noqa: F401
+        print(f"  {ok(True)}CVSS 4.0 (paquete cvss): disponible")
+    except Exception:
+        print(f"  {ok(False)}CVSS 4.0 (paquete cvss): no (pip install cvss)")
+    print()
 
 
 def cmd_triage(args, config):

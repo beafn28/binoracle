@@ -16,7 +16,7 @@ jobs:
       - name: Install binoracle (+ optional oracles)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[elf]" r2pipe pytest
+          pip install -e ".[elf]" r2pipe pytest cvss
       - name: Compile check
         run: python -m compileall -q binoracle
       - name: Run tests
