@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Dangerous-sink detection now covers statically-linked binaries**: `r2_sinks` previously
+  keyed only off PLT imports, so a static binary (no imports) reported "no sinks" even when it
+  calls `read`/`gets`. It now also detects compiled-in sink symbols and keeps those reached
+  from USER code (`sym.vuln`, not glibc internals like `sym._IO_*`), resolving all candidates
+  in a single r2 pass (no per-sink re-analysis). Keyword matching is token-delimited so `read`
+  no longer matches `fgets`/`readdir`/`pread`.
 - **ROP on PIE (verified by execution)**: `autopie.autopie_rop` resolves the (ASLR-off) PIE
   base in the sandbox, rebases the ELF, builds a ret2libc-`system` or execve-syscall ROP chain
   with absolute addresses and confirms a real shell via a marker — closing the ROP-on-PIE gap
