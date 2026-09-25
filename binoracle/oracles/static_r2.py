@@ -239,10 +239,12 @@ class R2Oracle(Oracle):
     def _win(self) -> ToolResult:
         funcs = self._run("afl")
         interesting = []
-        for kw in ("win", "shell", "backdoor", "flag", "secret", "admin", "give", "vuln"):
-            for line in funcs.splitlines():
-                if kw in line.lower():
-                    interesting.append(line.strip())
+        # delimited token, not a bare substring, so "win" does not match "_Unwind_Resume"/"winner"
+        # nor "flag" match unrelated glibc internals in a static binary.
+        gift = re.compile(r"(?:^|[^a-z])(win|shell|backdoor|flag|secret|admin|give|vuln)(?:[^a-z]|$)")
+        for line in funcs.splitlines():
+            if gift.search(line.lower()):
+                interesting.append(line.strip())
         strings = self._run("izz", analyze=False)
         sh_lines = [l for l in strings.splitlines()
                     if "/bin/sh" in l or "/bin/bash" in l or "flag" in l.lower() or "cat " in l]

@@ -16,6 +16,12 @@ All notable changes to this project are documented here. The format is based on
   cleanly (dict with `ok=False` + note) when Docker or the image is absent.
 
 ### Fixed
+- **Gift-function detection no longer false-matches substrings**: `find_win` (and the
+  `r2_win` gift finder) matched the bare substring `win`, so a static binary's glibc symbol
+  like `_Unwind_Resume` was taken as a `win()` gift — false-routing the audit backstop to a
+  bogus ret2win instead of the correct ROP/ROP-PIE path. Keywords now match as delimited
+  tokens (`win`, `shell`, `backdoor`, `flag`, `give`), so `_Unwind_Resume`/`winner` don't hit
+  while `win`/`get_flag`/`give_shell` still do.
 - **Agent protocol reliability**: the LLM backends now support a JSON-constrained output
   mode (Ollama `format:json`, OpenAI-compatible `response_format`), and the agent loop
   enables it for every action turn. Small local models (e.g. `qwen2.5-coder:7b`) no longer

@@ -363,3 +363,15 @@ def test_autopie_rop_degrades_cleanly():
     assert isinstance(r, dict) and "ok" in r
     if not r["ok"]:
         assert r.get("note")   # explica por que (sin docker / sin imagen)
+
+
+def test_find_win_gift_regex_no_substring_false_positive():
+    # Regresion: "win" dentro de "_Unwind_Resume" (o "winner") NO debe contar como gift function,
+    # o el backstop se desvia a un ret2win falso en binarios estaticos con glibc.
+    from binoracle.workflows.autopoc import _GIFT_RE
+    hit = lambda s: bool(_GIFT_RE.search(s.lower()))
+    assert hit("0x7fb20 sym._Unwind_Resume") is False
+    assert hit("sym.winner") is False
+    assert hit("sym.__libc_start_main") is False
+    # los nombres gift reales siguen detectandose
+    assert hit("sym.win") and hit("sym.get_flag") and hit("sym.give_shell") and hit("sym.backdoor")
