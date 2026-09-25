@@ -504,22 +504,53 @@ def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
     return "\n\n".join(p)
 
 
+def _owasp_html(findings, lang: str) -> str:
+    """OWASP Desktop Top 10 coverage table (methodology phase 9): what was found AND what was
+    reviewed with nothing found. Reuses the same conservative mapping as the markdown report."""
+    if not findings:
+        return ""
+    from .render import owasp_desktop_coverage
+    es = lang != "en"
+    cov = owasp_desktop_coverage(findings)
+    head = "OWASP Desktop Top 10 — cobertura" if es else "OWASP Desktop Top 10 — coverage"
+    intro = ("Mapeo de hallazgos al marco OWASP Desktop App Security Top 10 (metodologia Fase 9). "
+             "Las categorias sin hallazgo se marcan como revisadas." if es else
+             "Findings mapped to the OWASP Desktop App Security Top 10 (methodology phase 9). "
+             "Categories with no finding are marked as reviewed.")
+    c_cat, c_st, c_f = (("Categoria", "Estado", "Hallazgos") if es else ("Category", "Status", "Findings"))
+    with_f = "con hallazgos" if es else "findings"
+    none_f = "revisado, sin hallazgo" if es else "reviewed, none found"
+    rows = ""
+    for cid, name, hits in cov:
+        if hits:
+            det = _esc("; ".join(dict.fromkeys(hits)))
+            st = f'<b style="color:var(--high,#d9822b)">⚠ {with_f}</b>'
+        else:
+            det = "—"; st = f'<span class="mut">{none_f}</span>'
+        rows += f'<tr><td>{cid} {_esc(name)}</td><td>{st}</td><td>{det}</td></tr>'
+    return (f'<h2 id="sec-owasp">{_esc(head)}</h2><p class="sechelp">{_esc(intro)}</p>'
+            f'<table class="owasp" style="width:100%;border-collapse:collapse">'
+            f'<thead><tr><th style="text-align:left">{c_cat}</th><th style="text-align:left">{c_st}</th>'
+            f'<th style="text-align:left">{c_f}</th></tr></thead><tbody>{rows}</tbody></table>')
+
+
 def _toc(lang: str, has) -> str:
     """Indice navegable del informe: solo las secciones presentes, con enlace a su ancla."""
     T = {"es": {"t": "Indice", "summary": "Resumen ejecutivo", "proof": "Prueba de explotacion",
                 "exploit": "Exploit paso a paso", "dec": "Decompilacion anotada",
                 "cfg": "Grafo de flujo interactivo",
-                "find": "Hallazgos", "mit": "Mitigaciones y remediacion",
+                "find": "Hallazgos", "owasp": "OWASP Desktop Top 10", "mit": "Mitigaciones y remediacion",
                 "chain": "Cadena de explotacion", "xchain": "Analizador de cadenas (grafo)",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
          "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
                 "exploit": "Exploit step by step", "dec": "Annotated decompilation",
                 "cfg": "Interactive control-flow graph",
-                "find": "Findings", "mit": "Mitigations & remediation",
+                "find": "Findings", "owasp": "OWASP Desktop Top 10", "mit": "Mitigations & remediation",
                 "chain": "Exploitation chain", "xchain": "Chain analyzer (graph)",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
     order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
-             ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("mit", "sec-mit"),
+             ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("owasp", "sec-owasp"),
+             ("mit", "sec-mit"),
              ("chain", "sec-chain"), ("xchain", "sec-xchain"), ("surface", "sec-surface"),
              ("refs", "sec-refs"), ("trail", "sec-trail")]
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
@@ -745,6 +776,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     mit_detail_html = _mit_detail(mit, lang)
     attack_chain_html = _attack_chain(findings, mit, lang)
     references_html = _references(findings, lang)
+    owasp_html = _owasp_html(findings, lang)
     # Resumen ejecutivo COHERENTE (deterministico) en vez de la narracion del modelo, que puede
     # contradecirse ("no encontre vuln" + backstop verificado). Profesional y sin la nota de citas.
     summary_txt = _auto_summary(binary, findings, mit, lang)
@@ -753,6 +785,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
+            "owasp": bool(owasp_html),
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
             "xchain": bool(exploit_graph_html), "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
@@ -807,6 +840,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     {sev_buttons}
   </div>
   <div id="cards">{cards or '<p class="empty" data-i18n="no_findings"></p>'}</div>
+
+  {owasp_html}
 
   {mit_detail_html}
 
