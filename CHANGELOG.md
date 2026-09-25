@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **ROP on PIE (verified by execution)**: `autopie.autopie_rop` resolves the (ASLR-off) PIE
+  base in the sandbox, rebases the ELF, builds a ret2libc-`system` or execve-syscall ROP chain
+  with absolute addresses and confirms a real shell via a marker — closing the ROP-on-PIE gap
+  the scope table listed as not automated. Wired into the `audit` backstop cascade (ROP →
+  ret2libc → format-string → ROP-PIE) and covered by a `-static-pie` practice target
+  (`samples/src/ropme_pie.c`, no gift function). Runs in the `binoracle-pwn` image; degrades
+  cleanly (dict with `ok=False` + note) when Docker or the image is absent.
+
 ### Fixed
 - **Agent protocol reliability**: the LLM backends now support a JSON-constrained output
   mode (Ollama `format:json`, OpenAI-compatible `response_format`), and the agent loop

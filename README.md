@@ -81,7 +81,9 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 ### Scope
 
-Verified-by-execution today covers the six classes above. Not yet automated: ROP on PIE (base resolution is done for ret2win/format-string), and full heap exploitation (double-free/overflow are now confirmed by execution via
+Verified-by-execution today covers the six classes above, plus ROP on PIE (`autopie_rop`
+resolves the ASLR-off PIE base in the sandbox, rebases the chain and confirms a shell; the
+`ropme_pie` static-PIE sample is the target). Not yet automated: full heap exploitation (double-free/overflow are now confirmed by execution via
 glibc aborts, confirmed by execution
 via glibc aborts, but driving heap corruption to a verified shell is bespoke per binary and
 is blocked here by the same Rosetta limitation as ROP on PIE. The `heapexp` sample is a

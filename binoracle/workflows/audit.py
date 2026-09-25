@@ -297,6 +297,20 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                                   f"{rf.get('detail','')}\n{rf.get('output','')}",
                                   "Sobrescritura de printf@GOT con system y '/bin/sh' ejecutado en sandbox.",
                                   "No pasar entrada del usuario como formato de printf; full RELRO.")
+            if not _verified_now():
+                from .autopie import autopie_rop
+                rp = autopie_rop(binary)
+                if rp.get("verified"):
+                    res.ledger.record(res.steps + 5, "try_rop_pie (backstop)",
+                                      "autopie_rop (sandbox-verified)",
+                                      rp.get("output") or rp.get("detail") or "")
+                    res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via ROP en PIE (backstop)\n"
+                                   f"{rp.get('detail','')}. Base PIE resuelta y cadena ROP ejecutada en "
+                                   f"sandbox: shell obtenida. [src: try_rop_pie]")
+                    _add_verified("Exploit ROP en PIE a shell verificado", rp.get("detail", ""),
+                                  f"{rp.get('detail','')}\n{rp.get('output','')}",
+                                  "Base PIE resuelta en sandbox + cadena ROP rebasada: shell obtenida.",
+                                  "Full RELRO + stack canary; evitar el overflow de pila.")
     except Exception:
         pass
 

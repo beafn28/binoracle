@@ -353,3 +353,13 @@ def test_agent_loop_does_not_cap_exploration_tools():
     cfg = load_config(); cfg.max_steps = 12
     AgentLoop(_LLM(), ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
     assert calls["n"] >= 8   # r2_disasm esta exento del cap: se ejecuta las 8 veces
+
+
+def test_autopie_rop_degrades_cleanly():
+    # ROP-PIE se apoya en el sandbox binoracle-pwn; sin docker/imagen debe devolver un dict
+    # con ok=False y una nota, nunca lanzar (degradacion elegante como el resto de oraculos).
+    from binoracle.workflows.autopie import autopie_rop
+    r = autopie_rop("samples/bin/ropme_pie")
+    assert isinstance(r, dict) and "ok" in r
+    if not r["ok"]:
+        assert r.get("note")   # explica por que (sin docker / sin imagen)
