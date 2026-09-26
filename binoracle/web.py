@@ -85,12 +85,19 @@ body{margin:0;font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,s
 #main h3{font-size:17px;margin:26px 0 8px;color:var(--acc)}
 #main h4{font-size:14px;margin:18px 0 6px}
 #main p{margin:8px 0}
-#main ul{margin:8px 0;padding-left:22px}
+#main ul,#main ol{margin:8px 0;padding-left:24px}
 #main li{margin:3px 0}
+#main strong{font-weight:700;color:var(--tx)}
+#main em{font-style:italic}
 #main code{background:var(--code);color:var(--codetx);padding:1px 5px;border-radius:4px;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
 #main pre{background:var(--code);border:1px solid var(--line);border-radius:9px;padding:13px 15px;overflow-x:auto;margin:12px 0}
 #main pre code{background:none;padding:0;color:var(--tx)}
 .xref{color:var(--acc);cursor:pointer;text-decoration:none;border-bottom:1px dotted var(--acc)}
+.tbl-wrap{overflow-x:auto;margin:14px 0}
+#main table{border-collapse:collapse;width:100%;font-size:13px}
+#main th,#main td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+#main th{background:var(--code);font-weight:600;white-space:nowrap}
+#main tr:nth-child(even) td{background:color-mix(in srgb, var(--panel) 96%, var(--tx) 4%)}
 .empty{color:var(--mut);padding:40px 0}
 mark{background:#ffe08a;color:#000;border-radius:2px}
 </style></head><body>
@@ -139,15 +146,36 @@ def _md_inline(s: str) -> str:
     s = (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     s = _re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
     s = _re.sub(r"\[\[([a-z0-9-]+)\]\]", r'<a class="xref" data-doc="\1">\1</a>', s)
+    # markdown estandar de enfasis: **negrita**, luego *cursiva*/_cursiva_ (tras negrita, para que
+    # el primer/ultimo '*' de '**x**' no se consuma como cursiva de un solo asterisco).
+    s = _re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+    s = _re.sub(r"(?<!\*)\*([^*\s][^*]*?)\*(?!\*)", r"<em>\1</em>", s)
+    s = _re.sub(r"(?<!\w)_([^_\s][^_]*?)_(?!\w)", r"<em>\1</em>", s)
+    # [texto](url) -> enlace real (ninguna cheat sheet actual lo usa, pero por si acaso)
+    s = _re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
     return s
 
 
+_TABLE_SEP_RE = __import__("re").compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+_OL_RE = __import__("re").compile(r"^(\d+)\.\s+(.*)$")
+
+
+def _md_table_row(line: str) -> list:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
 def _md_to_html(text: str) -> str:
-    """Mini renderer markdown -> HTML (headings, code fences, listas, parrafos)."""
+    """Mini renderer markdown -> HTML (titulos, bloques de codigo, tablas, listas con y sin
+    numeros, parrafos con **negrita**/*cursiva*/`codigo`)."""
     out = []
     lines = text.split("\n")
     i = 0
-    in_list = False
+    in_list = None  # None | 'ul' | 'ol'
     para = []  # buffer de lineas planas consecutivas -> un solo parrafo fluido
 
     def flush_para():
@@ -158,7 +186,7 @@ def _md_to_html(text: str) -> str:
     def close_list():
         nonlocal in_list
         if in_list:
-            out.append("</ul>"); in_list = False
+            out.append(f"</{in_list}>"); in_list = None
 
     while i < len(lines):
         line = lines[i]
@@ -172,23 +200,41 @@ def _md_to_html(text: str) -> str:
             esc = "\n".join(code).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             out.append(f"<pre><code>{esc}</code></pre>")
             continue
+        # tabla: fila '| a | b |' seguida de la fila separadora '|---|---|'
+        if (line.strip().startswith("|") and i + 1 < len(lines)
+                and _TABLE_SEP_RE.match(lines[i + 1])):
+            flush_para(); close_list()
+            head = _md_table_row(line)
+            i += 2   # salta cabecera + separador
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(_md_table_row(lines[i])); i += 1
+            thead = "".join(f"<th>{_md_inline(c)}</th>" for c in head)
+            tbody = "".join("<tr>" + "".join(f"<td>{_md_inline(c)}</td>" for c in r) + "</tr>"
+                            for r in rows)
+            out.append(f'<div class="tbl-wrap"><table><thead><tr>{thead}</tr></thead>'
+                       f'<tbody>{tbody}</tbody></table></div>')
+            continue
         if line.startswith("### "):
             flush_para(); close_list(); out.append(f"<h4>{_md_inline(line[4:])}</h4>")
         elif line.startswith("## "):
             flush_para(); close_list(); out.append(f"<h3>{_md_inline(line[3:])}</h3>")
         elif line.startswith("# "):
             flush_para(); close_list(); out.append(f"<h2>{_md_inline(line[2:])}</h2>")
-        elif line.strip().startswith("- "):
+        elif line.strip().startswith(("- ", "* ")):
             flush_para()
-            if not in_list: out.append("<ul>"); in_list = True
+            if in_list != "ul":
+                close_list(); out.append("<ul>"); in_list = "ul"
             out.append(f"<li>{_md_inline(line.strip()[2:])}</li>")
+        elif _OL_RE.match(line.strip()):
+            flush_para()
+            if in_list != "ol":
+                close_list(); out.append("<ol>"); in_list = "ol"
+            out.append(f"<li>{_md_inline(_OL_RE.match(line.strip()).group(2))}</li>")
         elif line.strip() == "":
             flush_para(); close_list()
         else:
-            import re as _re
             close_list()
-            if _re.match(r"\d+\.\s", line.strip()):
-                flush_para()   # cada paso numerado empieza parrafo nuevo
             para.append(line.strip())
         i += 1
     flush_para(); close_list()
@@ -1069,6 +1115,11 @@ main{flex:1;display:flex;min-height:0}
 .f{display:flex;flex-direction:column;gap:3px}
 .f label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .f input,.f select{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
+.f.big{gap:6px;margin:4px 0}
+.f.big label{font-size:11px}
+.f textarea{background:var(--field);border:1.5px solid var(--line);color:var(--fg);border-radius:10px;padding:16px 18px;font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;min-height:110px;width:100%;box-sizing:border-box}
+.f textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px color-mix(in srgb, var(--acc) 20%, transparent)}
+.f textarea::placeholder{color:var(--mut);opacity:.7}
 .run{background:linear-gradient(135deg,var(--acc2),#3b8ee0);color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:700}
 .chk{display:flex;align-items:center;gap:6px}
 .out{flex:1;overflow:auto;padding:20px}
@@ -1142,7 +1193,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"Desarrollo de exploits"},
- {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id (p.ej. CVE-2024-33599) o descripcion de la vuln",t:"text"}]},
+ {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"}]},
  {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"#",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {g:"Pentest / Reversing de binarios"},
@@ -1166,6 +1217,9 @@ function select(it,btn){closeStream();current=it;[...side.querySelectorAll('butt
  (it.opts||[]).forEach(o=>{const f=document.createElement('div');f.className='f';const lab=document.createElement('label');lab.textContent=o.label;let el;
   if(o.t==='sel'){el=document.createElement('select');o.vals.forEach(v=>{const op=document.createElement('option');op.value=v;op.textContent=v;el.appendChild(op);});}
   else if(o.t==='check'){f.className='f chk';el=document.createElement('input');el.type='checkbox';}
+  else if(o.t==='textarea'){f.className='f big';el=document.createElement('textarea');el.rows=o.rows||4;
+   if(o.placeholder)el.placeholder=o.placeholder;
+   el.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();exec(it.c,collect());}});}
   else{el=document.createElement('input');el.type='text';if(o.def)el.value=o.def;}
   el.id='opt_'+o.k; if(o.t==='check'){f.appendChild(el);f.appendChild(lab);}else{f.appendChild(lab);f.appendChild(el);} opts.appendChild(f);});
  const run=document.createElement('button');run.className='run';run.textContent='Ejecutar';run.onclick=()=>exec(it.c,collect());opts.appendChild(run);

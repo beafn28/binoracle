@@ -1099,6 +1099,33 @@ def test_authcheck_no_false_positive_on_windows_binary():
     assert fs == [], [f.title for f in fs]
 
 
+def test_web_md_to_html_renders_bold_tables_ordered_lists():
+    # Regresion: la Biblioteca de Conocimiento (Conocimiento/kb) mostraba **negrita** literal y
+    # tablas markdown como un parrafo ilegible de '|' sueltos -- confirmado en owasp-desktop.md
+    # (tabla de 10 filas) y en 9/47 cheat sheets con **negrita**.
+    from binoracle.web import _md_to_html
+    html = _md_to_html("**bold** and *italic*\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+                       "1. paso uno\n2. paso dos\n")
+    assert "<strong>bold</strong>" in html and "<em>italic</em>" in html
+    assert "**" not in html
+    assert "<table>" in html and "<th>A</th>" in html and "<td>1</td>" in html
+    assert "|" not in html.replace("<td>", "").replace("</td>", "")  # sin pipes sueltos en prosa
+    assert "<ol>" in html and "<li>paso uno</li>" in html
+
+
+def test_report_md_rich_renders_lists_and_tables():
+    # Regresion: _md_rich (usado por Investigar/Entrenar/Dataset) mostraba cada '- item' como un
+    # <p> con guion literal, sin <ul>/<ol> real -- confirmado en el informe de 'Investigar (LLM)'.
+    from binoracle.report.html import _md_rich
+    html = _md_rich("## Titulo\n- **clave**: valor\n- otro item\n\n1. paso uno\n2. paso dos\n\n"
+                    "| ID | Nombre |\n|----|--------|\n| 1 | x |\n")
+    assert "<ul><li><strong>clave</strong>: valor</li>" in html
+    assert "<ol><li>paso uno</li>" in html
+    assert "<table>" in html and "<th>ID</th>" in html
+    assert "**" not in html
+    assert not __import__("re").search(r"<p>\s*-\s", html)   # sin guiones literales en <p>
+
+
 def test_commsec_prng_detects_bare_import_name():
     # Regresion: el regex de PRNG exigia el prefijo 'sym.imp.rand' que no siempre aparece en la
     # salida real de r2 (algunos binarios listan solo el nombre bare 'rand') -- falso NEGATIVO real,

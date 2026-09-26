@@ -36,30 +36,79 @@ def _md(s) -> str:
     return t
 
 
+_MD_OL_RE = __import__("re").compile(r"^(\d+)\.\s+(.*)$")
+
+
 def _md_rich(s: str) -> str:
-    """Markdown enriquecido para la decompilacion anotada: bloques ``` de codigo, cabeceras
-    ###, listas y **negrita**/`codigo`. Suficiente para el texto que produce el LLM."""
+    """Markdown enriquecido para la decompilacion anotada y los informes de agentes (Investigar/
+    Entrenar/Dataset): bloques ``` de codigo, cabeceras #/##/###, listas (con y sin numeros),
+    tablas y **negrita**/`codigo`. Suficiente para el texto que produce el LLM o los renderers."""
     import re as _re
     s = s or ""
     out = []
+    in_list = None  # None | 'ul' | 'ol'
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            out.append(f"</{in_list}>"); in_list = None
+
+    def inline(t: str) -> str:
+        h = _esc(t)
+        h = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
+        h = _re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
+        return h
+
     parts = _re.split(r"```[a-zA-Z]*\n?", s)     # alterna prosa / codigo
     for i, part in enumerate(parts):
         if i % 2 == 1:                            # dentro de un bloque de codigo
+            close_list()
             out.append(f'<pre class="code">{_esc(part.rstrip())}</pre>')
             continue
-        for ln in part.splitlines():
-            t = ln.strip()
+        lines = part.splitlines()
+        j = 0
+        while j < len(lines):
+            t = lines[j].strip()
             if not t:
+                close_list(); j += 1; continue
+            # tabla: fila '| a | b |' seguida de la fila separadora '|---|---|'
+            if (t.startswith("|") and j + 1 < len(lines)
+                    and _re.match(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$", lines[j + 1])):
+                close_list()
+                def row(ln):
+                    c = ln.strip()
+                    c = c[1:] if c.startswith("|") else c
+                    c = c[:-1] if c.endswith("|") else c
+                    return [x.strip() for x in c.split("|")]
+                head = row(t); j += 2
+                rows = []
+                while j < len(lines) and lines[j].strip().startswith("|"):
+                    rows.append(row(lines[j])); j += 1
+                thead = "".join(f"<th>{inline(c)}</th>" for c in head)
+                tbody = "".join("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>"
+                                for r in rows)
+                out.append(f'<div class="tbl-wrap"><table><thead><tr>{thead}</tr></thead>'
+                           f'<tbody>{tbody}</tbody></table></div>')
                 continue
             if t.startswith("### "):
-                out.append(f'<h5>{_esc(t[4:])}</h5>')
+                close_list(); out.append(f'<h5>{inline(t[4:])}</h5>')
             elif t.startswith("## "):
-                out.append(f'<h4>{_esc(t[3:])}</h4>')
+                close_list(); out.append(f'<h4>{inline(t[3:])}</h4>')
+            elif t.startswith("# "):
+                close_list(); out.append(f'<h3>{inline(t[2:])}</h3>')
+            elif t.startswith(("- ", "* ")):
+                if in_list != "ul":
+                    close_list(); out.append("<ul>"); in_list = "ul"
+                out.append(f"<li>{inline(t[2:])}</li>")
+            elif _MD_OL_RE.match(t):
+                if in_list != "ol":
+                    close_list(); out.append("<ol>"); in_list = "ol"
+                out.append(f"<li>{inline(_MD_OL_RE.match(t).group(2))}</li>")
             else:
-                h = _esc(t)
-                h = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
-                h = _re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
-                out.append(f"<p>{h}</p>")
+                close_list()
+                out.append(f"<p>{inline(t)}</p>")
+            j += 1
+        close_list()
     return "".join(out)
 
 
@@ -1843,6 +1892,14 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .evkind{color:#fff;font:700 9px sans-serif;padding:1px 6px;border-radius:4px;margin-left:6px;letter-spacing:.02em}
 .evpre{margin:0;padding:12px;background:#0b0e12;color:#cfe3ff;white-space:pre;overflow:auto;font:12px/1.5 ui-monospace,monospace;border:0;border-radius:0}
 .md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
+.md ul,.md ol{margin:8px 0;padding-left:24px;white-space:normal}
+.md li{margin:3px 0;white-space:normal}
+.md p{white-space:normal}
+.md strong{font-weight:700}
+.md .tbl-wrap{overflow-x:auto;margin:12px 0;white-space:normal}
+.md table{border-collapse:collapse;width:100%;font-size:13px}
+.md th,.md td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+.md th{background:var(--code);font-weight:600}
 .summary{margin-bottom:8px;border-left:3px solid var(--acc)}
 .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:14px 0}
 .toc-t{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
