@@ -630,6 +630,16 @@ def cmd_train(args, config):
     print("\n" + render_training(rep, config.lang))
 
 
+def cmd_autofuzz(args, config):
+    """Auto-fuzzing: descubre dinamicamente que input dispara el fallo (stdin/argv/format-string),
+    confirmado por crash en el sandbox. Devuelve el vector y la clase; el offset/exploit los resuelve
+    el pipeline."""
+    from .workflows.autofuzz import autofuzz, render_fuzz
+    binary = _require_binary(args.binary)
+    res = autofuzz(binary, on_step=lambda m: print("  " + m), lang=config.lang)
+    print("\n" + render_fuzz(res, config.lang))
+
+
 def cmd_fetch(args, config):
     """Extrae un binario real desde una imagen Docker (para conseguir el binario vulnerable de una
     CVE). No ejecuta el entrypoint de la imagen: docker create + cp."""
@@ -893,6 +903,11 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("--budget", type=float, default=240,
                     help="per-binary time budget in seconds (skip if exceeded; default 240)")
     dp.set_defaults(func=cmd_dataset)
+
+    afp = sub.add_parser("autofuzz", help="discover the crashing input (trigger) dynamically: fuzz "
+                                          "stdin/argv/format-string in the sandbox, report vector+class")
+    afp.add_argument("binary")
+    afp.set_defaults(func=cmd_autofuzz)
 
     fp = sub.add_parser("fetch", help="extract a real binary from a Docker image (get the vulnerable "
                                       "binary of a CVE); does NOT run the image entrypoint")

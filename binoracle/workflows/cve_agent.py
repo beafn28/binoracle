@@ -31,6 +31,7 @@ class Investigation:
     developed_script: str = ""
     verified: bool = False
     verified_detail: str = ""
+    trigger: str = ""                                 # disparador descubierto por auto-fuzzing
     blockers: List[str] = field(default_factory=list)
     steps: List[str] = field(default_factory=list)
 
@@ -118,7 +119,19 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                       classify_cve(inv.llm_notes.get("vuln_class", "")) or "")
     has_bin = bool(binary and os.path.exists(binary))
     if has_bin:
-        # 4) PRUEBA de verdad contra el binario: concreta offset/gadgets y VERIFICA en sandbox
+        # 4a) AUTO-FUZZING: descubre dinamicamente el disparador (stdin/argv/format-string)
+        try:
+            from .autofuzz import autofuzz
+            step("auto-fuzzing: buscando el input que dispara el fallo..." if es else
+                 "auto-fuzzing: searching for the crashing input...")
+            fz = autofuzz(binary, on_step=lambda m: step(m), lang=lang)
+            if fz.ok and fz.triggers:
+                t = fz.triggers[0]
+                inv.trigger = (f"{t.vector} -> {t.vuln_class}"
+                               + (f" (~{t.min_size} bytes)" if t.min_size else ""))
+        except Exception:
+            pass
+        # 4b) PRUEBA de verdad: concreta offset/gadgets y VERIFICA en sandbox
         step(f"binario dado: intentando explotar y verificar en sandbox (presupuesto {budget_s:.0f}s)..."
              if es else
              f"binary provided: attempting exploit + sandbox verification (budget {budget_s:.0f}s)...")
@@ -183,6 +196,9 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
                 if isinstance(s, dict):        # algunos modelos devuelven {"step": "..."}
                     s = s.get("step") or s.get("action") or next(iter(s.values()), str(s))
                 out.append(f"  {i}. {s}")
+    if inv.trigger:
+        out.append("- " + ("Disparador descubierto (auto-fuzzing): " if es else
+                           "Trigger discovered (auto-fuzzing): ") + f"`{inv.trigger}`")
     if inv.verified:
         out.append("\n> **" + ("EXPLOIT VERIFICADO" if es else "VERIFIED EXPLOIT")
                    + "** (sandbox): " + inv.verified_detail)

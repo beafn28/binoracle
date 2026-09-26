@@ -975,3 +975,19 @@ def test_dockerfetch_render_and_guard():
     assert "Binario extraido" in md and "debian:12" in md and "investigate" in md
     bad = render_fetch(FetchResult(ok=False, note="no se hallo", candidates=["/a", "/b"]), "es")
     assert "fallida" in bad.lower() and "/a" in bad
+
+
+def test_autofuzz_render_and_result():
+    # render del descubridor de disparador + propiedad crashed sin tocar docker.
+    from binoracle.workflows.autofuzz import FuzzResult, Trigger, render_fuzz
+    r = FuzzResult(ok=True, binary="/x/ret2win",
+                   triggers=[Trigger("stdin", "stack-overflow", min_size=128, exit_code=139,
+                                     evidence="crash con 128 bytes")])
+    assert r.crashed
+    md = render_fuzz(r, "es")
+    assert "stdin" in md and "stack-overflow" in md and "128" in md
+    empty = FuzzResult(ok=False, note="sin crash")
+    assert "sin crash" in render_fuzz(empty, "es") and empty.crashed is False
+    # cyclic fallback no lanza sin pwntools
+    from binoracle.workflows.autofuzz import _cyclic
+    assert len(_cyclic(100)) == 100
