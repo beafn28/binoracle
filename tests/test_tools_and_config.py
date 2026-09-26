@@ -812,6 +812,22 @@ def test_develop_exploit_all_classes_compile():
         compile(pl.script, "<exploit>", "exec")  # sintaxis valida
     # NX desactivado -> ret2shellcode
     assert "shellcraft" in plan("stack buffer overflow", {"nx": False}).script
+    # SROP disponible como estrategia (D) para stack-overflow estatico/minimo
+    so = plan("stack buffer overflow", {"nx": True, "pie": False}).script
+    assert "SigreturnFrame" in so and "SYS_execve" in so
+    # one-gadget ofrecido en la ruta de heap (tras resolver la base de libc)
+    assert "one_gadget" in plan("heap overflow", {"nx": True}).script
+
+
+def test_default_corpus_is_elf_only():
+    # El corpus de entrenamiento son ELF ejecutables/PIE reales: sin PE (.exe) ni core dumps.
+    from binoracle.workflows.exploit_trainer import default_corpus, _is_elf
+    corpus = default_corpus()
+    assert corpus, "el corpus de ejemplo no deberia estar vacio"
+    assert all(_is_elf(p) for p in corpus)
+    names = [p.rsplit("/", 1)[-1] for p in corpus]
+    assert "srop" in names            # nuevo objetivo SROP
+    assert not any(n.endswith(".exe") or n == "core" for n in names)
 
 
 def test_exploit_skill_accumulates(tmp_path):
