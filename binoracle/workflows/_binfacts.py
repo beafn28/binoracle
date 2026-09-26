@@ -10,7 +10,26 @@ para exigir evidencia de USO real, no presencia incidental.
 from __future__ import annotations
 
 import re as _re
-from typing import Dict, Set
+from typing import Dict, List, Set
+
+
+_STR_ROW_RE = _re.compile(r"\b(ascii|utf8|utf16le|utf32le|wide|unicode|base64)\s+(.*)$")
+
+
+def string_values(reg) -> List[str]:
+    """Lista de VALORES de string reales de `r2_strings` (izz), sin la fila de tabla cruda (offset/
+    seccion/tipo). Sin esto, un escaner que matchea sobre la linea entera podia citar como 'evidencia'
+    el offset/tipo/columna en vez del contenido real, o hacer match sobre metadatos de la tabla."""
+    t = reg.get("r2_strings")
+    r = t.run() if t else None
+    out: List[str] = []
+    if not (r and r.ok):
+        return out
+    for ln in (r.data or "").splitlines():
+        m = _STR_ROW_RE.search(ln)
+        if m:
+            out.append(m.group(2))
+    return out
 
 
 def imported_names(reg) -> Set[str]:

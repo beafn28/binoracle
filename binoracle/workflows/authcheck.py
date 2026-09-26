@@ -18,13 +18,26 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
+from ._binfacts import string_values
 
 _CMP = ("strcmp", "strncmp", "memcmp", "strcasecmp", "strncasecmp")
 _HASH = ("crypt", "bcrypt", "pbkdf2", "scrypt", "argon2", "sha256", "sha512", "sha1_init",
          "md5_init", "evp_", "hmac")
-# nombres de identificador/strings que sugieren una credencial usada en la comparacion
-_CRED = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|licen[cs]e|serial|admin|auth|login|pin)",
-                   re.I)
+# nombres de identificador/strings que sugieren una credencial usada en la comparacion. Limite propio
+# (no \b): \b trata '_' como caracter de palabra, asi que NO separaria "PASSWORD" dentro de
+# "MASTER_PASSWORD_2024" (un identificador real, con guion bajo, que SI debe matchear). En cambio,
+# sin ningun limite, "pin" hacia match dentro de "GetStartupInfoA" (falso positivo real confirmado en
+# win_chall.exe: una API de Windows sin relacion, donde "pin" cae en medio de letras seguidas). El
+# limite correcto es "no letra ADYACENTE": una palabra clave pegada a otras LETRAS es parte de un
+# termino mas largo no relacionado; pegada a '_'/'-'/digitos/inicio/fin SI cuenta (identificador).
+_CRED = re.compile(
+    r"(?<![A-Za-z])(pass(word|wd)?|secret|token|api[_-]?key|licen[cs]e|serial|admin|auth|login|pin)"
+    r"(?![A-Za-z])", re.I)
+# un prompt de UI ("pass?", "login:", "enter password: ") no es una credencial EMBEBIDA: es la
+# palabra clave seguida solo de puntuacion/espacios de prompt, sin ningun valor real adjunto.
+_PROMPT_ONLY = re.compile(
+    r"^\W*(enter\s+|please\s+enter\s+)?(pass(word|wd)?|secret|token|api[_-]?key|licen[cs]e|serial|"
+    r"admin|auth|login|pin)\W*$", re.I)
 
 
 def _run(reg: ToolRegistry, name: str) -> str:
@@ -37,18 +50,20 @@ def _run(reg: ToolRegistry, name: str) -> str:
 
 
 def scan_auth(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding]:
+    from ._binfacts import imported_names
     findings: List[Finding] = []
-    imports = _run(reg, "r2_imports").lower()
-    strings = _run(reg, "r2_strings")
+    names = imported_names(reg)          # nombres de import REALES (parseados), no texto crudo
     es = lang == "es"
 
-    cmp_used = [c for c in _CMP if c in imports]
+    cmp_used = [c for c in _CMP if c in names]
     if not cmp_used:
         return findings
-    has_hash = any(h in imports for h in _HASH)
-    # strings que parecen credenciales embebidas (candidatas a la comparacion de auth)
-    cred_lines = [ln.strip() for ln in strings.splitlines()
-                  if _CRED.search(ln) and re.search(r'"[^"]{3,64}"|\b\w{4,64}\b', ln)][:6]
+    has_hash = any(h in names for h in _HASH)
+    # strings que parecen credenciales EMBEBIDAS (no prompts de UI: "pass?"/"login:" no cuentan, son
+    # la etiqueta sin ningun valor real adjunto -- ver _PROMPT_ONLY).
+    cred_lines = [v.strip() for v in string_values(reg)
+                  if _CRED.search(v) and not _PROMPT_ONLY.match(v.strip())
+                  and re.search(r'"[^"]{3,64}"|\b\w{4,64}\b', v)][:6]
 
     if cred_lines:
         findings.append(Finding(

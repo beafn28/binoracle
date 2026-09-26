@@ -91,6 +91,13 @@ def _mock_reg(imports="", strings="", same_func=True):
         def __init__(self, d): self.d = d
         def run(self): return ToolResult(True, "r2", self.d)
 
+    # envuelve cada linea de `strings` como una fila real de la tabla `izz` (offset/seccion/tipo +
+    # contenido), para que string_values() (que exige ese formato) las parsee igual que los
+    # escaneres que aun miran el blob crudo (el contenido sigue presente, solo con prefijo).
+    _wrapped_strings = "\n".join(
+        f"0  0x0  0x0  {len(ln)}  {len(ln)}  .rdata  ascii  {ln}" for ln in strings.splitlines()
+    ) if strings else strings
+
     class _Xrefs:
         # simula r2_xrefs (axt): con same_func=True (por defecto), toda funcion importada se dice
         # llamada desde 'main' -- suficiente para que shares_caller() vea coocurrencia en los tests
@@ -106,7 +113,7 @@ def _mock_reg(imports="", strings="", same_func=True):
     class _R:
         def get(self, name):
             if name == "r2_imports": return _T(imports)
-            if name == "r2_strings": return _T(strings)
+            if name == "r2_strings": return _T(_wrapped_strings)
             if name == "r2_xrefs": return _Xrefs()
             return None
     return _R()
@@ -1058,6 +1065,70 @@ def test_backdoors_requires_same_function_not_just_presence():
     diff = _mock_reg(imports="sym.imp.socket\nsym.imp.bind\nsym.imp.listen\nsym.imp.execve",
                      strings="/bin/sh", same_func=False)
     assert scan_backdoors(diff, "x") == []          # sin coocurrencia real -> sin hallazgo
+
+
+def test_authcheck_cred_regex_boundaries():
+    # Regresion: sin limite alguno, "pin" hacia match dentro de "GetStartupInfoA" (API de Windows,
+    # nada que ver con credenciales) -- confirmado en win_chall.exe. Con \b clasico se habria roto
+    # el caso real "MASTER_PASSWORD_2024" (guion bajo cuenta como \w, no separa). El limite correcto
+    # es 'sin letra adyacente' (digitos/guion bajo/inicio/fin si cuentan como frontera de palabra).
+    from binoracle.workflows.authcheck import _CRED, _PROMPT_ONLY
+    assert not _CRED.search("GetStartupInfoA")
+    assert not _CRED.search("LPSTARTUPINFOA")
+    assert _CRED.search("MASTER_PASSWORD_2024xk")
+    assert _CRED.search("AUTH_TOKEN_XYZ123")
+    # prompts de UI (solo la etiqueta, sin valor real) se filtran aparte
+    assert _PROMPT_ONLY.match("pass?")
+    assert _PROMPT_ONLY.match("login:")
+    assert not _PROMPT_ONLY.match("MASTER_PASSWORD_2024xk")
+
+
+def test_authcheck_no_false_positive_on_windows_binary():
+    # Regresion sobre binario real: win_chall.exe (PE) tiene STARTUPINFOA/LPSTARTUPINFOA en sus
+    # strings (metadatos de arranque de Windows) que antes disparaban 'credencial hardcodeada' por
+    # contener "pin" como substring sin limites, y "pass?" (un prompt de UI, no una credencial).
+    # Ninguna de las dos debe producir un hallazgo.
+    import os
+    from binoracle.oracles import build_registry
+    from binoracle.workflows.authcheck import scan_auth
+    b = "samples/bin/win_chall.exe"
+    if not os.path.exists(b):
+        return
+    reg = build_registry(b)
+    fs = scan_auth(reg, b, "es")
+    assert fs == [], [f.title for f in fs]
+
+
+def test_versions_uses_max_not_first_glibc_match():
+    # Regresion: en un binario dinamico, la tabla de simbolos versionados de glibc (.dynstr) repite
+    # 'GLIBC_2.2.5' para casi toda funcion base (nivel ABI minimo casi universal), mientras la
+    # version real vinculada tambien aparece pero con menos frecuencia. Tomar la PRIMERA coincidencia
+    # (.search) casi siempre devolvia 2.2.x, marcando como 'antigua' una glibc moderna real -- se
+    # confirmo en 13 de ~20 binarios del corpus (todos compilados con GCC 13, glibc real 2.34).
+    from binoracle.workflows.versions import scan_versions
+    reg = _mock_reg(strings="GLIBC_2.2.5\nGLIBC_2.2.5\nGLIBC_2.34\nGLIBC_2.2.5\nGLIBC_2.2.6")
+    fs = scan_versions(reg, "x", "es")
+    titles = " ".join(f.title.lower() for f in fs)
+    assert "glibc 2.34" in titles
+    assert "antiguo" not in titles, titles       # 2.34 es moderna; no debe marcarse como antigua
+    # un binario que SOLO referencia simbolos antiguos (glibc real vieja) SI debe marcarse
+    reg2 = _mock_reg(strings="GLIBC_2.2.5\nGLIBC_2.2.5\nGLIBC_2.2.6")
+    fs2 = scan_versions(reg2, "x", "es")
+    assert any("antiguo" in f.title.lower() for f in fs2)
+
+
+def test_authcheck_still_detects_real_hardcoded_credential():
+    # No basta con no dar falsos positivos: un strcmp contra un identificador con pinta de credencial
+    # real (guion bajo, valor no trivial) SIGUE debiendo dispararse, con la evidencia limpia (el
+    # valor real, no una fila de tabla cruda con offsets).
+    reg = _mock_reg(imports="sym.imp.strcmp",
+                    strings="password: \nMASTER_PASSWORD_2024xk")
+    from binoracle.workflows.authcheck import scan_auth
+    fs = scan_auth(reg, "x", "es")
+    assert any("comparacion" in f.title.lower() for f in fs)
+    hi = next(f for f in fs if "comparacion" in f.title.lower())
+    assert "MASTER_PASSWORD_2024xk" in hi.evidence
+    assert "0x0" not in hi.evidence          # evidencia limpia, sin metadatos de tabla cruda
 
 
 def test_injection_no_false_positive_on_unrelated_gift_function():
