@@ -1099,6 +1099,17 @@ def test_authcheck_no_false_positive_on_windows_binary():
     assert fs == [], [f.title for f in fs]
 
 
+def test_fileperms_getenv_exec_requires_same_function():
+    # Regresion: getenv+exec en el binario (en cualquier sitio) ya NO basta -- un getenv("LANG") de
+    # un saludo y un system() fijo de un helper de backup, sin relacion, no deben dispararse juntos.
+    from binoracle.workflows.fileperms import scan_file_perms
+    same = _mock_reg(imports="sym.imp.getenv\nsym.imp.system", same_func=True)
+    titles_same = " ".join(f.title.lower() for f in scan_file_perms(same, "x"))
+    assert "entorno" in titles_same
+    diff = _mock_reg(imports="sym.imp.getenv\nsym.imp.system", same_func=False)
+    assert scan_file_perms(diff, "x") == []
+
+
 def test_versions_uses_max_not_first_glibc_match():
     # Regresion: en un binario dinamico, la tabla de simbolos versionados de glibc (.dynstr) repite
     # 'GLIBC_2.2.5' para casi toda funcion base (nivel ABI minimo casi universal), mientras la

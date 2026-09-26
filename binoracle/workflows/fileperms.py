@@ -13,6 +13,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
+from ._binfacts import shares_caller
 
 # import peligroso -> (severidad, ES, EN)
 _BAD_IMPORTS = {
@@ -151,8 +152,12 @@ def scan_file_perms(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fi
                 "Use absolute, trusted RPATH/RUNPATH paths (or drop them); no relative paths or "
                 "writable directories.", lang))
 
-    # (d) inyeccion por entorno: getenv cuyo valor llega a system/exec
-    if "getenv" in low_imp and any(x in low_imp for x in ("system", "popen", "execl", "execlp", "execvp")):
+    # (d) inyeccion por entorno: getenv cuyo valor llega a system/exec, EN LA MISMA FUNCION. Sin este
+    # requisito, un getenv("LANG")/getenv("TERM") normal (elegir idioma, terminal...) en una funcion
+    # y un system() de comando FIJO en otra, sin relacion, disparaba un falso positivo -- confirmado
+    # con un binario sintetico (getenv para saludo, system("tar ...") en un helper de backup aparte).
+    execs_d = [x for x in ("system", "popen", "execl", "execlp", "execvp") if x in low_imp]
+    if "getenv" in low_imp and execs_d and shares_caller(reg, ["getenv"], execs_d):
         findings.append(_f(
             "Posible inyeccion de comando via variable de entorno",
             "Possible command injection via environment variable", "medium",
