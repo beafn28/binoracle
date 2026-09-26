@@ -768,7 +768,7 @@ def render_chains_page(chains, lang: str = "es") -> str:
     return head + section + "</main></body></html>"
 
 
-def render_exploit_page(plan, binary: str = "target", lang: str = "es") -> str:
+def render_exploit_page(plan, binary: str = "target", lang: str = "es", intro_md: str = "") -> str:
     """Pagina autocontenida del apartado 'CVE -> exploit funcional': dada la info de una CVE/vuln y
     un binario, muestra el esquema de explotacion, el estado VERIFICADO (si la cadena se ejecuto en
     sandbox) y el exploit DESARROLLADO (script pwntools) con boton de descarga. Para la vista en vivo
@@ -787,7 +787,8 @@ def render_exploit_page(plan, binary: str = "target", lang: str = "es") -> str:
                 "buffer overflow') and load a binary to concretize offset/gadgets."))
         note = getattr(plan, "note", "") if plan is not None else ""
         extra = f"<p class='mut' style='font-size:12px'>{_esc(note)}</p>" if note else ""
-        return head + f"<p class='mut'>{_esc(msg)}</p>{extra}</main></body></html>"
+        intro = (f"<div class='md'>{_md_rich(intro_md)}</div>") if intro_md else ""
+        return head + intro + f"<p class='mut'>{_esc(msg)}</p>{extra}</main></body></html>"
     section = _cveplan_html(plan, lang)
     # el titulo data-i18n se rellena en servidor (vista sin el JS del informe)
     title = ((_I18N.get(lang, _I18N["es"]).get("exploit_plan", "Exploitation schema")))
@@ -811,7 +812,8 @@ def render_exploit_page(plan, binary: str = "target", lang: str = "es") -> str:
     hdr = (f'<h2 style="margin-top:0">{"CVE &rarr; exploit funcional" if es else "CVE &rarr; functional exploit"}'
            f' <span class="mut" style="font-size:13px">({name})</span></h2>'
            f'<p class="sechelp">{_esc(banner)}</p>')
-    return head + hdr + dl + section + "</main></body></html>"
+    intro = (f"<div class='md' style='margin:6px 0 14px'>{_md_rich(intro_md)}</div>") if intro_md else ""
+    return head + hdr + intro + dl + section + "</main></body></html>"
 
 
 def render_training_page(markdown: str, lang: str = "es") -> str:

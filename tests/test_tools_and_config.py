@@ -858,3 +858,39 @@ def test_trainer_report_renders():
     md = render_training(rep, "es")
     assert "Entrenamiento" in md and "ret2win" in md and "50%" in md
     assert "—" not in md
+
+
+def test_cve_id_detection_and_classifier_cooccurrence():
+    from binoracle.workflows.cvelookup import is_cve_id
+    from binoracle.workflows.cveplan import classify_cve
+    assert is_cve_id("mira CVE-2021-3156 sudo") == "CVE-2021-3156"
+    assert is_cve_id("stack overflow") is None
+    # la clasificacion cae al respaldo por co-ocurrencia con la redaccion real de la NVD
+    assert classify_cve("an off-by-one leading to a heap-based buffer overflow") == "heap-overflow"
+    assert classify_cve("stack-based buffer overflow in parser") == "stack-overflow"
+    assert classify_cve("a use after free in the handler") == "uaf"
+
+
+def test_render_cve_info_gap_vs_public():
+    from binoracle.workflows.cvelookup import CVEInfo, ExploitRef, render_cve_info
+    gap = CVEInfo(cve_id="CVE-2099-0001", ok=True, description="heap overflow in x",
+                  cvss_score=9.8, cvss_severity="CRITICAL")
+    md = render_cve_info(gap, "es")
+    assert "NO consta" in md and "CVE-2099-0001" in md
+    pub = CVEInfo(cve_id="CVE-2099-0002", ok=True, description="stack overflow", has_public_exploit=True,
+                  exploit_refs=[ExploitRef(url="https://www.exploit-db.com/exploits/12345",
+                                           source="exploit-db", edb_id="12345")])
+    md2 = render_cve_info(pub, "es")
+    assert "SI consta" in md2 and "EDB-12345" in md2
+
+
+def test_sft_sample_chat_format():
+    from binoracle.workflows.exploit_dataset import Sample
+    s = Sample(cls="stack-overflow", arch="x86", facts={"nx": "true", "pie": False, "bits": "64"},
+               script="from pwn import *\nio=process('./t')", verified=True, binary="/x/ret2win")
+    chat = s.to_chat()
+    roles = [m["role"] for m in chat["messages"]]
+    assert roles == ["system", "user", "assistant"]
+    assert "NX=on" in chat["messages"][1]["content"] and "PIE=off" in chat["messages"][1]["content"]
+    assert chat["messages"][2]["content"].startswith("from pwn import *")
+    assert chat["meta"]["verified"] is True and chat["meta"]["binary"] == "ret2win"

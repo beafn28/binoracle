@@ -621,6 +621,18 @@ def cmd_train(args, config):
     print("\n" + render_training(rep, config.lang))
 
 
+def cmd_dataset(args, config):
+    """Genera el dataset SFT (JSONL de chat) para fine-tunear un LLM que desarrolle exploits:
+    pares (vulnerabilidad + mitigaciones) -> exploit pwntools VERIFICADO. Con --include-templates
+    anade tambien las plantillas desarrolladas (mas cobertura, menor calidad)."""
+    from .workflows.exploit_dataset import build_dataset, render_dataset
+    bins = list(getattr(args, "binaries", None) or [])
+    rep = build_dataset(binaries=bins or None, out_path=args.out,
+                        include_templates=getattr(args, "include_templates", False),
+                        config=config, on_step=lambda m: print("  " + m), lang=config.lang)
+    print("\n" + render_dataset(rep, config.lang))
+
+
 def cmd_kb(args, config):
     from .rag import get_kb
     kb = get_kb()
@@ -838,6 +850,14 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("binaries", nargs="*", help="binaries to train on (default: repo sample corpus)")
     tp.add_argument("--no-verify", action="store_true", help="skip sandbox verification (faster)")
     tp.set_defaults(func=cmd_train)
+
+    dp = sub.add_parser("dataset", help="build the SFT JSONL to fine-tune an LLM to develop exploits "
+                                        "(pairs vuln+mitigations -> verified pwntools exploit)")
+    dp.add_argument("binaries", nargs="*", help="binaries (default: repo sample corpus)")
+    dp.add_argument("--out", default="exploit_sft.jsonl", help="output JSONL path")
+    dp.add_argument("--include-templates", action="store_true",
+                    help="also include developed (unverified) templates, not just verified exploits")
+    dp.set_defaults(func=cmd_dataset)
 
     return p
 

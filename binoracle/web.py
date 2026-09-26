@@ -687,10 +687,28 @@ def run_streaming(command, binary, ai, emit, text=""):
             # binario, deriva el esquema y DESARROLLA el exploit mas funcional posible, verificado en
             # sandbox cuando la cadena es ejecutable.
             from .workflows.cveplan import plan_for_binary, plan
+            from .workflows.cvelookup import is_cve_id, fetch_cve, render_cve_info
             from .report.html import render_exploit_page
             desc = (text or "").strip()
             cve = desc if desc.upper().startswith("CVE-") else ""
             has_bin = bool(binary and os.path.exists(binary))
+            # Si el texto es un identificador CVE, consulta la NVD: descripcion + si YA hay exploit
+            # publico (Exploit-DB/GitHub/PacketStorm). Si no consta, es un 'hueco' y lo desarrollamos.
+            cve_intro = ""
+            cid = is_cve_id(desc)
+            if cid:
+                emit("step", f"consultando la NVD y referencias de exploit para {cid}...")
+                info = fetch_cve(cid)
+                cve_intro = render_cve_info(info, config.lang)
+                if info.ok:
+                    cve = info.cve_id
+                    desc = info.description or desc     # usa la descripcion oficial para clasificar
+                    if info.is_gap:
+                        emit("step", f"{cid}: NO consta exploit publico (hueco) -> binoracle desarrolla uno.")
+                    elif info.has_public_exploit:
+                        emit("step", f"{cid}: ya existe exploit publico ({', '.join(dict.fromkeys(r.source for r in info.exploit_refs))}); aun asi desarrollo el esquema.")
+                else:
+                    emit("step", f"{cid}: {info.note}")
             if has_bin:
                 emit("step", "clasificando la vulnerabilidad" + (f": '{desc[:80]}'" if desc else
                              " a partir de los hechos del binario (control de RIP)..."))
@@ -703,7 +721,8 @@ def run_streaming(command, binary, ai, emit, text=""):
                 if not desc:
                     emit("step", "escribe el id de la CVE o describe la vulnerabilidad "
                                  "(p.ej. 'stack buffer overflow'), o carga un binario para verificar.")
-                    emit("html", render_exploit_page(None, binary or "target", config.lang))
+                    emit("html", render_exploit_page(None, binary or "target", config.lang,
+                                                     intro_md=cve_intro))
                     emit("done", "")
                     return
                 emit("step", f"clasificando la vulnerabilidad: '{desc[:80]}'...")
@@ -719,7 +738,7 @@ def run_streaming(command, binary, ai, emit, text=""):
                               "(revisa mitigaciones/arquitectura).") + " Script pwntools listo para descargar.")
             else:
                 emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
-            emit("html", render_exploit_page(pl, binary or "target", config.lang))
+            emit("html", render_exploit_page(pl, binary or "target", config.lang, intro_md=cve_intro))
         elif command == "train":
             # Agente entrenador: desarrolla+verifica exploits sobre el corpus y cura lo verificado,
             # subiendo la habilidad de forma medible. Streaming para ver el progreso en vivo.
@@ -1126,7 +1145,6 @@ const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
  {c:"cadenas",n:"Cadenas",ic:"@",d:"Construye y VERIFICA las cadenas de ataque, con grafo interactivo"},
  {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
- {c:"train",n:"Entrenar",ic:"^",d:"Agente que entrena la habilidad: desarrolla+verifica exploits sobre el corpus y cura lo verificado (sin binario usa los samples del repo)",nobin:true},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
  {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},

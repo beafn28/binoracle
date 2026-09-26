@@ -78,6 +78,28 @@ def classify_cve(text: str) -> Optional[str]:
     for cls, kws, _prim, _refs in _CLASSES:
         if any(k in t for k in kws):
             return cls
+    # respaldo por co-ocurrencia: descripciones de CVE varian en la redaccion exacta (p.ej.
+    # "heap-based buffer overflow"), asi que si no hubo match literal, deducimos por terminos juntos.
+    def has(*ws):
+        return all(w in t for w in ws)
+    if has("heap", "overflow") or has("heap", "buffer"):
+        return "heap-overflow"
+    if has("stack", "overflow") or has("stack", "buffer") or "buffer overflow" in t:
+        return "stack-overflow"
+    if has("use", "after", "free") or "use-after-free" in t:
+        return "uaf"
+    if has("format", "string"):
+        return "format-string"
+    if has("out-of-bounds", "write") or has("out of bounds", "write"):
+        return "oob-write"
+    if has("out-of-bounds", "read") or has("out of bounds", "read"):
+        return "oob-read"
+    if has("integer", "overflow") or has("integer", "underflow"):
+        return "integer-overflow"
+    if has("type", "confusion"):
+        return "type-confusion"
+    if has("command", "injection") or has("os", "command"):
+        return "command-injection"
     return None
 
 
