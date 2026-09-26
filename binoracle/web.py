@@ -510,7 +510,21 @@ def run_command(payload: dict) -> dict:
 
 
 
+def _finalize_upload(d: str, name: str, path: str, size: int) -> dict:
+    """Comun a subida base64 y streaming: permisos + compila si es fuente C/C++."""
+    import os
+    try:
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
+    ext = os.path.splitext(name)[1].lower()
+    if ext in (".c", ".cc", ".cpp", ".cxx"):
+        return _compile_source(d, name, path, ext)
+    return {"ok": True, "path": path, "size": size}
+
+
 def save_upload(payload: dict) -> dict:
+    """Subida por base64-en-JSON (comoda para ficheros pequenos)."""
     import base64, os, tempfile
     name = os.path.basename(payload.get("filename", "upload.bin")) or "upload.bin"
     try:
@@ -521,15 +535,30 @@ def save_upload(payload: dict) -> dict:
     path = os.path.join(d, name)
     with open(path, "wb") as f:
         f.write(data)
+    return _finalize_upload(d, name, path, len(data))
+
+
+def save_upload_raw(rfile, length: int, filename: str) -> dict:
+    """Subida por STREAMING del cuerpo crudo (para binarios GRANDES reales: firmware, apps). No usa
+    base64 ni carga el fichero entero en memoria; lo escribe a disco en trozos."""
+    import os, tempfile
+    name = os.path.basename(filename or "upload.bin") or "upload.bin"
+    d = tempfile.mkdtemp(prefix="binoracle_up_")
+    path = os.path.join(d, name)
+    remaining = length
+    written = 0
     try:
-        os.chmod(path, 0o755)
-    except OSError:
-        pass
-    # if a C/C++ source was uploaded, compile it so the dashboard can analyze it
-    ext = os.path.splitext(name)[1].lower()
-    if ext in (".c", ".cc", ".cpp", ".cxx"):
-        return _compile_source(d, name, path, ext)
-    return {"ok": True, "path": path, "size": len(data)}
+        with open(path, "wb") as f:
+            while remaining > 0:
+                chunk = rfile.read(min(1 << 20, remaining))   # 1 MiB por lectura
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+                remaining -= len(chunk)
+    except Exception as e:
+        return {"ok": False, "text": f"bad upload: {e}"}
+    return _finalize_upload(d, name, path, written)
 
 
 def _compile_source(d, name, path, ext):
@@ -831,13 +860,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def do_POST(self):
-        if self.path not in ("/api/run", "/api/upload"):
+        if self.path not in ("/api/run", "/api/upload", "/api/upload_raw"):
             self._send(404, "not found", "text/plain")
             return
         length = int(self.headers.get("Content-Length", 0))
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            result = save_upload(payload) if self.path == "/api/upload" else run_command(payload)
+            if self.path == "/api/upload_raw":
+                # binarios grandes: se hace streaming del cuerpo a disco (sin base64 ni JSON)
+                fname = self.headers.get("X-Filename", "upload.bin")
+                result = save_upload_raw(self.rfile, length, fname)
+            else:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                result = save_upload(payload) if self.path == "/api/upload" else run_command(payload)
         except Exception as e:
             result = {"ok": False, "text": f"error: {e}"}
         self._send(200, json.dumps(result), "application/json")
@@ -1132,10 +1166,16 @@ function findRow(it){
 }
 function kpi(v,l,c){return '<div class="card kpi"><div class="v" style="color:'+c+'">'+v+'</div><div class="l">'+l+'</div><div class="bar" style="background:'+c+'"></div></div>';}
 function b64enc(buf){var bytes=new Uint8Array(buf);var bin='';var chunk=0x8000;for(var i=0;i<bytes.length;i+=chunk){bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+chunk));}return btoa(bin);}
-async function upload(inp){var f=inp.files[0];if(!f)return;var out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">subiendo '+f.name+'...</div></div>';
- var buf=await f.arrayBuffer();var b64=b64enc(buf);
- var r=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:f.name,b64:b64})});var j=await r.json();
- if(j.ok){document.getElementById('target').value=j.path;dash();}else{out.innerHTML='<div class="console"><pre>'+(j.text||'error')+'</pre></div>';}}
+async function upload(inp){var f=inp.files[0];if(!f)return;var out=document.getElementById('out');
+ var mb=(f.size/1048576).toFixed(1);
+ out.innerHTML='<div class="empty"><div class="spin">subiendo '+f.name+' ('+mb+' MB)...</div></div>';
+ try{
+  // streaming del fichero CRUDO (sin base64): aguanta binarios grandes reales (firmware, apps).
+  var r=await fetch('/api/upload_raw',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':f.name},body:f});
+  var j=await r.json();
+  if(j.ok){document.getElementById('target').value=j.path;dash();}
+  else{out.innerHTML='<div class="console"><pre>'+(j.text||'error')+'</pre></div>';}
+ }catch(e){out.innerHTML='<div class="console"><pre>error subiendo: '+e+'\\nPara binarios muy grandes, escribe la RUTA ABSOLUTA del binario en la caja de arriba (sin limite).</pre></div>';}}
 async function loadHistory(){var out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">cargando historial...</div></div>';
  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'history',binary:'',options:{}})});var j=await r.json();
  var H=j.history||[];out.innerHTML='';
