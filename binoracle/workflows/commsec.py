@@ -151,14 +151,18 @@ def scan_comms(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[Fi
                 "Use modern primitives: AES-GCM/ChaCha20-Poly1305 for authenticated encryption, "
                 "SHA-256+ for hashing, and signatures (Ed25519/RSA-PSS) for authenticity.", lang))
 
-    # 4) PRNG inseguro para uso de seguridad (rand/srand/random no son criptograficos)
-    if re.search(r"\bsym\.imp\.(rand|srand|random|srandom|rand_r|drand48)\b", imports) and \
-       not re.search(r"getrandom|RAND_bytes|arc4random|/dev/urandom", blob, re.I):
-        mm = re.search(r"\b(rand|srand|random|srandom|rand_r|drand48)\b", imports)
+    # 4) PRNG inseguro para uso de seguridad (rand/srand/random no son criptograficos). Nombres de
+    # import PARSEADOS (imported_names): el regex anterior exigia el prefijo 'sym.imp.' que no
+    # siempre aparece en la salida de r2 (algunos binarios listan solo el nombre bare), lo que
+    # producia un falso NEGATIVO (rand() real, no detectado) -- confirmado con un binario sintetico.
+    from ._binfacts import imported_names
+    _prng_names = {"rand", "srand", "random", "srandom", "rand_r", "drand48"}
+    prng_hit = imported_names(reg) & _prng_names
+    if prng_hit and not re.search(r"getrandom|RAND_bytes|arc4random|/dev/urandom", blob, re.I):
         findings.append(_f(
             "Generador de aleatorios inseguro (PRNG no criptografico)",
             "Insecure randomness (non-cryptographic PRNG)", "medium",
-            f"[radare2: ii]\n{mm.group(0) if mm else 'rand/srand'}",
+            f"[radare2: ii]\n{', '.join(sorted(prng_hit))}",
             "El binario usa rand()/random() (PRNG predecible). Si se usa para tokens, claves, IVs, "
             "nonces o IDs de sesion, un atacante puede predecirlos.",
             "The binary uses rand()/random() (predictable PRNG). If used for tokens, keys, IVs, "

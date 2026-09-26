@@ -1099,6 +1099,20 @@ def test_authcheck_no_false_positive_on_windows_binary():
     assert fs == [], [f.title for f in fs]
 
 
+def test_commsec_prng_detects_bare_import_name():
+    # Regresion: el regex de PRNG exigia el prefijo 'sym.imp.rand' que no siempre aparece en la
+    # salida real de r2 (algunos binarios listan solo el nombre bare 'rand') -- falso NEGATIVO real,
+    # confirmado con un binario sintetico (rand() para un dado de juego). Con imported_names() se
+    # detecta sea cual sea el formato de prefijo.
+    from binoracle.workflows.commsec import scan_comms
+    reg = _mock_reg(imports="1  0x1000  global  func       rand\n2  0x1010  global  func       srand")
+    titles = " ".join(f.title.lower() for f in scan_comms(reg, "x"))
+    assert "aleatorios" in titles or "prng" in titles.lower()
+    # con un CSPRNG real presente, no se marca
+    reg2 = _mock_reg(imports="sym.imp.rand", strings="getrandom")
+    assert not any("aleatorios" in f.title.lower() for f in scan_comms(reg2, "x"))
+
+
 def test_fileperms_getenv_exec_requires_same_function():
     # Regresion: getenv+exec en el binario (en cualquier sitio) ya NO basta -- un getenv("LANG") de
     # un saludo y un system() fijo de un helper de backup, sin relacion, no deben dispararse juntos.
