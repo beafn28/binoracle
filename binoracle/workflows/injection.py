@@ -18,6 +18,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
+from ._binfacts import imported_names
 
 _SQL_API = ("sqlite3_exec", "sqlite3_prepare", "mysql_query", "mysql_real_query", "mysql_stmt_prepare",
             "pqexec", "pqexecparams", "mysql_real_escape_string", "sqlite3_mprintf")
@@ -47,19 +48,26 @@ def _f(t_es, t_en, sev, ev, r_es, r_en, rec_es, rec_en, lang, loc):
                    rationale_en=r_en, recommendation_en=rec_en)
 
 
+def _present(names, keys):
+    """Palabras clave presentes como IMPORT real (subcadena dentro de un nombre parseado, para captar
+    variantes _chk). No matchea cabeceras ni strings sueltas: solo nombres de simbolos importados."""
+    return [k for k in keys if any(k in n for n in names)]
+
+
 def scan_injection(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding]:
     findings: List[Finding] = []
-    imports = _imp(reg)
+    names = imported_names(reg)          # nombres de import REALES (parseados), no texto crudo
     strings = _str(reg)
     es = lang == "es"
 
-    # (a) SQL injection
-    sql_api = [a for a in _SQL_API if a in imports]
-    has_param = any(x in imports for x in ("sqlite3_prepare", "mysql_stmt_prepare", "pqexecparams",
-                                           "sqlite3_bind", "mysql_stmt_bind"))
+    # (a) SQL injection: EXIGE una API de ejecucion SQL real importada. Sin ella, cadenas SQL sueltas
+    # (frecuentes en glibc estatica / recursos embebidos) NO son evidencia de SQLi -> no se reporta.
+    sql_api = _present(names, _SQL_API)
+    has_param = bool(_present(names, ("sqlite3_prepare", "mysql_stmt_prepare", "pqexecparams",
+                                      "sqlite3_bind", "mysql_stmt_bind")))
     sql_text = bool(_SQL_TEXT.search(strings)) or bool(_SQL_FMT.search(strings))
-    builders = [b for b in _BUILDERS if b in imports]
-    if (sql_api or sql_text) and (builders or _SQL_FMT.search(strings)) and not (has_param and not builders):
+    builders = _present(names, _BUILDERS)
+    if sql_api and (builders or _SQL_FMT.search(strings)) and not (has_param and not builders):
         findings.append(_f(
             "Posible inyeccion SQL (consulta por concatenacion)",
             "Possible SQL injection (query by concatenation)", "high",
@@ -80,9 +88,10 @@ def scan_injection(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "Use prepared statements with bound parameters; never concatenate input into SQL.",
             lang, "inyeccion / sql"))
 
-    # (b) entrada no confiable -> sink de ejecucion (vision consolidada)
-    inputs = [i for i in _INPUT if i in imports]
-    execs = [e for e in _EXEC if e in imports]
+    # (b) entrada no confiable -> sink de ejecucion (vision consolidada). Requiere imports REALES de
+    # una fuente de entrada Y de un sink de ejecucion (no basta el simbolo en glibc estatica).
+    inputs = _present(names, _INPUT)
+    execs = _present(names, _EXEC)
     if inputs and execs:
         findings.append(_f(
             "Superficie de inyeccion: entrada no confiable alcanza ejecucion de comandos",

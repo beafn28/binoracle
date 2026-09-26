@@ -38,7 +38,8 @@ def scan_logging(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Findi
         suid = bool(mode & _stat.S_ISUID or mode & _stat.S_ISGID)
     except OSError:
         pass
-    net = any(n in imports for n in _NET)
+    from ._binfacts import has_network
+    net = has_network(reg)          # imports de red REALES (no la columna 'bind' de la cabecera de ii)
     if not (suid or net):
         return []                      # no sensible: no se evalua logging (se marcaria como N/A)
     has_log = any(a in imports for a in _LOG_APIS)

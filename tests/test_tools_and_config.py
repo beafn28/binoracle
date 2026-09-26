@@ -991,3 +991,39 @@ def test_autofuzz_render_and_result():
     # cyclic fallback no lanza sin pwntools
     from binoracle.workflows.autofuzz import _cyclic
     assert len(_cyclic(100)) == 100
+
+
+def test_no_false_positives_on_static_binary():
+    # Regresion: un binario ESTATICO minimo (solo un overflow) no debe generar falsos positivos de
+    # SQLi / cleartext / logging por strings o simbolos de la glibc embebida (caso informe_staticrop).
+    import os
+    from binoracle.oracles import build_registry
+    from binoracle.workflows.injection import scan_injection
+    from binoracle.workflows.commsec import scan_comms
+    from binoracle.workflows.logging_check import scan_logging
+    from binoracle.workflows._binfacts import is_static, has_network, imported_names
+    b = "samples/bin/staticrop"
+    if not os.path.exists(b):
+        return                         # corpus se construye con samples/build.sh
+    reg = build_registry(b)
+    assert is_static(reg) is True
+    assert has_network(reg) is False               # 'bind' de la cabecera de ii NO cuenta como red
+    assert not (imported_names(reg) & {"nth", "bind", "vaddr", "name"})  # cabecera no parseada
+    fp = (scan_injection(reg, b, "es") + scan_comms(reg, b, "es") + scan_logging(reg, b, "es"))
+    titles = [f.title for f in fp]
+    assert not any("sql" in t.lower() for t in titles), titles
+    assert not any("cifrar" in t.lower() or "cleartext" in t.lower() for t in titles), titles
+    assert not any("logging" in t.lower() or "registro" in t.lower() for t in titles), titles
+
+
+def test_binfacts_parses_import_names():
+    from binoracle.workflows._binfacts import imported_names, has_network, _NET_APIS
+    # formato mock 'sym.imp.socket' -> nombre bare 'socket'; y red por marcador CURLOPT
+    import sys; sys.path.insert(0, "tests")
+    from test_tools_and_config import _mock_reg
+    reg = _mock_reg(imports="1 0x1 GLOBAL FUNC libc connect\nsym.imp.socket", strings="")
+    names = imported_names(reg)
+    assert "connect" in names and "socket" in names and "nth" not in names
+    assert has_network(reg) is True
+    assert has_network(_mock_reg(imports="sym.imp.MD5_Init", strings="CURLOPT_SSL_VERIFYPEER=0")) is True
+    assert has_network(_mock_reg(imports="sym.imp.printf", strings="hello")) is False

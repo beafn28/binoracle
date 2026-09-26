@@ -79,9 +79,20 @@ def scan_comms(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[Fi
     blob = imports + "\n" + strings
 
     # 1) transmision sin cifrar: URLs http:// (no https), ftp://, telnet, ws://, ldap://
+    # SOLO si el binario tiene capacidad de red REAL (importa una API de red). Un http:// suelto en
+    # las strings -sobre todo URLs de la toolchain (gcc/debian/gnu) en binarios estaticos- NO es
+    # evidencia de que transmita nada -> se excluye para no dar falsos positivos.
+    from ._binfacts import has_network
+    _BENIGN_URL = re.compile(r"(debian\.org|gnu\.org|gcc\.gnu|sourceware|kernel\.org|ubuntu\.com|"
+                             r"fsf\.org|/bugs/|bugzilla|schemas\.|w3\.org|example\.(com|org))", re.I)
     cleartext = sorted(set(re.findall(r"\b(?:http|ftp|telnet|ws|ldap)://[^\s\"'<>]{3,60}", strings, re.I)))
-    cleartext = [u for u in cleartext if not u.lower().startswith(("https://", "wss://", "ldaps://"))][:6]
-    if cleartext:
+    cleartext = [u for u in cleartext
+                 if not u.lower().startswith(("https://", "wss://", "ldaps://"))
+                 and not _BENIGN_URL.search(u)][:6]
+    # esquemas que son inherentemente CLIENTE de red (ws/telnet/ftp/ldap): la URL ya es evidencia de
+    # comunicacion. Para http:// (que suele ser una URL de documentacion) exigimos ademas red real.
+    _client = any(u.lower().startswith(("ws://", "telnet://", "ftp://", "ldap://")) for u in cleartext)
+    if cleartext and (_client or has_network(reg)):
         findings.append(_f(
             "Transmision sin cifrar (texto en claro)", "Cleartext transmission", "medium",
             "[radare2: izz]\n" + "\n".join(cleartext),

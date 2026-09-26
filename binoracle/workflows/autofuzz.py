@@ -57,9 +57,11 @@ def _cyclic(n: int) -> bytes:
 
 
 def _probe(binary: str, *, stdin: bytes = b"", argv: Optional[str] = None,
-           as_file: Optional[bytes] = None, timeout: float = 30.0) -> Tuple[Optional[int], str]:
+           argv_list: Optional[List[str]] = None, as_file: Optional[bytes] = None,
+           timeout: float = 30.0) -> Tuple[Optional[int], str]:
     """Ejecuta el binario en el sandbox capturando el CODIGO DE SALIDA (para detectar el crash) y la
-    salida. `argv` pasa un argumento; `as_file` escribe un fichero y lo pasa como argv[1]."""
+    salida. `argv` pasa un argumento; `argv_list` pasa VARIOS (para invocaciones dirigidas tipo
+    `-s <payload>`); `as_file` escribe un fichero y lo pasa como argv[1]."""
     docker = shutil.which("docker")
     if not docker:
         return (None, "docker no disponible")
@@ -74,7 +76,10 @@ def _probe(binary: str, *, stdin: bytes = b"", argv: Optional[str] = None,
         with open(fp, "wb") as f:
             f.write(as_file)
         fpath_rel = ".fuzz_file"
-    if argv is not None:
+    if argv_list:
+        args = " ".join(_shq(a) for a in argv_list)
+        run = f"chmod +x ./{name}; ./{name} {args} < .fuzz_in > .fuzz_out 2>&1; echo EXIT=$?"
+    elif argv is not None:
         run = f"chmod +x ./{name}; ./{name} {_shq(argv)} < .fuzz_in > .fuzz_out 2>&1; echo EXIT=$?"
     elif fpath_rel:
         run = f"chmod +x ./{name}; ./{name} {fpath_rel} < /dev/null > .fuzz_out 2>&1; echo EXIT=$?"
