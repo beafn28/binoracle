@@ -178,11 +178,52 @@ def _exploit_section(binary: str, findings, lang: str) -> str:
               f'# payload = b"A"*offset + p64(RET) + p64(elf.sym.win)\n\n'
               f'io.sendline(payload)\n'
               f'io.interactive()                  # -> shell')
+    layout = _payload_layout_html(off, win, lang)
     return (f'<h2 data-i18n="exploit_steps" id="sec-exploit"></h2>'
             f'<div class="expwrap"><div class="expcol"><div class="panel-t">{T["repro"]}</div>'
             f'<ol class="steps">{steps}</ol></div>'
             f'<div class="expcol"><div class="panel-t">{T["script"]}</div>'
-            f'<pre class="code">{_esc(script)}</pre></div></div>')
+            f'<pre class="code">{_esc(script)}</pre></div></div>{layout}')
+
+
+def _le_bytes(addr_hex: str, width: int = 8):
+    """Bytes little-endian de una direccion (hex str) como lista de '0xNN'."""
+    try:
+        v = int(addr_hex, 16)
+    except (ValueError, TypeError):
+        return []
+    return ["%02x" % ((v >> (8 * i)) & 0xff) for i in range(width)]
+
+
+def _payload_layout_html(off, win, lang: str) -> str:
+    """Diagrama tecnico del layout de bytes del payload ret2win: relleno hasta el offset y la
+    direccion de retorno sobrescrita en little-endian, con offsets en decimal/hex."""
+    if not isinstance(off, int):
+        return ""
+    es = lang == "es"
+    le = _le_bytes(win)
+    lebytes = " ".join(le) if le else "?"
+    th = (("Offset", "Bytes", "Contenido", "Significado") if es
+          else ("Offset", "Bytes", "Content", "Meaning"))
+    rows = (
+        f'<tr><td><code>0x00 .. 0x{off-1:02x}</code><br><span class="mut">0 .. {off-1}</span></td>'
+        f'<td><code>41 41 .. 41</code> <span class="mut">({off} B)</span></td>'
+        f'<td><code>b"A" * {off}</code></td>'
+        f'<td>{"relleno: llena el buffer local + el RBP salvado (8 B) hasta la direccion de retorno" if es else "padding: fills the local buffer + saved RBP (8 B) up to the return address"}</td></tr>'
+        f'<tr class="lrip"><td><code>0x{off:02x} .. 0x{off+7:02x}</code><br><span class="mut">{off} .. {off+7}</span></td>'
+        f'<td><code>{_esc(lebytes)}</code> <span class="mut">(8 B LE)</span></td>'
+        f'<td><code>p64({_esc(win)})</code></td>'
+        f'<td>{"sobrescribe la DIRECCION DE RETORNO guardada (RIP): al ejecutar `ret` el flujo salta aqui" if es else "overwrites the saved RETURN ADDRESS (RIP): on `ret` the flow jumps here"} &rarr; win()</td></tr>')
+    total = off + 8
+    cap = ("Layout del payload (" + str(total) + " B). El qword en little-endian es como x86-64 "
+           "almacena la direccion en memoria; `ret` toma [RSP] como nuevo RIP." if es else
+           "Payload layout (" + str(total) + " B). The little-endian qword is how x86-64 stores the "
+           "address in memory; `ret` takes [RSP] as the new RIP.")
+    ttl = "Layout de bytes del payload" if es else "Payload byte layout"
+    return (f'<details class="sec" open><summary>{ttl}</summary>'
+            f'<table class="paylay"><thead><tr>' + "".join(f"<th>{_esc(x)}</th>" for x in th)
+            + f'</tr></thead><tbody>{rows}</tbody></table>'
+            f'<p class="mut" style="font-size:11.5px;margin:6px 0 0">{_esc(cap)}</p></details>')
 
 
 def _mit_detail(mit: dict, lang: str) -> str:
@@ -1695,6 +1736,10 @@ h2[id]{scroll-margin-top:16px}
 .deccross{border-left:3px solid var(--acc);background:var(--code);padding:8px 11px;border-radius:6px;font-size:12.5px;margin:8px 0}
 .dectech{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
 .dectech th,.dectech td{border:1px solid var(--line);padding:4px 8px;text-align:left}
+.paylay{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
+.paylay th,.paylay td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+.paylay th{background:var(--code);color:var(--mut);font-size:11px;text-transform:uppercase}
+.paylay tr.lrip td{background:color-mix(in srgb,#e5484d 8%,var(--panel))}
 .dectech th{background:var(--code);color:var(--mut);font-size:11px;text-transform:uppercase}
 .cvssb{color:#fff;font:700 10px ui-monospace,monospace;padding:2px 7px;border-radius:5px;letter-spacing:.02em}
 .cvssbox{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--code);margin:2px 0 4px}

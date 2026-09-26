@@ -512,6 +512,16 @@ def test_trail_kind_classifier():
     assert len(cols) == 4
 
 
+def test_payload_layout():
+    from binoracle.report.html import _le_bytes, _payload_layout_html
+    assert _le_bytes("0x401156") == ["56", "11", "40", "00", "00", "00", "00", "00"]
+    h = _payload_layout_html(72, "0x401156", "es")
+    assert "paylay" in h and "p64(0x401156)" in h
+    assert "0x48" in h                         # offset 72 en hex
+    assert "56 11 40" in h                     # direccion en little-endian
+    assert _payload_layout_html("N", "0x0", "es") == ""   # sin offset numerico -> vacio
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP
