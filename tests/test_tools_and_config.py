@@ -451,6 +451,35 @@ def test_hardening_scanner():
     assert not any("endurecimiento" in f.title.lower() for f in scan_hardening(reg2, "x"))
 
 
+def test_injection_scanner():
+    from binoracle.workflows.injection import scan_injection
+    reg = _mock_reg(imports="sym.imp.sqlite3_exec\nsym.imp.sprintf\nsym.imp.recv\nsym.imp.system",
+                    strings="SELECT * FROM users WHERE name='%s'")
+    titles = " ".join(f.title.lower() for f in scan_injection(reg, "x"))
+    assert "sql" in titles                     # SQLi por concatenacion
+    assert "superficie de inyeccion" in titles  # entrada -> exec
+    # parametrizado sin builders: no marca SQLi
+    reg2 = _mock_reg(imports="sym.imp.sqlite3_prepare\nsym.imp.sqlite3_bind", strings="SELECT 1")
+    assert not any("sql" in f.title.lower() for f in scan_injection(reg2, "x"))
+
+
+def test_authz_scanner(tmp_path):
+    import os
+    from binoracle.workflows.authz import scan_authz
+    p = tmp_path / "suidbin"
+    p.write_bytes(b"\x7fELF")
+    os.chmod(p, 0o4755)                         # SUID
+    # SUID + exec sin drop -> privesc
+    reg = _mock_reg(imports="sym.imp.system\nsym.imp.execl")
+    assert any("sin soltar privilegios" in f.title.lower() for f in scan_authz(reg, str(p)))
+    # SUID + exec + drop -> no marca el fuerte
+    reg2 = _mock_reg(imports="sym.imp.system\nsym.imp.setresuid")
+    assert not any("ejecuta comandos" in f.title.lower() for f in scan_authz(reg2, str(p)))
+    # binario NO privilegiado -> no aplica
+    q = tmp_path / "plain"; q.write_bytes(b"\x7fELF"); os.chmod(q, 0o755)
+    assert scan_authz(_mock_reg(imports="sym.imp.system"), str(q)) == []
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP

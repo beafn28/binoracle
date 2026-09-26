@@ -58,7 +58,8 @@ def render_findings(findings: List[Finding]) -> str:
 # marcan "no evaluado", para no afirmar una revision que no ocurrio (honestidad del informe).
 _OWASP_DESKTOP = [
     ("DA1", "Injection", True, ("command injection", "inyeccion de comando", "inyección de comando",
-                                "os command", "sql injection", "backdoor de comando")),
+                                "os command", "sql injection", "inyeccion sql", "backdoor de comando",
+                                "superficie de inyeccion", "injection surface", "inyeccion / ")),
     ("DA2", "Broken Authentication", True, ("broken auth", "session fixation", "autenticacion rota",
                                             "autenticacion por comparacion", "authentication by comparison",
                                             "sin hashing", "without hashing", "auth / ")),
@@ -67,7 +68,9 @@ _OWASP_DESKTOP = [
     ("DA4", "Improper Cryptography Usage", True, ("sha-1", "sha1", "md5", "rc4", "hashing debil",
                                                   "criptograf", "cifrado debil", "weak crypto")),
     ("DA5", "Improper Authorization", True, ("escalada de privilegio", "privilege escalation",
-                                             "setuid", "uac bypass", "token de privilegio")),
+                                             "setuid", "setgid", "uac bypass", "token de privilegio",
+                                             "sin soltar privilegios", "without dropping privileges",
+                                             "autorizacion / ")),
     ("DA6", "Security Misconfiguration", True, ("dll hijack", "authenticode", "sin firma", "permiso",
                                                 "acl ", "sandbox", "misconfigur", "rpath", "runpath",
                                                 "endurecimiento", "hardening", "configuracion / ",

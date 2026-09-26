@@ -156,7 +156,8 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                           ("commsec", "scan_comms"), ("backdoors", "scan_backdoors"),
                           ("dotnet", "scan_dotnet"), ("versions", "scan_versions"),
                           ("authcheck", "scan_auth"), ("logging_check", "scan_logging"),
-                          ("hardening", "scan_hardening")):
+                          ("hardening", "scan_hardening"), ("injection", "scan_injection"),
+                          ("authz", "scan_authz")):
             try:
                 import importlib
                 extra = getattr(importlib.import_module(f".{_mod}", __package__), _fn)(
