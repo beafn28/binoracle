@@ -52,41 +52,46 @@ def render_findings(findings: List[Finding]) -> str:
 # Tokens are deliberately specific (multi-char, non-overlapping) to avoid mis-classifying a
 # finding: e.g. never "des" (matches "desbordamiento"), "system"/"shell" (match exploit prose)
 # or "log"/"string". Better to under-map than to put a finding in the wrong OWASP box.
+# Cada categoria lleva un flag `covered`: True solo si binoracle tiene un scanner REAL que la
+# examina (secrets, fileperms, commsec, backdoors, vulnhunt/chains, dynamic). Las que NO se
+# escanean (autenticacion, componentes con CVEs, logging) NO se marcan como "revisadas": se
+# marcan "no evaluado", para no afirmar una revision que no ocurrio (honestidad del informe).
 _OWASP_DESKTOP = [
-    ("DA1", "Injection", ("command injection", "inyeccion de comando", "inyección de comando",
-                          "os command", "sql injection", "backdoor de comando")),
-    ("DA2", "Broken Authentication", ("broken auth", "session fixation", "autenticacion rota")),
-    ("DA3", "Sensitive Data Exposure", ("secreto", "credencial", "hardcoded", "api key",
-                                        "clave hardcode", "informacion sensible")),
-    ("DA4", "Improper Cryptography Usage", ("sha-1", "sha1", "md5", "rc4", "hashing debil",
-                                            "criptograf", "cifrado debil", "weak crypto")),
-    ("DA5", "Improper Authorization", ("escalada de privilegio", "privilege escalation",
-                                       "setuid", "uac bypass", "token de privilegio")),
-    ("DA6", "Security Misconfiguration", ("dll hijack", "authenticode", "sin firma", "permiso",
-                                          "acl ", "sandbox", "misconfigur")),
-    ("DA7", "Insecure Communication", ("sin cifrar", "texto en claro", "cleartext", "http://",
-                                       "telnet", "ftp ", "mitm", "insecure communication")),
-    ("DA8", "Poor Code Quality", ("overflow", "desbord", "gets", "format string", "format-string",
-                                  "uaf", "use-after", "double free", "double-free", "heap", "rop",
-                                  "ret2", "buffer", "memcpy", "strcpy", "tcache")),
-    ("DA9", "Using Components with Known Vulnerabilities", ("cve-", "desactualiz", "obsolet",
-                                                            "outdated", "known vulnerab")),
-    ("DA10", "Insufficient Logging & Monitoring", ("insufficient logging", "sin registro de auditoria")),
+    ("DA1", "Injection", True, ("command injection", "inyeccion de comando", "inyección de comando",
+                                "os command", "sql injection", "backdoor de comando")),
+    ("DA2", "Broken Authentication", False, ("broken auth", "session fixation", "autenticacion rota")),
+    ("DA3", "Sensitive Data Exposure", True, ("secreto", "credencial", "hardcoded", "api key",
+                                              "clave hardcode", "informacion sensible")),
+    ("DA4", "Improper Cryptography Usage", True, ("sha-1", "sha1", "md5", "rc4", "hashing debil",
+                                                  "criptograf", "cifrado debil", "weak crypto")),
+    ("DA5", "Improper Authorization", True, ("escalada de privilegio", "privilege escalation",
+                                             "setuid", "uac bypass", "token de privilegio")),
+    ("DA6", "Security Misconfiguration", True, ("dll hijack", "authenticode", "sin firma", "permiso",
+                                                "acl ", "sandbox", "misconfigur", "rpath", "runpath")),
+    ("DA7", "Insecure Communication", True, ("sin cifrar", "texto en claro", "cleartext", "http://",
+                                             "telnet", "ftp ", "mitm", "insecure communication",
+                                             "certificado", "runtime / red")),
+    ("DA8", "Poor Code Quality", True, ("overflow", "desbord", "gets", "format string", "format-string",
+                                        "uaf", "use-after", "double free", "double-free", "heap", "rop",
+                                        "ret2", "buffer", "memcpy", "strcpy", "tcache")),
+    ("DA9", "Using Components with Known Vulnerabilities", False, ("cve-", "desactualiz", "obsolet",
+                                                                   "outdated", "known vulnerab")),
+    ("DA10", "Insufficient Logging & Monitoring", False, ("insufficient logging", "sin registro de auditoria")),
 ]
 
 
 def owasp_desktop_coverage(findings):
-    """Map findings to OWASP Desktop Top 10 categories by keyword. Returns an ordered list of
-    (id, name, [finding titles]) so the report can show both what was found AND what was
-    reviewed with nothing found (professional coverage, methodology Fase 9)."""
+    """Mapea hallazgos a OWASP Desktop Top 10 por palabra clave. Devuelve una lista ordenada de
+    (id, name, [titulos], covered) donde covered indica si binoracle EXAMINA de verdad esa
+    categoria. Asi el informe distingue 'revisado, sin hallazgo' de 'no evaluado'."""
     out = []
-    for cid, name, kws in _OWASP_DESKTOP:
+    for cid, name, covered, kws in _OWASP_DESKTOP:
         hits = []
         for f in findings or []:
             blob = f"{f.title} {f.rationale} {f.location}".lower()
             if any(k in blob for k in kws):
                 hits.append(f.title)
-        out.append((cid, name, hits))
+        out.append((cid, name, hits, covered))
     return out
 
 
@@ -94,10 +99,16 @@ def render_owasp(findings) -> str:
     cov = owasp_desktop_coverage(findings)
     out = ["## OWASP Desktop Top 10 -- cobertura\n",
            "Mapeo de hallazgos al marco OWASP Desktop App Security Top 10 (metodologia Fase 9). "
-           "Las categorias sin hallazgo se marcan como revisadas.\n",
+           "Solo se marca 'revisado, sin hallazgo' lo que binoracle examina de verdad; el resto se "
+           "marca 'no evaluado' (fuera del alcance del analisis actual).\n",
            "| Categoria | Estado | Hallazgos |", "|---|---|---|"]
-    for cid, name, hits in cov:
-        estado = "⚠ con hallazgos" if hits else "revisado, sin hallazgo"
+    for cid, name, hits, covered in cov:
+        if hits:
+            estado = "con hallazgos"
+        elif covered:
+            estado = "revisado, sin hallazgo"
+        else:
+            estado = "no evaluado (fuera de alcance)"
         det = "; ".join(dict.fromkeys(hits)) if hits else "—"
         out.append(f"| {cid} {name} | {estado} | {det} |")
     return "\n".join(out)

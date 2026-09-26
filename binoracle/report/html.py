@@ -514,19 +514,24 @@ def _owasp_html(findings, lang: str) -> str:
     cov = owasp_desktop_coverage(findings)
     head = "OWASP Desktop Top 10 — cobertura" if es else "OWASP Desktop Top 10 — coverage"
     intro = ("Mapeo de hallazgos al marco OWASP Desktop App Security Top 10 (metodologia Fase 9). "
-             "Las categorias sin hallazgo se marcan como revisadas." if es else
-             "Findings mapped to the OWASP Desktop App Security Top 10 (methodology phase 9). "
-             "Categories with no finding are marked as reviewed.")
+             "Solo se marca 'revisado, sin hallazgo' lo que binoracle examina de verdad; el resto "
+             "se marca 'no evaluado' (fuera del alcance del analisis actual)." if es else
+             "Findings mapped to the OWASP Desktop App Security Top 10 (methodology phase 9). Only "
+             "what binoracle actually examines is marked 'reviewed, none found'; the rest is marked "
+             "'not assessed' (outside the current analysis scope).")
     c_cat, c_st, c_f = (("Categoria", "Estado", "Hallazgos") if es else ("Category", "Status", "Findings"))
     with_f = "con hallazgos" if es else "findings"
     none_f = "revisado, sin hallazgo" if es else "reviewed, none found"
+    na_f = "no evaluado (fuera de alcance)" if es else "not assessed (out of scope)"
     rows = ""
-    for cid, name, hits in cov:
+    for cid, name, hits, covered in cov:
         if hits:
             det = _esc("; ".join(dict.fromkeys(hits)))
-            st = f'<b style="color:var(--high,#d9822b)">⚠ {with_f}</b>'
+            st = f'<b style="color:#d9822b">{with_f}</b>'
+        elif covered:
+            det = "—"; st = f'<span style="color:#30a46c">{none_f}</span>'
         else:
-            det = "—"; st = f'<span class="mut">{none_f}</span>'
+            det = "—"; st = f'<span class="mut">{na_f}</span>'
         rows += f'<tr><td>{cid} {_esc(name)}</td><td>{st}</td><td>{det}</td></tr>'
     return (f'<h2 id="sec-owasp">{_esc(head)}</h2><p class="sechelp">{_esc(intro)}</p>'
             f'<table class="owasp" style="width:100%;border-collapse:collapse">'
