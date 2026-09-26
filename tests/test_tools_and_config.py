@@ -480,6 +480,26 @@ def test_authz_scanner(tmp_path):
     assert scan_authz(_mock_reg(imports="sym.imp.system"), str(q)) == []
 
 
+def test_cfg_block_state():
+    from binoracle.workflows.cfg import _block_state, _state_note, _norm_reg
+    # normalizacion de sub-registros a 64 bits
+    assert _norm_reg("eax") == "rax" and _norm_reg("dil") == "rdi" and _norm_reg("r8d") == "r8"
+    blk = [{"txt": "push rbp", "addr": "0x0"},
+           {"txt": "mov rbp, rsp", "addr": "0x1"},
+           {"txt": "sub rsp, 0x40", "addr": "0x2"},
+           {"txt": "lea rax, [rbp-0x40]", "addr": "0x3"},
+           {"txt": "mov edi, eax", "addr": "0x4"},
+           {"txt": "call sym.imp.read", "addr": "0x5"}]
+    st = _block_state(blk)
+    assert st["delta"] == -8 - 0x40                 # push (-8) + sub rsp 0x40
+    assert "rax" in st["w"] and "rdi" in st["w"]    # lea->rax, mov edi (rdi)
+    assert "rbp" in st["r"]
+    assert any("rbp-0x40" in s for s in st["slots"])
+    assert "sym.imp.read" in st["calls"]
+    note = _state_note(st, "es")
+    assert "escribe" in note and "RSP" in note and "llama" in note
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP

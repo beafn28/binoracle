@@ -434,7 +434,8 @@ def _cfg_html(cfg, lang: str) -> str:
     # detalles por bloque para el panel de inspeccion (instrucciones completas + what-if)
     info = {nid: {"addr": nodes[nid]["addr"],
                   "insns": [op.get("txt", "") for op in nodes[nid]["insns"]],
-                  "note": nodes[nid].get("note", "")} for nid in order}
+                  "note": nodes[nid].get("note", ""),
+                  "state": nodes[nid].get("state", "")} for nid in order}
     tip = ("Pulsa un bloque para ver sus instrucciones y que decide el salto."
            if lang == "es" else "Click a block to see its instructions and what its jump decides.")
     js = _CFG_JS.replace("__CFGW__", str(W)).replace(
@@ -1099,6 +1100,7 @@ _CFG_JS = r"""
     var d = INFO[id]; if(!d || !panel) return;
     var ins = d.insns.map(function(x){ return '<div class="cfgi-l">'+esc(x)+'</div>'; }).join('');
     panel.innerHTML = '<div class="cfgi-a">'+esc(d.addr)+'</div><div class="cfgi-code">'+ins+'</div>'+
+      (d.state?'<div class="cfgi-note" style="border-color:#12a594"><b>estado:</b> '+esc(d.state)+'</div>':'')+
       '<div class="cfgi-note">'+esc(d.note||'')+'</div>';
     vp.querySelectorAll('.cfgnode').forEach(function(g){ g.classList.toggle('sel', g.getAttribute('data-id')===id); });
   }

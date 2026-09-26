@@ -66,6 +66,108 @@ def _interpret_cmp(cmp_txt: str) -> str:
     return f" (compara `{a}` con `{b}`)"
 
 
+# normalizacion de registros x86-64 a su forma de 64 bits (para el estado por bloque)
+_R64 = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip",
+        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"}
+_SUB = {
+    "eax": "rax", "ax": "rax", "al": "rax", "ah": "rax", "ebx": "rbx", "bx": "rbx", "bl": "rbx",
+    "ecx": "rcx", "cx": "rcx", "cl": "rcx", "edx": "rdx", "dx": "rdx", "dl": "rdx",
+    "esi": "rsi", "si": "rsi", "sil": "rsi", "edi": "rdi", "di": "rdi", "dil": "rdi",
+    "ebp": "rbp", "bp": "rbp", "esp": "rsp", "sp": "rsp",
+}
+for _i in range(8, 16):
+    _SUB[f"r{_i}d"] = f"r{_i}"; _SUB[f"r{_i}w"] = f"r{_i}"; _SUB[f"r{_i}b"] = f"r{_i}"
+
+
+def _norm_reg(tok: str):
+    t = (tok or "").strip().lower().strip(",")
+    if t in _R64:
+        return t
+    return _SUB.get(t)
+
+
+_WRITE_MN = ("mov", "movzx", "movsx", "movsxd", "lea", "add", "sub", "xor", "and", "or", "imul",
+             "pop", "inc", "dec", "not", "neg", "shl", "shr", "sar", "sal", "cmov", "sete", "xchg")
+_RMW_MN = ("add", "sub", "xor", "and", "or", "inc", "dec", "shl", "shr", "sar", "sal", "imul", "xchg")
+
+
+def _block_state(insns) -> dict:
+    """Estado tecnico aproximado del bloque (analisis estatico local, grounded en el disasm):
+    registros escritos/leidos, variacion neta de RSP, slots de pila tocados y llamadas. No es
+    dataflow completo: es una lectura por instruccion, util para entender que hace el bloque."""
+    import re as _re
+    regs_w, regs_r, slots, calls = set(), set(), set(), []
+    delta = 0
+    for op in insns:
+        t = (op["txt"] or "").strip()
+        if not t:
+            continue
+        parts = t.replace(",", " ").split()
+        mn = parts[0].lower()
+        ops = parts[1:]
+        if mn == "push":
+            delta -= 8
+            r = _norm_reg(ops[0]) if ops else None
+            if r:
+                regs_r.add(r)
+        elif mn == "pop":
+            delta += 8
+            r = _norm_reg(ops[0]) if ops else None
+            if r:
+                regs_w.add(r)
+        elif mn in ("sub", "add") and len(ops) >= 2 and _norm_reg(ops[0]) == "rsp":
+            try:
+                n = int(ops[1], 0)
+                delta += (-n if mn == "sub" else n)
+            except ValueError:
+                pass
+        if mn.startswith("call"):
+            m = _re.search(r"(sym\.(?:imp\.)?[\w.]+|0x[0-9a-f]+)", t)
+            if m:
+                calls.append(m.group(1))
+        elif mn in _WRITE_MN and ops:
+            d = _norm_reg(ops[0])
+            if d and d != "rsp":
+                regs_w.add(d)
+                if mn in _RMW_MN:
+                    regs_r.add(d)
+            for o in ops[1:]:
+                rr = _norm_reg(o)
+                if rr:
+                    regs_r.add(rr)
+        elif mn in ("cmp", "test"):
+            for o in ops:
+                rr = _norm_reg(o)
+                if rr:
+                    regs_r.add(rr)
+        for o in ops:
+            m = _re.search(r"\[(rbp|rsp)\s*([+-]\s*0x[0-9a-f]+)?", o.lower())
+            if m:
+                slots.add(m.group(0).replace(" ", "") + "]")
+    return {"w": sorted(regs_w), "r": sorted(regs_r), "delta": delta,
+            "slots": sorted(slots)[:6], "calls": calls[:4]}
+
+
+def _state_note(st: dict, lang: str = "es") -> str:
+    """Resumen legible del estado tecnico del bloque."""
+    if not st:
+        return ""
+    es = lang == "es"
+    parts = []
+    if st["w"]:
+        parts.append(("escribe" if es else "writes") + ": " + ", ".join(r.upper() for r in st["w"]))
+    if st["r"]:
+        parts.append(("lee" if es else "reads") + ": " + ", ".join(r.upper() for r in st["r"]))
+    if st["delta"]:
+        sign = "+" if st["delta"] > 0 else ""
+        parts.append(("RSP " if es else "RSP ") + f"{sign}{st['delta']} B")
+    if st["slots"]:
+        parts.append(("pila" if es else "stack") + ": " + ", ".join(st["slots"]))
+    if st["calls"]:
+        parts.append(("llama" if es else "calls") + ": " + ", ".join(st["calls"]))
+    return " | ".join(parts)
+
+
 def _branch_note(insns) -> str:
     """Explicacion determinista y MATIZADA (grounded en el disasm) del terminador del bloque: que
     decide, con que operandos, y su implicacion (puertas de auth, chequeos de longitud, sinks).
@@ -141,7 +243,7 @@ def function_cfg(binary: str, func: str, max_blocks: int = 60) -> CFG:
         term = insns[-1]["txt"] if insns else ""
         ids[addr] = f"b{len(cfg.nodes)}"
         cfg.nodes.append({"id": ids[addr], "addr": hex(addr), "insns": insns, "term": term,
-                          "note": _branch_note(insns)})
+                          "note": _branch_note(insns), "state": _state_note(_block_state(insns))})
     # aristas: jump = rama tomada (o salto incondicional si no hay fail); fail = fall-through
     for b in g.get("blocks", [])[:max_blocks]:
         addr = b.get("addr", b.get("offset"))
