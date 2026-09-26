@@ -628,7 +628,7 @@ def _fmt_step(step, action):
     return f"paso {step}: {act}"
 
 
-def run_streaming(command, binary, ai, emit):
+def run_streaming(command, binary, ai, emit, text=""):
     config = load_config()
     import os
     if not binary or not os.path.exists(binary):
@@ -679,6 +679,28 @@ def run_streaming(command, binary, ai, emit):
             emit("step", f"cadenas: {len(an.chains)} candidatas, {nfea} factibles, "
                          f"{nver} VERIFICADAS por ejecucion. Gadgets: {len(an.gadgets)}.")
             emit("html", render_chains_page(an, config.lang))
+        elif command == "exploit":
+            # Apartado CVE -> exploit funcional: a partir de la info de la vuln (texto de la CVE) y el
+            # binario, deriva el esquema y DESARROLLA el exploit mas funcional posible, verificado en
+            # sandbox cuando la cadena es ejecutable.
+            from .workflows.cveplan import plan_for_binary
+            from .report.html import render_exploit_page
+            desc = (text or "").strip()
+            emit("step", f"clasificando la vulnerabilidad" + (f": '{desc[:80]}'" if desc else
+                         " a partir de los hechos del binario (control de RIP)..."))
+            emit("step", "concretando offset/gadgets/objetivo reales con el analizador de cadenas...")
+            emit("step", "desarrollando y VERIFICANDO el exploit por ejecucion en sandbox...")
+            pl = plan_for_binary(binary, text=desc, cve=desc if desc.upper().startswith("CVE-") else "",
+                                 lang=config.lang, verify=True)
+            if getattr(pl, "verified", False):
+                emit("step", "exploit VERIFICADO: cadena ejecutada en sandbox, objetivo alcanzado. "
+                             "Script pwntools listo para descargar.")
+            elif getattr(pl, "ok", False):
+                emit("step", "esquema derivado; no se pudo verificar una cadena ejecutable en sandbox "
+                             "(revisa mitigaciones/arquitectura). Se muestra el plan mas funcional posible.")
+            else:
+                emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
+            emit("html", render_exploit_page(pl, binary, config.lang))
         elif command in ("report", "hunt", "dashboard"):
             from .report.html import render_html
             from .agent.grounding import GroundingLedger
@@ -861,6 +883,7 @@ class Handler(BaseHTTPRequestHandler):
             command = q.get("command", [""])[0]
             binary = q.get("binary", [""])[0]
             ai = q.get("ai", ["0"])[0] == "1"
+            text = q.get("text", [""])[0]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -873,7 +896,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 except Exception:
                     pass
-            run_streaming(command, binary, ai, emit)
+            run_streaming(command, binary, ai, emit, text=text)
         else:
             self._send(404, "not found", "text/plain")
 
@@ -1074,6 +1097,7 @@ const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',inf
 const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
  {c:"cadenas",n:"Cadenas",ic:"@",d:"Construye y VERIFICA las cadenas de ataque, con grafo interactivo"},
+ {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
  {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
@@ -1112,17 +1136,18 @@ function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.g
 async function api(command,options){const binary=document.getElementById('target').value.trim();
  var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:opt})});return r.json();}
-function stream(command){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
+function stream(command,options){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
  out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo<button id="stopstream" class="stopbtn">parar</button></div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
  var log=document.getElementById('livelog');
- closeStream(); var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai); activeES=es;
+ var extra=(options&&options.text)?('&text='+encodeURIComponent(options.text)):'';
+ closeStream(); var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai+extra); activeES=es;
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
  es.addEventListener('html',function(e){var d=document.getElementById('streamresult');d.innerHTML='';reportView(d,JSON.parse(e.data));});
  es.addEventListener('dashboard',function(e){renderDash(JSON.parse(e.data));});
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas'].indexOf(command)>=0){stream(command);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';
@@ -1217,7 +1242,7 @@ async function loadHistory(){var out=document.getElementById('out');out.innerHTM
  selall.appendChild(selallInput);selall.appendChild(document.createTextNode(' seleccionar todo'));
  var delSel=document.createElement('button');delSel.className='hdelsel';
  var countSpan=document.createElement('span');countSpan.textContent='0';
- delSel.appendChild(document.createTextNode('🗑 Borrar seleccionados ('));
+ delSel.appendChild(document.createTextNode('Borrar seleccionados ('));
  delSel.appendChild(countSpan);delSel.appendChild(document.createTextNode(')'));delSel.disabled=true;
  tools.appendChild(selall);tools.appendChild(delSel);head.appendChild(tools);card.appendChild(head);
  if(!H.length){var e=document.createElement('div');e.className='empty';e.style.height='auto';e.textContent='Sin binarios analizados todavia.';card.appendChild(e);}

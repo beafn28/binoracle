@@ -768,6 +768,52 @@ def render_chains_page(chains, lang: str = "es") -> str:
     return head + section + "</main></body></html>"
 
 
+def render_exploit_page(plan, binary: str = "target", lang: str = "es") -> str:
+    """Pagina autocontenida del apartado 'CVE -> exploit funcional': dada la info de una CVE/vuln y
+    un binario, muestra el esquema de explotacion, el estado VERIFICADO (si la cadena se ejecuto en
+    sandbox) y el exploit DESARROLLADO (script pwntools) con boton de descarga. Para la vista en vivo
+    de la web (iframe)."""
+    import base64, os
+    es = lang == "es"
+    name = _esc(os.path.basename(binary) if binary else "target")
+    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<style>{_CSS}</style></head><body><main style='padding:16px'>")
+    if plan is None or not getattr(plan, "ok", False):
+        msg = (("No se pudo derivar un esquema de explotacion: describe la vulnerabilidad de la CVE "
+                "(p.ej. 'stack buffer overflow') y carga un binario para concretar offset/gadgets.")
+               if es else
+               ("Could not derive an exploitation schema: describe the CVE vulnerability (e.g. 'stack "
+                "buffer overflow') and load a binary to concretize offset/gadgets."))
+        note = getattr(plan, "note", "") if plan is not None else ""
+        extra = f"<p class='mut' style='font-size:12px'>{_esc(note)}</p>" if note else ""
+        return head + f"<p class='mut'>{_esc(msg)}</p>{extra}</main></body></html>"
+    section = _cveplan_html(plan, lang)
+    # el titulo data-i18n se rellena en servidor (vista sin el JS del informe)
+    title = ((_I18N.get(lang, _I18N["es"]).get("exploit_plan", "Exploitation schema")))
+    section = section.replace('data-i18n="exploit_plan" id="sec-exploitplan"></h2>',
+                              f'data-i18n="exploit_plan" id="sec-exploitplan">{_esc(title)}</h2>')
+    # boton de descarga del exploit desarrollado (data URI del script pwntools)
+    dl = ""
+    if getattr(plan, "script", ""):
+        b64 = base64.b64encode(plan.script.encode("utf-8")).decode("ascii")
+        fname = f"exploit_{os.path.splitext(name)[0]}.py"
+        label = ("Descargar exploit (pwntools)" if es else "Download exploit (pwntools)")
+        dl = (f'<p><a class="dlbtn" download="{fname}" '
+              f'href="data:text/x-python;base64,{b64}">&#8681; {label}</a></p>')
+    banner = (("Apartado CVE -> exploit funcional: a partir de la informacion de la vulnerabilidad, "
+               "binoracle deriva el esquema y desarrolla el exploit mas funcional posible, verificado "
+               "en sandbox cuando la cadena se puede ejecutar. Solo objetivos autorizados / CTF." )
+              if es else
+              ("CVE -> functional exploit: from the vulnerability information, binoracle derives the "
+               "schema and develops the most functional exploit possible, sandbox-verified when the "
+               "chain is executable. Authorized targets / CTF only."))
+    hdr = (f'<h2 style="margin-top:0">{"CVE &rarr; exploit funcional" if es else "CVE &rarr; functional exploit"}'
+           f' <span class="mut" style="font-size:13px">({name})</span></h2>'
+           f'<p class="sechelp">{_esc(banner)}</p>')
+    return head + hdr + dl + section + "</main></body></html>"
+
+
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
                 decompiled=None, cfg=None, chains=None) -> str:
@@ -1858,6 +1904,8 @@ h2[id]{scroll-margin-top:16px}
 div.xgverified{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(48,163,108,.10);border:1px solid #30a46c;border-radius:9px;padding:9px 12px;margin:10px 0;font-size:13px;color:var(--fg)}
 div.xgverified .proof-ok{color:#30a46c;font-weight:700}
 pre.pwnscript{background:#0b0e12;color:#cfe3ff;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;font:12px/1.5 ui-monospace,monospace;white-space:pre}
+a.dlbtn{display:inline-block;background:#30a46c;color:#fff;text-decoration:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600}
+a.dlbtn:hover{background:#278a59}
 .decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
 .decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}
 .decfn-t{font-weight:700;font-family:ui-monospace,monospace}

@@ -773,3 +773,25 @@ def test_cveplan_exports_developed_exploit(tmp_path, capsys):
     assert os.stat(out).st_mode & 0o111  # ejecutable
     body = open(out).read()
     assert "from pwn import *" in body and "OFFSET = 72" in body
+
+
+def test_render_exploit_page_functional_section():
+    # Apartado CVE -> exploit funcional: pagina autocontenida con esquema, estado verificado y el
+    # exploit desarrollado descargable (data URI del script pwntools).
+    from binoracle.report.html import render_exploit_page
+    from binoracle.workflows.cveplan import ExploitPlan, _pwn_script_from_proof
+    pl = ExploitPlan(vuln_class="stack-overflow", primitive="control de RIP", verified=True,
+                     kb_refs=["ret2win", "rop"])
+    pl.concrete = {"offset": 72, "reg_gadgets": {"rdi": "0x401234"}, "target": "win",
+                   "gadgets_total": 150, "chain": "ret2win"}
+    pl.proof = {"strategy": "ret2win", "offset": 72, "win": "0x401156", "output": "uid=0(root)"}
+    pl.script = _pwn_script_from_proof(pl.proof, "vuln")
+    for lang in ("es", "en"):
+        pg = render_exploit_page(pl, "/tmp/vuln", lang)
+        assert "<!doctype html>" in pg
+        assert 'class="dlbtn"' in pg and "data:text/x-python;base64," in pg
+        assert "sec-exploitplan" in pg and "uid=0(root)" in pg
+        assert "—" not in pg  # sin em-dash
+    # plan no reconocido -> pagina de guia, sin el boton de descarga (el anchor, no la clase CSS)
+    bad = render_exploit_page(ExploitPlan(note="clase no reconocida"), "/tmp/vuln", "es")
+    assert "No se pudo derivar" in bad and 'class="dlbtn"' not in bad
