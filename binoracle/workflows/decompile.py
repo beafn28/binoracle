@@ -22,6 +22,43 @@ class DecompiledFunc:
     notes: list = field(default_factory=list)
     variants: list = field(default_factory=list)   # [(engine, code)] de cada motor disponible
     crosscheck: str = ""     # nota deterministica de contraste entre motores (retroalimentacion)
+    tech: dict = field(default_factory=dict)       # ficha tecnica grounded (firma/marco/locales)
+
+
+def func_technical(binary: str, func: str) -> dict:
+    """Ficha tecnica GROUNDED de la funcion via r2 (afij/afvj): firma, tamano de marco, convencion,
+    y variables locales con su offset a RBP, tipo y DISTANCIA a la direccion de retorno guardada
+    (|offset| + tamano de palabra) -> el offset de overflow por variable. Best-effort; {} si falla."""
+    try:
+        import json
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return {}
+        info = json.loads(r.cmd(f"afij @ {func}") or "[]")
+        info = info[0] if info else {}
+        av = json.loads(r.cmd(f"afvj @ {func}") or "{}")
+    except Exception:
+        return {}
+    bits = info.get("bits", 64)
+    word = bits // 8
+    sig = (info.get("signature") or "").strip()
+    if not sig:
+        try:
+            sig = (r.cmd(f"afcf @ {func}") or "").strip().splitlines()[0]
+        except Exception:
+            sig = ""
+    locs = []
+    for v in (av.get("bp", []) + av.get("sp", [])):
+        ref = v.get("ref", {}) or {}
+        off = ref.get("offset")
+        base = ref.get("base", "rbp")
+        to_ret = (-off + word) if (base == "rbp" and isinstance(off, int) and off < 0) else None
+        locs.append({"name": v.get("name", "?"), "type": v.get("type", ""), "base": base,
+                     "offset": off, "to_ret": to_ret})
+    return {"signature": sig, "frame": info.get("stackframe"), "cc": info.get("calltype"),
+            "bits": bits, "ninstrs": info.get("ninstrs"), "nbbs": info.get("nbbs"),
+            "locals": locs, "reg_args": av.get("reg", [])}
 
     @property
     def ok(self) -> bool:
@@ -186,6 +223,11 @@ def decompile_explain(binary: str, func: str, llm=None, lang: str = "es") -> Dec
     try:
         d.variants = _collect_variants(binary, func)
         d.crosscheck = _crosscheck(d.variants, lang=lang)
+    except Exception:
+        pass
+    # Ficha tecnica grounded (firma/marco/locales con distancia a RIP).
+    try:
+        d.tech = func_technical(binary, func)
     except Exception:
         pass
     if llm is None or not getattr(llm, "available", lambda: False)():

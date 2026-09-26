@@ -67,6 +67,49 @@ _ENGINE_LABEL = {"ghidra": "Ghidra", "decai": "decai (r2ai)", "pdg": "r2 (r2ghid
                  "pdc": "r2 (pdc)", "pdf": "r2 (disasm)"}
 
 
+def _dec_tech_html(tech: dict, es: bool) -> str:
+    """Ficha tecnica grounded de la funcion: firma, marco, convencion y variables locales con su
+    offset a RBP y la DISTANCIA a la direccion de retorno guardada (= offset de overflow)."""
+    if not tech:
+        return ""
+    head = []
+    if tech.get("signature"):
+        head.append(f"<code>{_esc(tech['signature'])}</code>")
+    meta = []
+    if tech.get("frame") is not None:
+        meta.append(("marco" if es else "frame") + f": {tech['frame']} B")
+    if tech.get("cc"):
+        meta.append(("convencion" if es else "convention") + f": {_esc(str(tech['cc']))}")
+    if tech.get("bits"):
+        meta.append(f"{tech['bits']}-bit")
+    if tech.get("nbbs") is not None:
+        meta.append(("bloques" if es else "blocks") + f": {tech['nbbs']}")
+    rows = ""
+    for v in tech.get("locals", [])[:12]:
+        off = v.get("offset")
+        offs = (f"{v.get('base','rbp')}{'' if not isinstance(off,int) else ('%+d' % off)}"
+                + (f" ({hex(off) if isinstance(off,int) else ''})" if isinstance(off, int) else ""))
+        tr = v.get("to_ret")
+        trs = (f"{tr} B" if isinstance(tr, int) else "-")
+        rows += (f"<tr><td><code>{_esc(v.get('name','?'))}</code></td><td>{_esc(v.get('type','') or '-')}</td>"
+                 f"<td><code>{_esc(offs)}</code></td><td>{trs}</td></tr>")
+    tbl = ""
+    if rows:
+        th = (("Variable", "Tipo", "Offset", "a RIP guardado") if es
+              else ("Variable", "Type", "Offset", "to saved RIP"))
+        tbl = (f'<table class="dectech"><thead><tr>' + "".join(f"<th>{_esc(x)}</th>" for x in th)
+               + f'</tr></thead><tbody>{rows}</tbody></table>')
+    note = ("'a RIP guardado' = |offset| + tamano de palabra: es el numero de bytes de entrada para "
+            "pisar la direccion de retorno desde esa variable (offset de overflow)." if es else
+            "'to saved RIP' = |offset| + word size: the number of input bytes to overwrite the return "
+            "address from that variable (overflow offset).")
+    lbl = "Ficha tecnica" if es else "Technical fiche"
+    return (f'<details class="sec" open><summary>{lbl}</summary>'
+            + ("<div class='mut' style='margin:4px 0'>" + " &middot; ".join(head + meta) + "</div>" if (head or meta) else "")
+            + tbl + (f"<p class='mut' style='font-size:11.5px;margin:6px 0 0'>{_esc(note)}</p>" if tbl else "")
+            + "</details>")
+
+
 def _decompiled_html(decompiled, lang: str = "es") -> str:
     """Seccion de decompilacion: pseudo-C conciliado + explicacion por funcion, la COMPARATIVA lado a
     lado de cada motor (Ghidra vs decai vs r2) y el contraste determinista entre ellos."""
@@ -101,10 +144,11 @@ def _decompiled_html(decompiled, lang: str = "es") -> str:
         if crosscheck:
             lbl = "Contraste entre motores" if es else "Cross-check between engines"
             cross_html = (f'<div class="deccross"><b>{_esc(lbl)}:</b> {_esc(crosscheck)}</div>')
+        tech_html = _dec_tech_html(getattr(d, "tech", {}) or {}, es)
         suffix = " + LLM" if ann.strip() else ""
         cards += (f'<div class="decfn"><div class="decfn-h"><span class="decfn-t">{_esc(func)}</span>'
                   f'<span class="decfn-e">{_esc(elabel)}{suffix}</span></div>'
-                  f'<div class="md">{body}</div>{cross_html}{cmp_html}</div>')
+                  f'{tech_html}<div class="md">{body}</div>{cross_html}{cmp_html}</div>')
     return f'<h2 data-i18n="decompiled" id="sec-dec"></h2>{cards}'
 
 
@@ -1630,6 +1674,9 @@ h2[id]{scroll-margin-top:16px}
 .deccol-h{font:700 11px sans-serif;padding:6px 9px;background:var(--panel);border-bottom:1px solid var(--line);color:var(--acc)}
 .deccol pre{margin:0;max-height:340px;overflow:auto}
 .deccross{border-left:3px solid var(--acc);background:var(--code);padding:8px 11px;border-radius:6px;font-size:12.5px;margin:8px 0}
+.dectech{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
+.dectech th,.dectech td{border:1px solid var(--line);padding:4px 8px;text-align:left}
+.dectech th{background:var(--code);color:var(--mut);font-size:11px;text-transform:uppercase}
 .cvssb{color:#fff;font:700 10px ui-monospace,monospace;padding:2px 7px;border-radius:5px;letter-spacing:.02em}
 .cvssbox{border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--code);margin:2px 0 4px}
 .cvssrow{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:5px}
