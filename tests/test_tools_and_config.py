@@ -542,6 +542,15 @@ def test_cve_exploit_plan():
     assert plan("blah blah", {}, lang="es").ok is False
 
 
+def test_cveplan_script_from_proof():
+    from binoracle.workflows.cveplan import _pwn_script_from_proof
+    s = _pwn_script_from_proof({"strategy": "ret2win", "offset": 72, "win": "0x401156"}, "vuln")
+    assert "OFFSET = 72" in s and "0x401156" in s and "from pwn import" in s and "./vuln" in s
+    s2 = _pwn_script_from_proof({"strategy": "ret2libc+leak (2 etapas)", "offset": 88}, "b")
+    assert "rop.puts(elf.got['puts'])" in s2 and "libc" in s2
+    assert _pwn_script_from_proof({"strategy": "ret2win"}, "x").endswith("offset no resuelto")
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP

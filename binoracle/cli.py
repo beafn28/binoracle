@@ -59,19 +59,13 @@ def _require_binary(path: str) -> str:
 def cmd_cveplan(args, config):
     """Esquema de explotacion a partir de una CVE / descripcion (a la inversa: de la vuln al exploit).
     Con --binary, concreta las mitigaciones desde checksec."""
-    from .workflows.cveplan import plan, render_plan
-    facts = {}
+    from .workflows.cveplan import plan, plan_for_binary, render_plan
     if getattr(args, "binary", None):
-        try:
-            reg = build_registry(args.binary)
-            cs = reg.get("r2_checksec")
-            r = cs.run() if cs else None
-            if r and r.ok:
-                facts = {"nx": r.meta.get("nx"), "pie": r.meta.get("pic"),
-                         "canary": r.meta.get("canary"), "relro": r.meta.get("relro")}
-        except Exception:
-            pass
-    pl = plan(args.text, facts, cve=getattr(args, "cve", ""), lang=config.lang)
+        # concreta el esquema con el binario (offset/gadgets reales) y verifica en sandbox
+        pl = plan_for_binary(args.binary, text=args.text, cve=getattr(args, "cve", ""),
+                             lang=config.lang, verify=not getattr(args, "no_verify", False))
+    else:
+        pl = plan(args.text, {}, cve=getattr(args, "cve", ""), lang=config.lang)
     print(render_plan(pl, config.lang))
 
 
@@ -630,8 +624,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     cp = sub.add_parser("cveplan", help="exploitation schema from a CVE/vulnerability description")
     cp.add_argument("text", help="CVE id or vulnerability description text")
-    cp.add_argument("--binary", help="optional binary to pull mitigations (checksec) from")
+    cp.add_argument("--binary", help="binary to concretize the plan (real offset/gadgets) + verify")
     cp.add_argument("--cve", default="", help="CVE id label for the plan")
+    cp.add_argument("--no-verify", action="store_true", help="do not run the sandbox verification")
     cp.set_defaults(func=cmd_cveplan)
 
     t = sub.add_parser("triage", help="grounded facts + mitigations (no model needed)")
