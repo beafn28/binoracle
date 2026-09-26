@@ -633,7 +633,7 @@ def run_streaming(command, binary, ai, emit, text=""):
     import os
     # 'train' corre sobre el corpus del repo; 'exploit' puede derivar el esquema+plantilla solo con
     # la descripcion de la CVE. El resto de comandos si exigen un binario cargado.
-    _needs_binary = command not in ("train", "exploit", "dataset", "investigate", "fetch")
+    _needs_binary = command not in ("train", "exploit", "dataset", "fetch")
     if _needs_binary and (not binary or not os.path.exists(binary)):
         emit("step", f"error: binario no encontrado: {binary}")
         emit("done", "")
@@ -683,62 +683,24 @@ def run_streaming(command, binary, ai, emit, text=""):
                          f"{nver} VERIFICADAS por ejecucion. Gadgets: {len(an.gadgets)}.")
             emit("html", render_chains_page(an, config.lang))
         elif command == "exploit":
-            # Apartado CVE -> exploit funcional: a partir de la info de la vuln (texto de la CVE) y el
-            # binario, deriva el esquema y DESARROLLA el exploit mas funcional posible, verificado en
-            # sandbox cuando la cadena es ejecutable.
-            from .workflows.cveplan import plan_for_binary, plan
-            from .workflows.cvelookup import is_cve_id, fetch_cve, render_cve_info
-            from .report.html import render_exploit_page
-            desc = (text or "").strip()
-            cve = desc if desc.upper().startswith("CVE-") else ""
-            has_bin = bool(binary and os.path.exists(binary))
-            # Si el texto es un identificador CVE, consulta la NVD: descripcion + si YA hay exploit
-            # publico (Exploit-DB/GitHub/PacketStorm). Si no consta, es un 'hueco' y lo desarrollamos.
-            cve_intro = ""
-            cid = is_cve_id(desc)
-            if cid:
-                emit("step", f"consultando la NVD y referencias de exploit para {cid}...")
-                info = fetch_cve(cid)
-                cve_intro = render_cve_info(info, config.lang)
-                if info.ok:
-                    cve = info.cve_id
-                    desc = info.description or desc     # usa la descripcion oficial para clasificar
-                    if info.is_gap:
-                        emit("step", f"{cid}: NO consta exploit publico (hueco) -> binoracle desarrolla uno.")
-                    elif info.has_public_exploit:
-                        emit("step", f"{cid}: ya existe exploit publico ({', '.join(dict.fromkeys(r.source for r in info.exploit_refs))}); aun asi desarrollo el esquema.")
-                else:
-                    emit("step", f"{cid}: {info.note}")
-            if has_bin:
-                emit("step", "clasificando la vulnerabilidad" + (f": '{desc[:80]}'" if desc else
-                             " a partir de los hechos del binario (control de RIP)..."))
-                emit("step", "concretando offset/gadgets/objetivo reales con el analizador de cadenas...")
-                emit("step", "desarrollando y VERIFICANDO el exploit por ejecucion en sandbox...")
-                pl = plan_for_binary(binary, text=desc, cve=cve, lang=config.lang, verify=True)
-            else:
-                # Sin binario: deriva el esquema y DESARROLLA la plantilla funcional solo con la
-                # descripcion de la CVE (no hay verificacion en sandbox, no hay offset concreto).
-                if not desc:
-                    emit("step", "escribe el id de la CVE o describe la vulnerabilidad "
-                                 "(p.ej. 'stack buffer overflow'), o carga un binario para verificar.")
-                    emit("html", render_exploit_page(None, binary or "target", config.lang,
-                                                     intro_md=cve_intro))
-                    emit("done", "")
-                    return
-                emit("step", f"clasificando la vulnerabilidad: '{desc[:80]}'...")
-                emit("step", "sin binario: desarrollando la plantilla de exploit para la clase "
-                             "(cargalo arriba para concretar offset/gadgets y verificar en sandbox)...")
-                pl = plan(desc, {}, cve=cve, lang=config.lang)
-            if getattr(pl, "verified", False):
-                emit("step", "exploit VERIFICADO: cadena ejecutada en sandbox, objetivo alcanzado. "
-                             "Script pwntools listo para descargar.")
-            elif getattr(pl, "ok", False):
-                emit("step", ("esquema y plantilla desarrollados." if not has_bin else
-                              "esquema derivado; no se pudo verificar una cadena ejecutable en sandbox "
-                              "(revisa mitigaciones/arquitectura).") + " Script pwntools listo para descargar.")
-            else:
-                emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
-            emit("html", render_exploit_page(pl, binary or "target", config.lang, intro_md=cve_intro))
+            # Apartado unico CVE -> exploit funcional: consulta la CVE (NVD+GitHub+Exploit-DB), el
+            # LLM investiga (clase/objetivo/disparador/estrategia), auto-fuzzing descubre el trigger
+            # y (con binario) VERIFICA el exploit en sandbox. Fusiona lo que antes eran dos apartados
+            # separados (CVE->Exploit + Investigar-LLM): un solo cuadro de texto, un solo resultado.
+            from .workflows.cve_agent import investigate_cve, render_investigation
+            from .report.html import render_investigation_page
+            cve_or_desc = (text or "").strip()
+            if not cve_or_desc:
+                emit("step", "escribe un id CVE (p.ej. CVE-2024-33599) o describe la vulnerabilidad "
+                             "(p.ej. 'stack buffer overflow'); carga un binario arriba para verificar.")
+                emit("html", render_investigation_page("", "", "target", config.lang))
+                emit("done", "")
+                return
+            binp = binary if (binary and os.path.exists(binary)) else ""
+            inv = investigate_cve(cve_or_desc, binary=binp, config=config,
+                                  on_step=lambda m: emit("step", m), lang=config.lang)
+            emit("html", render_investigation_page(render_investigation(inv, config.lang),
+                                                   inv.developed_script, inv.cve_id, config.lang))
         elif command == "fetch":
             # Extrae el binario vulnerable real de una imagen Docker (docker create + cp, sin ejecutar
             # el entrypoint). Entrada de texto: "<imagen> <ruta_o_nombre>".
@@ -757,22 +719,6 @@ def run_streaming(command, binary, ai, emit, text=""):
             dest = os.path.join(tempfile.gettempdir(), "binoracle_fetched")
             res = fetch_from_image(image, path, dest_dir=dest, on_step=lambda m: emit("step", m))
             emit("html", render_training_page(render_fetch(res, config.lang), config.lang))
-        elif command == "investigate":
-            # Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando.
-            # El LLM razona; con binario, verifica en sandbox. Informe honesto (verificado/bloqueos).
-            from .workflows.cve_agent import investigate_cve, render_investigation
-            from .report.html import render_investigation_page
-            cve_or_desc = (text or "").strip()
-            if not cve_or_desc:
-                emit("step", "escribe un id CVE (p.ej. CVE-2024-33599) o una descripcion de la vuln.")
-                emit("html", render_investigation_page("", "", "target", config.lang))
-                emit("done", "")
-                return
-            binp = binary if (binary and os.path.exists(binary)) else ""
-            inv = investigate_cve(cve_or_desc, binary=binp, config=config,
-                                  on_step=lambda m: emit("step", m), lang=config.lang)
-            emit("html", render_investigation_page(render_investigation(inv, config.lang),
-                                                   inv.developed_script, inv.cve_id, config.lang))
         elif command == "train":
             # Agente entrenador: desarrolla+verifica exploits sobre el corpus y cura lo verificado,
             # subiendo la habilidad de forma medible. Streaming para ver el progreso en vivo.
@@ -1196,9 +1142,8 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"Desarrollo de exploits"},
- {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
- {c:"investigate",n:"Investigar (LLM)",ic:"~",d:"Agente LLM: de la CVE al exploit, investigando y probando. Razona, desarrolla y (con binario) verifica en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id (p.ej. CVE-2024-33599) o descripcion de la vuln",t:"text"}]},
- {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE->Exploit o Investigar.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
+ {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id (p.ej. CVE-2024-33599) o descripcion de la vuln",t:"text"}]},
+ {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"#",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {g:"Pentest / Reversing de binarios"},
  {c:"audit",n:"Auditar",ic:"*",d:"Analiza el binario y LISTA sus vulnerabilidades (hallazgos con evidencia), construye y verifica el exploit"},
@@ -1252,7 +1197,7 @@ function stream(command,options){var out=document.getElementById('out');var g=do
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','investigate','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';
