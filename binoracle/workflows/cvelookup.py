@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId="
+# Base curada de PoCs publicados en GitHub, por CVE (JSON por CVE). Fuente directa de "hay PoC".
+GH_POC = "https://raw.githubusercontent.com/nomi-sec/PoC-in-GitHub/master/{year}/{cve}.json"
 _CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.I)
 
 
@@ -69,8 +71,55 @@ def _classify_ref(url: str) -> ExploitRef:
     return ExploitRef(url=url, source="otro")
 
 
-def fetch_cve(cve_id: str, timeout: float = 8.0) -> CVEInfo:
-    """Descarga la CVE de la NVD. No lanza: ante error de red devuelve ok=False con nota."""
+def search_github_poc(cve_id: str, timeout: float = 6.0) -> List[ExploitRef]:
+    """Consulta la base curada de PoCs en GitHub (nomi-sec/PoC-in-GitHub) para la CVE. Devuelve las
+    referencias de repos con PoC (vacio si no hay o sin internet). Es una senal directa de exploit
+    publico, complementaria a las referencias de la NVD."""
+    cid = (cve_id or "").upper().strip()
+    m = re.fullmatch(r"CVE-(\d{4})-\d{4,}", cid)
+    if not m:
+        return []
+    url = GH_POC.format(year=m.group(1), cve=cid)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return []
+    refs = []
+    for item in (data or []):
+        html = item.get("html_url") or ""
+        if html:
+            refs.append(ExploitRef(url=html, source="github"))
+    return refs
+
+
+def search_searchsploit(cve_id: str, timeout: float = 8.0) -> List[ExploitRef]:
+    """Si `searchsploit` (Exploit-DB local) esta instalado, busca la CVE y devuelve las referencias
+    EDB encontradas. Best-effort: si no esta, devuelve vacio (no es un error)."""
+    import shutil
+    import subprocess
+    exe = shutil.which("searchsploit")
+    if not exe:
+        return []
+    cid = (cve_id or "").upper().strip()
+    try:
+        out = subprocess.run([exe, "--cve", cid, "-j"], capture_output=True, text=True, timeout=timeout)
+        data = json.loads(out.stdout or "{}")
+    except Exception:
+        return []
+    refs = []
+    for row in (data.get("RESULTS_EXPLOIT") or []):
+        edb = str(row.get("EDB-ID") or row.get("Codes") or "")
+        path = row.get("Path") or row.get("URL") or ""
+        url = f"https://www.exploit-db.com/exploits/{edb}" if edb.isdigit() else path
+        refs.append(ExploitRef(url=url, source="exploit-db", edb_id=edb if edb.isdigit() else ""))
+    return refs
+
+
+def fetch_cve(cve_id: str, timeout: float = 8.0, enrich: bool = True) -> CVEInfo:
+    """Descarga la CVE de la NVD y, si `enrich`, cruza con PoCs de GitHub + Exploit-DB (searchsploit)
+    para una deteccion de exploit publico mas completa. No lanza: ante error de red -> ok=False."""
     cid = (cve_id or "").upper().strip()
     info = CVEInfo(cve_id=cid)
     if not _CVE_RE.fullmatch(cid):
@@ -104,7 +153,7 @@ def fetch_cve(cve_id: str, timeout: float = 8.0) -> CVEInfo:
                                   metrics[key][0].get("baseSeverity") or "")
             info.cvss_vector = m0.get("vectorString", "")
             break
-    # referencias + deteccion de exploit publico
+    # referencias + deteccion de exploit publico (1) por las etiquetas de la NVD
     for ref in cve.get("references", []):
         url = ref.get("url", "")
         tags = ref.get("tags", []) or []
@@ -112,6 +161,14 @@ def fetch_cve(cve_id: str, timeout: float = 8.0) -> CVEInfo:
         if "Exploit" in tags:
             info.has_public_exploit = True
             info.exploit_refs.append(_classify_ref(url))
+    # (2) crawling complementario: PoCs en GitHub (nomi-sec) + Exploit-DB (searchsploit si esta)
+    if enrich:
+        seen = {r.url for r in info.exploit_refs}
+        for r in (search_github_poc(cid) + search_searchsploit(cid)):
+            if r.url and r.url not in seen:
+                seen.add(r.url)
+                info.exploit_refs.append(r)
+                info.has_public_exploit = True
     info.ok = bool(info.description)
     if not info.ok and not info.note:
         info.note = "la NVD no incluyo descripcion para esa CVE"
@@ -130,7 +187,10 @@ def render_cve_info(info: CVEInfo, lang: str = "es") -> str:
         out.append(("Publicada: " if es else "Published: ") + info.published)
     out.append("\n" + info.description)
     if info.has_public_exploit:
-        srcs = ", ".join(dict.fromkeys(r.source for r in info.exploit_refs)) or "referencias"
+        counts = {}
+        for r in info.exploit_refs:
+            counts[r.source] = counts.get(r.source, 0) + 1
+        srcs = ", ".join(f"{k}: {v}" for k, v in counts.items()) or "referencias"
         out.append("\n**" + ("Exploit publico: SI consta" if es else "Public exploit: YES") +
                    f"** ({srcs}). " +
                    ("No es un hueco: revisa el PoC existente antes de desarrollar." if es else
@@ -138,10 +198,13 @@ def render_cve_info(info: CVEInfo, lang: str = "es") -> str:
         for r in info.exploit_refs[:8]:
             tag = f"EDB-{r.edb_id}" if r.edb_id else r.source
             out.append(f"- [{tag}] {r.url}")
+        if len(info.exploit_refs) > 8:
+            out.append(("...y %d mas" % (len(info.exploit_refs) - 8)) if es else
+                       ("...and %d more" % (len(info.exploit_refs) - 8)))
     else:
-        out.append("\n**" + ("Exploit publico: NO consta en las referencias de la NVD (posible hueco)"
+        out.append("\n**" + ("Exploit publico: NO consta (NVD + GitHub + Exploit-DB) -> posible hueco"
                              if es else
-                             "Public exploit: NONE in NVD references (possible gap)") + "**. " +
+                             "Public exploit: NONE (NVD + GitHub + Exploit-DB) -> possible gap") + "**. " +
                    ("binoracle desarrolla una aproximacion abajo." if es else
                     "binoracle develops an approximation below."))
     return "\n".join(out)

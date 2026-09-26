@@ -925,3 +925,21 @@ def test_classify_cve_accepts_canonical_ids():
     from binoracle.workflows.cveplan import classify_cve
     for cid in ("stack-overflow", "heap-overflow", "uaf", "format-string", "oob-write"):
         assert classify_cve(cid) == cid
+
+
+def test_exploitdb_github_crawl_graceful_and_render():
+    # Las fuentes extra (GitHub PoC + searchsploit) no lanzan y devuelven [] con entrada invalida
+    # (sin red). El render agrupa por fuente con conteo.
+    from binoracle.workflows.cvelookup import (search_github_poc, search_searchsploit,
+                                               render_cve_info, CVEInfo, ExploitRef)
+    assert search_github_poc("no-es-cve") == []
+    assert search_searchsploit("no-es-cve") == []
+    pub = CVEInfo(cve_id="CVE-2099-0003", ok=True, description="stack overflow",
+                  has_public_exploit=True,
+                  exploit_refs=[ExploitRef(url="https://github.com/a/b", source="github"),
+                                ExploitRef(url="https://github.com/c/d", source="github"),
+                                ExploitRef(url="https://www.exploit-db.com/exploits/9", source="exploit-db", edb_id="9")])
+    md = render_cve_info(pub, "es")
+    assert "SI consta" in md and "github: 2" in md and "exploit-db: 1" in md
+    gap = CVEInfo(cve_id="CVE-2099-0004", ok=True, description="heap overflow")
+    assert "posible hueco" in render_cve_info(gap, "es")
