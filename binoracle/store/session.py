@@ -233,6 +233,31 @@ class SessionStore:
         self._conn.close()
 
 
+def delete_binary(db_path, bin_id: str) -> dict:
+    """Borra del historial un binario analizado y TODO lo asociado (facts, findings, annotations,
+    knowledge por-binario). Los global_facts son conocimiento agregado/anonimo entre binarios y NO
+    se tocan. Devuelve el recuento de filas eliminadas por tabla."""
+    import os, sqlite3
+    if not bin_id or not os.path.exists(str(db_path)):
+        return {"ok": False, "error": "no db o bin_id vacio"}
+    conn = sqlite3.connect(str(db_path))
+    deleted = {}
+    try:
+        exists = conn.execute("SELECT 1 FROM binaries WHERE bin_id=? LIMIT 1", (bin_id,)).fetchone()
+        if not exists:
+            return {"ok": False, "error": "bin_id no encontrado"}
+        for table in ("facts", "findings", "annotations", "knowledge", "binaries"):
+            try:
+                cur = conn.execute(f"DELETE FROM {table} WHERE bin_id=?", (bin_id,))
+                deleted[table] = cur.rowcount
+            except sqlite3.OperationalError:
+                deleted[table] = 0
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "bin_id": bin_id, "deleted": deleted}
+
+
 def list_all_binaries(db_path):
     """List every analyzed binary in the DB (for history), without needing a target."""
     import os, sqlite3

@@ -324,6 +324,12 @@ def run_command(payload: dict) -> dict:
     if cmd == "history":
         from .store.session import list_all_binaries
         return {"ok": True, "history": list_all_binaries(config.db_path())}
+    if cmd == "history_delete":
+        from .store.session import delete_binary, list_all_binaries
+        bid = (opts.get("bin_id") or "").strip()
+        res = delete_binary(config.db_path(), bid)
+        res["history"] = list_all_binaries(config.db_path())
+        return res
     if cmd == "regress":
         import os as _os
         old = (opts.get("old") or "").strip()
@@ -931,12 +937,15 @@ main{flex:1;display:flex;min-height:0}
 .side.collapsed .lab,.side.collapsed .grp{display:none}
 .side.collapsed button{justify-content:center;padding:9px 0}
 .side.collapsed .ic{width:auto;font-size:15px}
-.hrow{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:8px 0;background:var(--panel2)}
+.hrow{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:8px 0;background:var(--panel2);display:flex;align-items:center;gap:12px}
 .hrow:hover{border-color:var(--acc)}
+.hrow .hinfo{flex:1;min-width:0}
 .hrow .hn{font-weight:600}
 .hrow .hp{color:var(--mut);font:11px ui-monospace,monospace;word-break:break-all;margin:2px 0}
 .hrow .hm{color:var(--mut);font-size:12px}
 .hrow .del{color:#e5484d}
+.hdel{flex:none;background:transparent;border:1px solid var(--line);color:#e5484d;border-radius:7px;padding:5px 12px;font-size:12px;cursor:pointer}
+.hdel:hover{background:#e5484d;color:#fff;border-color:#e5484d}
 .sidetb{display:flex;gap:6px;padding:4px 6px 8px;border-bottom:1px solid var(--line);margin-bottom:4px}
 .stb{flex:1;background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 0;cursor:pointer;font:13px ui-monospace,monospace}
 .stb:hover{border-color:var(--acc)}
@@ -1185,10 +1194,23 @@ async function loadHistory(){var out=document.getElementById('out');out.innerHTM
  var card=document.createElement('div');card.className='card';var h=document.createElement('h3');h.textContent='Historial de binarios analizados';card.appendChild(h);
  if(!H.length){var e=document.createElement('div');e.className='empty';e.style.height='auto';e.textContent='Sin binarios analizados todavia.';card.appendChild(e);}
  H.forEach(function(b){var row=document.createElement('div');row.className='hrow';
-  row.innerHTML='<div class="hn">'+b.name+(b.exists?'':' <span class="del">(no disponible)</span>')+'</div><div class="hp">'+b.path+'</div><div class="hm">'+b.findings+' hallazgos, '+b.knowledge+' notas IA</div>';
-  if(b.exists){row.style.cursor='pointer';row.addEventListener('click',function(){document.getElementById('target').value=b.path;dash();});}
+  var info=document.createElement('div');info.className='hinfo';
+  info.innerHTML='<div class="hn">'+b.name+(b.exists?'':' <span class="del">(no disponible)</span>')+'</div><div class="hp">'+b.path+'</div><div class="hm">'+b.findings+' hallazgos, '+b.knowledge+' notas IA</div>';
+  if(b.exists){info.style.cursor='pointer';info.addEventListener('click',function(){document.getElementById('target').value=b.path;dash();});}
+  row.appendChild(info);
+  var del=document.createElement('button');del.className='hdel';del.title='Borrar del historial';del.textContent='Borrar';
+  del.addEventListener('click',function(ev){ev.stopPropagation();delHistory(b.bin_id,b.name);});
+  row.appendChild(del);
   card.appendChild(row);});
  out.appendChild(card);}
+async function delHistory(binId,name){
+ if(!confirm('Borrar del historial "'+name+'" y todos sus hallazgos/notas? Esta accion no se puede deshacer.'))return;
+ try{
+  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'history_delete',binary:'',options:{bin_id:binId}})});
+  var j=await r.json();
+  if(j.ok){loadHistory();}
+  else{alert('No se pudo borrar: '+(j.error||'error'));}
+ }catch(e){alert('error borrando: '+e);}}
 function toggleTheme(){const r=document.documentElement;r.setAttribute('data-theme',r.getAttribute('data-theme')==='light'?'dark':'light');}
 async function applyRag(setk){
  var st=document.getElementById('ragstatus'); if(st) st.textContent='aplicando...';

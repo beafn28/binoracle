@@ -653,3 +653,95 @@ def test_web_tools_command():
     from binoracle.web import run_command
     r = run_command({"command": "tools", "options": {}})
     assert r["ok"] and "toolchain" in r["text"]
+
+
+def test_cveplan_html_schema_and_verified_exploit():
+    # El informe muestra el ESQUEMA de explotacion (clase -> primitiva -> concrecion -> fases ->
+    # mitigaciones) y, si hay cadena verificada, la PRUEBA y el script pwntools desarrollado.
+    from binoracle.workflows.cveplan import plan_from_analysis
+    from binoracle.report.html import _cveplan_html
+
+    class FakeChain:
+        name = "ret2win"; verified = True; target = "win"
+        proof = {"strategy": "ret2win", "offset": 72, "win": "0x401156", "output": "uid=0(root)"}
+
+    class FakeAn:
+        ok = True; target = "win"
+        control = {"RIP": True, "rip_offset": 72,
+                   "reg_gadgets": {"rdi": {"addr": "0x401234"}}, "pivot_gadget": None}
+        gadgets = list(range(120)); chains = [FakeChain()]
+
+    pl = plan_from_analysis(FakeAn(), {"nx": True, "pie": False, "canary": False, "relro": "partial"},
+                            binary_name="vuln", lang="es")
+    assert pl.ok and pl.vuln_class == "stack-overflow"
+    assert pl.verified and pl.concrete.get("offset") == 72 and pl.script
+    for lang in ("es", "en"):
+        html = _cveplan_html(pl, lang)
+        assert 'id="sec-exploitplan"' in html
+        assert "0x401234" in html and "uid=0(root)" in html
+        assert "pwntools" in html.lower()
+        assert "—" not in html  # sin guiones largos
+    # sin analisis reconocible -> sin seccion
+    from binoracle.workflows.cveplan import ExploitPlan
+    assert _cveplan_html(ExploitPlan(), "es") == ""
+
+
+def test_report_embeds_exploit_plan_toc():
+    # render_html enlaza la seccion en el indice solo cuando hay plan concreto (no crashea sin chains).
+    from binoracle.report.html import render_html
+    out = render_html("target.bin", findings=[], lang="es", chains=None)
+    assert "sec-exploitplan" not in out  # sin chains, sin seccion
+
+
+def test_history_delete_removes_scan():
+    # Se puede borrar un binario del historial junto con sus hallazgos/facts/notas.
+    import os, tempfile
+    from binoracle.store.session import SessionStore, delete_binary, list_all_binaries, Finding
+    d = tempfile.mkdtemp()
+    b = os.path.join(d, "target.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+    db = os.path.join(d, "sess.db")
+    s = SessionStore(db, b)
+    s.add_finding(Finding(title="stack overflow", severity="high", verdict="verified",
+                          evidence="[sandbox] uid=0", location="main"))
+    s.add_fact("r2", "r2", "aaa ok")
+    bid = s.bin_id
+    s.close()
+    assert len(list_all_binaries(db)) == 1
+    res = delete_binary(db, bid)
+    assert res["ok"] and res["deleted"]["binaries"] == 1 and res["deleted"]["findings"] == 1
+    assert list_all_binaries(db) == []
+    assert delete_binary(db, "deadbeef")["ok"] is False
+
+
+def test_web_history_delete_command():
+    from binoracle.web import run_command
+    r = run_command({"command": "history_delete", "options": {"bin_id": ""}})
+    assert r["ok"] is False  # bin_id vacio -> no borra
+    assert "history" in r  # aun asi devuelve el historial actualizado
+
+
+def test_cveplan_exports_developed_exploit(tmp_path, capsys):
+    # binoracle DESARROLLA el exploit: --out escribe un script pwntools ejecutable, anclado a la
+    # cadena verificada. Aqui forzamos un plan con script y comprobamos la exportacion.
+    import os, types
+    from binoracle import cli
+    from binoracle.workflows import cveplan as CV
+    pl = CV.ExploitPlan(vuln_class="stack-overflow", primitive="RIP", verified=True)
+    pl.proof = {"strategy": "ret2win", "offset": 72, "win": "0x401156"}
+    pl.script = CV._pwn_script_from_proof(pl.proof, "vuln")
+    orig = CV.plan_for_binary
+    CV.plan_for_binary = lambda *a, **k: pl
+    try:
+        out = str(tmp_path / "exploit.py")
+        cfg = types.SimpleNamespace(lang="es")
+        args = types.SimpleNamespace(binary="./vuln", text="stack overflow", cve="",
+                                     no_verify=False, out=out)
+        cli.cmd_cveplan(args, cfg)
+    finally:
+        CV.plan_for_binary = orig
+    assert os.path.exists(out)
+    assert os.stat(out).st_mode & 0o111  # ejecutable
+    body = open(out).read()
+    assert "from pwn import *" in body and "OFFSET = 72" in body

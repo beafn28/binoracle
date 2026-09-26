@@ -67,6 +67,26 @@ def cmd_cveplan(args, config):
     else:
         pl = plan(args.text, {}, cve=getattr(args, "cve", ""), lang=config.lang)
     print(render_plan(pl, config.lang))
+    # exporta el exploit DESARROLLADO (script pwntools reproducible) a un fichero ejecutable
+    out = getattr(args, "out", None)
+    if out:
+        if not pl.script:
+            print(("\n[!] sin exploit desarrollado que exportar (no hubo cadena verificada; "
+                   "usa --binary y no pases --no-verify)" if config.lang == "es" else
+                   "\n[!] no developed exploit to export (no verified chain; use --binary without "
+                   "--no-verify)"))
+        else:
+            import os as _os
+            with open(out, "w") as fh:
+                fh.write(pl.script + "\n")
+            try:
+                _os.chmod(out, 0o755)
+            except OSError:
+                pass
+            print(("\n[+] exploit desarrollado escrito en " if config.lang == "es" else
+                   "\n[+] developed exploit written to ") + out
+                  + (" (verificado en sandbox)" if pl.verified and config.lang == "es" else
+                     (" (sandbox-verified)" if pl.verified else "")))
 
 
 def cmd_doctor(args, config):
@@ -627,6 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--binary", help="binary to concretize the plan (real offset/gadgets) + verify")
     cp.add_argument("--cve", default="", help="CVE id label for the plan")
     cp.add_argument("--no-verify", action="store_true", help="do not run the sandbox verification")
+    cp.add_argument("--out", help="write the developed pwntools exploit script to this file (executable)")
     cp.set_defaults(func=cmd_cveplan)
 
     t = sub.add_parser("triage", help="grounded facts + mitigations (no model needed)")

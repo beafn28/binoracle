@@ -598,7 +598,7 @@ def _owasp_html(findings, lang: str) -> str:
     from .render import owasp_desktop_coverage
     es = lang != "en"
     cov = owasp_desktop_coverage(findings)
-    head = "OWASP Desktop Top 10 — cobertura" if es else "OWASP Desktop Top 10 — coverage"
+    head = "OWASP Desktop Top 10: cobertura" if es else "OWASP Desktop Top 10: coverage"
     intro = ("Mapeo de hallazgos al marco OWASP Desktop App Security Top 10 (metodologia Fase 9). "
              "Solo se marca 'revisado, sin hallazgo' lo que binoracle examina de verdad; el resto "
              "se marca 'no evaluado' (fuera del alcance del analisis actual)." if es else
@@ -615,9 +615,9 @@ def _owasp_html(findings, lang: str) -> str:
             det = _esc("; ".join(dict.fromkeys(hits)))
             st = f'<b style="color:#d9822b">{with_f}</b>'
         elif covered:
-            det = "—"; st = f'<span style="color:#30a46c">{none_f}</span>'
+            det = "-"; st = f'<span style="color:#30a46c">{none_f}</span>'
         else:
-            det = "—"; st = f'<span class="mut">{na_f}</span>'
+            det = "-"; st = f'<span class="mut">{na_f}</span>'
         rows += f'<tr><td>{cid} {_esc(name)}</td><td>{st}</td><td>{det}</td></tr>'
     return (f'<h2 id="sec-owasp">{_esc(head)}</h2><p class="sechelp">{_esc(intro)}</p>'
             f'<table class="owasp" style="width:100%;border-collapse:collapse">'
@@ -632,17 +632,20 @@ def _toc(lang: str, has) -> str:
                 "cfg": "Grafo de flujo interactivo",
                 "find": "Hallazgos", "owasp": "OWASP Desktop Top 10", "mit": "Mitigaciones y remediacion",
                 "chain": "Cadena de explotacion", "xchain": "Analizador de cadenas (grafo)",
+                "exploitplan": "Esquema de explotacion",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
          "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
                 "exploit": "Exploit step by step", "dec": "Annotated decompilation",
                 "cfg": "Interactive control-flow graph",
                 "find": "Findings", "owasp": "OWASP Desktop Top 10", "mit": "Mitigations & remediation",
                 "chain": "Exploitation chain", "xchain": "Chain analyzer (graph)",
+                "exploitplan": "Exploitation schema",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
     order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
              ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("owasp", "sec-owasp"),
              ("mit", "sec-mit"),
-             ("chain", "sec-chain"), ("xchain", "sec-xchain"), ("surface", "sec-surface"),
+             ("chain", "sec-chain"), ("xchain", "sec-xchain"), ("exploitplan", "sec-exploitplan"),
+             ("surface", "sec-surface"),
              ("refs", "sec-refs"), ("trail", "sec-trail")]
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
                     for key, aid in order if has.get(key))
@@ -901,6 +904,18 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     decompiled_html = _decompiled_html(decompiled, lang)
     cfg_html = _cfg_html(cfg, lang)
     exploit_graph_html = _exploit_html(chains, lang)
+    # Esquema de explotacion (de la vulnerabilidad al exploit): reutiliza el analisis de cadenas ya
+    # calculado (sin re-ejecutar el sandbox) para concretar offset/gadgets/objetivo y, si hay cadena
+    # verificada, adjuntar la prueba y el script pwntools reproducible.
+    cveplan_html = ""
+    try:
+        from ..workflows.cveplan import plan_from_analysis
+        _facts = {"nx": mit.get("NX"), "pie": mit.get("PIE"),
+                  "canary": mit.get("Canary"), "relro": mit.get("RELRO")}
+        _pl = plan_from_analysis(chains, _facts, binary_name=binary, lang=lang)
+        cveplan_html = _cveplan_html(_pl, lang)
+    except Exception:
+        cveplan_html = ""
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
     attack_chain_html = _attack_chain(findings, mit, lang)
@@ -914,7 +929,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
-            "owasp": bool(owasp_html),
+            "owasp": bool(owasp_html), "exploitplan": bool(cveplan_html),
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
             "xchain": bool(exploit_graph_html), "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
@@ -978,6 +993,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {exploit_graph_html}
 
+  {cveplan_html}
+
   <h2 data-i18n="attack_surface" id="sec-surface"></h2>
   {triage_sections or '<p class="empty" data-i18n="no_triage"></p>'}
 
@@ -1039,6 +1056,7 @@ _I18N = {
         "cfg_graph": "Grafo de flujo interactivo",
         "attack_chain": "Cadena de explotacion",
         "exploit_chains": "Analizador de cadenas de explotacion",
+        "exploit_plan": "Esquema de explotacion (vulnerabilidad -> exploit)",
         "exploit_steps": "Exploit paso a paso",
         "mit_detail": "Mitigaciones y remediacion",
         "references": "Referencias",
@@ -1065,6 +1083,7 @@ _I18N = {
         "cfg_graph": "Interactive control-flow graph",
         "attack_chain": "Exploitation chain",
         "exploit_chains": "Exploit chain analyzer",
+        "exploit_plan": "Exploitation schema (vulnerability -> exploit)",
         "exploit_steps": "Exploit step by step",
         "mit_detail": "Mitigations and remediation",
         "references": "References",
@@ -1318,6 +1337,89 @@ def _pwn_script(c) -> str:
                 "io.sendline(flat({OFFSET: rop.chain()}))",
                 "io.interactive()"]
     return "\n".join(H + body)
+
+
+def _cveplan_html(plan, lang: str) -> str:
+    """Esquema de explotacion (de la vulnerabilidad al exploit, 'a la inversa'): clase -> primitiva ->
+    concrecion con el binario (offset/gadgets/objetivo) -> fases -> mitigaciones a sortear -> refs del
+    RAG. Si hay cadena VERIFICADA en sandbox, muestra la prueba y el script pwntools reproducible."""
+    if plan is None or not getattr(plan, "ok", False):
+        return ""
+    es = lang == "es"
+    parts = [f'<h2 data-i18n="exploit_plan" id="sec-exploitplan"></h2>']
+    note = (("Esquema tecnico y grounded de explotacion. Solo objetivos autorizados / CTF / research."
+             if es else
+             "Grounded technical exploitation schema. Authorized targets / CTF / research only."))
+    parts.append(f'<p class="poc-note">{_esc(note)}</p>')
+    # cabecera: clase + primitiva (+ cve si hay)
+    head = []
+    if plan.cve:
+        head.append(_badge(plan.cve, "#8e4ec6"))
+    head.append(_badge(("clase: " if es else "class: ") + (plan.vuln_class or "?"), "#5b8def"))
+    if plan.verified:
+        head.append(_badge("VERIFICADO" if es else "VERIFIED", "#30a46c"))
+    parts.append('<div class="xpl-head">' + "".join(head) + '</div>')
+    if plan.primitive:
+        parts.append(f'<p class="xpl-prim"><b>{"Primitiva" if es else "Primitive"}:</b> '
+                     f'{_esc(plan.primitive)}</p>')
+    # concrecion con el binario (datos reales del analizador de cadenas)
+    c = plan.concrete or {}
+    if c:
+        rows = []
+        if c.get("offset") is not None:
+            rows.append((("offset a RIP" if es else "RIP offset"), f'<code>{_esc(c["offset"])}</code>'))
+        if c.get("reg_gadgets"):
+            g = ", ".join(f'{k.upper()}@<code>{_esc(v)}</code>' for k, v in c["reg_gadgets"].items() if v)
+            if g:
+                rows.append(("gadgets", g))
+        if c.get("pivot"):
+            rows.append((("pivot RSP" if es else "RSP pivot"), f'<code>{_esc(c["pivot"])}</code>'))
+        if c.get("target"):
+            rows.append((("objetivo" if es else "target"), f'<code>{_esc(c["target"])}</code>'))
+        if c.get("gadgets_total"):
+            rows.append((("gadgets totales" if es else "total gadgets"), _esc(c["gadgets_total"])))
+        if c.get("chain"):
+            rows.append((("cadena" if es else "chain"), f'<code>{_esc(c["chain"])}</code>'))
+        if rows:
+            body = "".join(f'<tr><th>{_esc(k)}</th><td>{v}</td></tr>' for k, v in rows)
+            parts.append(f'<table class="dectech xpl-conc"><tbody>{body}</tbody></table>')
+    # prueba de la ejecucion en sandbox (si verificada)
+    if plan.verified and plan.proof:
+        pr = plan.proof
+        pline = "  ".join(f'{k}={v}' for k, v in pr.items() if k != "output" and v)
+        parts.append('<div class="xgverified">'
+                     f'<span class="proof-ok">&#10003;</span> '
+                     f'{"Exploit verificado por ejecucion en sandbox" if es else "Exploit verified by sandbox execution"}'
+                     f' &middot; <code>{_esc(pline)}</code></div>')
+        out = (pr.get("output") or "").strip()
+        if out:
+            parts.append(f'<pre class="evpre">{_esc(out[:1200])}</pre>')
+    # fases (paso a paso)
+    if plan.phases:
+        th = (("Fase", "Objetivo", "Tecnica", "Necesita") if es else
+              ("Phase", "Goal", "Technique", "Needs"))
+        head_r = "".join(f'<th>{_esc(x)}</th>' for x in th)
+        body_r = ""
+        for p in plan.phases:
+            body_r += (f'<tr><td><b>{_esc(p.name)}</b></td><td>{_esc(p.goal)}</td>'
+                       f'<td>{_esc(p.technique)}</td><td>{_esc(p.needs)}</td></tr>')
+        parts.append(f'<h4>{"Fases" if es else "Phases"}</h4>'
+                     f'<table class="dectech"><thead><tr>{head_r}</tr></thead><tbody>{body_r}</tbody></table>')
+    # mitigaciones a sortear
+    if plan.mitigations:
+        lis = "".join(f'<li>{_esc(m)}</li>' for m in plan.mitigations)
+        parts.append(f'<h4>{"Mitigaciones a sortear" if es else "Mitigations to bypass"}</h4>'
+                     f'<ul class="xpl-mit">{lis}</ul>')
+    # referencias del RAG (cheat sheets)
+    if plan.kb_refs:
+        chips = "".join(f'<span class="evsrc">{_esc(r)}</span>' for r in plan.kb_refs)
+        parts.append(f'<h4>{"Conocimiento (RAG)" if es else "Knowledge (RAG)"}</h4>'
+                     f'<div class="evchips">{chips}</div>')
+    # script pwntools reproducible (exploit desarrollado)
+    if plan.script:
+        parts.append(f'<h4>{"Exploit desarrollado (pwntools)" if es else "Developed exploit (pwntools)"}</h4>')
+        parts.append(f'<pre class="pwnscript">{_esc(plan.script)}</pre>')
+    return "\n".join(parts)
 
 
 def _exploit_html(an, lang: str) -> str:
@@ -1747,6 +1849,15 @@ h2[id]{scroll-margin-top:16px}
 .cvssmat{color:#fff;font:700 10px ui-monospace,monospace;padding:1px 6px;border-radius:4px}
 .cvssvec{display:block;font:11.5px ui-monospace,monospace;color:var(--codefg);word-break:break-all}
 .poc-note{color:var(--mut);font-size:12px;margin:-4px 0 12px}
+.xpl-head{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.xpl-prim{font-size:13px;margin:6px 0}
+.xpl-conc{max-width:640px}
+.xpl-conc th{width:170px;color:var(--mut);font-weight:600;text-transform:none}
+.xpl-mit{margin:6px 0;padding-left:20px;font-size:13px}
+.xpl-mit li{margin:3px 0}
+div.xgverified{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(48,163,108,.10);border:1px solid #30a46c;border-radius:9px;padding:9px 12px;margin:10px 0;font-size:13px;color:var(--fg)}
+div.xgverified .proof-ok{color:#30a46c;font-weight:700}
+pre.pwnscript{background:#0b0e12;color:#cfe3ff;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;font:12px/1.5 ui-monospace,monospace;white-space:pre}
 .decfn{border:1px solid var(--line);border-radius:11px;margin:10px 0;background:var(--panel);overflow:hidden}
 .decfn-h{display:flex;align-items:center;gap:9px;padding:9px 13px;background:var(--code);border-bottom:1px solid var(--line)}
 .decfn-t{font-weight:700;font-family:ui-monospace,monospace}

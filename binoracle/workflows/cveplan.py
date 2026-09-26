@@ -223,6 +223,42 @@ def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
     return "\n".join(H + B)
 
 
+def plan_from_analysis(an, facts: dict, binary_name: str = "target", text: str = "",
+                       cve: str = "", lang: str = "es") -> ExploitPlan:
+    """Construye el esquema a partir de un ChainAnalysis YA calculado (sin re-ejecutar el sandbox).
+    Para el informe/audit, que ya corre analyze_chains con verify. Concreta offset/gadgets/objetivo
+    y, si hay cadena verificada, adjunta prueba + script pwntools."""
+    import os
+    es = lang == "es"
+    cls = classify_cve(text) or classify_cve(cve)
+    if not cls and an is not None and getattr(an, "control", {}).get("RIP"):
+        cls = "stack-overflow"
+    if not cls:
+        return plan(text or cve, facts, cve=cve, lang=lang)
+    pl = plan(text or ("stack overflow" if cls == "stack-overflow" else cls), facts, cve=cve, lang=lang)
+    pl.vuln_class = cls
+    if an is not None:
+        ctrl = an.control
+        gd = ctrl.get("reg_gadgets") or {}
+        pl.concrete = {"offset": ctrl.get("rip_offset"),
+                       "reg_gadgets": {k: v.get("addr") for k, v in gd.items()},
+                       "pivot": ctrl.get("pivot_gadget"), "target": an.target,
+                       "gadgets_total": len(an.gadgets)}
+        vc = next((c for c in an.chains if getattr(c, "verified", False)), None)
+        if vc is not None:
+            pl.verified = True
+            pl.proof = vc.proof or {}
+            pl.concrete["chain"] = vc.name
+            pl.script = _pwn_script_from_proof(pl.proof, os.path.basename(binary_name))
+            pl.phases.append(Phase(
+                "Exploit VERIFICADO" if es else "VERIFIED exploit",
+                (f"cadena {vc.name} ejecutada en sandbox -> objetivo alcanzado" if es else
+                 f"chain {vc.name} executed in sandbox -> goal reached"),
+                (f"prueba: {'  '.join(f'{k}={v}' for k, v in pl.proof.items() if k != 'output' and v)}"),
+                "script pwntools adjunto" if es else "attached pwntools script"))
+    return pl
+
+
 def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es",
                     verify: bool = True) -> ExploitPlan:
     """Concreta el esquema con un binario cargado: rellena offset/gadgets/objetivo reales via el
@@ -247,37 +283,8 @@ def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es"
         an = analyze_chains(binary, None, verify=verify, lang=lang)
     except Exception:
         an = None
-    # clase: del texto, o inferida (si el analizador halla control de RIP -> stack-overflow)
-    cls = classify_cve(text) or classify_cve(cve)
-    if not cls and an is not None and an.control.get("RIP"):
-        cls = "stack-overflow"
-    if not cls:
-        return plan(text or cve, facts, cve=cve, lang=lang)
-    pl = plan(text or ("stack overflow" if cls == "stack-overflow" else cls), facts, cve=cve, lang=lang)
-    pl.vuln_class = cls
-    if an is not None:
-        # concrecion: offset, gadgets, objetivo, y cadena verificada
-        ctrl = an.control
-        gd = ctrl.get("reg_gadgets") or {}
-        pl.concrete = {"offset": ctrl.get("rip_offset"),
-                       "reg_gadgets": {k: v.get("addr") for k, v in gd.items()},
-                       "pivot": ctrl.get("pivot_gadget"), "target": an.target,
-                       "gadgets_total": len(an.gadgets)}
-        vc = next((c for c in an.chains if getattr(c, "verified", False)), None)
-        if vc is not None:
-            pl.verified = True
-            pl.proof = vc.proof or {}
-            pl.concrete["chain"] = vc.name
-            pl.script = _pwn_script_from_proof(pl.proof, os.path.basename(binary))
-            pl.phases.append(Phase(
-                "Exploit VERIFICADO" if es else "VERIFIED exploit",
-                (f"cadena {vc.name} ejecutada en sandbox -> objetivo alcanzado" if es else
-                 f"chain {vc.name} executed in sandbox -> goal reached"),
-                (f"prueba: {'  '.join(f'{k}={v}' for k, v in pl.proof.items() if k != 'output' and v)}"
-                 if es else
-                 f"proof: {'  '.join(f'{k}={v}' for k, v in pl.proof.items() if k != 'output' and v)}"),
-                "script pwntools adjunto" if es else "attached pwntools script"))
-    return pl
+    return plan_from_analysis(an, facts, binary_name=os.path.basename(binary), text=text,
+                              cve=cve, lang=lang)
 
 
 def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
@@ -285,7 +292,7 @@ def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
     if not pl.ok:
         return ("## Plan de explotacion\n\n" + (pl.note or ""))
     out = ["## " + ("Esquema de explotacion" if es else "Exploitation schema") +
-           (f" — {pl.cve}" if pl.cve else "")]
+           (f": {pl.cve}" if pl.cve else "")]
     out.append((f"- **Clase**: {pl.vuln_class}\n- **Primitiva**: {pl.primitive}" if es else
                 f"- **Class**: {pl.vuln_class}\n- **Primitive**: {pl.primitive}"))
     # concrecion con el binario cargado (datos reales)
@@ -311,7 +318,7 @@ def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
                     + "  ".join(f"{k}={v}" for k, v in pl.proof.items() if k != "output" and v)))
     out.append("\n### " + ("Fases" if es else "Phases"))
     for i, ph in enumerate(pl.phases, 1):
-        out.append(f"{i}. **{ph.name}** — {ph.goal}\n   - " + ("como" if es else "how") + f": {ph.technique}"
+        out.append(f"{i}. **{ph.name}**: {ph.goal}\n   - " + ("como" if es else "how") + f": {ph.technique}"
                    + (f"\n   - " + ("necesita" if es else "needs") + f": {ph.needs}" if ph.needs else ""))
     if pl.mitigations:
         out.append("\n### " + ("Mitigaciones a sortear" if es else "Mitigations to bypass"))
