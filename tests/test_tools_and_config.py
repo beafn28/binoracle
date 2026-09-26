@@ -417,6 +417,33 @@ def test_owasp_scanners_da2_da9_da10():
     assert scan_logging(_mock_reg(imports="sym.imp.printf"), "x") == []
 
 
+def test_hardening_scanner():
+    from binoracle.workflows.hardening import scan_hardening
+    from binoracle.oracles.base import ToolResult
+
+    class _T:
+        def __init__(self, d, meta=None): self.d = d; self.meta = meta or {}
+        def run(self): return ToolResult(True, "r", self.d, meta=self.meta)
+
+    class _R:
+        def __init__(self, cs, imp, st): self.cs = cs; self.imp = imp; self.st = st
+        def get(self, n):
+            if n == "r2_checksec": return _T("", self.cs)
+            if n == "r2_imports": return _T(self.imp)
+            if n == "r2_strings": return _T(self.st)
+            return None
+
+    reg = _R({"nx": "false", "pic": "false", "canary": "false", "relro": "partial"},
+             "sym.imp.setenv\nsym.imp.system", 'LD_PRELOAD\n"sh"\n"ls -la"')
+    titles = " ".join(f.title.lower() for f in scan_hardening(reg, "x"))
+    assert "endurecimiento" in titles          # build hardening insuficiente
+    assert "ld_" in titles or "entorno" in titles   # LD_* env
+    assert "path" in titles                    # ejecucion por PATH relativa
+    # binario endurecido (todo ON) no dispara el de hardening
+    reg2 = _R({"nx": "true", "pic": "true", "canary": "true", "relro": "full"}, "sym.imp.printf", "")
+    assert not any("endurecimiento" in f.title.lower() for f in scan_hardening(reg2, "x"))
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP
