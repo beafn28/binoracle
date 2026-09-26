@@ -74,7 +74,10 @@ _CLASSES = [
 
 
 def classify_cve(text: str) -> Optional[str]:
-    t = (text or "").lower()
+    t = (text or "").strip().lower()
+    # atajo: si el texto ya es un id de clase canonico (lo que produce classify_binary), usalo tal cual
+    if t in {c for c, _k, _p, _r in _CLASSES}:
+        return t
     for cls, kws, _prim, _refs in _CLASSES:
         if any(k in t for k in kws):
             return cls
@@ -100,6 +103,99 @@ def classify_cve(text: str) -> Optional[str]:
         return "type-confusion"
     if has("command", "injection") or has("os", "command"):
         return "command-injection"
+    return None
+
+
+_FMT_FUNCS = ("printf", "fprintf", "sprintf", "snprintf", "vprintf", "vsprintf", "syslog")
+
+
+_INSN_RE = re.compile(r"\b(lea|mov|movabs|movzx|movsxd|xor)\s+(e?[a-z]{2}|r[a-z0-9]+)\s*,\s*([^;]+)")
+
+
+def _fmt_arg_is_variable(disasm_func: str, call_line_idx: int, lines: list, func: str) -> bool:
+    """En una llamada a printf-family, busca la ULTIMA escritura al registro del FORMATO antes de la
+    llamada y decide: constante (immediato/rodata/`str.`) -> seguro; direccion de un local (`lea reg,
+    [var]`) o valor de otro registro (buffer) -> candidato a format-string. Ignora los stores (donde
+    el registro es la FUENTE, no el destino)."""
+    reg = "rsi" if func in ("fprintf", "syslog") else "rdi"    # System V: printf->rdi, fprintf->rsi
+    ereg = "esi" if reg == "rsi" else "edi"
+    for j in range(call_line_idx - 1, max(-1, call_line_idx - 10), -1):
+        ln = lines[j]
+        if "call " in ln.lower():          # otra llamada antes: el arg ya estaba fijado
+            break
+        m = _INSN_RE.search(ln)
+        if not m:
+            continue
+        mnem, dst, src = m.group(1).lower(), m.group(2).lower(), m.group(3).strip().lower()
+        if dst not in (reg, ereg):          # no es una escritura al registro de formato
+            continue
+        # escritura encontrada: clasifica la FUENTE
+        if mnem == "lea":
+            # lea reg, [rip + str] / [rip + 0x..] -> puntero a rodata (constante) = seguro;
+            # lea reg, [var_..] / [rbp/rsp - ..] -> direccion de un local = variable
+            return ("var_" in src) or ("rbp" in src) or ("rsp" in src)
+        if mnem in ("mov", "movabs", "movzx", "movsxd"):
+            if "str." in src or "obj." in src:
+                return False                # cadena conocida = seguro
+            if re.fullmatch(r"0x[0-9a-f]+", src):
+                return False                # immediato (puntero a literal) = seguro
+            if "var_" in src or "[" in src or re.fullmatch(r"e?[a-z]{2}|r[a-z0-9]+", src):
+                return True                 # de memoria/otro registro = variable
+            return False
+        return False                        # xor reg,reg u otro: no aporta un formato controlado
+    return False
+
+
+def classify_binary(binary: str, reg=None) -> Optional[str]:
+    """Clasifica la clase de vulnerabilidad DOMINANTE por el binario (estatico, best-effort):
+    format-string (printf con formato no constante) > heap/uaf (malloc+free con superficie UAF) >
+    stack-overflow (gets/strcpy o control de RIP). Devuelve la clase o None si no es concluyente.
+    Prioriza la senal mas especifica; no pretende ser exhaustivo (oob-write/integer se quedan None)."""
+    try:
+        if reg is None:
+            from ..oracles import build_registry
+            reg = build_registry(binary)
+        imports = (reg.get("r2_imports").run().data or "").lower() if reg.get("r2_imports") else ""
+        sinks = (reg.get("r2_sinks").run().data or "") if reg.get("r2_sinks") else ""
+        heap = (reg.get("r2_heap").run().data or "") if reg.get("r2_heap") else ""
+    except Exception:
+        return None
+    # 1) format-string: alguna llamada a printf-family con el formato tomado de una variable
+    fmt_funcs_present = [f for f in _FMT_FUNCS if f in imports]
+    if fmt_funcs_present:
+        # funciones que alcanzan un sink printf-family (de r2_sinks)
+        callers = set()
+        cur = None
+        for ln in sinks.splitlines():
+            s = ln.strip()
+            m = re.match(r"### sink:\s*(\w+)", s)
+            if m:
+                cur = m.group(1)
+                continue
+            if cur in _FMT_FUNCS and "call sym.imp." in s:
+                fn = s.split()[0]
+                callers.add(fn)
+        for fn in callers:
+            try:
+                dz = reg.get("r2_disasm").run(target=fn).data or ""
+            except Exception:
+                continue
+            lines = dz.splitlines()
+            for i, ln in enumerate(lines):
+                mm = re.search(r"call sym\.imp\.(\w+)", ln)
+                if mm and mm.group(1) in _FMT_FUNCS:
+                    if _fmt_arg_is_variable(dz, i, lines, mm.group(1)):
+                        return "format-string"
+    # 2) heap: superficie de UAF/double-free (malloc + free en la misma funcion, puntero colgante)
+    if ("malloc" in imports or "calloc" in imports) and "free" in imports:
+        if "uaf surface" in heap.lower() or "use-after-free" in heap.lower() or "double" in heap.lower():
+            return "uaf"
+        if "alloc=" in heap.lower():
+            return "heap-overflow"
+    # 3) stack-overflow: sinks de copia insegura clasicos
+    if any(s in imports for s in ("gets", "strcpy", "strcat", "sprintf")):
+        return "stack-overflow"
+    # sin senal concluyente: que decida el analizador de cadenas (control de RIP) aguas arriba
     return None
 
 

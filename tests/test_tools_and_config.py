@@ -898,3 +898,30 @@ def test_sft_sample_chat_format():
     assert "NX=on" in chat["messages"][1]["content"] and "PIE=off" in chat["messages"][1]["content"]
     assert chat["messages"][2]["content"].startswith("from pwn import *")
     assert chat["meta"]["verified"] is True and chat["meta"]["binary"] == "ret2win"
+
+
+def test_classify_binary_by_indicators():
+    # Clasificacion por el binario: format-string (printf con formato variable) vs heap (UAF) vs
+    # stack (gets/strcpy). Los que no dan senal concluyente quedan None (decide el control de RIP).
+    from binoracle.workflows.cveplan import classify_binary
+    import os
+    cases = {"fmt_got": "format-string", "fmtstring": "format-string",
+             "uaf": "uaf", "notes_heap": "uaf", "heapbug": ("heap-overflow", "uaf"),
+             "ret2win": "stack-overflow", "ret2libc": None, "oobwrite": None,
+             "srop": None, "canary": None}
+    for name, expect in cases.items():
+        p = f"samples/bin/{name}"
+        if not os.path.exists(p):
+            continue          # corpus se construye con samples/build.sh; no falla si no esta
+        got = classify_binary(p)
+        if isinstance(expect, tuple):
+            assert got in expect, f"{name}: got {got}, expected one of {expect}"
+        else:
+            assert got == expect, f"{name}: got {got}, expected {expect}"
+
+
+def test_classify_cve_accepts_canonical_ids():
+    # classify_binary produce ids canonicos; classify_cve debe aceptarlos tal cual.
+    from binoracle.workflows.cveplan import classify_cve
+    for cid in ("stack-overflow", "heap-overflow", "uaf", "format-string", "oob-write"):
+        assert classify_cve(cid) == cid
