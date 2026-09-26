@@ -722,6 +722,34 @@ def test_web_history_delete_command():
     assert "history" in r  # aun asi devuelve el historial actualizado
 
 
+def test_web_history_multiselect_delete(tmp_path, monkeypatch):
+    # Papelera: seleccion multiple -> borra varios binarios del historial de una vez.
+    import binoracle.web as web
+    from binoracle.store.session import SessionStore, Finding
+    db = str(tmp_path / "s.db")
+    ids = []
+    for nm in ("a.bin", "b.bin", "c.bin"):
+        p = str(tmp_path / nm)
+        with open(p, "wb") as fh:
+            fh.write(b"\x7fELF" + (nm.encode() * 20))
+        s = SessionStore(db, p)
+        s.add_finding(Finding(title="t", severity="low", verdict="grounded",
+                              evidence="e", location=nm))
+        ids.append(s.bin_id)
+        s.close()
+
+    class Cfg:
+        lang = "es"
+        def db_path(self):
+            return db
+    monkeypatch.setattr(web, "load_config", lambda: Cfg())
+    assert len(web.run_command({"command": "history", "options": {}})["history"]) == 3
+    r = web.run_command({"command": "history_delete", "options": {"bin_ids": ids[:2]}})
+    assert r["ok"] and r["deleted_count"] == 2 and len(r["history"]) == 1
+    # seleccion vacia no borra nada
+    assert web.run_command({"command": "history_delete", "options": {"bin_ids": []}})["ok"] is False
+
+
 def test_cveplan_exports_developed_exploit(tmp_path, capsys):
     # binoracle DESARROLLA el exploit: --out escribe un script pwntools ejecutable, anclado a la
     # cadena verificada. Aqui forzamos un plan con script y comprobamos la exportacion.

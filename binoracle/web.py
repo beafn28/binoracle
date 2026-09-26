@@ -326,10 +326,19 @@ def run_command(payload: dict) -> dict:
         return {"ok": True, "history": list_all_binaries(config.db_path())}
     if cmd == "history_delete":
         from .store.session import delete_binary, list_all_binaries
-        bid = (opts.get("bin_id") or "").strip()
-        res = delete_binary(config.db_path(), bid)
-        res["history"] = list_all_binaries(config.db_path())
-        return res
+        # acepta borrado de UNO (bin_id) o de VARIOS (bin_ids, seleccion multiple tipo papelera)
+        ids = opts.get("bin_ids")
+        if not ids:
+            one = (opts.get("bin_id") or "").strip()
+            ids = [one] if one else []
+        ids = [str(x).strip() for x in ids if str(x).strip()]
+        if not ids:
+            return {"ok": False, "error": "sin binarios seleccionados",
+                    "history": list_all_binaries(config.db_path())}
+        results = [delete_binary(config.db_path(), b) for b in ids]
+        deleted = sum(1 for r in results if r.get("ok"))
+        return {"ok": deleted > 0, "deleted_count": deleted, "requested": len(ids),
+                "results": results, "history": list_all_binaries(config.db_path())}
     if cmd == "regress":
         import os as _os
         old = (opts.get("old") or "").strip()
@@ -946,6 +955,14 @@ main{flex:1;display:flex;min-height:0}
 .hrow .del{color:#e5484d}
 .hdel{flex:none;background:transparent;border:1px solid var(--line);color:#e5484d;border-radius:7px;padding:5px 12px;font-size:12px;cursor:pointer}
 .hdel:hover{background:#e5484d;color:#fff;border-color:#e5484d}
+.hrow .hpick{flex:none;width:16px;height:16px;cursor:pointer;accent-color:#e5484d}
+.hhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.htools{display:flex;align-items:center;gap:12px;margin-left:auto}
+.hselall{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);cursor:pointer}
+.hselall input{cursor:pointer;accent-color:#e5484d}
+.hdelsel{background:#e5484d;color:#fff;border:1px solid #e5484d;border-radius:7px;padding:6px 14px;font-size:12px;cursor:pointer}
+.hdelsel:hover:not(:disabled){background:#c93b40}
+.hdelsel:disabled{opacity:.4;cursor:not-allowed}
 .sidetb{display:flex;gap:6px;padding:4px 6px 8px;border-bottom:1px solid var(--line);margin-bottom:4px}
 .stb{flex:1;background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 0;cursor:pointer;font:13px ui-monospace,monospace}
 .stb:hover{border-color:var(--acc)}
@@ -1191,22 +1208,49 @@ async function upload(inp){var f=inp.files[0];if(!f)return;var out=document.getE
 async function loadHistory(){var out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">cargando historial...</div></div>';
  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'history',binary:'',options:{}})});var j=await r.json();
  var H=j.history||[];out.innerHTML='';
- var card=document.createElement('div');card.className='card';var h=document.createElement('h3');h.textContent='Historial de binarios analizados';card.appendChild(h);
+ var card=document.createElement('div');card.className='card';
+ var head=document.createElement('div');head.className='hhead';
+ head.innerHTML='<h3 style="margin:0">Historial de binarios analizados</h3>';
+ var tools=document.createElement('div');tools.className='htools';
+ var selall=document.createElement('label');selall.className='hselall';
+ var selallInput=document.createElement('input');selallInput.type='checkbox';
+ selall.appendChild(selallInput);selall.appendChild(document.createTextNode(' seleccionar todo'));
+ var delSel=document.createElement('button');delSel.className='hdelsel';
+ var countSpan=document.createElement('span');countSpan.textContent='0';
+ delSel.appendChild(document.createTextNode('🗑 Borrar seleccionados ('));
+ delSel.appendChild(countSpan);delSel.appendChild(document.createTextNode(')'));delSel.disabled=true;
+ tools.appendChild(selall);tools.appendChild(delSel);head.appendChild(tools);card.appendChild(head);
  if(!H.length){var e=document.createElement('div');e.className='empty';e.style.height='auto';e.textContent='Sin binarios analizados todavia.';card.appendChild(e);}
+ function refreshSel(){var boxes=card.querySelectorAll('.hpick');var n=card.querySelectorAll('.hpick:checked').length;
+  countSpan.textContent=n;delSel.disabled=n===0;
+  selallInput.checked=boxes.length>0&&n===boxes.length;selallInput.indeterminate=n>0&&n<boxes.length;}
  H.forEach(function(b){var row=document.createElement('div');row.className='hrow';
+  var pick=document.createElement('input');pick.type='checkbox';pick.className='hpick';pick.value=b.bin_id;
+  pick.setAttribute('data-name',b.name);
+  pick.addEventListener('change',refreshSel);pick.addEventListener('click',function(ev){ev.stopPropagation();});
+  row.appendChild(pick);
   var info=document.createElement('div');info.className='hinfo';
   info.innerHTML='<div class="hn">'+b.name+(b.exists?'':' <span class="del">(no disponible)</span>')+'</div><div class="hp">'+b.path+'</div><div class="hm">'+b.findings+' hallazgos, '+b.knowledge+' notas IA</div>';
   if(b.exists){info.style.cursor='pointer';info.addEventListener('click',function(){document.getElementById('target').value=b.path;dash();});}
   row.appendChild(info);
   var del=document.createElement('button');del.className='hdel';del.title='Borrar del historial';del.textContent='Borrar';
-  del.addEventListener('click',function(ev){ev.stopPropagation();delHistory(b.bin_id,b.name);});
+  del.addEventListener('click',function(ev){ev.stopPropagation();delHistory([b.bin_id],b.name);});
   row.appendChild(del);
   card.appendChild(row);});
+ selallInput.addEventListener('change',function(){
+  var on=selallInput.checked;card.querySelectorAll('.hpick').forEach(function(x){x.checked=on;});refreshSel();});
+ delSel.addEventListener('click',function(){
+  var picks=[...card.querySelectorAll('.hpick:checked')];
+  delHistory(picks.map(function(x){return x.value;}),
+             picks.length===1?picks[0].getAttribute('data-name'):(picks.length+' binarios'));});
  out.appendChild(card);}
-async function delHistory(binId,name){
- if(!confirm('Borrar del historial "'+name+'" y todos sus hallazgos/notas? Esta accion no se puede deshacer.'))return;
+async function delHistory(binIds,name){
+ if(!binIds||!binIds.length)return;
+ var msg=binIds.length>1?('Borrar '+binIds.length+' binarios del historial y todos sus hallazgos/notas?'):
+   ('Borrar del historial "'+name+'" y todos sus hallazgos/notas?');
+ if(!confirm(msg+' Esta accion no se puede deshacer.'))return;
  try{
-  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'history_delete',binary:'',options:{bin_id:binId}})});
+  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'history_delete',binary:'',options:{bin_ids:binIds}})});
   var j=await r.json();
   if(j.ok){loadHistory();}
   else{alert('No se pudo borrar: '+(j.error||'error'));}
