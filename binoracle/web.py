@@ -631,7 +631,8 @@ def _fmt_step(step, action):
 def run_streaming(command, binary, ai, emit, text=""):
     config = load_config()
     import os
-    if not binary or not os.path.exists(binary):
+    # 'train' puede correr sobre el corpus de ejemplo del repo: no exige un binario cargado.
+    if command != "train" and (not binary or not os.path.exists(binary)):
         emit("step", f"error: binario no encontrado: {binary}")
         emit("done", "")
         return
@@ -701,6 +702,15 @@ def run_streaming(command, binary, ai, emit, text=""):
             else:
                 emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
             emit("html", render_exploit_page(pl, binary, config.lang))
+        elif command == "train":
+            # Agente entrenador: desarrolla+verifica exploits sobre el corpus y cura lo verificado,
+            # subiendo la habilidad de forma medible. Streaming para ver el progreso en vivo.
+            from .workflows.exploit_trainer import train as _train, render_training
+            from .report.html import render_training_page
+            bins = [binary] if (binary and os.path.exists(binary)) else None
+            rep = _train(binaries=bins, config=config, verify=True,
+                         on_step=lambda m: emit("step", m), lang=config.lang)
+            emit("html", render_training_page(render_training(rep, config.lang), config.lang))
         elif command in ("report", "hunt", "dashboard"):
             from .report.html import render_html
             from .agent.grounding import GroundingLedger
@@ -1098,6 +1108,7 @@ const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
  {c:"cadenas",n:"Cadenas",ic:"@",d:"Construye y VERIFICA las cadenas de ataque, con grafo interactivo"},
  {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
+ {c:"train",n:"Entrenar",ic:"^",d:"Agente que entrena la habilidad: desarrolla+verifica exploits sobre el corpus y cura lo verificado (sin binario usa los samples del repo)",nobin:true},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
  {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
@@ -1147,7 +1158,7 @@ function stream(command,options){var out=document.getElementById('out');var g=do
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';

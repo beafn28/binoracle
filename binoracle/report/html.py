@@ -814,6 +814,14 @@ def render_exploit_page(plan, binary: str = "target", lang: str = "es") -> str:
     return head + hdr + dl + section + "</main></body></html>"
 
 
+def render_training_page(markdown: str, lang: str = "es") -> str:
+    """Pagina autocontenida con el informe del agente entrenador (markdown -> HTML enriquecido)."""
+    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<style>{_CSS}</style></head><body><main class='md' style='padding:16px'>")
+    return head + _md_rich(markdown or "") + "</main></body></html>"
+
+
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
                 decompiled=None, cfg=None, chains=None) -> str:

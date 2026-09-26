@@ -795,3 +795,50 @@ def test_render_exploit_page_functional_section():
     # plan no reconocido -> pagina de guia, sin el boton de descarga (el anchor, no la clase CSS)
     bad = render_exploit_page(ExploitPlan(note="clase no reconocida"), "/tmp/vuln", "es")
     assert "No se pudo derivar" in bad and 'class="dlbtn"' not in bad
+
+
+def test_develop_exploit_all_classes_compile():
+    # El desarrollador de exploits produce un script pwntools que COMPILA para cada clase.
+    from binoracle.workflows.cveplan import plan
+    import ast
+    classes = {"stack buffer overflow": "stack-overflow", "format string": "format-string",
+               "heap overflow": "heap-overflow", "use-after-free": "uaf", "double free": "double-free",
+               "out-of-bounds write": "oob-write", "integer overflow": "integer-overflow",
+               "type confusion": "type-confusion"}
+    for text, expect in classes.items():
+        pl = plan(text, {"nx": True, "pie": False, "canary": False})
+        assert pl.vuln_class == expect
+        assert pl.script and "from pwn import *" in pl.script
+        compile(pl.script, "<exploit>", "exec")  # sintaxis valida
+    # NX desactivado -> ret2shellcode
+    assert "shellcraft" in plan("stack buffer overflow", {"nx": False}).script
+
+
+def test_exploit_skill_accumulates(tmp_path):
+    # La tabla de habilidad acumula intentos/exitos entre ejecuciones (progreso medible).
+    from binoracle.store.session import SessionStore, read_exploit_skill
+    db = str(tmp_path / "s.db")
+    b = str(tmp_path / "t.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + b"Z" * 200)
+    s = SessionStore(db, b)
+    s.record_exploit_attempt("x86", "stack-overflow", "ret2win", True, 72)
+    s.record_exploit_attempt("x86", "stack-overflow", "ret2win", False, None)
+    s.record_exploit_attempt("x86", "stack-overflow", "template", False, 552)
+    s.close()
+    sk = {(r["arch"], r["cls"], r["strategy"]): r for r in read_exploit_skill(db)}
+    assert sk[("x86", "stack-overflow", "ret2win")]["attempts"] == 2
+    assert sk[("x86", "stack-overflow", "ret2win")]["successes"] == 1
+    assert abs(sk[("x86", "stack-overflow", "ret2win")]["rate"] - 0.5) < 1e-9
+    assert sk[("x86", "stack-overflow", "template")]["successes"] == 0
+
+
+def test_trainer_report_renders():
+    from binoracle.workflows.exploit_trainer import TrainingReport, TrainCase, render_training
+    rep = TrainingReport(attempted=2, verified=1, learned=1, seconds=1.0,
+                         per_class={"stack-overflow": {"attempted": 2, "verified": 1}},
+                         cases=[TrainCase(binary="a", name="ret2win", vuln_class="stack-overflow",
+                                          strategy="ret2win", verified=True, offset=72)])
+    md = render_training(rep, "es")
+    assert "Entrenamiento" in md and "ret2win" in md and "50%" in md
+    assert "—" not in md

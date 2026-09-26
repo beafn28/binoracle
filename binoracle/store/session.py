@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS global_facts (
     arch TEXT, bits TEXT, sink TEXT, mitig TEXT,
     fact TEXT, verdict TEXT, created_at REAL
 );
+CREATE TABLE IF NOT EXISTS exploit_skill (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    arch TEXT, cls TEXT, strategy TEXT,
+    attempts INTEGER DEFAULT 0, successes INTEGER DEFAULT 0,
+    last_offset INTEGER, updated_at REAL,
+    UNIQUE(arch, cls, strategy)
+);
 """
 
 
@@ -194,6 +201,35 @@ class SessionStore:
         )
         self._conn.commit()
 
+    def record_exploit_attempt(self, arch, cls, strategy, ok: bool, offset=None) -> None:
+        """El agente entrenador registra un intento de desarrollo de exploit por (arch, clase,
+        estrategia): incrementa attempts y, si se verifico en sandbox, successes. Acumula entre
+        ejecuciones para medir el progreso de la habilidad."""
+        arch = arch or "?"; cls = cls or "?"; strategy = strategy or "?"
+        self._conn.execute(
+            """INSERT INTO exploit_skill(arch, cls, strategy, attempts, successes, last_offset, updated_at)
+               VALUES (?,?,?,1,?,?,?)
+               ON CONFLICT(arch, cls, strategy) DO UPDATE SET
+                   attempts = attempts + 1,
+                   successes = successes + ?,
+                   last_offset = COALESCE(?, last_offset),
+                   updated_at = ?""",
+            (arch, cls, strategy, 1 if ok else 0, offset, time.time(),
+             1 if ok else 0, offset, time.time()),
+        )
+        self._conn.commit()
+
+    def exploit_skill(self):
+        """Estado de la habilidad de explotacion aprendida: filas (arch, clase, estrategia) con
+        intentos/exitos y tasa. Es lo que hace medible que el agente 'entrena' la habilidad."""
+        rows = self._conn.execute(
+            """SELECT arch, cls, strategy, attempts, successes, last_offset, updated_at
+               FROM exploit_skill ORDER BY successes DESC, attempts DESC"""
+        ).fetchall()
+        return [{"arch": r[0], "cls": r[1], "strategy": r[2], "attempts": r[3],
+                 "successes": r[4], "last_offset": r[5], "updated_at": r[6],
+                 "rate": (r[4] / r[3]) if r[3] else 0.0} for r in rows]
+
     def relevant_facts(self, arch, sinks, limit: int = 8):
         """Cross-binary knowledge for a SIMILAR target: same arch and overlapping sinks.
         Anonymized (no paths). This is what makes the system improve as the corpus grows."""
@@ -256,6 +292,27 @@ def delete_binary(db_path, bin_id: str) -> dict:
     finally:
         conn.close()
     return {"ok": True, "bin_id": bin_id, "deleted": deleted}
+
+
+def read_exploit_skill(db_path):
+    """Lee el estado de la habilidad de explotacion entrenada, sin necesitar un binario. Para el
+    panel de progreso (web/CLI). Devuelve filas (arch, clase, estrategia, intentos, exitos, tasa)."""
+    import os, sqlite3
+    if not os.path.exists(str(db_path)):
+        return []
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            """SELECT arch, cls, strategy, attempts, successes, last_offset, updated_at
+               FROM exploit_skill ORDER BY successes DESC, attempts DESC"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+    return [{"arch": r[0], "cls": r[1], "strategy": r[2], "attempts": r[3],
+             "successes": r[4], "last_offset": r[5], "updated_at": r[6],
+             "rate": (r[4] / r[3]) if r[3] else 0.0} for r in rows]
 
 
 def list_all_binaries(db_path):

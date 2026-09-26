@@ -610,6 +610,17 @@ def cmd_learn(args, config):
               f"binoracle learn {args.path} --apply")
 
 
+def cmd_train(args, config):
+    """Agente entrenador: desarrolla + verifica exploits sobre un corpus y cura lo verificado,
+    subiendo la habilidad de forma medible. Sin binarios, usa el corpus de ejemplo del repo."""
+    from .workflows.exploit_trainer import train, render_training
+    bins = list(getattr(args, "binaries", None) or [])
+    rep = train(binaries=bins or None, config=config,
+                verify=not getattr(args, "no_verify", False),
+                on_step=lambda m: print("  " + m), lang=config.lang)
+    print("\n" + render_training(rep, config.lang))
+
+
 def cmd_kb(args, config):
     from .rag import get_kb
     kb = get_kb()
@@ -821,6 +832,12 @@ def build_parser() -> argparse.ArgumentParser:
     hp = sub.add_parser("heap", help="confirm heap corruption (double-free/overflow) by execution")
     hp.add_argument("binary")
     hp.set_defaults(func=cmd_heap)
+
+    tp = sub.add_parser("train", help="training agent: develop+verify exploits on a corpus and "
+                                      "curate what works, raising the skill measurably")
+    tp.add_argument("binaries", nargs="*", help="binaries to train on (default: repo sample corpus)")
+    tp.add_argument("--no-verify", action="store_true", help="skip sandbox verification (faster)")
+    tp.set_defaults(func=cmd_train)
 
     return p
 
