@@ -608,6 +608,22 @@ def _toc(lang: str, has) -> str:
     return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
 
 
+def _trail_kind(tool: str, source: str, data: str, lang: str = "es"):
+    """Clasifica una entrada del rastro por TECNICA (grounding): sandbox/ejecucion (prueba fuerte),
+    simbolica (angr), dinamica (debugger/LD_PRELOAD), o estatica (r2/ELF). Devuelve (etiqueta, color)."""
+    es = lang == "es"
+    blob = f"{tool} {source} {data}".lower()
+    if any(k in blob for k in ("sandbox", "docker", "pwntools", "try_ret2win", "autopoc", "autorop",
+                               "autolibc", "autopie", "autoheap", "binorace", "shell", "uid=")):
+        return ("ejecucion/sandbox" if es else "execution/sandbox", "#30a46c")
+    if any(k in blob for k in ("angr", "symbolic", "reachable", "alcanzab", "ejecucion simbolica")):
+        return ("simbolica (angr)" if es else "symbolic (angr)", "#8e4ec6")
+    if any(k in blob for k in ("ld_preload", "strace", "ltrace", "debugger", "gdb", "dynamic",
+                               "runtime", "stop reason")):
+        return ("dinamica" if es else "dynamic", "#f5a623")
+    return ("estatica" if es else "static", "#5b8def")
+
+
 def _evidence_html(ev: str) -> str:
     """Render finding evidence as a labelled terminal block, with the oracle sources it
     came from shown as chips and a colour cue for angr/debugger-proven evidence."""
@@ -807,7 +823,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         # Renumera secuencial (1..N): el contador interno del bucle salta (pasos internos/
         # dedup + backstop en res.steps+N); en el informe se lee limpio y sin huecos.
         for i, e in enumerate(ledger.entries, 1):
-            trail += (f'<details class="sec"><summary>paso {i}: {_esc(e.tool)}'
+            kind_lbl, kind_col = _trail_kind(e.tool, e.source, e.data, lang)
+            chip = f'<span class="evkind" style="background:{kind_col}">{_esc(kind_lbl)}</span>'
+            trail += (f'<details class="sec"><summary>paso {i}: {_esc(e.tool)} {chip}'
                       f'<span class="src">{_esc(e.source)}</span></summary>'
                       f'<pre><span class="cmd">$ {_esc(e.tool)}</span>\n{_esc(e.data)}</pre></details>')
 
@@ -1587,6 +1605,7 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .evtag{color:#8b95a1}
 .evchips{display:flex;gap:5px;flex-wrap:wrap;margin-left:auto}
 .evsrc{background:#070a10;border:1px solid #1e2632;border-radius:5px;padding:1px 7px;color:#a9c7e8}
+.evkind{color:#fff;font:700 9px sans-serif;padding:1px 6px;border-radius:4px;margin-left:6px;letter-spacing:.02em}
 .evpre{margin:0;padding:12px;background:#0b0e12;color:#cfe3ff;white-space:pre;overflow:auto;font:12px/1.5 ui-monospace,monospace;border:0;border-radius:0}
 .md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12px ui-monospace,monospace;color:var(--codefg)}
 .summary{margin-bottom:8px;border-left:3px solid var(--acc)}

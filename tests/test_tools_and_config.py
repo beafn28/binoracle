@@ -500,6 +500,18 @@ def test_cfg_block_state():
     assert "escribe" in note and "RSP" in note and "llama" in note
 
 
+def test_trail_kind_classifier():
+    from binoracle.report.html import _trail_kind
+    assert _trail_kind("try_ret2win", "autopoc: sandbox", "uid=0(root)", "es")[0].startswith("ejecucion")
+    assert "angr" in _trail_kind("x", "angr", "reachable", "es")[0]
+    assert _trail_kind("dynamic_trace", "LD_PRELOAD", "connect", "es")[0] == "dinamica"
+    assert _trail_kind("r2_sinks", "radare2: axt", "read", "es")[0] == "estatica"
+    # cada tecnica tiene su color
+    cols = {_trail_kind(*a, "es")[1] for a in [("t", "sandbox", "shell"), ("t", "angr", ""),
+                                               ("t", "gdb", "stop reason"), ("t", "r2", "pdf")]}
+    assert len(cols) == 4
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP
