@@ -251,6 +251,21 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
     except Exception:
         res.chains = None
 
+    # Alcanzabilidad simbolica (angr): genera el INPUT concreto que lleva a un sink peligroso
+    # (resuelve gates tipo password) -> hallazgos VERIFIED con la entrada. Best-effort, acotado.
+    try:
+        import os as _os
+        if _os.environ.get("BINORACLE_ANGR_REACH", "1").lower() not in ("0", "false", "no"):
+            from .reachability import reachable_findings
+            for xf in reachable_findings(binary, reg, lang=getattr(config, "lang", "es"),
+                                         budget_s=float(_os.environ.get("BINORACLE_ANGR_BUDGET", "45")),
+                                         max_targets=2):
+                res.findings.append(xf)
+                if store:
+                    store.add_finding(xf)
+    except Exception:
+        pass
+
     # Deterministic backstop: the AI drives, but if it did not actually verify an exploit and
     # the binary has a gift function reachable via overflow, we run the auto-PoC ourselves so
     # the audit reliably ends in a VERIFIED exploit (or an honest "could not").

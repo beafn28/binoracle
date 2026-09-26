@@ -398,6 +398,18 @@ def test_owasp_all_categories_covered():
     assert not_covered == [], f"categorias sin scanner: {not_covered}"
 
 
+def test_reachability_helpers():
+    from binoracle.workflows.reachability import ReachResult, _EXEC_SINKS, _OVF_SINKS
+    r = ReachResult(ok=True, target=0x401156, stdin=b"s3cr3t\n\x00\x00")
+    assert r.stdin_hex.startswith("73336372")           # 's3cr'
+    assert r.stdin_printable.startswith("s3cr3t")        # legible; nulos -> '.'
+    assert "." in r.stdin_printable                       # bytes no imprimibles -> '.'
+    # sinks de ejecucion priorizados y sin solaparse con los de overflow
+    assert "system" in _EXEC_SINKS and "execve" in _EXEC_SINKS
+    assert "gets" in _OVF_SINKS and "read" in _OVF_SINKS
+    assert not (set(_EXEC_SINKS) & set(_OVF_SINKS))
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.
