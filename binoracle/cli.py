@@ -66,6 +66,14 @@ def cmd_cveplan(args, config):
                              lang=config.lang, verify=not getattr(args, "no_verify", False))
     else:
         pl = plan(args.text, {}, cve=getattr(args, "cve", ""), lang=config.lang)
+    if getattr(args, "json", False):
+        # salida estructurada (una linea JSON): la usa el trainer/dataset para correr cada binario
+        # como subproceso con presupuesto de tiempo.
+        import json as _json
+        print(_json.dumps({"ok": pl.ok, "verified": pl.verified, "vuln_class": pl.vuln_class,
+                           "primitive": pl.primitive, "concrete": pl.concrete, "proof": pl.proof,
+                           "script": pl.script}))
+        return
     print(render_plan(pl, config.lang))
     # exporta el exploit DESARROLLADO (script pwntools reproducible) a un fichero ejecutable
     out = getattr(args, "out", None)
@@ -617,7 +625,8 @@ def cmd_train(args, config):
     bins = list(getattr(args, "binaries", None) or [])
     rep = train(binaries=bins or None, config=config,
                 verify=not getattr(args, "no_verify", False),
-                on_step=lambda m: print("  " + m), lang=config.lang)
+                on_step=lambda m: print("  " + m), lang=config.lang,
+                budget_s=float(getattr(args, "budget", 240) or 240))
     print("\n" + render_training(rep, config.lang))
 
 
@@ -629,7 +638,8 @@ def cmd_dataset(args, config):
     bins = list(getattr(args, "binaries", None) or [])
     rep = build_dataset(binaries=bins or None, out_path=args.out,
                         include_templates=getattr(args, "include_templates", False),
-                        config=config, on_step=lambda m: print("  " + m), lang=config.lang)
+                        config=config, on_step=lambda m: print("  " + m), lang=config.lang,
+                        budget_s=float(getattr(args, "budget", 240) or 240))
     print("\n" + render_dataset(rep, config.lang))
 
 
@@ -671,6 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--cve", default="", help="CVE id label for the plan")
     cp.add_argument("--no-verify", action="store_true", help="do not run the sandbox verification")
     cp.add_argument("--out", help="write the developed pwntools exploit script to this file (executable)")
+    cp.add_argument("--json", action="store_true", help="emit the plan as one JSON line (for tooling)")
     cp.set_defaults(func=cmd_cveplan)
 
     t = sub.add_parser("triage", help="grounded facts + mitigations (no model needed)")
@@ -849,6 +860,8 @@ def build_parser() -> argparse.ArgumentParser:
                                       "curate what works, raising the skill measurably")
     tp.add_argument("binaries", nargs="*", help="binaries to train on (default: repo sample corpus)")
     tp.add_argument("--no-verify", action="store_true", help="skip sandbox verification (faster)")
+    tp.add_argument("--budget", type=float, default=240,
+                    help="per-binary time budget in seconds (skip if exceeded; default 240)")
     tp.set_defaults(func=cmd_train)
 
     dp = sub.add_parser("dataset", help="build the SFT JSONL to fine-tune an LLM to develop exploits "
@@ -857,6 +870,8 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("--out", default="exploit_sft.jsonl", help="output JSONL path")
     dp.add_argument("--include-templates", action="store_true",
                     help="also include developed (unverified) templates, not just verified exploits")
+    dp.add_argument("--budget", type=float, default=240,
+                    help="per-binary time budget in seconds (skip if exceeded; default 240)")
     dp.set_defaults(func=cmd_dataset)
 
     return p
