@@ -1387,12 +1387,20 @@ def _exploit_html(an, lang: str) -> str:
           .replace("__XGLBL__", _json.dumps(xglbl, ensure_ascii=False).replace("</", "<\\/")))
     prim = "".join(f"<li>{_esc(p)}</li>" for p in an.primitives)
     ctrl = an.control
-    ctrl_txt = (f"RIP: {'si' if ctrl.get('RIP') else 'no'} &middot; "
-                f"pivote RSP: {'si' if ctrl.get('RSP_pivot') else 'no'} &middot; "
-                f"regs: {', '.join(ctrl.get('regs') or []) or '-'}") if es else \
-               (f"RIP: {'yes' if ctrl.get('RIP') else 'no'} &middot; "
-                f"RSP pivot: {'yes' if ctrl.get('RSP_pivot') else 'no'} &middot; "
-                f"regs: {', '.join(ctrl.get('regs') or []) or '-'}")
+    _rg = ctrl.get("reg_gadgets") or {}
+    _regtxt = ", ".join(f"{r.upper()}&larr;{_rg[r]['addr']}" for r in (ctrl.get("regs") or []) if r in _rg) \
+        or (", ".join((ctrl.get("regs") or [])) or "-")
+    _offtxt = (f"{ctrl.get('rip_offset')} B" if ctrl.get("rip_offset") is not None else ("s/d" if es else "n/a"))
+    _bits = ctrl.get("arch_bits", 64)
+    ripyes = "si" if es else "yes"
+    ripno = "no"
+    ctrl_txt = (
+        f"RIP: {ripyes if ctrl.get('RIP') else ripno}"
+        + (f" (@ RSP tras offset {_offtxt})" if ctrl.get('RIP') else "")
+        + f" &middot; {'pivote RSP' if es else 'RSP pivot'}: "
+        + (f"{ripyes} ({ctrl['pivot_gadget']})" if ctrl.get('pivot_gadget') else ripno)
+        + f" &middot; SysV AMD{_bits}"
+        + f"<br>{'gadgets de registro' if es else 'register gadgets'}: <code>{_regtxt}</code>")
     return (
         f'<h2 data-i18n="exploit_chains" id="sec-xchain"></h2>'
         f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["score_note"])}</p>'

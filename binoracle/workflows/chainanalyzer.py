@@ -346,20 +346,50 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     _sink = _overflow_sink(binary)
     _badset = _SINK_BADCHARS.get(_sink, set()) if (_sink and f.get("pie") is not True) else set()
 
-    # --- primitivas y control ---
+    # --- primitivas y control (tecnico) ---
     rip = f.get("rip_offset") is not None or f.get("win") is not None
     reg_control = sorted({r for g in gadgets for r in g.sets})
-    pivot = any(g.kind == "pivot" for g in gadgets)
-    _off = (str(f["rip_offset"]) if f.get("rip_offset") is not None else L("por determinar", "to be determined"))
+    # mejor gadget por registro controlable (direccion + stack delta) para el detalle tecnico
+    reg_gadgets = {}
+    for rc in reg_control:
+        g = _best_for(gadgets, rc)
+        if g:
+            reg_gadgets[rc] = {"addr": hex(g.addr), "delta": g.stack_delta, "text": g.text}
+    pivot_g = next((g for g in gadgets if g.kind == "pivot"), None)
+    pivot = pivot_g is not None
+    _off = f.get("rip_offset")
+    bits = 64 if "64" in an.arch else 32
+    wsz = bits // 8
     if rip:
-        an.primitives.append(L(f"Control de RIP por desbordamiento de pila (offset {_off})",
-                               f"RIP control via stack overflow (offset {_off})"))
-    if reg_control:
-        an.primitives.append(L("Control de registros via gadgets pop: ", "Register control via pop gadgets: ")
-                             + ", ".join(reg_control))
-    if pivot:
-        an.primitives.append(L("Pivote de RSP disponible (leave/pop rsp)", "RSP pivot available (leave/pop rsp)"))
-    an.control = {"RIP": rip, "RSP_pivot": pivot, "regs": reg_control}
+        if _off is not None:
+            an.primitives.append(L(
+                f"Control de RIP por desbordamiento lineal de pila: offset {_off} B hasta la direccion "
+                f"de retorno guardada (buffer local + RBP salvado de {wsz} B); el qword en [RSP] tras el "
+                f"epilogo `leave; ret` se sobrescribe con el destino. SysV AMD64, alineacion {wsz} B.",
+                f"RIP control via linear stack overflow: {_off} B offset to the saved return address "
+                f"(local buffer + saved RBP {wsz} B); the qword at [RSP] after the `leave; ret` epilogue "
+                f"is overwritten with the target. SysV AMD64, {wsz} B alignment."))
+        else:
+            an.primitives.append(L("Control de RIP por desbordamiento de pila (offset por determinar)",
+                                   "RIP control via stack overflow (offset to be determined)"))
+    if reg_gadgets:
+        det = ", ".join(f"{r.upper()} @ {reg_gadgets[r]['addr']} (delta {reg_gadgets[r]['delta']} B)"
+                        for r in reg_control if r in reg_gadgets)
+        an.primitives.append(L(
+            "Control de registros (convencion SysV AMD64: 1os args en RDI, RSI, RDX, RCX, R8, R9) "
+            "via gadgets `pop reg; ret`: " + det,
+            "Register control (SysV AMD64 convention: first args in RDI, RSI, RDX, RCX, R8, R9) via "
+            "`pop reg; ret` gadgets: " + det))
+    if pivot_g:
+        an.primitives.append(L(
+            f"Pivote de RSP disponible: `{pivot_g.text}` @ {hex(pivot_g.addr)} (redirige el marco de "
+            "pila hacia datos controlados, util con overflow corto).",
+            f"RSP pivot available: `{pivot_g.text}` @ {hex(pivot_g.addr)} (redirects the stack frame to "
+            "controlled data, useful with a short overflow)."))
+    an.control = {"RIP": rip, "RSP_pivot": pivot, "regs": reg_control,
+                  "rip_offset": _off, "arch_bits": bits, "word": wsz,
+                  "reg_gadgets": reg_gadgets,
+                  "pivot_gadget": (hex(pivot_g.addr) if pivot_g else None)}
     an.target = ("execve('/bin/sh')" if (f.get("system") or f.get("binsh")) else
                  ("win()" if f.get("win") is not None else L("control de flujo", "control flow")))
 
