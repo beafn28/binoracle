@@ -633,7 +633,7 @@ def run_streaming(command, binary, ai, emit, text=""):
     import os
     # 'train' corre sobre el corpus del repo; 'exploit' puede derivar el esquema+plantilla solo con
     # la descripcion de la CVE. El resto de comandos si exigen un binario cargado.
-    _needs_binary = command not in ("train", "exploit", "dataset")
+    _needs_binary = command not in ("train", "exploit", "dataset", "investigate")
     if _needs_binary and (not binary or not os.path.exists(binary)):
         emit("step", f"error: binario no encontrado: {binary}")
         emit("done", "")
@@ -739,6 +739,22 @@ def run_streaming(command, binary, ai, emit, text=""):
             else:
                 emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
             emit("html", render_exploit_page(pl, binary or "target", config.lang, intro_md=cve_intro))
+        elif command == "investigate":
+            # Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando.
+            # El LLM razona; con binario, verifica en sandbox. Informe honesto (verificado/bloqueos).
+            from .workflows.cve_agent import investigate_cve, render_investigation
+            from .report.html import render_investigation_page
+            cve_or_desc = (text or "").strip()
+            if not cve_or_desc:
+                emit("step", "escribe un id CVE (p.ej. CVE-2024-33599) o una descripcion de la vuln.")
+                emit("html", render_investigation_page("", "", "target", config.lang))
+                emit("done", "")
+                return
+            binp = binary if (binary and os.path.exists(binary)) else ""
+            inv = investigate_cve(cve_or_desc, binary=binp, config=config,
+                                  on_step=lambda m: emit("step", m), lang=config.lang)
+            emit("html", render_investigation_page(render_investigation(inv, config.lang),
+                                                   inv.developed_script, inv.cve_id, config.lang))
         elif command == "train":
             # Agente entrenador: desarrolla+verifica exploits sobre el corpus y cura lo verificado,
             # subiendo la habilidad de forma medible. Streaming para ver el progreso en vivo.
@@ -1163,6 +1179,7 @@ const CMDS=[
  {c:"audit",n:"Auditar",ic:"*",d:"La IA analiza el binario y construye+verifica el exploit"},
  {c:"cadenas",n:"Cadenas",ic:"@",d:"Construye y VERIFICA las cadenas de ataque, con grafo interactivo"},
  {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
+ {c:"investigate",n:"Investigar (LLM)",ic:"~",d:"Agente LLM: de la CVE al exploit, investigando y probando. Razona, desarrolla y (con binario) verifica en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id (p.ej. CVE-2024-33599) o descripcion de la vuln",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"#",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
@@ -1213,7 +1230,7 @@ function stream(command,options){var out=document.getElementById('out');var g=do
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','investigate'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';

@@ -824,6 +824,25 @@ def render_training_page(markdown: str, lang: str = "es") -> str:
     return head + _md_rich(markdown or "") + "</main></body></html>"
 
 
+def render_investigation_page(markdown: str, script: str = "", cve: str = "target",
+                              lang: str = "es") -> str:
+    """Pagina del agente de investigacion: informe (markdown) + descarga del exploit desarrollado."""
+    import base64
+    import re as _re
+    es = lang == "es"
+    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<style>{_CSS}</style></head><body><main class='md' style='padding:16px'>")
+    dl = ""
+    if script:
+        b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", cve or "target")
+        label = ("Descargar exploit (pwntools)" if es else "Download exploit (pwntools)")
+        dl = (f'<p><a class="dlbtn" download="exploit_{safe}.py" '
+              f'href="data:text/x-python;base64,{b64}">&#8681; {label}</a></p>')
+    return head + dl + _md_rich(markdown or "") + "</main></body></html>"
+
+
 def render_dataset_page(markdown: str, jsonl_text: str = "", fname: str = "exploit_sft.jsonl",
                         lang: str = "es") -> str:
     """Pagina del generador de dataset SFT: resumen + boton de descarga del JSONL (data URI)."""

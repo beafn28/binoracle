@@ -630,6 +630,17 @@ def cmd_train(args, config):
     print("\n" + render_training(rep, config.lang))
 
 
+def cmd_investigate(args, config):
+    """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
+    razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
+    verificado y lo bloqueado."""
+    from .workflows.cve_agent import investigate_cve, render_investigation
+    inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
+                          config=config, on_step=lambda m: print("  " + m), lang=config.lang,
+                          budget_s=float(getattr(args, "budget", 300) or 300))
+    print("\n" + render_investigation(inv, config.lang))
+
+
 def cmd_dataset(args, config):
     """Genera el dataset SFT (JSONL de chat) para fine-tunear un LLM que desarrolle exploits:
     pares (vulnerabilidad + mitigaciones) -> exploit pwntools VERIFICADO. Con --include-templates
@@ -873,6 +884,14 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("--budget", type=float, default=240,
                     help="per-binary time budget in seconds (skip if exceeded; default 240)")
     dp.set_defaults(func=cmd_dataset)
+
+    ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "
+                                            "reason + develop + (with --binary) verify in sandbox")
+    ip.add_argument("cve", help="CVE id (e.g. CVE-2024-33599) or vulnerability description")
+    ip.add_argument("--binary", help="vulnerable binary to actually try + verify against")
+    ip.add_argument("--budget", type=float, default=300,
+                    help="sandbox verification budget in seconds (default 300)")
+    ip.set_defaults(func=cmd_investigate)
 
     return p
 

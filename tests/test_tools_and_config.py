@@ -943,3 +943,22 @@ def test_exploitdb_github_crawl_graceful_and_render():
     assert "SI consta" in md and "github: 2" in md and "exploit-db: 1" in md
     gap = CVEInfo(cve_id="CVE-2099-0004", ok=True, description="heap overflow")
     assert "posible hueco" in render_cve_info(gap, "es")
+
+
+def test_cve_agent_deterministic_render():
+    # El agente de investigacion funciona sin LLM (via determinista): render con clase, bloqueos y
+    # el exploit desarrollado. Maneja steps como dicts del modelo y el estado de lookup.
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+    inv = Investigation(cve_id="CVE-2024-33599", description="nscd stack-based buffer overflow",
+                        lookup_ok=True, is_gap=True, vuln_class="stack-overflow",
+                        llm_notes={"target_binary": "nscd", "trigger": "netgroup request",
+                                   "steps": [{"step": "exhaust cache"}, "overflow"]},
+                        developed_script="from pwn import *\nio=process('./t')",
+                        blockers=["falta nscd", "falta disparador"])
+    md = render_investigation(inv, "es")
+    assert "CVE-2024-33599" in md and "HUECO" in md and "stack-overflow" in md
+    assert "nscd" in md and "exhaust cache" in md            # step dict aplanado
+    assert "Bloqueos" in md and "from pwn import *" in md
+    # exploit verificado se muestra como tal
+    inv2 = Investigation(cve_id="CVE-1-1", lookup_ok=True, verified=True, verified_detail="offset=88")
+    assert "VERIFICADO" in render_investigation(inv2, "es")
