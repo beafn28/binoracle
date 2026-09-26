@@ -631,8 +631,10 @@ def _fmt_step(step, action):
 def run_streaming(command, binary, ai, emit, text=""):
     config = load_config()
     import os
-    # 'train' puede correr sobre el corpus de ejemplo del repo: no exige un binario cargado.
-    if command != "train" and (not binary or not os.path.exists(binary)):
+    # 'train' corre sobre el corpus del repo; 'exploit' puede derivar el esquema+plantilla solo con
+    # la descripcion de la CVE. El resto de comandos si exigen un binario cargado.
+    _needs_binary = command not in ("train", "exploit")
+    if _needs_binary and (not binary or not os.path.exists(binary)):
         emit("step", f"error: binario no encontrado: {binary}")
         emit("done", "")
         return
@@ -684,24 +686,40 @@ def run_streaming(command, binary, ai, emit, text=""):
             # Apartado CVE -> exploit funcional: a partir de la info de la vuln (texto de la CVE) y el
             # binario, deriva el esquema y DESARROLLA el exploit mas funcional posible, verificado en
             # sandbox cuando la cadena es ejecutable.
-            from .workflows.cveplan import plan_for_binary
+            from .workflows.cveplan import plan_for_binary, plan
             from .report.html import render_exploit_page
             desc = (text or "").strip()
-            emit("step", f"clasificando la vulnerabilidad" + (f": '{desc[:80]}'" if desc else
-                         " a partir de los hechos del binario (control de RIP)..."))
-            emit("step", "concretando offset/gadgets/objetivo reales con el analizador de cadenas...")
-            emit("step", "desarrollando y VERIFICANDO el exploit por ejecucion en sandbox...")
-            pl = plan_for_binary(binary, text=desc, cve=desc if desc.upper().startswith("CVE-") else "",
-                                 lang=config.lang, verify=True)
+            cve = desc if desc.upper().startswith("CVE-") else ""
+            has_bin = bool(binary and os.path.exists(binary))
+            if has_bin:
+                emit("step", "clasificando la vulnerabilidad" + (f": '{desc[:80]}'" if desc else
+                             " a partir de los hechos del binario (control de RIP)..."))
+                emit("step", "concretando offset/gadgets/objetivo reales con el analizador de cadenas...")
+                emit("step", "desarrollando y VERIFICANDO el exploit por ejecucion en sandbox...")
+                pl = plan_for_binary(binary, text=desc, cve=cve, lang=config.lang, verify=True)
+            else:
+                # Sin binario: deriva el esquema y DESARROLLA la plantilla funcional solo con la
+                # descripcion de la CVE (no hay verificacion en sandbox, no hay offset concreto).
+                if not desc:
+                    emit("step", "escribe el id de la CVE o describe la vulnerabilidad "
+                                 "(p.ej. 'stack buffer overflow'), o carga un binario para verificar.")
+                    emit("html", render_exploit_page(None, binary or "target", config.lang))
+                    emit("done", "")
+                    return
+                emit("step", f"clasificando la vulnerabilidad: '{desc[:80]}'...")
+                emit("step", "sin binario: desarrollando la plantilla de exploit para la clase "
+                             "(cargalo arriba para concretar offset/gadgets y verificar en sandbox)...")
+                pl = plan(desc, {}, cve=cve, lang=config.lang)
             if getattr(pl, "verified", False):
                 emit("step", "exploit VERIFICADO: cadena ejecutada en sandbox, objetivo alcanzado. "
                              "Script pwntools listo para descargar.")
             elif getattr(pl, "ok", False):
-                emit("step", "esquema derivado; no se pudo verificar una cadena ejecutable en sandbox "
-                             "(revisa mitigaciones/arquitectura). Se muestra el plan mas funcional posible.")
+                emit("step", ("esquema y plantilla desarrollados." if not has_bin else
+                              "esquema derivado; no se pudo verificar una cadena ejecutable en sandbox "
+                              "(revisa mitigaciones/arquitectura).") + " Script pwntools listo para descargar.")
             else:
                 emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
-            emit("html", render_exploit_page(pl, binary, config.lang))
+            emit("html", render_exploit_page(pl, binary or "target", config.lang))
         elif command == "train":
             # Agente entrenador: desarrolla+verifica exploits sobre el corpus y cura lo verificado,
             # subiendo la habilidad de forma medible. Streaming para ver el progreso en vivo.
