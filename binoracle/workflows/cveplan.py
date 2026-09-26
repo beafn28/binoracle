@@ -110,39 +110,64 @@ _FMT_FUNCS = ("printf", "fprintf", "sprintf", "snprintf", "vprintf", "vsprintf",
 
 
 _INSN_RE = re.compile(r"\b(lea|mov|movabs|movzx|movsxd|xor)\s+(e?[a-z]{2}|r[a-z0-9]+)\s*,\s*([^;]+)")
+_REG64 = {"eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx", "esi": "rsi",
+          "edi": "rdi", "ebp": "rbp", "esp": "rsp"}
+
+
+def _norm_r(r: str) -> str:
+    r = r.strip().lower()
+    return _REG64.get(r, r)
+
+
+def _src_is_const(mnem: str, src: str) -> Optional[bool]:
+    """Clasifica una FUENTE como constante (True), variable (False) o 'sigue el registro' (None)."""
+    src = src.strip().lower()
+    if mnem == "lea":
+        # lea reg, [rip + str.x] / [rip + 0x..] -> puntero a rodata = constante;
+        # lea reg, [var_..] / [rbp/rsp ...] -> direccion de un local = variable
+        if "var_" in src or "rbp" in src or "rsp" in src:
+            return False
+        return True                                  # rip-relativo a rodata
+    # mov / movabs / movzx / movsxd
+    if "str." in src or "obj." in src:
+        return True
+    if re.fullmatch(r"0x[0-9a-f]+", src):
+        return True                                  # immediato = puntero a literal
+    if re.fullmatch(r"e?[a-z]{2}|r[a-z0-9]+", src):
+        return None                                  # otro registro: hay que seguirlo
+    if "var_" in src or "[" in src:
+        return False                                 # cargado de memoria/local
+    return True
 
 
 def _fmt_arg_is_variable(disasm_func: str, call_line_idx: int, lines: list, func: str) -> bool:
-    """En una llamada a printf-family, busca la ULTIMA escritura al registro del FORMATO antes de la
-    llamada y decide: constante (immediato/rodata/`str.`) -> seguro; direccion de un local (`lea reg,
-    [var]`) o valor de otro registro (buffer) -> candidato a format-string. Ignora los stores (donde
-    el registro es la FUENTE, no el destino)."""
-    reg = "rsi" if func in ("fprintf", "syslog") else "rdi"    # System V: printf->rdi, fprintf->rsi
-    ereg = "esi" if reg == "rsi" else "edi"
-    for j in range(call_line_idx - 1, max(-1, call_line_idx - 10), -1):
+    """En una llamada a printf-family, resuelve el ORIGEN del registro de FORMATO siguiendo la cadena
+    de escrituras (incluidos los `mov rdi, rax` con `lea rax,[rip+str]` de los binarios PIE). Decide:
+    constante (rodata/immediato/`str.`) -> seguro; local (`lea reg,[var]`) o memoria -> format-string."""
+    target = _norm_r("rsi" if func in ("fprintf", "syslog") else "rdi")   # System V
+    hops = 0
+    j = call_line_idx - 1
+    while j >= 0 and hops < 12:
         ln = lines[j]
-        if "call " in ln.lower():          # otra llamada antes: el arg ya estaba fijado
+        if "call " in ln.lower():          # el argumento ya estaba fijado antes de otra llamada
             break
         m = _INSN_RE.search(ln)
         if not m:
+            j -= 1
             continue
-        mnem, dst, src = m.group(1).lower(), m.group(2).lower(), m.group(3).strip().lower()
-        if dst not in (reg, ereg):          # no es una escritura al registro de formato
+        mnem, dst, src = m.group(1).lower(), _norm_r(m.group(2)), m.group(3).strip().lower()
+        if dst != target:                  # no escribe el registro que seguimos
+            j -= 1
             continue
-        # escritura encontrada: clasifica la FUENTE
-        if mnem == "lea":
-            # lea reg, [rip + str] / [rip + 0x..] -> puntero a rodata (constante) = seguro;
-            # lea reg, [var_..] / [rbp/rsp - ..] -> direccion de un local = variable
-            return ("var_" in src) or ("rbp" in src) or ("rsp" in src)
-        if mnem in ("mov", "movabs", "movzx", "movsxd"):
-            if "str." in src or "obj." in src:
-                return False                # cadena conocida = seguro
-            if re.fullmatch(r"0x[0-9a-f]+", src):
-                return False                # immediato (puntero a literal) = seguro
-            if "var_" in src or "[" in src or re.fullmatch(r"e?[a-z]{2}|r[a-z0-9]+", src):
-                return True                 # de memoria/otro registro = variable
-            return False
-        return False                        # xor reg,reg u otro: no aporta un formato controlado
+        verdict = _src_is_const(mnem, src)
+        if verdict is True:
+            return False                   # constante -> printf seguro
+        if verdict is False:
+            return True                    # variable/local -> format-string
+        # verdict None: la fuente es otro registro; seguimos ESE registro hacia atras
+        target = _norm_r(src)
+        hops += 1
+        j -= 1
     return False
 
 
