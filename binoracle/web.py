@@ -1020,9 +1020,9 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 <body>
 <header>
   <div class="brand">binoracle</div>
-  <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario  o  fuente.c" spellcheck="false"></div>
+  <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario (cualquier tamano)  o  fuente.c  -  o pulsa + para adjuntar cualquier fichero" spellcheck="false"></div>
   <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
-  <input type="file" id="file" style="display:none"><button class="icon-btn" id="ragbtn" title="RAG: busqueda del conocimiento">RAG</button><button class="icon-btn" id="attach" title="adjuntar binario">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
+  <input type="file" id="file" style="display:none"><button class="icon-btn" id="ragbtn" title="RAG: busqueda del conocimiento">RAG</button><button class="icon-btn" id="attach" title="adjuntar CUALQUIER fichero (binario, firmware, apk, .exe...) sin limite de tamano">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
 <div id="ragpop" class="ragpop" style="display:none">
   <div class="rt">Retrieval del conocimiento</div>

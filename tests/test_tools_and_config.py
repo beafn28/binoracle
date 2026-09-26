@@ -58,6 +58,32 @@ def test_secrets_scanner():
     assert "changeme" not in joined and "your_key_here" not in joined
 
 
+def test_secrets_extended_providers():
+    # casuistica ampliada de credenciales (proveedores concretos + clave crypto)
+    from binoracle.workflows.secrets import scan_secrets
+    from binoracle.oracles.base import ToolResult
+
+    class _T:
+        def run(self):
+            return ToolResult(True, "izz",
+                              "sk_live_abcdefghij0123456789ABCD\n"
+                              "glpat-xxxxYYYYzzzz11112222\n"
+                              "\"type\": \"service_account\"\n"
+                              "aes_key = 00112233445566778899aabbccddeeff\n"
+                              "password=changeme\n")
+
+    class _R:
+        def get(self, n):
+            return _T() if n == "r2_strings" else None
+
+    titles = " ".join(f.title.lower() for f in scan_secrets(_R(), "x"))
+    assert "stripe" in titles and "gitlab" in titles
+    assert "service account" in titles or "gcp" in titles
+    assert "criptografica" in titles
+    # el placeholder changeme sigue filtrado
+    assert "changeme" not in " ".join(f.evidence for f in scan_secrets(_R(), "x"))
+
+
 def _mock_reg(imports="", strings=""):
     from binoracle.oracles.base import ToolResult
 
