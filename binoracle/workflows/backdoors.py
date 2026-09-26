@@ -14,6 +14,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
+from ._binfacts import imported_names, shares_caller
 
 _SPAWN = ("execve", "execl", "execlp", "execvp", "execv", "system", "popen", "dup2")
 # puertos tipicos de backdoor/bind-shell (decimal) -> se buscan como inmediato htons en el disasm
@@ -87,17 +88,20 @@ def _hardcoded_ports(binary: str, sinks) -> list:
 
 def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding]:
     findings: List[Finding] = []
-    imports = _run(reg, "r2_imports").lower()
+    # nombres de import REALES (parseados), no substring sobre el texto crudo de `ii`: la cabecera de
+    # la tabla lleva una columna literal 'bind', que con matching ingenuo se leia como uso de red.
+    names = imported_names(reg)
     strings = _run(reg, "r2_strings")
 
-    has_socket = "socket" in imports
-    has_bind = "bind" in imports and "listen" in imports
-    has_connect = "connect" in imports
-    spawn = [s for s in _SPAWN if s in imports]
+    has_socket = "socket" in names
+    has_bind = "bind" in names and "listen" in names
+    has_connect = "connect" in names
+    spawn = [s for s in _SPAWN if s in names]
     has_shell_str = "/bin/sh" in strings or "/bin/bash" in strings
 
-    # (a) bind shell: socket + bind + listen + (dup2 | execve/system)
-    if has_socket and has_bind and spawn:
+    # (a) bind shell: socket + bind + listen + (dup2 | execve/system), Y el spawn debe compartir
+    # funcion llamadora con socket/bind (misma ruta de codigo, no solo presencia en el binario).
+    if has_socket and has_bind and spawn and shares_caller(reg, ("socket", "bind", "listen"), spawn):
         ports = _hardcoded_ports(binary, ("bind",))
         port_ev = ("\ninmediato(s) compatible(s) con puerto (heuristico): "
                    + ", ".join(f"{p} @ {a}" for p, a in ports)) if ports else ""
@@ -120,8 +124,8 @@ def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "Remove any illegitimate bind/listen code; if it is a real service, never spawn shells, "
             "listen only on localhost, authenticate and firewall it.", lang, loc="binario / red"))
 
-    # (b) reverse shell: socket + connect + (dup2 | execve/system)
-    if has_socket and has_connect and spawn:
+    # (b) reverse shell: socket + connect + (dup2 | execve/system), misma funcion llamadora.
+    if has_socket and has_connect and spawn and shares_caller(reg, ("socket", "connect"), spawn):
         ports = _hardcoded_ports(binary, ("connect",))
         port_ev = ("\ninmediato(s) compatible(s) con puerto (heuristico): "
                    + ", ".join(f"{p} @ {a}" for p, a in ports)) if ports else ""
@@ -143,9 +147,12 @@ def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "shell over a socket. Review the destination and block egress.", lang, loc="binario / red"))
 
     # (c) inyeccion de comando por concatenacion: system/popen alimentado por un constructor de cadena
-    execs = [s for s in ("system", "popen", "execl", "execlp", "execvp") if s in imports]
-    builders = [b for b in _BUILDERS if b in imports]
-    if execs and builders:
+    # EN LA MISMA FUNCION. Sin este requisito, un binario con un builder en una funcion (p.ej. un
+    # strcpy(buf, entrada) normal) y un exec de cadena FIJA en otra (p.ej. un system("cmd.exe") de un
+    # 'win()' de CTF, sin relacion) disparaba un falso positivo -- confirmado en win_chall.exe.
+    execs = [s for s in ("system", "popen", "execl", "execlp", "execvp") if s in names]
+    builders = [b for b in _BUILDERS if b in names]
+    if execs and builders and shares_caller(reg, builders, execs):
         findings.append(_f(
             "Posible inyeccion de comando por concatenacion",
             "Possible command injection via string concatenation", "high",

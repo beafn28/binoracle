@@ -9,7 +9,8 @@ para exigir evidencia de USO real, no presencia incidental.
 """
 from __future__ import annotations
 
-from typing import Set
+import re as _re
+from typing import Dict, Set
 
 
 def imported_names(reg) -> Set[str]:
@@ -72,3 +73,72 @@ def has_network(reg) -> bool:
     r = t.run() if t else None
     blob = (r.data or "").lower() if (r and r.ok) else ""
     return any(m in blob for m in _NET_STR)
+
+
+_CALLER_RE = _re.compile(r"^([A-Za-z_][\w.]*)\s+0x[0-9a-f]+\s+\[[A-Za-z:\-]+\]\s+call\s+", _re.M)
+
+
+def sink_callers(reg) -> Dict[str, Set[str]]:
+    """Parsea `r2_sinks` a {nombre_del_sink: {funciones que lo llaman}}. Sirve para exigir que dos
+    sinks (p.ej. un constructor de cadena y un exec) esten llamados desde la MISMA funcion antes de
+    afirmar que uno alimenta al otro -- 'ambos importados en el binario' no prueba flujo de datos;
+    'llamados desde la misma funcion' es una senal mucho mas fuerte (aunque no perfecta) de que sea
+    la misma ruta de codigo. Vacio si r2_sinks no esta disponible."""
+    t = reg.get("r2_sinks")
+    r = t.run() if t else None
+    out: Dict[str, Set[str]] = {}
+    if not (r and r.ok):
+        return out
+    cur = None
+    for ln in (r.data or "").splitlines():
+        s = ln.strip()
+        m = _re.match(r"###\s*sink:\s*(\w+)", s)
+        if m:
+            cur = m.group(1).lower()
+            out.setdefault(cur, set())
+            continue
+        if cur is None or not s:
+            continue
+        cm = _CALLER_RE.match(ln)
+        if cm:
+            out[cur].add(cm.group(1).lower())
+    return out
+
+
+def callers_of(reg, symbol: str) -> Set[str]:
+    """Funciones que llaman a `symbol`, via r2_xrefs (axt). Prueba `sym.imp.<nombre>` (dinamico) y
+    `sym.<nombre>` (estatico) -- funciona para cualquier nombre, no solo los de DANGEROUS/r2_sinks."""
+    t = reg.get("r2_xrefs")
+    if not t:
+        return set()
+    out: Set[str] = set()
+    for prefix in ("sym.imp.", "sym."):
+        try:
+            r = t.run(target=f"{prefix}{symbol}")
+        except Exception:
+            continue
+        if not (r and r.ok):
+            continue
+        for m in _CALLER_RE.finditer((r.data or "") + "\n"):
+            out.add(m.group(1).lower())
+        if out:
+            break
+    return out
+
+
+def shares_caller(reg, sinks_a, sinks_b) -> bool:
+    """True si algun simbolo de `sinks_a` y algun simbolo de `sinks_b` estan llamados desde la MISMA
+    funcion (via r2_xrefs, cualquier nombre de import). Uso: exigir que una fuente de entrada
+    (fgets/read...) o un constructor (sprintf/strcpy...) y un sink peligroso (system/popen...)
+    compartan funcion llamadora antes de afirmar que uno alimenta al otro -- 'ambos importados en el
+    binario' no prueba flujo de datos; 'llamados desde la misma funcion' es una senal mucho mas
+    fuerte (aunque no perfecta, sigue sin ser dataflow real) de que sea la misma ruta de codigo."""
+    fns_a = set()
+    for s in sinks_a:
+        fns_a |= callers_of(reg, s)
+    if not fns_a:
+        return False
+    fns_b = set()
+    for s in sinks_b:
+        fns_b |= callers_of(reg, s)
+    return bool(fns_a & fns_b)

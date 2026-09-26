@@ -84,17 +84,30 @@ def test_secrets_extended_providers():
     assert "changeme" not in " ".join(f.evidence for f in scan_secrets(_R(), "x"))
 
 
-def _mock_reg(imports="", strings=""):
+def _mock_reg(imports="", strings="", same_func=True):
     from binoracle.oracles.base import ToolResult
 
     class _T:
         def __init__(self, d): self.d = d
         def run(self): return ToolResult(True, "r2", self.d)
 
+    class _Xrefs:
+        # simula r2_xrefs (axt): con same_func=True (por defecto), toda funcion importada se dice
+        # llamada desde 'main' -- suficiente para que shares_caller() vea coocurrencia en los tests
+        # que no versan sobre esa logica. same_func=False simula funciones SIN llamador resuelto
+        # (como haria un binario real donde los sinks estan en funciones distintas), para probar el
+        # camino negativo de shares_caller.
+        def run(self, target=""):
+            name = target.rsplit(".", 1)[-1] if target else ""
+            if same_func and name and (name in imports.lower()):
+                return ToolResult(True, "r2", f"main 0x1000 [CALL:--x] call sym.imp.{name}")
+            return ToolResult(True, "r2", "")
+
     class _R:
         def get(self, name):
             if name == "r2_imports": return _T(imports)
             if name == "r2_strings": return _T(strings)
+            if name == "r2_xrefs": return _Xrefs()
             return None
     return _R()
 
@@ -1019,6 +1032,47 @@ def test_directed_fuzz_without_llm():
         pass
     res2 = directed_fuzz(__file__, "hint", None)
     assert res2.ok is False and "sin LLM" in res2.note
+
+
+def test_shares_caller_same_vs_different_function():
+    # shares_caller exige que dos simbolos esten llamados desde la MISMA funcion (via r2_xrefs), no
+    # solo que ambos existan en el binario -- distingue flujo de datos real (mismo camino de codigo)
+    # de mera co-presencia (que fue el origen de FPs en injection.py/backdoors.py: p.ej. un system()
+    # de cadena FIJA en un 'win()' de CTF, sin relacion con un gets() en main()).
+    from binoracle.workflows._binfacts import shares_caller, callers_of
+    same = _mock_reg(imports="sym.imp.sprintf\nsym.imp.system", same_func=True)
+    assert shares_caller(same, ["sprintf"], ["system"]) is True
+    assert callers_of(same, "sprintf") == {"main"}
+    diff = _mock_reg(imports="sym.imp.gets\nsym.imp.system", same_func=False)
+    assert shares_caller(diff, ["gets"], ["system"]) is False
+
+
+def test_backdoors_requires_same_function_not_just_presence():
+    # Regresion: el patron 'socket+bind+listen+exec en el binario' ya NO basta si estan en funciones
+    # SIN relacion (p.ej. un servidor legitimo + un helper de backup que hace exec en otro sitio).
+    same = _mock_reg(imports="sym.imp.socket\nsym.imp.bind\nsym.imp.listen\nsym.imp.execve",
+                     strings="/bin/sh", same_func=True)
+    from binoracle.workflows.backdoors import scan_backdoors
+    titles_same = " ".join(f.title.lower() for f in scan_backdoors(same, "x"))
+    assert "bind shell" in titles_same
+    diff = _mock_reg(imports="sym.imp.socket\nsym.imp.bind\nsym.imp.listen\nsym.imp.execve",
+                     strings="/bin/sh", same_func=False)
+    assert scan_backdoors(diff, "x") == []          # sin coocurrencia real -> sin hallazgo
+
+
+def test_injection_no_false_positive_on_unrelated_gift_function():
+    # Regresion sobre binario real: ret2win.c llama system("/bin/sh") FIJO dentro de win(), sin
+    # relacion con gets(buf) de main() -- antes del fix, 'entrada + exec en algun sitio' disparaba
+    # 'Superficie de inyeccion' en ~60% del corpus de ejemplo (ret2win, canary, oobwrite...).
+    import os
+    from binoracle.oracles import build_registry
+    from binoracle.workflows.injection import scan_injection
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        return
+    reg = build_registry(b)
+    fs = scan_injection(reg, b, "es")
+    assert not any("inyeccion" in f.title.lower() for f in fs), [f.title for f in fs]
 
 
 def test_no_false_positives_on_static_binary():

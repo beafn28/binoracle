@@ -18,7 +18,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
-from ._binfacts import imported_names
+from ._binfacts import imported_names, shares_caller
 
 _SQL_API = ("sqlite3_exec", "sqlite3_prepare", "mysql_query", "mysql_real_query", "mysql_stmt_prepare",
             "pqexec", "pqexecparams", "mysql_real_escape_string", "sqlite3_mprintf")
@@ -89,10 +89,14 @@ def scan_injection(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             lang, "inyeccion / sql"))
 
     # (b) entrada no confiable -> sink de ejecucion (vision consolidada). Requiere imports REALES de
-    # una fuente de entrada Y de un sink de ejecucion (no basta el simbolo en glibc estatica).
+    # una fuente de entrada Y de un sink de ejecucion, Y que ambos esten llamados desde la MISMA
+    # funcion (shares_caller, via r2_sinks): sin esto, cualquier binario que lea entrada en algun
+    # sitio Y ejecute un exec en otro (p.ej. un 'gift'/'win' de CTF con system("/bin/sh") fijo, sin
+    # relacion con la entrada) disparaba un falso positivo -- se confirmo en ~60% del corpus de
+    # ejemplo (ret2win, canary, oobwrite...: el system() esta en win(), no alimentado por gets()).
     inputs = _present(names, _INPUT)
     execs = _present(names, _EXEC)
-    if inputs and execs:
+    if inputs and execs and shares_caller(reg, inputs, execs):
         findings.append(_f(
             "Superficie de inyeccion: entrada no confiable alcanza ejecucion de comandos",
             "Injection surface: untrusted input reaches command execution", "medium",
