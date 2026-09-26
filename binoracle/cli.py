@@ -630,6 +630,15 @@ def cmd_train(args, config):
     print("\n" + render_training(rep, config.lang))
 
 
+def cmd_fetch(args, config):
+    """Extrae un binario real desde una imagen Docker (para conseguir el binario vulnerable de una
+    CVE). No ejecuta el entrypoint de la imagen: docker create + cp."""
+    from .workflows.dockerfetch import fetch_from_image, render_fetch
+    res = fetch_from_image(args.image, args.path, dest_dir=getattr(args, "out", "") or "",
+                           on_step=lambda m: print("  " + m))
+    print("\n" + render_fetch(res, config.lang))
+
+
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
@@ -884,6 +893,13 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("--budget", type=float, default=240,
                     help="per-binary time budget in seconds (skip if exceeded; default 240)")
     dp.set_defaults(func=cmd_dataset)
+
+    fp = sub.add_parser("fetch", help="extract a real binary from a Docker image (get the vulnerable "
+                                      "binary of a CVE); does NOT run the image entrypoint")
+    fp.add_argument("image", help="Docker image, e.g. ubuntu:16.04 or debian:10")
+    fp.add_argument("path", help="absolute path in the image (/usr/sbin/nscd) or a binary name (nscd)")
+    fp.add_argument("--out", help="destination directory (default ./fetched)")
+    fp.set_defaults(func=cmd_fetch)
 
     ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "
                                             "reason + develop + (with --binary) verify in sandbox")

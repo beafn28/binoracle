@@ -962,3 +962,16 @@ def test_cve_agent_deterministic_render():
     # exploit verificado se muestra como tal
     inv2 = Investigation(cve_id="CVE-1-1", lookup_ok=True, verified=True, verified_detail="offset=88")
     assert "VERIFICADO" in render_investigation(inv2, "es")
+
+
+def test_dockerfetch_render_and_guard():
+    # render + validacion de entrada sin tocar Docker/red.
+    from binoracle.workflows.dockerfetch import fetch_from_image, render_fetch, FetchResult
+    r = fetch_from_image("", "", on_step=lambda m: None)   # sin imagen/ruta -> falla limpio
+    assert r.ok is False and r.note
+    ok = FetchResult(ok=True, image="debian:12", src_path="/usr/bin/whoami",
+                     local_path="/tmp/fetched/whoami")
+    md = render_fetch(ok, "es")
+    assert "Binario extraido" in md and "debian:12" in md and "investigate" in md
+    bad = render_fetch(FetchResult(ok=False, note="no se hallo", candidates=["/a", "/b"]), "es")
+    assert "fallida" in bad.lower() and "/a" in bad

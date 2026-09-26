@@ -633,7 +633,7 @@ def run_streaming(command, binary, ai, emit, text=""):
     import os
     # 'train' corre sobre el corpus del repo; 'exploit' puede derivar el esquema+plantilla solo con
     # la descripcion de la CVE. El resto de comandos si exigen un binario cargado.
-    _needs_binary = command not in ("train", "exploit", "dataset", "investigate")
+    _needs_binary = command not in ("train", "exploit", "dataset", "investigate", "fetch")
     if _needs_binary and (not binary or not os.path.exists(binary)):
         emit("step", f"error: binario no encontrado: {binary}")
         emit("done", "")
@@ -739,6 +739,24 @@ def run_streaming(command, binary, ai, emit, text=""):
             else:
                 emit("step", "no se reconocio la clase de vulnerabilidad; describe la vuln de la CVE.")
             emit("html", render_exploit_page(pl, binary or "target", config.lang, intro_md=cve_intro))
+        elif command == "fetch":
+            # Extrae el binario vulnerable real de una imagen Docker (docker create + cp, sin ejecutar
+            # el entrypoint). Entrada de texto: "<imagen> <ruta_o_nombre>".
+            import tempfile
+            from .workflows.dockerfetch import fetch_from_image, render_fetch
+            from .report.html import render_training_page
+            parts = (text or "").strip().split(None, 1)
+            if len(parts) < 2:
+                emit("step", "formato: <imagen> <ruta_o_nombre>  (p.ej. debian:12 /usr/sbin/nscd)")
+                emit("html", render_training_page(
+                    "## Fetch de binario\n\nEscribe: `<imagen> <ruta_o_nombre>`\n\n"
+                    "Ejemplos:\n- `debian:12 /usr/bin/whoami`\n- `ubuntu:16.04 nscd`", config.lang))
+                emit("done", "")
+                return
+            image, path = parts[0], parts[1]
+            dest = os.path.join(tempfile.gettempdir(), "binoracle_fetched")
+            res = fetch_from_image(image, path, dest_dir=dest, on_step=lambda m: emit("step", m))
+            emit("html", render_training_page(render_fetch(res, config.lang), config.lang))
         elif command == "investigate":
             # Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando.
             # El LLM razona; con binario, verifica en sandbox. Informe honesto (verificado/bloqueos).
@@ -1180,6 +1198,7 @@ const CMDS=[
  {c:"cadenas",n:"Cadenas",ic:"@",d:"Construye y VERIFICA las cadenas de ataque, con grafo interactivo"},
  {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
  {c:"investigate",n:"Investigar (LLM)",ic:"~",d:"Agente LLM: de la CVE al exploit, investigando y probando. Razona, desarrolla y (con binario) verifica en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id (p.ej. CVE-2024-33599) o descripcion de la vuln",t:"text"}]},
+ {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE->Exploit o Investigar.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"#",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
  {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
@@ -1230,7 +1249,7 @@ function stream(command,options){var out=document.getElementById('out');var g=do
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','investigate'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','investigate','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';
