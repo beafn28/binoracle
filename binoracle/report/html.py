@@ -824,6 +824,23 @@ def render_training_page(markdown: str, lang: str = "es") -> str:
     return head + _md_rich(markdown or "") + "</main></body></html>"
 
 
+def render_dataset_page(markdown: str, jsonl_text: str = "", fname: str = "exploit_sft.jsonl",
+                        lang: str = "es") -> str:
+    """Pagina del generador de dataset SFT: resumen + boton de descarga del JSONL (data URI)."""
+    import base64
+    es = lang == "es"
+    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<style>{_CSS}</style></head><body><main class='md' style='padding:16px'>")
+    dl = ""
+    if jsonl_text:
+        b64 = base64.b64encode(jsonl_text.encode("utf-8")).decode("ascii")
+        label = ("Descargar dataset (.jsonl)" if es else "Download dataset (.jsonl)")
+        dl = (f'<p><a class="dlbtn" download="{_esc(fname)}" '
+              f'href="data:application/jsonl;base64,{b64}">&#8681; {label}</a></p>')
+    return head + _md_rich(markdown or "") + dl + "</main></body></html>"
+
+
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
                 decompiled=None, cfg=None, chains=None) -> str:
