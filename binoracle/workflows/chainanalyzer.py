@@ -187,7 +187,8 @@ def _facts(binary: str, reg=None) -> dict:
     Lee con r2 directo (r2pipe). El parametro `reg` se acepta por consistencia de firma con el
     resto de workflows pero no se usa aqui."""
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
-         "win": None, "system": None, "binsh": None, "rip_offset": None}
+         "win": None, "system": None, "binsh": None, "rip_offset": None,
+         "puts": False, "leak_fn": None, "reenter": False}
     try:
         import json
         from ..oracles.r2session import get as _r2get
@@ -204,6 +205,11 @@ def _facts(binary: str, reg=None) -> dict:
                     f["win"] = fn.get("offset")
                 if f["system"] is None and nm.endswith("system"):
                     f["system"] = fn.get("offset")
+            # imports para la cadena de fuga (leak): puts/printf permiten filtrar una direccion de libc
+            imps = (r.cmd("ii~puts,printf,write,main") or "").lower()
+            f["puts"] = "puts" in imps
+            f["leak_fn"] = ("puts" if "puts" in imps else ("printf" if "printf" in imps else None))
+            f["reenter"] = "main" in (r.cmd("afl~ main,sym.main,vuln") or "")
             # /bin/sh en strings
             for s in json.loads(r.cmd("izzj") or "{}").get("strings", []):
                 if "/bin/sh" in (s.get("string", "") or ""):
@@ -472,6 +478,45 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "execve", f, lang)
     chains.append(c)
 
+    # 4) ret2libc + leak (2 ETAPAS): binario dinamico con NX, sin win ni system estatico. Fase 1
+    #    filtra una direccion de libc (puts@GOT via puts@PLT) y reentra; fase 2 usa la base de libc
+    #    para llamar system('/bin/sh'). Solo tiene sentido si NO hay una via mas simple (win/system).
+    if f.get("puts") and f.get("system") is None and f.get("win") is None:
+        c = ExploitChain(name="ret2libc + leak", target="system('/bin/sh') via libc")
+        g_rdi = _best_for(gadgets, "rdi")
+        lk = f.get("leak_fn") or "puts"
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(bool(g_rdi), "gadget `pop rdi; ret`", "gadget `pop rdi; ret`", lang),
+            _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
+            _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
+                 "reentry point (main/vuln) for stage 2", lang),
+            _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
+                 "target libc (system and '/bin/sh' offsets)", lang)]
+        c.regs_needed = ["rdi"]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)  # direcciones de libc en runtime
+        if g_rdi:
+            c.gadgets_used = [g_rdi.addr]
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
+            ChainStep("gadget", f"[fase 1] pop rdi; {lk}@PLT",
+                      L(f"filtra {lk}@GOT para calcular la base de libc y reentra en main",
+                        f"leaks {lk}@GOT to compute the libc base and reenters main"),
+                      addr=g_rdi.addr if g_rdi else None,
+                      regs={"rdi": f"{lk}@GOT"}, stack=L("reentra: 2a etapa", "reenter: stage 2"),
+                      constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
+            ChainStep("gadget", "[fase 2] pop rdi; system",
+                      L("con la base de libc: rdi=&'/bin/sh', llama a system", "with libc base: rdi=&'/bin/sh', call system"),
+                      regs={"rdi": "&'/bin/sh' (libc)"} ),
+            ChainStep("target", "system('/bin/sh')",
+                      L("shell via libc rebaseada", "shell via rebased libc"),
+                      regs={"rip": "system@libc"})]
+        _score(c)
+        if verify and c.feasible:
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc_leak", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -556,6 +601,18 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
     OK = "VERIFICADA" if es else "VERIFIED"
     NO = "no verificada" if es else "not verified"
     try:
+        if kind == "ret2libc_leak":
+            from .autolibc import autolibc
+            r = autolibc(binary, run=True)
+            v = bool(r.get("verified"))
+            proof = {"strategy": "ret2libc+leak (2 etapas)", "marker": "BINORACLE_LIBC_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("off", "leak", "base", "system"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+|\d+)", r.get("detail", "") or "")
+                if m:
+                    proof["offset" if key == "off" else key] = m.group(1)
+            return ((f"{OK} (ret2libc con fuga de libc: base={proof.get('base')}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2win":
             if pie:
                 from .autopie import autopie_ret2win
