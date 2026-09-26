@@ -993,6 +993,34 @@ def test_autofuzz_render_and_result():
     assert len(_cyclic(100)) == 100
 
 
+def test_autofuzz_expand_tokens():
+    # Regresion: _expand usa `re` (PAD/CYCLIC) - un import faltante rompia TODO caso dirigido
+    # silenciosamente (capturado por el except generico de directed_fuzz). Debe expandir de verdad.
+    from binoracle.workflows.autofuzz import _expand
+    assert _expand("-s {PAD:5}\\") == b"-s AAAAA\\"
+    assert _expand("x{CYCLIC:8}y") == b"xaaaabaaay"
+    assert _expand(None) == b""
+    assert _expand(b"raw") == b"raw"
+    assert _expand("plain") == b"plain"
+
+
+def test_directed_fuzz_without_llm():
+    # Sin LLM disponible, directed_fuzz no lanza y deja nota clara (no falso "ok").
+    from binoracle.workflows.autofuzz import directed_fuzz
+
+    class _Unavailable:
+        def available(self):
+            return False
+
+    res = directed_fuzz("/nonexistent-binary-xyz", "hint", _Unavailable())
+    assert res.ok is False and "no encontrado" in res.note
+
+    class _NoLLM:
+        pass
+    res2 = directed_fuzz(__file__, "hint", None)
+    assert res2.ok is False and "sin LLM" in res2.note
+
+
 def test_no_false_positives_on_static_binary():
     # Regresion: un binario ESTATICO minimo (solo un overflow) no debe generar falsos positivos de
     # SQLi / cleartext / logging por strings o simbolos de la glibc embebida (caso informe_staticrop).

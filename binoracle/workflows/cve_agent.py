@@ -121,7 +121,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     if has_bin:
         # 4a) AUTO-FUZZING: descubre dinamicamente el disparador (stdin/argv/format-string)
         try:
-            from .autofuzz import autofuzz
+            from .autofuzz import autofuzz, directed_fuzz
             step("auto-fuzzing: buscando el input que dispara el fallo..." if es else
                  "auto-fuzzing: searching for the crashing input...")
             fz = autofuzz(binary, on_step=lambda m: step(m), lang=lang)
@@ -129,6 +129,19 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 t = fz.triggers[0]
                 inv.trigger = (f"{t.vector} -> {t.vuln_class}"
                                + (f" (~{t.min_size} bytes)" if t.min_size else ""))
+            # si el fuzzing generico no crashea y el LLM tiene una hipotesis del disparador, prueba
+            # invocaciones DIRIGIDAS por el LLM (flags/patrones especificos del trigger).
+            elif llm_on and inv.llm_notes.get("trigger"):
+                step("fuzzing DIRIGIDO por el LLM (segun la hipotesis del disparador)..." if es else
+                     "LLM-DIRECTED fuzzing (from the trigger hypothesis)...")
+                dz = directed_fuzz(binary, inv.llm_notes.get("trigger", ""), llm,
+                                   on_step=lambda m: step(m), lang=lang)
+                if dz.ok and dz.triggers:
+                    t = dz.triggers[0]
+                    inv.trigger = f"{t.vector} (dirigido por LLM) -> {t.vuln_class}"
+                elif dz.note:
+                    inv.blockers.append(("fuzzing dirigido: " + dz.note) if es else
+                                        ("directed fuzzing: " + dz.note))
         except Exception:
             pass
         # 4b) PRUEBA de verdad: concreta offset/gadgets y VERIFICA en sandbox

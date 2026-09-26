@@ -12,6 +12,7 @@ Solo binarios AUTORIZADOS / CTF / research. Corre en el sandbox docker (--networ
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -186,6 +187,100 @@ def autofuzz(binary: str, on_step: Optional[Callable[[str], None]] = None,
                     if es else
                     "no crash with the probed vectors; the trigger may be a file format or a network "
                     "request (dedicated harness needed)")
+    return res
+
+
+_DIRECTED_SYS = (
+    "Eres un fuzzer dirigido para retos AUTORIZADOS. Dada la hipotesis del disparador de una "
+    "vulnerabilidad y un binario, propones INVOCACIONES CONCRETAS para intentar provocar el fallo. "
+    "Responde SOLO JSON: {\"cases\": [{\"vector\": \"stdin\"|\"argv\"|\"file\", \"argv\": [\"-s\", "
+    "\"{PAD:200}\\\\\"], \"stdin\": \"...\", \"file\": \"...\", \"note\": \"...\"}]}. Usa los tokens "
+    "{PAD:n} (n bytes 'A') y {CYCLIC:n} (patron ciclico de n bytes) donde quieras un relleno largo. "
+    "Incluye flags y patrones especificos de la hipotesis (p.ej. un argumento acabado en '\\\\'). "
+    "Da 4-8 casos, del mas probable al menos."
+)
+
+
+def _expand(s: str) -> bytes:
+    """Expande los tokens {PAD:n} y {CYCLIC:n} de una cadena propuesta por el LLM a bytes."""
+    if s is None:
+        return b""
+    if isinstance(s, bytes):
+        return s
+    out = str(s)
+    for m in list(re.finditer(r"\{PAD:(\d+)\}", out)):
+        out = out.replace(m.group(0), "A" * int(m.group(1)), 1)
+    def _cyc(m):
+        return _cyclic(int(m.group(1))).decode("latin1")
+    out = re.sub(r"\{CYCLIC:(\d+)\}", _cyc, out)
+    return out.encode("latin1", "replace")
+
+
+def directed_fuzz(binary: str, trigger_hint: str, llm, on_step=None, lang: str = "es",
+                  timeout: float = 30.0, max_cases: int = 8) -> FuzzResult:
+    """Fuzzing DIRIGIDO por el LLM: a partir de la hipotesis del disparador, el modelo propone
+    invocaciones concretas (flags, patrones como argumentos acabados en '\\') y las probamos en el
+    sandbox buscando el crash. Cierra el hueco de los disparadores no triviales (no solo stdin). No
+    lanza; sin LLM devuelve vacio."""
+    step = on_step or (lambda _m: None)
+    es = lang == "es"
+    res = FuzzResult(binary=binary)
+    if not os.path.exists(binary):
+        res.note = "binario no encontrado"
+        return res
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        res.note = "sin LLM: no hay fuzzing dirigido"
+        return res
+    try:
+        from ..llm.base import Message
+        raw = llm.chat([Message("system", _DIRECTED_SYS),
+                        Message("user", f"binario: {os.path.basename(binary)}\n"
+                                        f"hipotesis del disparador: {trigger_hint}\n"
+                                        "Propon los casos en JSON.")], json_mode=True)
+        import json as _json
+        data = _json.loads(raw)
+        cases = data.get("cases") if isinstance(data, dict) else None
+    except Exception as e:
+        res.note = f"no se pudo obtener casos del LLM: {e}"
+        return res
+    if not isinstance(cases, list) or not cases:
+        res.note = "el LLM no propuso casos"
+        return res
+    step((f"probando {min(len(cases), max_cases)} invocaciones dirigidas por el LLM..." if es else
+          f"trying {min(len(cases), max_cases)} LLM-directed invocations..."))
+    for i, c in enumerate(cases[:max_cases], 1):
+        if not isinstance(c, dict):
+            continue
+        vector = (c.get("vector") or "stdin").lower()
+        note = c.get("note", "")
+        try:
+            if vector == "argv" and c.get("argv"):
+                argv_list = [_expand(a).decode("latin1") for a in c["argv"]]
+                code, out = _probe(binary, argv_list=argv_list, timeout=timeout)
+                shown = " ".join(a[:24] for a in argv_list)
+            elif vector == "file" and c.get("file") is not None:
+                code, out = _probe(binary, as_file=_expand(c["file"]), timeout=timeout)
+                shown = "fichero"
+            else:
+                code, out = _probe(binary, stdin=_expand(c.get("stdin", "")), timeout=timeout)
+                shown = "stdin"
+        except Exception:
+            continue
+        crashed = code in (139, 134, 136)
+        step((f"  caso {i} [{vector}] {shown[:40]} -> {'CRASH exit '+str(code) if crashed else 'ok'}"
+              if es else
+              f"  case {i} [{vector}] {shown[:40]} -> {'CRASH exit '+str(code) if crashed else 'ok'}"))
+        if crashed:
+            res.triggers.append(Trigger(vector, "stack-overflow", exit_code=code,
+                                        evidence=(f"crash dirigido por el LLM (exit {code}): "
+                                                  f"{note or shown}")))
+            break
+    res.ok = bool(res.triggers)
+    if not res.ok:
+        res.note = ("ninguna invocacion dirigida por el LLM provoco el fallo (puede requerir el "
+                    "binario/entorno exactos o heap grooming)" if es else
+                    "no LLM-directed invocation triggered the fault (may need the exact binary/"
+                    "environment or heap grooming)")
     return res
 
 
