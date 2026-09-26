@@ -48,7 +48,23 @@ _WEAK = [
     (re.compile(r"_ecb(_|\b)|EVP_[a-z0-9_]*_ecb", re.I), "medium",
      "Modo de cifrado ECB: filtra patrones del texto plano (bloques identicos -> cifrados identicos).",
      "ECB cipher mode: leaks plaintext patterns (identical blocks -> identical ciphertext)."),
+    (re.compile(r"\b(blowfish|bf_(ecb|cbc|set_key)|sweet32)\b", re.I), "medium",
+     "Blowfish (bloque de 64 bits): vulnerable a colisiones de bloque (Sweet32) en volumenes grandes.",
+     "Blowfish (64-bit block): vulnerable to birthday/block collisions (Sweet32) at high volume."),
+    (re.compile(r"\b(cast5|cast-128|\brc2\b|\bidea\b|\bseed_)\b", re.I), "low",
+     "Cifrado de bloque anticuado (CAST5/RC2/IDEA): usa AES.",
+     "Legacy block cipher (CAST5/RC2/IDEA): use AES."),
+    (re.compile(r"\bmd2\b", re.I), "medium",
+     "Hash MD2 roto y obsoleto.", "Broken and obsolete MD2 hash."),
+    (re.compile(r"\$1\$[./0-9A-Za-z]{8}", re.I), "medium",
+     "Hash de contrasena md5crypt ($1$): debil, sin coste ajustable.",
+     "md5crypt password hash ($1$): weak, no adjustable work factor."),
 ]
+
+# protocolos TLS/SSL obsoletos o forzados a version insegura
+_DEPRECATED_TLS = re.compile(
+    r"\b(SSLv2(_method|_client_method|_server_method)?|SSLv3(_method|_client_method|_server_method)?|"
+    r"SSLv23_method|TLSv1_method|TLSv1_1_method|TLS1\.0|TLS1\.1|SSL2|SSL3)\b")
 
 # validacion de certificados desactivada (strings/imports)
 _NOVERIFY = re.compile(
@@ -62,9 +78,9 @@ def scan_comms(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[Fi
     strings = _str(reg)
     blob = imports + "\n" + strings
 
-    # 1) transmision sin cifrar: URLs http:// (no https), ftp://, telnet
-    cleartext = sorted(set(re.findall(r"\b(?:http|ftp|telnet)://[^\s\"'<>]{3,60}", strings, re.I)))
-    cleartext = [u for u in cleartext if not u.lower().startswith("https://")][:6]
+    # 1) transmision sin cifrar: URLs http:// (no https), ftp://, telnet, ws://, ldap://
+    cleartext = sorted(set(re.findall(r"\b(?:http|ftp|telnet|ws|ldap)://[^\s\"'<>]{3,60}", strings, re.I)))
+    cleartext = [u for u in cleartext if not u.lower().startswith(("https://", "wss://", "ldaps://"))][:6]
     if cleartext:
         findings.append(_f(
             "Transmision sin cifrar (texto en claro)", "Cleartext transmission", "medium",
@@ -92,6 +108,21 @@ def scan_comms(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[Fi
             "InsecureSkipVerify en produccion; considera pinning.",
             "Always validate the certificate chain and hostname; never use VERIFY_NONE / "
             "InsecureSkipVerify in production; consider pinning.", lang))
+
+    # 2b) protocolos TLS/SSL obsoletos
+    dt = _DEPRECATED_TLS.search(blob)
+    if dt:
+        findings.append(_f(
+            "Protocolo TLS/SSL obsoleto", "Obsolete TLS/SSL protocol", "medium",
+            f"[radare2: ii/izz]\n{dt.group(0)}",
+            "El binario usa/permite un protocolo obsoleto (" + dt.group(0) + "). SSLv2/SSLv3/TLS1.0/1.1 "
+            "tienen debilidades conocidas (POODLE, BEAST, downgrade) y estan retirados.",
+            "The binary uses/allows an obsolete protocol (" + dt.group(0) + "). SSLv2/SSLv3/TLS1.0/1.1 "
+            "have known weaknesses (POODLE, BEAST, downgrade) and are deprecated.",
+            "Exige TLS 1.2+ (mejor 1.3) y desactiva las versiones antiguas; usa *_method modernos "
+            "(TLS_method con min version fijada).",
+            "Require TLS 1.2+ (ideally 1.3) and disable old versions; use modern *_method (TLS_method "
+            "with a pinned minimum version).", lang))
 
     # 3) crypto debil/rota
     seen = set()

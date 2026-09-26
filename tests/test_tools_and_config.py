@@ -117,6 +117,13 @@ def test_commsec_scanner():
     assert "sin cifrar" in titles         # cleartext http
     assert "certificado" in titles        # verify disabled
     assert "criptografia" in titles       # weak crypto
+    # casuistica ampliada DA4/DA7: Blowfish, MD2, protocolo obsoleto, ws:// en claro
+    reg2 = _mock_reg(imports="sym.imp.BF_set_key",
+                     strings="ws://live/feed\nSSLv3_method\nMD2_Init")
+    t2 = " ".join(f.title.lower() for f in scan_comms(reg2, "x"))
+    assert "obsoleto" in t2               # SSLv3
+    assert "sin cifrar" in t2             # ws://
+    assert "criptografia" in t2           # blowfish / md2
 
 
 def test_backdoors_scanner():
