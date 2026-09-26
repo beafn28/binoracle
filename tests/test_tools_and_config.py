@@ -826,8 +826,12 @@ def test_default_corpus_is_elf_only():
     assert corpus, "el corpus de ejemplo no deberia estar vacio"
     assert all(_is_elf(p) for p in corpus)
     names = [p.rsplit("/", 1)[-1] for p in corpus]
-    assert "srop" in names            # nuevo objetivo SROP
+    assert "srop" in names            # objetivo SROP
     assert not any(n.endswith(".exe") or n == "core" for n in names)
+    # el corpus ampliado cubre clases variadas (heap, format-string, oob, integer, uaf, canary)
+    for expected in ("canary", "fmt_got", "uaf", "intoverflow", "oobwrite", "notes_heap", "staticrop"):
+        assert expected in names, f"falta {expected} en el corpus"
+    assert len(corpus) >= 18
 
 
 def test_exploit_skill_accumulates(tmp_path):
