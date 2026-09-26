@@ -56,6 +56,25 @@ def _require_binary(path: str) -> str:
     return str(p)
 
 
+def cmd_cveplan(args, config):
+    """Esquema de explotacion a partir de una CVE / descripcion (a la inversa: de la vuln al exploit).
+    Con --binary, concreta las mitigaciones desde checksec."""
+    from .workflows.cveplan import plan, render_plan
+    facts = {}
+    if getattr(args, "binary", None):
+        try:
+            reg = build_registry(args.binary)
+            cs = reg.get("r2_checksec")
+            r = cs.run() if cs else None
+            if r and r.ok:
+                facts = {"nx": r.meta.get("nx"), "pie": r.meta.get("pic"),
+                         "canary": r.meta.get("canary"), "relro": r.meta.get("relro")}
+        except Exception:
+            pass
+    pl = plan(args.text, facts, cve=getattr(args, "cve", ""), lang=config.lang)
+    print(render_plan(pl, config.lang))
+
+
 def cmd_doctor(args, config):
     print("binoracle doctor\n" + "=" * 40)
     llm = make_backend(config)
@@ -608,6 +627,12 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("doctor", help="show oracle + LLM availability")
     d.add_argument("binary", nargs="?", help="optional target to probe")
     d.set_defaults(func=cmd_doctor)
+
+    cp = sub.add_parser("cveplan", help="exploitation schema from a CVE/vulnerability description")
+    cp.add_argument("text", help="CVE id or vulnerability description text")
+    cp.add_argument("--binary", help="optional binary to pull mitigations (checksec) from")
+    cp.add_argument("--cve", default="", help="CVE id label for the plan")
+    cp.set_defaults(func=cmd_cveplan)
 
     t = sub.add_parser("triage", help="grounded facts + mitigations (no model needed)")
     t.add_argument("binary")

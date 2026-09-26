@@ -522,6 +522,26 @@ def test_payload_layout():
     assert _payload_layout_html("N", "0x0", "es") == ""   # sin offset numerico -> vacio
 
 
+def test_cve_exploit_plan():
+    from binoracle.workflows.cveplan import classify_cve, plan, render_plan
+    assert classify_cve("a stack-based buffer overflow allows RCE") == "stack-overflow"
+    assert classify_cve("use-after-free in the handler") == "uaf"
+    assert classify_cve("uncontrolled format string (%n)") == "format-string"
+    assert classify_cve("nothing recognizable here") is None
+    # plan de stack overflow con NX+PIE+canary -> fases de leak + control + ROP
+    pl = plan("stack buffer overflow via strcpy", {"nx": True, "pie": True, "canary": True, "relro": "full"},
+              cve="CVE-2024-1", lang="es")
+    assert pl.vuln_class == "stack-overflow" and pl.cve == "CVE-2024-1"
+    names = " ".join(ph.name.lower() for ph in pl.phases)
+    assert "canary" in names and "pie" in names and "rop" in names and "objetivo" in names
+    assert any("Full RELRO" in m for m in pl.mitigations)
+    assert "ret2win" in pl.kb_refs
+    md = render_plan(pl, "es")
+    assert "Esquema de explotacion" in md and "Primitiva" in md
+    # sin clase reconocida -> plan vacio con nota
+    assert plan("blah blah", {}, lang="es").ok is False
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP
