@@ -59,7 +59,9 @@ def render_findings(findings: List[Finding]) -> str:
 _OWASP_DESKTOP = [
     ("DA1", "Injection", True, ("command injection", "inyeccion de comando", "inyección de comando",
                                 "os command", "sql injection", "backdoor de comando")),
-    ("DA2", "Broken Authentication", False, ("broken auth", "session fixation", "autenticacion rota")),
+    ("DA2", "Broken Authentication", True, ("broken auth", "session fixation", "autenticacion rota",
+                                            "autenticacion por comparacion", "authentication by comparison",
+                                            "sin hashing", "without hashing", "auth / ")),
     ("DA3", "Sensitive Data Exposure", True, ("secreto", "credencial", "hardcoded", "api key",
                                               "clave hardcode", "informacion sensible")),
     ("DA4", "Improper Cryptography Usage", True, ("sha-1", "sha1", "md5", "rc4", "hashing debil",
@@ -74,9 +76,12 @@ _OWASP_DESKTOP = [
     ("DA8", "Poor Code Quality", True, ("overflow", "desbord", "gets", "format string", "format-string",
                                         "uaf", "use-after", "double free", "double-free", "heap", "rop",
                                         "ret2", "buffer", "memcpy", "strcpy", "tcache")),
-    ("DA9", "Using Components with Known Vulnerabilities", False, ("cve-", "desactualiz", "obsolet",
-                                                                   "outdated", "known vulnerab")),
-    ("DA10", "Insufficient Logging & Monitoring", False, ("insufficient logging", "sin registro de auditoria")),
+    ("DA9", "Using Components with Known Vulnerabilities", True, ("cve-", "desactualiz", "obsolet",
+                                                                  "outdated", "known vulnerab",
+                                                                  "componente antiguo", "outdated component")),
+    ("DA10", "Insufficient Logging & Monitoring", True, ("insufficient logging", "sin registro de auditoria",
+                                                         "registro/auditoria insuficiente",
+                                                         "insufficient logging/auditing")),
 ]
 
 

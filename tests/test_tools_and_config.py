@@ -370,6 +370,34 @@ def test_rag_health():
     assert h["clean"] is True
 
 
+def test_owasp_scanners_da2_da9_da10():
+    # Las 3 categorias que faltaban ahora tienen scanner real (DA2 auth, DA9 versiones, DA10 logging)
+    from binoracle.workflows.versions import scan_versions
+    from binoracle.workflows.authcheck import scan_auth
+    from binoracle.workflows.logging_check import scan_logging
+    reg = _mock_reg(imports="sym.imp.strcmp\nsym.imp.socket\nsym.imp.recv",
+                    strings="GNU C Library (Ubuntu) stable release version 2.23\n"
+                            "enter password:\nadmin_token=abcd1234")
+    # DA9: glibc 2.23 es antigua
+    assert any("glibc 2.23" in f.title.lower() or "componente antiguo" in f.title.lower()
+               for f in scan_versions(reg, "x"))
+    # DA2: comparacion con credencial hardcodeada
+    assert any("comparacion" in f.title.lower() or "comparison" in f.title.lower()
+               for f in scan_auth(reg, "x"))
+    # DA10: binario de red (recv) sin syslog -> logging insuficiente
+    assert any("logging" in f.title.lower() or "registro" in f.title.lower()
+               for f in scan_logging(reg, "x"))
+    # DA10 conservador: binario no sensible no dispara
+    assert scan_logging(_mock_reg(imports="sym.imp.printf"), "x") == []
+
+
+def test_owasp_all_categories_covered():
+    # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
+    from binoracle.report.render import _OWASP_DESKTOP
+    not_covered = [cid for cid, name, covered, kws in _OWASP_DESKTOP if not covered]
+    assert not_covered == [], f"categorias sin scanner: {not_covered}"
+
+
 def test_ingest_classify():
     # El clasificador de aprendizaje automatico: binario-RE se queda, web/routers fuera,
     # chino a traducir.

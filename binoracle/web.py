@@ -678,7 +678,8 @@ def run_streaming(command, binary, ai, emit):
             emit("step", "credenciales/secretos, permisos de fichero, comunicaciones y backdoors...")
             for _m, _fn in (("secrets", "scan_secrets"), ("fileperms", "scan_file_perms"),
                             ("commsec", "scan_comms"), ("backdoors", "scan_backdoors"),
-                            ("dotnet", "scan_dotnet")):
+                            ("dotnet", "scan_dotnet"), ("versions", "scan_versions"),
+                            ("authcheck", "scan_auth"), ("logging_check", "scan_logging")):
                 try:
                     import importlib
                     extra = getattr(importlib.import_module(f".workflows.{_m}", "binoracle"),

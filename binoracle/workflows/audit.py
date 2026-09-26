@@ -154,7 +154,8 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
         _lang = getattr(config, "lang", "es")
         for _mod, _fn in (("secrets", "scan_secrets"), ("fileperms", "scan_file_perms"),
                           ("commsec", "scan_comms"), ("backdoors", "scan_backdoors"),
-                          ("dotnet", "scan_dotnet")):
+                          ("dotnet", "scan_dotnet"), ("versions", "scan_versions"),
+                          ("authcheck", "scan_auth"), ("logging_check", "scan_logging")):
             try:
                 import importlib
                 extra = getattr(importlib.import_module(f".{_mod}", __package__), _fn)(
