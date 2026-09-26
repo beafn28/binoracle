@@ -1194,6 +1194,7 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 <script>
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
+ {c:"audit",n:"Auditar",ic:"*",d:"Analiza el binario y LISTA sus vulnerabilidades (hallazgos con evidencia), construye y verifica el exploit"},
  {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Con la info de una CVE/vuln + el binario, desarrolla el exploit funcional (verificado en sandbox)",opts:[{k:"text",label:"CVE id o descripcion de la vuln (p.ej. stack buffer overflow)",t:"text"}]},
  {c:"investigate",n:"Investigar (LLM)",ic:"~",d:"Agente LLM: de la CVE al exploit, investigando y probando. Razona, desarrolla y (con binario) verifica en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id (p.ej. CVE-2024-33599) o descripcion de la vuln",t:"text"}]},
  {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE->Exploit o Investigar.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
