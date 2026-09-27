@@ -1,0 +1,24 @@
+name: ci
+# CERO gasto: el workflow NO se ejecuta solo (ni en push ni en PR). Solo corre si lo lanzas a mano
+# desde la pestana Actions ("Run workflow"). Asi no consume minutos de GitHub Actions ni sale en rojo.
+# Las pruebas se corren en LOCAL: .venv/bin/python -m pytest tests/ -q  (67 pasan).
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install radare2
+        run: sudo apt-get update && sudo apt-get install -y radare2
+      - name: Install binoracle (+ optional oracles)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[elf]" r2pipe pytest cvss
+      - name: Compile check
+        run: python -m compileall -q binoracle
+      - name: Run tests
+        run: pytest -q tests/
