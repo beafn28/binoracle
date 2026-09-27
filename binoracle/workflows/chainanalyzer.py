@@ -189,7 +189,8 @@ def _facts(binary: str, reg=None) -> dict:
     resto de workflows pero no se usa aqui."""
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
          "win": None, "system": None, "binsh": None, "rip_offset": None,
-         "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False}
+         "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
+         "wow_ok": False}
     try:
         import json
         import re as _re
@@ -253,6 +254,13 @@ def _facts(binary: str, reg=None) -> dict:
     try:
         from .autoheap import _heap_shell_applicable
         f["heap_shell_ok"] = _heap_shell_applicable(binary)
+    except Exception:
+        pass
+    # aplicabilidad del driver write-what-where (indice sin comprobar -> GOT=win): reutiliza el
+    # chequeo barato de autowow.py (simbolos win + table).
+    try:
+        from .autowow import _wow_applicable
+        f["wow_ok"] = _wow_applicable(binary)
     except Exception:
         pass
     return f
@@ -641,6 +649,35 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "uaf_tcache", f, lang)
         chains.append(c)
 
+    # 6) write-what-where (indice sin comprobar sobre un array global) -> GOT=win(): el binario
+    # lee un indice y un valor (scanf) y escribe sin limites en un array global; sin PIE, el
+    # offset entre el array y una entrada GOT (puts/printf/...) es ESTATICO -- no hace falta fuga.
+    if f.get("wow_ok"):
+        c = ExploitChain(name="write-what-where", target="win() via GOT overwrite")
+        c.requirements = [
+            _req(f.get("win") is not None, "funcion objetivo win()/giveshell en el binario",
+                 "target function win()/giveshell in the binary", lang),
+            _req(True, "simbolos win + table (indice/valor sin comprobar sobre un array global)",
+                 "win + table symbols (unchecked index/value into a global array)", lang),
+            _req(f.get("pie") is not True, "GOT en direccion fija (no-PIE)",
+                 "GOT at a fixed address (non-PIE)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.steps = [
+            ChainStep("vuln", L("Escritura sin comprobar (write-what-where)", "Unchecked write (write-what-where)"),
+                      L("`table[idx] = val` sin comprobar idx: escritura arbitraria relativa a table",
+                        "`table[idx] = val` with no bounds check: arbitrary write relative to table")),
+            ChainStep("primitive", L("Aritmetica de direcciones (sin PIE, sin fuga)", "Address arithmetic (no PIE, no leak)"),
+                      L("idx = (direccion_GOT - direccion_table) / 8: ambas son fijas y conocidas",
+                        "idx = (GOT_address - table_address) / 8: both are fixed and known")),
+            ChainStep("target", "GOT = win()",
+                      L("se escribe win() en la entrada GOT que el binario llama a continuacion (puts/printf)",
+                        "win() is written into the GOT entry the binary calls next (puts/printf)"),
+                      addr=f.get("win"), regs={"rip": hex(f["win"]) if f.get("win") else "?"})]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "wow_got", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -737,6 +774,22 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 if m:
                     proof[key] = m.group(1)
             return ((f"{OK} (tcache poisoning: free@GOT sobrescrito con win(), shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "wow_got":
+            from .autowow import autowow_shell
+            r = autowow_shell(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "write-what-where GOT=win", "marker": "BINORACLE_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("table", "win"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"idx=(-?\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (write-what-where: GOT sobrescrito con win(), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc

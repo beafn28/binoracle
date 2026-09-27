@@ -1286,6 +1286,27 @@ def test_chainanalyzer_attempts_verify_on_pie_despite_pie_breakpoint():
         assert c2.sim_result in ("no simulada", "not simulated"), c2.sim_result
 
 
+def test_chainanalyzer_wires_up_write_what_where_driver():
+    # Nueva capacidad (user-requested: ampliar la cobertura de clases de vulnerabilidad
+    # detectadas/verificadas): oobwrite.c tiene un write-what-where real ('table[idx] = val' sin
+    # comprobar idx) que ningun chain type previo cubria (no es overflow lineal de pila, no es
+    # heap-UAF). Construido y verificado con shell real en el sandbox: sin PIE, el offset entre
+    # el array global y una entrada GOT (puts) es ESTATICO, asi que 'idx' se calcula sin ninguna
+    # fuga y sobrescribe esa entrada con win(); el propio binario llama a esa funcion justo
+    # despues (puts("ok")), disparando el exploit.
+    import os
+    import shutil
+    b = "samples/bin/oobwrite"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    wow = next((c for c in an.chains if c.name == "write-what-where"), None)
+    assert wow is not None, "no se construyo la cadena write-what-where (wow_ok debia ser True)"
+    assert wow.verified, wow.sim_result
+    assert wow.proof.get("offset") == -12
+
+
 def test_chainanalyzer_wires_up_working_heap_driver():
     # Regresion CRITICA: autoheap.py's autoheap_shell() (tcache-poison -> free@GOT=win, full
     # sandbox exploit) already existed and WORKED standalone -- verified directly against
