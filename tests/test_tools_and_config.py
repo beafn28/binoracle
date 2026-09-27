@@ -1131,6 +1131,20 @@ def test_report_md_rich_renders_lists_and_tables():
     assert not __import__("re").search(r"<p>\s*-\s", html)   # sin guiones literales en <p>
 
 
+def test_hardening_ld_preload_requires_exact_string_value():
+    # Regresion: el check de LD_* disparaba con cualquier setenv/putenv + la SUBCADENA "LD_PRELOAD"
+    # en cualquier parte de las strings, incluido un texto de ayuda que solo la MENCIONA ("set
+    # LD_PRELOAD to use a custom allocator") sin relacion con ninguna llamada real. Ahora exige que
+    # el VALOR de un string sea EXACTAMENTE "LD_PRELOAD"/"LD_LIBRARY_PATH" (el nombre de variable
+    # real que se pasaria a setenv), no una mencion dentro de una frase.
+    from binoracle.workflows.hardening import scan_hardening
+    distractor = _mock_reg(imports="sym.imp.setenv",
+                           strings="set LD_PRELOAD to use a custom allocator")
+    assert not any("entorno" in f.title.lower() for f in scan_hardening(distractor, "x"))
+    real = _mock_reg(imports="sym.imp.setenv", strings="LD_PRELOAD")
+    assert any("entorno" in f.title.lower() for f in scan_hardening(real, "x"))
+
+
 def test_hardening_path_relative_was_dead_code():
     # Regresion CRITICA: el check (c) exigia comillas LITERALES ("cmd") en el texto de r2_strings,
     # pero la tabla `izz` de r2 NUNCA envuelve el valor entre comillas (son celdas de tabla) -- este

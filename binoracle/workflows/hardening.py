@@ -98,9 +98,14 @@ def scan_hardening(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
 
     imports = _imports(reg)
     strings = _strings(reg)
-    # (b) manipulacion insegura del entorno (LD_*): altera la busqueda de librerias
+    # (b) manipulacion insegura del entorno (LD_*): altera la busqueda de librerias. Exige que
+    # LD_PRELOAD/LD_LIBRARY_PATH sea el VALOR EXACTO de un string (el nombre de variable que se le
+    # pasaria a setenv/putenv), no una mencion dentro de una frase mas larga (p.ej. un texto de ayuda
+    # "set LD_PRELOAD to use a custom allocator" sin relacion con ninguna llamada real) -- confirmado
+    # como falso positivo con setenv("LANG",...) + un string de ayuda que solo menciona LD_PRELOAD.
+    _ld_exact = {"LD_PRELOAD", "LD_LIBRARY_PATH"}
     if any(x in imports for x in ("setenv", "putenv")) and \
-       re.search(r"LD_PRELOAD|LD_LIBRARY_PATH", strings):
+       any(v.strip() in _ld_exact for v in string_values(reg)):
         findings.append(_f(
             "Manipulacion insegura del entorno (LD_*)", "Insecure environment manipulation (LD_*)",
             "medium",
