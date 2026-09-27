@@ -188,7 +188,7 @@ def _facts(binary: str, reg=None) -> dict:
     resto de workflows pero no se usa aqui."""
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
          "win": None, "system": None, "binsh": None, "rip_offset": None,
-         "puts": False, "leak_fn": None, "reenter": False}
+         "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False}
     try:
         import json
         import re as _re
@@ -238,6 +238,13 @@ def _facts(binary: str, reg=None) -> dict:
         f["rip_offset"] = _static_offset(binary)
         if f["win"] is None:
             f["win"] = find_win(binary)
+    except Exception:
+        pass
+    # aplicabilidad del driver de heap (tcache-UAF -> free@GOT=win): reutiliza el chequeo barato
+    # de autoheap.py (simbolos win + free) en vez de duplicar la logica de elftools aqui.
+    try:
+        from .autoheap import _heap_shell_applicable
+        f["heap_shell_ok"] = _heap_shell_applicable(binary)
     except Exception:
         pass
     return f
@@ -568,6 +575,43 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc_leak", f, lang)
         chains.append(c)
 
+    # 5) heap UAF -> tcache poison -> free@GOT=win(): binario menu-driven (new/free/edit/show) con
+    # una funcion gift y free@GOT escribible. Antes de este bloque, autoheap_shell() (el driver que
+    # de verdad hace el poisoning) EXISTIA y FUNCIONABA de forma standalone, pero nunca se llamaba
+    # desde aqui -- classify_binary() marcaba estos binarios como 'uaf' correctamente, pero
+    # analyze_chains() nunca intentaba verificarlos: se quedaban en 'plantilla, no verificada' para
+    # siempre. Confirmado end-to-end: heapexp (que cumple heap_shell_ok) verifica con exito.
+    if f.get("heap_shell_ok"):
+        c = ExploitChain(name="uaf tcache-poison", target="win() via free@GOT overwrite")
+        c.requirements = [
+            _req(f.get("win") is not None, "funcion objetivo win()/giveshell en el binario",
+                 "target function win()/giveshell in the binary", lang),
+            _req(True, "simbolos win + free (heap menu-driven: new/free/edit/show)",
+                 "win + free symbols (menu-driven heap: new/free/edit/show)", lang),
+            _req(f.get("pie") is not True, "free@GOT en direccion fija (no-PIE)",
+                 "free@GOT at a fixed address (non-PIE)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.steps = [
+            ChainStep("vuln", L("Use-after-free / doble free", "Use-after-free / double free"),
+                      L("el menu permite reusar un chunk liberado (new/free/edit/show)",
+                        "the menu allows reusing a freed chunk (new/free/edit/show)")),
+            ChainStep("primitive", L("Fuga de la clave de safe-linking", "Safe-linking key leak"),
+                      L("free(0) en bin vacio -> fd=mangle(NULL)=(&chunk>>12); show(0) filtra la clave",
+                        "free(0) into an empty bin -> fd=mangle(NULL)=(&chunk>>12); show(0) leaks the key")),
+            ChainStep("gadget", "tcache poison",
+                      L("free(1); free(0); edit(0, key^free_got): fd del chunk 0 = mangle(free@GOT)",
+                        "free(1); free(0); edit(0, key^free_got): chunk 0's fd = mangle(free@GOT)"),
+                      constraints=L("necesita reparar el vecino de free@GOT+8 (zeroed por tcache key-clear)",
+                                    "needs repairing free@GOT+8's neighbor (zeroed by tcache key-clear)")),
+            ChainStep("target", "free@GOT = win()",
+                      L("malloc devuelve free@GOT; se escribe win() ahi; el siguiente free() lo dispara",
+                        "malloc returns free@GOT; win() is written there; the next free() triggers it"),
+                      addr=f.get("win"), regs={"rip": hex(f["win"]) if f.get("win") else "?"})]
+        _score(c)
+        if verify and c.feasible:
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "uaf_tcache", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -652,6 +696,19 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
     OK = "VERIFICADA" if es else "VERIFIED"
     NO = "no verificada" if es else "not verified"
     try:
+        if kind == "uaf_tcache":
+            from .autoheap import autoheap_shell
+            r = autoheap_shell(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "tcache-poison free@GOT=win", "marker": "BINORACLE_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("key", "free_got", "win"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            return ((f"{OK} (tcache poisoning: free@GOT sobrescrito con win(), shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc
             r = autolibc(binary, run=True)

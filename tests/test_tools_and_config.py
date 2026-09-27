@@ -1238,6 +1238,28 @@ def test_rop_binsh_search_uses_real_null_byte():
         f"se busco {captured.get('pattern')!r} en vez del string real con byte nulo")
 
 
+def test_chainanalyzer_wires_up_working_heap_driver():
+    # Regresion CRITICA: autoheap.py's autoheap_shell() (tcache-poison -> free@GOT=win, full
+    # sandbox exploit) already existed and WORKED standalone -- verified directly against
+    # samples/bin/heapexp returns verified=True -- but analyze_chains() (the function
+    # plan_for_binary()/the trainer actually calls) never invoked it at all: classify_binary()
+    # correctly tagged these binaries 'uaf', but no chain ever attempted the working driver, so
+    # they stayed 'template, not verified' forever regardless of budget (confirmed across 3
+    # training runs in this session, all reporting 0/N heap binaries verified).
+    import os
+    import shutil
+    b = "samples/bin/heapexp"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    heap_chains = [c for c in an.chains if c.name == "uaf tcache-poison"]
+    assert heap_chains, "no se construyo la cadena de heap (heap_shell_ok debia ser True)"
+    assert heap_chains[0].verified, heap_chains[0].sim_result
+    assert "VERIFIED" in (heap_chains[0].proof.get("output") or "")
+    assert heap_chains[0].proof.get("free_got") == "0x404000"
+
+
 def test_cveplan_classify_no_substring_false_positives():
     # Regresion CRITICA: classify_binary() (el clasificador central de clase de vulnerabilidad que
     # decide que tipo de exploit desarrollar) usaba substring sobre el texto crudo de imports:
