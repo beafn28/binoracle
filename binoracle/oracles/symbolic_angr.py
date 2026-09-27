@@ -65,6 +65,17 @@ class AngrOracle(Oracle):
                         pass
         try:
             proj = self._project()
+            # rebasa target/avoid del espacio de r2 (un PIE se reporta como si cargase en base 0,
+            # p.ej. un sink en 0x11a6) al espacio de angr (que SIEMPRE carga en su propia base fija,
+            # tipicamente 0x400000) -- mismo bug ya encontrado y arreglado en reachability.py:
+            # sin esto, `target` caia fuera del rango de direcciones cargado y explore() NUNCA podia
+            # tener exito en NINGUN binario PIE (que es el modo de compilacion por defecto hoy en
+            # dia), asi que auto_verify jamas promocionaba un hallazgo de grounded a verified ahi.
+            if proj.loader.main_object.pic:
+                base = proj.loader.main_object.mapped_base or 0
+                if target < base:
+                    target += base
+                avoid_list = [(a + base if a < base else a) for a in avoid_list]
             state = proj.factory.full_init_state(
                 stdin=angr.SimFileStream if hasattr(angr, "SimFileStream") else None
             ) if False else proj.factory.entry_state()

@@ -1279,6 +1279,32 @@ def test_cfg_branch_note_no_substring_false_positives():
     assert "sensible" in note2 and "gets" in note2
 
 
+def test_symbolic_angr_rebases_pie_addresses_for_auto_verify():
+    # Regresion CRITICA (misma familia que reachability.py, aqui en el oraculo angr_reachable que
+    # usa auto_verify para promocionar hallazgos de 'grounded' a 'verified' en el informe de
+    # Auditar): la direccion objetivo NUNCA se rebasaba del espacio de r2 (PIE reportado como si
+    # cargase en base 0) al espacio de angr (siempre carga en su propia base fija, ~0x400000),
+    # asi que auto_verify jamas podia promocionar NADA en un binario PIE -- el modo de compilacion
+    # por defecto hoy en dia. Verificado end-to-end sobre ret2win_pie real.
+    import os
+    try:
+        import angr  # noqa
+    except ImportError:
+        return
+    from binoracle.oracles import build_registry
+    from binoracle.store.session import Finding
+    from binoracle.workflows.verify import auto_verify
+    b = "samples/bin/ret2win_pie"
+    if not os.path.exists(b):
+        return
+    reg = build_registry(b)
+    f = Finding(title="Posible desbordamiento via gets", severity="high", verdict="grounded",
+               location="gets", evidence="[radare2] call to gets at 0x11e5",
+               rationale="...", recommendation="...")
+    findings, notes = auto_verify(reg, [f])
+    assert findings[0].verdict == "verified", notes
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
