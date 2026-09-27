@@ -79,16 +79,30 @@ def find_ret_gadget(binary: str) -> Optional[int]:
     return int(m.group(1), 16) if m else None
 
 
-def find_pc_offset(binary: str, maxlen: int = 400) -> Optional[int]:
-    """Find the offset from input to the saved return address, symbolically (no run)."""
+def find_pc_offset(binary: str, maxlen: int = 400, budget_s: float = 20.0) -> Optional[int]:
+    """Find the offset from input to the saved return address, symbolically (no run).
+
+    Bounded by WALL-CLOCK time (budget_s), not just step count: a menu/heap-driven binary
+    (malloc/free with a symbolic size/index) can make a SINGLE simgr.step() take minutes on
+    its own, because Z3's bit-blaster for symbolic MULTIPLICATION (size*count style) can blow
+    up -- confirmed via a process sample showing 100% time inside
+    bit_blaster_tpl::mk_const_case_multiplier while symbolically exploring a heap-menu binary.
+    The previous `steps < 400` cap does not protect against that (400 steps stuck on step #50
+    still hangs indefinitely). This is a stack-overflow-shaped strategy (flood stdin until PC
+    is unconstrained); for heap-classified binaries it should fail FAST so the static fallback
+    (_static_offset) gets a chance within the caller's overall budget, not eat all of it."""
     if not _HAVE_ANGR:
         return None
     try:
+        import time as _time
         proj = angr.Project(binary, auto_load_libs=False)
         state = proj.factory.entry_state()
         simgr = proj.factory.simulation_manager(state, save_unconstrained=True)
         steps = 0
+        deadline = _time.time() + budget_s
         while simgr.active and not simgr.unconstrained and steps < 400:
+            if _time.time() > deadline:
+                return None
             simgr.step()
             steps += 1
         if not simgr.unconstrained:

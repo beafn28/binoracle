@@ -1279,6 +1279,31 @@ def test_cfg_branch_note_no_substring_false_positives():
     assert "sensible" in note2 and "gets" in note2
 
 
+def test_autopoc_find_pc_offset_respects_wall_clock_budget():
+    # Regresion: find_pc_offset() (busqueda simbolica del offset a RIP, probada ANTES del metodo
+    # estatico rapido en _offset_candidates) solo tenia un tope de 400 PASOS, no de tiempo real --
+    # un binario dirigido por menu con malloc/free de tamano simbolico puede hacer que UN SOLO paso
+    # tarde minutos (Z3 bit-blasting una multiplicacion simbolica: size*count), asi que el tope de
+    # pasos no protegia nada. Confirmado con un sample real del proceso: 100% del tiempo dentro de
+    # bit_blaster_tpl::mk_const_case_multiplier mientras exploraba un binario de heap real
+    # (heapexp), sin terminar ni con 240s de presupuesto EXTERNO (el timeout real estaba mas
+    # arriba, en el trainer, no dentro de la propia busqueda). Ahora corta por reloj real.
+    import os
+    import time
+    try:
+        import angr  # noqa
+    except ImportError:
+        return
+    from binoracle.workflows.autopoc import find_pc_offset
+    b = "samples/bin/heapexp"
+    if not os.path.exists(b):
+        return
+    t0 = time.time()
+    find_pc_offset(b, budget_s=5.0)
+    elapsed = time.time() - t0
+    assert elapsed < 30, f"find_pc_offset tardo {elapsed:.1f}s con budget_s=5 -- el limite no corta"
+
+
 def test_symbolic_angr_rebases_pie_addresses_for_auto_verify():
     # Regresion CRITICA (misma familia que reachability.py, aqui en el oraculo angr_reachable que
     # usa auto_verify para promocionar hallazgos de 'grounded' a 'verified' en el informe de
