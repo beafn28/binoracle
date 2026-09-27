@@ -29,6 +29,26 @@ def test_rag_configure_toggles():
     assert kb._use_expand_llm is False and kb._use_rerank is False
 
 
+def test_rag_embed_requested_reflects_config_not_readiness():
+    # Regresion: el panel web leia "embed": kb.embeds is not None para marcar la casilla
+    # 'Semantico (embeddings)' -- eso es True SOLO cuando el hilo de fondo YA TERMINO de
+    # construir los embeddings, asi que mientras embed_mode == 'construyendo...' (varios
+    # segundos tras arrancar, con __init__ o tras un toggle) la casilla salia DESMARCADA,
+    # pareciendo apagada cuando en realidad esta activa y terminando. _embed_requested separa
+    # 'configurado/activo' de 'ya listo'.
+    from unittest.mock import patch
+    kb = get_kb()
+    configure(embed=False)
+    assert kb._embed_requested is False and kb.embeds is None
+    # activar: _embed_requested pasa a True de inmediato aunque la construccion real (lenta,
+    # sincrona en configure()) todavia no haya terminado -- se mockea _init_embeddings (no-op)
+    # para no disparar el calculo real de embeddings sobre todo el KB en el test.
+    with patch.object(kb, "_init_embeddings", lambda: None):
+        configure(embed=True)
+    assert kb._embed_requested is True
+    configure(embed=False)          # deja el estado como estaba para no afectar otros tests
+
+
 def test_rag_status_string():
     s = get_kb().status()
     assert "TF-IDF" in s and "chunks" in s

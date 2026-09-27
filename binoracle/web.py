@@ -350,9 +350,13 @@ def run_command(payload: dict) -> dict:
         else:
             status = get_kb().status()
         kb = get_kb()
+        # "embed" refleja CONFIGURADO/activo (kb._embed_requested), no "ya termino de cargar"
+        # (kb.embeds is not None): mientras el hilo de fondo construye los embeddings, la casilla
+        # debe verse marcada (esta activo, esta terminando), no desmarcada como si estuviera apagado.
+        # embed_mode (el texto de estado) sigue mostrando la fase real: 'construyendo...' -> 'hybrid'.
         return {"ok": True, "rag": {
             "status": status,
-            "embed": kb.embeds is not None,
+            "embed": kb._embed_requested,
             "expand": kb._use_expand_llm,
             "rerank": kb._use_rerank,
             "embed_mode": kb.embed_mode,

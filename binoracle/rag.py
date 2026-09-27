@@ -182,7 +182,13 @@ class KnowledgeBase:
         self._use_expand_llm = _flag("BINORACLE_RAG_EXPAND", "expand", auto_default=True)
         self._use_rerank = _flag("BINORACLE_RAG_RERANK", "rerank", auto_default=True)
         self._expand_cache: dict = {}
-        if _flag("BINORACLE_RAG_EMBED", "embed", auto_default=True):
+        # _embed_requested = CONFIGURADO/activo (aunque el hilo de fondo siga construyendo), a
+        # diferencia de `self.embeds is not None` que solo es True cuando YA esta listo. Sin esta
+        # distincion, la casilla "Semantico" del panel web (que lee este flag) salia DESMARCADA
+        # durante todo el tiempo de construccion (embed_mode='construyendo...'), pareciendo
+        # apagada cuando en realidad esta activa y a punto de terminar -- confuso para el usuario.
+        self._embed_requested = _flag("BINORACLE_RAG_EMBED", "embed", auto_default=True)
+        if self._embed_requested:
             # No bloquear el arranque: construir/cargar embeddings en un hilo de fondo. Hasta
             # que esten listos el retrieval usa TF-IDF; luego pasa a hibrido solo.
             self.embed_mode = "construyendo..."
@@ -585,13 +591,15 @@ def configure(embed=None, expand=None, rerank=None) -> str:
     if rerank is not None:
         kb._use_rerank = bool(rerank)
     if embed is not None:
+        kb._embed_requested = bool(embed)
         if embed and kb.embeds is None:
             kb._init_embeddings()          # carga cache o construye
         elif not embed:
             kb.embeds = None
             kb.embed_mode = "off"
-    # Persistir el estado para que sobreviva a reinicios del servidor.
-    _save_rag_prefs({"embed": kb.embeds is not None,
+    # Persistir el estado CONFIGURADO (no si ya termino de cargar) para que sobreviva a
+    # reinicios del servidor y no se guarde 'false' solo por pillar el toggle en pleno build.
+    _save_rag_prefs({"embed": kb._embed_requested,
                      "expand": kb._use_expand_llm, "rerank": kb._use_rerank})
     return kb.status()
 
