@@ -1381,6 +1381,26 @@ def test_chainanalyzer_wires_up_write_what_where_driver():
     assert wow.proof.get("offset") == -12
 
 
+def test_chainanalyzer_wires_up_uaf_funcptr_hijack_driver():
+    # Nueva capacidad: uaf.c tiene un UAF real (free() no anula el puntero) donde un malloc
+    # posterior del MISMO tamano recicla el chunk liberado (tcache LIFO, sin doble-free ni fake
+    # chunk) y la struct reciclada empieza con un puntero a funcion. Tecnica DISTINTA de la ya
+    # cubierta por uaf_tcache/autoheap.py (esa necesita fabricar un chunk falso en free@GOT). El
+    # menu (numeros de opcion) se reconoce dinamicamente por las cadenas del binario, no esta
+    # cableado al protocolo concreto de este sample (1)new 2)free 3)run 4)note).
+    import os
+    import shutil
+    b = "samples/bin/uaf"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    uaf = next((c for c in an.chains if c.name == "uaf funcptr-hijack"), None)
+    assert uaf is not None, "no se construyo la cadena uaf funcptr-hijack (uaf_fnptr_ok debia ser True)"
+    assert uaf.verified, uaf.sim_result
+    assert uaf.proof.get("win") == "0x4011d7"
+
+
 def test_chainanalyzer_wires_up_format_string_driver():
     # Nueva capacidad (misma linea de trabajo que write-what-where: ampliar clases de
     # vulnerabilidad cubiertas). autofmt.py YA EXISTIA completo (offset via %N$p, resolucion de

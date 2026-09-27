@@ -190,7 +190,7 @@ def _facts(binary: str, reg=None) -> dict:
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
-         "wow_ok": False, "printf": False}
+         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False}
     try:
         import json
         import re as _re
@@ -262,6 +262,16 @@ def _facts(binary: str, reg=None) -> dict:
     try:
         from .autowow import _wow_applicable
         f["wow_ok"] = _wow_applicable(binary)
+    except Exception:
+        pass
+    # aplicabilidad del driver UAF por reutilizacion de chunk (puntero a funcion en offset 0,
+    # sin envenenar tcache): reutiliza el chequeo barato de autouaf.py (simbolos win + malloc +
+    # free). Tecnica distinta de heap_shell_ok (esa necesita un doble-free real y fabricar un
+    # chunk falso en free@GOT; esta solo necesita que el siguiente malloc del mismo tamano
+    # recicle el chunk liberado).
+    try:
+        from .autouaf import _uaf_applicable
+        f["uaf_fnptr_ok"] = _uaf_applicable(binary)
     except Exception:
         pass
     return f
@@ -708,6 +718,39 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "fmt_got", f, lang)
         chains.append(c)
 
+    # 8) UAF por reutilizacion de chunk (puntero a funcion en offset 0, sin envenenar tcache):
+    # free() no anula el puntero -> un malloc posterior del mismo tamano recicla ese chunk (LIFO
+    # de tcache) -> el atacante escribe la struct reciclada -> la funcion se secuestra al usar el
+    # puntero colgante. Distinto de uaf_tcache (chain 5): no hace falta doble-free ni fabricar un
+    # chunk falso en una direccion arbitraria, solo que el tamano coincida.
+    if f.get("uaf_fnptr_ok"):
+        c = ExploitChain(name="uaf funcptr-hijack", target="funcptr -> win()")
+        c.requirements = [
+            _req(f.get("win") is not None, "funcion objetivo win()/giveshell en el binario",
+                 "target function win()/giveshell in the binary", lang),
+            _req(True, "simbolos win + malloc + free, y free() no anula el puntero (UAF real)",
+                 "win + malloc + free symbols, and free() does not null the pointer (real UAF)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+        c.steps = [
+            ChainStep("vuln", L("Use-after-free (puntero colgante)", "Use-after-free (dangling pointer)"),
+                      L("free() libera el objeto pero no anula el puntero que lo referencia",
+                        "free() releases the object but does not null the pointer to it")),
+            ChainStep("primitive", L("Reutilizacion de chunk (tcache LIFO)", "Chunk reuse (tcache LIFO)"),
+                      L("un malloc posterior del MISMO tamano recicla el chunk liberado: se "
+                        "sobrescribe con datos controlados por el atacante",
+                        "a later malloc of the SAME size reclaims the freed chunk: it is "
+                        "overwritten with attacker-controlled data")),
+            ChainStep("target", "funcptr = win()",
+                      L("el puntero a funcion en offset 0 de la struct reciclada apunta ahora a "
+                        "win(); usar el objeto colgante lo dispara",
+                        "the function pointer at offset 0 of the reclaimed struct now points to "
+                        "win(); using the dangling object triggers it"),
+                      addr=f.get("win"), regs={"rip": hex(f["win"]) if f.get("win") else "?"})]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "uaf_fnptr", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -836,6 +879,21 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
             if m:
                 proof["offset"] = int(m.group(1))
             return ((f"{OK} (format-string: printf@GOT sobrescrito con system, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "uaf_fnptr":
+            from .autouaf import autouaf_shell
+            r = autouaf_shell(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "UAF (reutilizacion de chunk) funcptr=win", "marker": "BINORACLE_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            m = _re_cv.search(r"win=(0x[0-9a-fA-F]+)", detail)
+            if m:
+                proof["win"] = m.group(1)
+            m = _re_cv.search(r"size=(\d+)", detail)
+            if m:
+                proof["size"] = int(m.group(1))
+            return ((f"{OK} (UAF: puntero a funcion reciclado con win(), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc
