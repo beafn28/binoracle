@@ -16,15 +16,30 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
+from ._binfacts import imported_names, callers_of
 
 _EXEC = ("system", "popen", "execl", "execlp", "execvp", "execv", "execve", "execle")
 _DROP = ("setuid", "setgid", "setresuid", "setresgid", "setreuid", "setregid", "seteuid", "setegid")
 _FILEW = ("fopen", "open", "open64", "openat", "creat", "chmod", "chown")
 
 
-def _imp(reg):
-    t = reg.get("r2_imports"); r = t.run() if t else None
-    return (r.data or "").lower() if r and r.ok else ""
+def _unsafe_callers(reg, risky: list, drop: list) -> set:
+    """Funciones que llaman a algo de `risky` (exec/fichero) sin llamar TAMBIEN a un `drop`
+    (setuid/setgid/...) -- exige que el drop este ausente en la MISMA funcion, no solo en el
+    binario entero. Sin esto, un binario con setuid() en una funcion 'safe_path()' que nunca se
+    invoca desde el camino que hace exec() en 'vuln_path()' se consideraba seguro (falso negativo
+    real, confirmado con un binario sintetico: setuid+printf en una funcion, execl SIN drop en
+    otra). Si no se resuelven llamadores para `risky` (estatico/stripped/analisis no disponible),
+    cae al heuristico global anterior (drop ausente en TODO el binario) para no perder cobertura."""
+    fns_risky = set()
+    for r in risky:
+        fns_risky |= callers_of(reg, r)
+    if not fns_risky:
+        return {"?"} if (risky and not drop) else set()   # sin resolver: heuristico global
+    fns_drop = set()
+    for d in drop:
+        fns_drop |= callers_of(reg, d)
+    return fns_risky - fns_drop
 
 
 def _f(t_es, t_en, sev, ev, r_es, r_en, rec_es, rec_en, lang):
@@ -45,18 +60,24 @@ def scan_authz(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding
         return []
     if not (suid or sgid):
         return []                          # solo aplica a binarios privilegiados
-    imports = _imp(reg)
-    execs = [e for e in _EXEC if e in imports]
-    drops = [d for d in _DROP if d in imports]
+    names = imported_names(reg)
+    execs = [e for e in _EXEC if e in names]
+    drops = [d for d in _DROP if d in names]
     findings: List[Finding] = []
     bit = "setuid" if suid else "setgid"
 
-    if execs and not drops:
+    # exige que el drop este AUSENTE en la MISMA funcion que hace exec, no solo en todo el binario
+    # (ver _unsafe_callers): un setuid() en una funcion 'safe_path()' no invocada desde el camino
+    # real que hace exec() no protege ese camino.
+    unsafe_exec_fns = _unsafe_callers(reg, execs, drops) if execs else set()
+    if unsafe_exec_fns:
+        fn_ev = (", ".join(sorted(unsafe_exec_fns))[:80] if unsafe_exec_fns != {"?"} else
+                 "(no resuelto por xrefs; heuristico global: ningun drop en todo el binario)")
         findings.append(_f(
             f"Binario {bit} ejecuta comandos sin soltar privilegios",
             f"{bit} binary executes commands without dropping privileges", "high",
-            f"[stat + ii]\nbit: {bit}\nejecucion: {', '.join(execs[:4])}\nsin drop de privilegios "
-            "(setuid/setgid/setresuid)",
+            f"[stat + ii + axt]\nbit: {bit}\nejecucion: {', '.join(execs[:4])}\nfuncion(es) sin drop "
+            f"de privilegios antes del exec: {fn_ev}",
             f"El binario tiene el bit {bit} (corre como su propietario, tipicamente root) y ejecuta "
             "comandos/shell, pero no baja privilegios antes. Cualquier via de ejecucion (inyeccion, "
             "PATH, argumentos) corre como root: escalada de privilegios directa." if es else
@@ -71,12 +92,16 @@ def scan_authz(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding
             "Drop privileges (setresuid/setresgid) before executing anything; avoid external commands.",
             lang))
 
-    if not execs and not drops and any(w in imports for w in _FILEW):
+    filew = [w for w in _FILEW if w in names]
+    unsafe_filew_fns = _unsafe_callers(reg, filew, drops) if (not unsafe_exec_fns and filew) else set()
+    if unsafe_filew_fns:
+        fn_ev = (", ".join(sorted(unsafe_filew_fns))[:80] if unsafe_filew_fns != {"?"} else
+                 "(no resuelto por xrefs; heuristico global: ningun drop en todo el binario)")
         findings.append(_f(
             f"Binario {bit} opera con ficheros sin soltar privilegios",
             f"{bit} binary handles files without dropping privileges", "medium",
-            f"[stat + ii]\nbit: {bit}\nficheros: {', '.join(w for w in _FILEW if w in imports)[:60]}\n"
-            "sin drop de privilegios",
+            f"[stat + ii + axt]\nbit: {bit}\nficheros: {', '.join(filew)[:60]}\n"
+            f"funcion(es) sin drop de privilegios: {fn_ev}",
             f"El binario {bit} abre/escribe/cambia permisos de ficheros con privilegios elevados y no "
             "los suelta. Si la ruta es controlable, permite leer/escribir ficheros como root (p.ej. "
             "sobrescribir /etc/passwd) -> escalada." if es else

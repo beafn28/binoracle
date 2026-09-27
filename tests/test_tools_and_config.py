@@ -84,7 +84,7 @@ def test_secrets_extended_providers():
     assert "changeme" not in " ".join(f.evidence for f in scan_secrets(_R(), "x"))
 
 
-def _mock_reg(imports="", strings="", same_func=True):
+def _mock_reg(imports="", strings="", same_func=True, callers=None):
     from binoracle.oracles.base import ToolResult
 
     class _T:
@@ -103,9 +103,13 @@ def _mock_reg(imports="", strings="", same_func=True):
         # llamada desde 'main' -- suficiente para que shares_caller() vea coocurrencia en los tests
         # que no versan sobre esa logica. same_func=False simula funciones SIN llamador resuelto
         # (como haria un binario real donde los sinks estan en funciones distintas), para probar el
-        # camino negativo de shares_caller.
+        # camino negativo de shares_caller. `callers` (opcional): {nombre: funcion} para asignar un
+        # llamador DISTINTO por simbolo (simula p.ej. exec en una funcion y drop en otra).
         def run(self, target=""):
             name = target.rsplit(".", 1)[-1] if target else ""
+            if callers is not None:
+                fn = callers.get(name)
+                return ToolResult(True, "r2", f"{fn} 0x1000 [CALL:--x] call sym.imp.{name}" if fn else "")
             if same_func and name and (name in imports.lower()):
                 return ToolResult(True, "r2", f"main 0x1000 [CALL:--x] call sym.imp.{name}")
             return ToolResult(True, "r2", "")
@@ -1129,6 +1133,31 @@ def test_report_md_rich_renders_lists_and_tables():
     assert "<table>" in html and "<th>ID</th>" in html
     assert "**" not in html
     assert not __import__("re").search(r"<p>\s*-\s", html)   # sin guiones literales en <p>
+
+
+def test_authz_drop_must_guard_the_exec_path(tmp_path):
+    # Regresion: 'setuid ejecuta comandos sin soltar privilegios' exigia que setuid/setgid/...
+    # estuviera AUSENTE en TODO el binario -- un binario con setuid() en una funcion 'safe_path()'
+    # que nunca se invoca desde el camino real que hace exec() se consideraba seguro (falso negativo
+    # confirmado con un binario real: setuid+printf en una funcion, execl SIN drop en otra, ambas
+    # alcanzables desde main segun argv). Ahora exige que el drop este ausente en la MISMA funcion
+    # que hace el exec.
+    import os
+    from binoracle.workflows.authz import scan_authz
+    p = tmp_path / "suidbin"; p.write_bytes(b"\x7fELF"); os.chmod(p, 0o4755)
+
+    # execl llamado desde vuln_path; setuid llamado desde una funcion DISTINTA (safe_path) -> inseguro
+    reg = _mock_reg(imports="sym.imp.execl\nsym.imp.setuid",
+                    callers={"execl": "sym.vuln_path", "setuid": "sym.safe_path"})
+    fs = scan_authz(reg, str(p))
+    assert any("sin soltar privilegios" in f.title.lower() for f in fs)
+    assert any("vuln_path" in f.evidence for f in fs)
+
+    # execl y setuid llamados desde la MISMA funcion -> seguro (orden no se verifica, pero al menos
+    # el drop esta en el camino real, que es la mejora minima grounded)
+    reg2 = _mock_reg(imports="sym.imp.execl\nsym.imp.setuid",
+                     callers={"execl": "sym.main", "setuid": "sym.main"})
+    assert not any("ejecuta comandos" in f.title.lower() for f in scan_authz(reg2, str(p)))
 
 
 def test_hardening_ld_preload_requires_exact_string_value():
