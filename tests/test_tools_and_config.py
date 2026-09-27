@@ -1135,6 +1135,32 @@ def test_report_md_rich_renders_lists_and_tables():
     assert not __import__("re").search(r"<p>\s*-\s", html)   # sin guiones literales en <p>
 
 
+def test_reachability_rebases_pie_addresses_for_angr():
+    # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
+    # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
+    # un sink en 0x11a6) al espacio de angr (que SIEMPRE carga en su propia base fija, tipicamente
+    # 0x400000). La funcion de rebase existia pero ambas ramas de su condicional devolvian el valor
+    # SIN CAMBIOS (no-op) y ademas nunca se llamaba -- el 'target' pedido a angr caia fuera del
+    # espacio de direcciones cargado, asi que la busqueda NUNCA podia tener exito: la capacidad de
+    # verificacion por angr (el nivel de evidencia mas fuerte del sistema, 'verified') estaba inerte
+    # en TODO binario PIE, que es el modo de compilacion por defecto en toolchains modernas.
+    import os
+    try:
+        import angr  # noqa
+    except ImportError:
+        return                         # angr no instalado en este entorno: se omite
+    from binoracle.workflows.reachability import reachable_findings
+    b = "samples/bin/ret2win_pie"
+    if not os.path.exists(b):
+        return                         # corpus se construye con samples/build.sh
+    fs = reachable_findings(b, budget_s=25, max_targets=2)
+    assert fs, "angr no alcanzo ningun sink en un PIE real -- el rebase sigue roto"
+    assert any(f.verdict == "verified" for f in fs)
+    # el input concreto recuperado debe ser la contrasena real del reto (prueba de que la busqueda
+    # realmente ejecuto el binario correcto, no una direccion aleatoria que resulto alcanzable)
+    assert any("sup3rs3cr3t" in f.evidence for f in fs)
+
+
 def test_authz_drop_must_guard_the_exec_path(tmp_path):
     # Regresion: 'setuid ejecuta comandos sin soltar privilegios' exigia que setuid/setgid/...
     # estuviera AUSENTE en TODO el binario -- un binario con setuid() en una funcion 'safe_path()'

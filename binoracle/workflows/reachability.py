@@ -87,13 +87,25 @@ def find_input_to(binary: str, target: int, avoid: tuple = (), stdin_len: int = 
         return None
     try:
         proj = angr.Project(binary, auto_load_libs=False)
-        base = proj.loader.main_object.mapped_base or 0
-        link = proj.loader.main_object.min_addr - base if base else 0
-        # rebasa target/avoid del espacio del binario (r2) al de angr
-        def rb(a):
-            return a if proj.loader.main_object.pic is False else a  # non-PIE: coinciden
-        tgt = target
-        av = [a for a in avoid]
+        # rebasa target/avoid del espacio del binario (r2, direcciones de fichero/link) al de angr
+        # (direcciones cargadas). BUG previo: ambas ramas del condicional devolvian `a` sin cambios
+        # (no-op) y ademas nunca se llamaba -- en un binario PIE, r2 reporta las direcciones como si
+        # se cargase en base 0 (p.ej. un sink en 0x11a6), pero angr SIEMPRE lo carga en su propia
+        # base fija (mapped_base, tipicamente 0x400000). Sin el rebase, el 'target' pedido a angr
+        # caia FUERA del espacio de direcciones cargado y la busqueda no podia tener exito NUNCA --
+        # reachable_findings quedaba inerte (0 verificaciones) en todo binario PIE, que es el modo de
+        # compilacion por defecto en toolchains modernos. Confirmado con ret2win_pie: angr carga en
+        # 0x400000+ pero el sink de r2 estaba en 0x11a6, fuera de rango. En no-PIE el ELF ya trae su
+        # base fija horneada en el vaddr y coincide directamente con angr (no hace falta rebase).
+        if proj.loader.main_object.pic:
+            base = proj.loader.main_object.mapped_base or 0
+            def rb(a):
+                return a + base
+        else:
+            def rb(a):
+                return a
+        tgt = rb(target)
+        av = [rb(a) for a in avoid]
         # stdin simbolico de longitud acotada
         flag = claripy.BVS("stdin", 8 * stdin_len)
         stdin = angr.SimFileStream(name="stdin", content=flag, has_end=True)
