@@ -190,7 +190,7 @@ def _facts(binary: str, reg=None) -> dict:
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
-         "wow_ok": False}
+         "wow_ok": False, "printf": False}
     try:
         import json
         import re as _re
@@ -223,7 +223,8 @@ def _facts(binary: str, reg=None) -> dict:
                 nm2 = (imp.get("name") or "").lower()
                 imp_names.add(nm2.rsplit(".", 1)[-1] if "." in nm2 else nm2)
             f["puts"] = "puts" in imp_names
-            f["leak_fn"] = "puts" if f["puts"] else ("printf" if "printf" in imp_names else None)
+            f["printf"] = "printf" in imp_names
+            f["leak_fn"] = "puts" if f["puts"] else ("printf" if f["printf"] else None)
             # punto de reentrada: coincidencia EXACTA de nombre de funcion, no substring de un grep
             # (antes, "main" in texto tambien matcheaba funciones como getdomainname/remainder_calc,
             # o simplemente el nombre de la propia consulta de grep repetido en la salida).
@@ -678,6 +679,35 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "wow_got", f, lang)
         chains.append(c)
 
+    # 7) format-string: printf(buf) con buf controlado -> escritura %n sobre printf@GOT=system,
+    # sin necesitar win() ni una fuga externa (la libc/base se resuelven localmente en el
+    # sandbox). No requiere PIE=False: el driver resuelve la base cargada via io.libs().
+    if f.get("printf"):
+        c = ExploitChain(name="format-string", target="printf@GOT = system")
+        c.requirements = [
+            _req(f.get("printf"), "printf(buf) con el formato controlado por la entrada",
+                 "printf(buf) with the format string attacker-controlled", lang),
+            _req(True, "printf@GOT alcanzable para sobrescritura (%n)",
+                 "printf@GOT reachable for overwrite (%n)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+        c.steps = [
+            ChainStep("vuln", L("Format-string", "Format string"),
+                      L("`printf(buf)` con buf tomado directamente de la entrada del usuario",
+                        "`printf(buf)` with buf taken directly from user input")),
+            ChainStep("primitive", L("Escritura arbitraria (%n)", "Arbitrary write (%n)"),
+                      L("se localiza el indice de argumento de buf (%N$p) y se construye el "
+                        "payload %n para escribir en printf@GOT",
+                        "locate buf's argument index (%N$p) and build the %n payload to write "
+                        "to printf@GOT")),
+            ChainStep("target", "printf@GOT = system",
+                      L("la siguiente llamada printf(entrada) se convierte en system(entrada): "
+                        "se envia '/bin/sh' para obtener shell",
+                        "the next printf(input) call becomes system(input): send '/bin/sh' for a shell"))]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "fmt_got", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -790,6 +820,22 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
             if m:
                 proof["offset"] = int(m.group(1))
             return ((f"{OK} (write-what-where: GOT sobrescrito con win(), shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "fmt_got":
+            from .autofmt import autofmt
+            r = autofmt(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "format-string printf@GOT=system", "marker": "BINORACLE_FMT_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("system", "printf_got"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key.replace("printf_got", "got")] = m.group(1)
+            m = _re_cv.search(r"offset=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (format-string: printf@GOT sobrescrito con system, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc

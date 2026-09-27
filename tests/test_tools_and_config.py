@@ -1320,6 +1320,46 @@ def test_ret2win_stripped_verifies_end_to_end():
     assert ret2win.proof.get("win") == "0x401176"
 
 
+def test_ret2win32_verifies_end_to_end():
+    # ret2win32 (32 bits, sin PIE) se quedaba SIEMPRE sin verificar por DOS bugs independientes,
+    # ninguno de los dos especifico de Docker/qemu:
+    #   1) autopoc.py empaquetaba la direccion de retorno con 8 bytes fijos (p64) sin importar
+    #      la arquitectura del binario; en un ELF de 32 bits el valor de retorno en pila son 4
+    #      bytes, asi que los 4 de mas escriben sobre lo que sigue en la pila y el proceso
+    #      termina con SIGSEGV en vez de saltar a win(). Fix: _word_size(binary) via r2 'ij'.
+    #   2) el offset devuelto por angr/el metodo estatico (_static_offset, que ademas sumaba +8
+    #      fijos en vez de word_size) no coincidia exactamente con el offset real (80 vs 72):
+    #      el padding de alineacion del compilador puede desplazarlo por exactamente un word.
+    #      Fix: _offset_candidates ahora tambien prueba los vecinos +/- word_size de cada
+    #      candidato.
+    # Por separado (no cubierto por este test, requiere docker): _docker_run/_docker_run_raw
+    # tambien se cambiaron de la imagen gcc:13 (sin libc6:i386) a binoracle-pwn (con soporte
+    # i386 anadido a .docker/Dockerfile.pwn), o el proceso de 32 bits ni siquiera arrancaba
+    # (qemu-i386: Could not open '/lib/ld-linux.so.2').
+    import os
+    import shutil
+    b = "samples/bin/ret2win32"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    ret2win = next(c for c in an.chains if c.name == "ret2win")
+    assert ret2win.unmet_requirements == 0
+    assert ret2win.verified, ret2win.sim_result
+    assert ret2win.proof.get("win") == "0x80491a6"
+
+
+def test_autopoc_word_size_detects_32_vs_64_bit():
+    import os
+    from binoracle.workflows.autopoc import _word_size
+    b32 = "samples/bin/ret2win32"
+    b64 = "samples/bin/ret2win"
+    if os.path.exists(b32):
+        assert _word_size(b32) == 4
+    if os.path.exists(b64):
+        assert _word_size(b64) == 8
+
+
 def test_chainanalyzer_wires_up_write_what_where_driver():
     # Nueva capacidad (user-requested: ampliar la cobertura de clases de vulnerabilidad
     # detectadas/verificadas): oobwrite.c tiene un write-what-where real ('table[idx] = val' sin
@@ -1339,6 +1379,45 @@ def test_chainanalyzer_wires_up_write_what_where_driver():
     assert wow is not None, "no se construyo la cadena write-what-where (wow_ok debia ser True)"
     assert wow.verified, wow.sim_result
     assert wow.proof.get("offset") == -12
+
+
+def test_chainanalyzer_wires_up_format_string_driver():
+    # Nueva capacidad (misma linea de trabajo que write-what-where: ampliar clases de
+    # vulnerabilidad cubiertas). autofmt.py YA EXISTIA completo (offset via %N$p, resolucion de
+    # system() desde la libc local del sandbox, fmtstr_payload sobre printf@GOT) y funcionaba
+    # standalone (autofmt('samples/bin/fmtstring') -> verified=True) pero no tenia NINGUNA
+    # referencia en chainanalyzer.py: no habia hecho ('printf' en _facts), ni cadena, ni rama en
+    # _verify_chain. fmtstring.c no llama a system() ni tiene win(): el exploit retarget-ea
+    # printf@GOT a system usando la libc local (misma logica que ret2libc con leak, pero sin
+    # necesitar ninguna fuga real porque estamos verificando en sandbox controlado) y la propia
+    # siguiente llamada a printf(buf) del programa se convierte en system(buf).
+    import os
+    import shutil
+    b = "samples/bin/fmtstring"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    fmt = next((c for c in an.chains if c.name == "format-string"), None)
+    assert fmt is not None, "no se construyo la cadena format-string (printf debia estar importado)"
+    assert fmt.verified, fmt.sim_result
+    assert fmt.proof.get("offset") == 6
+
+
+def test_chainanalyzer_format_string_driver_handles_pie():
+    # Misma cadena que arriba pero sobre la variante PIE: confirma que autofmt.py resuelve
+    # correctamente la base de printf@GOT y de system() via io.libs() cuando el binario esta
+    # cargado a una direccion aleatorizada, sin depender de ninguna direccion fija.
+    import os
+    import shutil
+    b = "samples/bin/fmtstring_pie"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    fmt = next((c for c in an.chains if c.name == "format-string"), None)
+    assert fmt is not None, "no se construyo la cadena format-string (printf debia estar importado)"
+    assert fmt.verified, fmt.sim_result
 
 
 def test_chainanalyzer_wires_up_working_heap_driver():

