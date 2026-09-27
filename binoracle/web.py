@@ -1120,7 +1120,7 @@ main{flex:1;display:flex;min-height:0}
 .f{display:flex;flex-direction:column;gap:3px}
 .f label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .f input,.f select{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;min-width:120px;font-family:ui-monospace,monospace}
-.f.big{gap:6px;margin:4px 0}
+.f.big{gap:6px;margin:4px 0;flex:1 1 480px;max-width:980px}
 .f.big label{font-size:11px}
 .f textarea{background:var(--field);border:1.5px solid var(--line);color:var(--fg);border-radius:10px;padding:16px 18px;font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;min-height:110px;width:100%;box-sizing:border-box}
 .f textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px color-mix(in srgb, var(--acc) 20%, transparent)}
