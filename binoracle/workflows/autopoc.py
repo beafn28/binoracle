@@ -59,6 +59,9 @@ def _r2(binary: str, cmd: str) -> str:
 _GIFT_RE = re.compile(r"(?:^|[^a-z])(win|shell|backdoor|flag|give)(?:[^a-z]|$)")
 
 
+_SHELL_STR_RE = re.compile(r'"(?:/bin/(?:sh|bash|dash)\\?x?0?0?|sh -c)"')
+
+
 def find_win(binary: str) -> Optional[int]:
     funcs = _r2(binary, "aa;afl")
     for line in funcs.splitlines():
@@ -66,6 +69,27 @@ def find_win(binary: str) -> Optional[int]:
             m = re.match(r"\s*(0x[0-9a-fA-F]+)", line)
             if m:
                 return int(m.group(1), 16)
+    # Fallback para binarios STRIPPED (sin nombres de funcion, asi que _GIFT_RE no tiene nada
+    # que matchear): system/execve/execl NUNCA se stripean (son imports dinamicos, hacen falta
+    # para el enlazado), asi que se busca la funcion que LOS LLAMA (via xref, no hace falta
+    # iterar todas las funciones) y se confirma que tambien referencia un string de shell -- esa
+    # es la funcion gift, tenga o no un nombre. Confirmado con un binario real (ret2win.stripped):
+    # fcn.00401176 (sin nombre) llama a system("/bin/sh"), misma direccion que 'win' en la
+    # variante no-stripped del mismo reto.
+    for sink in ("system", "execve", "execl", "execlp"):
+        callers = _r2(binary, f"aa; axt @ sym.imp.{sink}")
+        for m in re.finditer(r"^\S+\s+(0x[0-9a-fA-F]+)\s+\[CALL", callers, re.M):
+            call_addr = m.group(1)
+            dis = _r2(binary, f"aa; pdf @ {call_addr}")
+            if not _SHELL_STR_RE.search(dis):
+                continue
+            # `call_addr` es la direccion del `call system`, EN MEDIO de la funcion; `afo`
+            # resuelve la direccion de INICIO real de la funcion que lo contiene (necesaria
+            # para saltar ahi como target de ret2win), sea o no un simbolo con nombre.
+            start = _r2(binary, f"aa; afo @ {call_addr}")
+            sm = re.search(r"(0x[0-9a-fA-F]+)", start)
+            if sm:
+                return int(sm.group(1), 16)
     return None
 
 

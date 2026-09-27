@@ -1286,6 +1286,40 @@ def test_chainanalyzer_attempts_verify_on_pie_despite_pie_breakpoint():
         assert c2.sim_result in ("no simulada", "not simulated"), c2.sim_result
 
 
+def test_find_win_resolves_gift_function_in_stripped_binary():
+    # Nueva capacidad (user-requested: ret2win.stripped): find_win() solo buscaba el simbolo
+    # 'win' por NOMBRE (_GIFT_RE sobre afl), asi que en un binario stripped (sin nombres de
+    # funcion locales) nunca lo encontraba, aunque la funcion gift siga presente en el codigo.
+    # Fix: system/execve/execl NUNCA se stripean (son imports dinamicos, necesarios para el
+    # enlazado) -- se busca la funcion que LOS LLAMA (via xref) con un string de shell cerca
+    # ('/bin/sh' etc), y se resuelve su direccion de INICIO real (afo), sea o no un simbolo
+    # con nombre. Verificado con un binario real: ret2win.stripped ahora resuelve win() en la
+    # MISMA direccion (0x401176) que su variante no-stripped, y analyze_chains() VERIFICA el
+    # ret2win completo (shell real, uid=0) donde antes se quedaba en 'no se encontro una
+    # funcion gift'.
+    import os
+    b = "samples/bin/ret2win.stripped"
+    if not os.path.exists(b):
+        return
+    from binoracle.workflows.autopoc import find_win
+    w = find_win(b)
+    assert w == 0x401176, f"win esperado en 0x401176, obtenido {hex(w) if w else None}"
+
+
+def test_ret2win_stripped_verifies_end_to_end():
+    import os
+    import shutil
+    b = "samples/bin/ret2win.stripped"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    ret2win = next(c for c in an.chains if c.name == "ret2win")
+    assert ret2win.unmet_requirements == 0
+    assert ret2win.verified, ret2win.sim_result
+    assert ret2win.proof.get("win") == "0x401176"
+
+
 def test_chainanalyzer_wires_up_write_what_where_driver():
     # Nueva capacidad (user-requested: ampliar la cobertura de clases de vulnerabilidad
     # detectadas/verificadas): oobwrite.c tiene un write-what-where real ('table[idx] = val' sin
