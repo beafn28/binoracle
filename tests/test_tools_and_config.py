@@ -1238,6 +1238,35 @@ def test_rop_binsh_search_uses_real_null_byte():
         f"se busco {captured.get('pattern')!r} en vez del string real con byte nulo")
 
 
+def test_chainanalyzer_attempts_verify_on_pie_despite_pie_breakpoint():
+    # Regresion CRITICA (misma familia que el hallazgo del heap): autopie.py's autopie_ret2win()
+    # already WORKED standalone against a real PIE binary (resolves the ASLR-off sandbox base, no
+    # leak needed), but analyze_chains() gated verification attempts on c.feasible, which requires
+    # ZERO break_points -- and _mitig_breakpoints() always adds a PIE break_point ('addresses are
+    # random, the chain breaks without a leak') to any PIE binary's ret2win/ret2libc/execve chain,
+    # even though the PIE-aware verifier specifically does not need a leak. So _verify_chain() was
+    # NEVER invoked for ANY PIE binary, regardless of budget, even though the working verifier was
+    # one function call away. Fixed with _should_attempt_verify(): gate on unmet requirements only
+    # (canary still blocks the attempt -- no driver bypasses it by brute force).
+    import os
+    import shutil
+    b = "samples/bin/ret2win_pie"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    ret2win = next(c for c in an.chains if c.name == "ret2win")
+    assert ret2win.unmet_requirements == 0
+    assert ret2win.verified, ret2win.sim_result
+    assert ret2win.proof.get("strategy") == "ret2win-pie"
+    # el canary SI debe seguir bloqueando el intento (no hay bypass de canary en los drivers)
+    b2 = "samples/bin/canary"
+    if os.path.exists(b2):
+        an2 = analyze_chains(b2, None, verify=True, lang="es")
+        c2 = next(c for c in an2.chains if c.name == "ret2win")
+        assert c2.sim_result in ("no simulada", "not simulated"), c2.sim_result
+
+
 def test_chainanalyzer_wires_up_working_heap_driver():
     # Regresion CRITICA: autoheap.py's autoheap_shell() (tcache-poison -> free@GOT=win, full
     # sandbox exploit) already existed and WORKED standalone -- verified directly against

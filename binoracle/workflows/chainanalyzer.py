@@ -66,6 +66,7 @@ class ExploitChain:
     mitigations: List[str] = field(default_factory=list)
     break_points: List[str] = field(default_factory=list)
     feasible: bool = False
+    unmet_requirements: int = 0                 # requisitos [X] (para decidir si INTENTAR verificar)
     score: int = 0
     score_detail: dict = field(default_factory=dict)
     sim_result: str = "no simulada"
@@ -328,6 +329,7 @@ def _apply_badchars(chain: "ExploitChain", addrs, badset, sink: str, lang: str) 
 def _score(chain: ExploitChain) -> None:
     """Puntuacion TECNICA (0-100) por propiedades objetivas. No es recomendacion de ataque."""
     unmet = sum(1 for r in chain.requirements if r.startswith("[X]"))
+    chain.unmet_requirements = unmet
     blockers = len(chain.break_points)
     ng = len(chain.gadgets_used)
     conflicts = sum(1 for c in chain.constraints if "conflicto" in c.lower() or "conflict" in c.lower())
@@ -336,6 +338,26 @@ def _score(chain: ExploitChain) -> None:
     chain.score_detail = {"gadgets": ng, "requisitos_incumplidos": unmet,
                           "puntos_de_rotura": blockers, "conflictos_clobber": conflicts}
     chain.feasible = (unmet == 0 and blockers == 0)
+
+
+def _should_attempt_verify(c: ExploitChain, f: dict) -> bool:
+    """Decide si merece la pena INTENTAR la verificacion real en sandbox (no solo si la cadena es
+    'feasible' en el sentido estatico/teorico). BUG que arregla: `c.feasible` tambien exige CERO
+    break_points, y _mitig_breakpoints() anade un break_point de PIE ('direcciones aleatorias, la
+    cadena se rompe sin fuga') a CUALQUIER cadena de direccion fija en un binario PIE -- pero los
+    verificadores de autopie.py (autopie_ret2win/autopie_rop) EXISTEN precisamente para ese caso:
+    resuelven la base real en el sandbox (ASLR off) sin necesitar ninguna fuga. Con el gate
+    anterior (`c.feasible`), esos verificadores YA FUNCIONABAN si se llamaban directamente, pero
+    `analyze_chains()` nunca los intentaba en NINGUN binario PIE -- confirmado con ret2win_pie:
+    autopie_ret2win() por si solo verifica en ~unos segundos, pero la cadena salia
+    'feasible=False' por el break_point de PIE y _verify_chain() nunca se invocaba.
+    El canary SI sigue bloqueando el intento (ningun driver hace bypass de canary por fuerza
+    bruta; intentarlo solo gastaria tiempo de sandbox en un fallo casi seguro)."""
+    if c.unmet_requirements != 0:
+        return False
+    if f.get("canary") is True:
+        return False
+    return True
 
 
 def _req(met: bool, es: str, en: str, lang: str) -> str:
@@ -452,7 +474,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                 "align the stack (16B) with a `ret` gadget if win() calls system"))]
     _apply_badchars(c, [f.get("win")] if f.get("win") else [], _badset, _sink, lang)
     _score(c)
-    if verify and c.feasible:
+    if verify and _should_attempt_verify(c, f):
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2win", f, lang)
     chains.append(c)
 
@@ -490,7 +512,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     _apply_badchars(c, [a for a in [g_rdi.addr if g_rdi else None, f.get("system"), f.get("binsh")] if a],
                     _badset, _sink, lang)
     _score(c)
-    if verify and c.feasible:
+    if verify and _should_attempt_verify(c, f):
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc", f, lang)
     chains.append(c)
 
@@ -532,7 +554,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     _apply_badchars(c, [g.addr for g in list(need.values()) + [g_sys] if g]
                     + ([f["binsh"]] if f.get("binsh") else []), _badset, _sink, lang)
     _score(c)
-    if verify and c.feasible:
+    if verify and _should_attempt_verify(c, f):
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "execve", f, lang)
     chains.append(c)
 
@@ -571,7 +593,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                       L("shell via libc rebaseada", "shell via rebased libc"),
                       regs={"rip": "system@libc"})]
         _score(c)
-        if verify and c.feasible:
+        if verify and _should_attempt_verify(c, f):
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc_leak", f, lang)
         chains.append(c)
 
@@ -608,7 +630,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                         "malloc returns free@GOT; win() is written there; the next free() triggers it"),
                       addr=f.get("win"), regs={"rip": hex(f["win"]) if f.get("win") else "?"})]
         _score(c)
-        if verify and c.feasible:
+        if verify and _should_attempt_verify(c, f):
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "uaf_tcache", f, lang)
         chains.append(c)
 
