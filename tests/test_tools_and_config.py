@@ -1238,6 +1238,25 @@ def test_rop_binsh_search_uses_real_null_byte():
         f"se busco {captured.get('pattern')!r} en vez del string real con byte nulo")
 
 
+def test_chainanalyzer_facts_finds_binsh_in_izzj_list_format():
+    # Regresion CRITICA (encontrada investigando ropme_pie por peticion del usuario): _facts()
+    # parseaba `izzj` como json.loads(...).get("strings", []) -- pero izzj devuelve una lista JSON
+    # DIRECTA ([{...}, ...]), no {"strings": [...]}. Llamar .get() sobre una lista lanza
+    # AttributeError, capturado por el `except Exception: pass` que envuelve TODO el bloque, asi
+    # que f["binsh"] JAMAS se establecia para NINGUN binario, sistematicamente -- no solo
+    # ropme_pie. Confirmado con un binario real (ropme_pie) que SI tiene "/bin/sh" en .data
+    # (viene de `char binsh[] = "/bin/sh";` en el fuente, para el reto ret2syscall), pero
+    # _facts() nunca lo veia, asi que la cadena execve syscall salia con el requisito
+    # "cadena '/bin/sh'" marcado [X] incluso estando presente.
+    import os
+    b = "samples/bin/ropme_pie"
+    if not os.path.exists(b):
+        return
+    from binoracle.workflows.chainanalyzer import _facts
+    f = _facts(b)
+    assert f.get("binsh") is not None, "binsh no detectado pese a estar presente en .data"
+
+
 def test_chainanalyzer_attempts_verify_on_pie_despite_pie_breakpoint():
     # Regresion CRITICA (misma familia que el hallazgo del heap): autopie.py's autopie_ret2win()
     # already WORKED standalone against a real PIE binary (resolves the ASLR-off sandbox base, no

@@ -227,9 +227,16 @@ def _facts(binary: str, reg=None) -> dict:
             # (antes, "main" in texto tambien matcheaba funciones como getdomainname/remainder_calc,
             # o simplemente el nombre de la propia consulta de grep repetido en la salida).
             f["reenter"] = bool(fn_names & {"main", "sym.main", "vuln", "sym.vuln"})
-            # /bin/sh en strings
-            for s in json.loads(r.cmd("izzj") or "{}").get("strings", []):
-                if "/bin/sh" in (s.get("string", "") or ""):
+            # /bin/sh en strings. BUG previo: `izzj` devuelve una lista JSON directa ([{...}, ...]),
+            # no {"strings": [...]}; `.get("strings", [])` sobre una lista lanza AttributeError,
+            # silenciada por el except de todo el bloque -- asi que f["binsh"] NUNCA se establecia
+            # para NINGUN binario, sistematicamente (no solo ropme_pie). Confirmado: ropme_pie SI
+            # tiene "/bin/sh" real en .data (vaddr 0xb1030, viene de `char binsh[] = "/bin/sh";` en
+            # el fuente), pero la cadena execve nunca lo veia disponible. Acepta ambos formatos.
+            izz = json.loads(r.cmd("izzj") or "[]")
+            izz_list = izz if isinstance(izz, list) else izz.get("strings", [])
+            for s in izz_list:
+                if (s.get("string", "") or "") == "/bin/sh":
                     f["binsh"] = s.get("vaddr"); break
     except Exception:
         pass
