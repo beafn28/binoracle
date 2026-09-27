@@ -1238,6 +1238,28 @@ def test_rop_binsh_search_uses_real_null_byte():
         f"se busco {captured.get('pattern')!r} en vez del string real con byte nulo")
 
 
+def test_cveplan_classify_no_substring_false_positives():
+    # Regresion CRITICA: classify_binary() (el clasificador central de clase de vulnerabilidad que
+    # decide que tipo de exploit desarrollar) usaba substring sobre el texto crudo de imports:
+    # "free" in texto hacia match dentro de "freeaddrinfo" (getaddrinfo/red, nada que ver con
+    # free() de memoria), clasificando como 'uaf' un binario que malloc()+usa red pero NUNCA llama
+    # a free(). Confirmado con un binario real. Mismo motivo para 'gets' en 'getsockopt' etc.
+    from binoracle.workflows.cveplan import classify_binary
+    reg = _mock_reg(imports="sym.imp.malloc\nsym.imp.freeaddrinfo\nsym.imp.getaddrinfo")
+    assert classify_binary("x", reg=reg) is None, "malloc+freeaddrinfo NO deberia ser 'uaf'"
+    reg2 = _mock_reg(imports="sym.imp.getsockopt")
+    assert classify_binary("x", reg=reg2) is None, "getsockopt NO deberia ser 'stack-overflow'"
+    # true positive: malloc+free REALES si deben marcarse (heap) cuando r2_heap lo confirma
+    reg3 = _mock_reg(imports="sym.imp.malloc\nsym.imp.free")
+    class _Heap:
+        def run(self):
+            from binoracle.oracles.base import ToolResult
+            return ToolResult(True, "r2", "uaf surface detected")
+    orig_get = reg3.get
+    reg3.get = lambda n: _Heap() if n == "r2_heap" else orig_get(n)
+    assert classify_binary("x", reg=reg3) == "uaf"
+
+
 def test_cfg_branch_note_no_substring_false_positives():
     # Regresion: _branch_note marcaba un bloque como "llama a una funcion sensible" (gets/read...)
     # via substring ("d in c"), asi que una llamada a getsockopt()/readlink()/readdir()/pread()

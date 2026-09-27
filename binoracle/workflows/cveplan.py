@@ -180,13 +180,14 @@ def classify_binary(binary: str, reg=None) -> Optional[str]:
         if reg is None:
             from ..oracles import build_registry
             reg = build_registry(binary)
-        imports = (reg.get("r2_imports").run().data or "").lower() if reg.get("r2_imports") else ""
+        from ._binfacts import imported_names
+        names = imported_names(reg)
         sinks = (reg.get("r2_sinks").run().data or "") if reg.get("r2_sinks") else ""
         heap = (reg.get("r2_heap").run().data or "") if reg.get("r2_heap") else ""
     except Exception:
         return None
     # 1) format-string: alguna llamada a printf-family con el formato tomado de una variable
-    fmt_funcs_present = [f for f in _FMT_FUNCS if f in imports]
+    fmt_funcs_present = [f for f in _FMT_FUNCS if f in names]
     if fmt_funcs_present:
         # funciones que alcanzan un sink printf-family (de r2_sinks)
         callers = set()
@@ -211,14 +212,18 @@ def classify_binary(binary: str, reg=None) -> Optional[str]:
                 if mm and mm.group(1) in _FMT_FUNCS:
                     if _fmt_arg_is_variable(dz, i, lines, mm.group(1)):
                         return "format-string"
-    # 2) heap: superficie de UAF/double-free (malloc + free en la misma funcion, puntero colgante)
-    if ("malloc" in imports or "calloc" in imports) and "free" in imports:
+    # 2) heap: superficie de UAF/double-free (malloc + free en la misma funcion, puntero colgante).
+    # Nombres de import EXACTOS (imported_names), no substring sobre el texto crudo de `ii`: "free"
+    # como substring hacia match dentro de "freeaddrinfo" (getaddrinfo/red, nada que ver con el
+    # free() de memoria), clasificando binarios sin ningun bug de heap como 'uaf'.
+    if ("malloc" in names or "calloc" in names) and "free" in names:
         if "uaf surface" in heap.lower() or "use-after-free" in heap.lower() or "double" in heap.lower():
             return "uaf"
         if "alloc=" in heap.lower():
             return "heap-overflow"
-    # 3) stack-overflow: sinks de copia insegura clasicos
-    if any(s in imports for s in ("gets", "strcpy", "strcat", "sprintf")):
+    # 3) stack-overflow: sinks de copia insegura clasicos. Mismo motivo: "gets" como substring
+    # matcheaba "getsockopt"/similar.
+    if any(s in names for s in ("gets", "strcpy", "strcat", "sprintf")):
         return "stack-overflow"
     # sin senal concluyente: que decida el analizador de cadenas (control de RIP) aguas arriba
     return None
