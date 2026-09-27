@@ -188,7 +188,10 @@ def _branch_note(insns) -> str:
             prev_call = t
     # sinks peligrosos que este bloque invoca (por donde entra/usa la entrada)
     calls = [_call_target(op["txt"]) for op in insns if (op["txt"] or "").strip().lower().startswith("call")]
-    danger = [c for c in calls if c and any(d == c or c.endswith("." + d) or d in c for d in _DANGER)]
+    # exige nombre EXACTO (o "prefijo.nombre", p.ej. sym.imp.gets) -- SIN la caida a substring
+    # ("d in c"), que confundia "gets" con "getsockopt" y "read" con "readlink"/"readdir"/"pread",
+    # marcando llamadas normales como "sink peligroso" en el grafo.
+    danger = [c for c in calls if c and any(d == c or c.endswith("." + d) for d in _DANGER)]
     danger_note = ""
     if danger:
         danger_note = (f" Este bloque LLAMA a `{danger[0]}` (funcion sensible): aqui entra o se procesa "
@@ -200,7 +203,7 @@ def _branch_note(insns) -> str:
         gate = ""
         if prev_call:
             fn = _call_target(prev_call)
-            if fn and any(g == fn or fn.endswith("." + g) or g in fn for g in _CMP_GATES):
+            if fn and any(g == fn or fn.endswith("." + g) for g in _CMP_GATES):
                 gate = (f" La decision depende del RESULTADO de `{fn}`: es una PUERTA de comparacion "
                         "(tipica de password / flag / token / longitud). La rama 'correcta' es la que "
                         "se toma cuando coinciden; controlar esa entrada suele ser el objetivo.")

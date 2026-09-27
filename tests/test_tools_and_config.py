@@ -1238,6 +1238,25 @@ def test_rop_binsh_search_uses_real_null_byte():
         f"se busco {captured.get('pattern')!r} en vez del string real con byte nulo")
 
 
+def test_cfg_branch_note_no_substring_false_positives():
+    # Regresion: _branch_note marcaba un bloque como "llama a una funcion sensible" (gets/read...)
+    # via substring ("d in c"), asi que una llamada a getsockopt()/readlink()/readdir()/pread()
+    # (nada que ver con gets()/read() sin limite) se etiquetaba igual como "sink peligroso" en el
+    # grafo del informe. Confirmado: "gets" in "getsockopt" es True en Python.
+    from binoracle.workflows.cfg import _branch_note
+    insns_safe = [{"txt": "call sym.imp.getsockopt", "addr": "0x0"},
+                  {"txt": "cmp eax, 0", "addr": "0x1"},
+                  {"txt": "je 0x10", "addr": "0x2"}]
+    note = _branch_note(insns_safe)
+    assert "getsockopt" not in note or "sensible" not in note
+    # el verdadero positivo (gets real) SI debe seguir marcandose
+    insns_real = [{"txt": "call sym.imp.gets", "addr": "0x0"},
+                  {"txt": "cmp eax, 0", "addr": "0x1"},
+                  {"txt": "je 0x10", "addr": "0x2"}]
+    note2 = _branch_note(insns_real)
+    assert "sensible" in note2 and "gets" in note2
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
