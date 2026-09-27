@@ -1381,6 +1381,47 @@ def test_chainanalyzer_wires_up_write_what_where_driver():
     assert wow.proof.get("offset") == -12
 
 
+def test_chainanalyzer_wires_up_tcache_dup_driver():
+    # Nueva capacidad: notes_heap.c corre bajo glibc >= 2.34 (sin __free_hook/__malloc_hook) y
+    # no tiene win()/system() en el binario -- ninguna de las tecnicas de heap previas (tcache
+    # tcache-poison via autoheap.py, uaf funcptr-hijack via autouaf.py) aplica, ambas requieren
+    # win(). La UNICA defensa activa contra el double-free es el campo `key` aleatorizado de
+    # tcache; con una escritura UAF (edit sobre indice ya liberado) basta con corromperlo con
+    # CUALQUIER valor para saltarsela -- no hace falta conocer su valor real. El envenenamiento
+    # del puntero 'next' (safe-linking, XOR contra la propia direccion del campo) se calcula sin
+    # ninguna fuga porque el sandbox corre con ASLR desactivado. La UNICA comprobacion real que
+    # glibc sigue haciendo sobre la direccion envenenada es que este alineada a 16 bytes
+    # ("malloc(): unaligned tcache chunk detected" si no) -- NO que el contenido en direccion-8
+    # parezca un tamano de chunk valido (confirmado empiricamente: apuntar a atoi@GOT, que NO
+    # esta alineado, aborta con ese mensaje exacto; apuntar a free@GOT, que SI esta alineado,
+    # funciona sin comprobacion de tamano). Con free@GOT retargeteada a system() (resuelto desde
+    # la libc local del sandbox), la propia operacion free() del binario sobre una nota cuyo
+    # CONTENIDO es '/bin/sh' se convierte en system('/bin/sh') = shell real.
+    import os
+    import shutil
+    b = "samples/bin/notes_heap"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains(b, None, verify=True, lang="es")
+    tcd = next((c for c in an.chains if c.name == "tcache dup"), None)
+    assert tcd is not None, "no se construyo la cadena tcache dup (tcache_dup_ok debia ser True)"
+    assert tcd.verified, tcd.sim_result
+    assert tcd.proof.get("got_symbol") == "free"
+    assert tcd.proof.get("got") == "0x404000"
+
+
+def test_autotcachedup_excludes_binaries_with_win():
+    # heapexp/uaf ya tienen win() y su propia tecnica mas directa (tcache-poison / funcptr
+    # hijack); la cadena tcache_dup NO debe intentarse ahi (evita atacar un binario con una
+    # tecnica pensada para el caso "sin gift function" cuando ya hay una mas simple disponible).
+    import os
+    from binoracle.workflows.autotcachedup import _tcache_dup_applicable
+    for b in ("samples/bin/heapexp", "samples/bin/uaf"):
+        if os.path.exists(b):
+            assert _tcache_dup_applicable(b) is False
+
+
 def test_chainanalyzer_wires_up_uaf_funcptr_hijack_driver():
     # Nueva capacidad: uaf.c tiene un UAF real (free() no anula el puntero) donde un malloc
     # posterior del MISMO tamano recicla el chunk liberado (tcache LIFO, sin doble-free ni fake
