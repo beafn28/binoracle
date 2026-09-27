@@ -18,6 +18,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
+from ._binfacts import string_values
 
 
 def _checksec(reg: ToolRegistry) -> dict:
@@ -117,12 +118,26 @@ def scan_hardening(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "Do not set LD_* from untrusted data; sanitize the environment in privileged binaries.",
             lang, "configuracion / entorno"))
 
-    # (c) ejecucion por PATH relativa: system/popen + comando sin ruta absoluta
+    # (c) ejecucion por PATH relativa: system/popen + comando sin ruta absoluta. BUG previo: el
+    # regex exigia comillas LITERALES ("cmd") en el texto, pero la tabla `izz` de r2 nunca envuelve
+    # el VALOR del string entre comillas (son celdas de tabla) -- este check nunca pudo dispararse
+    # en NINGUN binario real (falso negativo del 100%, no falso positivo). Se usa string_values()
+    # (parseo real del valor) y se exige que la cadena COMPLETA sea el nombre de comando (no una
+    # frase que solo lo mencione).
     if any(x in imports for x in ("system", "popen")):
-        rel = re.findall(r'"([a-z][\w.-]*(?: -[\w]+)*)"', strings)
-        cmds = [c for c in rel if c.split()[0] in
-                ("sh", "bash", "ls", "cat", "cp", "mv", "rm", "id", "whoami", "ping", "curl",
-                 "wget", "python", "perl", "env", "echo", "chmod", "chown", "kill", "ps")]
+        _cmd_names = {"sh", "bash", "ls", "cat", "cp", "mv", "rm", "id", "whoami", "ping", "curl",
+                      "wget", "python", "perl", "env", "echo", "chmod", "chown", "kill", "ps"}
+        cmds = []
+        for v in string_values(reg):
+            s = v.strip()
+            parts = s.split()
+            # primer token = nombre de comando conocido; resto = argumentos plausibles de linea de
+            # comandos (sin espacios raros/control, cadena corta) -- no exige que sean flags '-x'
+            # (comandos reales como 'ps aux' o 'curl example.com' no usan guion).
+            if (parts and parts[0] in _cmd_names and len(s) <= 80
+                    and re.fullmatch(r"[\x20-\x7e]+", s)):
+                cmds.append(s)
+        cmds = sorted(set(cmds))
         if cmds:
             findings.append(_f(
                 "Ejecucion de comando por PATH (ruta relativa)", "Command execution via PATH (relative)",

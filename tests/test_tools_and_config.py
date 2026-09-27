@@ -460,8 +460,13 @@ def test_hardening_scanner():
             if n == "r2_strings": return _T(self.st)
             return None
 
+    # las strings van en formato de fila real de `izz` (offset/seccion/tipo + valor): string_values()
+    # exige ese formato -- ver _mock_reg mas arriba, que hace lo mismo para los demas escaneres.
+    st = ("0  0x0  0x0  10  10  .rodata  ascii  LD_PRELOAD\n"
+          "1  0x0  0x0  2   2   .rodata  ascii  sh\n"
+          "2  0x0  0x0  5   5   .rodata  ascii  ls -la")
     reg = _R({"nx": "false", "pic": "false", "canary": "false", "relro": "partial"},
-             "sym.imp.setenv\nsym.imp.system", 'LD_PRELOAD\n"sh"\n"ls -la"')
+             "sym.imp.setenv\nsym.imp.system", st)
     titles = " ".join(f.title.lower() for f in scan_hardening(reg, "x"))
     assert "endurecimiento" in titles          # build hardening insuficiente
     assert "ld_" in titles or "entorno" in titles   # LD_* env
@@ -1124,6 +1129,22 @@ def test_report_md_rich_renders_lists_and_tables():
     assert "<table>" in html and "<th>ID</th>" in html
     assert "**" not in html
     assert not __import__("re").search(r"<p>\s*-\s", html)   # sin guiones literales en <p>
+
+
+def test_hardening_path_relative_was_dead_code():
+    # Regresion CRITICA: el check (c) exigia comillas LITERALES ("cmd") en el texto de r2_strings,
+    # pero la tabla `izz` de r2 NUNCA envuelve el valor entre comillas (son celdas de tabla) -- este
+    # check no pudo dispararse NUNCA en ningun binario real desde que se escribio (falso negativo
+    # del 100%, no falso positivo). Confirmado con un binario real: system("ps aux").
+    from binoracle.workflows.hardening import scan_hardening
+    # _mock_reg envuelve `strings` como filas reales de tabla `izz` (ver su definicion mas arriba):
+    # se le pasa el VALOR plano de cada string, una por linea.
+    reg = _mock_reg(imports="sym.imp.system", strings="ps aux")
+    titles = " ".join(f.title.lower() for f in scan_hardening(reg, "x"))
+    assert "path" in titles, titles
+    # una frase que solo MENCIONA un nombre de comando (no lo tiene como primer token) no cuenta
+    reg2 = _mock_reg(imports="sym.imp.system", strings="usage: pass -v or ps to see status")
+    assert not any("path" in f.title.lower() for f in scan_hardening(reg2, "x"))
 
 
 def test_commsec_prng_detects_bare_import_name():
