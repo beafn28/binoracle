@@ -1197,6 +1197,47 @@ def test_chainanalyzer_facts_word_boundaries():
     assert sink is None, "'gets' hizo match dentro de getsockopt"
 
 
+def test_rop_binsh_search_uses_real_null_byte():
+    # Regresion: build_rop_chain buscaba b"/bin/sh\\x00" (doble barra invertida en el fuente ->
+    # los 4 caracteres LITERALES '\','x','0','0', NO un byte nulo) en la libc proporcionada para
+    # la estrategia 3 (ret2libc con --libc). Como ninguna libc real contiene ese texto literal, la
+    # busqueda SIEMPRE fallaba y el offset de /bin/sh salia como '??' aunque la libc si tuviera el
+    # string real. Se verifica con un mock que captura los bytes EXACTOS pasados a libc.search().
+    import sys
+    import types
+    from unittest.mock import MagicMock, patch
+
+    captured = {}
+
+    class _FakeLibc:
+        def __init__(self, *a, **k): pass
+        def search(self, pattern):
+            captured["pattern"] = pattern
+            return iter([])                # simula que no se encuentra (no afecta la asercion)
+        symbols = {"system": 0x1234}
+
+    class _FakeElf:
+        def __init__(self, *a, **k):
+            self.pie = True; self.nx = True; self.plt = {}; self.symbols = {}
+        def search(self, pattern):
+            return iter([])                 # el binario no tiene '/bin/sh' -> fuerza estrategia 3
+
+    fake_pwn = types.SimpleNamespace(
+        context=MagicMock(arch="amd64", binary=None),
+        ELF=lambda path, **k: _FakeLibc() if "libc" in str(path) else _FakeElf(),
+        ROP=lambda elf: MagicMock())
+    with patch.dict(sys.modules, {"pwn": fake_pwn}):
+        import importlib
+        from binoracle.workflows import rop as rop_mod
+        importlib.reload(rop_mod)
+        try:
+            rop_mod.build_rop_chain("/fake/binary", goal="auto", libc_path="/fake/libc.so.6")
+        finally:
+            importlib.reload(rop_mod)   # restaura el modulo real (pwntools de verdad) para el resto
+    assert captured.get("pattern") == b"/bin/sh\x00", (
+        f"se busco {captured.get('pattern')!r} en vez del string real con byte nulo")
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.

