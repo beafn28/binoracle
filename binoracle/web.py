@@ -1100,7 +1100,6 @@ main{flex:1;display:flex;min-height:0}
 .work{flex:1;display:flex;flex-direction:column;min-width:0}
 .opts{padding:11px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;align-items:end;background:var(--panel2);min-height:0}
 .opts:empty{display:none}
-.cmddesc{flex-basis:100%;color:var(--mut);font-size:12px;margin-bottom:2px}
 .rptbar{display:flex;justify-content:flex-end;padding:0 0 10px 0}
 .fhdr{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
 .fhdr h3{margin:0}
@@ -1218,7 +1217,8 @@ function select(it,btn){closeStream();current=it;[...side.querySelectorAll('butt
  const opts=document.getElementById('opts');opts.innerHTML='';
  const out=document.getElementById('out');out.innerHTML='';   // limpia el panel al instante (no arrastrar la opcion anterior)
  if(it.c==='kb'||it.c==='doctor'){exec(it.c,{});return;}   // opciones baratas: se cargan solas, sin barra
- if(it.d){const dd=document.createElement('div');dd.className='cmddesc';dd.textContent=it.d;opts.appendChild(dd);}
+ // la descripcion ya se ve en la barra lateral (resaltada al seleccionar); repetirla aqui era
+ // ruido duplicado -- el formulario va directo a lo que hay que rellenar.
  (it.opts||[]).forEach(o=>{const f=document.createElement('div');f.className='f';const lab=document.createElement('label');lab.textContent=o.label;let el;
   if(o.t==='sel'){el=document.createElement('select');o.vals.forEach(v=>{const op=document.createElement('option');op.value=v;op.textContent=v;el.appendChild(op);});}
   else if(o.t==='check'){f.className='f chk';el=document.createElement('input');el.type='checkbox';}
