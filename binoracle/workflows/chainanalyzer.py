@@ -191,6 +191,7 @@ def _facts(binary: str, reg=None) -> dict:
          "puts": False, "leak_fn": None, "reenter": False}
     try:
         import json
+        import re as _re
         from ..oracles.r2session import get as _r2get
         r = _r2get(binary)
         if r is not None:
@@ -199,17 +200,32 @@ def _facts(binary: str, reg=None) -> dict:
             f["pie"] = info.get("pic")
             f["nx"] = info.get("nx")
             f["arch"] = f"{info.get('arch','x86')}_{info.get('bits',64)}"
+            # limite de palabra (no letra ADYACENTE): sin el, "win" hacia match dentro de
+            # "_unwind_resume" (el runtime de excepciones de C++/libgcc_s) -- confirmado con un
+            # binario real que usa try/catch: se marcaba _Unwind_Resume como la funcion 'win()' del
+            # reto, fabricando un objetivo de ret2win que no existe.
+            _gift_re = _re.compile(r"(?<![a-z])(win|shell|backdoor|giveshell)(?![a-z])")
+            fn_names = set()
             for fn in json.loads(r.cmd("aflj") or "[]"):
                 nm = fn.get("name", "").lower()
-                if f["win"] is None and ("win" in nm or "shell" in nm or "backdoor" in nm or "giveshell" in nm):
+                fn_names.add(nm)
+                if f["win"] is None and _gift_re.search(nm):
                     f["win"] = fn.get("offset")
                 if f["system"] is None and nm.endswith("system"):
                     f["system"] = fn.get("offset")
-            # imports para la cadena de fuga (leak): puts/printf permiten filtrar una direccion de libc
-            imps = (r.cmd("ii~puts,printf,write,main") or "").lower()
-            f["puts"] = "puts" in imps
-            f["leak_fn"] = ("puts" if "puts" in imps else ("printf" if "printf" in imps else None))
-            f["reenter"] = "main" in (r.cmd("afl~ main,sym.main,vuln") or "")
+            # imports para la cadena de fuga (leak): puts/printf permiten filtrar una direccion de
+            # libc. Nombres de import REALES via iij (no substring sobre un grep de texto: "puts" in
+            # texto tambien matcheaba "fputs", marcando puts() como presente cuando solo hay fputs).
+            imp_names = set()
+            for imp in json.loads(r.cmd("iij") or "[]"):
+                nm2 = (imp.get("name") or "").lower()
+                imp_names.add(nm2.rsplit(".", 1)[-1] if "." in nm2 else nm2)
+            f["puts"] = "puts" in imp_names
+            f["leak_fn"] = "puts" if f["puts"] else ("printf" if "printf" in imp_names else None)
+            # punto de reentrada: coincidencia EXACTA de nombre de funcion, no substring de un grep
+            # (antes, "main" in texto tambien matcheaba funciones como getdomainname/remainder_calc,
+            # o simplemente el nombre de la propia consulta de grep repetido en la salida).
+            f["reenter"] = bool(fn_names & {"main", "sym.main", "vuln", "sym.vuln"})
             # /bin/sh en strings
             for s in json.loads(r.cmd("izzj") or "{}").get("strings", []):
                 if "/bin/sh" in (s.get("string", "") or ""):
@@ -244,6 +260,7 @@ def _overflow_sink(binary: str):
     o None. Busca la funcion que llama a un sink de lectura y toma el mas restrictivo presente."""
     try:
         import json
+        import re as _re
         from ..oracles.r2session import get as _r2get
         r = _r2get(binary)
         if r is None:
@@ -253,7 +270,11 @@ def _overflow_sink(binary: str):
             nm = fn.get("name", "")
             dis = r.cmd(f"pdf @ {nm}") or ""
             for s in _SINK_ORDER:
-                if f"sym.imp.{s}" in dis or f" {s}\n" in dis or f"call {s}" in dis:
+                # \b (limite de palabra) en vez de substring: sin el, "gets" hacia match dentro de
+                # "sym.imp.getsockopt"/"call getsockopt" -- confirmado con un binario real que solo
+                # llama a getsockopt(), donde se fabricaban badchars de gets() (0x0a prohibido) que
+                # no aplican, degradando o rompiendo candidatos de cadena validos.
+                if _re.search(rf"\b{_re.escape(s)}\b", dis):
                     present.add(s)
         for s in _SINK_ORDER:            # el primero por prioridad manda
             if s in present:

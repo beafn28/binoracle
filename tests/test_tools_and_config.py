@@ -1135,6 +1135,48 @@ def test_report_md_rich_renders_lists_and_tables():
     assert not __import__("re").search(r"<p>\s*-\s", html)   # sin guiones literales en <p>
 
 
+def test_chainanalyzer_facts_word_boundaries():
+    # Regresion (hallada por un subagente de auditoria): _facts() marcaba "win" dentro de
+    # "_unwind_resume" (el runtime de excepciones de C++/libgcc_s, presente en CUALQUIER binario
+    # con try/catch) como si fuera la funcion win()/gift del reto -- fabricando un objetivo de
+    # ret2win inexistente. Tambien: "puts" in texto matcheaba "fputs" (substring), marcando puts()
+    # como disponible para la fuga cuando solo hay fputs(); y el chequeo de reentrada usaba
+    # substring sobre un grep en vez de igualdad exacta de nombre de funcion.
+    import json
+    from unittest.mock import patch
+    from binoracle.workflows.chainanalyzer import _facts, _overflow_sink
+
+    class _FakeR2:
+        def __init__(self, cmds): self.cmds = cmds
+        def cmd(self, c):
+            for prefix, out in self.cmds.items():
+                if c.startswith(prefix):
+                    return out
+            return ""
+
+    # 'win' NO debe matchear dentro de _Unwind_Resume (solo funciones de C++/libgcc_s presentes)
+    fns = json.dumps([{"name": "main", "offset": 4096},
+                      {"name": "sym.imp._Unwind_Resume", "offset": 8192}])
+    r2 = _FakeR2({"ij": json.dumps({"bin": {}}), "aflj": fns, "iij": "[]", "izzj": "{}"})
+    with patch("binoracle.oracles.r2session.get", return_value=r2):
+        f = _facts("/nonexistent")
+    assert f["win"] is None, "'win' hizo match dentro de _Unwind_Resume"
+
+    # 'puts' NO debe marcarse presente si solo hay 'fputs' (substring de 'puts')
+    imps = json.dumps([{"name": "sym.imp.fputs"}])
+    r2b = _FakeR2({"ij": json.dumps({"bin": {}}), "aflj": "[]", "iij": imps, "izzj": "{}"})
+    with patch("binoracle.oracles.r2session.get", return_value=r2b):
+        fb = _facts("/nonexistent")
+    assert fb["puts"] is False and fb["leak_fn"] is None
+
+    # 'gets' NO debe matchear dentro de la disassembly de una funcion que solo llama a getsockopt
+    fns2 = json.dumps([{"name": "sym.check_sock", "offset": 4096}])
+    r2c = _FakeR2({"aflj": fns2, "pdf @ sym.check_sock": "call sym.imp.getsockopt"})
+    with patch("binoracle.oracles.r2session.get", return_value=r2c):
+        sink = _overflow_sink("/nonexistent")
+    assert sink is None, "'gets' hizo match dentro de getsockopt"
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
