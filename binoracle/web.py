@@ -679,6 +679,56 @@ def _fmt_step(step, action):
     return f"paso {step}: {act}"
 
 
+def _build_dashboard_data(reg, findings):
+    """Construye el dict que espera renderDash() a partir de una lista de Finding ya conocida
+    (recien verificada o cargada del historial) mas los hechos ESTATICOS y baratos del binario
+    (checksec/sinks/funciones/formato via r2). No verifica ni ejecuta nada por si misma."""
+    cs = reg.get("r2_checksec").run(); m = cs.meta if cs.ok else {}
+    sk = reg.get("r2_sinks").run(); sinks = sk.meta.get("sinks", []) if sk.ok else []
+    by = {k: 0 for k in ("critical", "high", "medium", "low", "info")}
+    verified = 0
+    for f in findings:
+        by[f.severity] = by.get(f.severity, 0) + 1
+        if f.verdict == "verified":
+            verified += 1
+    fr = reg.get("r2_functions").run()
+    funcs = len([l for l in fr.data.splitlines() if l.strip() and l.strip()[0] == "0"]) if fr.ok else 0
+    info = reg.get("r2_info").run().data if reg.get("r2_info") else ""
+    fmt = next((l.split()[-1] for l in info.splitlines() if l.strip().startswith("bintype")), "?")
+    def hd(name):
+        t = reg.get("r2_hardening").run().data
+        for line in t.splitlines():
+            if line.lower().startswith(name.lower()):
+                return "not detected" not in line.lower()
+        return False
+    relro = "unknown"
+    em = reg.get("elf_mitigations")
+    if em:
+        r = em.run()
+        if r.ok:
+            import re as _re
+            mm = _re.search(r"RELRO:\s*(\w+)", r.data)
+            if mm: relro = mm.group(1)
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    items = sorted(
+        [{"title": f.title, "severity": f.severity, "verdict": f.verdict,
+          "location": (f.location or "")[:120],
+          "rationale": (f.rationale or "").strip()[:400],
+          "recommendation": (f.recommendation or "").strip()[:400]}
+         for f in findings],
+        key=lambda x: (sev_rank.get(x["severity"], 9), x["verdict"] != "verified"))
+    sink_detail = reg.get("r2_sinks").run()
+    return {"arch": m.get("arch", "?"), "bits": m.get("bits", "?"), "format": fmt,
+            "mitigations": {"NX": str(m.get("nx")).lower() in ("true", "1"),
+                "PIE": str(m.get("pic")).lower() in ("true", "1"),
+                "Canary": str(m.get("canary")).lower() in ("true", "1"), "RELRO": relro,
+                "FORTIFY": hd("FORTIFY"), "ASan": hd("AddressSanitizer"),
+                "CFI": hd("CFI"), "SafeStack": hd("SafeStack")},
+            "findings": {"total": len(findings), "verified": verified, "by_sev": by},
+            "items": items, "sinks": sinks, "functions": funcs,
+            "sink_detail": (sink_detail.data.strip()[:1500] if sink_detail.ok else "")}
+
+
 def run_streaming(command, binary, ai, emit, text=""):
     config = load_config()
     import os
@@ -797,6 +847,21 @@ def run_streaming(command, binary, ai, emit, text=""):
                 pass
             emit("html", render_dataset_page(render_dataset(rep, config.lang), jsonl_text,
                                              "exploit_sft.jsonl", config.lang))
+        elif command == "dashboard_stored":
+            # Abrir un binario desde el HISTORIAL: mostrar el informe COMPLETO ya analizado tal
+            # cual se guardo, sin volver a correr ninguna herramienta ni re-verificar nada. Solo
+            # si nunca se genero un dashboard para este binario (historial "huerfano") se cae al
+            # analisis en vivo, como unico fallback razonable.
+            store = SessionStore(config.db_path(), binary)
+            stored = store.load_report("dashboard")
+            store.close()
+            if stored is not None:
+                emit("step", "cargando el informe ya analizado (sin re-escanear)...")
+                emit("dashboard", stored)
+                emit("done", "")
+                return
+            run_streaming("dashboard", binary, ai, emit, text=text)
+            return
         elif command in ("report", "hunt", "dashboard"):
             from .report.html import render_html
             from .agent.grounding import GroundingLedger
@@ -838,51 +903,10 @@ def run_streaming(command, binary, ai, emit, text=""):
                 pass
             answer = hunt.answer
             if command == "dashboard":
-                cs = reg.get("r2_checksec").run(); m = cs.meta if cs.ok else {}
-                sk = reg.get("r2_sinks").run(); sinks = sk.meta.get("sinks", []) if sk.ok else []
-                by = {k: 0 for k in ("critical", "high", "medium", "low", "info")}
-                verified = 0
-                for f in findings:
-                    by[f.severity] = by.get(f.severity, 0) + 1
-                    if f.verdict == "verified":
-                        verified += 1
-                fr = reg.get("r2_functions").run()
-                funcs = len([l for l in fr.data.splitlines() if l.strip() and l.strip()[0] == "0"]) if fr.ok else 0
-                info = reg.get("r2_info").run().data if reg.get("r2_info") else ""
-                fmt = next((l.split()[-1] for l in info.splitlines() if l.strip().startswith("bintype")), "?")
-                def hd(name):
-                    t = reg.get("r2_hardening").run().data
-                    for line in t.splitlines():
-                        if line.lower().startswith(name.lower()):
-                            return "not detected" not in line.lower()
-                    return False
-                relro = "unknown"
-                em = reg.get("elf_mitigations")
-                if em:
-                    r = em.run()
-                    if r.ok:
-                        import re as _re
-                        mm = _re.search(r"RELRO:\s*(\w+)", r.data)
-                        if mm: relro = mm.group(1)
-                sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-                items = sorted(
-                    [{"title": f.title, "severity": f.severity, "verdict": f.verdict,
-                      "location": (f.location or "")[:120],
-                      "rationale": (f.rationale or "").strip()[:400],
-                      "recommendation": (f.recommendation or "").strip()[:400]}
-                     for f in findings],
-                    key=lambda x: (sev_rank.get(x["severity"], 9), x["verdict"] != "verified"))
-                # imports peligrosos con quien los alcanza (superficie de ataque detallada)
-                sink_detail = reg.get("r2_sinks").run()
-                data = {"arch": m.get("arch", "?"), "bits": m.get("bits", "?"), "format": fmt,
-                        "mitigations": {"NX": str(m.get("nx")).lower() in ("true","1"),
-                            "PIE": str(m.get("pic")).lower() in ("true","1"),
-                            "Canary": str(m.get("canary")).lower() in ("true","1"), "RELRO": relro,
-                            "FORTIFY": hd("FORTIFY"), "ASan": hd("AddressSanitizer"),
-                            "CFI": hd("CFI"), "SafeStack": hd("SafeStack")},
-                        "findings": {"total": len(findings), "verified": verified, "by_sev": by},
-                        "items": items, "sinks": sinks, "functions": funcs,
-                        "sink_detail": (sink_detail.data.strip()[:1500] if sink_detail.ok else "")}
+                data = _build_dashboard_data(reg, findings)
+                # persistido para que abrirlo desde el HISTORIAL lo muestre tal cual, sin
+                # re-analizar (ver comando "dashboard_stored").
+                store.save_report("dashboard", data)
                 store.close()
                 emit("dashboard", data)
                 emit("done", "")
@@ -1365,7 +1389,7 @@ async function loadHistory(){var out=document.getElementById('out');out.innerHTM
   row.appendChild(pick);
   var info=document.createElement('div');info.className='hinfo';
   info.innerHTML='<div class="hn">'+b.name+(b.exists?'':' <span class="del">(no disponible)</span>')+'</div><div class="hp">'+b.path+'</div><div class="hm">'+b.findings+' hallazgos, '+b.knowledge+' notas IA</div>';
-  if(b.exists){info.style.cursor='pointer';info.addEventListener('click',function(){document.getElementById('target').value=b.path;dash();});}
+  if(b.exists){info.style.cursor='pointer';info.addEventListener('click',function(){document.getElementById('target').value=b.path;stream('dashboard_stored');});}
   row.appendChild(info);
   var del=document.createElement('button');del.className='hdel';del.title='Borrar del historial';del.textContent='Borrar';
   del.addEventListener('click',function(ev){ev.stopPropagation();delHistory([b.bin_id],b.name);});
