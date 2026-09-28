@@ -1280,6 +1280,126 @@ def test_chainanalyzer_facts_word_boundaries():
     assert sink is None, "'gets' hizo match dentro de getsockopt"
 
 
+def test_analyze_chains_not_applicable_for_non_elf_binaries():
+    # BUG real encontrado revisando un informe generado contra un .exe de Windows real
+    # (Ingrid.exe, PE32 x86 32-bit): analyze_chains() generaba (y con verify=True, intentaba
+    # VERIFICAR EN SANDBOX) cadenas puramente ELF/glibc -- "tcache dup -> free@GOT=system()",
+    # "execve syscall", strings '/bin/sh' -- para un binario donde nada de eso existe (PE no
+    # tiene GOT/PLT ni tcache; Windows no tiene glibc). Ademas de enganoso en el informe, cada
+    # intento de verificacion es una tanda de docker que nunca puede tener exito: tiempo tirado.
+    # Fix: _facts() ahora lee `bintype` (via 'ij'), y analyze_chains() corta ANTES de enumerar
+    # gadgets o construir ninguna cadena si el binario no es ELF.
+    from unittest.mock import patch
+    from binoracle.workflows import chainanalyzer
+
+    fake_facts = {"bintype": "pe", "arch": "x86_32", "canary": True, "pie": False, "nx": True,
+                  "win": None, "system": None, "binsh": None, "rip_offset": 100}
+    with patch.object(chainanalyzer, "_facts", return_value=fake_facts):
+        an = chainanalyzer.analyze_chains("samples/bin/ret2win", None, verify=True, lang="es")
+    assert an.applicable is False
+    assert an.chains == []
+    assert an.gadgets == []          # ni siquiera se enumeraron gadgets: corte antes de eso
+    assert "pe" in an.note.lower()
+
+    # un ELF real (bintype=elf, o no detectado -- None se trata como aplicable) SI debe seguir
+    # construyendo cadenas con normalidad: no se ha cambiado el comportamiento para el caso normal.
+    an_elf = chainanalyzer.analyze_chains("samples/bin/ret2win", None, verify=False, lang="es")
+    assert an_elf.applicable is True
+    assert an_elf.chains, "un ELF real no deberia perder sus cadenas por este cambio"
+
+
+def test_pe_capability_map_classifies_imports_by_category():
+    # Fase 2 de una auditoria PE (pedida explicitamente): clasificar el binario por lo que PUEDE
+    # hacer (red/proceso/privilegios/cripto/registro/ficheros) a partir de sus imports, antes de
+    # leer ninguna funcion.
+    from binoracle.report.html import _pe_capability_map, _capability_html
+
+    class _FakeTriage:
+        sections = [("Imports", "radare2: ii",
+                     "nth vaddr      bind type lib            name\n"
+                     "----------------------------------------------\n"
+                     "1   0x00abe1f4 NONE FUNC KERNEL32.dll   CreateProcessA\n"
+                     "2   0x00abe1f8 NONE FUNC WININET.dll    InternetOpenA\n"
+                     "3   0x00abe1fc NONE FUNC ADVAPI32.dll   RegCreateKeyExA\n"
+                     "4   0x00abe200 NONE FUNC ADVAPI32.dll   AdjustTokenPrivileges\n"
+                     "5   0x00abe204 NONE FUNC ADVAPI32.dll   CryptAcquireContextA\n")]
+
+    cm = _pe_capability_map(_FakeTriage())
+    assert cm["red"] == ["InternetOpenA"]
+    assert "CreateProcessA" in cm["proceso"]
+    assert cm["privilegios"] == ["AdjustTokenPrivileges"]
+    assert cm["registro"] == ["RegCreateKeyExA"]
+    assert cm["cripto"] == ["CryptAcquireContextA"]
+    html = _capability_html(cm, "es")
+    assert "InternetOpenA" in html and "AdjustTokenPrivileges" in html
+
+    # sin imports reconocidos (o sin seccion de Imports): no debe reventar, solo no clasificar nada
+    class _EmptyTriage:
+        sections = [("Imports", "radare2: ii", "(no imports)")]
+    assert _pe_capability_map(_EmptyTriage()) == {}
+    assert _capability_html({}, "es") == ""
+
+
+def test_pe_dll_characteristics_decodes_mitigation_bits():
+    # ASLR/DEP/CFG de Windows viven en IMAGE_OPTIONAL_HEADER.DllCharacteristics, no en ningun
+    # campo de checksec -- hay que decodificar los bits IMAGE_DLLCHARACTERISTICS_* a mano.
+    from unittest.mock import patch
+    from binoracle.report.html import _pe_dll_characteristics
+
+    class _FakeR2:
+        def __init__(self, header_text):
+            self.header_text = header_text
+        def cmd(self, c):
+            if c == "iHj":
+                import json
+                return json.dumps({"header": self.header_text})
+            return ""
+
+    # DYNAMIC_BASE (0x40) + NX_COMPAT (0x100) + GUARD_CF (0x4000) = 0x4140: los 3 activos
+    r2 = _FakeR2("IMAGE_OPTIONAL_HEADERS\n  DllCharacteristics : 0x4140\n")
+    with patch("binoracle.oracles.r2session.get", return_value=r2):
+        pe = _pe_dll_characteristics("/nonexistent")
+    assert pe == {"ASLR": True, "DEP": True, "CFG": True}
+
+    # solo TERMINAL_SERVER_AWARE (0x8000): ninguna de las 3 mitigaciones activa
+    r2b = _FakeR2("IMAGE_OPTIONAL_HEADERS\n  DllCharacteristics : 0x8000\n")
+    with patch("binoracle.oracles.r2session.get", return_value=r2b):
+        pe_off = _pe_dll_characteristics("/nonexistent")
+    assert pe_off == {"ASLR": False, "DEP": False, "CFG": False}
+
+
+def test_pe_packing_check_flags_high_entropy_and_known_packer_sections():
+    # Fase 0: si el binario esta empaquetado, el resto del analisis estatico ve el stub del
+    # packer, no el programa real -- hay que avisar ANTES que de cualquier otra cosa. Umbral
+    # empirico de entropia ~7.0 (comprimido/cifrado), mas nombres de seccion de packers conocidos.
+    from unittest.mock import patch
+    from binoracle.report.html import _pe_packing_check, _packing_warning_html
+    import json
+
+    class _FakeR2:
+        def __init__(self, secs): self.secs = secs
+        def cmd(self, c):
+            return json.dumps(self.secs) if c == "iSj entropy" else ""
+
+    # seccion .text con entropia normal (codigo) + UPX0 vacia (tipico de UPX) -> ambos indicios
+    secs = [{"name": ".text", "entropy": "4.06"}, {"name": "UPX0", "entropy": "0.01"},
+            {"name": "UPX1", "entropy": "7.85"}]
+    with patch("binoracle.oracles.r2session.get", return_value=_FakeR2(secs)):
+        pk = _pe_packing_check("/nonexistent")
+    assert ("UPX0", "UPX") in pk["packer_sections"]
+    assert ("UPX1", "UPX") in pk["packer_sections"]
+    assert any(name == "UPX1" for name, _ent in pk["high_entropy"])
+    html = _packing_warning_html(pk, "es")
+    assert "UPX" in html
+
+    # binario normal, sin packer ni entropia alta: no debe generar ningun aviso
+    secs_clean = [{"name": ".text", "entropy": "4.06"}, {"name": ".rsrc", "entropy": "2.30"}]
+    with patch("binoracle.oracles.r2session.get", return_value=_FakeR2(secs_clean)):
+        pk_clean = _pe_packing_check("/nonexistent")
+    assert pk_clean == {}
+    assert _packing_warning_html(pk_clean, "es") == ""
+
+
 def test_rop_binsh_search_uses_real_null_byte():
     # Regresion: build_rop_chain buscaba b"/bin/sh\\x00" (doble barra invertida en el fuente ->
     # los 4 caracteres LITERALES '\','x','0','0', NO un byte nulo) en la libc proporcionada para
