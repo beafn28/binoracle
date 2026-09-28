@@ -486,8 +486,8 @@ def _packing_warning_html(pk: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#1a0e0e;border-color:#e5484d">'
                 f'<span class="proof-ok" style="color:#e5484d">&#9888;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1391,8 +1391,8 @@ def _elf_rpath_hijack_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
                 f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1454,8 +1454,8 @@ def _elf_debug_path_leak_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#0c1420;border-color:#5b8def">'
                 f'<span class="proof-ok" style="color:#5b8def">&#9432;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1529,8 +1529,8 @@ def _elf_capabilities_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#12141a;border-color:#8b95a1">'
                 f'<span class="proof-ok" style="color:#8b95a1">&#9432;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1689,8 +1689,8 @@ def _dll_hijack_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
                 f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1740,8 +1740,8 @@ def _pdb_leak_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#0c1420;border-color:#5b8def">'
                 f'<span class="proof-ok" style="color:#5b8def">&#9432;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1782,7 +1782,7 @@ def _rich_header_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#12141a;border-color:#8b95a1">'
                 f'<span class="proof-ok" style="color:#8b95a1">&#9432;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}</div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}</div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1842,8 +1842,8 @@ def _sibling_dll_signing_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
                 f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 
@@ -1897,8 +1897,8 @@ def _sandbox_flag_html(res: dict, lang: str = "es") -> str:
                 f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
                 f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
                 f'<span class="proof-t">{_esc(title)}</span></div>'
-                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+                f'<div style="padding:10px 13px;color:#dbe4ec;font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0;color:#8b95a1">{_esc(note)}</p></div></div>')
     return _lg(block(True), block(False))
 
 

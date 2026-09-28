@@ -1630,6 +1630,38 @@ def test_methodology_html_documents_every_phase_honestly():
     assert "sin hallazgos que mapear" in html_empty
 
 
+def test_dark_proof_boxes_never_use_theme_dependent_text_color():
+    # Bug real encontrado revisando el informe de Ingrid.exe en el navegador: el texto de estas
+    # cajas (fondo SIEMPRE oscuro, #0b0e12-como, independiente del tema claro/oscuro de la pagina)
+    # usaba color:var(--fg)/class="mut" sin override -- ambos son variables DEPENDIENTES DEL TEMA
+    # (--fg es casi negro #1a2027 en tema claro, el default), asi que el texto salia casi invisible
+    # (texto casi negro sobre fondo casi negro). Estas cajas deben usar SIEMPRE un color claro
+    # hardcodeado (igual que .proof-t/.proof-ok/.evpre ya hacian antes de esta sesion), nunca
+    # var(--fg) ni class="mut" sin override de color inline.
+    from binoracle.report.html import (
+        _packing_warning_html, _dll_hijack_html, _pdb_leak_html, _rich_header_html,
+        _sibling_dll_signing_html, _sandbox_flag_html, _elf_rpath_hijack_html,
+        _elf_debug_path_leak_html, _elf_capabilities_html)
+
+    checks = [
+        _packing_warning_html({"packer_sections": [("UPX0", "UPX")]}, "es"),
+        _dll_hijack_html({"dlls": ["version.dll"]}, "es"),
+        _pdb_leak_html({"pdb_path": "C:\\build\\x.pdb"}, "es"),
+        _rich_header_html({"present": True, "entries": 5}, "es"),
+        _sibling_dll_signing_html({"unsigned_dlls": ["x.dll"], "total": 1}, "es"),
+        _sandbox_flag_html({"found": True, "electron": True}, "es"),
+        _elf_rpath_hijack_html({"entries": [("DT_RUNPATH", "./lib", "relative")]}, "es"),
+        _elf_debug_path_leak_html({"comp_dir": "/home/build", "name": "main.c"}, "es"),
+        _elf_capabilities_html({"aware_apis": ["prctl"]}, "es"),
+    ]
+    for html in checks:
+        assert html, "la caja deberia generar contenido para este input de prueba"
+        assert "color:var(--fg)" not in html, "texto casi invisible: fondo oscuro fijo + color de tema"
+        # cualquier class="mut" dentro de estas cajas debe llevar SIEMPRE un color inline explicito
+        for m in __import__("re").finditer(r'class="mut"[^>]*', html):
+            assert "color:" in m.group(0), f"class=mut sin override de color en caja oscura: {m.group(0)}"
+
+
 def test_elf_capability_map_classifies_libc_imports_by_category():
     # Equivalente ELF del mapa de capacidades de PE (Fase 2 de la metodologia, aplicada a Linux):
     # clasifica los imports de libc/libcrypto/libpq/etc por categoria. read/write se excluyen a
