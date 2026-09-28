@@ -90,8 +90,49 @@ def _mask(s: str, keep: int = 4) -> str:
     return s[:keep] + "***" + s[-keep:]
 
 
+# columna 3 (vaddr) de la tabla de r2 'izz': "nth paddr vaddr len size section type string"
+_IZZ_LINE = re.compile(r"^\s*\d+\s+0x[0-9a-fA-F]+\s+(0x[0-9a-fA-F]+)")
+
+
+def _line_vaddr(text: str, pos: int):
+    """Vaddr (columna 3 de la tabla `izz`) de la linea de `text` que contiene la posicion `pos`.
+    None si la linea no tiene el formato de tabla esperado (p.ej. cabecera)."""
+    line_start = text.rfind("\n", 0, pos) + 1
+    line_end = text.find("\n", pos)
+    line = text[line_start:(line_end if line_end != -1 else len(text))]
+    m = _IZZ_LINE.match(line)
+    return m.group(1) if m else None
+
+
+def _used_in(reg: ToolRegistry, vaddr) -> List[str]:
+    """Funciones que referencian esta direccion (r2 axt: cross-references TO). Grounded: solo
+    reporta lo que r2 realmente encuentra, nunca inventa un 'usado en' generico. Vacio si no hay
+    vaddr, no hay xrefs (string sin referenciar directamente -- p.ej. tabla de reubicacion,
+    simbolos stripped) o la herramienta no esta disponible."""
+    if not vaddr:
+        return []
+    xt = reg.get("r2_xrefs")
+    if not xt:
+        return []
+    try:
+        res = xt.run(target=vaddr)
+    except Exception:
+        return []
+    if not res.ok:
+        return []
+    fns = []
+    for line in (res.data or "").splitlines():
+        parts = line.split()
+        if parts and parts[0] and parts[0] not in ("(no", "no"):
+            fns.append(parts[0])
+    return sorted(set(fns))[:5]
+
+
 def scan_secrets(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[Finding]:
-    """Devuelve hallazgos por credenciales/secretos hallados en las strings del binario."""
+    """Devuelve hallazgos por credenciales/secretos hallados en las strings del binario. Para cada
+    coincidencia, ademas de la string, se busca via r2 (axt sobre el vaddr de esa linea de la
+    tabla `izz`) que FUNCION la referencia -- location deja de ser el generico fijo "seccion de
+    datos" y pasa a decir donde se usa realmente, cuando r2 puede determinarlo."""
     st = reg.get("r2_strings")
     if not st:
         return []
@@ -113,23 +154,41 @@ def scan_secrets(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[
                 continue
             seen.add(key)
             snippet = frag if len(frag) < 120 else frag[:117] + "..."
+            vaddr = _line_vaddr(text, m.start())
+            used_in = _used_in(reg, vaddr)
+            if used_in:
+                location = (f"usado en: {', '.join(used_in)}" if lang == "es"
+                           else f"used in: {', '.join(used_in)}")
+                usage_note = ((f" Referenciada desde {', '.join(used_in)} (r2 axt): esta es la "
+                              f"funcion que lee/compara este valor, no una suposicion.") if lang == "es"
+                              else (f" Referenced from {', '.join(used_in)} (r2 axt): this is the "
+                                    f"function that reads/compares this value, not a guess."))
+            else:
+                location = ("seccion de datos (.rodata/.data), sin xref directo encontrado" if lang == "es"
+                           else "data section (.rodata/.data), no direct xref found")
+                usage_note = ((" No se encontro una funcion que referencie esta direccion "
+                              "directamente (r2 axt): puede estar en una tabla, referenciada "
+                              "indirectamente, o el binario tiene simbolos eliminados.") if lang == "es"
+                              else (" No function directly referencing this address was found "
+                                    "(r2 axt): it may be in a table, referenced indirectly, or the "
+                                    "binary has stripped symbols."))
             # enmascara el valor sensible en el titulo, pero deja la string cruda en la evidencia.
             findings.append(Finding(
                 title=(f"Posible {name} hardcodeada" if lang == "es" else f"Possible hardcoded {name}"),
                 severity=sev,
                 verdict="grounded",     # string presente; que sea explotable lo confirma el analista
-                evidence=f"[radare2: izz]\n{snippet}",
-                location="seccion de datos (.rodata/.data)",
+                evidence=f"[radare2: izz + axt]\n{snippet}",
+                location=location,
                 rationale=(des_es + " Extraido de las strings del binario; confirma si es un valor "
-                           "real y si esta en uso.") if lang == "es"
+                           "real y si esta en uso." + usage_note) if lang == "es"
                           else (des_en + " Extracted from the binary strings; confirm it is a real "
-                                "value and whether it is used."),
+                                "value and whether it is used." + usage_note),
                 recommendation=("No embebas secretos en el binario: usa variables de entorno, un "
                                 "gestor de secretos o KMS, y rota el secreto expuesto.") if lang == "es"
                                else ("Do not embed secrets in the binary: use environment variables, "
                                      "a secrets manager or KMS, and rotate the exposed secret."),
                 rationale_en=(des_en + " Extracted from the binary strings; confirm it is a real value "
-                              "and whether it is used."),
+                              "and whether it is used." + usage_note),
                 recommendation_en=("Do not embed secrets in the binary: use environment variables, a "
                                    "secrets manager or KMS, and rotate the exposed secret."),
             ))

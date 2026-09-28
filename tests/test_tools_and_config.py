@@ -1630,6 +1630,296 @@ def test_methodology_html_documents_every_phase_honestly():
     assert "sin hallazgos que mapear" in html_empty
 
 
+def _mock_tool(ok=True, data="", meta=None):
+    from unittest.mock import MagicMock
+    t = MagicMock()
+    t.run.return_value = MagicMock(ok=ok, data=data, meta=meta or {})
+    return t
+
+
+def test_secrets_scan_finds_the_real_using_function_via_xref():
+    # Limitacion real senalada por el usuario: secrets.py devolvia SIEMPRE la misma location fija
+    # ("seccion de datos"), sin decir en que funcion se usa la credencial. Ahora usa r2 axt sobre
+    # el vaddr de la string (columna 3 de la tabla `izz`) para decir la funcion REAL que la
+    # referencia, cuando r2 puede determinarla -- y es honesto (no inventa) cuando no puede.
+    from unittest.mock import MagicMock
+    from binoracle.workflows.secrets import scan_secrets
+
+    def make_reg(xref_data):
+        reg = MagicMock()
+        strings_tool = _mock_tool(data="0   0x00000318 0x00400318 27  28   .rodata ascii "
+                                        "password=SuperSecret123\n")
+        xrefs_tool = _mock_tool(data=xref_data)
+        reg.get.side_effect = lambda name: {"r2_strings": strings_tool, "r2_xrefs": xrefs_tool}.get(name)
+        return reg
+
+    # con xref real: location dice la funcion, no el generico fijo de antes
+    fs = scan_secrets(make_reg("sym.check_login 0x401177 [STRN:r--] mov edi, str.password"), "fake", "es")
+    assert len(fs) == 1
+    assert fs[0].location == "usado en: sym.check_login"
+    assert "sym.check_login" in fs[0].rationale and "no una suposicion" in fs[0].rationale
+
+    # sin xref (r2 no encuentra referencia directa): fallback HONESTO, no inventa una funcion
+    fs2 = scan_secrets(make_reg("(no xrefs to 0x00400318)"), "fake", "es")
+    assert fs2[0].location == "seccion de datos (.rodata/.data), sin xref directo encontrado"
+
+
+def test_authcheck_recognizes_win32_comparison_apis_not_just_libc():
+    # Bug real encontrado probando con Ingrid.exe (PE real): _CMP solo tenia nombres libc/POSIX
+    # (strcmp, memcmp...) -- ningun binario Windows (que usa lstrcmpA/_stricmp/wcscmp, no strcmp)
+    # disparaba nunca este chequeo aunque el binario SI comparaba credenciales. Ademas, el chequeo
+    # de "sin hashing" tenia un bug preexistente: "evp_" nunca podia hacer match por membership
+    # EXACTA contra un import real como "evp_encryptinit" (necesitaba ser prefijo).
+    from unittest.mock import MagicMock, patch
+    from binoracle.workflows.authcheck import scan_auth
+
+    def make_reg(imports_line):
+        reg = MagicMock()
+        imports_tool = _mock_tool(data=imports_line)
+        strings_tool = _mock_tool(data="0 0x1 0x402000 20 21 .rodata ascii MASTER_PASSWORD_2024\n")
+        xrefs_tool = _mock_tool(data="(no xrefs to 0x402000)")
+        reg.get.side_effect = lambda name: {
+            "r2_imports": imports_tool, "r2_strings": strings_tool, "r2_xrefs": xrefs_tool,
+            "r2_disasm": None,
+        }.get(name)
+        return reg
+
+    # lstrcmpA (Win32) debe disparar el chequeo exactamente igual que strcmp (libc)
+    with patch("binoracle.workflows._binfacts.imported_names", return_value={"lstrcmpa"}):
+        fs = scan_auth(make_reg(""), "fake.exe", "es")
+    assert any("comparacion" in f.title.lower() for f in fs)
+    assert any("sin hashing" in f.title.lower() for f in fs)  # ninguna API de hash presente
+
+    # con una API de hash Win32 real presente (prefijo, no nombre exacto): no debe salir el aviso
+    # de "sin hashing" -- bug preexistente corregido (antes "evp_" nunca matcheaba nada)
+    with patch("binoracle.workflows._binfacts.imported_names",
+               return_value={"lstrcmpa", "cryptcreatehash"}):
+        fs2 = scan_auth(make_reg(""), "fake.exe", "es")
+    assert not any("sin hashing" in f.title.lower() for f in fs2)
+
+    # sin ninguna funcion de comparacion (ni libc ni Win32): no hay nada que reportar
+    with patch("binoracle.workflows._binfacts.imported_names", return_value={"printf"}):
+        assert scan_auth(make_reg(""), "fake.exe", "es") == []
+
+
+def test_authcheck_xref_confirmation_distinguishes_verified_link_from_correlation():
+    # La mejora principal pedida por el usuario: no basta con que strcmp Y una string sospechosa
+    # existan en el binario (correlacion) -- hay que confirmar que la MISMA funcion que hace la
+    # comparacion referencia esa credencial concreta (xref real, r2 axt + pdf).
+    from unittest.mock import MagicMock, patch
+    from binoracle.workflows.authcheck import scan_auth, get_confirmed_credentials
+
+    def make_reg(disasm_body):
+        reg = MagicMock()
+        imports_tool = _mock_tool(data="1 0x1 GLOBAL FUNC strcmp\n")
+        strings_tool = _mock_tool(data="0 0x1 0x402000 20 21 .rodata ascii MASTER_PASSWORD_2024\n")
+        xrefs_tool = _mock_tool(data="sym.check_login 0x401177 [STRN:r--] mov edi, str.master")
+        disasm_tool = _mock_tool(data=disasm_body)
+        reg.get.side_effect = lambda name: {
+            "r2_imports": imports_tool, "r2_strings": strings_tool, "r2_xrefs": xrefs_tool,
+            "r2_disasm": disasm_tool,
+        }.get(name)
+        return reg
+
+    with patch("binoracle.workflows._binfacts.imported_names", return_value={"strcmp"}):
+        # sym.check_login (que referencia la credencial) TAMBIEN llama a strcmp -> confirmado
+        reg_confirmed = make_reg("sym.check_login: push rbp; call sym.imp.strcmp; test eax, eax")
+        confirmed = get_confirmed_credentials(reg_confirmed)
+        assert confirmed and confirmed[0][1] == "sym.check_login" and confirmed[0][2] == "strcmp"
+        fs = scan_auth(reg_confirmed, "fake", "es")
+        assert "xref" in fs[0].title.lower()
+        assert "CONFIRMADO" in fs[0].rationale
+
+        # sym.check_login referencia la credencial pero NO llama a ninguna _CMP -> sin confirmar
+        reg_unconfirmed = make_reg("sym.check_login: push rbp; call sym.imp.printf; ret")
+        assert get_confirmed_credentials(reg_unconfirmed) == []
+        fs2 = scan_auth(reg_unconfirmed, "fake", "es")
+        assert "xref" not in fs2[0].title.lower()
+        assert "NO confirmado por xref" in fs2[0].rationale
+
+
+def test_llm_deep_review_parses_new_findings_as_unverified_hypotheses():
+    # Peticion explicita del usuario: una revision LLM "sin fronteras" sobre TODO el contexto
+    # grounded (mitigaciones, capacidades, hallazgos ya encontrados, codigo decompilado), buscando
+    # lo que los scanners ESTATICOS no cubren. Honesto sobre su naturaleza: siempre verdict=
+    # "unverified" (hipotesis del modelo, no hecho probado por un oraculo determinista), nunca
+    # "grounded"/"verified". Si el modelo no encuentra nada nuevo (responde NADA/NOTHING), no debe
+    # inventar un hallazgo solo por rellenar.
+    from unittest.mock import MagicMock
+    from binoracle.workflows.llm_review import llm_deep_review
+    from binoracle.store.session import Finding
+
+    class _FakeDecomp:
+        func = "sym.check_license"
+        annotated = "if (time(0) > 1700000000) { fail(); }"
+        raw = ""
+
+    existing = [Finding(title="Posible credencial", severity="high", verdict="grounded",
+                        evidence="x", location="y")]
+
+    llm = MagicMock()
+    llm.available.return_value = True
+    llm.chat.return_value = (
+        "### Verificacion de licencia via comparacion de fecha del sistema\n"
+        "Severidad: medium\n"
+        "El codigo decompilado compara la fecha del sistema contra una constante fija sin validar "
+        "el reloj, lo que permite eludir la verificacion retrocediendo el reloj del sistema.")
+    fs = llm_deep_review(llm, "fake.exe", {"Canary": True}, {"red": ["InternetOpenA"]},
+                         existing, [_FakeDecomp()], lang="es")
+    assert len(fs) == 1
+    assert fs[0].verdict == "unverified"  # nunca grounded/verified: es una hipotesis del modelo
+    assert fs[0].severity == "medium"
+    assert fs[0].title.startswith("[Revision LLM]")
+    assert "reloj" in fs[0].rationale
+
+    # el modelo dice que no hay nada nuevo -> no se inventa un hallazgo de relleno
+    llm_nothing = MagicMock()
+    llm_nothing.available.return_value = True
+    llm_nothing.chat.return_value = "NADA"
+    assert llm_deep_review(llm_nothing, "fake.exe", {}, {}, existing, [_FakeDecomp()], lang="es") == []
+
+    # sin modelo disponible: no llama al chat, degrada con gracia
+    llm_off = MagicMock()
+    llm_off.available.return_value = False
+    assert llm_deep_review(llm_off, "fake.exe", {"x": 1}, {}, existing, None, lang="es") == []
+    assert not llm_off.chat.called
+
+    # sin NADA de contexto (sin mitigaciones/capacidades/hallazgos/decompilado): no llama al modelo,
+    # no tiene sentido pedirle que revise un contexto vacio
+    llm_empty = MagicMock()
+    llm_empty.available.return_value = True
+    assert llm_deep_review(llm_empty, "fake.exe", {}, {}, [], None, lang="es") == []
+    assert not llm_empty.chat.called
+
+
+def test_authbypass_detects_real_exit_code_difference_between_credential_and_control(tmp_path):
+    # authbypass.py: ejecuta el binario en sandbox con la credencial candidata vs. un control
+    # claramente incorrecto, y solo afirma "differs" si el codigo de salida real difiere --
+    # nunca interpreta el TEXTO de salida (mas propenso a variar por motivos no relacionados).
+    from unittest.mock import patch, MagicMock
+    from binoracle.workflows.authbypass import try_credential_bypass
+
+    fake_binary = tmp_path / "target"
+    fake_binary.write_bytes(b"\x7fELF")
+
+    def fake_run(cmd, **kwargs):
+        # el ultimo argumento de 'bash -c <script>' contiene el contenido de stdin via el volumen;
+        # aqui simulamos leyendo el fichero .in que el codigo real escribe antes de invocar docker.
+        import os
+        # localizar el directorio de trabajo montado (-v <work>:/w)
+        work = None
+        for i, a in enumerate(cmd):
+            if a == "-v":
+                work = cmd[i + 1].split(":")[0]
+        stdin_bytes = open(os.path.join(work, ".in"), "rb").read()
+        if b"MASTER_PASSWORD_2024" in stdin_bytes:
+            return MagicMock(stdout="__BO_EXIT__0__\nACCESS GRANTED", stderr="")
+        return MagicMock(stdout="__BO_EXIT__1__\nACCESS DENIED", stderr="")
+
+    with patch("shutil.which", return_value="/usr/bin/docker"), \
+         patch("subprocess.run") as mock_run:
+        # primera llamada: "docker image inspect" (comprobacion de disponibilidad) -> ok
+        # siguientes: las dos ejecuciones reales -> fake_run segun el contenido de stdin
+        calls = {"n": 0}
+        def side_effect(cmd, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return MagicMock(returncode=0)
+            return fake_run(cmd, **kwargs)
+        mock_run.side_effect = side_effect
+        r = try_credential_bypass(str(fake_binary), "MASTER_PASSWORD_2024")
+
+    assert r.ran is True
+    assert r.candidate_exit == 0 and r.control_exit == 1
+    assert r.differs is True
+    assert "ACCESS GRANTED" in r.candidate_out
+
+    # docker no disponible: degrada con gracia, no lanza excepcion
+    with patch("shutil.which", return_value=None):
+        r2 = try_credential_bypass(str(fake_binary), "x")
+    assert r2.ran is False and "docker no disponible" in r2.note
+
+
+def test_cfg_blocks_show_inline_notes_and_highlight_verified_addresses():
+    # Peticion del usuario viendo el grafo de flujo: cada bloque debe describir bien lo que hace
+    # (no solo direccion+asm crudo, hay que pulsarlo para ver la nota), y las partes que forman
+    # parte de una cadena VERIFICADA (probada por ejecucion real en sandbox) deben quedar mas
+    # detalladas y resaltadas que un bloque generico razonado solo estaticamente.
+    from binoracle.report.html import _cfg_html
+    from binoracle.workflows.cfg import CFG
+
+    long_note = ("Este bloque LLAMA a gets (funcion sensible): aqui entra o se procesa la entrada, "
+                 "un punto clave de la superficie de ataque.")
+    cfg = CFG(func="main", nodes=[
+        {"id": "b0", "addr": "0x1000", "insns": [{"addr": "0x1000", "txt": "call gets"}],
+         "term": "call gets", "note": long_note, "state": ""},
+        {"id": "b1", "addr": "0x1020", "insns": [{"addr": "0x1020", "txt": "ret"}],
+         "term": "ret", "note": "Fin del bloque: la funcion retorna.", "state": ""},
+    ], edges=[{"src": "b0", "dst": "b1", "kind": "jump"}])
+
+    class _Verified:
+        verdict = "verified"
+        location = "win=0x1000"
+        evidence = ""
+
+    class _Grounded:
+        verdict = "grounded"
+        location = "0x1020"
+        evidence = ""
+
+    html = _cfg_html(cfg, "es", findings=[_Verified(), _Grounded()])
+    # b0 coincide con el hallazgo VERIFICADO -> resaltado + nota COMPLETA sin truncar
+    assert 'class="cfgnode verified"' in html
+    assert "VERIFIED" in html
+    assert "un punto clave de la superficie de ataque." in html  # nota completa, no cortada con "..."
+    # b1 (grounded, no verificado) NO se resalta aunque su direccion tambien aparezca en un hallazgo
+    assert html.count('class="cfgnode verified"') == 1
+
+    # sin findings verificados: ningun bloque se resalta, todas las notas van truncadas a 2 lineas
+    html_none = _cfg_html(cfg, "es", findings=[_Grounded()])
+    assert "verified" not in html_none.replace("cfginfo", "")  # sin contar el id del panel lateral
+    assert "..." in html_none  # la nota larga de b0 se trunca sin resaltado
+
+
+def test_effective_severity_matches_official_cvss_not_the_scanners_fixed_label():
+    # Bug real reportado por el usuario viendo el informe: la etiqueta grande HIGH/MEDIUM (severity
+    # fijo que asigna cada scanner a mano) se contradecia con el badge CVSS 4.0 del mismo hallazgo
+    # -- "HIGH" junto a "CVSS 4.0 5.5" (5.5 es Medium en la escala oficial 0.1-3.9 Low / 4.0-6.9
+    # Medium / 7.0-8.9 High / 9.0-10 Critical), y "MEDIUM" junto a "CVSS 4.0 2.9" (Low). La
+    # severidad EFECTIVA (usada para el badge, el recuento y el orden) debe ser la OFICIAL que
+    # calcula la libreria cvss a partir del score, no el valor fijo del scanner, para no mostrar
+    # dos afirmaciones que se contradicen.
+    from binoracle.report.html import _effective_severity
+
+    class _Secret:
+        title = "Posible credencial en asignacion hardcodeada"
+        location = ""
+        evidence = ""
+        verdict = "grounded"
+        severity = "high"  # el scanner secrets.py fija esto a mano
+
+    class _WeakCrypto:
+        title = "Criptografia debil o rota (MD5)"
+        location = ""
+        evidence = ""
+        verdict = "grounded"
+        severity = "medium"
+
+    assert _effective_severity(_Secret()) == "medium"
+    assert _effective_severity(_WeakCrypto()) == "low"
+
+    class _Unclassified:
+        # ninguna palabra clave de _RULES en cvss.py -> cvss_for() devuelve None -> se mantiene
+        # el severity del scanner tal cual (no hay score oficial con el que contrastar)
+        title = "Comportamiento anomalo sin clasificar"
+        location = ""
+        evidence = ""
+        verdict = "grounded"
+        severity = "medium"
+
+    assert _effective_severity(_Unclassified()) == "medium"
+
+
 def test_dark_proof_boxes_never_use_theme_dependent_text_color():
     # Bug real encontrado revisando el informe de Ingrid.exe en el navegador: el texto de estas
     # cajas (fondo SIEMPRE oscuro, #0b0e12-como, independiente del tema claro/oscuro de la pagina)
