@@ -1565,6 +1565,100 @@ def test_pe_pdb_leak_extracts_debug_directory_path():
     assert _pdb_leak_html({}, "es") == ""
 
 
+def test_pe_rich_header_reports_presence_and_entry_count():
+    # Gap menor de la Fase 0 ("buscar... el Rich Header... esto determina si vamos a
+    # encontrarnos con convenciones MSVC, GCC, Delphi, .NET"): el Rich Header solo lo escribe el
+    # linker de Microsoft, asi que su presencia confirma toolchain MSVC. No se decodifica la
+    # tabla de product-id -> version de VS (no oficial, propensa a error); solo presencia+conteo.
+    from unittest.mock import patch, MagicMock
+    from binoracle.report.html import _pe_rich_header, _rich_header_html
+
+    fake_pe = MagicMock()
+    # 3 pares (compid, count) = 3 entradas
+    fake_pe.parse_rich_header.return_value = {
+        "values": [9981587, 2, 10394907, 60, 0, 2],
+        "key": b"1234",
+    }
+    with patch("pefile.PE", return_value=fake_pe):
+        res = _pe_rich_header("/nonexistent.exe")
+    assert res == {"present": True, "entries": 3}
+    html = _rich_header_html(res, "es")
+    assert "MSVC" in html and "3" in html
+
+    # sin Rich Header (MinGW/GCC/Delphi/.NET, o eliminado por el linker): nada que informar
+    fake_pe_none = MagicMock()
+    fake_pe_none.parse_rich_header.return_value = None
+    with patch("pefile.PE", return_value=fake_pe_none):
+        assert _pe_rich_header("/nonexistent.exe") == {}
+    assert _rich_header_html({}, "es") == ""
+
+
+def test_pe_sibling_dll_signing_flags_dlls_without_authenticode(tmp_path):
+    # Checklist base ("¿Y sus DLLs?" -- la firma no solo se comprueba en el EXE principal): DLLs
+    # en el mismo directorio que el ejecutable sin tabla de certificados Authenticode.
+    from unittest.mock import patch, MagicMock
+    import os
+    import pefile
+    from binoracle.report.html import _pe_sibling_dll_signing, _sibling_dll_signing_html
+
+    exe = tmp_path / "app.exe"
+    exe.write_bytes(b"MZ")
+    (tmp_path / "signed.dll").write_bytes(b"MZ")
+    (tmp_path / "unsigned.dll").write_bytes(b"MZ")
+
+    sec_idx = pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]
+
+    def _fake_pe(path, fast_load=True):
+        pe = MagicMock()
+        dd = [MagicMock() for _ in range(20)]
+        for d in dd:
+            d.VirtualAddress = 0
+            d.Size = 0
+        # ojo: "unsigned.dll" contiene "signed.dll" como substring -> comparar el basename exacto
+        if os.path.basename(str(path)) == "signed.dll":
+            dd[sec_idx].VirtualAddress = 0x1000
+            dd[sec_idx].Size = 0x200
+        pe.OPTIONAL_HEADER.DATA_DIRECTORY = dd
+        return pe
+
+    with patch("pefile.PE", side_effect=_fake_pe):
+        res = _pe_sibling_dll_signing(str(exe))
+    assert res == {"unsigned_dlls": ["unsigned.dll"], "total": 2}
+    html = _sibling_dll_signing_html(res, "es")
+    assert "unsigned.dll" in html and "signed.dll" not in html.split("Authenticode")[1].split("<p")[0]
+
+    # sin DLLs junto al ejecutable: nada que informar
+    only_exe = tmp_path / "solo"
+    only_exe.mkdir()
+    (only_exe / "app.exe").write_bytes(b"MZ")
+    assert _pe_sibling_dll_signing(str(only_exe / "app.exe")) == {}
+    assert _sibling_dll_signing_html({}, "es") == ""
+
+
+def test_pe_sandbox_flag_check_detects_no_sandbox_string():
+    # Checklist base ("ejecucion sin sandboxing en componentes de terceros... se identifica al
+    # detectar '--no-sandbox' en el comando ejecutado"): busca el literal en las strings (izz).
+    from unittest.mock import patch
+    from binoracle.report.html import _pe_sandbox_flag_check, _sandbox_flag_html
+
+    class _FakeR2:
+        def __init__(self, txt): self.txt = txt
+        def cmd(self, c):
+            return self.txt if c == "izz" else ""
+
+    r2_electron = _FakeR2("0x1000 20 20 --no-sandbox\n0x1010 12 12 libcef.dll\n")
+    with patch("binoracle.oracles.r2session.get", return_value=r2_electron):
+        res = _pe_sandbox_flag_check("/nonexistent")
+    assert res == {"found": True, "electron": True}
+    html = _sandbox_flag_html(res, "es")
+    assert "no-sandbox" in html and "Electron" in html
+
+    r2_no_flag = _FakeR2("0x1000 10 10 hello world\n")
+    with patch("binoracle.oracles.r2session.get", return_value=r2_no_flag):
+        assert _pe_sandbox_flag_check("/nonexistent") == {}
+    assert _sandbox_flag_html({}, "es") == ""
+
+
 def test_rop_binsh_search_uses_real_null_byte():
     # Regresion: build_rop_chain buscaba b"/bin/sh\\x00" (doble barra invertida en el fuente ->
     # los 4 caracteres LITERALES '\','x','0','0', NO un byte nulo) en la libc proporcionada para
