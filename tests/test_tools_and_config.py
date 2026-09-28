@@ -764,6 +764,89 @@ def test_history_delete_removes_scan():
     assert delete_binary(db, "deadbeef")["ok"] is False
 
 
+def test_session_store_save_and_load_report_roundtrip():
+    # save_report()/load_report(): el informe COMPLETO (no solo los findings sueltos) que
+    # renderDash() consume, guardado tal cual para poder reabrirlo desde el historial sin
+    # re-analizar. Un informe nuevo del mismo 'kind' REEMPLAZA al anterior (no se acumulan).
+    import os, tempfile
+    from binoracle.store.session import SessionStore
+    d = tempfile.mkdtemp()
+    b = os.path.join(d, "target.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+    db = os.path.join(d, "sess.db")
+    s = SessionStore(db, b)
+    assert s.load_report("dashboard") is None
+    data1 = {"arch": "x86", "bits": "64", "findings": {"total": 1, "verified": 0, "by_sev": {}},
+             "items": [{"title": "primero"}]}
+    s.save_report("dashboard", data1)
+    assert s.load_report("dashboard") == data1
+    data2 = {"arch": "x86", "bits": "64", "findings": {"total": 2, "verified": 1, "by_sev": {}},
+             "items": [{"title": "segundo"}]}
+    s.save_report("dashboard", data2)
+    loaded = s.load_report("dashboard")
+    assert loaded == data2  # reemplaza, no acumula
+    s.close()
+
+
+def test_delete_binary_also_removes_stored_report():
+    import os, tempfile
+    from binoracle.store.session import SessionStore, delete_binary
+    d = tempfile.mkdtemp()
+    b = os.path.join(d, "target.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+    db = os.path.join(d, "sess.db")
+    s = SessionStore(db, b)
+    s.save_report("dashboard", {"findings": {"total": 0, "verified": 0, "by_sev": {}}, "items": []})
+    bid = s.bin_id
+    s.close()
+    res = delete_binary(db, bid)
+    assert res["ok"] and res["deleted"].get("reports") == 1
+    s2 = SessionStore(db, b)
+    assert s2.load_report("dashboard") is None
+    s2.close()
+
+
+def test_history_click_loads_stored_report_without_rescanning(monkeypatch, tmp_path):
+    # El bug reportado: al hacer click en un binario del historial, la web volvia a
+    # RE-ESCANEARLO (dash() -> stream('dashboard'), pipeline completo: triage+hunt+verify+
+    # dynamic_trace) en vez de llevar al informe YA analizado. Ahora el frontend llama a
+    # 'dashboard_stored', que debe: (a) si hay un informe guardado, emitirlo TAL CUAL con un
+    # unico paso informativo y SIN disparar ninguna herramienta pesada; (b) si nunca se genero
+    # ninguno, caer al analisis en vivo (unico caso donde SI se re-escanea).
+    import os
+    import binoracle.web as web
+    from binoracle.store.session import SessionStore
+
+    class _FakeConfig:
+        def db_path(self):
+            return str(tmp_path / "sess.db")
+        lang = "es"
+
+    monkeypatch.setattr(web, "load_config", lambda: _FakeConfig())
+
+    b = str(tmp_path / "target.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+
+    stored = {"arch": "x86", "bits": "64", "format": "elf",
+              "mitigations": {"NX": True}, "findings": {"total": 3, "verified": 1, "by_sev": {}},
+              "items": [{"title": "cacheado"}], "sinks": [], "functions": 0, "sink_detail": ""}
+    s = SessionStore(_FakeConfig().db_path(), b)
+    s.save_report("dashboard", stored)
+    s.close()
+
+    events = []
+    web.run_streaming("dashboard_stored", b, False, lambda kind, data: events.append((kind, data)))
+    kinds = [k for k, _ in events]
+    assert kinds == ["step", "dashboard", "done"]
+    assert events[1][1] == stored
+    # nada de pasos de la tuberia pesada (serian visibles como mensajes de "step" adicionales)
+    steps = [d for k, d in events if k == "step"]
+    assert not any("hunt" in s.lower() or "sinks y vulnerabilidades" in s.lower() for s in steps)
+
+
 def test_web_history_delete_command():
     from binoracle.web import run_command
     r = run_command({"command": "history_delete", "options": {"bin_id": ""}})

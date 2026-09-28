@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS knowledge (
     content TEXT,
     created_at REAL
 );
+CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bin_id TEXT,
+    kind TEXT,
+    data TEXT,
+    created_at REAL
+);
 CREATE TABLE IF NOT EXISTS global_facts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     arch TEXT, bits TEXT, sink TEXT, mitig TEXT,
@@ -265,6 +272,31 @@ class SessionStore:
             n += 1
         return n
 
+    def save_report(self, kind: str, data: dict) -> None:
+        """Guarda el informe COMPLETO ya analizado (el dict que consume la vista, no solo los
+        hallazgos sueltos) para que volver a abrirlo desde el historial lo muestre tal cual fue
+        generado, sin re-analizar nada. Un solo informe guardado por (bin_id, kind): cada
+        analisis nuevo reemplaza al anterior."""
+        payload = json.dumps(data)
+        self._conn.execute("DELETE FROM reports WHERE bin_id=? AND kind=?", (self.bin_id, kind))
+        self._conn.execute(
+            "INSERT INTO reports(bin_id, kind, data, created_at) VALUES (?,?,?,?)",
+            (self.bin_id, kind, payload, time.time()),
+        )
+        self._conn.commit()
+
+    def load_report(self, kind: str) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT data FROM reports WHERE bin_id=? AND kind=? ORDER BY id DESC LIMIT 1",
+            (self.bin_id, kind),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+
     def close(self) -> None:
         self._conn.close()
 
@@ -282,7 +314,7 @@ def delete_binary(db_path, bin_id: str) -> dict:
         exists = conn.execute("SELECT 1 FROM binaries WHERE bin_id=? LIMIT 1", (bin_id,)).fetchone()
         if not exists:
             return {"ok": False, "error": "bin_id no encontrado"}
-        for table in ("facts", "findings", "annotations", "knowledge", "binaries"):
+        for table in ("facts", "findings", "annotations", "knowledge", "reports", "binaries"):
             try:
                 cur = conn.execute(f"DELETE FROM {table} WHERE bin_id=?", (bin_id,))
                 deleted[table] = cur.rowcount
