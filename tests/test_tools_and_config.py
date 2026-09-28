@@ -2069,3 +2069,16 @@ def test_binfacts_parses_import_names():
     assert has_network(reg) is True
     assert has_network(_mock_reg(imports="sym.imp.MD5_Init", strings="CURLOPT_SSL_VERIFYPEER=0")) is True
     assert has_network(_mock_reg(imports="sym.imp.printf", strings="hello")) is False
+
+
+def test_decompiled_func_has_ok_property():
+    # Regresion: la propiedad `ok` de DecompiledFunc estaba mal ubicada (pegada por error dentro
+    # del cuerpo de func_technical(), tras su return, como codigo muerto), asi que la dataclass
+    # nunca tenia el atributo. decompile_explain() y _decompile_vuln_funcs() acceden a `d.ok`
+    # incondicionalmente, asi que CUALQUIER decompilacion (via CLI o el informe web) lanzaba
+    # AttributeError, capturado en silencio y dejando el informe sin la seccion de "Decompilacion
+    # anotada" (detectado al regenerar el informe real de Ingrid.exe).
+    from binoracle.workflows.decompile import DecompiledFunc
+    assert DecompiledFunc(func="main", raw="int main(){}", engine="pdc").ok is True
+    assert DecompiledFunc(func="main", raw="   ", engine="pdc").ok is False
+    assert DecompiledFunc(func="main").ok is False

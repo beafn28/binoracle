@@ -24,6 +24,10 @@ class DecompiledFunc:
     crosscheck: str = ""     # nota deterministica de contraste entre motores (retroalimentacion)
     tech: dict = field(default_factory=dict)       # ficha tecnica grounded (firma/marco/locales)
 
+    @property
+    def ok(self) -> bool:
+        return bool(self.raw.strip())
+
 
 def func_technical(binary: str, func: str) -> dict:
     """Ficha tecnica GROUNDED de la funcion via r2 (afij/afvj): firma, tamano de marco, convencion,
@@ -59,10 +63,6 @@ def func_technical(binary: str, func: str) -> dict:
     return {"signature": sig, "frame": info.get("stackframe"), "cc": info.get("calltype"),
             "bits": bits, "ninstrs": info.get("ninstrs"), "nbbs": info.get("nbbs"),
             "locals": locs, "reg_args": av.get("reg", [])}
-
-    @property
-    def ok(self) -> bool:
-        return bool(self.raw.strip())
 
 
 def _best_decompile(binary: str, func: str) -> tuple[str, str]:
