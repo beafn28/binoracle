@@ -85,6 +85,11 @@ class ChainAnalysis:
     chains: List[ExploitChain] = field(default_factory=list)
     graph: dict = field(default_factory=dict)
     note: str = ""
+    # False solo cuando el binario NO es del formato al que aplica este analizador (ELF/glibc,
+    # Linux x86). Distinto de `ok`/chains vacio: un ELF sin gadgets tambien tiene chains=[], pero
+    # SI aplica (solo que no hay nada que construir); un PE de Windows nunca aplica, sea cual sea
+    # su superficie, porque tcache/GOT/execve/'/bin/sh' no existen ahi.
+    applicable: bool = True
 
     @property
     def ok(self) -> bool:
@@ -187,7 +192,7 @@ def _facts(binary: str, reg=None) -> dict:
     """Hechos del binario: mitigaciones, win(), system(), /bin/sh, offset de control de RIP.
     Lee con r2 directo (r2pipe). El parametro `reg` se acepta por consistencia de firma con el
     resto de workflows pero no se usa aqui."""
-    f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64",
+    f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64", "bintype": None,
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
          "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False}
@@ -202,6 +207,7 @@ def _facts(binary: str, reg=None) -> dict:
             f["pie"] = info.get("pic")
             f["nx"] = info.get("nx")
             f["arch"] = f"{info.get('arch','x86')}_{info.get('bits',64)}"
+            f["bintype"] = info.get("bintype")
             # limite de palabra (no letra ADYACENTE): sin el, "win" hacia match dentro de
             # "_unwind_resume" (el runtime de excepciones de C++/libgcc_s) -- confirmado con un
             # binario real que usa try/catch: se marcaba _Unwind_Resume como la funcion 'win()' del
@@ -455,10 +461,27 @@ def _mitig_breakpoints(f: dict, uses_fixed_addr: bool, lang: str) -> (List[str],
 
 def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es") -> ChainAnalysis:
     es = lang == "es"
+    L = (lambda a, b: a) if es else (lambda a, b: b)
     f = _facts(binary, reg)
+    # Todas las cadenas de este modulo son ELF/glibc/Linux x86: GOT/PLT, tcache, execve,
+    # '/bin/sh'... nada de eso existe en un PE (Windows) o Mach-O (macOS). Antes se generaban
+    # (y con verify=True, se intentaban VERIFICAR EN SANDBOX) igualmente para esos binarios,
+    # mostrando en el informe una cadena "tcache dup -> free@GOT=system()" o un script pwntools
+    # con 'context.update(os=linux)' para un .exe de Windows -- ademas de ser enganoso, cada
+    # intento de verificacion es una tanda de docker que nunca puede tener exito, desperdiciada.
+    # Confirmado con un PE real (Ingrid.exe, x86 32-bit, os=windows): bintype='pe' en `ij`.
+    if f.get("bintype") not in (None, "elf"):
+        note = L("Analizador de cadenas no aplicable: el binario es "
+                 f"{f.get('bintype')} ({f.get('arch','?')}), no ELF/Linux. Las tecnicas de esta "
+                 "seccion (GOT/PLT, tcache, execve, cadenas '/bin/sh') son especificas de glibc "
+                 "y no tienen equivalente aqui.",
+                 f"Chain analyzer not applicable: the binary is {f.get('bintype')} "
+                 f"({f.get('arch','?')}), not ELF/Linux. This section's techniques "
+                 "(GOT/PLT, tcache, execve, '/bin/sh' strings) are glibc-specific and have no "
+                 "equivalent here.")
+        return ChainAnalysis(arch=f["arch"], applicable=False, note=note)
     gadgets = _enum_gadgets(binary)
     an = ChainAnalysis(arch=f["arch"], gadgets=gadgets)
-    L = (lambda a, b: a) if es else (lambda a, b: b)
     # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
     _sink = _overflow_sink(binary)
     _badset = _SINK_BADCHARS.get(_sink, set()) if (_sink and f.get("pie") is not True) else set()

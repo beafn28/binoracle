@@ -279,7 +279,8 @@ def _mit_detail(mit: dict, lang: str) -> str:
     """Cada mitigacion: estado, que implica para explotacion y como remediar."""
     T = _MIT_STR.get(lang, _MIT_STR["es"])
     rows = ""
-    order = ["NX", "PIE", "Canary", "RELRO"]
+    order = (["ASLR", "DEP", "CFG", "Canary", "Authenticode"] if mit.get("bintype") == "pe"
+             else ["NX", "PIE", "Canary", "RELRO"])
     for k in order:
         v = mit.get(k)
         info = T[k](v)
@@ -291,6 +292,65 @@ def _mit_detail(mit: dict, lang: str) -> str:
     return (f'<h2 data-i18n="mit_detail" id="sec-mit"></h2>'
             f'<table class="mittab"><thead><tr><th>{T["h_mit"]}</th><th>{T["h_state"]}</th>'
             f'<th>{T["h_impact"]}</th><th>{T["h_rem"]}</th></tr></thead><tbody>{rows}</tbody></table>')
+
+
+def _capability_html(cap_map: dict, lang: str) -> str:
+    """Mapa de capacidades (Fase 2): por cada categoria con imports, un chip con el recuento y
+    las funciones detectadas. Vacio si no hay ninguna categoria (no es PE, o sin imports Win32
+    reconocidos) -- el llamador ya filtra por bintype=pe antes de construir cap_map."""
+    if not cap_map:
+        return ""
+    es = lang == "es"
+    title = ("Mapa de capacidades (por imports)" if es else "Capability map (from imports)")
+    note = ("Lo que el binario PUEDE hacer, clasificado por los imports detectados -- antes de "
+            "mirar ninguna funcion. Indica donde merece la pena profundizar." if es else
+            "What the binary CAN do, classified from its detected imports -- before reading any "
+            "function. Points to where it is worth digging in.")
+    cards = ""
+    for key, _es_pair, _en_pair, _pat in _PE_CAPABILITIES:
+        hits = cap_map.get(key)
+        if not hits:
+            continue
+        lbl = _es_pair[1] if es else _en_pair[1]
+        fn_chips = "".join(f'<span class="refchip">{_esc(h)}</span>' for h in hits[:12])
+        more = len(hits) - 12
+        more_txt = (f' <span class="mut">+{more}</span>' if more > 0 else "")
+        cards += (f'<div class="panel" style="margin:8px 0"><div class="panel-t">{_esc(lbl)} '
+                  f'<span class="mut">({len(hits)})</span></div>'
+                  f'<div class="refchips">{fn_chips}{more_txt}</div></div>')
+    if not cards:
+        return ""
+    return (f'<h2>{_esc(title)}</h2><p class="sechelp">{_esc(note)}</p>{cards}')
+
+
+def _packing_warning_html(pk: dict, lang: str) -> str:
+    """Fase 0: si hay indicios de empaquetado, un aviso BIEN VISIBLE antes de cualquier otra
+    seccion -- el resto del informe (imports, cadenas, funciones) puede estar viendo el stub del
+    packer, no el programa real, y hay que saberlo antes de leer nada mas."""
+    if not pk:
+        return ""
+    es = lang == "es"
+    title = ("Posible empaquetado / cifrado" if es else "Possibly packed / encrypted")
+    parts = []
+    for name, packer in pk.get("packer_sections", []):
+        parts.append((f"seccion '{name}' (firma conocida de {packer})" if es
+                      else f"section '{name}' (known {packer} signature)"))
+    for name, ent in pk.get("high_entropy", []):
+        parts.append((f"seccion '{name}' con entropia {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"
+                      if es else f"section '{name}' with entropy {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"))
+    body = "; ".join(parts)
+    note = ("El resto del analisis estatico (imports, cadenas, funciones) puede estar viendo el "
+            "STUB del empaquetador, no el programa real: los resultados de abajo son menos "
+            "fiables hasta desempaquetar." if es else
+            "The rest of the static analysis (imports, strings, functions) may be looking at the "
+            "packer's STUB, not the real program: the results below are less reliable until "
+            "unpacked.")
+    return (f'<div class="proof" style="border-color:#e5484d;box-shadow:0 0 0 1px rgba(229,72,77,.15)">'
+            f'<div class="proof-h" style="background:#1a0e0e;border-color:#e5484d">'
+            f'<span class="proof-ok" style="color:#e5484d">&#9888;</span>'
+            f'<span class="proof-t">{_esc(title)}</span></div>'
+            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
 
 
 # Mapa tecnica -> cheat sheets del RAG + fuentes autoritativas.
@@ -734,8 +794,12 @@ def _evidence_html(ev: str) -> str:
 
 
 def _parse_mitigations(triage) -> dict:
-    """Pull NX/PIE/Canary/RELRO/arch out of the checksec triage section, if present."""
-    m = {"NX": None, "PIE": None, "Canary": None, "RELRO": None, "Arch": None}
+    """Pull NX/PIE/Canary/RELRO/arch out of the checksec triage section, if present. Tambien
+    saca `bintype`/`signed` de la seccion 'radare2 binary info' (iI): son las mismas que decide
+    si el panel debe mostrar mitigaciones ELF (NX/PIE/RELRO) o PE (ASLR/DEP/CFG/Authenticode) --
+    ver _pe_mitigations()."""
+    m = {"NX": None, "PIE": None, "Canary": None, "RELRO": None, "Arch": None,
+         "bintype": None, "signed": None}
     if triage is None:
         return m
     for title, source, text in triage.sections:
@@ -754,7 +818,147 @@ def _parse_mitigations(triage) -> dict:
                 ma = re.search(r"arch:\s*([a-z0-9_\- ]+)", low)
                 if ma and m["Arch"] is None:
                     m["Arch"] = ma.group(1).strip()
+        if "binary info" in blob or title.lower() == "file / elf header":
+            for line in text.splitlines():
+                low = line.strip().lower()
+                if low.startswith("bintype") and m["bintype"] is None:
+                    m["bintype"] = low.split()[-1]
+                if low.startswith("signed") and m["signed"] is None:
+                    m["signed"] = low.split()[-1] == "true"
     return m
+
+
+# Bits de IMAGE_OPTIONAL_HEADER.DllCharacteristics (PE) relevantes para explotacion. `nx`/`pic`
+# de checksec ya cubren DEP/ASLR razonablemente via heuristica de r2, pero CFG (Control Flow
+# Guard, el equivalente PE de CFI: valida cada `call`/`jmp` indirecto contra una bitmap de
+# destinos validos) no lo expone ningun campo de checksec -- solo esta en DllCharacteristics.
+_PE_DYNAMIC_BASE = 0x0040   # ASLR
+_PE_NX_COMPAT = 0x0100      # DEP
+_PE_GUARD_CF = 0x4000       # CFG
+
+
+# Fase 2 de una auditoria PE: clasificar por lo que el binario PUEDE hacer (capacidad), no por lo
+# que creemos que esta mal, antes de mirar ninguna funcion. Nombres de API Win32 reales, no
+# sustrings sueltos (evita que "Process32First"/"Process32Next" -- enumeracion, no ejecucion --
+# cuenten como "proceso" solo por contener "Process").
+_PE_CAPABILITIES = [
+    ("red", ("es", "Red"), ("en", "Network"), (
+        "InternetOpen", "InternetConnect", "InternetReadFile", "InternetWriteFile",
+        "HttpSendRequest", "HttpOpenRequest", "WinHttpOpen", "WinHttpConnect",
+        "WinHttpSendRequest", "WSAStartup", "WSASocket", "socket", "connect", "send", "recv",
+        "bind", "listen", "accept", "URLDownloadToFile")),
+    ("proceso", ("es", "Proceso / ejecucion"), ("en", "Process / execution"), (
+        "CreateProcess", "WinExec", "ShellExecute", "CreateRemoteThread", "CreateThread",
+        "OpenProcess", "TerminateProcess", "VirtualAllocEx", "WriteProcessMemory",
+        "QueueUserAPC", "NtCreateThreadEx", "LoadLibrary", "GetProcAddress")),
+    ("privilegios", ("es", "Privilegios / token"), ("en", "Privileges / token"), (
+        "AdjustTokenPrivileges", "LookupPrivilegeValue", "OpenProcessToken", "OpenThreadToken",
+        "DuplicateToken", "ImpersonateLoggedOnUser", "SetTokenInformation")),
+    ("cripto", ("es", "Criptografia"), ("en", "Cryptography"), (
+        "CryptAcquireContext", "CryptCreateHash", "CryptHashData", "CryptEncrypt",
+        "CryptDecrypt", "CryptGenKey", "CryptDeriveKey", "BCryptOpenAlgorithmProvider",
+        "BCryptEncrypt", "BCryptDecrypt", "NCryptOpenStorageProvider")),
+    ("registro", ("es", "Registro"), ("en", "Registry"), (
+        "RegCreateKey", "RegSetValue", "RegOpenKey", "RegDeleteKey", "RegDeleteValue",
+        "RegQueryValue", "RegEnumKey")),
+    ("ficheros", ("es", "Ficheros"), ("en", "Files"), (
+        "CreateFile", "WriteFile", "ReadFile", "DeleteFile", "MoveFile", "CopyFile",
+        "SetFileAttributes", "GetTempPath", "GetTempFileName")),
+]
+
+
+def _pe_capability_map(triage) -> dict:
+    """Clasifica los imports del binario por capacidad (red/proceso/privilegios/cripto/registro/
+    ficheros), Fase 2 de una auditoria PE: dice DONDE merece la pena mirar antes de leer ninguna
+    funcion. Solo tiene sentido para bintype=pe (los nombres son API Win32); se llama solo desde
+    ahi. Devuelve {cat_key: [nombres de funcion encontrados]}, categorias vacias omitidas."""
+    if triage is None:
+        return {}
+    imports_text = ""
+    for title, source, text in triage.sections:
+        if "import" in title.lower():
+            imports_text += text + "\n"
+    if not imports_text.strip():
+        return {}
+    names = set()
+    for line in imports_text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        cand = parts[-1]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", cand):
+            names.add(cand)
+    out = {}
+    for key, _es, _en, patterns in _PE_CAPABILITIES:
+        hits = sorted({n for n in names for p in patterns if n.lower().startswith(p.lower())})
+        if hits:
+            out[key] = hits
+    return out
+
+
+# Nombres de seccion que dejan packers/protectores conocidos (Fase 0: si esta empaquetado, todo
+# lo demas cambia -- hay que desempaquetar antes de que el resto del analisis tenga sentido).
+_PACKER_SECTION_SIGS = {
+    "upx0": "UPX", "upx1": "UPX", "upx2": "UPX", ".aspack": "ASPack", ".adata": "ASPack",
+    ".themida": "Themida/WinLicense", ".vmp0": "VMProtect", ".vmp1": "VMProtect",
+    ".petite": "Petite", ".mpress1": "MPRESS", ".mpress2": "MPRESS", ".enigma1": "Enigma",
+    ".enigma2": "Enigma", ".pec1": "PECompact", ".pec2": "PECompact",
+}
+_ENTROPY_PACKED_THRESHOLD = 7.0
+
+
+def _pe_packing_check(binary: str) -> dict:
+    """Fase 0: entropia por seccion (umbral empirico ~7.0 = probablemente comprimido/cifrado) +
+    nombres de seccion de packers conocidos. Si el binario esta empaquetado, el resto del
+    analisis estatico (imports, cadenas, funciones) ve el STUB del packer, no el programa real --
+    hay que avisar de esto ANTES que de cualquier otra cosa. Best-effort: {} si falla o no aplica."""
+    try:
+        from ..oracles.r2session import get as _r2get
+        import json as _json
+        r = _r2get(binary)
+        if r is None:
+            return {}
+        secs = _json.loads(r.cmd("iSj entropy") or "[]")
+        high = []
+        sigs = []
+        for s in secs:
+            name = (s.get("name") or "").strip()
+            try:
+                ent = float(s.get("entropy", 0) or 0)
+            except (TypeError, ValueError):
+                ent = 0.0
+            if ent >= _ENTROPY_PACKED_THRESHOLD:
+                high.append((name, ent))
+            packer = _PACKER_SECTION_SIGS.get(name.lower())
+            if packer:
+                sigs.append((name, packer))
+        if not high and not sigs:
+            return {}
+        return {"high_entropy": high, "packer_sections": sigs}
+    except Exception:
+        return {}
+
+
+def _pe_dll_characteristics(binary: str) -> dict:
+    """Lee IMAGE_OPTIONAL_HEADER.DllCharacteristics via r2 (iHj) y decodifica los bits de
+    mitigacion. Solo tiene sentido para bintype=pe; devuelve {} si algo falla (best-effort,
+    igual que el resto de oraculos de este informe)."""
+    try:
+        from ..oracles.r2session import get as _r2get
+        import json as _json
+        r = _r2get(binary)
+        if r is None:
+            return {}
+        raw = _json.loads(r.cmd("iHj") or "{}").get("header", "")
+        m = re.search(r"DllCharacteristics\s*:\s*(0x[0-9a-fA-F]+)", raw)
+        if not m:
+            return {}
+        bits = int(m.group(1), 16)
+        return {"ASLR": bool(bits & _PE_DYNAMIC_BASE),
+                "DEP": bool(bits & _PE_NX_COMPAT),
+                "CFG": bool(bits & _PE_GUARD_CF)}
+    except Exception:
+        return {}
 
 
 _CVSS_SEV_COLOR = {"Critical": "#e5484d", "High": "#f5a623", "Medium": "#e2b53e",
@@ -805,6 +1009,9 @@ def render_chains_page(chains, lang: str = "es") -> str:
     head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<style>{_CSS}</style></head><body><main style='padding:16px'>")
+    if chains is not None and not getattr(chains, "applicable", True):
+        msg = getattr(chains, "note", "") or ""
+        return head + f"<p class='mut'>{_esc(msg)}</p></main></body></html>"
     if chains is None or not getattr(chains, "ok", False):
         msg = ("No se pudieron construir cadenas (binario no soportado o sin primitivas)."
                if es else "Could not build chains (unsupported binary or no primitives).")
@@ -915,6 +1122,15 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
+    # Las mitigaciones ELF (NX/PIE/RELRO) no existen en Windows: mostrarlas para un PE es
+    # enganoso (RELRO sale "N/A", PIE se confunde con ASLR aunque el mecanismo real -- y el bit
+    # que lo activa, DllCharacteristics -- es distinto). Para bintype=pe se sustituyen por las
+    # mitigaciones reales de Windows: ASLR/DEP/CFG (DllCharacteristics, ver _pe_dll_characteristics)
+    # y Authenticode (firma digital, ya presente en la salida de 'iI' como 'signed').
+    is_pe = mit.get("bintype") == "pe"
+    if is_pe:
+        mit.update(_pe_dll_characteristics(binary))
+        mit["Authenticode"] = mit.get("signed")
     # Texto por defecto renderizado en servidor: el informe es legible aunque NO corra JS (al
     # abrirlo como fichero estatico). El JS luego solo cambia el idioma con el boton.
     def L(k):
@@ -949,10 +1165,11 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     )
 
     # mitigation panel: good/bad coloring (NX on = good, PIE on = good, Canary on = good)
+    _MIT_BOOL_GOOD = ("NX", "PIE", "Canary", "ASLR", "DEP", "CFG", "Authenticode")
     def mit_item(key, value):
         if value is None:
             state, cls = "?", "mut"
-        elif key in ("NX", "PIE", "Canary"):
+        elif key in _MIT_BOOL_GOOD:
             good = bool(value) if isinstance(value, bool) else False
             state = ("ON" if good else "OFF") if isinstance(value, bool) else str(value)
             cls = "ok" if good else "bad"
@@ -962,7 +1179,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         else:
             state, cls = str(value), "mut"
         return f'<div class="mit {cls}"><span class="mit-k">{_esc(key)}</span><span class="mit-v">{_esc(state)}</span></div>'
-    mit_panel = "".join(mit_item(k, mit[k]) for k in ("Arch", "NX", "PIE", "Canary", "RELRO"))
+    mit_keys = ("Arch", "ASLR", "DEP", "CFG", "Canary", "Authenticode") if is_pe \
+        else ("Arch", "NX", "PIE", "Canary", "RELRO")
+    mit_panel = "".join(mit_item(k, mit.get(k)) for k in mit_keys)
 
     # findings cards
     cards = ""
@@ -1059,6 +1278,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         cveplan_html = ""
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
+    capability_html = _capability_html(_pe_capability_map(triage), lang) if is_pe else ""
     attack_chain_html = _attack_chain(findings, mit, lang)
     references_html = _references(findings, lang)
     owasp_html = _owasp_html(findings, lang)
@@ -1067,6 +1287,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     summary_txt = _auto_summary(binary, findings, mit, lang)
     answer_html = (f'<div class="panel md summary" id="sec-summary">'
                    f'<div class="panel-t" data-i18n="exec_summary"></div>{_md(summary_txt)}</div>')
+    packing_html = _packing_warning_html(_pe_packing_check(binary), lang) if is_pe else ""
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
@@ -1109,6 +1330,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {toc_html}
 
+  {packing_html}
+
   {answer_html}
 
   {proof_html}
@@ -1129,6 +1352,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {owasp_html}
 
   {mit_detail_html}
+
+  {capability_html}
 
   {attack_chain_html}
 
@@ -1316,6 +1541,33 @@ _MIT_STR = {
             else "GOT de solo lectura: sin GOT overwrite (ve por FSOP/exit-handlers).",
             "Enlazar con -Wl,-z,relro,-z,now (Full RELRO)." if str(v).lower() != "full" else "Mantener Full RELRO.",
             "warn" if str(v).lower() == "partial" else ("bad" if str(v).lower() in ("none", "no") else "ok")),
+        "ASLR": lambda v: _mrow_es(_mst(v),
+            "Base fija (imagen + DLLs cargan siempre en la misma direccion): hardcodea gadgets/API sin leak."
+            if v in (False,) else "Base reubicada en cada arranque: necesitas un leak (p.ej. una direccion filtrada) para calcularla.",
+            "Enlazar con /DYNAMICBASE (bit DllCharacteristics IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)."
+            if v in (False,) else "Mantener /DYNAMICBASE.",
+            "bad" if v in (False,) else "ok"),
+        "DEP": lambda v: _mrow_es(_mst(v),
+            "Pila/heap ejecutables: puedes saltar a shellcode inyectado (sin reutilizar codigo)."
+            if v in (False,) else "Sin shellcode en pila/heap; hay que reutilizar codigo (ROP).",
+            "Enlazar con /NXCOMPAT (bit DllCharacteristics IMAGE_DLLCHARACTERISTICS_NX_COMPAT)."
+            if v in (False,) else "Mantener /NXCOMPAT.",
+            "bad" if v in (False,) else "ok"),
+        "CFG": lambda v: _mrow_es(_mst(v),
+            "Sin validacion de destinos: un `call`/`jmp` indirecto secuestrado (vtable, puntero a funcion) "
+            "puede saltar a CUALQUIER direccion ejecutable." if v in (False,) else
+            "Cada `call`/`jmp` indirecto se valida contra una bitmap de destinos validos en tiempo de carga: "
+            "un vptr/puntero a funcion secuestrado solo puede saltar a un destino ya autorizado por el compilador.",
+            "Compilar/enlazar con /guard:cf (bit DllCharacteristics IMAGE_DLLCHARACTERISTICS_GUARD_CF)."
+            if v in (False,) else "Mantener /guard:cf.",
+            "bad" if v in (False,) else "ok"),
+        "Authenticode": lambda v: _mrow_es(_mst(v),
+            "El binario no esta firmado: nada impide modificarlo (parchear, inyectar) sin que Windows/SmartScreen "
+            "lo detecte, y no hay forma de verificar el editor." if v in (False,) else
+            "Firmado: Windows puede verificar editor e integridad antes de ejecutar (SmartScreen/AppLocker/WDAC).",
+            "Firmar con signtool (certificado de editor de codigo valido)." if v in (False,) else
+            "Mantener la firma valida y el certificado vigente.",
+            "bad" if v in (False,) else "ok"),
     },
     "en": {
         "h_mit": "Mitigation", "h_state": "State", "h_impact": "Exploitation implication",
@@ -1340,6 +1592,33 @@ _MIT_STR = {
             else "Read-only GOT: no GOT overwrite (use FSOP/exit-handlers).",
             "Link with -Wl,-z,relro,-z,now (Full RELRO)." if str(v).lower() != "full" else "Keep Full RELRO.",
             "warn" if str(v).lower() == "partial" else ("bad" if str(v).lower() in ("none", "no") else "ok")),
+        "ASLR": lambda v: _mrow_es(_mst(v),
+            "Fixed base (image + DLLs always load at the same address): hardcode gadgets/API addresses, no leak needed."
+            if v in (False,) else "Base relocated on every start: you need a leak (e.g. a disclosed address) to compute it.",
+            "Link with /DYNAMICBASE (DllCharacteristics bit IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)."
+            if v in (False,) else "Keep /DYNAMICBASE.",
+            "bad" if v in (False,) else "ok"),
+        "DEP": lambda v: _mrow_es(_mst(v),
+            "Executable stack/heap: you can jump to injected shellcode (no code reuse needed)."
+            if v in (False,) else "No stack/heap shellcode; must reuse code (ROP).",
+            "Link with /NXCOMPAT (DllCharacteristics bit IMAGE_DLLCHARACTERISTICS_NX_COMPAT)."
+            if v in (False,) else "Keep /NXCOMPAT.",
+            "bad" if v in (False,) else "ok"),
+        "CFG": lambda v: _mrow_es(_mst(v),
+            "No target validation: a hijacked indirect `call`/`jmp` (vtable, function pointer) can jump to ANY "
+            "executable address." if v in (False,) else
+            "Every indirect `call`/`jmp` is checked against a bitmap of valid targets at load time: a hijacked "
+            "vptr/function pointer can only land where the compiler already authorized.",
+            "Compile/link with /guard:cf (DllCharacteristics bit IMAGE_DLLCHARACTERISTICS_GUARD_CF)."
+            if v in (False,) else "Keep /guard:cf.",
+            "bad" if v in (False,) else "ok"),
+        "Authenticode": lambda v: _mrow_es(_mst(v),
+            "The binary is unsigned: nothing stops it being modified (patched, injected) without Windows/"
+            "SmartScreen flagging it, and there is no way to verify the publisher." if v in (False,) else
+            "Signed: Windows can verify the publisher and integrity before running it (SmartScreen/AppLocker/WDAC).",
+            "Sign it with signtool (a valid code-signing certificate)." if v in (False,) else
+            "Keep the signature valid and the certificate current.",
+            "bad" if v in (False,) else "ok"),
     },
 }
 
@@ -1567,7 +1846,14 @@ def _exploit_html(an, lang: str) -> str:
     """Exploit Chain Analyzer: grafo interactivo (Vulnerabilidad -> Primitiva -> Control -> Gadget...
     -> Objetivo) renderizado en servidor + interactividad (pan/zoom/arrastrar, inspeccionar nodo,
     filtrar por cadena, reproducir paso a paso), comparacion tecnica y tablas de factibilidad."""
-    if an is None or not getattr(an, "ok", False):
+    if an is None:
+        return ""
+    if not getattr(an, "applicable", True):
+        title = _I18N.get(lang, _I18N["es"]).get("exploit_chains", "Exploit chains")
+        note = getattr(an, "note", "") or ""
+        return (f'<h2 data-i18n="exploit_chains" id="sec-xchain">{_esc(title)}</h2>'
+                f'<p class="mut">{_esc(note)}</p>')
+    if not getattr(an, "ok", False):
         return ""
     es = lang == "es"
     g = an.graph
