@@ -853,21 +853,24 @@ def _owasp_html(findings, lang: str) -> str:
 
 def _toc(lang: str, has) -> str:
     """Indice navegable del informe: solo las secciones presentes, con enlace a su ancla."""
-    T = {"es": {"t": "Indice", "summary": "Resumen ejecutivo", "proof": "Prueba de explotacion",
+    T = {"es": {"t": "Indice", "methodology": "Metodologia aplicada", "summary": "Resumen ejecutivo",
+                "proof": "Prueba de explotacion",
                 "exploit": "Exploit paso a paso", "dec": "Decompilacion anotada",
                 "cfg": "Grafo de flujo interactivo",
                 "find": "Hallazgos", "owasp": "OWASP Desktop Top 10", "mit": "Mitigaciones y remediacion",
                 "chain": "Cadena de explotacion", "xchain": "Analizador de cadenas (grafo)",
                 "exploitplan": "Esquema de explotacion",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
-         "en": {"t": "Contents", "summary": "Executive summary", "proof": "Exploitation proof",
+         "en": {"t": "Contents", "methodology": "Methodology applied", "summary": "Executive summary",
+                "proof": "Exploitation proof",
                 "exploit": "Exploit step by step", "dec": "Annotated decompilation",
                 "cfg": "Interactive control-flow graph",
                 "find": "Findings", "owasp": "OWASP Desktop Top 10", "mit": "Mitigations & remediation",
                 "chain": "Exploitation chain", "xchain": "Chain analyzer (graph)",
                 "exploitplan": "Exploitation schema",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
-    order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("exploit", "sec-exploit"),
+    order = [("methodology", "sec-methodology"), ("summary", "sec-summary"), ("proof", "sec-proof"),
+             ("exploit", "sec-exploit"),
              ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("owasp", "sec-owasp"),
              ("mit", "sec-mit"),
              ("chain", "sec-chain"), ("xchain", "sec-xchain"), ("exploitplan", "sec-exploitplan"),
@@ -876,6 +879,119 @@ def _toc(lang: str, has) -> str:
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
                     for key, aid in order if has.get(key))
     return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
+
+
+def _methodology_html(is_pe: bool, has, lang: str) -> str:
+    """Documenta de forma explicita, fase por fase, la metodologia de auditoria PE pegada por el
+    usuario (Fases 0-9 + checklist base): que se cubrio en ESTE informe y donde encontrarlo. Las
+    fases 0/2/3/4/9 y el checklist base son features de codigo concretas (enlazadas a su seccion);
+    las fases 5/6/7/8 son en su mayoria metodologia de RAZONAMIENTO (como debe trabajar el
+    analista/LLM) mas que un checklist binario -- se documenta honestamente que apoyo real tiene
+    cada una en el informe, sin fingir cobertura que no existe. `has` es el mismo dict de
+    presencia de secciones que ya usa _toc()."""
+    es = lang == "es"
+    title = "Metodologia aplicada" if es else "Methodology applied"
+    def row(phase, text):
+        return f'<tr><td class="mk">{_esc(phase)}</td><td>{text}</td></tr>'
+    rows = []
+    if is_pe:
+        rows.append(row("Fase 0", (
+            'Reconocimiento: tipo/arquitectura, toolchain (Rich Header), empaquetado/entropia, '
+            'mitigaciones ASLR/DEP/CFG, imports (con fallback pefile), firma Authenticode del '
+            'binario y sus DLLs acompanantes -- ver <a href="#sec-mit">Mitigaciones</a>.' if es else
+            'Recon: type/arch, toolchain (Rich Header), packing/entropy, ASLR/DEP/CFG mitigations, '
+            'imports (with pefile fallback), Authenticode of the binary and its companion DLLs -- '
+            'see <a href="#sec-mit">Mitigations</a>.')))
+        rows.append(row("Fase 2", (
+            'Mapa de capacidades por imports (red/proceso/privilegios/cripto/registro/ficheros/'
+            'bases de datos) -- ver el mapa de capacidades bajo Mitigaciones.' if es else
+            'Import-based capability map (network/process/privileges/crypto/registry/files/'
+            'databases) -- see the capability map under Mitigations.')))
+    rows.append(row("Fase 3", (
+        'Analisis de codigo: decompilacion grounded en r2 (xrefs por direccion virtual, no '
+        'fisica) de la(s) funcion(es) que llaman a un sink peligroso -- '
+        f'{"ver" if es else "see"} <a href="#sec-dec">{"Decompilacion" if es else "Decompilation"}</a>.'
+        if has.get("dec") else
+        ('Analisis de codigo: no se pudo decompilar ninguna funcion de interes en este binario.' if es
+         else 'Code analysis: no function of interest could be decompiled for this binary.'))))
+    rows.append(row("Fase 4" if is_pe else "Fase 4 (N/A)", (
+        'Verificacion de constantes Win32 contra el SDK oficial de Microsoft (tabla curada, no '
+        'interpretadas por el modelo) -- ver la tabla de constantes dentro de cada funcion '
+        'decompilada, si el codigo invoca alguna API reconocida.' if es and is_pe else
+        ('Win32 constant verification against the official Microsoft SDK (curated table, not '
+         'model-interpreted) -- see the constants table inside each decompiled function, if the '
+         'code calls a recognized API.' if is_pe else
+         ('No aplica: las constantes de API son especificas de Win32.' if es else
+          'Not applicable: API constants are Win32-specific.')))))
+    rows.append(row("Fase 5", (
+        'Hecho vs. inferencia: cada hallazgo lleva un veredicto explicito -- "verified" (probado '
+        'por ejecucion real en sandbox, hecho confirmado), o sin verificar (patron reconocido en '
+        'el codigo estatico, no ejecutado). El backstop de la prueba de explotacion distingue '
+        'ademas "sin verificacion" (intento fallido, no es evidencia). Nunca se presenta una '
+        'suposicion como hecho confirmado.' if es else
+        'Fact vs. inference: every finding carries an explicit verdict -- "verified" (proven by '
+        'real sandbox execution, a confirmed fact) or unverified (a pattern recognized in static '
+        'code, not executed). The exploitation-proof backstop further distinguishes "unverified" '
+        '(a failed attempt, not evidence). An assumption is never presented as a confirmed fact.')))
+    rows.append(row("Fase 6", (
+        'Priorizacion por impacto: los hallazgos se ordenan por severidad (Critical..Low) y los '
+        'sinks que procesan datos externos (red, fichero, entrada de usuario) se marcan primero '
+        '-- ver <a href="#sec-find">Hallazgos</a>.' if es else
+        'Impact-based prioritization: findings are ordered by severity (Critical..Low) and sinks '
+        'that process external data (network, file, user input) are surfaced first -- see '
+        '<a href="#sec-find">Findings</a>.')))
+    rows.append(row("Fase 7", (
+        f'Cadena completa del hallazgo (origen no confiable -> propagacion sin validar -> '
+        f'operacion sensible -> impacto) -- {"ver" if es else "see"} '
+        f'<a href="#sec-chain">{"Cadena de explotacion" if es else "Exploitation chain"}</a>.'
+        if has.get("chain") else
+        ('Cadena completa del hallazgo: no hay suficientes hallazgos relacionados en este binario '
+         'para construir una cadena origen -> impacto.' if es else
+         'Full finding chain: not enough related findings in this binary to build an origin -> '
+         'impact chain.'))))
+    if is_pe:
+        rows.append(row("Fase 8", (
+            'Verificacion dinamica: NO ejecutada. El sandbox de verificacion dinamica de binoracle '
+            '(interceptacion LD_PRELOAD de red/ficheros/exec) es Linux/ELF-only; para un binario '
+            'Windows no hay entorno de ejecucion real disponible en este momento. Todo lo anterior '
+            'es analisis ESTATICO (mas la verificacion en sandbox del exploit ret2win si aplica).' if es else
+            'Dynamic verification: NOT run. binoracle\'s dynamic-verification sandbox (LD_PRELOAD '
+            'interception of network/files/exec) is Linux/ELF-only; there is currently no real '
+            'execution environment for a Windows binary. Everything above is STATIC analysis (plus '
+            'the ret2win sandbox exploit verification, if applicable).')))
+    else:
+        rows.append(row("Fase 8", (
+            'Verificacion dinamica: se ejecuto el binario en sandbox aislado interceptando red/'
+            'ficheros/exec en tiempo real; los hallazgos derivados aparecen en Hallazgos (si el '
+            'binario no realizo ninguna de estas operaciones durante la traza, no hay hallazgos de '
+            'esta fase).' if es else
+            'Dynamic verification: the binary was run in an isolated sandbox intercepting network/'
+            'file/exec activity in real time; any resulting findings appear under Findings (if the '
+            'binary performed none of these operations during the trace, there are no findings for '
+            'this phase).')))
+    rows.append(row("Fase 9", (
+        f'Contraste contra OWASP Desktop App Security Top 10 -- {"ver" if es else "see"} '
+        f'<a href="#sec-owasp">OWASP Desktop Top 10</a>.' if has.get("owasp") else
+        ('Contraste contra OWASP Desktop App Security Top 10: sin hallazgos que mapear en este '
+         'binario.' if es else
+         'Contrast against the OWASP Desktop App Security Top 10: no findings to map for this '
+         'binary.'))))
+    checklist_note = (
+        'Checklist base cubierto: CVEs/componentes desactualizados, HTTP sin cifrar, hashing debil '
+        '(MD5/SHA-1), mitigaciones de memoria, DLL hijacking, firma Authenticode (binario y DLLs), '
+        'fuga de rutas de compilacion (PDB), --no-sandbox/Electron, permisos de fichero. Fuera de '
+        'alcance: elevacion a SYSTEM via MSI rollback/Config.Msi (formato MSI/OLE, distinto de '
+        'PE/ELF -- no es un binario de codigo, es un instalador).' if es else
+        'Base checklist covered: outdated CVEs/components, unencrypted HTTP, weak hashing '
+        '(MD5/SHA-1), memory mitigations, DLL hijacking, Authenticode (binary and DLLs), leaked '
+        'compilation paths (PDB), --no-sandbox/Electron, file permissions. Out of scope: SYSTEM '
+        'privilege escalation via MSI rollback/Config.Msi (MSI/OLE format, unlike PE/ELF -- not a '
+        'code binary, an installer).')
+    th = ("Fase", "Cobertura en este informe") if es else ("Phase", "Coverage in this report")
+    return (f'<details class="sec" id="sec-methodology"><summary>{_esc(title)}</summary>'
+            f'<table class="mittab"><thead><tr>{"".join(f"<th>{_esc(h)}</th>" for h in th)}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(checklist_note)}</p></details>')
 
 
 def _trail_kind(tool: str, source: str, data: str, lang: str = "es"):
@@ -1743,12 +1859,13 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     sibling_dll_html = _sibling_dll_signing_html(_pe_sibling_dll_signing(binary), lang) if is_pe else ""
     sandbox_flag_html = _sandbox_flag_html(_pe_sandbox_flag_check(binary), lang) if is_pe else ""
     # Indice: solo las secciones realmente presentes.
-    _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
+    _has = {"methodology": True, "summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
             "owasp": bool(owasp_html), "exploitplan": bool(cveplan_html),
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
             "xchain": bool(exploit_graph_html), "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
+    methodology_html = _methodology_html(is_pe, _has, lang)
     toc_html = _toc(lang, _has)
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
@@ -1783,6 +1900,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   </section>
 
   {toc_html}
+
+  {methodology_html}
 
   {packing_html}
 
