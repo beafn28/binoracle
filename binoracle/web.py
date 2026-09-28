@@ -901,6 +901,42 @@ def run_streaming(command, binary, ai, emit, text=""):
                     findings = findings + dynf
             except Exception:
                 pass
+            # bypass de credencial en sandbox: si authcheck.py CONFIRMO por xref que una credencial
+            # candidata concreta se usa en la misma funcion que la comparacion, se intenta de verdad
+            # contra el binario real (stdin) y se compara con un valor de control. Solo si el codigo
+            # de salida DIFIERE se afirma evidencia (verdict=verified: probado por ejecucion real,
+            # no una suposicion) -- solo command=="report" (mismo criterio que el intento de
+            # ret2win: lento, solo para el informe completo, no el dashboard/hunt rapido).
+            if command == "report":
+                try:
+                    from .workflows.authcheck import get_confirmed_credentials
+                    from .workflows.authbypass import try_credential_bypass
+                    from .store.session import Finding as _F2
+                    confirmed_creds = get_confirmed_credentials(reg)
+                    if confirmed_creds:
+                        cred_val, cred_fn, cred_cmp = confirmed_creds[0]
+                        emit("step", f"probando la credencial candidata en sandbox contra {cred_fn}...")
+                        ba = try_credential_bypass(binary, cred_val, timeout=8)
+                        if ba.ran and ba.differs:
+                            findings.insert(0, _F2(
+                                title="Bypass de autenticacion VERIFICADO (credencial hardcodeada funciona)",
+                                severity="critical", verdict="verified",
+                                location=f"{cred_fn} ({cred_cmp})",
+                                evidence=(f"[sandbox: stdin real]\ncredencial candidata (exit={ba.candidate_exit}): "
+                                         f"{ba.candidate_out[:300]}\ncontrol (exit={ba.control_exit}): "
+                                         f"{ba.control_out[:300]}"),
+                                rationale=(f"Se ejecuto el binario real en sandbox aislado con la credencial "
+                                          f"candidata '{cred_val}' por stdin (encontrada en {cred_fn}, que "
+                                          f"llama a {cred_cmp}) y con un valor de control claramente "
+                                          f"incorrecto. El codigo de salida DIFIRIO entre ambas ejecuciones "
+                                          f"({ba.candidate_exit} vs {ba.control_exit}): evidencia real, no "
+                                          f"una suposicion, de que esta entrada concreta cambia el camino de "
+                                          f"ejecucion del programa."),
+                                recommendation="Elimina la credencial hardcodeada; autentica con un hash "
+                                              "con sal y compara en tiempo constante."))
+                            store.add_finding(findings[0])
+                except Exception:
+                    pass
             answer = hunt.answer
             if command == "dashboard":
                 data = _build_dashboard_data(reg, findings)
@@ -939,8 +975,33 @@ def run_streaming(command, binary, ai, emit, text=""):
                 if llm.available() and findings:
                     emit("step", "IA: redactando analisis profesional de cada hallazgo...")
                     findings = enrich_findings(llm, findings, lang=config.lang)
-                    emit("step", "IA: resumen ejecutivo (con conocimiento previo)...")
                     mit = next((t for (ti, sr, t) in report.sections if "checksec" in (sr+ti).lower()), "")
+                    # revision LLM completa ("sin fronteras", pedido explicito del usuario): a
+                    # diferencia de enrich_findings (redacta cada hallazgo YA encontrado), este
+                    # paso le da al modelo TODO el contexto grounded (mitigaciones, capacidades,
+                    # hallazgos existentes, codigo decompilado) y busca patrones que los scanners
+                    # ESTATICOS (regex/xref) no cubren -- solo command=="report" (informe completo).
+                    if command == "report":
+                        try:
+                            emit("step", "IA: revision completa sin restricciones de alcance...")
+                            from .workflows.llm_review import llm_deep_review
+                            bintype_row = next((t for (ti, sr, t) in report.sections
+                                                if ti.lower().startswith("file /") or "binary info" in (sr+ti).lower()), "")
+                            cap_map = {}
+                            if "pe" in bintype_row.lower():
+                                from .report.html import _pe_capability_map
+                                cap_map = _pe_capability_map(report, binary)
+                            elif "elf" in bintype_row.lower():
+                                from .report.html import _elf_capability_map
+                                cap_map = _elf_capability_map(report)
+                            review_findings = llm_deep_review(
+                                llm, binary, {}, cap_map, findings, decompiled, lang=config.lang)
+                            for rf in review_findings:
+                                store.add_finding(rf)
+                            findings = findings + review_findings
+                        except Exception:
+                            pass
+                    emit("step", "IA: resumen ejecutivo (con conocimiento previo)...")
                     cs = reg.get("r2_checksec").run()
                     arch = cs.meta.get("arch","?") if cs.ok else "?"; bits = cs.meta.get("bits","?") if cs.ok else "?"
                     vfacts = [f"- {f.title} @ {f.location}" for f in findings if f.verdict == "verified"]

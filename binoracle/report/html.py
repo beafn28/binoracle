@@ -729,9 +729,45 @@ def _surface_help(key: str, lang: str) -> str:
     return ""
 
 
-def _cfg_layout(cfg):
+def _wrap_note(text: str, max_chars: int = 34, max_lines: int = None):
+    """Envuelve una nota (texto de _branch_note/_state_note) en lineas de como max `max_chars`
+    caracteres, por palabra completa. Si `max_lines` corta antes de terminar, marca la ultima
+    linea con '...' para que quede claro que hay mas (el detalle completo sigue disponible al
+    pulsar el bloque, via el panel lateral)."""
+    words = (text or "").split()
+    if not words:
+        return []
+    lines, cur = [], ""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        cand = (cur + " " + w).strip()
+        if len(cand) <= max_chars:
+            cur = cand
+            i += 1
+        else:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            else:
+                lines.append(w)
+                i += 1
+            if max_lines and len(lines) >= max_lines:
+                break
+    if cur and (not max_lines or len(lines) < max_lines):
+        lines.append(cur)
+    if max_lines and i < len(words):
+        lines[-1] = lines[-1].rstrip() + "..."
+    return lines
+
+
+def _cfg_layout(cfg, verified_addrs=None):
     """Calcula posiciones (x,y,h) de cada bloque por profundidad BFS. En SERVIDOR, para que el
-    grafo se vea SIEMPRE (aunque no corra JS)."""
+    grafo se vea SIEMPRE (aunque no corra JS). Tambien envuelve la nota de cada bloque (que hace,
+    que decide el salto) en lineas visibles DENTRO del bloque -- corta para bloques normales,
+    completa para los que forman parte de una cadena VERIFICADA (ejecutada de verdad en sandbox,
+    no solo razonada estaticamente), que ademas se resaltan con borde rojo."""
+    verified_addrs = verified_addrs or set()
     nodes = {n["id"]: dict(n) for n in cfg.nodes}
     order = [n["id"] for n in cfg.nodes]
     adj = {}
@@ -753,7 +789,16 @@ def _cfg_layout(cfg):
     W = 210
     for nid in order:
         n = nodes[nid]
-        n["h"] = 26 + min(len(n["insns"]), 6) * 15 + (15 if len(n["insns"]) > 6 else 0)
+        try:
+            n["verified"] = int(n.get("addr", "0"), 16) in verified_addrs
+        except (TypeError, ValueError):
+            n["verified"] = False
+        n["note_lines"] = _wrap_note(n.get("note", ""), max_chars=34,
+                                     max_lines=None if n["verified"] else 2)
+        insns_h = 26 + min(len(n["insns"]), 6) * 15 + (15 if len(n["insns"]) > 6 else 0)
+        note_h = (6 + len(n["note_lines"]) * 13) if n["note_lines"] else 0
+        n["h"] = insns_h + note_h
+        n["insns_h"] = insns_h
     y = 0
     for d in sorted(byd):
         row = byd[d]
@@ -766,12 +811,27 @@ def _cfg_layout(cfg):
     return nodes, order, W
 
 
-def _cfg_html(cfg, lang: str) -> str:
+def _cfg_html(cfg, lang: str, findings=None) -> str:
     """Grafo de flujo de una funcion, RENDERIZADO EN SERVIDOR (visible sin JS) + interactividad
-    (mover/zoom/arrastrar) por JS encima. Nodos = bloques; aristas coloreadas por tipo de salto."""
+    (mover/zoom/arrastrar) por JS encima. Nodos = bloques; aristas coloreadas por tipo de salto.
+    Cada bloque muestra SIEMPRE una nota corta de que hace (envuelta dentro del propio bloque, sin
+    necesidad de pulsar); los bloques cuya direccion coincide con un hallazgo VERIFICADO (probado
+    por ejecucion real en sandbox, no solo razonado estaticamente) se resaltan con borde rojo y
+    muestran la nota COMPLETA, sin truncar."""
     if cfg is None or not getattr(cfg, "ok", False):
         return ""
-    nodes, order, W = _cfg_layout(cfg)
+    verified_addrs = set()
+    if findings:
+        for f in findings:
+            if getattr(f, "verdict", None) != "verified":
+                continue
+            blob = (getattr(f, "location", "") or "") + " " + (getattr(f, "evidence", "") or "")
+            for m in _re_mod.finditer(r"0x[0-9a-fA-F]+", blob):
+                try:
+                    verified_addrs.add(int(m.group(0), 16))
+                except ValueError:
+                    pass
+    nodes, order, W = _cfg_layout(cfg, verified_addrs=verified_addrs)
     _COL = {"taken": "#30a46c", "jump": "#4aa3ff", "fallthrough": "#8b95a1"}
     # aristas (curvas bezier de la base del origen al techo del destino)
     edges_svg = ""
@@ -786,7 +846,8 @@ def _cfg_html(cfg, lang: str) -> str:
                       f'd="M{x1:.0f},{y1:.0f} C{x1:.0f},{my:.0f} {x2:.0f},{my:.0f} {x2:.0f},{y2:.0f}" '
                       f'fill="none" stroke="{_COL.get(e["kind"], "#8b95a1")}" stroke-width="2" '
                       f'marker-end="url(#ah)"/>')
-    # nodos (rect + direccion + instrucciones)
+    # nodos (rect + direccion + instrucciones + nota siempre visible -- corta para bloques
+    # normales, completa + borde rojo para los que forman parte de una cadena VERIFICADA)
     nodes_svg = ""
     for nid in order:
         n = nodes[nid]
@@ -794,9 +855,16 @@ def _cfg_html(cfg, lang: str) -> str:
                       for i, op in enumerate(n["insns"][:6]))
         if len(n["insns"]) > 6:
             ins += f'<text x="9" y="{30 + 6 * 15}" class="cfgins">... +{len(n["insns"]) - 6}</text>'
-        nodes_svg += (f'<g class="cfgnode" data-id="{nid}" transform="translate({n["x"]:.0f},{n["y"]:.0f})">'
+        note_lines = n.get("note_lines") or []
+        note_svg = "".join(
+            f'<text x="9" y="{n["insns_h"] + 10 + i * 13}" class="cfgnote">{_esc(line)}</text>'
+            for i, line in enumerate(note_lines))
+        verified_cls = " verified" if n.get("verified") else ""
+        badge = (f'<text x="{W - 9}" y="16" text-anchor="end" class="cfgvbadge">VERIFIED</text>'
+                 if n.get("verified") else "")
+        nodes_svg += (f'<g class="cfgnode{verified_cls}" data-id="{nid}" transform="translate({n["x"]:.0f},{n["y"]:.0f})">'
                       f'<rect width="{W}" height="{n["h"]}" rx="7"/>'
-                      f'<text x="9" y="16" class="cfgaddr">{_esc(n["addr"])}</text>{ins}</g>')
+                      f'<text x="9" y="16" class="cfgaddr">{_esc(n["addr"])}</text>{badge}{ins}{note_svg}</g>')
     T = {"es": {"func": "funcion", "hint": "Arrastra el fondo para moverte, rueda para zoom, "
                 "arrastra un bloque para recolocarlo. Cada arista es un salto:",
                 "taken": "rama tomada (condicion verdadera)", "fall": "caida / fall-through (condicion falsa)",
@@ -837,7 +905,7 @@ def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
     modelo, que en modelos pequenos puede contradecirse). Bilingue."""
     name = _os_basename(binary)
     sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    fs = sorted(findings, key=lambda x: sev_rank.get(x.severity, 9))
+    fs = sorted(findings, key=lambda x: sev_rank.get(_effective_severity(x), 9))
     total = len(fs)
     verified = sum(1 for f in fs if f.verdict == "verified")
     vexp = next((f for f in fs if f.verdict == "verified"
@@ -2008,6 +2076,27 @@ _CVSS_SEV_COLOR = {"Critical": "#e5484d", "High": "#f5a623", "Medium": "#e2b53e"
                    "Low": "#5b8def", "None": "#8b95a1"}
 
 
+def _effective_severity(f) -> str:
+    """Severidad EFECTIVA de un hallazgo para el badge/recuento/orden. Bug real reportado por el
+    usuario: la etiqueta HIGH/MEDIUM (severidad fija que asigna cada scanner) y el badge CVSS 4.0
+    del mismo hallazgo podian contradecirse -- p.ej. "HIGH" junto a "CVSS 4.0 5.5" (5.5 es MEDIUM
+    en la escala oficial CVSS 0.1-3.9 Low / 4.0-6.9 Medium / 7.0-8.9 High / 9.0-10 Critical).
+    Causa: dos sistemas de severidad independientes -- el `severity` del scanner (subjetivo,
+    fijado a mano por patron) y la severidad OFICIAL que calcula la libreria `cvss` a partir del
+    score numerico (ver binoracle/report/cvss.py, que documenta "nunca se inventa el numero"). Si
+    el hallazgo tiene una clase CVSS reconocida, la severidad OFICIAL manda (se usa para el badge
+    grande, el recuento por severidad y el orden), no el valor fijo del scanner -- consistente con
+    el principio de este informe de no mostrar dos afirmaciones que se contradicen."""
+    try:
+        from .cvss import cvss_for
+        r = cvss_for(f)
+        if r and r.severity:
+            return r.severity.lower()
+    except Exception:
+        pass
+    return f.severity
+
+
 def _cvss_html(f, lang: str):
     """(badge, body) CVSS 4.0 de un hallazgo. El vector se asigna por clase de vulnerabilidad y el
     score lo calcula el algoritmo oficial; None -> sin badge (no se inventa)."""
@@ -2187,7 +2276,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     counts = {s: 0 for s in _SEV}
     verified = 0
     for f in findings:
-        counts[f.severity] = counts.get(f.severity, 0) + 1
+        esev = _effective_severity(f)
+        counts[esev] = counts.get(esev, 0) + 1
         if f.verdict == "verified":
             verified += 1
     total = len(findings)
@@ -2241,13 +2331,14 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         en = en or es
         return (f'<div class="md"><div class="lg lg-es">{_md(es)}</div>'
                 f'<div class="lg lg-en">{_md(en)}</div></div>')
-    for f in sorted(findings, key=lambda x: _SEV.index(x.severity) if x.severity in _SEV else 9):
+    for f in sorted(findings, key=lambda x: _SEV.index(_effective_severity(x)) if _effective_severity(x) in _SEV else 9):
         cvbadge, cvbody = _cvss_html(f, lang)
+        esev = _effective_severity(f)
         # <details> nativo: cada hallazgo se DESPLIEGA al pulsar, tambien como fichero estatico.
         cards += f'''
-        <details class="card" data-sev="{_esc(f.severity)}">
+        <details class="card" data-sev="{_esc(esev)}">
           <summary class="card-h">
-            {_badge(f.severity.upper(), _SEV_COLOR.get(f.severity,'#666'))}
+            {_badge(esev.upper(), _SEV_COLOR.get(esev,'#666'))}
             {_badge(f.verdict, _VERDICT_COLOR.get(f.verdict,'#666'))}
             {cvbadge}
             <span class="title">{_esc(f.title)}</span>
@@ -2311,7 +2402,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
                       f'<p class="poc-note" data-i18n="poc_note"></p>{cards_p}')
 
     decompiled_html = _decompiled_html(decompiled, lang)
-    cfg_html = _cfg_html(cfg, lang)
+    cfg_html = _cfg_html(cfg, lang, findings=findings)
     exploit_graph_html = _exploit_html(chains, lang)
     # Esquema de explotacion (de la vulnerabilidad al exploit): reutiliza el analisis de cadenas ya
     # calculado (sin re-ejecutar el sandbox) para concretar offset/gadgets/objetivo y, si hay cadena
@@ -3318,6 +3409,10 @@ h2[id]{scroll-margin-top:16px}
 .cfgnode{cursor:move}
 .cfgaddr{fill:var(--acc);font:700 11px ui-monospace,monospace}
 .cfgins{fill:var(--codefg);font:11px/1 ui-monospace,monospace}
+.cfgnode.verified rect{stroke:#e5484d;stroke-width:2.5}
+.cfgvbadge{fill:#e5484d;font:700 9px ui-monospace,monospace}
+.cfgnote{fill:var(--mut);font:10px -apple-system,system-ui,sans-serif}
+.cfgnode.verified .cfgnote{fill:var(--fg)}
 .cfg-lg{display:inline-flex;align-items:center;gap:4px;margin:0 8px}
 .cfg-lg i{width:16px;height:3px;border-radius:2px;display:inline-block}
 .cfg-reset{font-size:11px;padding:2px 8px;margin-left:6px}
