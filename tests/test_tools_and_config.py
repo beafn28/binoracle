@@ -1614,7 +1614,7 @@ def test_methodology_html_documents_every_phase_honestly():
     for phase in ("Fase 0", "Fase 2", "Fase 3", "Fase 4", "Fase 5", "Fase 6", "Fase 7", "Fase 9"):
         assert phase in html
     assert "sandbox de verificacion dinamica" in html and "Linux/ELF-only" in html  # Fase 8 honesta en PE
-    assert "MSI" in html and "fuera de alcance" not in html.lower() or "Fuera de alcance" in html
+    assert "MSI" in html and "DISABLEROLLBACK" in html  # checklist MSI: documentado, no fingido
 
     # ELF: no debe reclamar Fase 0/2 (especificas de PE: Rich Header, capacidades Win32...)
     html_elf = _methodology_html(False, has_full, "es")
@@ -1628,6 +1628,225 @@ def test_methodology_html_documents_every_phase_honestly():
     assert "no se pudo decompilar" in html_empty
     assert "no hay suficientes hallazgos" in html_empty
     assert "sin hallazgos que mapear" in html_empty
+
+
+def test_elf_capability_map_classifies_libc_imports_by_category():
+    # Equivalente ELF del mapa de capacidades de PE (Fase 2 de la metodologia, aplicada a Linux):
+    # clasifica los imports de libc/libcrypto/libpq/etc por categoria. read/write se excluyen a
+    # proposito (estan en practicamente todo binario dinamico, diluirian la senal).
+    from binoracle.report.html import _elf_capability_map, _capability_html, _ELF_CAPABILITIES
+
+    class _FakeTriage:
+        sections = [("Imports", "radare2: ii",
+                     "1 0x1 GLOBAL FUNC socket\n"
+                     "2 0x2 GLOBAL FUNC connect\n"
+                     "3 0x3 GLOBAL FUNC setuid\n"
+                     "4 0x4 GLOBAL FUNC execve\n"
+                     "5 0x5 GLOBAL FUNC sqlite3_open\n"
+                     "6 0x6 GLOBAL FUNC printf\n"
+                     "7 0x7 GLOBAL FUNC read\n"
+                     "8 0x8 GLOBAL FUNC write\n")]
+
+    cm = _elf_capability_map(_FakeTriage())
+    assert cm == {"red": ["connect", "socket"], "proceso": ["execve"],
+                  "privilegios": ["setuid"], "bd": ["sqlite3_open"]}
+    assert "read" not in str(cm) and "write" not in str(cm)
+    html = _capability_html(cm, "es", categories=_ELF_CAPABILITIES)
+    assert "Red" in html and "Privilegios" in html and "Bases de datos" in html
+
+    class _EmptyTriage:
+        sections = [("Imports", "radare2: ii", "1 0x1 GLOBAL FUNC printf\n")]
+    assert _elf_capability_map(_EmptyTriage()) == {}
+
+
+def test_elf_rpath_hijack_check_flags_relative_and_world_writable_paths(tmp_path):
+    # Equivalente ELF de DLL hijacking: DT_RPATH/DT_RUNPATH relativo o en un directorio classic
+    # world-writable permite plantar un .so malicioso con el nombre de una dependencia real.
+    from unittest.mock import patch, MagicMock
+    from binoracle.report.html import _elf_rpath_hijack_check, _elf_rpath_hijack_html
+
+    f = tmp_path / "app"
+    f.write_bytes(b"\x7fELF")
+
+    def _mk_dynsec(runpath=None, rpath=None):
+        tags = []
+        if runpath is not None:
+            t = MagicMock(); t.entry.d_tag = "DT_RUNPATH"; t.runpath = runpath
+            tags.append(t)
+        if rpath is not None:
+            t2 = MagicMock(); t2.entry.d_tag = "DT_RPATH"; t2.rpath = rpath
+            tags.append(t2)
+        dynsec = MagicMock(); dynsec.iter_tags.return_value = tags
+        elf = MagicMock(); elf.get_section_by_name.return_value = dynsec
+        return elf
+
+    # ruta relativa Y directorio world-writable clasico -> ambas se marcan; ruta absoluta normal no
+    with patch("elftools.elf.elffile.ELFFile", return_value=_mk_dynsec(runpath="./lib:/opt/safe/lib:/tmp/evil")):
+        res = _elf_rpath_hijack_check(str(f))
+    kinds = {(dt, path): kind for dt, path, kind in res["entries"]}
+    assert kinds[("DT_RUNPATH", "./lib")] == "relative"
+    assert kinds[("DT_RUNPATH", "/tmp/evil")] == "world_writable"
+    assert ("DT_RUNPATH", "/opt/safe/lib") not in kinds
+    html = _elf_rpath_hijack_html(res, "es")
+    assert "./lib" in html and "/tmp/evil" in html and "/opt/safe/lib" not in html
+
+    # DT_RPATH (legado, busqueda antes que LD_LIBRARY_PATH) tambien se detecta y se distingue
+    with patch("elftools.elf.elffile.ELFFile", return_value=_mk_dynsec(rpath="lib")):
+        res_rpath = _elf_rpath_hijack_check(str(f))
+    assert res_rpath["entries"] == [("DT_RPATH", "lib", "relative")]
+
+    # solo rutas absolutas seguras: nada que avisar
+    with patch("elftools.elf.elffile.ELFFile", return_value=_mk_dynsec(runpath="/usr/local/lib:/opt/app/lib")):
+        assert _elf_rpath_hijack_check(str(f)) == {}
+    assert _elf_rpath_hijack_html({}, "es") == ""
+
+    # sin .dynamic (binario estatico): no aplica
+    static_elf = MagicMock(); static_elf.get_section_by_name.return_value = None
+    with patch("elftools.elf.elffile.ELFFile", return_value=static_elf):
+        assert _elf_rpath_hijack_check(str(f)) == {}
+
+
+def test_elf_debug_path_leak_extracts_dwarf_comp_dir(tmp_path):
+    # Equivalente ELF de la fuga de PDB: DW_AT_comp_dir (si se compilo con -g) filtra la ruta
+    # absoluta de la maquina de build.
+    from unittest.mock import patch, MagicMock
+    from binoracle.report.html import _elf_debug_path_leak, _elf_debug_path_leak_html
+
+    f = tmp_path / "app"
+    f.write_bytes(b"\x7fELF")
+
+    comp_dir = MagicMock(); comp_dir.value = b"/home/build/agent1/proj/src"
+    name = MagicMock(); name.value = b"main.c"
+    die = MagicMock(); die.attributes = {"DW_AT_comp_dir": comp_dir, "DW_AT_name": name}
+    cu = MagicMock(); cu.get_top_DIE.return_value = die
+    dwarf = MagicMock(); dwarf.iter_CUs.return_value = [cu]
+    elf = MagicMock(); elf.has_dwarf_info.return_value = True; elf.get_dwarf_info.return_value = dwarf
+
+    with patch("elftools.elf.elffile.ELFFile", return_value=elf):
+        res = _elf_debug_path_leak(str(f))
+    assert res == {"comp_dir": "/home/build/agent1/proj/src", "name": "main.c"}
+    html = _elf_debug_path_leak_html(res, "es")
+    assert "/home/build/agent1/proj/src" in html and "main.c" in html
+
+    # sin DWARF (release limpio, sin -g): nada que avisar
+    elf_clean = MagicMock(); elf_clean.has_dwarf_info.return_value = False
+    with patch("elftools.elf.elffile.ELFFile", return_value=elf_clean):
+        assert _elf_debug_path_leak(str(f)) == {}
+    assert _elf_debug_path_leak_html({}, "es") == ""
+
+
+def test_elf_capabilities_check_detects_aware_apis_and_xattr(tmp_path):
+    # Checklist "Linux capabilities": dos senales distintas, ninguna adivinada. (1) el binario
+    # importa APIs de manejo de capabilities (capset/prctl) -- hecho de codigo. (2) la xattr
+    # security.capability esta asignada -- hecho del fichero, solo legible en Linux/si sobrevivio
+    # la transferencia; NO se decodifica el bitmask exacto (mismo principio de honestidad que MSI).
+    from unittest.mock import patch
+    from binoracle.report.html import _elf_capabilities_check, _elf_capabilities_html
+
+    f = tmp_path / "app"
+    f.write_bytes(b"\x7fELF")
+
+    class _FakeTriage:
+        sections = [("Imports", "radare2: ii", "1 0x1 GLOBAL FUNC prctl\n2 0x2 GLOBAL FUNC capset\n")]
+
+    res = _elf_capabilities_check(str(f), _FakeTriage())
+    assert res == {"aware_apis": ["capset", "prctl"]}
+    html = _elf_capabilities_html(res, "es")
+    assert "prctl" in html and "capset" in html and "getcap" in html  # nota honesta, no decodifica el bitmask
+
+    class _EmptyTriage:
+        sections = []
+    with patch("os.getxattr", return_value=b"\x01" * 8, create=True):
+        res_xattr = _elf_capabilities_check(str(f), _EmptyTriage())
+    assert res_xattr == {"xattr_size": 8}
+    assert "security.capability" in _elf_capabilities_html(res_xattr, "es")
+
+    assert _elf_capabilities_check(str(f), _EmptyTriage()) == {}
+    assert _elf_capabilities_html({}, "es") == ""
+
+
+def test_references_cites_real_clickable_sources_for_pe_features():
+    # Feedback del usuario: la seccion de Referencias solo mostraba comandos de RAG interno
+    # ("binoracle kb ...") y nombres de repo sueltos sin enlace -- pidio fuentes REALES (teoria
+    # usada, citable). Cada URL de _REF_MAP se verifico con WebFetch antes de anadirla (Microsoft
+    # Learn, MITRE ATT&CK, OWASP, GitHub); extra_keys activa las citas de las features PE que
+    # SI dispararon en este informe concreto (no toda la tabla solo por ser un PE).
+    from binoracle.report.html import _references
+
+    html_full = _references([], "es", extra_keys=[
+        "dll_hijack", "pe_mitigations", "msi_rollback", "owasp_desktop", "authenticode"])
+    for domain in ("learn.microsoft.com", "attack.mitre.org", "owasp.org"):
+        assert domain in html_full
+    assert html_full.count("<a href=") >= 5  # cada fuente es un link real, no texto suelto
+    assert 'target="_blank"' in html_full
+
+    # sin extra_keys y sin findings que matcheen: no se citan fuentes PE que no aplican a este informe
+    html_none = _references([], "es", extra_keys=[])
+    assert "learn.microsoft.com" not in html_none and "attack.mitre.org" not in html_none
+
+    # los repos existentes (heap/kernel) tambien deben ser enlaces reales ahora, no texto plano
+    class _F:
+        def __init__(self, t):
+            self.title, self.evidence, self.location = t, "", ""
+    html_heap = _references([_F("posible heap overflow")], "es")
+    assert "github.com/shellphish/how2heap" in html_heap
+
+
+def test_is_msi_detects_ole_compound_file_signature(tmp_path):
+    # Checklist base: "elevacion a SYSTEM via MSI rollback/Config.Msi LPE". Un .msi es Compound
+    # File Binary Format (OLE), NO PE/ELF/Mach-O -- r2 no lo entiende. La deteccion es solo la
+    # firma OLE estandar (8 bytes, documentada, sin ambiguedad), independiente de lo que r2 haya
+    # podido sacar (que sera basura para este formato).
+    from binoracle.report.html import _is_msi
+
+    msi_like = tmp_path / "installer.msi"
+    msi_like.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    assert _is_msi(str(msi_like)) is True
+
+    not_msi = tmp_path / "app.exe"
+    not_msi.write_bytes(b"MZ" + b"\x00" * 64)
+    assert _is_msi(str(not_msi)) is False
+
+    assert _is_msi(str(tmp_path / "does_not_exist")) is False
+
+
+def test_msi_recon_extracts_summary_metadata_without_guessing_rollback():
+    # Se extraen los metadatos OLE estandar (SummaryInformation: titulo, autor, plantilla...) via
+    # la libreria olefile, pero DELIBERADAMENTE no se decodifica la tabla Property (DISABLEROLLBACK)
+    # -- eso requeriria implementar el formato binario de fila/columna de las tablas MSI, que no se
+    # puede verificar sin un fichero MSI real de referencia. El informe debe decir esto
+    # explicitamente (Fase 5: no afirmar un hecho de seguridad que no se puede verificar).
+    from unittest.mock import patch, MagicMock
+    from binoracle.report.html import _msi_recon, _msi_recon_html
+
+    fake_meta = MagicMock()
+    fake_meta.title = "Installer Package"
+    fake_meta.author = "Contoso Inc"
+    fake_meta.subject = None
+    fake_meta.comments = None
+    fake_meta.template = "x64;1033"
+    fake_ole = MagicMock()
+    fake_ole.get_metadata.return_value = fake_meta
+    fake_ole.listdir.return_value = [["Property"], ["CustomAction"], ["\x05SummaryInformation"]]
+
+    with patch("olefile.OleFileIO", return_value=fake_ole):
+        res = _msi_recon("/nonexistent.msi")
+    assert res == {"is_msi": True, "title": "Installer Package", "author": "Contoso Inc",
+                    "subject": None, "comments": None, "template": "x64;1033", "n_entries": 3}
+    fake_ole.close.assert_called_once()
+
+    html = _msi_recon_html(res, "es")
+    assert "Contoso Inc" in html and "x64;1033" in html
+    assert "DISABLEROLLBACK" in html and "NO verificado" in html
+
+    # olefile no puede parsear el fichero (corrupto): degrada con gracia, no rompe el informe
+    with patch("olefile.OleFileIO", side_effect=OSError("bad file")):
+        res_bad = _msi_recon("/nonexistent.msi")
+    assert res_bad == {"is_msi": True, "parse_failed": True}
+    html_bad = _msi_recon_html(res_bad, "es")
+    assert "no se pudo parsear" in html_bad
+
+    assert _msi_recon_html({}, "es") == ""
 
 
 def test_pe_rich_header_reports_presence_and_entry_count():
