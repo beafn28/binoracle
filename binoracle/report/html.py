@@ -338,6 +338,13 @@ def _packing_warning_html(pk: dict, lang: str) -> str:
     for name, ent in pk.get("high_entropy", []):
         parts.append((f"seccion '{name}' con entropia {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"
                       if es else f"section '{name}' with entropy {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"))
+    lf = pk.get("low_fncount")
+    if lf:
+        nfcn, size = lf
+        parts.append((f"solo {nfcn} funciones detectadas para un binario de {size:,} bytes "
+                      "(tipico del stub de un packer, no del programa real)" if es else
+                      f"only {nfcn} functions detected for a {size:,}-byte binary "
+                      "(typical of a packer stub, not the real program)"))
     body = "; ".join(parts)
     note = ("El resto del analisis estatico (imports, cadenas, funciones) puede estar viendo el "
             "STUB del empaquetador, no el programa real: los resultados de abajo son menos "
@@ -868,22 +875,47 @@ _PE_CAPABILITIES = [
     ("ficheros", ("es", "Ficheros"), ("en", "Files"), (
         "CreateFile", "WriteFile", "ReadFile", "DeleteFile", "MoveFile", "CopyFile",
         "SetFileAttributes", "GetTempPath", "GetTempFileName")),
+    ("bd", ("es", "Bases de datos"), ("en", "Databases"), (
+        "SQLConnect", "SQLDriverConnect", "SQLExecDirect", "SQLExecute", "SQLPrepare",
+        "SQLGetData", "SQLFetch", "SQLBindParameter", "sqlite3_open", "sqlite3_exec",
+        "sqlite3_prepare")),
 ]
 
 
-def _pe_capability_map(triage) -> dict:
+def _pe_imports_via_pefile(binary: str) -> set:
+    """Fallback de Fase 0: si r2 (ii/iij) no da imports (PE raro, empaquetado, o el parser de r2
+    se atraganta), NO hay que asumir que el binario carece de tabla de importaciones -- probar
+    pefile antes de concluir nada. Devuelve el set de nombres de funcion importados, vacio si
+    tambien falla (best-effort, igual que el resto de oraculos de este informe)."""
+    try:
+        import pefile
+        pe = pefile.PE(binary, fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+        names = set()
+        for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []):
+            for imp in entry.imports:
+                nm = imp.name
+                if not nm:
+                    continue
+                if isinstance(nm, bytes):
+                    nm = nm.decode("latin-1", errors="replace")
+                names.add(nm)
+        return names
+    except Exception:
+        return set()
+
+
+def _pe_capability_map(triage, binary: str = None) -> dict:
     """Clasifica los imports del binario por capacidad (red/proceso/privilegios/cripto/registro/
-    ficheros), Fase 2 de una auditoria PE: dice DONDE merece la pena mirar antes de leer ninguna
-    funcion. Solo tiene sentido para bintype=pe (los nombres son API Win32); se llama solo desde
-    ahi. Devuelve {cat_key: [nombres de funcion encontrados]}, categorias vacias omitidas."""
+    ficheros/bd), Fase 2 de una auditoria PE: dice DONDE merece la pena mirar antes de leer
+    ninguna funcion. Solo tiene sentido para bintype=pe (los nombres son API Win32); se llama solo
+    desde ahi. Devuelve {cat_key: [nombres de funcion encontrados]}, categorias vacias omitidas."""
     if triage is None:
         return {}
     imports_text = ""
     for title, source, text in triage.sections:
         if "import" in title.lower():
             imports_text += text + "\n"
-    if not imports_text.strip():
-        return {}
     names = set()
     for line in imports_text.splitlines():
         parts = line.split()
@@ -892,6 +924,10 @@ def _pe_capability_map(triage) -> dict:
         cand = parts[-1]
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", cand):
             names.add(cand)
+    if not names and binary:
+        names = _pe_imports_via_pefile(binary)
+    if not names:
+        return {}
     def _match(name: str, pattern: str) -> bool:
         low = name.lower()
         if pattern.startswith("="):
@@ -914,16 +950,23 @@ _PACKER_SECTION_SIGS = {
     ".enigma2": "Enigma", ".pec1": "PECompact", ".pec2": "PECompact",
 }
 _ENTROPY_PACKED_THRESHOLD = 7.0
+# Fase 0: senal adicional de empaquetado -- un binario grande con MUY pocas funciones detectadas
+# es tipico del stub de un packer (el programa real esta comprimido/cifrado como datos, r2 no ve
+# codigo ahi). Umbrales empiricos: por debajo de este tamano no es significativo (cualquier
+# programa pequeno tiene pocas funciones de forma legitima).
+_PACKING_MIN_SIZE_FOR_FNCOUNT = 200_000
+_PACKING_LOW_FNCOUNT = 30
 
 
 def _pe_packing_check(binary: str) -> dict:
     """Fase 0: entropia por seccion (umbral empirico ~7.0 = probablemente comprimido/cifrado) +
-    nombres de seccion de packers conocidos. Si el binario esta empaquetado, el resto del
-    analisis estatico (imports, cadenas, funciones) ve el STUB del packer, no el programa real --
-    hay que avisar de esto ANTES que de cualquier otra cosa. Best-effort: {} si falla o no aplica."""
+    nombres de seccion de packers conocidos + recuento de funciones detectadas (afl~?) anormalmente
+    bajo para el tamano del binario. Si el binario esta empaquetado, el resto del analisis estatico
+    (imports, cadenas, funciones) ve el STUB del packer, no el programa real -- hay que avisar de
+    esto ANTES que de cualquier otra cosa. Best-effort: {} si falla o no aplica."""
     try:
         from ..oracles.r2session import get as _r2get
-        import json as _json
+        import json as _json, os as _os
         r = _r2get(binary)
         if r is None:
             return {}
@@ -941,9 +984,20 @@ def _pe_packing_check(binary: str) -> dict:
             packer = _PACKER_SECTION_SIGS.get(name.lower())
             if packer:
                 sigs.append((name, packer))
-        if not high and not sigs:
+        low_fncount = None
+        try:
+            size = _os.path.getsize(binary)
+            nfcn = int((r.cmd("aflc") or "0").strip())
+            if size >= _PACKING_MIN_SIZE_FOR_FNCOUNT and 0 < nfcn < _PACKING_LOW_FNCOUNT:
+                low_fncount = (nfcn, size)
+        except Exception:
+            low_fncount = None
+        if not high and not sigs and not low_fncount:
             return {}
-        return {"high_entropy": high, "packer_sections": sigs}
+        out = {"high_entropy": high, "packer_sections": sigs}
+        if low_fncount:
+            out["low_fncount"] = low_fncount
+        return out
     except Exception:
         return {}
 
@@ -968,6 +1022,131 @@ def _pe_dll_characteristics(binary: str) -> dict:
                 "CFG": bool(bits & _PE_GUARD_CF)}
     except Exception:
         return {}
+
+
+# Checklist base de auditoria PE: "DLL hijacking - se utilizan rutas relativas?". Windows carga
+# estas DLLs por busqueda de nombre (no ruta completa) en varias versiones/contextos, y son las
+# reportadas con mas frecuencia en investigaciones publicas de sideloading/hijacking (plantar una
+# DLL maliciosa con este nombre en el directorio del ejecutable para que cargue antes que la
+# legitima del sistema). No es una lista exhaustiva, es una senal de "merece la pena revisar".
+_HIJACKABLE_DLLS = {
+    "version.dll", "dwmapi.dll", "uxtheme.dll", "winmm.dll", "msimg32.dll", "wtsapi32.dll",
+    "dbghelp.dll", "profapi.dll", "cryptbase.dll", "ntmarta.dll", "propsys.dll", "oleacc.dll",
+    "secur32.dll", "wow64log.dll", "apphelp.dll", "imageres.dll", "wbemcomn.dll", "amsi.dll",
+    "wldp.dll",
+}
+# Si el binario usa estas APIs para fijar su propia ruta de busqueda de DLLs, se considera
+# endurecido frente a hijacking por busqueda de nombre (mitigacion real, no solo teoria).
+_DLL_SEARCH_HARDENING_APIS = {"setdlldirectorya", "setdlldirectoryw", "setdefaultdlldirectories"}
+
+
+def _pe_dll_hijack_check(triage) -> dict:
+    """Checklist base: DLL hijacking. Mira los NOMBRES DE DLL de la tabla de imports (no solo las
+    funciones) contra una lista de DLLs conocidas por cargarse por busqueda de nombre y ser
+    plantadas junto al ejecutable para search-order hijacking. Si el binario ademas usa
+    SetDllDirectory/SetDefaultDllDirectories se considera endurecido y no se avisa. Devuelve
+    {"dlls": [nombres encontrados]} o {} si no aplica/no hay indicios."""
+    if triage is None:
+        return {}
+    imports_text = ""
+    for title, source, text in triage.sections:
+        if "import" in title.lower():
+            imports_text += text + "\n"
+    if not imports_text.strip():
+        return {}
+    dll_names = set()
+    func_names = set()
+    for line in imports_text.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        cand_fn = parts[-1]
+        cand_dll = parts[-2]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", cand_fn):
+            func_names.add(cand_fn.lower())
+        if re.match(r"^[A-Za-z0-9_.]+\.dll$", cand_dll, re.I):
+            dll_names.add(cand_dll.lower())
+    if func_names & _DLL_SEARCH_HARDENING_APIS:
+        return {}
+    hits = sorted(dll_names & _HIJACKABLE_DLLS)
+    return {"dlls": hits} if hits else {}
+
+
+def _dll_hijack_html(res: dict, lang: str) -> str:
+    """Checklist base: aviso de DLL hijacking si el binario importa alguna DLL de busqueda-por-
+    nombre conocida sin usar las APIs de endurecimiento de ruta de busqueda."""
+    if not res or not res.get("dlls"):
+        return ""
+    es = lang == "es"
+    title = "Posible DLL hijacking" if es else "Possible DLL hijacking"
+    dll_list = ", ".join(res["dlls"])
+    body = ((f"Importa {dll_list}, que Windows puede cargar por busqueda de nombre (no ruta "
+             f"completa), y el binario no llama a SetDllDirectory/SetDefaultDllDirectories para "
+             f"fijar su propia ruta de busqueda.") if es else
+            (f"Imports {dll_list}, which Windows can load by name search (not a full path), and "
+             f"the binary never calls SetDllDirectory/SetDefaultDllDirectories to pin its own "
+             f"search path."))
+    note = ("Si un atacante puede escribir en el directorio del ejecutable (o en un directorio "
+            "anterior en la ruta de busqueda), puede plantar una DLL maliciosa con ese nombre y "
+            "conseguir ejecucion de codigo con los privilegios del proceso." if es else
+            "If an attacker can write to the executable's directory (or an earlier directory in "
+            "the search path), they can plant a malicious DLL with that name and get code "
+            "execution with the process's privileges.")
+    return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+            f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+            f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+            f'<span class="proof-t">{_esc(title)}</span></div>'
+            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+
+
+def _pe_pdb_leak(binary: str) -> dict:
+    """Checklist base: filtracion de informacion sensible en strings -- rutas de compilacion. El
+    PE Debug Directory (registro CodeView/RSDS) suele embeber la ruta ABSOLUTA al .pdb tal cual
+    quedo en la maquina que compilo el binario (revela usuario, estructura de disco, a veces
+    nombre de la organizacion). Usa pefile (r2 no expone este directorio). Best-effort: {} si
+    falla, no aplica, o el binario fue compilado sin esta info (release limpio)."""
+    try:
+        import pefile
+        pe = pefile.PE(binary, fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"]])
+        for d in getattr(pe, "DIRECTORY_ENTRY_DEBUG", []):
+            entry = getattr(d, "entry", None)
+            path = getattr(entry, "PdbFileName", None) if entry is not None else None
+            if not path:
+                continue
+            if isinstance(path, bytes):
+                path = path.rstrip(b"\x00").decode("latin-1", errors="replace")
+            path = path.rstrip("\x00")
+            if path:
+                return {"pdb_path": path}
+        return {}
+    except Exception:
+        return {}
+
+
+def _pdb_leak_html(res: dict, lang: str) -> str:
+    """Checklist base: aviso de fuga de ruta de compilacion (PDB) si el Debug Directory la trae."""
+    path = (res or {}).get("pdb_path")
+    if not path:
+        return ""
+    es = lang == "es"
+    title = "Ruta de compilacion filtrada (PDB)" if es else "Compilation path leaked (PDB)"
+    body = ((f"El Debug Directory del PE embebe la ruta absoluta al simbolo de depuracion: "
+             f"{path}") if es else
+            (f"The PE Debug Directory embeds the absolute path to the debug symbol: {path}"))
+    note = ("Revela la estructura de disco (y a veces el usuario/organizacion) de la maquina que "
+            "compilo el binario. Bajo impacto por si solo, pero utilidad para reconocimiento "
+            "(nombres de proyecto, rutas de red internas, convenciones de nombrado)." if es else
+            "Reveals the disk layout (and sometimes the username/organization) of the build "
+            "machine. Low impact on its own, but useful for recon (project names, internal "
+            "network paths, naming conventions).")
+    return (f'<div class="proof" style="border-color:#5b8def;box-shadow:0 0 0 1px rgba(91,141,239,.15)">'
+            f'<div class="proof-h" style="background:#0c1420;border-color:#5b8def">'
+            f'<span class="proof-ok" style="color:#5b8def">&#9432;</span>'
+            f'<span class="proof-t">{_esc(title)}</span></div>'
+            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
 
 
 _CVSS_SEV_COLOR = {"Critical": "#e5484d", "High": "#f5a623", "Medium": "#e2b53e",
@@ -1287,7 +1466,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         cveplan_html = ""
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
-    capability_html = _capability_html(_pe_capability_map(triage), lang) if is_pe else ""
+    capability_html = _capability_html(_pe_capability_map(triage, binary), lang) if is_pe else ""
     attack_chain_html = _attack_chain(findings, mit, lang)
     references_html = _references(findings, lang)
     owasp_html = _owasp_html(findings, lang)
@@ -1297,6 +1476,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     answer_html = (f'<div class="panel md summary" id="sec-summary">'
                    f'<div class="panel-t" data-i18n="exec_summary"></div>{_md(summary_txt)}</div>')
     packing_html = _packing_warning_html(_pe_packing_check(binary), lang) if is_pe else ""
+    dll_hijack_html = _dll_hijack_html(_pe_dll_hijack_check(triage), lang) if is_pe else ""
+    pdb_leak_html = _pdb_leak_html(_pe_pdb_leak(binary), lang) if is_pe else ""
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
@@ -1340,6 +1521,10 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {toc_html}
 
   {packing_html}
+
+  {dll_hijack_html}
+
+  {pdb_leak_html}
 
   {answer_html}
 
