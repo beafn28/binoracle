@@ -23,6 +23,14 @@ def _esc(s) -> str:
     return _html.escape(str(s if s is not None else ""))
 
 
+def _lg(es_html: str, en_html: str) -> str:
+    """Envuelve un bloque en las dos variantes de idioma (mismo mecanismo que el resto del informe:
+    _bi(), .lg-es/.lg-en, boton de idioma) para que TODO el informe -- no solo el markdown de los
+    hallazgos -- responda al toggle EN, con espanol visible por defecto. Si algun bloque no aporta
+    nada en un idioma, pasar "" en ese lado."""
+    return f'<div class="lg lg-es">{es_html}</div><div class="lg lg-en">{en_html}</div>'
+
+
 def _badge(text, color):
     return f'<span class="badge" style="background:{color}">{_esc(text)}</span>'
 
@@ -246,25 +254,28 @@ def _win32_constant_annotations(code: str) -> list:
     return out
 
 
-def _win32_constants_html(hits: list, lang: str) -> str:
+def _win32_constants_html(hits: list, lang: str = "es") -> str:
     """Fase 4: tabla de constantes Win32 verificadas contra la documentacion oficial (valores
-    estables y publicos del SDK de Microsoft), no interpretadas a ojo por el LLM."""
+    estables y publicos del SDK de Microsoft), no interpretadas a ojo por el LLM. Bilingue: ambos
+    idiomas se generan siempre (patron .lg-es/.lg-en del resto del informe, espanol visible por
+    defecto), `lang` se ignora salvo por compatibilidad de firma con el resto de helpers."""
     if not hits:
         return ""
-    es = lang == "es"
-    title = "Constantes verificadas (Fase 4)" if es else "Verified constants (Phase 4)"
-    note = ("Numeros magicos en llamadas a APIs Win32 conocidas, resueltos contra sus valores "
-            "oficiales y estables del SDK de Microsoft -- no interpretados por el modelo." if es else
-            "Magic numbers in known Win32 API calls, resolved against their official, stable "
-            "Microsoft SDK values -- not interpreted by the model.")
     rows = "".join(
         f'<tr><td><code>{_esc(api)}</code></td><td><code>{_esc(txt)}</code></td>'
         f'<td><code>{_esc(sym)}</code></td></tr>' for api, txt, sym in hits)
-    th = ("API", "Valor", "Constante") if es else ("API", "Value", "Constant")
-    return (f'<details class="sec" open><summary>{_esc(title)}</summary>'
-            f'<p class="sechelp">{_esc(note)}</p>'
-            f'<table class="mittab"><thead><tr>{"".join(f"<th>{_esc(h)}</th>" for h in th)}</tr></thead>'
-            f'<tbody>{rows}</tbody></table></details>')
+    def block(es: bool) -> str:
+        title = "Constantes verificadas (Fase 4)" if es else "Verified constants (Phase 4)"
+        note = ("Numeros magicos en llamadas a APIs Win32 conocidas, resueltos contra sus valores "
+                "oficiales y estables del SDK de Microsoft -- no interpretados por el modelo." if es else
+                "Magic numbers in known Win32 API calls, resolved against their official, stable "
+                "Microsoft SDK values -- not interpreted by the model.")
+        th = ("API", "Valor", "Constante") if es else ("API", "Value", "Constant")
+        return (f'<details class="sec" open><summary>{_esc(title)}</summary>'
+                f'<p class="sechelp">{_esc(note)}</p>'
+                f'<table class="mittab"><thead><tr>{"".join(f"<th>{_esc(h)}</th>" for h in th)}</tr></thead>'
+                f'<tbody>{rows}</tbody></table></details>')
+    return _lg(block(True), block(False))
 
 
 def _decompiled_html(decompiled, lang: str = "es") -> str:
@@ -404,73 +415,86 @@ def _mit_detail(mit: dict, lang: str) -> str:
             f'<th>{T["h_impact"]}</th><th>{T["h_rem"]}</th></tr></thead><tbody>{rows}</tbody></table>')
 
 
-def _capability_html(cap_map: dict, lang: str) -> str:
+def _capability_html(cap_map: dict, lang: str = "es", categories=None) -> str:
     """Mapa de capacidades (Fase 2): por cada categoria con imports, un chip con el recuento y
-    las funciones detectadas. Vacio si no hay ninguna categoria (no es PE, o sin imports Win32
-    reconocidos) -- el llamador ya filtra por bintype=pe antes de construir cap_map."""
+    las funciones detectadas. Vacio si no hay ninguna categoria (sin imports reconocidos de la
+    tabla dada) -- el llamador ya filtra por formato antes de construir cap_map. `categories` es
+    la tabla a usar (_PE_CAPABILITIES o _ELF_CAPABILITIES); por defecto _PE_CAPABILITIES para no
+    romper llamadas existentes. Bilingue siempre (patron .lg-es/.lg-en), `lang` se ignora salvo
+    por compatibilidad de firma."""
     if not cap_map:
         return ""
-    es = lang == "es"
-    title = ("Mapa de capacidades (por imports)" if es else "Capability map (from imports)")
-    note = ("Lo que el binario PUEDE hacer, clasificado por los imports detectados -- antes de "
-            "mirar ninguna funcion. Indica donde merece la pena profundizar." if es else
-            "What the binary CAN do, classified from its detected imports -- before reading any "
-            "function. Points to where it is worth digging in.")
-    cards = ""
-    for key, _es_pair, _en_pair, _pat in _PE_CAPABILITIES:
-        hits = cap_map.get(key)
-        if not hits:
-            continue
-        lbl = _es_pair[1] if es else _en_pair[1]
-        fn_chips = "".join(f'<span class="refchip">{_esc(h)}</span>' for h in hits[:12])
-        more = len(hits) - 12
-        more_txt = (f' <span class="mut">+{more}</span>' if more > 0 else "")
-        cards += (f'<div class="panel" style="margin:8px 0"><div class="panel-t">{_esc(lbl)} '
-                  f'<span class="mut">({len(hits)})</span></div>'
-                  f'<div class="refchips">{fn_chips}{more_txt}</div></div>')
-    if not cards:
+    categories = _PE_CAPABILITIES if categories is None else categories
+    def block(es: bool) -> str:
+        title = ("Mapa de capacidades (por imports)" if es else "Capability map (from imports)")
+        note = ("Lo que el binario PUEDE hacer, clasificado por los imports detectados -- antes de "
+                "mirar ninguna funcion. Indica donde merece la pena profundizar." if es else
+                "What the binary CAN do, classified from its detected imports -- before reading any "
+                "function. Points to where it is worth digging in.")
+        cards = ""
+        for key, _es_pair, _en_pair, _pat in categories:
+            hits = cap_map.get(key)
+            if not hits:
+                continue
+            lbl = _es_pair[1] if es else _en_pair[1]
+            fn_chips = "".join(f'<span class="refchip">{_esc(h)}</span>' for h in hits[:12])
+            more = len(hits) - 12
+            more_txt = (f' <span class="mut">+{more}</span>' if more > 0 else "")
+            cards += (f'<div class="panel" style="margin:8px 0"><div class="panel-t">{_esc(lbl)} '
+                      f'<span class="mut">({len(hits)})</span></div>'
+                      f'<div class="refchips">{fn_chips}{more_txt}</div></div>')
+        if not cards:
+            return ""
+        return (f'<h2>{_esc(title)}</h2><p class="sechelp">{_esc(note)}</p>{cards}')
+    es_html, en_html = block(True), block(False)
+    if not es_html and not en_html:
         return ""
-    return (f'<h2>{_esc(title)}</h2><p class="sechelp">{_esc(note)}</p>{cards}')
+    return _lg(es_html, en_html)
 
 
-def _packing_warning_html(pk: dict, lang: str) -> str:
+def _packing_warning_html(pk: dict, lang: str = "es") -> str:
     """Fase 0: si hay indicios de empaquetado, un aviso BIEN VISIBLE antes de cualquier otra
     seccion -- el resto del informe (imports, cadenas, funciones) puede estar viendo el stub del
-    packer, no el programa real, y hay que saberlo antes de leer nada mas."""
+    packer, no el programa real, y hay que saberlo antes de leer nada mas. Bilingue siempre
+    (patron .lg-es/.lg-en), `lang` se ignora salvo por compatibilidad de firma."""
     if not pk:
         return ""
-    es = lang == "es"
-    title = ("Posible empaquetado / cifrado" if es else "Possibly packed / encrypted")
-    parts = []
-    for name, packer in pk.get("packer_sections", []):
-        parts.append((f"seccion '{name}' (firma conocida de {packer})" if es
-                      else f"section '{name}' (known {packer} signature)"))
-    for name, ent in pk.get("high_entropy", []):
-        parts.append((f"seccion '{name}' con entropia {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"
-                      if es else f"section '{name}' with entropy {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"))
-    lf = pk.get("low_fncount")
-    if lf:
-        nfcn, size = lf
-        parts.append((f"solo {nfcn} funciones detectadas para un binario de {size:,} bytes "
-                      "(tipico del stub de un packer, no del programa real)" if es else
-                      f"only {nfcn} functions detected for a {size:,}-byte binary "
-                      "(typical of a packer stub, not the real program)"))
-    body = "; ".join(parts)
-    note = ("El resto del analisis estatico (imports, cadenas, funciones) puede estar viendo el "
-            "STUB del empaquetador, no el programa real: los resultados de abajo son menos "
-            "fiables hasta desempaquetar." if es else
-            "The rest of the static analysis (imports, strings, functions) may be looking at the "
-            "packer's STUB, not the real program: the results below are less reliable until "
-            "unpacked.")
-    return (f'<div class="proof" style="border-color:#e5484d;box-shadow:0 0 0 1px rgba(229,72,77,.15)">'
-            f'<div class="proof-h" style="background:#1a0e0e;border-color:#e5484d">'
-            f'<span class="proof-ok" style="color:#e5484d">&#9888;</span>'
-            f'<span class="proof-t">{_esc(title)}</span></div>'
-            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    def block(es: bool) -> str:
+        title = ("Posible empaquetado / cifrado" if es else "Possibly packed / encrypted")
+        parts = []
+        for name, packer in pk.get("packer_sections", []):
+            parts.append((f"seccion '{name}' (firma conocida de {packer})" if es
+                          else f"section '{name}' (known {packer} signature)"))
+        for name, ent in pk.get("high_entropy", []):
+            parts.append((f"seccion '{name}' con entropia {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"
+                          if es else f"section '{name}' with entropy {ent:.2f} (>= {_ENTROPY_PACKED_THRESHOLD})"))
+        lf = pk.get("low_fncount")
+        if lf:
+            nfcn, size = lf
+            parts.append((f"solo {nfcn} funciones detectadas para un binario de {size:,} bytes "
+                          "(tipico del stub de un packer, no del programa real)" if es else
+                          f"only {nfcn} functions detected for a {size:,}-byte binary "
+                          "(typical of a packer stub, not the real program)"))
+        body = "; ".join(parts)
+        note = ("El resto del analisis estatico (imports, cadenas, funciones) puede estar viendo el "
+                "STUB del empaquetador, no el programa real: los resultados de abajo son menos "
+                "fiables hasta desempaquetar." if es else
+                "The rest of the static analysis (imports, strings, functions) may be looking at the "
+                "packer's STUB, not the real program: the results below are less reliable until "
+                "unpacked.")
+        return (f'<div class="proof" style="border-color:#e5484d;box-shadow:0 0 0 1px rgba(229,72,77,.15)">'
+                f'<div class="proof-h" style="background:#1a0e0e;border-color:#e5484d">'
+                f'<span class="proof-ok" style="color:#e5484d">&#9888;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
 
 
 # Mapa tecnica -> cheat sheets del RAG + fuentes autoritativas.
+# Cada entrada: (claves de busqueda [findings o extra_keys explicitos], sheets del RAG local,
+# fuentes EXTERNAS reales como (etiqueta, URL) -- cada URL de esta tabla se verifico manualmente
+# (WebFetch, no adivinada) antes de anadirla; nunca se cita una fuente sin comprobar que existe.
 _REF_MAP = {
     "ret2win": (["ret2win", "rop"], []),
     "overflow": (["mitigations", "pie", "canary-bypass"], []),
@@ -478,8 +502,46 @@ _REF_MAP = {
     "system": (["got-plt"], []),
     "rop": (["rop", "advanced-rop", "syscall-table"], []),
     "format": (["format-string", "got-plt"], []),
-    "heap": (["heap", "modern-heap", "heap-version-matrix"], ["shellphish/how2heap"]),
-    "kernel": (["kernel-pwn", "kernel-mitigations"], ["xairy/linux-kernel-exploitation"]),
+    "heap": (["heap", "modern-heap", "heap-version-matrix"],
+             [("shellphish/how2heap (GitHub)", "https://github.com/shellphish/how2heap")]),
+    "kernel": (["kernel-pwn", "kernel-mitigations"],
+               [("xairy/linux-kernel-exploitation (GitHub)",
+                 "https://github.com/xairy/linux-kernel-exploitation")]),
+    # Fase 0/2/checklist de la metodologia PE: activadas explicitamente por extra_keys en
+    # render_html (no dependen de encontrar la palabra en los findings, ya que estas secciones
+    # no son Finding objects).
+    "pe_mitigations": ([], [
+        ("PE Format: DllCharacteristics / ASLR / DEP (Microsoft Learn)",
+         "https://learn.microsoft.com/en-us/windows/win32/debug/pe-format"),
+        ("Control Flow Guard for platform security (Microsoft Learn)",
+         "https://learn.microsoft.com/en-us/windows/win32/secbp/control-flow-guard"),
+    ]),
+    "dll_hijack": ([], [
+        ("Dynamic-link library search order (Microsoft Learn)",
+         "https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order"),
+        ("MITRE ATT&CK T1574.001: Hijack Execution Flow - DLL",
+         "https://attack.mitre.org/techniques/T1574/001/"),
+    ]),
+    "authenticode": ([], [
+        ("Authenticode Digital Signatures (Microsoft Learn)",
+         "https://learn.microsoft.com/en-us/windows-hardware/drivers/install/authenticode"),
+    ]),
+    "msi_rollback": ([], [
+        ("Rollback Installation - Windows Installer (Microsoft Learn)",
+         "https://learn.microsoft.com/en-us/windows/win32/msi/rollback-installation"),
+    ]),
+    "owasp_desktop": ([], [
+        ("OWASP Desktop App Security Top 10",
+         "https://owasp.org/projects/desktop-app-security-top-10"),
+    ]),
+    # Equivalentes ELF/Linux de las citas PE de arriba.
+    "elf_rpath": ([], [
+        ("ld.so(8) - dynamic linker/loader (Linux man-pages, man7.org)",
+         "https://man7.org/linux/man-pages/man8/ld.so.8.html"),
+    ]),
+    "elf_debug_leak": ([], [
+        ("DWARF Debugging Standard", "https://dwarfstd.org/"),
+    ]),
 }
 
 
@@ -570,23 +632,30 @@ def _attack_chain(findings, mit: dict, lang: str) -> str:
             f'<p class="mut" style="font-size:12px;margin:-4px 0 10px">{_esc(note)}</p>{blocks}')
 
 
-def _references(findings, lang: str) -> str:
-    """Referencias: cheat sheets del RAG relevantes a lo detectado + fuentes autoritativas."""
+def _references(findings, lang: str, extra_keys=None) -> str:
+    """Referencias: cheat sheets del RAG relevantes a lo detectado + fuentes autoritativas REALES
+    (cada URL de _REF_MAP se verifico antes de anadirla, no se cita nada sin comprobar). Una clave
+    de _REF_MAP se activa si aparece como substring en los findings (comportamiento original) O si
+    esta en `extra_keys` (para secciones que no son Finding objects, como las de la metodologia
+    PE: mitigaciones, DLL hijacking, Authenticode, MSI, OWASP -- render_html pasa que features
+    dispararon de verdad en ESTE informe)."""
     blob = " ".join((f.title + " " + (f.evidence or "") + " " + (f.location or "")) for f in findings).lower()
+    extra_keys = set(extra_keys or ())
     sheets, ext = [], []
     for key, (sh, ex) in _REF_MAP.items():
-        if key in blob:
+        if key in blob or key in extra_keys:
             for s in sh:
                 if s not in sheets:
                     sheets.append(s)
-            for e in ex:
-                if e not in ext:
-                    ext.append(e)
+            for label, url in ex:
+                if (label, url) not in ext:
+                    ext.append((label, url))
     if not sheets:
         sheets = ["methodology", "mitigations"]
     T = _REF_STR.get(lang, _REF_STR["es"])
     chips = "".join(f'<code class="refchip">binoracle kb "{_esc(s)}"</code>' for s in sheets)
-    extl = "".join(f'<li>{_esc(e)}</li>' for e in ext)
+    extl = "".join(f'<li><a href="{_esc(url)}" target="_blank" rel="noopener">{_esc(label)}</a></li>'
+                   for label, url in ext)
     ext_html = f'<div class="panel-t" style="margin-top:12px">{T["ext"]}</div><ul class="reflist">{extl}</ul>' if ext else ""
     return (f'<h2 data-i18n="references" id="sec-refs"></h2>'
             f'<p class="mut" style="font-size:12px">{T["note"]}</p>'
@@ -881,117 +950,137 @@ def _toc(lang: str, has) -> str:
     return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
 
 
-def _methodology_html(is_pe: bool, has, lang: str) -> str:
+def _methodology_html(is_pe: bool, has, lang: str = "es", is_elf: bool = False) -> str:
     """Documenta de forma explicita, fase por fase, la metodologia de auditoria PE pegada por el
     usuario (Fases 0-9 + checklist base): que se cubrio en ESTE informe y donde encontrarlo. Las
     fases 0/2/3/4/9 y el checklist base son features de codigo concretas (enlazadas a su seccion);
     las fases 5/6/7/8 son en su mayoria metodologia de RAZONAMIENTO (como debe trabajar el
     analista/LLM) mas que un checklist binario -- se documenta honestamente que apoyo real tiene
     cada una en el informe, sin fingir cobertura que no existe. `has` es el mismo dict de
-    presencia de secciones que ya usa _toc()."""
-    es = lang == "es"
-    title = "Metodologia aplicada" if es else "Methodology applied"
-    def row(phase, text):
-        return f'<tr><td class="mk">{_esc(phase)}</td><td>{text}</td></tr>'
-    rows = []
-    if is_pe:
-        rows.append(row("Fase 0", (
-            'Reconocimiento: tipo/arquitectura, toolchain (Rich Header), empaquetado/entropia, '
-            'mitigaciones ASLR/DEP/CFG, imports (con fallback pefile), firma Authenticode del '
-            'binario y sus DLLs acompanantes -- ver <a href="#sec-mit">Mitigaciones</a>.' if es else
-            'Recon: type/arch, toolchain (Rich Header), packing/entropy, ASLR/DEP/CFG mitigations, '
-            'imports (with pefile fallback), Authenticode of the binary and its companion DLLs -- '
-            'see <a href="#sec-mit">Mitigations</a>.')))
-        rows.append(row("Fase 2", (
-            'Mapa de capacidades por imports (red/proceso/privilegios/cripto/registro/ficheros/'
-            'bases de datos) -- ver el mapa de capacidades bajo Mitigaciones.' if es else
-            'Import-based capability map (network/process/privileges/crypto/registry/files/'
-            'databases) -- see the capability map under Mitigations.')))
-    rows.append(row("Fase 3", (
-        'Analisis de codigo: decompilacion grounded en r2 (xrefs por direccion virtual, no '
-        'fisica) de la(s) funcion(es) que llaman a un sink peligroso -- '
-        f'{"ver" if es else "see"} <a href="#sec-dec">{"Decompilacion" if es else "Decompilation"}</a>.'
-        if has.get("dec") else
-        ('Analisis de codigo: no se pudo decompilar ninguna funcion de interes en este binario.' if es
-         else 'Code analysis: no function of interest could be decompiled for this binary.'))))
-    rows.append(row("Fase 4" if is_pe else "Fase 4 (N/A)", (
-        'Verificacion de constantes Win32 contra el SDK oficial de Microsoft (tabla curada, no '
-        'interpretadas por el modelo) -- ver la tabla de constantes dentro de cada funcion '
-        'decompilada, si el codigo invoca alguna API reconocida.' if es and is_pe else
-        ('Win32 constant verification against the official Microsoft SDK (curated table, not '
-         'model-interpreted) -- see the constants table inside each decompiled function, if the '
-         'code calls a recognized API.' if is_pe else
-         ('No aplica: las constantes de API son especificas de Win32.' if es else
-          'Not applicable: API constants are Win32-specific.')))))
-    rows.append(row("Fase 5", (
-        'Hecho vs. inferencia: cada hallazgo lleva un veredicto explicito -- "verified" (probado '
-        'por ejecucion real en sandbox, hecho confirmado), o sin verificar (patron reconocido en '
-        'el codigo estatico, no ejecutado). El backstop de la prueba de explotacion distingue '
-        'ademas "sin verificacion" (intento fallido, no es evidencia). Nunca se presenta una '
-        'suposicion como hecho confirmado.' if es else
-        'Fact vs. inference: every finding carries an explicit verdict -- "verified" (proven by '
-        'real sandbox execution, a confirmed fact) or unverified (a pattern recognized in static '
-        'code, not executed). The exploitation-proof backstop further distinguishes "unverified" '
-        '(a failed attempt, not evidence). An assumption is never presented as a confirmed fact.')))
-    rows.append(row("Fase 6", (
-        'Priorizacion por impacto: los hallazgos se ordenan por severidad (Critical..Low) y los '
-        'sinks que procesan datos externos (red, fichero, entrada de usuario) se marcan primero '
-        '-- ver <a href="#sec-find">Hallazgos</a>.' if es else
-        'Impact-based prioritization: findings are ordered by severity (Critical..Low) and sinks '
-        'that process external data (network, file, user input) are surfaced first -- see '
-        '<a href="#sec-find">Findings</a>.')))
-    rows.append(row("Fase 7", (
-        f'Cadena completa del hallazgo (origen no confiable -> propagacion sin validar -> '
-        f'operacion sensible -> impacto) -- {"ver" if es else "see"} '
-        f'<a href="#sec-chain">{"Cadena de explotacion" if es else "Exploitation chain"}</a>.'
-        if has.get("chain") else
-        ('Cadena completa del hallazgo: no hay suficientes hallazgos relacionados en este binario '
-         'para construir una cadena origen -> impacto.' if es else
-         'Full finding chain: not enough related findings in this binary to build an origin -> '
-         'impact chain.'))))
-    if is_pe:
-        rows.append(row("Fase 8", (
-            'Verificacion dinamica: NO ejecutada. El sandbox de verificacion dinamica de binoracle '
-            '(interceptacion LD_PRELOAD de red/ficheros/exec) es Linux/ELF-only; para un binario '
-            'Windows no hay entorno de ejecucion real disponible en este momento. Todo lo anterior '
-            'es analisis ESTATICO (mas la verificacion en sandbox del exploit ret2win si aplica).' if es else
-            'Dynamic verification: NOT run. binoracle\'s dynamic-verification sandbox (LD_PRELOAD '
-            'interception of network/files/exec) is Linux/ELF-only; there is currently no real '
-            'execution environment for a Windows binary. Everything above is STATIC analysis (plus '
-            'the ret2win sandbox exploit verification, if applicable).')))
-    else:
-        rows.append(row("Fase 8", (
-            'Verificacion dinamica: se ejecuto el binario en sandbox aislado interceptando red/'
-            'ficheros/exec en tiempo real; los hallazgos derivados aparecen en Hallazgos (si el '
-            'binario no realizo ninguna de estas operaciones durante la traza, no hay hallazgos de '
-            'esta fase).' if es else
-            'Dynamic verification: the binary was run in an isolated sandbox intercepting network/'
-            'file/exec activity in real time; any resulting findings appear under Findings (if the '
-            'binary performed none of these operations during the trace, there are no findings for '
-            'this phase).')))
-    rows.append(row("Fase 9", (
-        f'Contraste contra OWASP Desktop App Security Top 10 -- {"ver" if es else "see"} '
-        f'<a href="#sec-owasp">OWASP Desktop Top 10</a>.' if has.get("owasp") else
-        ('Contraste contra OWASP Desktop App Security Top 10: sin hallazgos que mapear en este '
-         'binario.' if es else
-         'Contrast against the OWASP Desktop App Security Top 10: no findings to map for this '
-         'binary.'))))
-    checklist_note = (
-        'Checklist base cubierto: CVEs/componentes desactualizados, HTTP sin cifrar, hashing debil '
-        '(MD5/SHA-1), mitigaciones de memoria, DLL hijacking, firma Authenticode (binario y DLLs), '
-        'fuga de rutas de compilacion (PDB), --no-sandbox/Electron, permisos de fichero. Fuera de '
-        'alcance: elevacion a SYSTEM via MSI rollback/Config.Msi (formato MSI/OLE, distinto de '
-        'PE/ELF -- no es un binario de codigo, es un instalador).' if es else
-        'Base checklist covered: outdated CVEs/components, unencrypted HTTP, weak hashing '
-        '(MD5/SHA-1), memory mitigations, DLL hijacking, Authenticode (binary and DLLs), leaked '
-        'compilation paths (PDB), --no-sandbox/Electron, file permissions. Out of scope: SYSTEM '
-        'privilege escalation via MSI rollback/Config.Msi (MSI/OLE format, unlike PE/ELF -- not a '
-        'code binary, an installer).')
-    th = ("Fase", "Cobertura en este informe") if es else ("Phase", "Coverage in this report")
-    return (f'<details class="sec" id="sec-methodology"><summary>{_esc(title)}</summary>'
-            f'<table class="mittab"><thead><tr>{"".join(f"<th>{_esc(h)}</th>" for h in th)}</tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody></table>'
-            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(checklist_note)}</p></details>')
+    presencia de secciones que ya usa _toc(). Bilingue siempre (patron .lg-es/.lg-en); el ancla
+    id="sec-methodology" vive en un div exterior estable para que el enlace del indice funcione
+    en cualquiera de los dos idiomas visibles (el toggle solo cambia que bloque interno se ve)."""
+    def _phase_block(es: bool) -> str:
+        title = "Metodologia aplicada" if es else "Methodology applied"
+        def row(phase, text):
+            return f'<tr><td class="mk">{_esc(phase)}</td><td>{text}</td></tr>'
+        rows = []
+        if is_pe:
+            rows.append(row("Fase 0", (
+                'Reconocimiento: tipo/arquitectura, toolchain (Rich Header), empaquetado/entropia, '
+                'mitigaciones ASLR/DEP/CFG, imports (con fallback pefile), firma Authenticode del '
+                'binario y sus DLLs acompanantes -- ver <a href="#sec-mit">Mitigaciones</a>.' if es else
+                'Recon: type/arch, toolchain (Rich Header), packing/entropy, ASLR/DEP/CFG mitigations, '
+                'imports (with pefile fallback), Authenticode of the binary and its companion DLLs -- '
+                'see <a href="#sec-mit">Mitigations</a>.')))
+            rows.append(row("Fase 2", (
+                'Mapa de capacidades por imports (red/proceso/privilegios/cripto/registro/ficheros/'
+                'bases de datos) -- ver el mapa de capacidades bajo Mitigaciones.' if es else
+                'Import-based capability map (network/process/privileges/crypto/registry/files/'
+                'databases) -- see the capability map under Mitigations.')))
+        elif is_elf:
+            rows.append(row("Fase 0", (
+                'Reconocimiento: tipo/arquitectura, mitigaciones NX/PIE/Canary/RELRO, posible '
+                'hijacking de libreria via RPATH/RUNPATH relativo o world-writable, fuga de ruta de '
+                'compilacion (DWARF comp_dir), Linux capabilities (imports de libcap/prctl + xattr '
+                'security.capability si es legible) -- ver <a href="#sec-mit">Mitigaciones</a>.' if es else
+                'Recon: type/arch, NX/PIE/Canary/RELRO mitigations, possible library hijacking via '
+                'relative or world-writable RPATH/RUNPATH, leaked compilation path (DWARF comp_dir), '
+                'Linux capabilities (libcap/prctl imports + security.capability xattr if readable) -- '
+                'see <a href="#sec-mit">Mitigations</a>.')))
+            rows.append(row("Fase 2", (
+                'Mapa de capacidades por imports (red/proceso/privilegios/cripto/ficheros/ipc/bases '
+                'de datos) -- ver el mapa de capacidades bajo Mitigaciones.' if es else
+                'Import-based capability map (network/process/privileges/crypto/files/ipc/databases) '
+                '-- see the capability map under Mitigations.')))
+        rows.append(row("Fase 3", (
+            'Analisis de codigo: decompilacion grounded en r2 (xrefs por direccion virtual, no '
+            'fisica) de la(s) funcion(es) que llaman a un sink peligroso -- '
+            f'{"ver" if es else "see"} <a href="#sec-dec">{"Decompilacion" if es else "Decompilation"}</a>.'
+            if has.get("dec") else
+            ('Analisis de codigo: no se pudo decompilar ninguna funcion de interes en este binario.' if es
+             else 'Code analysis: no function of interest could be decompiled for this binary.'))))
+        rows.append(row("Fase 4" if is_pe else "Fase 4 (N/A)", (
+            'Verificacion de constantes Win32 contra el SDK oficial de Microsoft (tabla curada, no '
+            'interpretadas por el modelo) -- ver la tabla de constantes dentro de cada funcion '
+            'decompilada, si el codigo invoca alguna API reconocida.' if es and is_pe else
+            ('Win32 constant verification against the official Microsoft SDK (curated table, not '
+             'model-interpreted) -- see the constants table inside each decompiled function, if the '
+             'code calls a recognized API.' if is_pe else
+             ('No aplica: las constantes de API son especificas de Win32.' if es else
+              'Not applicable: API constants are Win32-specific.')))))
+        rows.append(row("Fase 5", (
+            'Hecho vs. inferencia: cada hallazgo lleva un veredicto explicito -- "verified" (probado '
+            'por ejecucion real en sandbox, hecho confirmado), o sin verificar (patron reconocido en '
+            'el codigo estatico, no ejecutado). El backstop de la prueba de explotacion distingue '
+            'ademas "sin verificacion" (intento fallido, no es evidencia). Nunca se presenta una '
+            'suposicion como hecho confirmado.' if es else
+            'Fact vs. inference: every finding carries an explicit verdict -- "verified" (proven by '
+            'real sandbox execution, a confirmed fact) or unverified (a pattern recognized in static '
+            'code, not executed). The exploitation-proof backstop further distinguishes "unverified" '
+            '(a failed attempt, not evidence). An assumption is never presented as a confirmed fact.')))
+        rows.append(row("Fase 6", (
+            'Priorizacion por impacto: los hallazgos se ordenan por severidad (Critical..Low) y los '
+            'sinks que procesan datos externos (red, fichero, entrada de usuario) se marcan primero '
+            '-- ver <a href="#sec-find">Hallazgos</a>.' if es else
+            'Impact-based prioritization: findings are ordered by severity (Critical..Low) and sinks '
+            'that process external data (network, file, user input) are surfaced first -- see '
+            '<a href="#sec-find">Findings</a>.')))
+        rows.append(row("Fase 7", (
+            f'Cadena completa del hallazgo (origen no confiable -> propagacion sin validar -> '
+            f'operacion sensible -> impacto) -- {"ver" if es else "see"} '
+            f'<a href="#sec-chain">{"Cadena de explotacion" if es else "Exploitation chain"}</a>.'
+            if has.get("chain") else
+            ('Cadena completa del hallazgo: no hay suficientes hallazgos relacionados en este binario '
+             'para construir una cadena origen -> impacto.' if es else
+             'Full finding chain: not enough related findings in this binary to build an origin -> '
+             'impact chain.'))))
+        if is_pe:
+            rows.append(row("Fase 8", (
+                'Verificacion dinamica: NO ejecutada. El sandbox de verificacion dinamica de binoracle '
+                '(interceptacion LD_PRELOAD de red/ficheros/exec) es Linux/ELF-only; para un binario '
+                'Windows no hay entorno de ejecucion real disponible en este momento. Todo lo anterior '
+                'es analisis ESTATICO (mas la verificacion en sandbox del exploit ret2win si aplica).' if es else
+                'Dynamic verification: NOT run. binoracle\'s dynamic-verification sandbox (LD_PRELOAD '
+                'interception of network/files/exec) is Linux/ELF-only; there is currently no real '
+                'execution environment for a Windows binary. Everything above is STATIC analysis (plus '
+                'the ret2win sandbox exploit verification, if applicable).')))
+        else:
+            rows.append(row("Fase 8", (
+                'Verificacion dinamica: se ejecuto el binario en sandbox aislado interceptando red/'
+                'ficheros/exec en tiempo real; los hallazgos derivados aparecen en Hallazgos (si el '
+                'binario no realizo ninguna de estas operaciones durante la traza, no hay hallazgos de '
+                'esta fase).' if es else
+                'Dynamic verification: the binary was run in an isolated sandbox intercepting network/'
+                'file/exec activity in real time; any resulting findings appear under Findings (if the '
+                'binary performed none of these operations during the trace, there are no findings for '
+                'this phase).')))
+        rows.append(row("Fase 9", (
+            f'Contraste contra OWASP Desktop App Security Top 10 -- {"ver" if es else "see"} '
+            f'<a href="#sec-owasp">OWASP Desktop Top 10</a>.' if has.get("owasp") else
+            ('Contraste contra OWASP Desktop App Security Top 10: sin hallazgos que mapear en este '
+             'binario.' if es else
+             'Contrast against the OWASP Desktop App Security Top 10: no findings to map for this '
+             'binary.'))))
+        checklist_note = (
+            'Checklist base cubierto: CVEs/componentes desactualizados, HTTP sin cifrar, hashing debil '
+            '(MD5/SHA-1), mitigaciones de memoria, DLL hijacking, firma Authenticode (binario y DLLs), '
+            'fuga de rutas de compilacion (PDB), --no-sandbox/Electron, permisos de fichero. Elevacion a '
+            'SYSTEM via MSI rollback/Config.Msi: se detecta el formato MSI (OLE) y se extraen sus '
+            'metadatos oficiales, pero NO se decodifica la tabla Property (DISABLEROLLBACK) ni el nivel '
+            'de parche de Windows -- ver la seccion "Instalador MSI" si este binario es un .msi.' if es else
+            'Base checklist covered: outdated CVEs/components, unencrypted HTTP, weak hashing '
+            '(MD5/SHA-1), memory mitigations, DLL hijacking, Authenticode (binary and DLLs), leaked '
+            'compilation paths (PDB), --no-sandbox/Electron, file permissions. SYSTEM privilege '
+            'escalation via MSI rollback/Config.Msi: the MSI (OLE) format is detected and its official '
+            'metadata extracted, but the Property table (DISABLEROLLBACK) and the Windows patch level '
+            'are NOT decoded -- see the "MSI installer" section if this binary is a .msi.')
+        th = ("Fase", "Cobertura en este informe") if es else ("Phase", "Coverage in this report")
+        return (f'<details class="sec"><summary>{_esc(title)}</summary>'
+                f'<table class="mittab"><thead><tr>{"".join(f"<th>{_esc(h)}</th>" for h in th)}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table>'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(checklist_note)}</p></details>')
+    return f'<div id="sec-methodology">{_lg(_phase_block(True), _phase_block(False))}</div>'
 
 
 def _trail_kind(tool: str, source: str, data: str, lang: str = "es"):
@@ -1131,13 +1220,12 @@ def _pe_imports_via_pefile(binary: str) -> set:
         return set()
 
 
-def _pe_capability_map(triage, binary: str = None) -> dict:
-    """Clasifica los imports del binario por capacidad (red/proceso/privilegios/cripto/registro/
-    ficheros/bd), Fase 2 de una auditoria PE: dice DONDE merece la pena mirar antes de leer
-    ninguna funcion. Solo tiene sentido para bintype=pe (los nombres son API Win32); se llama solo
-    desde ahi. Devuelve {cat_key: [nombres de funcion encontrados]}, categorias vacias omitidas."""
+def _triage_import_names(triage) -> set:
+    """Extrae los nombres de funcion importada del texto de la seccion 'Imports' del triage
+    (funciona igual para PE y ELF: en ambos casos r2/ii pone el nombre de la funcion como ultimo
+    token de la linea). Compartido por _pe_capability_map/_elf_capability_map."""
     if triage is None:
-        return {}
+        return set()
     imports_text = ""
     for title, source, text in triage.sections:
         if "import" in title.lower():
@@ -1150,21 +1238,300 @@ def _pe_capability_map(triage, binary: str = None) -> dict:
         cand = parts[-1]
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", cand):
             names.add(cand)
+    return names
+
+
+def _match_capability(name: str, pattern: str) -> bool:
+    """Nombres con prefijo '=': coincidencia EXACTA (nombres cortos/genericos que colisionan por
+    prefijo, ej. Win32 'send' con 'SendMessageA', o libc 'open' con 'openlog'). Sin prefijo:
+    coincidencia por prefijo (nombres largos y especificos, sin riesgo de colision)."""
+    low = name.lower()
+    if pattern.startswith("="):
+        return low == pattern[1:].lower()
+    return low.startswith(pattern.lower())
+
+
+def _build_capability_map(names: set, categories) -> dict:
+    """Clasifica un set de nombres de funcion importada contra una tabla de categorias
+    (_PE_CAPABILITIES o _ELF_CAPABILITIES). Devuelve {cat_key: [nombres]}, categorias vacias
+    omitidas."""
+    out = {}
+    for key, _es, _en, patterns in categories:
+        hits = sorted({n for n in names for p in patterns if _match_capability(n, p)})
+        if hits:
+            out[key] = hits
+    return out
+
+
+def _pe_capability_map(triage, binary: str = None) -> dict:
+    """Clasifica los imports del binario por capacidad (red/proceso/privilegios/cripto/registro/
+    ficheros/bd), Fase 2 de una auditoria PE: dice DONDE merece la pena mirar antes de leer
+    ninguna funcion. Solo tiene sentido para bintype=pe (los nombres son API Win32); se llama solo
+    desde ahi. Devuelve {cat_key: [nombres de funcion encontrados]}, categorias vacias omitidas."""
+    names = _triage_import_names(triage)
     if not names and binary:
         names = _pe_imports_via_pefile(binary)
     if not names:
         return {}
-    def _match(name: str, pattern: str) -> bool:
-        low = name.lower()
-        if pattern.startswith("="):
-            return low == pattern[1:].lower()
-        return low.startswith(pattern.lower())
+    return _build_capability_map(names, _PE_CAPABILITIES)
+
+
+# Equivalente a _PE_CAPABILITIES pero para ELF/Linux: clasificar por lo que el binario PUEDE hacer
+# via sus imports de libc/libcrypto/libpq/etc, ANTES de mirar ninguna funcion (mismo principio que
+# la Fase 2 de la metodologia PE, aplicado a Linux). No hay equivalente de "registro" de Windows en
+# Linux; se sustituye por "ipc" (memoria compartida/colas de mensajes, superficie de ataque real
+# entre procesos). read/write (los sinks de overflow ya cubiertos por el analizador de cadenas) se
+# excluyen a proposito: estan en practicamente TODO binario dinamico, asi que incluirlos aqui
+# diluiria la senal del mapa en vez de aportarla.
+_ELF_CAPABILITIES = [
+    ("red", ("es", "Red"), ("en", "Network"), (
+        "=socket", "=connect", "=send", "=recv", "=bind", "=listen", "=accept", "sendto",
+        "sendmsg", "recvfrom", "recvmsg", "gethostbyname", "getaddrinfo", "inet_pton",
+        "inet_addr", "SSL_connect", "SSL_read", "SSL_write", "curl_easy_init",
+        "curl_easy_perform")),
+    ("proceso", ("es", "Proceso / ejecucion"), ("en", "Process / execution"), (
+        "=fork", "vfork", "clone", "execve", "execv", "execl", "execle", "execlp", "execvp",
+        "=system", "popen", "posix_spawn")),
+    ("privilegios", ("es", "Privilegios"), ("en", "Privileges"), (
+        "setuid", "setgid", "seteuid", "setegid", "setresuid", "setresgid", "setreuid",
+        "setregid", "capset", "capget", "prctl", "cap_set_proc", "cap_set_flag", "cap_get_proc")),
+    ("cripto", ("es", "Criptografia"), ("en", "Cryptography"), (
+        "EVP_EncryptInit", "EVP_DecryptInit", "EVP_CipherInit", "MD5_Init", "SHA1_Init",
+        "SHA256_Init", "SHA512_Init", "RSA_generate_key", "AES_encrypt", "AES_set_encrypt_key",
+        "HMAC_Init", "RAND_bytes")),
+    ("ficheros", ("es", "Ficheros"), ("en", "Files"), (
+        "openat", "=open", "creat", "unlink", "rename", "chmod", "fchmod", "chown", "fchown",
+        "mkstemp", "mkdtemp", "truncate", "=remove")),
+    ("ipc", ("es", "IPC / memoria compartida"), ("en", "IPC / shared memory"), (
+        "shmget", "shmat", "semget", "msgget", "mmap", "mq_open")),
+    ("bd", ("es", "Bases de datos"), ("en", "Databases"), (
+        "mysql_real_connect", "PQconnectdb", "sqlite3_open", "sqlite3_exec", "SQLConnect",
+        "SQLExecDirect")),
+]
+
+
+def _elf_capability_map(triage) -> dict:
+    """Mapa de capacidades para ELF (mismo principio que _pe_capability_map, tabla _ELF_CAPABILITIES).
+    Solo tiene sentido para bintype=elf; se llama solo desde ahi."""
+    names = _triage_import_names(triage)
+    if not names:
+        return {}
+    return _build_capability_map(names, _ELF_CAPABILITIES)
+
+
+# Equivalente ELF de la checklist "DLL hijacking": DT_RPATH/DT_RUNPATH son la ruta de busqueda de
+# .so que el propio binario embebe. Si es RELATIVA (no empieza por "/") o apunta a un directorio
+# clasicamente escribible por cualquiera, un atacante puede plantar un .so malicioso con el nombre
+# de una dependencia real y conseguir ejecucion de codigo cuando el binario cargue la libreria --
+# mismo principio que DLL search-order hijacking en Windows, aplicado a ld.so. DT_RPATH ademas se
+# busca ANTES que LD_LIBRARY_PATH (al reves que DT_RUNPATH, que se busca despues), asi que su sola
+# presencia ya es una senal de riesgo mas alto incluso con ruta absoluta -- se distingue en el aviso.
+_UNSAFE_RPATH_DIRS = ("/tmp", "/var/tmp", "/dev/shm")
+
+
+def _elf_rpath_hijack_check(binary: str) -> dict:
+    """Lee DT_RPATH/DT_RUNPATH del .dynamic con pyelftools (libreria del formato ELF estandar,
+    no algo hecho a mano) y marca las entradas relativas o en un directorio clasico world-writable.
+    Best-effort: {} si no aplica (binario estatico, sin .dynamic) o pyelftools falla/no esta."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        return {}
+    try:
+        with open(binary, "rb") as f:
+            elf = ELFFile(f)
+            dynsec = elf.get_section_by_name(".dynamic")
+            if dynsec is None:
+                return {}
+            risky = []
+            for tag in dynsec.iter_tags():
+                dt = tag.entry.d_tag
+                if dt not in ("DT_RPATH", "DT_RUNPATH"):
+                    continue
+                raw = tag.rpath if dt == "DT_RPATH" else tag.runpath
+                for part in (raw or "").split(":"):
+                    part = part.strip()
+                    if not part:
+                        continue  # entrada vacia = directorio actual (cwd), siempre relativa
+                    is_relative = not part.startswith("/")
+                    is_unsafe_dir = any(part == d or part.startswith(d + "/") for d in _UNSAFE_RPATH_DIRS)
+                    if is_relative or is_unsafe_dir:
+                        risky.append((dt, part, "relative" if is_relative else "world_writable"))
+            if not risky:
+                return {}
+            return {"entries": risky}
+    except Exception:
+        return {}
+
+
+def _elf_rpath_hijack_html(res: dict, lang: str = "es") -> str:
+    """Aviso de posible hijacking de libreria compartida via RPATH/RUNPATH relativo o world-writable.
+    Bilingue siempre."""
+    if not res or not res.get("entries"):
+        return ""
+    entries = res["entries"]
+    def block(es: bool) -> str:
+        title = "Posible hijacking de libreria (RPATH/RUNPATH)" if es else "Possible library hijacking (RPATH/RUNPATH)"
+        parts = []
+        for dt, path, kind in entries:
+            tag_note = ("busqueda ANTES que LD_LIBRARY_PATH, mas peligroso" if (es and dt == "DT_RPATH")
+                        else ("searched BEFORE LD_LIBRARY_PATH, higher risk" if dt == "DT_RPATH" else ""))
+            reason = (("ruta relativa" if kind == "relative" else "directorio world-writable conocido")
+                      if es else ("relative path" if kind == "relative" else "known world-writable directory"))
+            suffix = f" ({tag_note})" if tag_note else ""
+            parts.append(f"{dt}='{path}' ({reason}){suffix}")
+        body = "; ".join(parts)
+        note = ("Si un atacante puede escribir en esa ruta, puede plantar un .so malicioso con el "
+                "nombre de una dependencia real (DT_NEEDED) del binario y conseguir ejecucion de "
+                "codigo cuando ld.so la cargue." if es else
+                "If an attacker can write to that path, they can plant a malicious .so named after "
+                "one of the binary's real dependencies (DT_NEEDED) and get code execution when "
+                "ld.so loads it.")
+        return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+                f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+                f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
+
+
+def _elf_debug_path_leak(binary: str) -> dict:
+    """Checklist base: filtracion de informacion sensible en strings -- rutas de compilacion,
+    equivalente ELF de la fuga de PDB en PE. DWARF DW_AT_comp_dir/DW_AT_name (si el binario se
+    compilo con -g) suele embeber la ruta ABSOLUTA de la maquina de build. Via pyelftools
+    (parseo DWARF estandar, no hecho a mano). Best-effort: {} si falla, no aplica, o release
+    limpio (compilado sin -g)."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        return {}
+    try:
+        with open(binary, "rb") as f:
+            elf = ELFFile(f)
+            if not elf.has_dwarf_info():
+                return {}
+            di = elf.get_dwarf_info()
+            for cu in di.iter_CUs():
+                top = cu.get_top_DIE()
+                comp_dir = top.attributes.get("DW_AT_comp_dir")
+                name = top.attributes.get("DW_AT_name")
+                if comp_dir is None:
+                    continue
+                cd = comp_dir.value
+                nm = name.value if name is not None else b""
+                if isinstance(cd, bytes):
+                    cd = cd.decode("utf-8", errors="replace")
+                if isinstance(nm, bytes):
+                    nm = nm.decode("utf-8", errors="replace")
+                if cd:
+                    return {"comp_dir": cd, "name": nm}
+            return {}
+    except Exception:
+        return {}
+
+
+def _elf_debug_path_leak_html(res: dict, lang: str = "es") -> str:
+    """Aviso de fuga de ruta de compilacion (DWARF comp_dir) si el binario se compilo con -g.
+    Bilingue siempre."""
+    comp_dir = (res or {}).get("comp_dir")
+    if not comp_dir:
+        return ""
+    name = res.get("name") or ""
+    def block(es: bool) -> str:
+        title = "Ruta de compilacion filtrada (DWARF)" if es else "Compilation path leaked (DWARF)"
+        src = f" ({name})" if name else ""
+        body = ((f"La informacion DWARF embebe la ruta absoluta de la maquina de build: "
+                 f"{comp_dir}{src}") if es else
+                (f"The DWARF debug info embeds the build machine's absolute path: {comp_dir}{src}"))
+        note = ("Revela la estructura de disco (y a veces el usuario/organizacion) de la maquina "
+                "que compilo el binario. Bajo impacto por si solo, pero utilidad para "
+                "reconocimiento (nombres de proyecto, rutas internas, convenciones de nombrado)." if es else
+                "Reveals the disk layout (and sometimes the username/organization) of the build "
+                "machine. Low impact on its own, but useful for recon (project names, internal "
+                "paths, naming conventions).")
+        return (f'<div class="proof" style="border-color:#5b8def;box-shadow:0 0 0 1px rgba(91,141,239,.15)">'
+                f'<div class="proof-h" style="background:#0c1420;border-color:#5b8def">'
+                f'<span class="proof-ok" style="color:#5b8def">&#9432;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
+
+
+# Checklist "Linux capabilities" (equivalente parcial a los privilegios/token de Windows). Dos
+# senales DISTINTAS, ninguna adivinada:
+# 1) el binario IMPORTA APIs de libcap/prctl para manipular capabilities (hecho de codigo, siempre
+#    verificable via imports).
+# 2) el fichero tiene la xattr "security.capability" asignada (hecho del FICHERO, no del codigo;
+#    solo legible en Linux y solo si la xattr sobrevivio la copia/transferencia -- por eso es
+#    best-effort y puede no estar disponible aunque el binario SI tenga capabilities en su sistema
+#    origen). NO se decodifica el bitmask permitted/inheritable de la xattr (formato binario
+#    vfs_cap_data no documentado de forma estable en un solo sitio): se informa presencia+tamano,
+#    no que capabilities concretas trae, siguiendo el mismo principio de honestidad que el checklist
+#    de MSI rollback.
+_CAP_AWARE_APIS = ("capset", "capget", "cap_set_proc", "cap_get_proc", "cap_set_flag",
+                   "cap_from_text", "cap_to_text", "prctl")
+
+
+def _elf_capabilities_check(binary: str, triage) -> dict:
+    """Best-effort: {} si no hay ninguna de las dos senales."""
+    names = _triage_import_names(triage)
+    aware = sorted(n for n in names if any(_match_capability(n, a) for a in _CAP_AWARE_APIS))
+    xattr_size = None
+    try:
+        import os as _os
+        if hasattr(_os, "getxattr"):
+            xattr_size = len(_os.getxattr(binary, "security.capability"))
+    except Exception:
+        xattr_size = None
+    if not aware and xattr_size is None:
+        return {}
     out = {}
-    for key, _es, _en, patterns in _PE_CAPABILITIES:
-        hits = sorted({n for n in names for p in patterns if _match(n, p)})
-        if hits:
-            out[key] = hits
+    if aware:
+        out["aware_apis"] = aware
+    if xattr_size is not None:
+        out["xattr_size"] = xattr_size
     return out
+
+
+def _elf_capabilities_html(res: dict, lang: str = "es") -> str:
+    """Nota informativa sobre uso/presencia de Linux capabilities. Bilingue siempre."""
+    if not res:
+        return ""
+    aware = res.get("aware_apis")
+    xattr_size = res.get("xattr_size")
+    def block(es: bool) -> str:
+        title = "Linux capabilities" if es else "Linux capabilities"
+        parts = []
+        if aware:
+            fn_list = ", ".join(aware)
+            parts.append((f"El binario importa APIs de manejo de capabilities: {fn_list} (puede "
+                          f"soltar/ampliar su bounding set en tiempo de ejecucion)." if es else
+                          f"The binary imports capability-handling APIs: {fn_list} (it may drop/"
+                          f"raise its bounding set at runtime)."))
+        if xattr_size is not None:
+            parts.append((f"El fichero tiene la xattr 'security.capability' asignada ({xattr_size} "
+                          f"bytes) -- tiene capabilities Linux otorgadas via setcap, en vez de (o "
+                          f"ademas de) SUID." if es else
+                          f"The file has the 'security.capability' xattr set ({xattr_size} bytes) "
+                          f"-- it has Linux capabilities granted via setcap, instead of (or in "
+                          f"addition to) SUID."))
+        body = " ".join(parts)
+        note = ("No se decodifica el bitmask exacto de capabilities otorgadas (formato binario de "
+                "la xattr no documentado de forma estable); usa `getcap` en el sistema Linux real "
+                "para ver la lista exacta. La xattr solo es legible si sobrevivio la copia/"
+                "transferencia del fichero." if es else
+                "The exact granted-capabilities bitmask is not decoded (the xattr's binary format "
+                "isn't stably documented in one place); use `getcap` on the real Linux system for "
+                "the exact list. The xattr is only readable if it survived the file's copy/transfer.")
+        return (f'<div class="proof" style="border-color:#8b95a1;box-shadow:0 0 0 1px rgba(139,149,161,.15)">'
+                f'<div class="proof-h" style="background:#12141a;border-color:#8b95a1">'
+                f'<span class="proof-ok" style="color:#8b95a1">&#9432;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
 
 
 # Nombres de seccion que dejan packers/protectores conocidos (Fase 0: si esta empaquetado, todo
@@ -1298,32 +1665,33 @@ def _pe_dll_hijack_check(triage) -> dict:
     return {"dlls": hits} if hits else {}
 
 
-def _dll_hijack_html(res: dict, lang: str) -> str:
+def _dll_hijack_html(res: dict, lang: str = "es") -> str:
     """Checklist base: aviso de DLL hijacking si el binario importa alguna DLL de busqueda-por-
-    nombre conocida sin usar las APIs de endurecimiento de ruta de busqueda."""
+    nombre conocida sin usar las APIs de endurecimiento de ruta de busqueda. Bilingue siempre."""
     if not res or not res.get("dlls"):
         return ""
-    es = lang == "es"
-    title = "Posible DLL hijacking" if es else "Possible DLL hijacking"
     dll_list = ", ".join(res["dlls"])
-    body = ((f"Importa {dll_list}, que Windows puede cargar por busqueda de nombre (no ruta "
-             f"completa), y el binario no llama a SetDllDirectory/SetDefaultDllDirectories para "
-             f"fijar su propia ruta de busqueda.") if es else
-            (f"Imports {dll_list}, which Windows can load by name search (not a full path), and "
-             f"the binary never calls SetDllDirectory/SetDefaultDllDirectories to pin its own "
-             f"search path."))
-    note = ("Si un atacante puede escribir en el directorio del ejecutable (o en un directorio "
-            "anterior en la ruta de busqueda), puede plantar una DLL maliciosa con ese nombre y "
-            "conseguir ejecucion de codigo con los privilegios del proceso." if es else
-            "If an attacker can write to the executable's directory (or an earlier directory in "
-            "the search path), they can plant a malicious DLL with that name and get code "
-            "execution with the process's privileges.")
-    return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
-            f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
-            f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
-            f'<span class="proof-t">{_esc(title)}</span></div>'
-            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    def block(es: bool) -> str:
+        title = "Posible DLL hijacking" if es else "Possible DLL hijacking"
+        body = ((f"Importa {dll_list}, que Windows puede cargar por busqueda de nombre (no ruta "
+                 f"completa), y el binario no llama a SetDllDirectory/SetDefaultDllDirectories para "
+                 f"fijar su propia ruta de busqueda.") if es else
+                (f"Imports {dll_list}, which Windows can load by name search (not a full path), and "
+                 f"the binary never calls SetDllDirectory/SetDefaultDllDirectories to pin its own "
+                 f"search path."))
+        note = ("Si un atacante puede escribir en el directorio del ejecutable (o en un directorio "
+                "anterior en la ruta de busqueda), puede plantar una DLL maliciosa con ese nombre y "
+                "conseguir ejecucion de codigo con los privilegios del proceso." if es else
+                "If an attacker can write to the executable's directory (or an earlier directory in "
+                "the search path), they can plant a malicious DLL with that name and get code "
+                "execution with the process's privileges.")
+        return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+                f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+                f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
 
 
 def _pe_pdb_leak(binary: str) -> dict:
@@ -1351,28 +1719,30 @@ def _pe_pdb_leak(binary: str) -> dict:
         return {}
 
 
-def _pdb_leak_html(res: dict, lang: str) -> str:
-    """Checklist base: aviso de fuga de ruta de compilacion (PDB) si el Debug Directory la trae."""
+def _pdb_leak_html(res: dict, lang: str = "es") -> str:
+    """Checklist base: aviso de fuga de ruta de compilacion (PDB) si el Debug Directory la trae.
+    Bilingue siempre."""
     path = (res or {}).get("pdb_path")
     if not path:
         return ""
-    es = lang == "es"
-    title = "Ruta de compilacion filtrada (PDB)" if es else "Compilation path leaked (PDB)"
-    body = ((f"El Debug Directory del PE embebe la ruta absoluta al simbolo de depuracion: "
-             f"{path}") if es else
-            (f"The PE Debug Directory embeds the absolute path to the debug symbol: {path}"))
-    note = ("Revela la estructura de disco (y a veces el usuario/organizacion) de la maquina que "
-            "compilo el binario. Bajo impacto por si solo, pero utilidad para reconocimiento "
-            "(nombres de proyecto, rutas de red internas, convenciones de nombrado)." if es else
-            "Reveals the disk layout (and sometimes the username/organization) of the build "
-            "machine. Low impact on its own, but useful for recon (project names, internal "
-            "network paths, naming conventions).")
-    return (f'<div class="proof" style="border-color:#5b8def;box-shadow:0 0 0 1px rgba(91,141,239,.15)">'
-            f'<div class="proof-h" style="background:#0c1420;border-color:#5b8def">'
-            f'<span class="proof-ok" style="color:#5b8def">&#9432;</span>'
-            f'<span class="proof-t">{_esc(title)}</span></div>'
-            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    def block(es: bool) -> str:
+        title = "Ruta de compilacion filtrada (PDB)" if es else "Compilation path leaked (PDB)"
+        body = ((f"El Debug Directory del PE embebe la ruta absoluta al simbolo de depuracion: "
+                 f"{path}") if es else
+                (f"The PE Debug Directory embeds the absolute path to the debug symbol: {path}"))
+        note = ("Revela la estructura de disco (y a veces el usuario/organizacion) de la maquina que "
+                "compilo el binario. Bajo impacto por si solo, pero utilidad para reconocimiento "
+                "(nombres de proyecto, rutas de red internas, convenciones de nombrado)." if es else
+                "Reveals the disk layout (and sometimes the username/organization) of the build "
+                "machine. Low impact on its own, but useful for recon (project names, internal "
+                "network paths, naming conventions).")
+        return (f'<div class="proof" style="border-color:#5b8def;box-shadow:0 0 0 1px rgba(91,141,239,.15)">'
+                f'<div class="proof-h" style="background:#0c1420;border-color:#5b8def">'
+                f'<span class="proof-ok" style="color:#5b8def">&#9432;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
 
 
 def _pe_rich_header(binary: str) -> dict:
@@ -1395,23 +1765,25 @@ def _pe_rich_header(binary: str) -> dict:
         return {}
 
 
-def _rich_header_html(res: dict, lang: str) -> str:
-    """Fase 0: nota informativa (no es un hallazgo de seguridad) sobre el toolchain probable."""
+def _rich_header_html(res: dict, lang: str = "es") -> str:
+    """Fase 0: nota informativa (no es un hallazgo de seguridad) sobre el toolchain probable.
+    Bilingue siempre."""
     if not res or not res.get("present"):
         return ""
-    es = lang == "es"
-    title = "Rich Header presente (toolchain MSVC)" if es else "Rich Header present (MSVC toolchain)"
     n = res.get("entries", 0)
-    body = ((f"El binario tiene Rich Header ({n} entradas de linker/compilador), un artefacto "
-             f"que solo escribe el linker de Microsoft: confirma que se construyo con Visual "
-             f"Studio/MSVC.") if es else
-            (f"The binary has a Rich Header ({n} linker/compiler entries), an artifact only "
-             f"Microsoft's linker writes: confirms it was built with Visual Studio/MSVC."))
-    return (f'<div class="proof" style="border-color:#8b95a1;box-shadow:0 0 0 1px rgba(139,149,161,.15)">'
-            f'<div class="proof-h" style="background:#12141a;border-color:#8b95a1">'
-            f'<span class="proof-ok" style="color:#8b95a1">&#9432;</span>'
-            f'<span class="proof-t">{_esc(title)}</span></div>'
-            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}</div></div>')
+    def block(es: bool) -> str:
+        title = "Rich Header presente (toolchain MSVC)" if es else "Rich Header present (MSVC toolchain)"
+        body = ((f"El binario tiene Rich Header ({n} entradas de linker/compilador), un artefacto "
+                 f"que solo escribe el linker de Microsoft: confirma que se construyo con Visual "
+                 f"Studio/MSVC.") if es else
+                (f"The binary has a Rich Header ({n} linker/compiler entries), an artifact only "
+                 f"Microsoft's linker writes: confirms it was built with Visual Studio/MSVC."))
+        return (f'<div class="proof" style="border-color:#8b95a1;box-shadow:0 0 0 1px rgba(139,149,161,.15)">'
+                f'<div class="proof-h" style="background:#12141a;border-color:#8b95a1">'
+                f'<span class="proof-ok" style="color:#8b95a1">&#9432;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}</div></div>')
+    return _lg(block(True), block(False))
 
 
 def _pe_sibling_dll_signing(binary: str) -> dict:
@@ -1446,31 +1818,33 @@ def _pe_sibling_dll_signing(binary: str) -> dict:
         return {}
 
 
-def _sibling_dll_signing_html(res: dict, lang: str) -> str:
-    """Checklist base: aviso si alguna DLL acompanante no tiene tabla de certificados Authenticode."""
+def _sibling_dll_signing_html(res: dict, lang: str = "es") -> str:
+    """Checklist base: aviso si alguna DLL acompanante no tiene tabla de certificados Authenticode.
+    Bilingue siempre."""
     if not res or not res.get("unsigned_dlls"):
         return ""
-    es = lang == "es"
-    title = "DLLs acompanantes sin firma Authenticode" if es else "Companion DLLs without Authenticode"
-    names = ", ".join(res["unsigned_dlls"][:12])
-    more = len(res["unsigned_dlls"]) - 12
-    if more > 0:
-        names += (f" (+{more} mas)" if es else f" (+{more} more)")
-    body = ((f"{len(res['unsigned_dlls'])} de {res['total']} DLL(s) en el directorio del "
-             f"ejecutable no tienen tabla de certificados Authenticode: {names}") if es else
-            (f"{len(res['unsigned_dlls'])} of {res['total']} DLL(s) in the executable's directory "
-             f"have no Authenticode certificate table: {names}"))
-    note = ("Si una de estas DLLs se carga por el ejecutable, un atacante que consiga "
-            "sobrescribirla (o sustituirla) puede ejecutar codigo sin que Windows lo rechace por "
-            "firma invalida." if es else
-            "If the executable loads one of these DLLs, an attacker who can overwrite (or "
-            "replace) it can run code without Windows rejecting it for an invalid signature.")
-    return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
-            f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
-            f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
-            f'<span class="proof-t">{_esc(title)}</span></div>'
-            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    def block(es: bool) -> str:
+        title = "DLLs acompanantes sin firma Authenticode" if es else "Companion DLLs without Authenticode"
+        names = ", ".join(res["unsigned_dlls"][:12])
+        more = len(res["unsigned_dlls"]) - 12
+        if more > 0:
+            names += (f" (+{more} mas)" if es else f" (+{more} more)")
+        body = ((f"{len(res['unsigned_dlls'])} de {res['total']} DLL(s) en el directorio del "
+                 f"ejecutable no tienen tabla de certificados Authenticode: {names}") if es else
+                (f"{len(res['unsigned_dlls'])} of {res['total']} DLL(s) in the executable's directory "
+                 f"have no Authenticode certificate table: {names}"))
+        note = ("Si una de estas DLLs se carga por el ejecutable, un atacante que consiga "
+                "sobrescribirla (o sustituirla) puede ejecutar codigo sin que Windows lo rechace por "
+                "firma invalida." if es else
+                "If the executable loads one of these DLLs, an attacker who can overwrite (or "
+                "replace) it can run code without Windows rejecting it for an invalid signature.")
+        return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+                f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+                f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
 
 
 # Checklist base: "ejecucion de codigo sin sandboxing en componentes de terceros... se suele poder
@@ -1500,30 +1874,134 @@ def _pe_sandbox_flag_check(binary: str) -> dict:
         return {}
 
 
-def _sandbox_flag_html(res: dict, lang: str) -> str:
-    """Checklist base: aviso si el binario embebe el flag --no-sandbox en sus strings."""
+def _sandbox_flag_html(res: dict, lang: str = "es") -> str:
+    """Checklist base: aviso si el binario embebe el flag --no-sandbox en sus strings. Bilingue
+    siempre."""
     if not res or not res.get("found"):
         return ""
-    es = lang == "es"
-    title = "Posible ejecucion sin sandbox (--no-sandbox)" if es else "Possible no-sandbox execution"
-    ctx = ((" El binario tambien tiene marcadores de Electron/CEF, contexto tipico de este flag."
-            if res.get("electron") else "") if es else
-           (" The binary also has Electron/CEF markers, the typical context for this flag."
-            if res.get("electron") else ""))
-    body = (("El binario embebe el string literal '--no-sandbox' en sus datos." + ctx) if es else
-            ("The binary embeds the literal string '--no-sandbox' in its data." + ctx))
-    note = ("Si este flag se usa al lanzar un componente de terceros (tipicamente un renderer "
-            "Chromium/CEF), ese componente corre SIN el sandbox del sistema operativo: cualquier "
-            "vulnerabilidad ahi puede escalar directamente al proceso que lo lanzo." if es else
-            "If this flag is used to launch a third-party component (typically a Chromium/CEF "
-            "renderer), that component runs WITHOUT the OS sandbox: any vulnerability there can "
-            "escalate directly to the launching process.")
-    return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
-            f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
-            f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
-            f'<span class="proof-t">{_esc(title)}</span></div>'
-            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
-            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    def block(es: bool) -> str:
+        title = "Posible ejecucion sin sandbox (--no-sandbox)" if es else "Possible no-sandbox execution"
+        ctx = ((" El binario tambien tiene marcadores de Electron/CEF, contexto tipico de este flag."
+                if res.get("electron") else "") if es else
+               (" The binary also has Electron/CEF markers, the typical context for this flag."
+                if res.get("electron") else ""))
+        body = (("El binario embebe el string literal '--no-sandbox' en sus datos." + ctx) if es else
+                ("The binary embeds the literal string '--no-sandbox' in its data." + ctx))
+        note = ("Si este flag se usa al lanzar un componente de terceros (tipicamente un renderer "
+                "Chromium/CEF), ese componente corre SIN el sandbox del sistema operativo: cualquier "
+                "vulnerabilidad ahi puede escalar directamente al proceso que lo lanzo." if es else
+                "If this flag is used to launch a third-party component (typically a Chromium/CEF "
+                "renderer), that component runs WITHOUT the OS sandbox: any vulnerability there can "
+                "escalate directly to the launching process.")
+        return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+                f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+                f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+                f'<span class="proof-t">{_esc(title)}</span></div>'
+                f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+    return _lg(block(True), block(False))
+
+
+# Checklist base: "elevacion de privilegios a SYSTEM mediante abuso de instalador MSI (MSI
+# rollback/Config.Msi LPE)". Un .msi NO es PE/ELF/Mach-O -- es Compound File Binary Format (OLE),
+# una base de datos de tablas (tipo SQL empaquetado), no codigo maquina. r2 no lo entiende. Se usa
+# `olefile` (libreria del formato OLE ESTANDAR, no MSI-especifica, ya probada y mantenida) para
+# identificar el fichero y sacar sus metadatos oficiales (stream SummaryInformation, propiedades
+# OLE estandar: titulo, autor, plantilla/arquitectura...). Deliberadamente NO se decodifica la
+# tabla Property (para leer DISABLEROLLBACK y afirmar si el rollback esta habilitado o no): eso
+# requeriria implementar el formato binario de fila/columna de las tablas MSI (empaquetado de
+# enteros variable segun el ancho de columna, referencias a _StringPool/_StringData), y sin un
+# fichero MSI real de referencia para validar el decodificador no se puede verificar que sea
+# correcto -- este proyecto no afirma un hecho de seguridad que no pueda verificar (Fase 5:
+# separar hecho de inferencia). Se documenta el hueco explicitamente en vez de fingir cobertura.
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_msi(binary: str) -> bool:
+    """Firma de Compound File Binary Format (OLE) -- MSI, y tambien .doc/.xls/.ppt legacy, .msp,
+    .cab de instalador... Aqui solo importa distinguirlo de PE/ELF/Mach-O para no intentar
+    analizarlo con r2 (que no entiende este formato) ni mostrar secciones PE que no aplican."""
+    try:
+        with open(binary, "rb") as f:
+            return f.read(8) == _OLE_MAGIC
+    except Exception:
+        return False
+
+
+def _msi_recon(binary: str) -> dict:
+    """Fase 0 (formato + metadatos) para un instalador MSI. Best-effort via olefile: si la
+    libreria no esta instalada o el fichero esta corrupto, degrada con gracia (igual que el resto
+    de oraculos de este informe)."""
+    try:
+        import olefile
+    except ImportError:
+        return {"is_msi": True, "olefile_missing": True}
+    try:
+        ole = olefile.OleFileIO(binary)
+        try:
+            meta = ole.get_metadata()
+            streams = ole.listdir(streams=True, storages=True)
+
+            def _s(v):
+                return v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
+            return {
+                "is_msi": True,
+                "title": _s(meta.title), "author": _s(meta.author),
+                "subject": _s(meta.subject), "comments": _s(meta.comments),
+                "template": _s(meta.template), "n_entries": len(streams),
+            }
+        finally:
+            ole.close()
+    except Exception:
+        return {"is_msi": True, "parse_failed": True}
+
+
+def _msi_recon_html(res: dict, lang: str = "es") -> str:
+    """Recon del instalador MSI + nota honesta del checklist de LPE por rollback (lo que se
+    verifico y lo que NO, y por que). Bilingue siempre."""
+    if not res or not res.get("is_msi"):
+        return ""
+    def block(es: bool) -> str:
+        title = "Instalador MSI (Compound File Binary Format)" if es else "MSI installer (Compound File Binary Format)"
+        if res.get("olefile_missing"):
+            body = ('Fichero MSI detectado (firma OLE), pero la libreria "olefile" no esta instalada '
+                    '-- sin metadatos.' if es else
+                    'MSI file detected (OLE signature), but the "olefile" library is not installed -- '
+                    'no metadata.')
+        elif res.get("parse_failed"):
+            body = ('Fichero MSI detectado (firma OLE), pero no se pudo parsear (corrupto o formato '
+                    'OLE atipico).' if es else
+                    'MSI file detected (OLE signature), but it could not be parsed (corrupt or an '
+                    'unusual OLE variant).')
+        else:
+            rows = [
+                ("Titulo" if es else "Title", res.get("title")),
+                ("Autor" if es else "Author", res.get("author")),
+                ("Asunto" if es else "Subject", res.get("subject")),
+                ("Comentarios" if es else "Comments", res.get("comments")),
+                ("Plantilla (arquitectura)" if es else "Template (architecture)", res.get("template")),
+                ("Entradas OLE (tablas+streams)" if es else "OLE entries (tables+streams)", res.get("n_entries")),
+            ]
+            rows_html = "".join(f'<tr><td class="mk">{_esc(k)}</td><td>{_esc(str(v))}</td></tr>'
+                                for k, v in rows if v not in (None, ""))
+            body = (f'<table class="mittab"><tbody>{rows_html}</tbody></table>' if rows_html else
+                    ('Sin metadatos de SummaryInformation en este MSI.' if es else
+                     'No SummaryInformation metadata in this MSI.'))
+        checklist_note = (
+            'Checklist base: "elevacion a SYSTEM via MSI rollback/Config.Msi LPE". NO verificado aqui: '
+            'requiere decodificar la tabla Property del MSI (formato binario de fila/columna de las '
+            'tablas MSI) para leer DISABLEROLLBACK, y el nivel de parche del Windows objetivo -- ambos '
+            'fuera del alcance de un escaneo estatico del fichero sin un entorno Windows real. No se '
+            'afirma que el paquete sea vulnerable o no; solo se documenta que esta prueba del checklist '
+            'no esta cubierta por este informe.' if es else
+            'Base checklist: "SYSTEM privilege escalation via MSI rollback/Config.Msi LPE". NOT verified '
+            'here: it requires decoding the MSI Property table (MSI table row/column binary format) to '
+            'read DISABLEROLLBACK, plus the target Windows patch level -- both outside the scope of a '
+            'static file scan without a real Windows environment. This does not claim the package is or '
+            'is not vulnerable; it only documents that this checklist item is not covered by this report.')
+        return (f'<details class="sec"><summary>{_esc(title)}</summary>{body}'
+                f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(checklist_note)}</p></details>')
+    return _lg(block(True), block(False))
 
 
 _CVSS_SEV_COLOR = {"Critical": "#e5484d", "High": "#f5a623", "Medium": "#e2b53e",
@@ -1693,9 +2171,14 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     # mitigaciones reales de Windows: ASLR/DEP/CFG (DllCharacteristics, ver _pe_dll_characteristics)
     # y Authenticode (firma digital, ya presente en la salida de 'iI' como 'signed').
     is_pe = mit.get("bintype") == "pe"
+    is_elf = mit.get("bintype") == "elf"
     if is_pe:
         mit.update(_pe_dll_characteristics(binary))
         mit["Authenticode"] = mit.get("signed")
+    # Checklist base: instalador MSI (Compound File Binary Format / OLE, no PE/ELF/Mach-O). r2 no
+    # lo entiende -- ni las mitigaciones ELF ni las PE tienen sentido aqui, asi que se detecta por
+    # firma de fichero (independiente de lo que haya podido sacar r2) y se muestra su propia seccion.
+    is_msi = _is_msi(binary)
     # Texto por defecto renderizado en servidor: el informe es legible aunque NO corra JS (al
     # abrirlo como fichero estatico). El JS luego solo cambia el idioma con el boton.
     def L(k):
@@ -1744,8 +2227,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         else:
             state, cls = str(value), "mut"
         return f'<div class="mit {cls}"><span class="mit-k">{_esc(key)}</span><span class="mit-v">{_esc(state)}</span></div>'
-    mit_keys = ("Arch", "ASLR", "DEP", "CFG", "Canary", "Authenticode") if is_pe \
-        else ("Arch", "NX", "PIE", "Canary", "RELRO")
+    mit_keys = () if is_msi else (
+        ("Arch", "ASLR", "DEP", "CFG", "Canary", "Authenticode") if is_pe
+        else ("Arch", "NX", "PIE", "Canary", "RELRO"))
     mit_panel = "".join(mit_item(k, mit.get(k)) for k in mit_keys)
 
     # findings cards
@@ -1843,9 +2327,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         cveplan_html = ""
     exploit_html = _exploit_section(binary, findings, lang)
     mit_detail_html = _mit_detail(mit, lang)
-    capability_html = _capability_html(_pe_capability_map(triage, binary), lang) if is_pe else ""
+    capability_html = _capability_html(_pe_capability_map(triage, binary), lang) if is_pe else (
+        _capability_html(_elf_capability_map(triage), lang, categories=_ELF_CAPABILITIES) if is_elf else "")
     attack_chain_html = _attack_chain(findings, mit, lang)
-    references_html = _references(findings, lang)
     owasp_html = _owasp_html(findings, lang)
     # Resumen ejecutivo COHERENTE (deterministico) en vez de la narracion del modelo, que puede
     # contradecirse ("no encontre vuln" + backstop verificado). Profesional y sin la nota de citas.
@@ -1853,11 +2337,33 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     answer_html = (f'<div class="panel md summary" id="sec-summary">'
                    f'<div class="panel-t" data-i18n="exec_summary"></div>{_md(summary_txt)}</div>')
     packing_html = _packing_warning_html(_pe_packing_check(binary), lang) if is_pe else ""
+    msi_html = _msi_recon_html(_msi_recon(binary), lang) if is_msi else ""
     dll_hijack_html = _dll_hijack_html(_pe_dll_hijack_check(triage), lang) if is_pe else ""
     pdb_leak_html = _pdb_leak_html(_pe_pdb_leak(binary), lang) if is_pe else ""
     rich_header_html = _rich_header_html(_pe_rich_header(binary), lang) if is_pe else ""
     sibling_dll_html = _sibling_dll_signing_html(_pe_sibling_dll_signing(binary), lang) if is_pe else ""
     sandbox_flag_html = _sandbox_flag_html(_pe_sandbox_flag_check(binary), lang) if is_pe else ""
+    elf_rpath_html = _elf_rpath_hijack_html(_elf_rpath_hijack_check(binary), lang) if is_elf else ""
+    elf_debug_leak_html = _elf_debug_path_leak_html(_elf_debug_path_leak(binary), lang) if is_elf else ""
+    elf_capabilities_html = _elf_capabilities_html(_elf_capabilities_check(binary, triage), lang) if is_elf else ""
+    # Solo se citan fuentes de tecnicas que DISPARARON de verdad en este informe (no toda la lista
+    # de _REF_MAP solo por ser un PE/ELF).
+    _extra_ref_keys = []
+    if is_pe:
+        _extra_ref_keys.append("pe_mitigations")
+    if dll_hijack_html:
+        _extra_ref_keys.append("dll_hijack")
+    if mit.get("Authenticode") is not None:
+        _extra_ref_keys.append("authenticode")
+    if is_msi:
+        _extra_ref_keys.append("msi_rollback")
+    if owasp_html:
+        _extra_ref_keys.append("owasp_desktop")
+    if elf_rpath_html:
+        _extra_ref_keys.append("elf_rpath")
+    if elf_debug_leak_html:
+        _extra_ref_keys.append("elf_debug_leak")
+    references_html = _references(findings, lang, extra_keys=_extra_ref_keys)
     # Indice: solo las secciones realmente presentes.
     _has = {"methodology": True, "summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
@@ -1865,7 +2371,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
             "xchain": bool(exploit_graph_html), "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
-    methodology_html = _methodology_html(is_pe, _has, lang)
+    methodology_html = _methodology_html(is_pe, _has, lang, is_elf=is_elf)
     toc_html = _toc(lang, _has)
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'
@@ -1903,6 +2409,8 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {methodology_html}
 
+  {msi_html}
+
   {packing_html}
 
   {dll_hijack_html}
@@ -1914,6 +2422,12 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {pdb_leak_html}
 
   {rich_header_html}
+
+  {elf_rpath_html}
+
+  {elf_debug_leak_html}
+
+  {elf_capabilities_html}
 
   {answer_html}
 
