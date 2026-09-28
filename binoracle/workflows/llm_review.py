@@ -12,7 +12,13 @@ ni "verified"), y el titulo deja explicito que vienen de una revision LLM. El pr
 solo lo que esta en el contexto dado (nunca inventar direcciones/funciones que no aparezcan ahi) y
 responder "NADA"/"NOTHING" si no hay nada nuevo real que anadir -- evita rellenar el informe con
 ruido solo por rellenar.
-"""
+
+Siguiente paso pedido explicitamente por el usuario: si la sugerencia es sobre una comparacion de
+credencial y el modelo puede CITAR el valor exacto (ya presente en el contexto dado -- nunca
+inventado), lo marca con una linea "Credencial probable: <valor>". El pipeline (web.py) puede
+entonces intentar esa credencial DE VERDAD en el sandbox (authbypass.py, ELF/Linux-only) y, si el
+codigo de salida difiere del control, subir el hallazgo de "unverified" (hipotesis) a "verified"
+(probado por ejecucion real) -- ver _finding_credential_candidate()."""
 from __future__ import annotations
 
 import re
@@ -60,25 +66,40 @@ def llm_deep_review(llm, binary: str, mit: dict, capability_map: dict, findings:
     es = lang == "es"
     if es:
         sys = (
-            "Eres un auditor de seguridad senior revisando un binario. Se te da TODO el contexto "
-            "grounded reunido hasta ahora (mitigaciones, capacidades, hallazgos ya encontrados por "
-            "scanners automaticos, y codigo decompilado). Tu trabajo es buscar SOLO lo que esos "
-            "scanners automaticos NO puedan detectar: logica de negocio sospechosa, combinaciones "
-            "de APIs peligrosas no evidentes por regex, o inconsistencias entre lo que dice el "
-            "codigo y las mitigaciones/capacidades. NO repitas hallazgos ya listados arriba. Si no "
+            "Actua como un pentester de binarios senior: reversing + explotacion (pwn) de verdad, "
+            "no un auditor de codigo fuente generico. Se te da TODO el contexto grounded reunido "
+            "hasta ahora (mitigaciones, capacidades, hallazgos ya encontrados por scanners "
+            "automaticos, y codigo decompilado). Tu trabajo es buscar SOLO lo que esos scanners "
+            "automaticos (regex/xref, deterministas) NO puedan detectar leyendo el binario como lo "
+            "haria un humano: primitivas de corrupcion de memoria (overflow, UAF, off-by-one, "
+            "integer overflow que alimenta un tamano/indice), logica de negocio o de autenticacion "
+            "sospechosa, combinaciones de APIs peligrosas no evidentes por regex, o inconsistencias "
+            "entre lo que dice el codigo y las mitigaciones/capacidades ya detectadas. NO repitas "
+            "hallazgos ya listados arriba. Si no "
             "encuentras nada nuevo y real, responde EXACTAMENTE la palabra NADA y nada mas. Si "
             "encuentras algo, para CADA hallazgo nuevo escribe un bloque asi (puede haber varios):\n"
             "### <titulo corto>\nSeveridad: <critical|high|medium|low>\n<explicacion de 2-4 frases, "
             "citando SOLO lo que esta en el contexto dado, sin inventar direcciones, funciones ni "
             "comportamiento que no aparezcan ahi>\n"
+            "Presta atencion especial a CUALQUIER logica de autenticacion/autorizacion que pueda "
+            "eludirse con una entrada concreta por stdin: comparacion de credencial fija (strcmp/"
+            "lstrcmp/memcmp...), un backdoor o comando magico oculto, un flag de depuracion/modo "
+            "dev que salta la comprobacion, una comparacion de version/licencia/serial, o cualquier "
+            "'atajo' condicional que un valor concreto de entrada active. Si encuentras algo asi Y "
+            "puedes CITAR el valor EXACTO de esa entrada porque YA aparece en el contexto dado "
+            "(nunca lo inventes -- si no esta literalmente ahi, no lo escribas), anade una linea "
+            "mas: 'Entrada de bypass probable: <valor exacto>'.\n"
             "No inventes nada que no este en el contexto dado. Si tienes dudas, no lo reportes.")
         user = context[:12000]
     else:
         sys = (
-            "You are a senior security auditor reviewing a binary. You are given ALL the grounded "
-            "context gathered so far (mitigations, capabilities, findings already found by "
-            "automated scanners, and decompiled code). Your job is to look ONLY for what those "
-            "automated scanners CANNOT detect: suspicious business logic, dangerous API "
+            "Act as a senior binary pentester: real reversing + exploitation (pwn), not a generic "
+            "source-code auditor. You are given ALL the grounded context gathered so far "
+            "(mitigations, capabilities, findings already found by automated scanners, and "
+            "decompiled code). Your job is to look ONLY for what those automated scanners (regex/"
+            "xref, deterministic) CANNOT detect by reading the binary like a human would: memory-"
+            "corruption primitives (overflow, UAF, off-by-one, integer overflow feeding a size/"
+            "index), suspicious business or authentication logic, dangerous API "
             "combinations not obvious via regex, or inconsistencies between what the code shows "
             "and the mitigations/capabilities. Do NOT repeat findings already listed above. If you "
             "find nothing new and real, answer EXACTLY the word NOTHING and nothing else. If you "
@@ -86,16 +107,24 @@ def llm_deep_review(llm, binary: str, mit: dict, capability_map: dict, findings:
             "### <short title>\nSeverity: <critical|high|medium|low>\n<2-4 sentence explanation, "
             "citing ONLY what is in the given context, without inventing addresses, functions or "
             "behavior not present there>\n"
+            "Pay special attention to ANY authentication/authorization logic that could be bypassed "
+            "with a specific stdin input: fixed credential comparison (strcmp/lstrcmp/memcmp...), a "
+            "hidden backdoor or magic command, a debug/dev-mode flag that skips the check, a "
+            "version/license/serial comparison, or any conditional 'shortcut' a specific input "
+            "value triggers. If you find something like that AND you can CITE the EXACT value of "
+            "that input because it ALREADY appears in the given context (never invent it -- if it's "
+            "not literally there, don't write it), add one more line: "
+            "'Likely bypass input: <exact value>'.\n"
             "Do not invent anything not in the given context. If unsure, do not report it.")
         user = context[:12000]
     try:
         resp = llm.chat([Message("system", sys), Message("user", user)])
     except Exception:
         return []
-    return _parse_review(resp or "", lang)
+    return _parse_review(resp or "", lang, context)
 
 
-def _parse_review(text: str, lang: str) -> List[Finding]:
+def _parse_review(text: str, lang: str, context: str = "") -> List[Finding]:
     stripped = (text or "").strip()
     if not stripped or stripped.strip("*_. \n").upper() in ("NADA", "NOTHING", "NONE"):
         return []
@@ -112,10 +141,24 @@ def _parse_review(text: str, lang: str) -> List[Finding]:
         sev = (m.group(1).lower() if m else "low")
         if sev not in _SEV_WORDS:
             sev = "low"
-        expl = re.sub(r"(?:Severidad|Severity)\s*:\s*\w+\s*", "", rest, flags=re.I).strip()
+        # entrada de bypass sugerida (opcional; cubre credencial fija, backdoor/comando magico,
+        # flag de depuracion, comparacion de licencia/serial... cualquier logica de auth que una
+        # entrada concreta por stdin pueda saltarse). SOLO se acepta si aparece LITERALMENTE en el
+        # contexto dado al modelo -- blindaje contra que el modelo invente un valor pese a la
+        # instruccion del prompt (nunca se confia ciegamente en lo que dice, se verifica contra el
+        # grounding). Acepta las dos etiquetas (credencial especifica, o bypass generico).
+        _CAND_LABEL = r"(?:Credencial probable|Likely credential|Entrada de bypass probable|Likely bypass input)"
+        cm = re.search(_CAND_LABEL + r"\s*:\s*(.+)", rest, re.I)
+        cred_candidate = None
+        if cm:
+            cand = cm.group(1).strip().strip("`\"'")
+            if cand and context and cand in context:
+                cred_candidate = cand
+        expl = re.sub(r"(?:Severidad|Severity)\s*:\s*\w+\s*", "", rest, flags=re.I)
+        expl = re.sub(_CAND_LABEL + r"\s*:.*", "", expl, flags=re.I).strip()
         if not title or not expl:
             continue
-        out.append(Finding(
+        f = Finding(
             title=(f"[Revision LLM] {title}" if es else f"[LLM review] {title}"),
             severity=sev, verdict="unverified",
             evidence=(("[revision LLM sobre contexto grounded, no verificado automaticamente]\n" if es
@@ -126,7 +169,11 @@ def _parse_review(text: str, lang: str) -> List[Finding]:
                             "un hecho probado por un oraculo determinista." if es else
                             "Confirm manually before acting: this is a model hypothesis, not a fact "
                             "proven by a deterministic oracle."),
-        ))
+        )
+        # atributo dinamico (no forma parte del esquema persistido de Finding): el pipeline lo lee
+        # con getattr() para decidir si intenta esta credencial concreta en el sandbox real.
+        f.credential_candidate = cred_candidate
+        out.append(f)
         if len(out) >= 8:
             break
     return out

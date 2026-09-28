@@ -1738,6 +1738,92 @@ def test_authcheck_xref_confirmation_distinguishes_verified_link_from_correlatio
         assert "NO confirmado por xref" in fs2[0].rationale
 
 
+def test_llm_deep_review_recognizes_backdoors_and_magic_flags_not_just_password_compare():
+    # Peticion del usuario: no limitar la conexion sandbox a "credencial" en sentido estricto
+    # (comparacion de password) -- cubrir CUALQUIER logica de auth/autorizacion bypasseable por una
+    # entrada concreta: backdoor con comando magico, flag de debug/dev-mode, comparacion de
+    # licencia/serial, etc. La etiqueta nueva 'Entrada de bypass probable'/'Likely bypass input' es
+    # generica; la antigua 'Credencial probable'/'Likely credential' se mantiene por compatibilidad
+    # y ambas alimentan el mismo atributo credential_candidate (mismo blindaje: grounded o nada).
+    from unittest.mock import MagicMock
+    from binoracle.workflows.llm_review import llm_deep_review
+
+    class _FakeDecomp:
+        func = "sym.main"
+        annotated = 'if (strcmp(argv[1], "--debug-unlock-9f2a") == 0) skip_auth();'
+        raw = ""
+
+    llm = MagicMock()
+    llm.available.return_value = True
+    llm.chat.return_value = (
+        "### Backdoor por argumento magico\n"
+        "Severidad: critical\n"
+        "El codigo comprueba si argv[1] es igual a --debug-unlock-9f2a antes de saltarse la "
+        "autenticacion, un atajo condicional que ningun scanner de credenciales detectaria.\n"
+        "Entrada de bypass probable: --debug-unlock-9f2a")
+    fs = llm_deep_review(llm, "fake.elf", {}, {}, [], [_FakeDecomp()], lang="es")
+    assert len(fs) == 1
+    assert fs[0].severity == "critical"
+    assert fs[0].credential_candidate == "--debug-unlock-9f2a"
+    assert "atajo condicional" in fs[0].rationale  # la explicacion se conserva, no se pierde
+
+    # sigue funcionando con la etiqueta antigua (compatibilidad hacia atras)
+    llm_old = MagicMock()
+    llm_old.available.return_value = True
+    llm_old.chat.return_value = (
+        "### Comparacion de credencial\nSeveridad: high\nCompara con un valor fijo.\n"
+        'Credencial probable: --debug-unlock-9f2a')
+    fs_old = llm_deep_review(llm_old, "fake.elf", {}, {}, [], [_FakeDecomp()], lang="es")
+    assert fs_old[0].credential_candidate == "--debug-unlock-9f2a"
+
+
+def test_llm_deep_review_extracts_credential_candidate_only_when_grounded_in_context():
+    # Siguiente paso pedido explicitamente por el usuario: conectar las sugerencias de la revision
+    # LLM con la verificacion dinamica real (authbypass.py) cuando el modelo cita una credencial
+    # CONCRETA. Blindaje critico: el valor sugerido solo se acepta si aparece LITERALMENTE en el
+    # contexto dado al modelo -- si el modelo alucina un valor que no esta ahi, se descarta (nunca
+    # se confia ciegamente en lo que el LLM afirma, ni siquiera para decidir que probar despues).
+    from unittest.mock import MagicMock
+    from binoracle.workflows.llm_review import llm_deep_review
+
+    class _FakeDecomp:
+        func = "sym.check_login"
+        annotated = 'if (strcmp(input, "MASTER_PASSWORD_2024") == 0) grant_access();'
+        raw = ""
+
+    # el modelo cita un valor que SI esta en el codigo decompilado dado -> se acepta
+    llm_real = MagicMock()
+    llm_real.available.return_value = True
+    llm_real.chat.return_value = (
+        "### Comparacion de credencial no cubierta por los scanners\n"
+        "Severidad: high\n"
+        "El codigo compara la entrada contra MASTER_PASSWORD_2024 usando strcmp.\n"
+        "Credencial probable: MASTER_PASSWORD_2024")
+    fs = llm_deep_review(llm_real, "fake.elf", {}, {}, [], [_FakeDecomp()], lang="es")
+    assert len(fs) == 1
+    assert fs[0].credential_candidate == "MASTER_PASSWORD_2024"
+
+    # el modelo alucina un valor que NO aparece en el contexto dado -> se descarta (None), aunque
+    # el hallazgo en si (severidad/titulo/explicacion) se mantiene
+    llm_fake = MagicMock()
+    llm_fake.available.return_value = True
+    llm_fake.chat.return_value = (
+        "### Comparacion sospechosa\n"
+        "Severidad: high\n"
+        "Parece que compara contra una clave fija.\n"
+        "Credencial probable: TOTALMENTE_INVENTADA_123")
+    fs2 = llm_deep_review(llm_fake, "fake.elf", {}, {}, [], [_FakeDecomp()], lang="es")
+    assert len(fs2) == 1
+    assert fs2[0].credential_candidate is None
+
+    # bloque sin ninguna linea de credencial: atributo presente pero None, sin romper nada
+    llm_none = MagicMock()
+    llm_none.available.return_value = True
+    llm_none.chat.return_value = "### Otro hallazgo\nSeveridad: low\nAlgo no relacionado con auth."
+    fs3 = llm_deep_review(llm_none, "fake.elf", {}, {}, [], [_FakeDecomp()], lang="es")
+    assert fs3[0].credential_candidate is None
+
+
 def test_llm_deep_review_parses_new_findings_as_unverified_hypotheses():
     # Peticion explicita del usuario: una revision LLM "sin fronteras" sobre TODO el contexto
     # grounded (mitigaciones, capacidades, hallazgos ya encontrados, codigo decompilado), buscando

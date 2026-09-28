@@ -987,15 +987,47 @@ def run_streaming(command, binary, ai, emit, text=""):
                             from .workflows.llm_review import llm_deep_review
                             bintype_row = next((t for (ti, sr, t) in report.sections
                                                 if ti.lower().startswith("file /") or "binary info" in (sr+ti).lower()), "")
+                            is_elf_bin = "elf" in bintype_row.lower()
                             cap_map = {}
                             if "pe" in bintype_row.lower():
                                 from .report.html import _pe_capability_map
                                 cap_map = _pe_capability_map(report, binary)
-                            elif "elf" in bintype_row.lower():
+                            elif is_elf_bin:
                                 from .report.html import _elf_capability_map
                                 cap_map = _elf_capability_map(report)
                             review_findings = llm_deep_review(
                                 llm, binary, {}, cap_map, findings, decompiled, lang=config.lang)
+                            # siguiente paso pedido explicitamente por el usuario: si la revision
+                            # LLM sugirio una credencial CONCRETA (citada del contexto real, nunca
+                            # inventada -- ver llm_review._parse_review) y es un binario ELF (mismo
+                            # sandbox Docker que authbypass.py, Linux-only), se intenta de verdad
+                            # contra el binario real; si el codigo de salida difiere del control,
+                            # la hipotesis "unverified" del modelo sube a "verified" (probado por
+                            # ejecucion real, no una suposicion del LLM).
+                            if is_elf_bin:
+                                from .workflows.authbypass import try_credential_bypass
+                                for rf in review_findings:
+                                    cred = getattr(rf, "credential_candidate", None)
+                                    if not cred:
+                                        continue
+                                    emit("step", f"IA sugirio una credencial verificable: probandola en sandbox...")
+                                    ba = try_credential_bypass(binary, cred, timeout=8)
+                                    if ba.ran and ba.differs:
+                                        rf.verdict = "verified"
+                                        rf.severity = "critical"
+                                        rf.evidence += (
+                                            f"\n\n[sandbox: stdin real, credencial sugerida por LLM]\n"
+                                            f"candidata '{cred}' (exit={ba.candidate_exit}): {ba.candidate_out[:300]}\n"
+                                            f"control (exit={ba.control_exit}): {ba.control_out[:300]}")
+                                        rf.rationale += ((
+                                            f" CONFIRMADO en sandbox: el codigo de salida DIFIRIO "
+                                            f"({ba.candidate_exit} vs {ba.control_exit}) al probar esta "
+                                            f"credencial de verdad contra el binario real -- ya no es "
+                                            f"solo una hipotesis del modelo.") if config.lang == "es" else (
+                                            f" CONFIRMED in sandbox: the exit code DIFFERED "
+                                            f"({ba.candidate_exit} vs {ba.control_exit}) when trying this "
+                                            f"credential for real against the real binary -- no longer "
+                                            f"just a model hypothesis."))
                             for rf in review_findings:
                                 store.add_finding(rf)
                             findings = findings + review_findings
