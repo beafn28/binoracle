@@ -159,6 +159,114 @@ def _dec_tech_html(tech: dict, es: bool) -> str:
             + "</details>")
 
 
+# Fase 4 de la metodologia PE pegada por el usuario: "cualquier 'numero magico' que aparezca en
+# una llamada a una API de Windows (flags, codigos de servicio, codigos de control) se debe
+# verificar contra la documentacion oficial antes de interpretarse". Implementado de forma
+# DETERMINISTA (no el LLM adivinando): tabla curada de constantes Win32 REALES y estables del SDK
+# publico de Microsoft (sin cambios entre versiones de Windows), agrupada por familia de API para
+# evitar colisiones -- el mismo valor numerico significa cosas distintas segun la API (p.ej.
+# 0x80000000 es GENERIC_READ en CreateFile pero HKEY_CLASSES_ROOT en el registro), asi que solo se
+# resuelve un literal contra la tabla de la API que aparece en esa misma linea de codigo.
+_WIN32_API_CONSTANTS = {
+    "createfile": {
+        0x80000000: "GENERIC_READ", 0x40000000: "GENERIC_WRITE", 0x20000000: "GENERIC_EXECUTE",
+        0x10000000: "GENERIC_ALL", 0xC0000000: "GENERIC_READ|GENERIC_WRITE",
+        0x1: "CREATE_NEW", 0x2: "CREATE_ALWAYS", 0x3: "OPEN_EXISTING", 0x4: "OPEN_ALWAYS",
+        0x5: "TRUNCATE_EXISTING",
+    },
+    "virtualalloc": {
+        0x1000: "MEM_COMMIT", 0x2000: "MEM_RESERVE", 0x3000: "MEM_COMMIT|MEM_RESERVE",
+        0x4000: "MEM_DECOMMIT", 0x8000: "MEM_RELEASE", 0x80000: "MEM_RESET",
+        0x100000: "MEM_TOP_DOWN", 0x400000: "MEM_PHYSICAL",
+        # flProtect (mismo 4o parametro que VirtualProtect): PAGE_* -- no colisiona con los MEM_*
+        # de arriba (flAllocationType), asi que se pueden fundir en una sola tabla sin ambiguedad.
+        0x01: "PAGE_NOACCESS", 0x02: "PAGE_READONLY", 0x04: "PAGE_READWRITE",
+        0x08: "PAGE_WRITECOPY", 0x10: "PAGE_EXECUTE", 0x20: "PAGE_EXECUTE_READ",
+        0x40: "PAGE_EXECUTE_READWRITE", 0x80: "PAGE_EXECUTE_WRITECOPY", 0x100: "PAGE_GUARD",
+        0x200: "PAGE_NOCACHE",
+    },
+    "virtualprotect": {
+        0x01: "PAGE_NOACCESS", 0x02: "PAGE_READONLY", 0x04: "PAGE_READWRITE",
+        0x08: "PAGE_WRITECOPY", 0x10: "PAGE_EXECUTE", 0x20: "PAGE_EXECUTE_READ",
+        0x40: "PAGE_EXECUTE_READWRITE", 0x80: "PAGE_EXECUTE_WRITECOPY", 0x100: "PAGE_GUARD",
+        0x200: "PAGE_NOCACHE",
+    },
+    "createprocess": {
+        0x00000004: "CREATE_SUSPENDED", 0x00000008: "DETACHED_PROCESS",
+        0x00000010: "CREATE_NEW_CONSOLE", 0x00000400: "CREATE_UNICODE_ENVIRONMENT",
+        0x08000000: "CREATE_NO_WINDOW", 0x00000200: "CREATE_NEW_PROCESS_GROUP",
+    },
+    "openprocess": {
+        0x0001: "PROCESS_TERMINATE", 0x0002: "PROCESS_CREATE_THREAD",
+        0x0008: "PROCESS_VM_OPERATION", 0x0010: "PROCESS_VM_READ", 0x0020: "PROCESS_VM_WRITE",
+        0x0040: "PROCESS_DUP_HANDLE", 0x0400: "PROCESS_QUERY_INFORMATION",
+    },
+    "regopenkey": {
+        0x80000000: "HKEY_CLASSES_ROOT", 0x80000001: "HKEY_CURRENT_USER",
+        0x80000002: "HKEY_LOCAL_MACHINE", 0x80000003: "HKEY_USERS",
+        0x80000005: "HKEY_CURRENT_CONFIG",
+    },
+    "regcreatekey": {
+        0x80000000: "HKEY_CLASSES_ROOT", 0x80000001: "HKEY_CURRENT_USER",
+        0x80000002: "HKEY_LOCAL_MACHINE", 0x80000003: "HKEY_USERS",
+        0x80000005: "HKEY_CURRENT_CONFIG",
+    },
+}
+_WIN32_NUM_RE = re.compile(r"\b(0x[0-9a-fA-F]+|\d+)\b")
+
+
+def _win32_constant_annotations(code: str) -> list:
+    """Escanea el texto decompilado/desensamblado linea a linea: si una linea invoca una API Win32
+    conocida (createfile, virtualalloc...), resuelve cualquier literal numerico de esa linea que
+    coincida EXACTAMENTE con una constante conocida de esa familia. Sin coincidencia exacta, no se
+    anota nada (nunca se adivina). Devuelve [(api_matched, literal_text, symbol), ...] deduplicado."""
+    if not code:
+        return []
+    seen = set()
+    out = []
+    for line in code.splitlines():
+        low = line.lower()
+        for api, table in _WIN32_API_CONSTANTS.items():
+            if api not in low:
+                continue
+            for m in _WIN32_NUM_RE.finditer(line):
+                txt = m.group(1)
+                try:
+                    val = int(txt, 16) if txt.lower().startswith("0x") else int(txt)
+                except ValueError:
+                    continue
+                sym = table.get(val)
+                if sym is None:
+                    continue
+                key = (api, val)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((api, txt, sym))
+    return out
+
+
+def _win32_constants_html(hits: list, lang: str) -> str:
+    """Fase 4: tabla de constantes Win32 verificadas contra la documentacion oficial (valores
+    estables y publicos del SDK de Microsoft), no interpretadas a ojo por el LLM."""
+    if not hits:
+        return ""
+    es = lang == "es"
+    title = "Constantes verificadas (Fase 4)" if es else "Verified constants (Phase 4)"
+    note = ("Numeros magicos en llamadas a APIs Win32 conocidas, resueltos contra sus valores "
+            "oficiales y estables del SDK de Microsoft -- no interpretados por el modelo." if es else
+            "Magic numbers in known Win32 API calls, resolved against their official, stable "
+            "Microsoft SDK values -- not interpreted by the model.")
+    rows = "".join(
+        f'<tr><td><code>{_esc(api)}</code></td><td><code>{_esc(txt)}</code></td>'
+        f'<td><code>{_esc(sym)}</code></td></tr>' for api, txt, sym in hits)
+    th = ("API", "Valor", "Constante") if es else ("API", "Value", "Constant")
+    return (f'<details class="sec" open><summary>{_esc(title)}</summary>'
+            f'<p class="sechelp">{_esc(note)}</p>'
+            f'<table class="mittab"><thead><tr>{"".join(f"<th>{_esc(h)}</th>" for h in th)}</tr></thead>'
+            f'<tbody>{rows}</tbody></table></details>')
+
+
 def _decompiled_html(decompiled, lang: str = "es") -> str:
     """Seccion de decompilacion: pseudo-C conciliado + explicacion por funcion, la COMPARATIVA lado a
     lado de cada motor (Ghidra vs decai vs r2) y el contraste determinista entre ellos."""
@@ -194,10 +302,12 @@ def _decompiled_html(decompiled, lang: str = "es") -> str:
             lbl = "Contraste entre motores" if es else "Cross-check between engines"
             cross_html = (f'<div class="deccross"><b>{_esc(lbl)}:</b> {_esc(crosscheck)}</div>')
         tech_html = _dec_tech_html(getattr(d, "tech", {}) or {}, es)
+        const_hits = _win32_constant_annotations(raw + "\n" + ann)
+        const_html = _win32_constants_html(const_hits, lang)
         suffix = " + LLM" if ann.strip() else ""
         cards += (f'<div class="decfn"><div class="decfn-h"><span class="decfn-t">{_esc(func)}</span>'
                   f'<span class="decfn-e">{_esc(elabel)}{suffix}</span></div>'
-                  f'{tech_html}<div class="md">{body}</div>{cross_html}{cmp_html}</div>')
+                  f'{tech_html}<div class="md">{body}</div>{const_html}{cross_html}{cmp_html}</div>')
     return f'<h2 data-i18n="decompiled" id="sec-dec"></h2>{cards}'
 
 
