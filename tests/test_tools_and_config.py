@@ -1419,6 +1419,31 @@ def test_ropme_and_srop_verify_end_to_end_after_canary_fix():
         assert execve.verified, f"{b}: {execve.sim_result}"
 
 
+def test_ropme_pie_verifies_with_retries_under_flaky_base_resolution():
+    # ropme_pie es static-PIE. En este sandbox (Docker Desktop en Apple Silicon), un binario
+    # static-PIE se traduce via Rosetta en vez de qemu-user, y resolve_base() (io.libs() /
+    # /proc/pid/maps) solo atrapa la direccion real de carga en una VENTANA DE TIEMPO
+    # intermitente -- confirmado probando la MISMA logica de resolucion muchas veces seguidas:
+    # a veces encuentra la base real (y el exploit funciona con shell real, uid=0), a veces solo
+    # ve el propio wrapper de Rosetta y usa el fallback fijo (que no es la base real, y el
+    # syscall chain revienta el proceso de inmediato). El offset correcto (72, confirmado via
+    # r2) YA estaba primero en la lista de offsets probados -- el problema nunca fue el offset,
+    # sino que cada offset solo se intentaba con UNA resolucion de base. El fix (RETRIES por
+    # offset en _DRIVER_ROP/_DRIVER en autopie.py) sube las probabilidades de atrapar la ventana
+    # buena sin cambiar la logica de resolucion en si.
+    import os
+    import shutil
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    b = "samples/bin/ropme_pie"
+    if not os.path.exists(b) or not shutil.which("docker"):
+        return
+    an = analyze_chains(b, None, verify=True, lang="es")
+    execve = next((c for c in an.chains if c.name == "execve syscall"), None)
+    assert execve is not None
+    assert execve.verified, execve.sim_result
+    assert execve.proof.get("offset") == 72
+
+
 def test_chainanalyzer_wires_up_tcache_dup_driver():
     # Nueva capacidad: notes_heap.c corre bajo glibc >= 2.34 (sin __free_hook/__malloc_hook) y
     # no tiene win()/system() en el binario -- ninguna de las tecnicas de heap previas (tcache

