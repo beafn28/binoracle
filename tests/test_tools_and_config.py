@@ -1340,6 +1340,27 @@ def test_pe_capability_map_classifies_imports_by_category():
     assert _capability_html({}, "es") == ""
 
 
+def test_pe_capability_map_exact_match_for_short_socket_names():
+    # BUG real encontrado con un PE real (Ingrid.exe): 'SendMessageA' (mensajeria de ventanas,
+    # user32, nada que ver con red) caia en la categoria "Red" solo por empezar por "send" (los
+    # nombres BSD-socket clasicos -- send/recv/connect/bind/listen/accept/socket -- son
+    # demasiado cortos para prefix-match sin choques). Deben exigir coincidencia EXACTA; los
+    # nombres largos y especificos (InternetOpen, WinHttpConnect...) siguen siendo prefix-match.
+    from binoracle.report.html import _pe_capability_map
+
+    class _FakeTriage:
+        sections = [("Imports", "radare2: ii",
+                     "1 0x1 NONE FUNC USER32.dll  SendMessageA\n"
+                     "2 0x2 NONE FUNC WS2_32.dll   send\n"
+                     "3 0x3 NONE FUNC WS2_32.dll   connect\n"
+                     "4 0x4 NONE FUNC WS2_32.dll   ConnectNamedPipe\n")]
+
+    cm = _pe_capability_map(_FakeTriage())
+    assert "SendMessageA" not in cm.get("red", [])
+    assert "ConnectNamedPipe" not in cm.get("red", [])
+    assert cm["red"] == ["connect", "send"]
+
+
 def test_pe_dll_characteristics_decodes_mitigation_bits():
     # ASLR/DEP/CFG de Windows viven en IMAGE_OPTIONAL_HEADER.DllCharacteristics, no en ningun
     # campo de checksec -- hay que decodificar los bits IMAGE_DLLCHARACTERISTICS_* a mano.
