@@ -1149,6 +1149,157 @@ def _pdb_leak_html(res: dict, lang: str) -> str:
             f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
 
 
+def _pe_rich_header(binary: str) -> dict:
+    """Fase 0 (metodologia): "buscar... el Rich Header... esto determina si vamos a encontrarnos
+    con convenciones MSVC, GCC, Delphi, .NET, etc.". El Rich Header es un artefacto que solo
+    escribe el LINKER de Microsoft (link.exe); su presencia es una senal fuerte de toolchain MSVC,
+    su ausencia sugiere otro compilador (MinGW/GCC, Delphi, .NET AOT) o que el linker lo elimino a
+    proposito. No se decodifica la tabla completa de product-id -> version de Visual Studio (tabla
+    grande y no oficial); solo se informa presencia + numero de entradas, que ya responde la
+    pregunta de la metodologia. Best-effort: {} si pefile no encuentra nada o falla."""
+    try:
+        import pefile
+        pe = pefile.PE(binary, fast_load=True)
+        rh = pe.parse_rich_header()
+        if not rh or not rh.get("values"):
+            return {}
+        n_entries = len(rh["values"]) // 2
+        return {"present": True, "entries": n_entries}
+    except Exception:
+        return {}
+
+
+def _rich_header_html(res: dict, lang: str) -> str:
+    """Fase 0: nota informativa (no es un hallazgo de seguridad) sobre el toolchain probable."""
+    if not res or not res.get("present"):
+        return ""
+    es = lang == "es"
+    title = "Rich Header presente (toolchain MSVC)" if es else "Rich Header present (MSVC toolchain)"
+    n = res.get("entries", 0)
+    body = ((f"El binario tiene Rich Header ({n} entradas de linker/compilador), un artefacto "
+             f"que solo escribe el linker de Microsoft: confirma que se construyo con Visual "
+             f"Studio/MSVC.") if es else
+            (f"The binary has a Rich Header ({n} linker/compiler entries), an artifact only "
+             f"Microsoft's linker writes: confirms it was built with Visual Studio/MSVC."))
+    return (f'<div class="proof" style="border-color:#8b95a1;box-shadow:0 0 0 1px rgba(139,149,161,.15)">'
+            f'<div class="proof-h" style="background:#12141a;border-color:#8b95a1">'
+            f'<span class="proof-ok" style="color:#8b95a1">&#9432;</span>'
+            f'<span class="proof-t">{_esc(title)}</span></div>'
+            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}</div></div>')
+
+
+def _pe_sibling_dll_signing(binary: str) -> dict:
+    """Checklist base: "modulos y binarios sin firma digital (Authenticode)... verificar si el
+    binario esta firmado o no". Aplicado a las DLLs que acompanan al ejecutable en su mismo
+    directorio (no solo al EXE principal, que ya se comprueba en _parse_mitigations). Chequeo
+    ligero via pefile: presencia de entrada en el data directory IMAGE_DIRECTORY_ENTRY_SECURITY
+    (tabla de certificados Authenticode), sin verificar la cadena de confianza -- igual de
+    best-effort que el resto de chequeos de firma de este informe. Devuelve {} si el directorio no
+    tiene DLLs junto al binario, o si falla."""
+    try:
+        import os
+        import pefile
+        d = os.path.dirname(os.path.abspath(binary))
+        dlls = sorted(f for f in os.listdir(d) if f.lower().endswith(".dll"))
+        if not dlls:
+            return {}
+        sec_idx = pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]
+        unsigned = []
+        for name in dlls:
+            try:
+                dpe = pefile.PE(os.path.join(d, name), fast_load=True)
+                sec = dpe.OPTIONAL_HEADER.DATA_DIRECTORY[sec_idx]
+                if sec.VirtualAddress == 0 or sec.Size == 0:
+                    unsigned.append(name)
+            except Exception:
+                continue
+        if not unsigned:
+            return {}
+        return {"unsigned_dlls": unsigned, "total": len(dlls)}
+    except Exception:
+        return {}
+
+
+def _sibling_dll_signing_html(res: dict, lang: str) -> str:
+    """Checklist base: aviso si alguna DLL acompanante no tiene tabla de certificados Authenticode."""
+    if not res or not res.get("unsigned_dlls"):
+        return ""
+    es = lang == "es"
+    title = "DLLs acompanantes sin firma Authenticode" if es else "Companion DLLs without Authenticode"
+    names = ", ".join(res["unsigned_dlls"][:12])
+    more = len(res["unsigned_dlls"]) - 12
+    if more > 0:
+        names += (f" (+{more} mas)" if es else f" (+{more} more)")
+    body = ((f"{len(res['unsigned_dlls'])} de {res['total']} DLL(s) en el directorio del "
+             f"ejecutable no tienen tabla de certificados Authenticode: {names}") if es else
+            (f"{len(res['unsigned_dlls'])} of {res['total']} DLL(s) in the executable's directory "
+             f"have no Authenticode certificate table: {names}"))
+    note = ("Si una de estas DLLs se carga por el ejecutable, un atacante que consiga "
+            "sobrescribirla (o sustituirla) puede ejecutar codigo sin que Windows lo rechace por "
+            "firma invalida." if es else
+            "If the executable loads one of these DLLs, an attacker who can overwrite (or "
+            "replace) it can run code without Windows rejecting it for an invalid signature.")
+    return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+            f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+            f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+            f'<span class="proof-t">{_esc(title)}</span></div>'
+            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+
+
+# Checklist base: "ejecucion de codigo sin sandboxing en componentes de terceros... se suele poder
+# identificar al detectar '--no-sandbox' en el comando ejecutado por el componente". Marcadores de
+# contexto (Electron/CEF) opcionales, solo para explicar el porque cuando aparecen.
+_ELECTRON_MARKERS = ("libcef.dll", "electron.asar", "chrome_100_percent.pak", "content_shell",
+                     "cefbrowser", "electron.exe")
+
+
+def _pe_sandbox_flag_check(binary: str) -> dict:
+    """Checklist base: busca el literal '--no-sandbox' en las strings del binario (izz). No es
+    prueba de que SIEMPRE se use, pero es una senal fuerte de que el codigo lo construye para
+    invocar algun componente (tipico de apps Electron/CEF que desactivan el sandbox del
+    renderer/GPU). Best-effort: {} si no aparece o falla."""
+    try:
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return {}
+        txt = r.cmd("izz") or ""
+        if "--no-sandbox" not in txt:
+            return {}
+        low = txt.lower()
+        electron = any(m in low for m in _ELECTRON_MARKERS)
+        return {"found": True, "electron": electron}
+    except Exception:
+        return {}
+
+
+def _sandbox_flag_html(res: dict, lang: str) -> str:
+    """Checklist base: aviso si el binario embebe el flag --no-sandbox en sus strings."""
+    if not res or not res.get("found"):
+        return ""
+    es = lang == "es"
+    title = "Posible ejecucion sin sandbox (--no-sandbox)" if es else "Possible no-sandbox execution"
+    ctx = ((" El binario tambien tiene marcadores de Electron/CEF, contexto tipico de este flag."
+            if res.get("electron") else "") if es else
+           (" The binary also has Electron/CEF markers, the typical context for this flag."
+            if res.get("electron") else ""))
+    body = (("El binario embebe el string literal '--no-sandbox' en sus datos." + ctx) if es else
+            ("The binary embeds the literal string '--no-sandbox' in its data." + ctx))
+    note = ("Si este flag se usa al lanzar un componente de terceros (tipicamente un renderer "
+            "Chromium/CEF), ese componente corre SIN el sandbox del sistema operativo: cualquier "
+            "vulnerabilidad ahi puede escalar directamente al proceso que lo lanzo." if es else
+            "If this flag is used to launch a third-party component (typically a Chromium/CEF "
+            "renderer), that component runs WITHOUT the OS sandbox: any vulnerability there can "
+            "escalate directly to the launching process.")
+    return (f'<div class="proof" style="border-color:#f5a623;box-shadow:0 0 0 1px rgba(245,166,35,.15)">'
+            f'<div class="proof-h" style="background:#1a1408;border-color:#f5a623">'
+            f'<span class="proof-ok" style="color:#f5a623">&#9888;</span>'
+            f'<span class="proof-t">{_esc(title)}</span></div>'
+            f'<div style="padding:10px 13px;color:var(--fg);font-size:13px">{_esc(body)}'
+            f'<p class="mut" style="font-size:12px;margin:8px 0 0">{_esc(note)}</p></div></div>')
+
+
 _CVSS_SEV_COLOR = {"Critical": "#e5484d", "High": "#f5a623", "Medium": "#e2b53e",
                    "Low": "#5b8def", "None": "#8b95a1"}
 
@@ -1478,6 +1629,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     packing_html = _packing_warning_html(_pe_packing_check(binary), lang) if is_pe else ""
     dll_hijack_html = _dll_hijack_html(_pe_dll_hijack_check(triage), lang) if is_pe else ""
     pdb_leak_html = _pdb_leak_html(_pe_pdb_leak(binary), lang) if is_pe else ""
+    rich_header_html = _rich_header_html(_pe_rich_header(binary), lang) if is_pe else ""
+    sibling_dll_html = _sibling_dll_signing_html(_pe_sibling_dll_signing(binary), lang) if is_pe else ""
+    sandbox_flag_html = _sandbox_flag_html(_pe_sandbox_flag_check(binary), lang) if is_pe else ""
     # Indice: solo las secciones realmente presentes.
     _has = {"summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
@@ -1524,7 +1678,13 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {dll_hijack_html}
 
+  {sibling_dll_html}
+
+  {sandbox_flag_html}
+
   {pdb_leak_html}
+
+  {rich_header_html}
 
   {answer_html}
 
