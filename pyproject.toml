@@ -24,13 +24,14 @@ dependencies = []
 [project.optional-dependencies]
 # Analysis oracles are optional and load lazily. Install what you have/need.
 elf = ["pyelftools>=0.30"]
+pe = ["pefile>=2023.2.7"]
 r2 = ["r2pipe>=1.8"]
 symbolic = ["angr>=9.2"]
 pwn = ["pwntools>=4.11"]
 disasm = ["capstone>=5.0"]
 cvss = ["cvss>=3.0"]
-all = ["pyelftools>=0.30", "r2pipe>=1.8", "angr>=9.2", "capstone>=5.0", "pwntools>=4.11", "cvss>=3.0"]
-dev = ["pytest>=8.0", "cvss>=3.0"]
+all = ["pyelftools>=0.30", "pefile>=2023.2.7", "r2pipe>=1.8", "angr>=9.2", "capstone>=5.0", "pwntools>=4.11", "cvss>=3.0"]
+dev = ["pytest>=8.0", "cvss>=3.0", "pefile>=2023.2.7"]
 
 [project.scripts]
 binoracle = "binoracle.cli:main"

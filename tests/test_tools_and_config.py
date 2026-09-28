@@ -1421,6 +1421,150 @@ def test_pe_packing_check_flags_high_entropy_and_known_packer_sections():
     assert _packing_warning_html(pk_clean, "es") == ""
 
 
+def test_pe_packing_check_flags_low_function_count():
+    # Fase 0 (metodologia PE pegada por el usuario): "contar las funciones detectadas (afl~?)"
+    # como senal ADICIONAL de empaquetado -- un binario grande con muy pocas funciones es tipico
+    # del stub de un packer (el programa real esta comprimido/cifrado, r2 no ve codigo ahi).
+    from unittest.mock import patch
+    from binoracle.report.html import _pe_packing_check, _packing_warning_html
+    import json
+
+    class _FakeR2:
+        def __init__(self, secs, nfcn): self.secs = secs; self.nfcn = nfcn
+        def cmd(self, c):
+            if c == "iSj entropy":
+                return json.dumps(self.secs)
+            if c == "aflc":
+                return str(self.nfcn)
+            return ""
+
+    secs_clean = [{"name": ".text", "entropy": "4.06"}]
+    # binario grande (por encima del umbral) con solo 5 funciones detectadas -> sospechoso
+    with patch("binoracle.oracles.r2session.get", return_value=_FakeR2(secs_clean, 5)), \
+         patch("os.path.getsize", return_value=1_000_000):
+        pk = _pe_packing_check("/nonexistent")
+    assert pk.get("low_fncount") == (5, 1_000_000)
+    html = _packing_warning_html(pk, "es")
+    assert "5" in html and "funciones" in html
+
+    # mismo recuento bajo pero binario PEQUENO (por debajo del umbral de tamano): no es senal,
+    # cualquier programa pequeno tiene pocas funciones de forma legitima
+    with patch("binoracle.oracles.r2session.get", return_value=_FakeR2(secs_clean, 5)), \
+         patch("os.path.getsize", return_value=5_000):
+        pk_small = _pe_packing_check("/nonexistent")
+    assert pk_small == {}
+
+    # binario grande con muchas funciones (normal): tampoco es senal
+    with patch("binoracle.oracles.r2session.get", return_value=_FakeR2(secs_clean, 800)), \
+         patch("os.path.getsize", return_value=1_000_000):
+        pk_normal = _pe_packing_check("/nonexistent")
+    assert pk_normal == {}
+
+
+def test_pe_capability_map_has_database_category():
+    # Fase 2 de la metodologia pegada por el usuario pide explicitamente "¿Tiene acceso a bases de
+    # datos?" como una categoria del mapa de capacidades, junto a red/proceso/privilegios/cripto/
+    # registro -- faltaba.
+    from binoracle.report.html import _pe_capability_map
+
+    class _FakeTriage:
+        sections = [("Imports", "radare2: ii",
+                     "1 0x1 NONE FUNC ODBC32.dll   SQLDriverConnect\n"
+                     "2 0x2 NONE FUNC ODBC32.dll   SQLExecDirect\n"
+                     "3 0x3 NONE FUNC KERNEL32.dll GetLastError\n")]
+
+    cm = _pe_capability_map(_FakeTriage())
+    assert cm.get("bd") == ["SQLDriverConnect", "SQLExecDirect"]
+
+
+def test_pe_capability_map_falls_back_to_pefile_when_r2_imports_empty():
+    # Fase 0 de la metodologia: "si ii/iij de r2 falla, no asumir que el binario no tiene tabla de
+    # importaciones -- probar readpe/pefile antes de concluir nada". Si el texto de imports de r2
+    # viene vacio (parser atragantado, PE raro), el mapa de capacidades debe caer a pefile en vez
+    # de devolver {} silenciosamente.
+    from unittest.mock import patch, MagicMock
+    from binoracle.report.html import _pe_capability_map
+
+    class _FakeTriageEmpty:
+        sections = [("Imports", "radare2: ii", "")]
+
+    fake_import = MagicMock()
+    fake_import.name = b"InternetOpenA"
+    fake_entry = MagicMock()
+    fake_entry.imports = [fake_import]
+    fake_pe = MagicMock()
+    fake_pe.DIRECTORY_ENTRY_IMPORT = [fake_entry]
+
+    with patch("pefile.PE", return_value=fake_pe):
+        cm = _pe_capability_map(_FakeTriageEmpty(), binary="/nonexistent.exe")
+    assert cm.get("red") == ["InternetOpenA"]
+
+    # sin binario para el fallback: sigue devolviendo {} (no puede hacer nada mas)
+    assert _pe_capability_map(_FakeTriageEmpty()) == {}
+
+
+def test_pe_dll_hijack_check_flags_known_hijackable_dll_unless_hardened():
+    # Checklist base pegada por el usuario: "DLL hijacking - se utilizan rutas relativas?". Senal
+    # practica: importa una DLL de las que Windows carga por busqueda de nombre (conocida en
+    # investigaciones publicas de sideloading) SIN usar SetDllDirectory/SetDefaultDllDirectories
+    # para fijar su propia ruta de busqueda.
+    from binoracle.report.html import _pe_dll_hijack_check, _dll_hijack_html
+
+    class _FakeTriageVulnerable:
+        sections = [("Imports", "radare2: ii",
+                     "1 0x1 NONE FUNC VERSION.dll  GetFileVersionInfoA\n"
+                     "2 0x2 NONE FUNC UXTHEME.dll  SetWindowTheme\n"
+                     "3 0x3 NONE FUNC KERNEL32.dll LoadLibraryA\n")]
+
+    res = _pe_dll_hijack_check(_FakeTriageVulnerable())
+    assert res["dlls"] == ["uxtheme.dll", "version.dll"]
+    html = _dll_hijack_html(res, "es")
+    assert "version.dll" in html and "uxtheme.dll" in html
+
+    # mismas DLLs pero el binario SI fija su propia ruta de busqueda -> se considera endurecido
+    class _FakeTriageHardened:
+        sections = [("Imports", "radare2: ii",
+                     "1 0x1 NONE FUNC VERSION.dll   GetFileVersionInfoA\n"
+                     "2 0x2 NONE FUNC KERNEL32.dll  SetDllDirectoryW\n")]
+
+    assert _pe_dll_hijack_check(_FakeTriageHardened()) == {}
+
+    # sin ninguna DLL de la lista conocida: nada que avisar
+    class _FakeTriageClean:
+        sections = [("Imports", "radare2: ii", "1 0x1 NONE FUNC KERNEL32.dll GetLastError\n")]
+
+    assert _pe_dll_hijack_check(_FakeTriageClean()) == {}
+    assert _dll_hijack_html({}, "es") == ""
+
+
+def test_pe_pdb_leak_extracts_debug_directory_path():
+    # Checklist base pegada por el usuario: "filtracion de informacion sensible en strings...
+    # rutas de compilacion". El PE Debug Directory (CodeView/RSDS) suele embeber la ruta absoluta
+    # al .pdb tal cual quedo en la maquina de build. r2 no expone este directorio, por eso pefile.
+    from unittest.mock import patch, MagicMock
+    from binoracle.report.html import _pe_pdb_leak, _pdb_leak_html
+
+    fake_cv_entry = MagicMock()
+    fake_cv_entry.PdbFileName = b"C:\\build\\agent1\\src\\Release\\Ingrid.pdb\x00\x00"
+    fake_debug_entry = MagicMock()
+    fake_debug_entry.entry = fake_cv_entry
+    fake_pe = MagicMock()
+    fake_pe.DIRECTORY_ENTRY_DEBUG = [fake_debug_entry]
+
+    with patch("pefile.PE", return_value=fake_pe):
+        res = _pe_pdb_leak("/nonexistent.exe")
+    assert res["pdb_path"] == "C:\\build\\agent1\\src\\Release\\Ingrid.pdb"
+    html = _pdb_leak_html(res, "es")
+    assert "Ingrid.pdb" in html
+
+    # sin debug directory (release limpio, caso comun): no hay nada que avisar
+    fake_pe_clean = MagicMock()
+    fake_pe_clean.DIRECTORY_ENTRY_DEBUG = []
+    with patch("pefile.PE", return_value=fake_pe_clean):
+        assert _pe_pdb_leak("/nonexistent.exe") == {}
+    assert _pdb_leak_html({}, "es") == ""
+
+
 def test_rop_binsh_search_uses_real_null_byte():
     # Regresion: build_rop_chain buscaba b"/bin/sh\\x00" (doble barra invertida en el fuente ->
     # los 4 caracteres LITERALES '\','x','0','0', NO un byte nulo) en la libc proporcionada para
