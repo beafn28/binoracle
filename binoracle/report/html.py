@@ -842,11 +842,15 @@ _PE_GUARD_CF = 0x4000       # CFG
 # sustrings sueltos (evita que "Process32First"/"Process32Next" -- enumeracion, no ejecucion --
 # cuenten como "proceso" solo por contener "Process").
 _PE_CAPABILITIES = [
+    # nombres con prefijo "=": coincidencia EXACTA, no prefijo. Los BSD-socket clasicos (send,
+    # recv, connect...) son demasiado cortos/genericos para prefix-match sin falsos positivos --
+    # confirmado con un binario real: "SendMessageA" (mensajeria de ventanas, user32, nada que
+    # ver con red) caia en "Red" solo por empezar por "send".
     ("red", ("es", "Red"), ("en", "Network"), (
         "InternetOpen", "InternetConnect", "InternetReadFile", "InternetWriteFile",
         "HttpSendRequest", "HttpOpenRequest", "WinHttpOpen", "WinHttpConnect",
-        "WinHttpSendRequest", "WSAStartup", "WSASocket", "socket", "connect", "send", "recv",
-        "bind", "listen", "accept", "URLDownloadToFile")),
+        "WinHttpSendRequest", "WSAStartup", "WSASocket", "=socket", "=connect", "=send",
+        "=recv", "=bind", "=listen", "=accept", "URLDownloadToFile")),
     ("proceso", ("es", "Proceso / ejecucion"), ("en", "Process / execution"), (
         "CreateProcess", "WinExec", "ShellExecute", "CreateRemoteThread", "CreateThread",
         "OpenProcess", "TerminateProcess", "VirtualAllocEx", "WriteProcessMemory",
@@ -888,9 +892,14 @@ def _pe_capability_map(triage) -> dict:
         cand = parts[-1]
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", cand):
             names.add(cand)
+    def _match(name: str, pattern: str) -> bool:
+        low = name.lower()
+        if pattern.startswith("="):
+            return low == pattern[1:].lower()
+        return low.startswith(pattern.lower())
     out = {}
     for key, _es, _en, patterns in _PE_CAPABILITIES:
-        hits = sorted({n for n in names for p in patterns if n.lower().startswith(p.lower())})
+        hits = sorted({n for n in names for p in patterns if _match(n, p)})
         if hits:
             out[key] = hits
     return out
