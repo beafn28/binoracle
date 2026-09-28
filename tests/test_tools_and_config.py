@@ -1565,6 +1565,42 @@ def test_pe_pdb_leak_extracts_debug_directory_path():
     assert _pdb_leak_html({}, "es") == ""
 
 
+def test_win32_constant_annotations_resolves_known_apis_only():
+    # Fase 4 de la metodologia pegada por el usuario: "cualquier numero magico que aparezca en
+    # una llamada a una API de Windows se debe verificar contra la documentacion oficial antes de
+    # interpretarse". Implementado DETERMINISTA (tabla curada, no el LLM adivinando), por familia
+    # de API para no confundir valores que colisionan entre APIs (0x80000000 es GENERIC_READ en
+    # CreateFile pero HKEY_CLASSES_ROOT en el registro).
+    from binoracle.report.html import _win32_constant_annotations, _win32_constants_html
+
+    code = (
+        'HANDLE h = CreateFileA(path, 0x80000000, 0, 0, 3, 0, 0);\n'
+        'LPVOID p = VirtualAlloc(0, 0x1000, 0x3000, 0x40);\n'
+        'RegOpenKeyExA(0x80000002, sub, 0, 0, &hk);\n'
+        'int x = 42;  // literal suelto, sin API conocida en la linea: no debe anotarse\n'
+    )
+    hits = _win32_constant_annotations(code)
+    assert ("createfile", "0x80000000", "GENERIC_READ") in hits
+    assert ("createfile", "3", "OPEN_EXISTING") in hits
+    assert ("virtualalloc", "0x1000", "MEM_COMMIT") in hits
+    assert ("virtualalloc", "0x3000", "MEM_COMMIT|MEM_RESERVE") in hits
+    assert ("virtualalloc", "0x40", "PAGE_EXECUTE_READWRITE") in hits
+    assert ("regopenkey", "0x80000002", "HKEY_LOCAL_MACHINE") in hits
+    assert not any(h[1] == "42" for h in hits)
+
+    html = _win32_constants_html(hits, "es")
+    assert "GENERIC_READ" in html and "HKEY_LOCAL_MACHINE" in html
+
+    # mismo valor 0x80000000, API distinta (registro, no CreateFile) -> simbolo distinto, sin
+    # colision entre tablas
+    reg_only = _win32_constant_annotations("RegCreateKeyExA(0x80000000, name, 0, 0, 0, 0, 0, &hk, 0);")
+    assert reg_only == [("regcreatekey", "0x80000000", "HKEY_CLASSES_ROOT")]
+
+    # sin ninguna API Win32 conocida en el texto: nada que anotar
+    assert _win32_constant_annotations("int add(int a, int b) { return a + b; }") == []
+    assert _win32_constants_html([], "es") == ""
+
+
 def test_pe_rich_header_reports_presence_and_entry_count():
     # Gap menor de la Fase 0 ("buscar... el Rich Header... esto determina si vamos a
     # encontrarnos con convenciones MSVC, GCC, Delphi, .NET"): el Rich Header solo lo escribe el
