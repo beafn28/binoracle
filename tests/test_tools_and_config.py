@@ -1381,6 +1381,44 @@ def test_chainanalyzer_wires_up_write_what_where_driver():
     assert wow.proof.get("offset") == -12
 
 
+def test_facts_corrects_canary_false_positive_on_static_binaries():
+    # BUG real (no un limite fundamental): `canary` de `ij` es un flag DEL BINARIO ENTERO. En un
+    # binario estaticamente enlazado, __stack_chk_fail viaja siempre dentro de la libc completa
+    # aunque NINGUNA funcion propia lo use, asi que r2 marcaba canary=True incluso cuando vuln()
+    # no comprueba nada -- confirmado leyendo el desensamblado real de vuln() en los 4 binarios de
+    # abajo (sus fuentes dicen explicitamente "no canary" y no hay ningun `fs:0x28`/stack_chk ahi).
+    # Esto bloqueaba SIEMPRE su verificacion via _should_attempt_verify() (que rechaza canary=True
+    # sin condiciones), pese a que un simple ret2win/ROP era perfectamente viable. `canary` y
+    # `ret2win_hardened` (canary real, confirmado con `mov rax, qword fs:[0x28]` en su vuln())
+    # deben seguir dando True: la correccion solo debe activarse para el falso positivo.
+    import os
+    from binoracle.workflows.chainanalyzer import _facts
+    real_canary = {"samples/bin/canary": True, "samples/bin/ret2win_hardened": True}
+    false_positive = {"samples/bin/ropme": False, "samples/bin/ropme_pie": False,
+                       "samples/bin/srop": False, "samples/bin/staticrop": False}
+    for b, expected in {**real_canary, **false_positive}.items():
+        if not os.path.exists(b):
+            continue
+        f = _facts(b)
+        assert f.get("canary") is expected, f"{b}: canary esperado {expected}, obtenido {f.get('canary')}"
+
+
+def test_ropme_and_srop_verify_end_to_end_after_canary_fix():
+    # Consecuencia directa del fix de arriba: antes de esto, ropme y srop NUNCA intentaban
+    # verificarse (canary=True los bloqueaba en la puerta), pese a no tener canary real y tener
+    # todos los gadgets necesarios para una cadena execve('/bin/sh') por syscall.
+    import os
+    import shutil
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    for b in ("samples/bin/ropme", "samples/bin/srop"):
+        if not os.path.exists(b) or not shutil.which("docker"):
+            continue
+        an = analyze_chains(b, None, verify=True, lang="es")
+        execve = next((c for c in an.chains if c.name == "execve syscall"), None)
+        assert execve is not None
+        assert execve.verified, f"{b}: {execve.sim_result}"
+
+
 def test_chainanalyzer_wires_up_tcache_dup_driver():
     # Nueva capacidad: notes_heap.c corre bajo glibc >= 2.34 (sin __free_hook/__malloc_hook) y
     # no tiene win()/system() en el binario -- ninguna de las tecnicas de heap previas (tcache

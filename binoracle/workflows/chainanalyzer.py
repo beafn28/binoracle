@@ -240,6 +240,38 @@ def _facts(binary: str, reg=None) -> dict:
             for s in izz_list:
                 if (s.get("string", "") or "") == "/bin/sh":
                     f["binsh"] = s.get("vaddr"); break
+            # BUG previo: `canary` (arriba, de `ij`) es un flag DEL BINARIO ENTERO. En un binario
+            # estaticamente enlazado, __stack_chk_fail/stack-protector viaja siempre dentro de la
+            # libc completa aunque NINGUNA funcion propia lo use -- r2 lo detecta como presente
+            # por el simple hecho de estar ahi, marcando canary=True incluso cuando la funcion
+            # vulnerable en si no comprueba nada. Confirmado en 4 binarios reales (ropme,
+            # ropme_pie, srop, staticrop): sus fuentes dicen explicitamente "no canary" y su
+            # vuln() no tiene ningun `fs:0x28`/__stack_chk_fail -- pero el flag binario-ancho
+            # decia True en los 4, y _should_attempt_verify() bloqueaba SIEMPRE su verificacion
+            # por ello. El chequeo real es la funcion vulnerable EN SI (por convencion "vuln" en
+            # todos los samples de este proyecto), no "cualquier funcion que llame a read": en un
+            # binario estatico decenas de funciones INTERNAS de la libc (fread, getline, el
+            # buffering de FILE*...) tambien llaman a read() y CASI TODAS tienen canary (la
+            # propia libc se compila con stack protector), asi que escanear por sink es
+            # practicamente inutil ahi -- casi cualquier match da un falso "True".
+            if f["canary"] is True:
+                dis = ""
+                if "sym.vuln" in fn_names or "vuln" in fn_names:
+                    dis = r.cmd("pdf @ sym.vuln") or r.cmd("pdf @ vuln") or ""
+                if not dis:
+                    read_sinks = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "recv", "fread", "gets_s")
+                    # el simbolo puede llevar prefijo '.' (sym.imp.read) o '_' (sym.__read, comun
+                    # en binarios estaticos): \b solo no basta, "_" es caracter de palabra en
+                    # regex y no forma limite entre "__" y "read".
+                    sink_re = _re.compile(r"call\s+\S*[._](?:" + "|".join(read_sinks) + r")\b")
+                    for fn in json.loads(r.cmd("aflj") or "[]"):
+                        name = fn.get("name", "")
+                        cand = r.cmd(f"pdf @ {name}") or ""
+                        if sink_re.search(cand):
+                            dis = cand
+                            break
+                if dis:
+                    f["canary"] = ("fs:" in dis) or ("stack_chk" in dis)
     except Exception:
         pass
     # offset de control de RIP (reutiliza el detector estatico de autopoc)
