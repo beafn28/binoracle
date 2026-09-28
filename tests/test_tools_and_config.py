@@ -1601,6 +1601,35 @@ def test_win32_constant_annotations_resolves_known_apis_only():
     assert _win32_constants_html([], "es") == ""
 
 
+def test_methodology_html_documents_every_phase_honestly():
+    # Peticion explicita del usuario: que la metodologia (Fases 0-9 + checklist) quede "toda
+    # representada y bien documentada" en el informe, no solo aplicada en silencio. Debe ser
+    # honesta: nunca afirmar cobertura de una fase que no existe en el binario concreto (p.ej. no
+    # decir "cadena completa" si no hay seccion de cadena de ataque para ESTE informe).
+    from binoracle.report.html import _methodology_html
+
+    # PE con todas las secciones presentes: fases 0/2 (especificas de PE) + 3/4/5/6/7/8/9
+    has_full = {"dec": True, "chain": True, "owasp": True}
+    html = _methodology_html(True, has_full, "es")
+    for phase in ("Fase 0", "Fase 2", "Fase 3", "Fase 4", "Fase 5", "Fase 6", "Fase 7", "Fase 9"):
+        assert phase in html
+    assert "sandbox de verificacion dinamica" in html and "Linux/ELF-only" in html  # Fase 8 honesta en PE
+    assert "MSI" in html and "fuera de alcance" not in html.lower() or "Fuera de alcance" in html
+
+    # ELF: no debe reclamar Fase 0/2 (especificas de PE: Rich Header, capacidades Win32...)
+    html_elf = _methodology_html(False, has_full, "es")
+    assert "Fase 0" not in html_elf and "Fase 2" not in html_elf
+    assert "sandbox aislado interceptando" in html_elf  # Fase 8 distinta para ELF (si se ejecuta)
+
+    # sin decompilacion ni cadena ni OWASP en este binario concreto: el texto debe decirlo, no
+    # fingir que si se cubrio
+    has_empty = {"dec": False, "chain": False, "owasp": False}
+    html_empty = _methodology_html(True, has_empty, "es")
+    assert "no se pudo decompilar" in html_empty
+    assert "no hay suficientes hallazgos" in html_empty
+    assert "sin hallazgos que mapear" in html_empty
+
+
 def test_pe_rich_header_reports_presence_and_entry_count():
     # Gap menor de la Fase 0 ("buscar... el Rich Header... esto determina si vamos a
     # encontrarnos con convenciones MSVC, GCC, Delphi, .NET"): el Rich Header solo lo escribe el
