@@ -3222,6 +3222,45 @@ def test_symbolic_angr_rebases_pie_addresses_for_auto_verify():
     assert findings[0].verdict == "verified", notes
 
 
+def test_symbolic_angr_reachable_never_hangs_past_its_budget():
+    # Bug real encontrado en vivo probando un binario con un bucle (un menu re-mostrado hasta que
+    # el usuario elige salir): AngrOracle._reachable() hacia una UNICA llamada bloqueante
+    # `simgr.explore(...)` sin ningun limite de tiempo ni de estados activos -- en un binario con
+    # un bucle que multiplica caminos sin fin, se quedaba al 100% de CPU minuto tras minuto sin
+    # devolver nunca nada (mismo patron de fallo que el `pdg` de r2 sin timeout, arreglado antes
+    # en r2session.cmd_timeout). Ahora usa el mismo bucle con deadline + tope de estados activos
+    # que ya usaba reachability.find_input_to() para el mismo problema.
+    import time
+    from unittest.mock import MagicMock
+    from binoracle.oracles.symbolic_angr import AngrOracle, _HAVE_ANGR
+    if not _HAVE_ANGR:
+        return   # angr no instalado en este entorno: se omite
+
+    oracle = AngrOracle("fake.bin")
+    fake_active = [MagicMock() for _ in range(500)]   # muchos estados activos, como un bucle real
+    fake_simgr = MagicMock()
+    fake_simgr.active = fake_active
+    fake_simgr.found = []          # NUNCA encuentra el objetivo (simula un bucle sin salida)
+    fake_simgr.deadended = []
+    fake_simgr.explore = MagicMock()   # no-op: no reduce 'active' ni pone 'found'
+
+    fake_proj = MagicMock()
+    fake_proj.loader.main_object.pic = False   # sin rebase PIE, para simplificar el mock
+    fake_proj.factory.simulation_manager.return_value = fake_simgr
+    oracle._project = MagicMock(return_value=fake_proj)
+
+    t0 = time.time()
+    res = oracle._reachable("0x401234", budget_s=0.3, max_active=50)
+    elapsed = time.time() - t0
+
+    assert elapsed < 3.0, "no debe esperar mucho mas que el budget_s pedido"
+    assert res.ok and res.meta.get("reachable") is False
+    assert "budget" in res.data.lower() or "NOT reachable" in res.data
+    assert fake_simgr.explore.call_count > 1   # de verdad iteró varias veces dentro del budget
+    # el tope de max_active se aplico: 'active' se recorto, nunca crecio sin control
+    assert len(fake_simgr.active) <= 50
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
