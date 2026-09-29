@@ -912,7 +912,7 @@ def run_streaming(command, binary, ai, emit, text=""):
                     from .workflows.authcheck import get_confirmed_credentials
                     from .workflows.authbypass import try_credential_bypass
                     from .store.session import Finding as _F2
-                    confirmed_creds = get_confirmed_credentials(reg)
+                    confirmed_creds = get_confirmed_credentials(reg, binary)
                     if confirmed_creds:
                         cred_val, cred_fn, cred_cmp = confirmed_creds[0]
                         emit("step", f"probando la credencial candidata en sandbox contra {cred_fn}...")

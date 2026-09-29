@@ -113,37 +113,68 @@ def _cred_candidates_with_vaddr(reg):
     return out
 
 
-def _confirm_via_xref(reg, candidates):
+def _disasm_of(reg, fn: str, binary: str = "") -> str:
+    """Desensamblado de `fn` (r2 pdf). Mismo problema y mismo arreglo que _used_in: el ToolRegistry
+    usa analisis ligero ('aa') por defecto, que puede no haber descubierto `fn` como funcion en
+    absoluto (se encontro via 'aaa' en r2session, en una sesion r2 DISTINTA) -- 'pdf @ fn' sobre la
+    sesion ligera saldria vacio aunque la funcion exista de verdad. Si el intento normal no da nada
+    y hay `binary`, reintenta contra la sesion compartida (aaa, cacheada)."""
+    disasm = reg.get("r2_disasm")
+    if disasm is not None:
+        try:
+            r = disasm.run(target=fn)
+            if r.ok and (r.data or "").strip():
+                return r.data
+        except Exception:
+            pass
+    if binary:
+        try:
+            from ..oracles.r2session import cmd_timeout
+            return cmd_timeout(binary, f"pdf @ {fn}", timeout=60) or ""
+        except Exception:
+            pass
+    return ""
+
+
+def _confirm_via_xref(reg, candidates, binary: str = ""):
     """De las candidatas (string, vaddr), cuales tienen un xref directo (r2 axt) a una funcion que
     ADEMAS llama a una de las _CMP en su propio disassembly (r2 pdf) -- conexion REAL entre esa
-    credencial concreta y la comparacion, no solo co-ocurrencia en el binario. Devuelve
-    [(string, funcion, cmp_usada), ...], grounded: nunca inventa el enlace si r2 no lo confirma."""
-    disasm = reg.get("r2_disasm")
-    if not disasm:
-        return []
+    credencial concreta y la comparacion, no solo co-ocurrencia en el binario.
+
+    Devuelve (confirmed, used_elsewhere):
+    - confirmed: [(string, funcion, cmp_usada), ...] -- la funcion que usa la credencial TAMBIEN
+      la compara: mecanismo de auth por comparacion confirmado.
+    - used_elsewhere: [(string, funcion), ...] -- xref real confirmado (SI sabemos donde se usa la
+      credencial), pero esa funcion NO llama a ninguna _CMP: se usa para otra cosa (ver la funcion
+      para el uso exacto -- p.ej. construir una cadena de conexion), no es una comparacion.
+    Distincion pedida por el usuario: "solo correlacion" no es lo mismo que "no sabemos donde se
+    usa" -- si hay xref mostramos que SI hay un uso real, solo que no es de comparacion, en vez de
+    quedarnos en un "sin confirmar" ambiguo que suena a que no se investigo nada.
+    Grounded: nunca inventa el enlace ni el motivo si r2 no lo confirma."""
     confirmed = []
+    used_elsewhere = []
     seen_fns = {}
     for val, vaddr in candidates:
-        for fn in _used_in(reg, vaddr):
+        for fn in _used_in(reg, vaddr, binary):
             if fn not in seen_fns:
-                try:
-                    r = disasm.run(target=fn)
-                    seen_fns[fn] = (r.data or "") if r.ok else ""
-                except Exception:
-                    seen_fns[fn] = ""
+                seen_fns[fn] = _disasm_of(reg, fn, binary)
             body = seen_fns[fn]
             hit = next((c for c in _CMP if re.search(rf"\bcall\b[^\n]*\b{re.escape(c)}\b", body)), None)
             if hit:
                 confirmed.append((val, fn, hit))
-    return confirmed[:6]
+            else:
+                used_elsewhere.append((val, fn))
+    return confirmed[:6], used_elsewhere[:6]
 
 
-def get_confirmed_credentials(reg: ToolRegistry) -> List[tuple]:
+def get_confirmed_credentials(reg: ToolRegistry, binary: str = "") -> List[tuple]:
     """Punto de entrada publico y reutilizable: [(credencial, funcion, cmp_usada), ...] confirmadas
-    por xref (r2 axt + pdf). Usado por scan_auth() para el hallazgo estatico, y por el pipeline de
-    informe (web.py) para decidir que credencial concreta intentar en el sandbox dinamico
-    (authbypass.py) -- un unico calculo, sin duplicar la logica de xref en dos sitios."""
-    return _confirm_via_xref(reg, _cred_candidates_with_vaddr(reg))
+    por xref (r2 axt + pdf). Usado por el pipeline de informe (web.py) para decidir que credencial
+    concreta intentar en el sandbox dinamico (authbypass.py). `binary` habilita el reintento con
+    analisis profundo (ver _used_in/_disasm_of) cuando el ligero no encuentra nada; sin el, se
+    comporta como antes (solo el analisis ligero del ToolRegistry)."""
+    confirmed, _used_elsewhere = _confirm_via_xref(reg, _cred_candidates_with_vaddr(reg), binary)
+    return confirmed
 
 
 def scan_auth(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding]:
@@ -164,8 +195,16 @@ def scan_auth(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding]
 
     if cred_lines:
         # intenta CONFIRMAR el enlace especifico credencial<->comparacion via xref (r2 axt + pdf),
-        # no solo la correlacion "ambas cosas existen en el binario".
-        confirmed = get_confirmed_credentials(reg)
+        # no solo la correlacion "ambas cosas existen en el binario". Tres estados honestos, no
+        # solo confirmado/sin confirmar (pedido explicito del usuario: si SI se sabe donde se usa
+        # la credencial, hay que decir QUE hace esa funcion con ella -- compararla o usarla para
+        # otra cosa -- en vez de un "sin confirmar" ambiguo que suena a que no se investigo nada):
+        # 1) confirmed: la funcion que usa la credencial TAMBIEN la compara -> auth por comparacion.
+        # 2) used_elsewhere: SI hay xref real a una funcion, pero esa funcion no compara -- se usa
+        #    para otra cosa alli (visto en Ingrid.exe: una contrasena de BD usada para construir una
+        #    cadena de conexion OLEDB, no para autenticar por comparacion).
+        # 3) ninguno de los dos: no hay ningun xref, correlacion pura, no se sabe donde se usa.
+        confirmed, used_elsewhere = _confirm_via_xref(reg, _cred_candidates_with_vaddr(reg), binary)
         if confirmed:
             conf_txt = "; ".join(f"{fn} ({c})" for _v, fn, c in confirmed)
             title = ("Autenticacion por comparacion con credencial hardcodeada (confirmado por xref)"
@@ -177,23 +216,43 @@ def scan_auth(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding]
                          (f" CONFIRMED by cross-reference (r2 axt + pdf): function(s) {conf_txt} "
                           f"directly reference one of the candidates AND call the comparison in that "
                           f"same function -- not just co-occurrence in the binary, the same code path."))
+        elif used_elsewhere:
+            where_txt = "; ".join(sorted({fn for _v, fn in used_elsewhere}))
+            title = ("Autenticacion por comparacion con credencial hardcodeada"
+                     if es else "Authentication by comparison against a hardcoded credential")
+            xref_note = ((f" USO REAL confirmado por cruce de referencias (r2 axt + pdf) en "
+                         f"{where_txt}, pero esa funcion NO llama a ninguna de las comparaciones "
+                         f"detectadas ({', '.join(cmp_used)}): la credencial candidata SI se usa "
+                         f"realmente alli, pero para otra cosa (p.ej. construir una cadena/argumento "
+                         f"pasado a otra llamada), no como puerta de autenticacion por comparacion "
+                         f"directa. Revisa {where_txt} para ver el uso exacto; las funciones de "
+                         f"comparacion detectadas pueden estar comparando OTRO valor, sin relacion "
+                         f"con esta credencial.") if es else
+                         (f" REAL usage confirmed by cross-reference (r2 axt + pdf) in {where_txt}, "
+                          f"but that function does NOT call any of the detected comparisons "
+                          f"({', '.join(cmp_used)}): the candidate credential IS really used there, "
+                          f"but for something else (e.g. building a string/argument passed to "
+                          f"another call), not as a direct comparison-based auth gate. Check "
+                          f"{where_txt} for the exact usage; the detected comparison functions may "
+                          f"be comparing a DIFFERENT value, unrelated to this credential."))
         else:
             title = ("Autenticacion por comparacion con credencial hardcodeada"
                      if es else "Authentication by comparison against a hardcoded credential")
             xref_note = ((" NO confirmado por xref: se ve la comparacion y strings candidatas en el "
-                         "binario, pero r2 no pudo establecer que la MISMA funcion use la MISMA "
-                         "credencial (simbolos stripped, referencia indirecta, o no relacionadas de "
-                         "verdad) -- es una correlacion, confirmalo leyendo la funcion.") if es else
+                         "binario, pero r2 no pudo establecer NINGUN uso real de esa credencial "
+                         "(simbolos stripped, referencia indirecta, o no relacionadas de verdad) -- "
+                         "es una correlacion, confirmalo leyendo la funcion.") if es else
                          (" NOT xref-confirmed: the comparison and candidate strings are both present "
-                          "in the binary, but r2 could not establish that the SAME function uses the "
-                          "SAME credential (stripped symbols, indirect reference, or genuinely "
-                          "unrelated) -- this is a correlation, confirm by reading the function."))
+                          "in the binary, but r2 could not establish ANY real usage of that credential "
+                          "(stripped symbols, indirect reference, or genuinely unrelated) -- this is "
+                          "a correlation, confirm by reading the function."))
         findings.append(Finding(
             title=title,
             severity="high", verdict="grounded", location="auth / comparacion",
             evidence="[radare2: ii + izz]\ncomparacion: " + ", ".join(cmp_used)
                      + "\ncandidatas: " + " | ".join(cred_lines[:4])
-                     + (("\nxref confirmado: " + conf_txt) if confirmed else ""),
+                     + (("\nxref confirmado: " + conf_txt) if confirmed else
+                        (("\nuso real, no comparacion: " + where_txt) if used_elsewhere else "")),
             rationale=("El binario compara entradas con " + ", ".join(cmp_used) + " y embebe cadenas que "
                        "parecen credenciales. Autenticar comparando contra una cadena fija es debil: la "
                        "credencial se extrae del binario (ver DA3) y strcmp filtra por canal lateral de "

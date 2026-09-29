@@ -190,6 +190,68 @@ def test_backdoors_scanner():
     assert scan_backdoors(_mock_reg(imports="sym.imp.printf", strings=""), "x") == []
 
 
+def test_backdoors_cites_the_real_function_not_a_generic_location():
+    # Pedido explicito del usuario ("hay que ir mas alla en todos los casos", aplicado mas alla de
+    # credenciales): la location no debe quedarse en el generico fijo "binario / red" -- debe citar
+    # la funcion REAL confirmada por xref (shared_caller_fns), igual que se hizo para credenciales.
+    from binoracle.workflows.backdoors import scan_backdoors
+    from unittest.mock import MagicMock
+
+    def make_reg(caller_fn):
+        reg = MagicMock()
+        imports_tool = _mock_tool(data="1 0x1 GLOBAL FUNC socket\n2 0x2 GLOBAL FUNC bind\n"
+                                       "3 0x3 GLOBAL FUNC listen\n4 0x4 GLOBAL FUNC execve\n")
+        strings_tool = _mock_tool(data="")
+
+        class _Xrefs:
+            def run(self, target=""):
+                name = target.rsplit(".", 1)[-1] if target else ""
+                if name in ("socket", "bind", "listen", "execve"):
+                    return MagicMock(ok=True, data=f"{caller_fn} 0x1000 [CALL:--x] call sym.imp.{name}")
+                return MagicMock(ok=True, data="")
+
+        reg.get.side_effect = lambda n: {"r2_imports": imports_tool, "r2_strings": strings_tool,
+                                         "r2_xrefs": _Xrefs()}.get(n)
+        return reg
+
+    fs = scan_backdoors(make_reg("fcn.deploy_listener"), "x")
+    bind = next(f for f in fs if "bind shell" in f.title.lower())
+    assert bind.location == "fcn.deploy_listener"
+    assert "fcn.deploy_listener" in bind.rationale
+
+
+def test_callers_of_falls_back_to_deep_analysis_when_light_analysis_finds_nothing():
+    # Mismo arreglo (analisis ligero 'aa' del ToolRegistry puede no encontrar un xref real) aplicado
+    # de forma general a callers_of/shared_caller_fns -- usado por backdoors.py, authz.py,
+    # fileperms.py e injection.py, asi que este UNICO arreglo los beneficia a todos.
+    from unittest.mock import MagicMock, patch
+    from binoracle.workflows._binfacts import callers_of, shared_caller_fns
+
+    reg = MagicMock()
+    reg.get.side_effect = lambda n: {"r2_xrefs": _mock_tool(data="")}.get(n)  # ligero: nada
+
+    with patch("binoracle.oracles.r2session.cmd_timeout",
+               return_value="fcn.real_caller 0x1000 [CALL:--x] call sym.imp.system") as deep:
+        fns = callers_of(reg, "system", "/real/path/target.bin")
+    assert fns == {"fcn.real_caller"}
+    deep.assert_called()
+
+    # sin `binary`: sin reintento, se comporta como antes (compatibilidad hacia atras)
+    with patch("binoracle.oracles.r2session.cmd_timeout") as deep2:
+        assert callers_of(reg, "system") == set()
+    deep2.assert_not_called()
+
+    # shared_caller_fns: misma logica, para dos sinks distintos que resultan en la MISMA funcion
+    def deep_side_effect(binary, cmd, timeout=60):
+        if "getenv" in cmd:
+            return "fcn.real_caller 0x1000 [CALL:--x] call sym.imp.getenv"
+        if "system" in cmd:
+            return "fcn.real_caller 0x1010 [CALL:--x] call sym.imp.system"
+        return ""
+    with patch("binoracle.oracles.r2session.cmd_timeout", side_effect=deep_side_effect):
+        assert shared_caller_fns(reg, ["getenv"], ["system"], "/real/path/target.bin") == {"fcn.real_caller"}
+
+
 def test_dynamic_parse_and_findings():
     # Parser del shim LD_PRELOAD + generacion de hallazgos (sin docker: se prueba _parse directo).
     from binoracle.workflows.dynamic import _parse, dynamic_findings
@@ -1791,6 +1853,38 @@ def test_secrets_scan_finds_the_real_using_function_via_xref():
     assert fs2[0].location == "seccion de datos (.rodata/.data), sin xref directo encontrado"
 
 
+def test_secrets_xref_falls_back_to_deep_analysis_when_light_analysis_finds_nothing():
+    # Bug real encontrado en vivo probando Ingrid.exe: el ToolRegistry usa analisis LIGERO de r2
+    # ('aa') por defecto -- una credencial REAL (contrasena en una connection string OLEDB, con un
+    # xref real y verificable a mano con 'aaa') salia como "sin xref encontrado" porque el chequeo
+    # solo miraba la sesion ligera, nunca reintentaba con mas profundidad. Ahora, si la sesion
+    # ligera no encuentra nada y se paso `binary`, se reintenta UNA vez contra la sesion r2
+    # compartida (analisis 'aaa' completo) antes de rendirse.
+    from unittest.mock import MagicMock, patch
+    from binoracle.workflows.secrets import scan_secrets
+
+    reg = MagicMock()
+    strings_tool = _mock_tool(data="0 0x1 0x00b20828 20 21 .rodata ascii "
+                                    "password=azohc060397\n")
+    xrefs_tool = _mock_tool(data="")  # analisis ligero: no encuentra nada (falso negativo)
+    reg.get.side_effect = lambda name: {"r2_strings": strings_tool, "r2_xrefs": xrefs_tool}.get(name)
+
+    with patch("binoracle.oracles.r2session.cmd_timeout",
+               return_value="fcn.0087c371 0x87c39f [STRN:r--] push str.password") as deep:
+        fs = scan_secrets(reg, "/real/path/Ingrid.exe", "es")
+    deep.assert_called_once()
+    assert deep.call_args[0][0] == "/real/path/Ingrid.exe"
+    assert "axt @" in deep.call_args[0][1]
+    assert fs[0].location == "usado en: fcn.0087c371"
+
+    # sin `binary` (compatibilidad hacia atras): NO intenta el reintento profundo, se comporta
+    # exactamente como antes de este arreglo -- nunca abre una sesion r2 real por sorpresa.
+    with patch("binoracle.oracles.r2session.cmd_timeout") as deep2:
+        fs2 = scan_secrets(reg, "", "es")
+    deep2.assert_not_called()
+    assert fs2[0].location == "seccion de datos (.rodata/.data), sin xref directo encontrado"
+
+
 def test_authcheck_recognizes_win32_comparison_apis_not_just_libc():
     # Bug real encontrado probando con Ingrid.exe (PE real): _CMP solo tenia nombres libc/POSIX
     # (strcmp, memcmp...) -- ningun binario Windows (que usa lstrcmpA/_stricmp/wcscmp, no strcmp)
@@ -1857,12 +1951,70 @@ def test_authcheck_xref_confirmation_distinguishes_verified_link_from_correlatio
         assert "xref" in fs[0].title.lower()
         assert "CONFIRMADO" in fs[0].rationale
 
-        # sym.check_login referencia la credencial pero NO llama a ninguna _CMP -> sin confirmar
-        reg_unconfirmed = make_reg("sym.check_login: push rbp; call sym.imp.printf; ret")
-        assert get_confirmed_credentials(reg_unconfirmed) == []
-        fs2 = scan_auth(reg_unconfirmed, "fake", "es")
+        # sym.check_login SI referencia la credencial (xref real) pero NO llama a ninguna _CMP:
+        # tercer estado honesto pedido por el usuario -- no es "sin confirmar" a secas (eso suena
+        # a que no se sabe nada), es "hay uso real, pero no es una comparacion" (visto de verdad en
+        # Ingrid.exe: una contrasena de BD usada para construir una cadena de conexion OLEDB).
+        reg_used_elsewhere = make_reg("sym.check_login: push rbp; call sym.imp.printf; ret")
+        assert get_confirmed_credentials(reg_used_elsewhere) == []
+        fs2 = scan_auth(reg_used_elsewhere, "fake", "es")
         assert "xref" not in fs2[0].title.lower()
-        assert "NO confirmado por xref" in fs2[0].rationale
+        assert "USO REAL confirmado" in fs2[0].rationale
+        assert "sym.check_login" in fs2[0].rationale
+        assert "NO llama a ninguna de las comparaciones" in fs2[0].rationale
+
+        # sin NINGUN xref a la credencial (ni siquiera un uso no-comparativo): correlacion pura,
+        # el unico caso que sigue diciendo "NO confirmado por xref" a secas.
+        reg_no_xref = MagicMock()
+        reg_no_xref.get.side_effect = lambda name: {
+            "r2_imports": _mock_tool(data="1 0x1 GLOBAL FUNC strcmp\n"),
+            "r2_strings": _mock_tool(data="0 0x1 0x402000 20 21 .rodata ascii MASTER_PASSWORD_2024\n"),
+            "r2_xrefs": _mock_tool(data=""),
+            "r2_disasm": _mock_tool(data=""),
+        }.get(name)
+        assert get_confirmed_credentials(reg_no_xref) == []
+        fs3 = scan_auth(reg_no_xref, "fake", "es")
+        assert "xref" not in fs3[0].title.lower()
+        assert "NO confirmado por xref" in fs3[0].rationale
+        assert "USO REAL" not in fs3[0].rationale
+
+
+def test_authcheck_confirmation_falls_back_to_deep_analysis_like_secrets():
+    # Mismo arreglo que test_secrets_xref_falls_back_to_deep_analysis..., aplicado a la
+    # confirmacion de bypass (get_confirmed_credentials): pedido explicito del usuario de que el
+    # arreglo cubra "todo, con el bypass y todo", no solo la location de secrets.py -- el bypass
+    # en sandbox (authbypass.py) SOLO se intenta si esta funcion confirma un enlace real, asi que
+    # el mismo falso negativo por analisis ligero le habria bloqueado la verificacion en sandbox.
+    from unittest.mock import MagicMock, patch
+    from binoracle.workflows.authcheck import get_confirmed_credentials
+
+    reg = MagicMock()
+    imports_tool = _mock_tool(data="1 0x1 GLOBAL FUNC strcmp\n")
+    strings_tool = _mock_tool(data="0 0x1 0x402000 20 21 .rodata ascii MASTER_PASSWORD_2024\n")
+    xrefs_tool = _mock_tool(data="")   # analisis ligero: sin xref (falso negativo)
+    disasm_tool = _mock_tool(data="")  # y sin disasm util tampoco
+    reg.get.side_effect = lambda name: {
+        "r2_imports": imports_tool, "r2_strings": strings_tool, "r2_xrefs": xrefs_tool,
+        "r2_disasm": disasm_tool,
+    }.get(name)
+
+    def deep_side_effect(binary, cmd, timeout=60):
+        if cmd.startswith("axt @"):
+            return "sym.check_login 0x401177 [STRN:r--] mov edi, str.master"
+        if cmd.startswith("pdf @"):
+            return "sym.check_login: push rbp; call sym.imp.strcmp; test eax, eax"
+        return ""
+
+    with patch("binoracle.workflows._binfacts.imported_names", return_value={"strcmp"}), \
+         patch("binoracle.oracles.r2session.cmd_timeout", side_effect=deep_side_effect):
+        confirmed = get_confirmed_credentials(reg, "/real/path/Ingrid.exe")
+    assert confirmed and confirmed[0][1] == "sym.check_login" and confirmed[0][2] == "strcmp"
+
+    # sin `binary`: sin reintento profundo, se comporta como antes (solo analisis ligero)
+    with patch("binoracle.workflows._binfacts.imported_names", return_value={"strcmp"}), \
+         patch("binoracle.oracles.r2session.cmd_timeout") as deep2:
+        assert get_confirmed_credentials(reg, "") == []
+    deep2.assert_not_called()
 
 
 def test_llm_deep_review_recognizes_backdoors_and_magic_flags_not_just_password_compare():
