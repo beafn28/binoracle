@@ -23,28 +23,30 @@ _DROP = ("setuid", "setgid", "setresuid", "setresgid", "setreuid", "setregid", "
 _FILEW = ("fopen", "open", "open64", "openat", "creat", "chmod", "chown")
 
 
-def _unsafe_callers(reg, risky: list, drop: list) -> set:
+def _unsafe_callers(reg, risky: list, drop: list, binary: str = "") -> set:
     """Funciones que llaman a algo de `risky` (exec/fichero) sin llamar TAMBIEN a un `drop`
     (setuid/setgid/...) -- exige que el drop este ausente en la MISMA funcion, no solo en el
     binario entero. Sin esto, un binario con setuid() en una funcion 'safe_path()' que nunca se
     invoca desde el camino que hace exec() en 'vuln_path()' se consideraba seguro (falso negativo
     real, confirmado con un binario sintetico: setuid+printf en una funcion, execl SIN drop en
     otra). Si no se resuelven llamadores para `risky` (estatico/stripped/analisis no disponible),
-    cae al heuristico global anterior (drop ausente en TODO el binario) para no perder cobertura."""
+    cae al heuristico global anterior (drop ausente en TODO el binario) para no perder cobertura.
+    `binary` habilita el reintento con analisis profundo en callers_of() cuando el ligero no
+    encuentra nada (mismo arreglo que la logica de credenciales de authcheck.py)."""
     fns_risky = set()
     for r in risky:
-        fns_risky |= callers_of(reg, r)
+        fns_risky |= callers_of(reg, r, binary)
     if not fns_risky:
         return {"?"} if (risky and not drop) else set()   # sin resolver: heuristico global
     fns_drop = set()
     for d in drop:
-        fns_drop |= callers_of(reg, d)
+        fns_drop |= callers_of(reg, d, binary)
     return fns_risky - fns_drop
 
 
-def _f(t_es, t_en, sev, ev, r_es, r_en, rec_es, rec_en, lang):
+def _f(t_es, t_en, sev, ev, r_es, r_en, rec_es, rec_en, lang, loc="autorizacion / privilegios"):
     return Finding(title=t_es if lang == "es" else t_en, severity=sev, verdict="grounded",
-                   evidence=ev, location="autorizacion / privilegios",
+                   evidence=ev, location=loc,
                    rationale=r_es if lang == "es" else r_en,
                    recommendation=rec_es if lang == "es" else rec_en,
                    rationale_en=r_en, recommendation_en=rec_en)
@@ -69,9 +71,10 @@ def scan_authz(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding
     # exige que el drop este AUSENTE en la MISMA funcion que hace exec, no solo en todo el binario
     # (ver _unsafe_callers): un setuid() en una funcion 'safe_path()' no invocada desde el camino
     # real que hace exec() no protege ese camino.
-    unsafe_exec_fns = _unsafe_callers(reg, execs, drops) if execs else set()
+    unsafe_exec_fns = _unsafe_callers(reg, execs, drops, binary) if execs else set()
     if unsafe_exec_fns:
-        fn_ev = (", ".join(sorted(unsafe_exec_fns))[:80] if unsafe_exec_fns != {"?"} else
+        resolved = unsafe_exec_fns != {"?"}
+        fn_ev = (", ".join(sorted(unsafe_exec_fns))[:80] if resolved else
                  "(no resuelto por xrefs; heuristico global: ningun drop en todo el binario)")
         findings.append(_f(
             f"Binario {bit} ejecuta comandos sin soltar privilegios",
@@ -90,12 +93,13 @@ def scan_authz(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding
             "Drop privileges as early as possible (setresuid/setresgid to the real uid) BEFORE running "
             "anything; better, do not execute external commands in a privileged binary.",
             "Drop privileges (setresuid/setresgid) before executing anything; avoid external commands.",
-            lang))
+            lang, loc=(fn_ev if resolved else "autorizacion / privilegios")))
 
     filew = [w for w in _FILEW if w in names]
-    unsafe_filew_fns = _unsafe_callers(reg, filew, drops) if (not unsafe_exec_fns and filew) else set()
+    unsafe_filew_fns = _unsafe_callers(reg, filew, drops, binary) if (not unsafe_exec_fns and filew) else set()
     if unsafe_filew_fns:
-        fn_ev = (", ".join(sorted(unsafe_filew_fns))[:80] if unsafe_filew_fns != {"?"} else
+        resolved = unsafe_filew_fns != {"?"}
+        fn_ev = (", ".join(sorted(unsafe_filew_fns))[:80] if resolved else
                  "(no resuelto por xrefs; heuristico global: ningun drop en todo el binario)")
         findings.append(_f(
             f"Binario {bit} opera con ficheros sin soltar privilegios",
@@ -114,5 +118,5 @@ def scan_authz(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Finding
             "Drop privileges before touching path-controlled files; validate paths and use O_NOFOLLOW; "
             "open with the real uid.",
             "Drop privileges before file operations; validate paths and use O_NOFOLLOW.",
-            lang))
+            lang, loc=(fn_ev if resolved else "autorizacion / privilegios")))
     return findings

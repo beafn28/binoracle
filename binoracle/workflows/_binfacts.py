@@ -124,40 +124,68 @@ def sink_callers(reg) -> Dict[str, Set[str]]:
     return out
 
 
-def callers_of(reg, symbol: str) -> Set[str]:
+def callers_of(reg, symbol: str, binary: str = "") -> Set[str]:
     """Funciones que llaman a `symbol`, via r2_xrefs (axt). Prueba `sym.imp.<nombre>` (dinamico) y
-    `sym.<nombre>` (estatico) -- funciona para cualquier nombre, no solo los de DANGEROUS/r2_sinks."""
-    t = reg.get("r2_xrefs")
-    if not t:
-        return set()
+    `sym.<nombre>` (estatico) -- funciona para cualquier nombre, no solo los de DANGEROUS/r2_sinks.
+
+    Bug real encontrado en la logica de credenciales de authcheck.py (mismo patron, aqui aplicado
+    de forma general): el ToolRegistry usa analisis LIGERO de r2 ('aa') por defecto, que puede no
+    resolver algunos xrefs (p.ej. llamada indirecta via tabla de thunks/imports en binarios poco
+    convencionales). Si `binary` esta disponible y el chequeo ligero no encuentra NADA para NINGUN
+    prefijo, se reintenta UNA vez contra la sesion r2 compartida (r2session, analisis 'aaa'
+    completo, cacheada y reutilizada por decompile.py en el mismo informe) antes de rendirse."""
     out: Set[str] = set()
-    for prefix in ("sym.imp.", "sym."):
+    t = reg.get("r2_xrefs")
+    if t is not None:
+        for prefix in ("sym.imp.", "sym."):
+            try:
+                r = t.run(target=f"{prefix}{symbol}")
+            except Exception:
+                continue
+            if not (r and r.ok):
+                continue
+            for m in _CALLER_RE.finditer((r.data or "") + "\n"):
+                out.add(m.group(1).lower())
+            if out:
+                break
+    if not out and binary:
         try:
-            r = t.run(target=f"{prefix}{symbol}")
+            from ..oracles.r2session import cmd_timeout
+            for prefix in ("sym.imp.", "sym."):
+                txt = cmd_timeout(binary, f"axt @ {prefix}{symbol}", timeout=60) or ""
+                for m in _CALLER_RE.finditer(txt + "\n"):
+                    out.add(m.group(1).lower())
+                if out:
+                    break
         except Exception:
-            continue
-        if not (r and r.ok):
-            continue
-        for m in _CALLER_RE.finditer((r.data or "") + "\n"):
-            out.add(m.group(1).lower())
-        if out:
-            break
+            pass
     return out
 
 
-def shares_caller(reg, sinks_a, sinks_b) -> bool:
+def shared_caller_fns(reg, sinks_a, sinks_b, binary: str = "") -> Set[str]:
+    """Como shares_caller, pero devuelve las funciones REALES que comparten `sinks_a` y `sinks_b`
+    (no solo si hay o no coincidencia) -- pedido explicito del usuario: no basta con "hay una
+    coincidencia", hay que poder citar la funcion concreta en el hallazgo, igual que se hizo para
+    las credenciales en authcheck.py. `binary` habilita el reintento con analisis profundo (ver
+    callers_of) cuando el analisis ligero no encuentra nada."""
+    fns_a = set()
+    for s in sinks_a:
+        fns_a |= callers_of(reg, s, binary)
+    if not fns_a:
+        return set()
+    fns_b = set()
+    for s in sinks_b:
+        fns_b |= callers_of(reg, s, binary)
+    return fns_a & fns_b
+
+
+def shares_caller(reg, sinks_a, sinks_b, binary: str = "") -> bool:
     """True si algun simbolo de `sinks_a` y algun simbolo de `sinks_b` estan llamados desde la MISMA
     funcion (via r2_xrefs, cualquier nombre de import). Uso: exigir que una fuente de entrada
     (fgets/read...) o un constructor (sprintf/strcpy...) y un sink peligroso (system/popen...)
     compartan funcion llamadora antes de afirmar que uno alimenta al otro -- 'ambos importados en el
     binario' no prueba flujo de datos; 'llamados desde la misma funcion' es una senal mucho mas
-    fuerte (aunque no perfecta, sigue sin ser dataflow real) de que sea la misma ruta de codigo."""
-    fns_a = set()
-    for s in sinks_a:
-        fns_a |= callers_of(reg, s)
-    if not fns_a:
-        return False
-    fns_b = set()
-    for s in sinks_b:
-        fns_b |= callers_of(reg, s)
-    return bool(fns_a & fns_b)
+    fuerte (aunque no perfecta, sigue sin ser dataflow real) de que sea la misma ruta de codigo.
+    Wrapper booleano sobre shared_caller_fns(); usa esa funcion directamente si necesitas citar la
+    funcion real en el hallazgo, no solo saber si existe coincidencia."""
+    return bool(shared_caller_fns(reg, sinks_a, sinks_b, binary))

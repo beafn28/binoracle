@@ -96,7 +96,7 @@ def scan_injection(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
     # ejemplo (ret2win, canary, oobwrite...: el system() esta en win(), no alimentado por gets()).
     inputs = _present(names, _INPUT)
     execs = _present(names, _EXEC)
-    if inputs and execs and shares_caller(reg, inputs, execs):
+    if inputs and execs and shares_caller(reg, inputs, execs, binary):
         findings.append(_f(
             "Superficie de inyeccion: entrada no confiable alcanza ejecucion de comandos",
             "Injection surface: untrusted input reaches command execution", "medium",

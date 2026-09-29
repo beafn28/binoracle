@@ -157,7 +157,7 @@ def scan_file_perms(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fi
     # y un system() de comando FIJO en otra, sin relacion, disparaba un falso positivo -- confirmado
     # con un binario sintetico (getenv para saludo, system("tar ...") en un helper de backup aparte).
     execs_d = [x for x in ("system", "popen", "execl", "execlp", "execvp") if x in low_imp]
-    if "getenv" in low_imp and execs_d and shares_caller(reg, ["getenv"], execs_d):
+    if "getenv" in low_imp and execs_d and shares_caller(reg, ["getenv"], execs_d, binary):
         findings.append(_f(
             "Posible inyeccion de comando via variable de entorno",
             "Possible command injection via environment variable", "medium",

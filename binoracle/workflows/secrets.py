@@ -104,27 +104,46 @@ def _line_vaddr(text: str, pos: int):
     return m.group(1) if m else None
 
 
-def _used_in(reg: ToolRegistry, vaddr) -> List[str]:
-    """Funciones que referencian esta direccion (r2 axt: cross-references TO). Grounded: solo
-    reporta lo que r2 realmente encuentra, nunca inventa un 'usado en' generico. Vacio si no hay
-    vaddr, no hay xrefs (string sin referenciar directamente -- p.ej. tabla de reubicacion,
-    simbolos stripped) o la herramienta no esta disponible."""
-    if not vaddr:
-        return []
-    xt = reg.get("r2_xrefs")
-    if not xt:
-        return []
-    try:
-        res = xt.run(target=vaddr)
-    except Exception:
-        return []
-    if not res.ok:
-        return []
+def _extract_fns(text: str) -> List[str]:
     fns = []
-    for line in (res.data or "").splitlines():
+    for line in (text or "").splitlines():
         parts = line.split()
         if parts and parts[0] and parts[0] not in ("(no", "no"):
             fns.append(parts[0])
+    return fns
+
+
+def _used_in(reg: ToolRegistry, vaddr, binary: str = "") -> List[str]:
+    """Funciones que referencian esta direccion (r2 axt: cross-references TO). Grounded: solo
+    reporta lo que r2 realmente encuentra, nunca inventa un 'usado en' generico. Vacio si no hay
+    vaddr o no hay xrefs.
+
+    Bug real encontrado en vivo con Ingrid.exe: el ToolRegistry usa analisis LIGERO de r2 ('aa',
+    rapido) por defecto -- suficiente para la mayoria de xrefs directos, pero insuficiente para
+    algunos indirectos (p.ej. una string empujada a pila desde una funcion que solo el analisis
+    profundo resuelve). Una credencial REAL (contrasena en una connection string OLEDB) con un
+    xref real confirmado a mano con 'aaa' salia como "sin xref encontrado" porque el chequeo
+    solo miraba la sesion ligera. Si el chequeo ligero no encuentra nada Y se paso `binary`, se
+    reintenta UNA vez contra la sesion r2 compartida (r2session, analisis 'aaa' completo, cacheada
+    y reutilizada por decompile.py en el mismo informe -- no es coste extra neto) antes de rendirse
+    y admitir honestamente que no hay xref."""
+    if not vaddr:
+        return []
+    fns = []
+    xt = reg.get("r2_xrefs")
+    if xt is not None:
+        try:
+            res = xt.run(target=vaddr)
+            if res.ok:
+                fns = _extract_fns(res.data or "")
+        except Exception:
+            pass
+    if not fns and binary:
+        try:
+            from ..oracles.r2session import cmd_timeout
+            fns = _extract_fns(cmd_timeout(binary, f"axt @ {vaddr}", timeout=60) or "")
+        except Exception:
+            pass
     return sorted(set(fns))[:5]
 
 
@@ -155,7 +174,7 @@ def scan_secrets(reg: ToolRegistry, binary: str = "", lang: str = "es") -> List[
             seen.add(key)
             snippet = frag if len(frag) < 120 else frag[:117] + "..."
             vaddr = _line_vaddr(text, m.start())
-            used_in = _used_in(reg, vaddr)
+            used_in = _used_in(reg, vaddr, binary)
             if used_in:
                 location = (f"usado en: {', '.join(used_in)}" if lang == "es"
                            else f"used in: {', '.join(used_in)}")
