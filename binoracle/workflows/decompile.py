@@ -78,14 +78,14 @@ def _best_decompile(binary: str, func: str) -> tuple[str, str]:
                 return code, "ghidra"
     except Exception:
         pass
-    # 2) r2 pdg (r2ghidra) si da algo sustancioso
+    # 2) r2 pdg (r2ghidra) si da algo sustancioso. Con limite de tiempo real (ver
+    # r2session.cmd_timeout): r2pipe no tiene timeout nativo y `pdg` puede colgarse sin fin en
+    # ciertas funciones/binarios, lo que se llevaria por delante el informe entero.
     try:
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is not None:
-            pdg = r.cmd(f"pdg @ {func}") or ""
-            if len(pdg.strip()) > 120:
-                return pdg, "pdg"
+        from ..oracles.r2session import cmd_timeout as _r2cmd
+        pdg = _r2cmd(binary, f"pdg @ {func}", timeout=90) or ""
+        if len(pdg.strip()) > 120:
+            return pdg, "pdg"
     except Exception:
         pass
     # 3) decai (r2ai, LLM) como alternativa, si esta habilitado
@@ -119,12 +119,10 @@ def _collect_variants(binary: str, func: str) -> list:
     except Exception:
         pass
     try:
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is not None:
-            pdg = r.cmd(f"pdg @ {func}") or ""
-            if len(pdg.strip()) > 60:
-                add("pdg", pdg)
+        from ..oracles.r2session import cmd_timeout as _r2cmd
+        pdg = _r2cmd(binary, f"pdg @ {func}", timeout=90) or ""
+        if len(pdg.strip()) > 60:
+            add("pdg", pdg)
     except Exception:
         pass
     try:
@@ -177,6 +175,30 @@ def _crosscheck(variants: list, lang: str = "es") -> str:
     return " ".join(parts)
 
 
+def _cmd_bounded(r, cmd: str, timeout: float = 90.0) -> Optional[str]:
+    """r.cmd(cmd) con limite de tiempo real sobre una sesion r2 DEDICADA (no compartida): si se
+    cuelga (mismo bug que r2session.cmd_timeout -- r2pipe no tiene timeout nativo), se mata el
+    proceso r2 propio (seguro, nadie mas lo usa) y se devuelve None en vez de bloquear para
+    siempre. El hilo que seguia bloqueado en la lectura se abandona (daemon)."""
+    import threading
+    result: dict = {}
+    def _run():
+        try:
+            result["v"] = r.cmd(cmd)
+        except Exception:
+            result["v"] = None
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        try:
+            r.process.kill()
+        except Exception:
+            pass
+        return None
+    return result.get("v")
+
+
 def _r2_decompile(binary: str, func: str) -> tuple[str, str]:
     """Devuelve (texto, engine) con la mejor decompilacion de r2 disponible para la funcion."""
     try:
@@ -187,13 +209,15 @@ def _r2_decompile(binary: str, func: str) -> tuple[str, str]:
         r = r2pipe.open(binary, flags=["-2"])
         r.cmd("aaa")
         # r2ghidra (pdg) si esta y da algo sustancioso; si no, el pdc propio; si no, el disasm.
-        pdg = r.cmd(f"pdg @ {func}") or ""
+        # Cada comando con limite de tiempo real (ver _cmd_bounded): un `pdg` colgado no debe
+        # dejar el informe entero esperando para siempre.
+        pdg = _cmd_bounded(r, f"pdg @ {func}") or ""
         if len(pdg.strip()) > 120:
             r.quit(); return pdg, "pdg"
-        pdc = r.cmd(f"pdc @ {func}") or ""
+        pdc = _cmd_bounded(r, f"pdc @ {func}") or ""
         if pdc.strip():
             r.quit(); return pdc, "pdc"
-        pdf = r.cmd(f"pdf @ {func}") or ""
+        pdf = _cmd_bounded(r, f"pdf @ {func}") or ""
         r.quit()
         return pdf, "pdf"
     except Exception:

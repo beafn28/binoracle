@@ -373,6 +373,60 @@ def test_decompile_crosscheck():
     assert "coinciden" in _crosscheck(agree, "es").lower()
 
 
+def test_r2session_cmd_timeout_never_hangs_the_pipeline():
+    # Bug real encontrado probando el informe de Ingrid.exe en el navegador: r2pipe.cmd() no tiene
+    # NINGUN timeout nativo. Un `pdg @ func` (decompilador r2ghidra) colgado -- por una funcion
+    # rara, o por un servidor Ghidra externo emparejado con otro binario dejando la sesion r2 en
+    # mal estado -- se llevaba por delante el informe ENTERO sin ningun error visible (40+ minutos
+    # de espera real). cmd_timeout() debe devolver None dentro del limite de tiempo en vez de
+    # bloquear para siempre, e invalidar la sesion colgada para que la siguiente llamada a get()
+    # abra una limpia.
+    import os
+    import time
+    import tempfile
+    from binoracle.oracles import r2session
+
+    d = tempfile.mkdtemp()
+    b = os.path.join(d, "target.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _HangingR2:
+        """Simula r.cmd() colgado para siempre (como pdg en r2 real sin timeout)."""
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            time.sleep(5)  # mucho mas que el timeout de prueba (0.2s)
+            return "nunca deberia llegar aqui"
+
+    fake = _HangingR2()
+    r2session._CACHE[os.path.abspath(b)] = (fake, os.path.getmtime(b))
+    t0 = time.time()
+    out = r2session.cmd_timeout(b, "pdg @ main", timeout=0.2)
+    elapsed = time.time() - t0
+    assert out is None
+    assert elapsed < 2.0, "cmd_timeout no debe esperar mucho mas que el timeout pedido"
+    assert fake.process.killed, "la sesion colgada debe matarse para no dejarla zombie"
+    assert os.path.abspath(b) not in r2session._CACHE, "la sesion colgada se invalida del cache"
+
+    # camino feliz: un comando que responde a tiempo devuelve su resultado normalmente
+    class _FastR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            return "void main(){}"
+    fast = _FastR2()
+    r2session._CACHE[os.path.abspath(b)] = (fast, os.path.getmtime(b))
+    assert r2session.cmd_timeout(b, "pdg @ main", timeout=2.0) == "void main(){}"
+    assert not fast.process.killed
+
+
 def test_sarif_export():
     import json
     from binoracle.report.render import findings_to_sarif
