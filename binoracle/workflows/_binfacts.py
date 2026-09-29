@@ -10,7 +10,7 @@ para exigir evidencia de USO real, no presencia incidental.
 from __future__ import annotations
 
 import re as _re
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 
 _STR_ROW_RE = _re.compile(r"\b(ascii|utf8|utf16le|utf32le|wide|unicode|base64)\s+(.*)$")
@@ -189,3 +189,94 @@ def shares_caller(reg, sinks_a, sinks_b, binary: str = "") -> bool:
     Wrapper booleano sobre shared_caller_fns(); usa esa funcion directamente si necesitas citar la
     funcion real en el hallazgo, no solo saber si existe coincidencia."""
     return bool(shared_caller_fns(reg, sinks_a, sinks_b, binary))
+
+
+def disasm_of(reg, fn: str, binary: str = "") -> str:
+    """Desensamblado de `fn` (r2 pdf). El ToolRegistry usa analisis ligero ('aa') por defecto, que
+    puede no haber descubierto `fn` como funcion en absoluto (se encontro via 'aaa' en r2session,
+    en una sesion r2 DISTINTA) -- 'pdf @ fn' sobre la sesion ligera saldria vacio aunque la funcion
+    exista de verdad. Si el intento normal no da nada y hay `binary`, reintenta contra la sesion
+    compartida (aaa, cacheada). Compartido por authcheck.py (credenciales) y aqui (dataflow)."""
+    disasm = reg.get("r2_disasm")
+    if disasm is not None:
+        try:
+            r = disasm.run(target=fn)
+            if r.ok and (r.data or "").strip():
+                return r.data
+        except Exception:
+            pass
+    if binary:
+        try:
+            from ..oracles.r2session import cmd_timeout
+            return cmd_timeout(binary, f"pdf @ {fn}", timeout=60) or ""
+        except Exception:
+            pass
+    return ""
+
+
+_CALL_RE = _re.compile(r"\bcall\b[^\n]*?\b([A-Za-z_][\w.]*)\s*$", _re.M)
+# operandos "con nombre" que valen como senal de que dos llamadas comparten el MISMO dato: variable
+# de pila con nombre r2 (var_18h) o registro de proposito general. eax/rax/esp/rsp/ebp/rbp se
+# EXCLUYEN aposta: son de uso tan universal (valor de retorno, puntero de pila/marco) que compartirlos
+# no significa nada -- serian ruido, no una senal real de dataflow.
+_OPERAND_RE = _re.compile(r"\b(var_[0-9a-f]+h|e?[bcd]x|e?[sd]i|r1[0-5][dwb]?|r[bcd]x|r[sd]i)\b", _re.I)
+
+
+def _operands_before(lines: List[str], idx: int, window: int = 4) -> Set[str]:
+    ops: Set[str] = set()
+    for ln in lines[max(0, idx - window):idx + 1]:
+        for m in _OPERAND_RE.finditer(ln):
+            ops.add(m.group(1).lower())
+    return ops
+
+
+def dataflow_hint(body: str, source_names, sink_names) -> Optional[dict]:
+    """Heuristica de dataflow INTRAPROCEDURAL sobre el desensamblado de UNA funcion: busca una
+    llamada a algo de `source_names` seguida (mas adelante, misma funcion) de una llamada a algo de
+    `sink_names` que comparten un operando con nombre (variable de pila o registro no generico) en
+    las instrucciones inmediatamente anteriores a cada llamada -- senal de que el MISMO buffer/valor
+    pasado a la fuente se reutiliza como argumento del sink, no solo que ambas llamadas viven en la
+    misma funcion. Sigue sin ser dataflow real (no hay symbolic execution ni resolucion de alias
+    completa): es una heuristica sintactica, mejor que 'misma funcion' a secas pero no una prueba
+    absoluta -- ver el nombre del retorno (dataflow_hint, no dataflow_proof) y como se cita en el
+    hallazgo (siempre con el matiz de que es heuristico). None si no se encuentra nada asi."""
+    lines = (body or "").splitlines()
+    calls = []
+    for i, ln in enumerate(lines):
+        m = _CALL_RE.search(ln)
+        if m:
+            calls.append((i, m.group(1).rsplit(".", 1)[-1].lower()))
+    src = {s.lower() for s in source_names}
+    snk = {s.lower() for s in sink_names}
+    for si, sname in calls:
+        if sname not in src:
+            continue
+        src_ops = _operands_before(lines, si)
+        if not src_ops:
+            continue
+        for ci, cname in calls:
+            if ci <= si or cname not in snk:
+                continue
+            sink_ops = _operands_before(lines, ci)
+            shared = sorted(src_ops & sink_ops)
+            if shared:
+                return {"source": sname, "sink": cname, "shared_operand": shared[0]}
+    return None
+
+
+def dataflow_confirmed(reg, source_names, sink_names, binary: str = "") -> Optional[dict]:
+    """Punto de entrada: para cada funcion que comparte llamador entre `source_names` y
+    `sink_names` (shared_caller_fns), intenta confirmar dataflow real via dataflow_hint sobre su
+    desensamblado. Devuelve {"fn", "source", "sink", "shared_operand"} de la PRIMERA funcion donde
+    se confirma, o None si ninguna lo confirma (aunque compartan llamador -- en ese caso sigue
+    siendo solo la senal mas debil de shared_caller_fns, el llamador debe usarla como fallback)."""
+    fns = shared_caller_fns(reg, source_names, sink_names, binary)
+    for fn in sorted(fns):
+        body = disasm_of(reg, fn, binary)
+        if not body:
+            continue
+        hint = dataflow_hint(body, source_names, sink_names)
+        if hint:
+            hint["fn"] = fn
+            return hint
+    return None

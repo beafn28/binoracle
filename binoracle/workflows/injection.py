@@ -18,7 +18,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
-from ._binfacts import imported_names, shares_caller
+from ._binfacts import imported_names, shared_caller_fns, dataflow_confirmed
 
 _SQL_API = ("sqlite3_exec", "sqlite3_prepare", "mysql_query", "mysql_real_query", "mysql_stmt_prepare",
             "pqexec", "pqexecparams", "mysql_real_escape_string", "sqlite3_mprintf")
@@ -90,29 +90,65 @@ def scan_injection(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
 
     # (b) entrada no confiable -> sink de ejecucion (vision consolidada). Requiere imports REALES de
     # una fuente de entrada Y de un sink de ejecucion, Y que ambos esten llamados desde la MISMA
-    # funcion (shares_caller, via r2_sinks): sin esto, cualquier binario que lea entrada en algun
-    # sitio Y ejecute un exec en otro (p.ej. un 'gift'/'win' de CTF con system("/bin/sh") fijo, sin
-    # relacion con la entrada) disparaba un falso positivo -- se confirmo en ~60% del corpus de
-    # ejemplo (ret2win, canary, oobwrite...: el system() esta en win(), no alimentado por gets()).
+    # funcion (shared_caller_fns): sin esto, cualquier binario que lea entrada en algun sitio Y
+    # ejecute un exec en otro (p.ej. un 'gift'/'win' de CTF con system("/bin/sh") fijo, sin relacion
+    # con la entrada) disparaba un falso positivo -- se confirmo en ~60% del corpus de ejemplo
+    # (ret2win, canary, oobwrite...: el system() esta en win(), no alimentado por gets()).
+    #
+    # Dataflow INTRAPROCEDURAL (pedido explicito del usuario -- "no basta con la misma funcion, hay
+    # que ir mas alla"): dataflow_confirmed() intenta un nivel mas de evidencia, buscando si el
+    # MISMO operando (variable de pila o registro) que recibe la entrada se reutiliza como argumento
+    # del sink -- mas fuerte que "misma funcion" a secas, aunque sigue siendo heuristico sintactico,
+    # no symbolic execution real (se dice honestamente en el hallazgo, nunca se presenta como prueba
+    # absoluta). Si no se confirma a ese nivel, se mantiene el hallazgo con la senal mas debil
+    # (misma funcion) que ya habia antes, citando la funcion real.
     inputs = _present(names, _INPUT)
     execs = _present(names, _EXEC)
-    if inputs and execs and shares_caller(reg, inputs, execs, binary):
+    shared_fns = shared_caller_fns(reg, inputs, execs, binary) if (inputs and execs) else set()
+    if shared_fns:
+        flow = dataflow_confirmed(reg, inputs, execs, binary)
+        fn_txt = ", ".join(sorted(shared_fns))
+        base_es = "El binario lee entrada (" + ", ".join(inputs[:4]) + ") y ejecuta comandos (" + ", ".join(execs[:3]) + ")."
+        base_en = "The binary reads input (" + ", ".join(inputs[:4]) + ") and executes commands (" + ", ".join(execs[:3]) + ")."
+        if flow:
+            t_es = "Superficie de inyeccion: dataflow confirmado hasta ejecucion de comandos"
+            t_en = "Injection surface: dataflow confirmed into command execution"
+            r_es = base_es + (
+                f" DATAFLOW: en {flow['fn']}, la llamada a {flow['source']} y la llamada a "
+                f"{flow['sink']} comparten el operando '{flow['shared_operand']}' -- senal de que el "
+                f"MISMO valor leido se reutiliza como argumento del sink, no solo que ambas llamadas "
+                f"viven en la misma funcion. Sigue siendo una heuristica sintactica (no symbolic "
+                f"execution), pero es una senal bastante mas fuerte que la simple co-ocurrencia.")
+            r_en = base_en + (
+                f" DATAFLOW: in {flow['fn']}, the call to {flow['source']} and the call to "
+                f"{flow['sink']} share the operand '{flow['shared_operand']}' -- a signal that the "
+                f"SAME value read is reused as the sink's argument, not just that both calls live in "
+                f"the same function. Still a syntactic heuristic (not symbolic execution), but a much "
+                f"stronger signal than mere co-occurrence.")
+            sev = "high"
+            loc = flow["fn"]
+        else:
+            t_es = "Superficie de inyeccion: entrada no confiable alcanza ejecucion de comandos"
+            t_en = "Injection surface: untrusted input reaches command execution"
+            r_es = base_es + (
+                f" Confirmado que ambas llamadas viven en {fn_txt} (xref), pero NO se pudo confirmar "
+                f"que el mismo operando fluya de la entrada al sink (heuristica de dataflow sin "
+                f"match) -- puede que sean valores distintos en la misma funcion; revisa el flujo de "
+                f"datos a mano.")
+            r_en = base_en + (
+                f" Confirmed that both calls live in {fn_txt} (xref), but the same-operand dataflow "
+                f"heuristic found no match -- they may be unrelated values within the same function; "
+                f"review the data flow by hand.")
+            sev = "medium"
+            loc = fn_txt
         findings.append(_f(
-            "Superficie de inyeccion: entrada no confiable alcanza ejecucion de comandos",
-            "Injection surface: untrusted input reaches command execution", "medium",
-            "[radare2: ii]\nfuentes de entrada: " + ", ".join(inputs[:5])
-            + "\nsinks de ejecucion: " + ", ".join(execs[:4]),
-            "El binario lee entrada (" + ", ".join(inputs[:4]) + ") y ejecuta comandos (" +
-            ", ".join(execs[:3]) + "). Si esa entrada llega al comando sin sanear, es inyeccion de "
-            "comando. Revisa el flujo de datos entre la lectura y el exec." if es else
-            "The binary reads input (" + ", ".join(inputs[:4]) + ") and executes commands (" +
-            ", ".join(execs[:3]) + "). If that input reaches the command unsanitized, it is command "
-            "injection. Review the data flow between the read and the exec.",
-            "The binary reads input and executes commands; review the data flow for injection.",
+            t_es, t_en, sev,
+            "[radare2: ii + axt]\nfuentes de entrada: " + ", ".join(inputs[:5])
+            + "\nsinks de ejecucion: " + ", ".join(execs[:4]) + f"\nfuncion(es): {fn_txt}",
+            r_es, r_en,
             "No pases entrada a system/popen; usa execve con argv fijo (sin shell), valida/escapa y "
-            "aplica listas de permitidos." if es else
+            "aplica listas de permitidos.",
             "Do not pass input to system/popen; use execve with a fixed argv (no shell), validate/escape "
             "and use allow-lists.",
-            "Use execve with a fixed argv (no shell); validate/escape input with allow-lists.",
-            lang, "inyeccion / comando"))
+            lang, loc))
     return findings
