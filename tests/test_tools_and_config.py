@@ -2038,6 +2038,43 @@ def test_dark_proof_boxes_never_use_theme_dependent_text_color():
             assert "color:" in m.group(0), f"class=mut sin override de color en caja oscura: {m.group(0)}"
 
 
+def test_checks_group_html_bundles_checklist_boxes_into_one_collapsible():
+    # Antes cada caja del checklist base (MSI, packing, DLL hijacking, DLL hermana sin firmar,
+    # flag de sandbox, fuga de PDB, Rich Header, RPATH/RUNPATH, fuga de ruta DWARF, capacidades
+    # Linux) salia siempre abierta, una detras de otra, antes de llegar al resumen ejecutivo --
+    # pedido explicito del usuario de organizar mejor el informe con desplegables. Ahora se
+    # agrupan en UN solo <details> colapsado con un contador, sin perder ninguna caja individual.
+    from binoracle.report.html import _checks_group_html, _dll_hijack_html, _pdb_leak_html
+
+    parts = [
+        _dll_hijack_html({"dlls": ["version.dll"]}, "es"),
+        _pdb_leak_html({"pdb_path": "C:\\build\\x.pdb"}, "es"),
+        "",  # una comprobacion sin contenido no debe romper el conteo ni aparecer vacia
+    ]
+    out = _checks_group_html(parts, "es")
+    assert 'id="sec-checks"' in out
+    assert "<details" in out and "</details>" in out
+    assert "Comprobaciones adicionales (2)" in out  # cuenta solo las que produjeron contenido
+    assert "version.dll" in out and "x.pdb" in out
+    # sin ninguna comprobacion, no hay seccion que mostrar
+    assert _checks_group_html([], "es") == ""
+    assert _checks_group_html(["", ""], "en") == ""
+
+
+def test_report_orders_summary_and_findings_before_checklist_appendix():
+    # El resumen ejecutivo y los hallazgos son lo que se lee primero; las comprobaciones del
+    # checklist base (ahora agrupadas) y la metodologia son contenido de apoyo/meta y deben quedar
+    # al final, no interponerse antes del resumen como pasaba antes de esta reorganizacion.
+    from binoracle.report.html import render_html
+    from binoracle.store.session import Finding
+
+    f = Finding(title="fuga de credencial", severity="high", verdict="unverified",
+                evidence="ev", location="loc")
+    out = render_html("target.bin", findings=[f], lang="es")
+    assert out.index('id="sec-summary"') < out.index('id="sec-find"')
+    assert out.index('id="sec-find"') < out.index('id="sec-methodology"')
+
+
 def test_elf_capability_map_classifies_libc_imports_by_category():
     # Equivalente ELF del mapa de capacidades de PE (Fase 2 de la metodologia, aplicada a Linux):
     # clasifica los imports de libc/libcrypto/libpq/etc por categoria. read/write se excluyen a
