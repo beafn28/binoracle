@@ -229,6 +229,79 @@ def test_attack_chain_runtime():
     assert "chain-step" in h
 
 
+def test_attack_chain_credentials_cites_the_real_xref_not_generic_text():
+    # Bug real senalado por el usuario mirando el informe de Ingrid.exe: el paso "Secreto
+    # hardcodeado -> Auth bypass / acceso" de la cadena de credenciales imprimia SIEMPRE las
+    # mismas dos frases genericas, sin importar que secrets.py/authcheck.py YA sepan (via xref)
+    # en que funcion se usa la credencial y si la comparacion esta confirmada. La cadena debe
+    # citar esos datos reales, no repetir texto fijo.
+    from binoracle.report.html import _attack_chain
+    from binoracle.store.session import Finding
+
+    secret = Finding(title="Posible contrasena hardcodeada", severity="high", verdict="grounded",
+                     location="usado en: check_login", evidence="ev")
+    cmp_confirmed = Finding(
+        title="Autenticacion por comparacion con credencial hardcodeada (confirmado por xref)",
+        severity="high", verdict="grounded", location="auth / comparacion",
+        evidence="[radare2: ii + izz]\ncomparacion: strcmp\ncandidatas: \"S3cr3t!\"\n"
+                 "xref confirmado: check_login (strcmp)")
+    h = _attack_chain([secret, cmp_confirmed], {}, "es")
+    assert "check_login" in h                      # la funcion real, no un texto generico
+    assert "CONFIRMADO por xref" in h
+    assert "strcmp" in h
+    # sin xref (solo correlacion): la cadena debe decirlo honestamente, no inventar confirmacion
+    cmp_unconfirmed = Finding(
+        title="Autenticacion por comparacion con credencial hardcodeada",
+        severity="high", verdict="grounded", location="auth / comparacion",
+        evidence="[radare2: ii + izz]\ncomparacion: strcmp\ncandidatas: \"S3cr3t!\"")
+    h2 = _attack_chain([secret, cmp_unconfirmed], {}, "es")
+    assert "NO confirmado por xref" in h2
+    # con bypass verificado en sandbox: se anade un tercer eslabon VERIFICADO
+    verified = Finding(title="Bypass de autenticacion VERIFICADO (credencial hardcodeada funciona)",
+                       severity="critical", verdict="verified", location="check_login (strcmp)",
+                       evidence="ev", rationale="codigo de salida DIFIRIO: evidencia real")
+    h3 = _attack_chain([secret, cmp_confirmed, verified], {}, "es")
+    assert "VERIFICADO" in h3 and "#30a46c" in h3   # color de paso verificado
+
+
+def test_attack_chain_covers_hidden_auth_logic_from_llm_review_not_just_credentials():
+    # Pedido explicito del usuario: no basta con mirar la credencial hardcodeada clasica, hay que
+    # mirar TODOS los mecanismos/comprobaciones de autenticacion (backdoor, flag de depuracion,
+    # licencia/serial...) que la revision LLM sin restricciones encuentre, y encadenarlos igual de
+    # grounded (citando el hallazgo real), distinguiendo hipotesis sin confirmar de bypass
+    # VERIFICADO en sandbox.
+    from binoracle.report.html import _attack_chain
+    from binoracle.store.session import Finding
+
+    hyp = Finding(title="[Revision LLM] Flag de depuracion salta la comprobacion de licencia",
+                 severity="high", verdict="unverified", location="revision LLM", evidence="ev",
+                 rationale="Si arg1 == 'DEVMODE99' se salta check_license() por completo.")
+    hyp.credential_candidate = "DEVMODE99"
+    h = _attack_chain([hyp], {}, "es")
+    assert "Logica de autenticacion oculta" in h
+    assert "DEVMODE99" in h
+    assert "Sin confirmar (hipotesis)" in h
+    assert "#f5b800" in h                            # amarillo: hipotesis sin confirmar
+
+    # confirmada de verdad en sandbox (authbypass.py subio verdict a "verified")
+    hyp_confirmed = Finding(
+        title="[Revision LLM] Flag de depuracion salta la comprobacion de licencia",
+        severity="critical", verdict="verified", location="revision LLM", evidence="ev",
+        rationale="Si arg1 == 'DEVMODE99' se salta check_license(). CONFIRMADO en sandbox: el "
+                 "codigo de salida DIFIRIO al probar esta entrada de verdad contra el binario real.")
+    hyp_confirmed.credential_candidate = "DEVMODE99"
+    h2 = _attack_chain([hyp_confirmed], {}, "es")
+    assert "Bypass VERIFICADO en sandbox" in h2
+    assert "#30a46c" in h2                           # verde: confirmado por ejecucion real
+
+    # una revision LLM sin candidato concreto (ninguna entrada citable) no genera esta cadena:
+    # no hay nada verificable que encadenar, solo ruido
+    no_cand = Finding(title="[Revision LLM] Posible logica de negocio sospechosa",
+                      severity="low", verdict="unverified", location="revision LLM", evidence="ev",
+                      rationale="Sin entrada concreta citable en el contexto.")
+    assert "Logica de autenticacion oculta" not in _attack_chain([no_cand], {}, "es")
+
+
 def test_chainanalyzer_classify_and_score():
     from binoracle.workflows.chainanalyzer import (_classify, _best_for, _score, ExploitChain, Gadget)
     # gadget limpio: pop rdi; ret

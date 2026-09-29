@@ -576,15 +576,68 @@ def _attack_chain(findings, mit: dict, lang: str) -> str:
                           if es else "RIP is overwritten with the target and a shell is obtained in the sandbox (uid=0).",
                           "verified"))
         chains.append((("Corrupcion de memoria -> RCE" if es else "Memory corruption -> RCE"), steps))
-    # 2) credenciales -> acceso no autorizado
+    # 2) credenciales -> acceso no autorizado: GROUNDED en los hallazgos REALES de secrets.py
+    # (xref: donde se usa la credencial) y authcheck.py (xref: que funcion compara con que API),
+    # no en las mismas dos frases fijas sin importar lo que se encontro de verdad. Bug senalado
+    # por el usuario mirando el informe de Ingrid.exe: la cadena no reflejaba el cruce de
+    # referencias ni la comparacion concreta ya calculados en otras secciones del mismo informe.
     if has("credencial", "secreto", "hardcod", "clave privada", "aws", "token", "jwt"):
-        chains.append((("Credenciales -> acceso no autorizado" if es else "Credentials -> unauthorized access"),
-            [("Secreto hardcodeado" if es else "Hardcoded secret",
-              "El binario embebe una credencial/clave/token extraible de las strings."
-              if es else "The binary embeds a credential/key/token extractable from strings.", "grounded"),
-             ("Auth bypass / acceso" if es else "Auth bypass / access",
-              "Con la credencial expuesta se accede a sistemas o datos protegidos (o se firma como legitimo)."
-              if es else "With the exposed credential, protected systems/data are accessed (or signed as legit).", "grounded")]))
+        secret_f = next((f for f in findings if f.title.lower().startswith(("posible ", "possible hardcoded"))
+                         and "hardcod" in f.title.lower()), None)
+        cmp_f = next((f for f in findings if "comparacion con credencial hardcodeada" in f.title.lower()
+                     or "comparison against a hardcoded credential" in f.title.lower()), None)
+        verified_bypass_f = next((f for f in findings if f.verdict == "verified"
+                                  and "bypass" in f.title.lower()
+                                  and ("autenticacion" in f.title.lower() or "authentication" in f.title.lower())), None)
+        steps = []
+        if secret_f:
+            where = f" -- {secret_f.location}" if secret_f.location else ""
+            steps.append((secret_f.title, secret_f.title + where,
+                         secret_f.verdict if secret_f.verdict in ("verified", "grounded") else "grounded"))
+        else:
+            steps.append(("Secreto hardcodeado" if es else "Hardcoded secret",
+                          "El binario embebe una credencial/clave/token extraible de las strings."
+                          if es else "The binary embeds a credential/key/token extractable from strings.", "grounded"))
+        if cmp_f:
+            m = re.search(r"xref confirmado:\s*(.+)", cmp_f.evidence or "")
+            if m:
+                detail = (("CONFIRMADO por xref: " if es else "Xref-confirmed: ") + m.group(1).strip())
+            else:
+                detail = ("NO confirmado por xref: solo correlacion (comparacion y credencial "
+                          "coexisten en el binario, sin establecer la MISMA funcion)." if es else
+                          "NOT xref-confirmed: only a correlation (the comparison and the credential "
+                          "coexist in the binary, without establishing the SAME function).")
+            steps.append((cmp_f.title, detail, "grounded"))
+        else:
+            steps.append(("Auth bypass / acceso" if es else "Auth bypass / access",
+                          "Con la credencial expuesta se accede a sistemas o datos protegidos (o se firma como legitimo)."
+                          if es else "With the exposed credential, protected systems/data are accessed (or signed as legit).", "grounded"))
+        if verified_bypass_f:
+            steps.append((verified_bypass_f.title,
+                         (verified_bypass_f.rationale or "")[:300], "verified"))
+        chains.append((("Credenciales -> acceso no autorizado" if es else "Credentials -> unauthorized access"), steps))
+    # 2b) OTROS mecanismos de autenticacion ocultos (backdoor, flag de depuracion/modo dev,
+    # comparacion de licencia/serial...) que la revision LLM sin restricciones encontro -- pedido
+    # explicito del usuario: no basta con la credencial hardcodeada clasica, hay que mirar TODOS
+    # los mecanismos/comprobaciones de autenticacion que aparezcan, cada uno grounded en su propio
+    # hallazgo real (titulo + razonamiento de la revision LLM), nunca en texto generico. Se
+    # distingue honestamente hipotesis sin confirmar (amarillo) de bypass VERIFICADO en sandbox
+    # (verde, cuando authbypass.py confirmo la entrada sugerida contra el binario real).
+    llm_auth_findings = [f for f in findings
+                         if (f.title.startswith("[Revision LLM]") or f.title.startswith("[LLM review]"))
+                         and getattr(f, "credential_candidate", None)]
+    for lf in llm_auth_findings[:3]:
+        lsteps = [(lf.title, (lf.rationale or "")[:280], "verified" if lf.verdict == "verified" else "grounded")]
+        if lf.verdict == "verified":
+            lsteps.append((("Bypass VERIFICADO en sandbox" if es else "Bypass VERIFIED in sandbox"),
+                           (lf.rationale or "")[-280:], "verified"))
+        else:
+            lsteps.append((("Sin confirmar (hipotesis)" if es else "Unconfirmed (hypothesis)"),
+                           ("Hipotesis de la revision LLM sobre contexto grounded, NO probada en "
+                            "ejecucion real -- confirma manualmente antes de actuar." if es else
+                            "Hypothesis from the LLM review over grounded context, NOT proven by real "
+                            "execution -- confirm manually before acting."), "unverified"))
+        chains.append((("Logica de autenticacion oculta -> bypass" if es else "Hidden auth logic -> bypass"), lsteps))
     # 3) SUID + inyeccion -> root
     if has("setuid", "setgid") and has("inyeccion de comando", "command injection", "system"):
         chains.append((("SUID + inyeccion -> root" if es else "SUID + injection -> root"),
@@ -615,7 +668,7 @@ def _attack_chain(findings, mit: dict, lang: str) -> str:
               if es else "A network attacker reads and alters the communication (credentials, updates).", "grounded")]))
     if not chains:
         return ""
-    _KC = {"verified": "#30a46c", "grounded": "#5b8def"}
+    _KC = {"verified": "#30a46c", "grounded": "#5b8def", "unverified": "#f5b800"}
     blocks = ""
     for title, steps in chains:
         row = ""
