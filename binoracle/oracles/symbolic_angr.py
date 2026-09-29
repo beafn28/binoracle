@@ -5,6 +5,7 @@ of the model guessing, angr tries to find a path (and, if asked, a concrete inpu
 reaches a target address."""
 from __future__ import annotations
 
+import time
 from typing import List
 
 from .base import Oracle, Tool, ToolParam, ToolResult
@@ -49,7 +50,16 @@ class AngrOracle(Oracle):
             ),
         ]
 
-    def _reachable(self, addr, avoid=None) -> ToolResult:
+    def _reachable(self, addr, avoid=None, budget_s: float = 45.0, max_active: int = 80) -> ToolResult:
+        """Bug real encontrado en vivo: un binario con un bucle (p.ej. un menu re-mostrado hasta
+        que el usuario elige salir) puede hacer que angr explore un numero de caminos que crece sin
+        limite -- `simgr.explore(...)` de una sola llamada, sin ningun tope de tiempo ni de estados
+        activos, se quedaba corriendo minuto tras minuto (CPU al 100%, sin avisar de nada) en vez de
+        devolver un resultado acotado. Mismo patron de fallo que el `pdg` de r2 sin timeout
+        (r2session.cmd_timeout): un oraculo grounded no debe poder colgar el pipeline entero.
+        Ahora usa el mismo bucle con deadline + control de explosion de estados que ya usaba
+        reachability.find_input_to() para el mismo problema, en vez de una llamada bloqueante
+        unica."""
         try:
             target = int(str(addr), 0)
         except ValueError:
@@ -80,7 +90,19 @@ class AngrOracle(Oracle):
                 stdin=angr.SimFileStream if hasattr(angr, "SimFileStream") else None
             ) if False else proj.factory.entry_state()
             simgr = proj.factory.simulation_manager(state)
-            simgr.explore(find=target, avoid=avoid_list or None, num_find=1)
+            deadline = time.time() + budget_s
+            while time.time() < deadline:
+                if not simgr.active:
+                    break
+                simgr.explore(find=target, avoid=avoid_list or None, n=1, num_find=1)
+                if simgr.found:
+                    break
+                # controla la explosion de estados (p.ej. un bucle en el binario que multiplica
+                # caminos activos sin limite): recorta a los primeros `max_active`.
+                if len(simgr.active) > max_active:
+                    simgr.active[:] = simgr.active[:max_active]
+                if not simgr.active:
+                    break
             if simgr.found:
                 found = simgr.found[0]
                 try:
@@ -96,7 +118,8 @@ class AngrOracle(Oracle):
                 )
             return ToolResult(
                 True, f"angr: explore(find={hex(target)})",
-                f"NOT reachable within explored bounds (deadended={len(simgr.deadended)}).",
+                f"NOT reachable within budget ({budget_s:.0f}s; deadended="
+                f"{len(simgr.deadended)}, active={len(simgr.active)}).",
                 meta={"reachable": False, "addr": hex(target)},
             )
         except Exception as e:
