@@ -22,7 +22,7 @@ from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..store.session import Finding
-from ._binfacts import string_values, _STR_ROW_RE
+from ._binfacts import string_values, _STR_ROW_RE, disasm_of
 from .secrets import _line_vaddr, _used_in
 
 # Bug real encontrado probando con un PE real (Ingrid.exe, que importa lstrcmpA): esta lista solo
@@ -113,29 +113,6 @@ def _cred_candidates_with_vaddr(reg):
     return out
 
 
-def _disasm_of(reg, fn: str, binary: str = "") -> str:
-    """Desensamblado de `fn` (r2 pdf). Mismo problema y mismo arreglo que _used_in: el ToolRegistry
-    usa analisis ligero ('aa') por defecto, que puede no haber descubierto `fn` como funcion en
-    absoluto (se encontro via 'aaa' en r2session, en una sesion r2 DISTINTA) -- 'pdf @ fn' sobre la
-    sesion ligera saldria vacio aunque la funcion exista de verdad. Si el intento normal no da nada
-    y hay `binary`, reintenta contra la sesion compartida (aaa, cacheada)."""
-    disasm = reg.get("r2_disasm")
-    if disasm is not None:
-        try:
-            r = disasm.run(target=fn)
-            if r.ok and (r.data or "").strip():
-                return r.data
-        except Exception:
-            pass
-    if binary:
-        try:
-            from ..oracles.r2session import cmd_timeout
-            return cmd_timeout(binary, f"pdf @ {fn}", timeout=60) or ""
-        except Exception:
-            pass
-    return ""
-
-
 def _confirm_via_xref(reg, candidates, binary: str = ""):
     """De las candidatas (string, vaddr), cuales tienen un xref directo (r2 axt) a una funcion que
     ADEMAS llama a una de las _CMP en su propio disassembly (r2 pdf) -- conexion REAL entre esa
@@ -157,7 +134,7 @@ def _confirm_via_xref(reg, candidates, binary: str = ""):
     for val, vaddr in candidates:
         for fn in _used_in(reg, vaddr, binary):
             if fn not in seen_fns:
-                seen_fns[fn] = _disasm_of(reg, fn, binary)
+                seen_fns[fn] = disasm_of(reg, fn, binary)
             body = seen_fns[fn]
             hit = next((c for c in _CMP if re.search(rf"\bcall\b[^\n]*\b{re.escape(c)}\b", body)), None)
             if hit:
@@ -171,7 +148,7 @@ def get_confirmed_credentials(reg: ToolRegistry, binary: str = "") -> List[tuple
     """Punto de entrada publico y reutilizable: [(credencial, funcion, cmp_usada), ...] confirmadas
     por xref (r2 axt + pdf). Usado por el pipeline de informe (web.py) para decidir que credencial
     concreta intentar en el sandbox dinamico (authbypass.py). `binary` habilita el reintento con
-    analisis profundo (ver _used_in/_disasm_of) cuando el ligero no encuentra nada; sin el, se
+    analisis profundo (ver _used_in/disasm_of) cuando el ligero no encuentra nada; sin el, se
     comporta como antes (solo el analisis ligero del ToolRegistry)."""
     confirmed, _used_elsewhere = _confirm_via_xref(reg, _cred_candidates_with_vaddr(reg), binary)
     return confirmed

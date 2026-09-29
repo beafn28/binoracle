@@ -701,6 +701,100 @@ def test_injection_scanner():
     assert not any("sql" in f.title.lower() for f in scan_injection(reg2, "x"))
 
 
+def test_dataflow_hint_finds_shared_operand_between_source_and_sink():
+    # Nivel de evidencia pedido explicito por el usuario ("no basta con la misma funcion, hay que
+    # ir mas alla"): dataflow_hint busca, DENTRO de una funcion, si la llamada a la fuente y la
+    # llamada al sink comparten un operando con nombre (variable de pila/registro) -- senal de que
+    # el mismo valor fluye de uno a otro, mas fuerte que solo "ambas llamadas viven aqui".
+    from binoracle.workflows._binfacts import dataflow_hint
+
+    # patron real: read(fd, [var_58h], n) ... luego system([var_58h]) -- mismo buffer reutilizado
+    body = (
+        "0x1000  lea eax, [var_58h]\n"
+        "0x1004  push eax\n"
+        "0x1005  push 0x40\n"
+        "0x1006  call sym.imp.read\n"
+        "0x1010  lea eax, [var_58h]\n"
+        "0x1014  push eax\n"
+        "0x1015  call sym.imp.system\n"
+    )
+    hint = dataflow_hint(body, ["read"], ["system"])
+    assert hint and hint["source"] == "read" and hint["sink"] == "system"
+    assert hint["shared_operand"] == "var_58h"
+
+    # sin operando compartido (buffers DISTINTOS, con distancia real entre ambas llamadas): no se
+    # confirma, aunque ambas llamadas existan en la funcion.
+    body_unrelated = (
+        "0x1000  lea eax, [var_10h]\n"
+        "0x1004  push eax\n"
+        "0x1006  call sym.imp.read\n"
+        "0x1008  mov ebx, 1\n"
+        "0x100a  mov ecx, 2\n"
+        "0x100c  mov edx, 3\n"
+        "0x100e  nop\n"
+        "0x1010  push str.fixed_cmd\n"
+        "0x1015  call sym.imp.system\n"
+    )
+    assert dataflow_hint(body_unrelated, ["read"], ["system"]) is None
+
+    # registros genericos (eax/esp/ebp) no cuentan como senal -- serian ruido universal
+    body_generic_only = (
+        "0x1000  call sym.imp.read\n"
+        "0x1004  mov eax, eax\n"
+        "0x1010  call sym.imp.system\n"
+    )
+    assert dataflow_hint(body_generic_only, ["read"], ["system"]) is None
+
+
+def test_injection_scanner_distinguishes_dataflow_confirmed_from_same_function_only():
+    # Verifica la integracion completa en scan_injection: cuando dataflow_confirmed() encuentra el
+    # operando compartido, el titulo/severidad reflejan la confirmacion real (mas fuerte); cuando
+    # solo se confirma la misma funcion (sin operando compartido), se mantiene el titulo honesto
+    # anterior, pero YA citando la funcion real (antes location era el generico fijo).
+    from unittest.mock import MagicMock
+    from binoracle.workflows.injection import scan_injection
+
+    def make_reg(disasm_body):
+        reg = MagicMock()
+        imports_tool = _mock_tool(data="1 0x1 GLOBAL FUNC recv\n2 0x2 GLOBAL FUNC system\n")
+        strings_tool = _mock_tool(data="")
+
+        class _Xrefs:
+            def run(self, target=""):
+                name = target.rsplit(".", 1)[-1] if target else ""
+                if name in ("recv", "system"):
+                    return MagicMock(ok=True, data=f"fcn.handle 0x1000 [CALL:--x] call sym.imp.{name}")
+                return MagicMock(ok=True, data="")
+
+        disasm_tool = _mock_tool(data=disasm_body)
+        reg.get.side_effect = lambda n: {
+            "r2_imports": imports_tool, "r2_strings": strings_tool,
+            "r2_xrefs": _Xrefs(), "r2_disasm": disasm_tool,
+        }.get(n)
+        return reg
+
+    # dataflow confirmado: mismo var_58h en recv() y en system()
+    body_confirmed = (
+        "0x1000  lea eax, [var_58h]\n0x1004  push eax\n0x1006  call sym.imp.recv\n"
+        "0x1010  lea eax, [var_58h]\n0x1014  push eax\n0x1015  call sym.imp.system\n"
+    )
+    fs = scan_injection(make_reg(body_confirmed), "x", "es")
+    f = next(f for f in fs if "inyeccion" in f.title.lower() and "sql" not in f.title.lower())
+    assert "dataflow confirmado" in f.title.lower()
+    assert f.severity == "high"
+    assert f.location == "fcn.handle"
+    assert "var_58h" in f.rationale
+
+    # solo misma funcion, SIN operando compartido: titulo honesto anterior, pero cita la funcion real
+    body_no_flow = "0x1000  call sym.imp.recv\n0x1010  push str.fixed\n0x1015  call sym.imp.system\n"
+    fs2 = scan_injection(make_reg(body_no_flow), "x", "es")
+    f2 = next(f for f in fs2 if "inyeccion" in f.title.lower() and "sql" not in f.title.lower())
+    assert "dataflow" not in f2.title.lower()
+    assert f2.severity == "medium"
+    assert f2.location == "fcn.handle"
+    assert "NO se pudo confirmar" in f2.rationale
+
+
 def test_authz_scanner(tmp_path):
     import os
     from binoracle.workflows.authz import scan_authz
