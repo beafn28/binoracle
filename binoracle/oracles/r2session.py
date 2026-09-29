@@ -12,6 +12,7 @@ None y el llamador cae a su propia apertura.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Optional
 
 _CACHE: dict = {}   # abspath -> (r2_handle, mtime)
@@ -60,3 +61,40 @@ def close_all() -> None:
     for r, _ in list(_CACHE.values()):
         _quit(r)
     _CACHE.clear()
+
+
+def cmd_timeout(binary: str, cmd: str, timeout: float = 90.0) -> Optional[str]:
+    """Como get(binary).cmd(cmd), pero con limite de tiempo real. Bug encontrado en vivo: `pdg @
+    func` (decompilador r2ghidra) NO tiene ningun timeout nativo en r2pipe -- si se queda colgado
+    (funcion compleja, o el proceso r2 en un estado raro, p.ej. por un servidor Ghidra externo
+    emparejado con OTRO binario y una sesion previa que dejo el pipe en mal estado) el pipeline
+    ENTERO del informe se queda esperando para siempre, sin ningun error visible.
+
+    Si el comando no vuelve a tiempo: se invalida la sesion compartida de este binario (la
+    siguiente llamada a get() abre una nueva, limpia) y se mata el proceso r2 colgado en segundo
+    plano -- el hilo que seguia bloqueado en la lectura del pipe se abandona (es daemon, no
+    impide que el programa termine) en vez de dejarlo bloquear el resto de la auditoria. Nunca
+    lanza; None si no hay sesion o si se agoto el tiempo."""
+    r = get(binary)
+    if r is None:
+        return None
+    result: dict = {}
+    def _run():
+        try:
+            result["v"] = r.cmd(cmd)
+        except Exception:
+            result["v"] = None
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        key = os.path.abspath(binary)
+        ent = _CACHE.get(key)
+        if ent and ent[0] is r:
+            _CACHE.pop(key, None)
+        try:
+            r.process.kill()
+        except Exception:
+            pass
+        return None
+    return result.get("v")
