@@ -996,7 +996,7 @@ def _toc(lang: str, has) -> str:
                 "cfg": "Grafo de flujo interactivo",
                 "find": "Hallazgos", "owasp": "OWASP Desktop Top 10", "mit": "Mitigaciones y remediacion",
                 "chain": "Cadena de explotacion", "xchain": "Analizador de cadenas (grafo)",
-                "exploitplan": "Esquema de explotacion",
+                "exploitplan": "Esquema de explotacion", "checks": "Comprobaciones adicionales",
                 "surface": "Superficie de ataque", "refs": "Referencias", "trail": "Rastro de evidencia"},
          "en": {"t": "Contents", "methodology": "Methodology applied", "summary": "Executive summary",
                 "proof": "Exploitation proof",
@@ -1004,18 +1004,38 @@ def _toc(lang: str, has) -> str:
                 "cfg": "Interactive control-flow graph",
                 "find": "Findings", "owasp": "OWASP Desktop Top 10", "mit": "Mitigations & remediation",
                 "chain": "Exploitation chain", "xchain": "Chain analyzer (graph)",
-                "exploitplan": "Exploitation schema",
+                "exploitplan": "Exploitation schema", "checks": "Additional checks",
                 "surface": "Attack surface", "refs": "References", "trail": "Evidence trail"}}[lang if lang in ("es", "en") else "es"]
-    order = [("methodology", "sec-methodology"), ("summary", "sec-summary"), ("proof", "sec-proof"),
-             ("exploit", "sec-exploit"),
-             ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("find", "sec-find"), ("owasp", "sec-owasp"),
+    # Orden del indice = orden visual real de la pagina (lo importante primero: resumen, prueba,
+    # hallazgos; lo de apoyo/meta al final: comprobaciones adicionales, metodologia, superficie,
+    # referencias, rastro). Antes el indice no reflejaba el orden real de la pagina.
+    order = [("summary", "sec-summary"), ("proof", "sec-proof"), ("find", "sec-find"),
+             ("exploit", "sec-exploit"), ("dec", "sec-dec"), ("cfg", "sec-cfg"), ("owasp", "sec-owasp"),
              ("mit", "sec-mit"),
              ("chain", "sec-chain"), ("xchain", "sec-xchain"), ("exploitplan", "sec-exploitplan"),
+             ("checks", "sec-checks"), ("methodology", "sec-methodology"),
              ("surface", "sec-surface"),
              ("refs", "sec-refs"), ("trail", "sec-trail")]
     items = "".join(f'<li><a href="#{aid}">{_esc(T[key])}</a></li>'
                     for key, aid in order if has.get(key))
     return (f'<nav class="toc"><div class="toc-t">{_esc(T["t"])}</div><ol class="toc-l">{items}</ol></nav>')
+
+
+def _checks_group_html(parts: list, lang: str = "es") -> str:
+    """Agrupa las comprobaciones del checklist base (MSI, packing, DLL hijacking, DLL hermana sin
+    firmar, flag de sandbox/depuracion, fuga de PDB, Rich Header, RPATH/RUNPATH de ELF, fuga de
+    ruta de compilacion DWARF, capacidades Linux) en UN solo desplegable en vez de una pared de
+    cajas siempre abiertas antes de llegar al resumen ejecutivo. Cada comprobacion conserva su
+    propia caja/color interna (aviso naranja si aplica); esto solo cambia como se presentan en
+    conjunto. Vacio si ninguna comprobacion produjo contenido (nada que agrupar)."""
+    parts = [p for p in parts if p]
+    if not parts:
+        return ""
+    es = lang == "es"
+    title = f"Comprobaciones adicionales ({len(parts)})" if es else f"Additional checks ({len(parts)})"
+    body = "".join(parts)
+    return (f'<div id="sec-checks"><details class="sec"><summary>{_esc(title)}</summary>'
+            f'{body}</details></div>')
 
 
 def _methodology_html(is_pe: bool, has, lang: str = "es", is_elf: bool = False) -> str:
@@ -2455,12 +2475,20 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     if elf_debug_leak_html:
         _extra_ref_keys.append("elf_debug_leak")
     references_html = _references(findings, lang, extra_keys=_extra_ref_keys)
+    # Comprobaciones del checklist base agrupadas en un solo desplegable (ver _checks_group_html):
+    # antes cada una salia como una caja siempre abierta, una detras de otra, antes de llegar al
+    # resumen ejecutivo -- una pared de texto sin organizar.
+    checks_html = _checks_group_html([
+        msi_html, packing_html, dll_hijack_html, sibling_dll_html, sandbox_flag_html,
+        pdb_leak_html, rich_header_html, elf_rpath_html, elf_debug_leak_html, elf_capabilities_html,
+    ], lang)
     # Indice: solo las secciones realmente presentes.
     _has = {"methodology": True, "summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
             "owasp": bool(owasp_html), "exploitplan": bool(cveplan_html),
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
-            "xchain": bool(exploit_graph_html), "surface": bool(triage_sections),
+            "xchain": bool(exploit_graph_html), "checks": bool(checks_html),
+            "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
     methodology_html = _methodology_html(is_pe, _has, lang, is_elf=is_elf)
     toc_html = _toc(lang, _has)
@@ -2498,37 +2526,9 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
 
   {toc_html}
 
-  {methodology_html}
-
-  {msi_html}
-
-  {packing_html}
-
-  {dll_hijack_html}
-
-  {sibling_dll_html}
-
-  {sandbox_flag_html}
-
-  {pdb_leak_html}
-
-  {rich_header_html}
-
-  {elf_rpath_html}
-
-  {elf_debug_leak_html}
-
-  {elf_capabilities_html}
-
   {answer_html}
 
   {proof_html}
-
-  {exploit_html}
-
-  {decompiled_html}
-
-  {cfg_html}
 
   <h2 data-i18n="findings" id="sec-find"></h2>
   <div class="toolbar">
@@ -2536,6 +2536,12 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     {sev_buttons}
   </div>
   <div id="cards">{cards or '<p class="empty" data-i18n="no_findings"></p>'}</div>
+
+  {exploit_html}
+
+  {decompiled_html}
+
+  {cfg_html}
 
   {owasp_html}
 
@@ -2548,6 +2554,10 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
   {exploit_graph_html}
 
   {cveplan_html}
+
+  {checks_html}
+
+  {methodology_html}
 
   <h2 data-i18n="attack_surface" id="sec-surface"></h2>
   {triage_sections or '<p class="empty" data-i18n="no_triage"></p>'}
