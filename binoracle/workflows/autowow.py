@@ -10,9 +10,7 @@ Runs en el sandbox binoracle-pwn. Solo para binarios AUTORIZADOS / CTF / researc
 """
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
+from ._sandbox import run_driver
 
 # candidatos de sink que el binario podria llamar tras el write (para retargetear su GOT)
 _TRIGGER_FUNCS = ("puts", "printf", "exit", "fflush")
@@ -87,44 +85,16 @@ def _wow_applicable(binary: str) -> bool:
 def autowow_shell(binary: str) -> dict:
     """Explota un write-what-where (indice sin comprobar sobre un array global) retargeteando
     una entrada GOT (puts/printf/...) a 'win', verificado con shell real en el sandbox."""
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
     if not _wow_applicable(binary):
         return {"ok": False, "note": "no aplicable (sin win/table): write-what-where requiere ambos"}
-    try:
-        img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                             capture_output=True, timeout=15).returncode
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "note": "docker no responde (image inspect timeout)"}
-    if img != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
-    if not os.path.isdir(d):
-        return {"ok": False, "note": f"directorio inexistente: {d}"}
-    drv = os.path.join(d, ".binoracle_wow.py")
-    try:
-        with open(drv, "w") as f:
-            f.write(_DRIVER)
-    except OSError as e:
-        return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "bash", "-c",
-             f"chmod +x ./{name}; python3 .binoracle_wow.py {name}"],
-            capture_output=True, text=True, timeout=120)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try: os.unlink(drv)
-        except OSError: pass
-    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-600:],
-            "note": "write-what-where -> GOT=win -> shell (sandbox)" if verified
-                    else "no verificado (offset de GOT no alineado, o prompt distinto)"}
+    res = run_driver(binary, _DRIVER, ".binoracle_wow.py")
+    if not res.get("ok"):
+        return res
+    eng = res.get("engine", "sandbox")
+    res["note"] = (f"write-what-where -> GOT=win -> shell (verificado por ejecucion, {eng})"
+                   if res.get("verified")
+                   else f"no verificado ({eng}): offset de GOT no alineado, o prompt distinto")
+    return res
 
 
 def render_wow(r: dict) -> str:
