@@ -2634,6 +2634,10 @@ def test_msi_recon_extracts_summary_metadata_without_guessing_rollback():
     # -- eso requeriria implementar el formato binario de fila/columna de las tablas MSI, que no se
     # puede verificar sin un fichero MSI real de referencia. El informe debe decir esto
     # explicitamente (Fase 5: no afirmar un hecho de seguridad que no se puede verificar).
+    try:
+        import olefile  # noqa: F401  (optional '[msi]' extra; skip if not installed)
+    except ImportError:
+        return
     from unittest.mock import patch, MagicMock
     from binoracle.report.html import _msi_recon, _msi_recon_html
 

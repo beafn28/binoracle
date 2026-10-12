@@ -120,40 +120,60 @@ def find_ret_gadget(binary: str) -> Optional[int]:
     return int(m.group(1), 16) if m else None
 
 
-def find_pc_offset(binary: str, maxlen: int = 400, budget_s: float = 20.0) -> Optional[int]:
-    """Find the offset from input to the saved return address, symbolically (no run).
-
-    Bounded by WALL-CLOCK time (budget_s), not just step count: a menu/heap-driven binary
-    (malloc/free with a symbolic size/index) can make a SINGLE simgr.step() take minutes on
-    its own, because Z3's bit-blaster for symbolic MULTIPLICATION (size*count style) can blow
-    up -- confirmed via a process sample showing 100% time inside
-    bit_blaster_tpl::mk_const_case_multiplier while symbolically exploring a heap-menu binary.
-    The previous `steps < 400` cap does not protect against that (400 steps stuck on step #50
-    still hangs indefinitely). This is a stack-overflow-shaped strategy (flood stdin until PC
-    is unconstrained); for heap-classified binaries it should fail FAST so the static fallback
-    (_static_offset) gets a chance within the caller's overall budget, not eat all of it."""
-    if not _HAVE_ANGR:
-        return None
+def _pc_offset_worker(binary: str, q) -> None:
+    """Child-process body: symbolically flood stdin until PC is unconstrained and report the
+    offset. Runs in its own process so the parent can hard-kill it on deadline (see below)."""
     try:
-        import time as _time
-        proj = angr.Project(binary, auto_load_libs=False)
+        import angr as _angr
+        proj = _angr.Project(binary, auto_load_libs=False)
         state = proj.factory.entry_state()
         simgr = proj.factory.simulation_manager(state, save_unconstrained=True)
         steps = 0
-        deadline = _time.time() + budget_s
         while simgr.active and not simgr.unconstrained and steps < 400:
-            if _time.time() > deadline:
-                return None
             simgr.step()
             steps += 1
-        if not simgr.unconstrained:
+        if simgr.unconstrained:
+            u = simgr.unconstrained[0]
+            pc_val = u.solver.eval(u.regs.pc)
+            pc_bytes = pc_val.to_bytes(proj.arch.bytes, "little")
+            off = u.posix.dumps(0).find(pc_bytes)
+            q.put(off if off >= 0 else None)
+            return
+    except Exception:
+        pass
+    q.put(None)
+
+
+def find_pc_offset(binary: str, maxlen: int = 400, budget_s: float = 20.0) -> Optional[int]:
+    """Find the offset from input to the saved return address, symbolically (no run).
+
+    HARD-bounded by WALL-CLOCK time: a menu/heap-driven binary (malloc/free with a symbolic
+    size/index) can make a SINGLE simgr.step() take minutes on its own, because Z3's bit-blaster
+    for symbolic MULTIPLICATION (size*count style) can blow up -- confirmed via a process sample
+    showing 100% time inside bit_blaster_tpl::mk_const_case_multiplier. A between-steps deadline
+    check does NOT help there: the loop is stuck INSIDE one step, so it never comes back to
+    check. The only reliable bound is to run the exploration in a child process and KILL it at
+    the deadline; Z3's C/Python call won't honor a Python-level timeout or signal. This is a
+    stack-overflow-shaped strategy (flood stdin until PC is unconstrained); for heap binaries it
+    then fails fast so the static fallback (_static_offset) gets its turn within the budget."""
+    if not _HAVE_ANGR:
+        return None
+    import multiprocessing as mp
+    try:
+        ctx = mp.get_context("spawn")        # fork after importing z3 can deadlock; spawn is safe
+        q = ctx.Queue()
+        p = ctx.Process(target=_pc_offset_worker, args=(binary, q), daemon=True)
+        p.start()
+        p.join(budget_s)
+        if p.is_alive():
+            p.terminate(); p.join(2)
+            if p.is_alive():
+                p.kill(); p.join(1)
             return None
-        u = simgr.unconstrained[0]
-        pc_val = u.solver.eval(u.regs.pc)
-        pc_bytes = pc_val.to_bytes(proj.arch.bytes, "little")
-        inp = u.posix.dumps(0)
-        off = inp.find(pc_bytes)
-        return off if off >= 0 else None
+        try:
+            return q.get(timeout=1)
+        except Exception:
+            return None
     except Exception:
         return None
 
