@@ -46,18 +46,26 @@ def _elf_machine(path: str):
     return struct.unpack_from("<H", head, 18)[0]
 
 
-def native_available(binary: str) -> tuple[bool, str]:
-    """(ok, reason). A native run needs a Linux x86-64 host, an x86-64 ELF target, pwntools and
-    `setarch` (to turn ASLR off). Network isolation via `unshare` is optional -- we degrade."""
+def _host_target_ok(binary: str) -> tuple[bool, str]:
+    """Host/target preconditions common to every native run: Linux x86-64 host, x86-64 ELF
+    target, and `setarch` (to turn ASLR off). Network isolation via `unshare` is optional."""
     if platform.system() != "Linux":
         return False, "host no es Linux"
     if platform.machine() not in ("x86_64", "amd64"):
         return False, "host no es x86-64"
-    m = _elf_machine(binary)
-    if m != _EM_X86_64:
+    if _elf_machine(binary) != _EM_X86_64:
         return False, "el binario no es ELF x86-64 (el runner nativo es x86-64)"
     if not shutil.which("setarch"):
         return False, "falta 'setarch' (necesario para desactivar ASLR)"
+    return True, "ok"
+
+
+def native_available(binary: str) -> tuple[bool, str]:
+    """(ok, reason) for a native pwntools DRIVER run: the host/target preconditions plus
+    pwntools on the host. (A raw-binary run uses `_host_target_ok` directly, no pwntools.)"""
+    ok, why = _host_target_ok(binary)
+    if not ok:
+        return ok, why
     try:
         import pwn  # noqa: F401
     except Exception:
@@ -127,6 +135,35 @@ def run_native(binary: str, driver_path: str, args=None, timeout: int = 90,
         except Exception:
             partial = ""
         return "[timeout] " + partial
+
+
+def run_bash(binary: str, bash_cmd: str, timeout: int = 120, mem_mb: int = 512) -> tuple:
+    """Run an arbitrary bash pipeline against `binary` (the command refers to it as ./<name>
+    and to sibling files the caller wrote in the binary's dir), preferring the binoracle-pwn
+    Docker image and falling back to native isolation (unshare/setarch/rlimits). No pwntools
+    needed -- this runs the raw target (e.g. feeding a ret2win payload on stdin). Returns
+    (engine | None, output); engine is None only when neither Docker nor native can run it."""
+    d = os.path.dirname(os.path.abspath(binary))
+    if _docker_image_ok():
+        try:
+            r = subprocess.run(
+                ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
+                 "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
+                 "binoracle-pwn", "bash", "-c", bash_cmd],
+                capture_output=True, text=True, timeout=timeout)
+            return "docker", (r.stdout or "") + (r.stderr or "")
+        except subprocess.TimeoutExpired:
+            return "docker", "[timed out]"
+    ok, reason = _host_target_ok(binary)
+    if not ok:
+        return None, reason
+    cmd = _net_prefix() + ["setarch", platform.machine(), "-R", "bash", "-c", bash_cmd]
+    try:
+        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=timeout,
+                           preexec_fn=_rlimit_preexec(min(timeout, 60), mem_mb))
+        return "native", (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired:
+        return "native", "[timed out]"
 
 
 def _docker_image_ok(timeout: int = 15) -> bool:

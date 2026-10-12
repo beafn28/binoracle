@@ -16,6 +16,8 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ._sandbox import run_bash
+
 try:
     import angr  # type: ignore
     import logging as _lg
@@ -172,9 +174,6 @@ io.interactive()
 
 
 def _docker_run(binary: str, payload: bytes) -> (bool, str):
-    docker = shutil.which("docker")
-    if not docker:
-        return (False, "docker not available")
     d = os.path.dirname(os.path.abspath(binary))
     name = os.path.basename(binary)
     with open(os.path.join(d, ".poc_payload"), "wb") as f:
@@ -189,16 +188,11 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
            f"| stdbuf -oL -eL ./{name} 2>&1 | head -80")
     try:
         # binoracle-pwn (no gcc:13): trae libc6:i386, necesaria para binarios de 32 bits como
-        # ret2win32 (gcc:13 no tiene multiarch instalado y qemu-i386 falla al no encontrar
-        # /lib/ld-linux.so.2). bash/stdbuf/chmod/head ya estan en esa imagen.
-        out = subprocess.run(
-            [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "binoracle-pwn", "bash", "-c", run],
-            capture_output=True, text=True, timeout=120)
-        return (True, out.stdout + out.stderr)
-    except subprocess.TimeoutExpired:
-        return (True, "[timed out]")
+        # ret2win32. Sin la imagen, run_bash cae a ejecucion nativa (solo binarios x86-64).
+        engine, out = run_bash(binary, run, timeout=120, mem_mb=256)
+        if engine is None:
+            return (False, out)
+        return (True, out)
     finally:
         try:
             os.unlink(os.path.join(d, ".poc_payload"))
@@ -336,24 +330,19 @@ def render_poc(r: PoCResult, lang: str = "es") -> str:
 
 
 def _docker_run_raw(binary: str, data: bytes):
-    """Run the target in an x86-64 sandbox feeding EXACTLY `data` on stdin (line-buffered)."""
-    docker = shutil.which("docker")
-    if not docker:
-        return (False, "docker not available")
+    """Run the target in an x86-64 sandbox feeding EXACTLY `data` on stdin (line-buffered).
+    Docker image preferred; falls back to native isolation when it is absent."""
     d = os.path.dirname(os.path.abspath(binary))
     name = os.path.basename(binary)
     with open(os.path.join(d, ".poc_raw"), "wb") as f:
         f.write(data)
     try:
-        # binoracle-pwn: ver comentario en _docker_run() sobre soporte i386 para ret2win32.
-        out = subprocess.run(
-            [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "binoracle-pwn", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60"],
-            capture_output=True, text=True, timeout=120)
-        return (True, out.stdout + out.stderr)
-    except subprocess.TimeoutExpired:
-        return (True, "[timed out]")
+        engine, out = run_bash(
+            binary, f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60",
+            timeout=120, mem_mb=256)
+        if engine is None:
+            return (False, out)
+        return (True, out)
     finally:
         try:
             os.unlink(os.path.join(d, ".poc_raw"))
