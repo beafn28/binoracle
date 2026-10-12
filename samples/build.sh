@@ -27,9 +27,18 @@ run(){
   if [ "$engine" = "docker" ]; then
     docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"
   else
-    # Host gcc: tolerate a single build failing (e.g. -static sin glibc-static, -m32 sin
-    # multilib) so the rest of the corpus still builds; those targets simply stay absent.
-    ( cd "$here" && bash -c "$1" ) || { echo "  [!] build fallo (host gcc): omitido"; return 0; }
+    # Host gcc: the official gcc:13 image is VANILLA gcc (stack-protector and cf-protection OFF
+    # by default), but a distro gcc (Ubuntu/Debian) turns BOTH on by default -- which would add
+    # a canary to the "no-canary" samples and endbr64 padding that shifts win()'s address. We
+    # inject the vanilla defaults right after `gcc`; the per-line flags come AFTER and still win
+    # (e.g. the canary sample's -fstack-protector-all overrides). PIE/RELRO are already set
+    # explicitly per line. Tolerate a single build failing (e.g. -static sin glibc-static, -m32
+    # sin multilib) so the rest still builds.
+    local cmd="$1"
+    case "$cmd" in
+      gcc\ *) cmd="gcc -fno-stack-protector -fcf-protection=none ${cmd#gcc }" ;;
+    esac
+    ( cd "$here" && bash -c "$cmd" ) || { echo "  [!] build fallo (host gcc): omitido"; return 0; }
   fi
 }
 
