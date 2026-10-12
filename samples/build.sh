@@ -1,11 +1,37 @@
 #!/usr/bin/env bash
-# Build the practice corpus as real Linux x86-64 ELFs using Docker (gcc:13).
-# These are intentionally-vulnerable binaries for AUTHORIZED local practice only.
+# Build the practice corpus as real Linux x86-64 ELFs.
+# Prefers the gcc:13 Docker image; falls back to the HOST gcc when the image is unavailable
+# (CI / cloud / any box without `make pwn-image`), so the corpus still builds with no Docker.
+# The host fallback only engages on Linux -- a macOS `gcc` is clang and would emit Mach-O, not
+# Linux ELFs, so there we stay on Docker (its auto-pull preserves the original behavior).
+# Intentionally-vulnerable binaries for AUTHORIZED local practice only.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$here/bin"
 img=gcc:13
-run(){ docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"; }
+
+engine=none
+if command -v docker >/dev/null 2>&1 && docker image inspect "$img" >/dev/null 2>&1; then
+  engine=docker                                   # image already present -> fastest, exact
+elif [ "$(uname -s)" = "Linux" ] && command -v gcc >/dev/null 2>&1; then
+  engine=host                                     # no image, but a Linux host gcc emits ELFs
+elif command -v docker >/dev/null 2>&1; then
+  engine=docker                                   # e.g. macOS: let docker pull gcc:13 as before
+fi
+if [ "$engine" = none ]; then
+  echo "[!] necesito la imagen Docker '$img' (make pwn-image) o un gcc en un host Linux" >&2
+  exit 1
+fi
+echo "[*] motor de compilacion: $engine"
+run(){
+  if [ "$engine" = "docker" ]; then
+    docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"
+  else
+    # Host gcc: tolerate a single build failing (e.g. -static sin glibc-static, -m32 sin
+    # multilib) so the rest of the corpus still builds; those targets simply stay absent.
+    ( cd "$here" && bash -c "$1" ) || { echo "  [!] build fallo (host gcc): omitido"; return 0; }
+  fi
+}
 
 echo "[*] ret2win  (no-PIE, no-canary, NX)"
 run "gcc -w -fno-stack-protector -no-pie -o bin/ret2win  src/ret2win.c"
