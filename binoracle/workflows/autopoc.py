@@ -79,16 +79,19 @@ def find_win(binary: str) -> Optional[int]:
     # fcn.00401176 (sin nombre) llama a system("/bin/sh"), misma direccion que 'win' en la
     # variante no-stripped del mismo reto.
     for sink in ("system", "execve", "execl", "execlp"):
-        callers = _r2(binary, f"aa; axt @ sym.imp.{sink}")
+        # Xrefs to an import are only populated by FULL analysis (`aaa`); plain `aa` leaves
+        # `axt @ sym.imp.<sink>` empty, so the stripped gift was never found (confirmed on
+        # radare2 5.5.0: `aa; axt` -> nothing, `aaa; axt` -> the real caller).
+        callers = _r2(binary, f"aaa; axt @ sym.imp.{sink}")
         for m in re.finditer(r"^\S+\s+(0x[0-9a-fA-F]+)\s+\[CALL", callers, re.M):
             call_addr = m.group(1)
-            dis = _r2(binary, f"aa; pdf @ {call_addr}")
+            dis = _r2(binary, f"aaa; pdf @ {call_addr}")
             if not _SHELL_STR_RE.search(dis):
                 continue
             # `call_addr` es la direccion del `call system`, EN MEDIO de la funcion; `afo`
             # resuelve la direccion de INICIO real de la funcion que lo contiene (necesaria
             # para saltar ahi como target de ret2win), sea o no un simbolo con nombre.
-            start = _r2(binary, f"aa; afo @ {call_addr}")
+            start = _r2(binary, f"aaa; afo @ {call_addr}")
             sm = re.search(r"(0x[0-9a-fA-F]+)", start)
             if sm:
                 return int(sm.group(1), 16)
