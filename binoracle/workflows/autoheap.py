@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 
+from ._sandbox import run_driver
+
 _ABORT = ("free(): ", "double free or corruption", "malloc(): ", "corrupted",
           "invalid pointer", "invalid next size", "smallbin double linked list",
           "unsorted double linked list", "munmap_chunk")
@@ -234,50 +236,24 @@ def autoheap_shell(binary: str) -> dict:
     """Drive a menu-driven tcache-UAF (new/free/edit/show) to a verified shell via tcache
     poisoning + free@GOT overwrite. Needs a `win` and a writable free@GOT (no-PIE). The menu
     shape (option numbers + prompt) is detected statically from the binary, so it adapts to
-    reordered/relabelled/non-English menus, not just heapexp. Runs in the binoracle-pwn
-    sandbox; degrades cleanly if Docker or the image is absent."""
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
+    reordered/relabelled/non-English menus, not just heapexp. Verified by EXECUTION in the
+    binoracle-pwn Docker image, or in the native sandbox (unshare/setarch/rlimits) when the
+    image is absent; degrades cleanly when neither is available."""
     if not _heap_shell_applicable(binary):
         return {"ok": False, "note": "no aplicable (sin win/free): heap->shell requiere win + free@GOT"}
     spec = detect_menu_spec(binary)
     if spec is None:
         return {"ok": False, "note": "no aplicable: no se detecto un menu new/free/edit/show en el binario"}
-    try:
-        img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                             capture_output=True, timeout=15).returncode
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "note": "docker no responde (image inspect timeout)"}
-    if img != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
-    if not os.path.isdir(d):
-        return {"ok": False, "note": f"directorio inexistente: {d}"}
-    drv = os.path.join(d, ".binoracle_heap.py")
-    try:
-        with open(drv, "w") as f:
-            f.write(_HEAP_SHELL_DRIVER.replace("__SPEC_JSON__", json.dumps(spec)))
-    except OSError as e:
-        return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "bash", "-c",
-             f"chmod +x ./{name}; python3 .binoracle_heap.py {name}"],
-            capture_output=True, text=True, timeout=200)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try: os.unlink(drv)
-        except OSError: pass
-    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-600:],
-            "menu": spec,
-            "note": "tcache-UAF -> free@GOT=win -> shell (sandbox)" if verified
-                    else "no verificado (revisa alineacion/glibc o formato del menu)"}
+    driver = _HEAP_SHELL_DRIVER.replace("__SPEC_JSON__", json.dumps(spec))
+    res = run_driver(binary, driver, ".binoracle_heap.py")
+    if not res.get("ok"):
+        return res
+    res["menu"] = spec
+    eng = res.get("engine", "sandbox")
+    res["note"] = (f"tcache-UAF -> free@GOT=win -> shell (verificado por ejecucion, {eng})"
+                   if res.get("verified")
+                   else f"no verificado ({eng}): revisa alineacion/glibc o formato del menu")
+    return res
 
 
 def render_heap(r: dict) -> str:

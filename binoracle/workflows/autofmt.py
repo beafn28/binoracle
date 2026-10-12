@@ -6,9 +6,7 @@ fixed), and then sends '/bin/sh' so the next printf(buf) becomes system('/bin/sh
 Confirms a real shell. For AUTHORIZED / CTF targets. Needs the 'binoracle-pwn' image."""
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
+from ._sandbox import run_driver
 
 _DRIVER = r'''
 import sys
@@ -66,32 +64,14 @@ sys.exit(1)
 
 
 def autofmt(binary: str, run: bool = True, prompt: str = "say: ") -> dict:
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
-    if subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                      capture_output=True).returncode != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
-    drv = os.path.join(d, ".binoracle_fmt.py")
-    with open(drv, "w") as f:
-        f.write(_DRIVER)
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "python3", ".binoracle_fmt.py", name, prompt],
-            capture_output=True, text=True, timeout=150)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try: os.unlink(drv)
-        except OSError: pass
-    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-800:],
-            "note": ("format-string -> printf@GOT=system: shell verificada en sandbox" if verified
-                     else "format-string: no verificado (no aplica printf(user) en bucle o timing)")}
+    res = run_driver(binary, _DRIVER, ".binoracle_fmt.py", args=[prompt])
+    if not res.get("ok"):
+        return res
+    eng = res.get("engine", "sandbox")
+    res["note"] = (f"format-string -> printf@GOT=system: shell verificada por ejecucion ({eng})"
+                   if res.get("verified")
+                   else f"format-string: no verificado ({eng}) (no aplica printf(user) en bucle o timing)")
+    return res
 
 
 def render_fmt(r: dict) -> str:

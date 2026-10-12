@@ -6,9 +6,7 @@ computed libc base to call system('/bin/sh'). Runs inside the pwntools sandbox i
 AUTHORIZED / CTF targets. Build the image once with: make pwn-image."""
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
+from ._sandbox import run_driver
 
 _DRIVER = r'''
 import sys, subprocess, struct
@@ -76,36 +74,14 @@ sys.exit(1)
 
 
 def autolibc(binary: str, run: bool = True) -> dict:
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
-    img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                         capture_output=True)
-    if img.returncode != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary))
-    name = os.path.basename(binary)
-    drv = os.path.join(d, ".binoracle_libc.py")
-    with open(drv, "w") as f:
-        f.write(_DRIVER)
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "python3", ".binoracle_libc.py", name],
-            capture_output=True, text=True, timeout=200)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try:
-            os.unlink(drv)
-        except OSError:
-            pass
-    verified = "VERIFIED" in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-800:],
-            "note": ("ret2libc con leak: shell verificada en sandbox" if verified
-                     else "ret2libc: no verificado (sin leak/gadget aplicable o timing)")}
+    res = run_driver(binary, _DRIVER, ".binoracle_libc.py")
+    if not res.get("ok"):
+        return res
+    eng = res.get("engine", "sandbox")
+    res["note"] = (f"ret2libc con leak: shell verificada por ejecucion ({eng})"
+                   if res.get("verified")
+                   else f"ret2libc: no verificado ({eng}) (sin leak/gadget aplicable o timing)")
+    return res
 
 
 def render_libc(r: dict) -> str:
