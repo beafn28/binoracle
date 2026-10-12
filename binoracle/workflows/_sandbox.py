@@ -30,6 +30,10 @@ import struct
 import subprocess
 
 _EM_X86_64 = 0x3E
+_EM_386 = 0x03
+# An x86-64 host runs i386 ELFs natively too, as long as the 32-bit loader is installed
+# (/lib/ld-linux.so.2); without it the exec simply fails and the run degrades honestly.
+_RUNNABLE_MACHINES = (_EM_X86_64, _EM_386)
 
 # Probed once per process: does `unshare` give us a usable net namespace here?
 _NET_PREFIX_CACHE: list | None = None
@@ -47,14 +51,15 @@ def _elf_machine(path: str):
 
 
 def _host_target_ok(binary: str) -> tuple[bool, str]:
-    """Host/target preconditions common to every native run: Linux x86-64 host, x86-64 ELF
-    target, and `setarch` (to turn ASLR off). Network isolation via `unshare` is optional."""
+    """Host/target preconditions common to every native run: Linux x86-64 host, an x86-64 (or
+    i386 -- the host runs 32-bit ELFs too) target, and `setarch` (to turn ASLR off). Network
+    isolation via `unshare` is optional."""
     if platform.system() != "Linux":
         return False, "host no es Linux"
     if platform.machine() not in ("x86_64", "amd64"):
         return False, "host no es x86-64"
-    if _elf_machine(binary) != _EM_X86_64:
-        return False, "el binario no es ELF x86-64 (el runner nativo es x86-64)"
+    if _elf_machine(binary) not in _RUNNABLE_MACHINES:
+        return False, "el binario no es ELF x86-64/i386 (el runner nativo es x86)"
     if not shutil.which("setarch"):
         return False, "falta 'setarch' (necesario para desactivar ASLR)"
     return True, "ok"
