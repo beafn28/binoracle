@@ -2871,7 +2871,13 @@ def test_find_win_resolves_gift_function_in_stripped_binary():
         return
     from binoracle.workflows.autopoc import find_win
     w = find_win(b)
-    assert w == 0x401176, f"win esperado en 0x401176, obtenido {hex(w) if w else None}"
+    # La direccion absoluta de win() depende del compilador (el gcc del host la desplaza unos
+    # bytes frente al gcc:13 oficial). La invariante REAL de este test es que el binario stripped
+    # resuelve win() en la MISMA direccion que su variante NO stripped (que si conserva el simbolo
+    # 'win' y lo resuelve por nombre), independiente del toolchain.
+    want = find_win("samples/bin/ret2win")
+    assert want is not None, "no se pudo resolver win() en la variante no stripped"
+    assert w == want, f"win stripped {hex(w) if w else None} != win no-stripped {hex(want)}"
 
 
 def test_ret2win_stripped_verifies_end_to_end():
@@ -2881,11 +2887,15 @@ def test_ret2win_stripped_verifies_end_to_end():
     if not os.path.exists(b) or not shutil.which("docker"):
         return
     from binoracle.workflows.chainanalyzer import analyze_chains
+    from binoracle.workflows.autopoc import find_win
     an = analyze_chains(b, None, verify=True, lang="es")
     ret2win = next(c for c in an.chains if c.name == "ret2win")
     assert ret2win.unmet_requirements == 0
     assert ret2win.verified, ret2win.sim_result
-    assert ret2win.proof.get("win") == "0x401176"
+    # win() absoluto depende del compilador: se deriva del propio binario en tiempo de test
+    # (proof lo guarda como string hex, p.ej. "0x401176") en vez de fijar el literal.
+    want = find_win(b)
+    assert ret2win.proof.get("win") == hex(want)
 
 
 def test_ret2win32_verifies_end_to_end():
@@ -2910,11 +2920,15 @@ def test_ret2win32_verifies_end_to_end():
     if not os.path.exists(b) or not shutil.which("docker"):
         return
     from binoracle.workflows.chainanalyzer import analyze_chains
+    from binoracle.workflows.autopoc import find_win
     an = analyze_chains(b, None, verify=True, lang="es")
     ret2win = next(c for c in an.chains if c.name == "ret2win")
     assert ret2win.unmet_requirements == 0
     assert ret2win.verified, ret2win.sim_result
-    assert ret2win.proof.get("win") == "0x80491a6"
+    # win() absoluto depende del compilador: se deriva del propio binario en tiempo de test
+    # (proof lo guarda como string hex, p.ej. "0x80491a6") en vez de fijar el literal.
+    want = find_win(b)
+    assert ret2win.proof.get("win") == hex(want)
 
 
 def test_autopoc_word_size_detects_32_vs_64_bit():
@@ -3066,11 +3080,15 @@ def test_chainanalyzer_wires_up_uaf_funcptr_hijack_driver():
     if not os.path.exists(b) or not shutil.which("docker"):
         return
     from binoracle.workflows.chainanalyzer import analyze_chains
+    from binoracle.workflows.autopoc import find_win
     an = analyze_chains(b, None, verify=True, lang="es")
     uaf = next((c for c in an.chains if c.name == "uaf funcptr-hijack"), None)
     assert uaf is not None, "no se construyo la cadena uaf funcptr-hijack (uaf_fnptr_ok debia ser True)"
     assert uaf.verified, uaf.sim_result
-    assert uaf.proof.get("win") == "0x4011d7"
+    # win() absoluto depende del compilador: se deriva del propio binario en tiempo de test
+    # (proof lo guarda como string hex, p.ej. "0x4011dc") en vez de fijar el literal.
+    want = find_win(b)
+    assert uaf.proof.get("win") == hex(want)
 
 
 def test_chainanalyzer_wires_up_format_string_driver():
