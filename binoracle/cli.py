@@ -589,6 +589,14 @@ def cmd_har(args, config):
     _write_if(args.output, out)
 
 
+def cmd_dotnet(args, config):
+    from .workflows.dotnetinspect import inspect_dotnet, render_dotnet
+    binary = _require_binary(args.binary)
+    out = render_dotnet(inspect_dotnet(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -942,6 +950,11 @@ def build_parser() -> argparse.ArgumentParser:
     hr.add_argument("binary", help="path to the .har file")
     hr.add_argument("-o", "--output")
     hr.set_defaults(func=cmd_har)
+
+    dn = sub.add_parser("dotnet", help="inspect a .NET/CLI managed assembly statically (metadata, tables, names)")
+    dn.add_argument("binary", help="path to the managed .dll/.exe")
+    dn.add_argument("-o", "--output")
+    dn.set_defaults(func=cmd_dotnet)
 
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")

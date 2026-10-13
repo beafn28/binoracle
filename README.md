@@ -174,6 +174,10 @@ Notes:
 - **Network captures (HAR)**: `binoracle har ./capture.har` reads a saved HTTP archive — the
   request/response inventory, hosts, and secrets exposed in URLs/headers/bodies (Authorization,
   api_key/token/password, JWT, AWS keys), heuristic and labelled. Also `inspect_har_capture`.
+- **.NET / CLI assemblies**: `binoracle dotnet ./app.dll` reads a managed PE statically (pefile to
+  locate the CLI header) — runtime/metadata version, the metadata streams, the metadata-table row
+  counts (Module/TypeDef/MethodDef/Assembly…) and a sample of the #Strings name heap. CIL method
+  bodies are not disassembled. Also the `inspect_dotnet_assembly` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

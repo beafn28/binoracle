@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_dotnet_assembly", "Lee un ensamblado .NET/CLI (PE gestionado) estaticamente: "
+       "version de runtime/metadata, streams, conteos de tablas de metadata (Module/TypeDef/"
+       "MethodDef/Assembly...) y una muestra del heap de nombres #Strings. No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al .dll/.exe gestionado"}}, ["binary"])
+def _h_dotnet(args):
+    from .workflows.dotnetinspect import inspect_dotnet, render_dotnet
+    b = _binary(args)
+    return render_dotnet(inspect_dotnet(b))
+
+
 @_tool("inspect_har_capture", "Lee una captura de red HAR (JSON) estaticamente: peticiones/"
        "respuestas, hosts, y SECRETOS expuestos (Authorization/Bearer, api_key/token/password, "
        "JWT, claves AWS) en URL/cabeceras/cuerpo. Heuristico; no descifra TLS.",

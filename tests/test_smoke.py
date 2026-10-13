@@ -459,6 +459,43 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_dotnet_metadata_parser_on_synthetic_root():
+    # Parsea un metadata root BSJB sintetico: version, streams, conteos de tablas y nombres.
+    import struct
+    from binoracle.workflows.dotnetinspect import parse_metadata
+    ver = b"v4.0.30319\x00"
+    ver = ver + b"\x00" * (((len(ver) + 3) & ~3) - len(ver))
+    valid = (1 << 0) | (1 << 6)  # Module, MethodDef
+    tilde = struct.pack("<IBBBBQQ", 0, 2, 0, 0, 1, valid, 0) + struct.pack("<II", 1, 3)
+    strings = b"\x00MyModule\x00Main\x00Program\x00"
+    head = struct.pack("<IHHI", 0x424A5342, 1, 1, 0) + struct.pack("<I", len(ver)) + ver
+    head += struct.pack("<H", 0) + struct.pack("<H", 2)
+    sh1 = b"#~\x00\x00"
+    sh2 = b"#Strings\x00\x00\x00\x00"
+    hdr_len = len(head) + 8 + len(sh1) + 8 + len(sh2)
+    off_t = hdr_len
+    off_s = off_t + len(tilde)
+    blob = (head + struct.pack("<II", off_t, len(tilde)) + sh1
+            + struct.pack("<II", off_s, len(strings)) + sh2 + tilde + strings)
+    r = parse_metadata(blob)
+    assert r["version"] == "v4.0.30319"
+    assert r["streams"] == ["#~", "#Strings"]
+    assert r["tables"] == {"Module": 1, "MethodDef": 3}
+    assert r["string_names"] == ["MyModule", "Main", "Program"]
+
+
+def test_dotnet_inspect_non_pe():
+    import os
+    from binoracle.workflows.dotnetinspect import inspect_dotnet, render_dotnet
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample no compilado")
+    r = inspect_dotnet(binp)
+    assert r["ok"] and r.get("is_dotnet") is False
+    assert isinstance(render_dotnet(r), str)
+
+
 def test_har_inspect_requests_and_secrets():
     import json
     import os
