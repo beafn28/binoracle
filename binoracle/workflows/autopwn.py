@@ -93,7 +93,11 @@ def autopwn(binary: str, config=None, store=None,
 
     # combo A: ret2win (build + sandbox verify)
     is_pie = str(mit.get("pic", "")).lower() in ("true", "1")
-    if want("ret2win") and win is not None:
+    canary_on = str(mit.get("canary", "")).lower() in ("true", "1")
+    # Un canary detiene el overflow lineal ANTES del `ret`, asi que el ret2win directo no puede
+    # funcionar: seria un intento de sandbox fallido garantizado. Con canary + win() la ruta
+    # correcta es el bypass por fuga (combo G, autocanary), no el ret2win directo.
+    if want("ret2win") and win is not None and not canary_on:
         log("[combo] ret2win: construyendo y verificando en sandbox..." + (" (PIE)" if is_pie else ""))
         try:
             if is_pie:
@@ -113,6 +117,8 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("ret2win", False, str(e)))
             log(f"[combo] ret2win error: {e}")
+    elif want("ret2win") and win is not None and canary_on:
+        log("[combo] ret2win: canary activo -> el overflow lineal se omite, se usa el bypass por fuga (combo canary)")
     elif want("ret2win"):
         log("[combo] ret2win: no hay funcion gift -> se omite")
 
@@ -240,7 +246,7 @@ def autopwn(binary: str, config=None, store=None,
 
     # combo G: stack-canary bypass by leak (canary present + a gift win()). autocanary leaks the
     # canary via a %s echo, then overflows past it to win().
-    if run and want("canary") and str(mit.get("canary", "")).lower() in ("true", "1") and win is not None:
+    if run and want("canary") and canary_on and win is not None:
         log("[combo] canary: fuga del canary + overflow a win (sandbox)...")
         try:
             from .autocanary import autocanary
