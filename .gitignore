@@ -20,3 +20,6 @@ samples/bin/
 
 # generated reports / scratch exploits
 binoracle_report.*
+
+# stray core dumps from crashing exploit processes (the `core` fixture is tracked explicitly)
+core.*
