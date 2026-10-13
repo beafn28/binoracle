@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_apk", "Lee un APK de Android (ZIP) estaticamente: DEX, librerias nativas por ABI, "
+       "framework (Flutter/React Native/Unity/Xamarin), firma (v1 JAR y bloque v2/v3) y digests "
+       "SHA-256 de los snapshots Flutter (libapp.so). No decodifica el AndroidManifest binario.",
+       {"binary": {"type": "string", "description": "ruta al .apk"}}, ["binary"])
+def _h_apk(args):
+    from .workflows.apkinspect import inspect_apk, render_apk
+    b = _binary(args)
+    return render_apk(inspect_apk(b))
+
+
 @_tool("inspect_macho", "Lee un binario Mach-O (macOS) estaticamente: arquitectura, tipo, "
        "segmentos y protecciones, dylibs enlazadas (LC_LOAD_DYLIB), entrypoint (LC_MAIN) y "
        "flags de mitigacion (PIE, pila ejecutable). Detecta binarios universales (fat). No ejecuta.",

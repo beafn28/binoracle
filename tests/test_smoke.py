@@ -459,6 +459,47 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_apk_inspect_on_synthetic_apk():
+    import os
+    import tempfile
+    import zipfile
+    from binoracle.workflows.apkinspect import inspect_apk, render_apk
+    p = tempfile.mktemp(suffix=".apk")
+    z = zipfile.ZipFile(p, "w")
+    z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00fakeAXML")
+    z.writestr("classes.dex", b"dex\n035\x00")
+    z.writestr("classes2.dex", b"dex\n035\x00")
+    z.writestr("lib/arm64-v8a/libapp.so", b"FLUTTERSNAP" * 10)
+    z.writestr("lib/arm64-v8a/libflutter.so", b"engine")
+    z.writestr("META-INF/CERT.RSA", b"cert")
+    z.close()
+    try:
+        r = inspect_apk(p)
+        assert r["ok"] and r["is_apk"] and r["has_manifest"]
+        assert r["dex"] == ["classes.dex", "classes2.dex"]
+        assert "Flutter" in r["frameworks"]
+        assert "arm64-v8a" in r["native_abis"]
+        assert "arm64-v8a/libapp.so" in r["flutter_snapshots"]
+        assert r["signing"]["v1_jar"] == ["META-INF/CERT.RSA"]
+        assert "APK" in render_apk(r)
+    finally:
+        os.remove(p)
+
+
+def test_apk_inspect_non_apk():
+    import os
+    import tempfile
+    from binoracle.workflows.apkinspect import inspect_apk
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"not a zip at all")
+    try:
+        r = inspect_apk(p)
+        assert r["ok"] and r["is_apk"] is False
+    finally:
+        os.remove(p)
+
+
 def test_macho_inspect_on_synthetic_binary():
     import os
     import struct

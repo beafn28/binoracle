@@ -182,6 +182,10 @@ Notes:
   architecture, file type, segments with protections (W+X flagged), linked dylibs, entry point and
   the mitigation flags (PIE, executable stack); fat/universal binaries are split into slices. Also
   the `inspect_macho` MCP tool.
+- **Android APKs**: `binoracle apk ./app.apk` reads the APK (a ZIP) statically — DEX files, native
+  libraries by ABI, the app framework (Flutter/React Native/Unity/Xamarin), signing (v1 JAR +
+  v2/v3 block) and SHA-256 digests of the Flutter snapshots (libapp.so). The binary
+  AndroidManifest.xml is detected but not decoded (needs Apktool). Also the `inspect_apk` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.
