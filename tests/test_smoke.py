@@ -437,6 +437,52 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_js_inspect_electron_bundle_and_sourcemap():
+    import os
+    import json as _json
+    import tempfile
+    from binoracle.workflows.jsinspect import inspect_js, render_js
+    d = tempfile.mkdtemp(prefix="binojs_")
+    try:
+        with open(os.path.join(d, "main.js"), "w") as f:
+            f.write("const {app, BrowserWindow, ipcMain} = require('electron');\n"
+                    "const cp = require('child_process');\n"
+                    "import axios from 'axios';\n"
+                    "ipcMain.handle('do-thing', () => {});\n"
+                    "ipcMain.on('ping', () => {});\n"
+                    "require('./util');\n")
+        with open(os.path.join(d, "preload.js"), "w") as f:
+            f.write("const {contextBridge, ipcRenderer} = require('electron');\n"
+                    "contextBridge.exposeInMainWorld('api', {});\n")
+        # a node_modules dir that must be skipped
+        os.makedirs(os.path.join(d, "node_modules", "axios"))
+        with open(os.path.join(d, "node_modules", "axios", "index.js"), "w") as f:
+            f.write("require('http');\n")
+        r = inspect_js(d)
+        assert r["ok"] and r["is_js"] and r["is_electron"]
+        assert r["file_count"] == 2                      # node_modules skipped
+        assert "axios" in r["packages"]
+        assert "http" not in r["packages"]               # from node_modules, skipped
+        assert "do-thing" in r["ipc_channels"] and "ping" in r["ipc_channels"]
+        assert "api" in r["context_bridge"]
+        assert any("child_process" in k for k in r["electron"])
+        out = render_js(r)
+        assert "Electron" in out and "do-thing" in out
+        # source map
+        mp = os.path.join(d, "bundle.js.map")
+        with open(mp, "w") as f:
+            _json.dump({"version": 3, "file": "bundle.js",
+                        "sources": ["webpack://app/src/index.js", "webpack://app/src/util.js"],
+                        "sourcesContent": ["//a", "//b"], "names": []}, f)
+        rm = inspect_js(mp)
+        assert rm["kind"] == "sourcemap" and rm["source_count"] == 2
+        assert rm["has_sources_content"] and rm["generator"] == "webpack"
+        assert "index.js" in render_js(rm)
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_dynamic_adb_frida_degrade():
     # El modulo dinamico es caller-supplied: sin adb/frida en PATH debe degradar con honestidad.
     import os

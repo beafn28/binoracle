@@ -282,6 +282,12 @@ Notes:
   bytes — the file/directory tree, the embedded `package.json` (name, version, `main` entry point,
   declared dependencies), the JavaScript modules and the per-file integrity blocks. `package.json`
   is sliced out by offset; JS is never executed or deminified. Also the `inspect_asar` MCP tool.
+- **JavaScript / Electron (deep)**: `binoracle js ./app` reads a `.js`, a `.js.map`, or an extracted
+  app directory statically — recovers original sources from **source maps** (and whether contents
+  are embedded, plus the generator), the **module import graph** (external packages vs relative),
+  the **Electron/IPC boundaries** (ipcMain/ipcRenderer channels, `contextBridge` exposures, preload,
+  `child_process`/shell), detected **routes**, and **native add-on** references. Heuristic, skips
+  `node_modules`. Also the `inspect_javascript` MCP tool.
 - **Embedded secrets / IOCs (any file)**: `binoracle secrets ./anything` extracts printable strings
   (ASCII + UTF-16LE) from any artifact and flags embedded URLs, hosts, IPs, e-mails, cloud/API
   credentials (AWS/GCP/Slack/GitHub/Stripe), JWTs, private-key PEM headers and high-entropy tokens.

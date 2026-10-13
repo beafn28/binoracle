@@ -248,6 +248,17 @@ def _h_ghidra(args):
     return render_caller("ghidra", ghidra_decompile(b, func=(args or {}).get("func")))
 
 
+@_tool("inspect_javascript", "Lee JavaScript/Electron estaticamente: source maps (fuentes "
+       "originales), imports de modulos (paquetes externos vs relativos), fronteras Electron/IPC "
+       "(ipcMain/ipcRenderer, contextBridge, preload, child_process), rutas y add-ons nativos. "
+       "Acepta un .js, un .js.map o un directorio de app. Heuristico; no ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta a .js / .js.map / directorio de app"}}, ["binary"])
+def _h_js(args):
+    from .workflows.jsinspect import inspect_js, render_js
+    b = (args or {}).get("binary") or ""
+    return render_js(inspect_js(b))
+
+
 @_tool("dynamic_adb", "Analisis RUNTIME de un dispositivo Android via adb (caller-supplied; SEPARADO "
        "del nucleo estatico; solo objetivos autorizados; salida no confiable). op: devices|packages|"
        "processes|logcat|getprop|apk-path. 'package' para apk-path, 'serial' para elegir dispositivo.",

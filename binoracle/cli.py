@@ -661,6 +661,17 @@ def cmd_pe(args, config):
     _write_if(args.output, out)
 
 
+def cmd_js(args, config):
+    from .workflows.jsinspect import inspect_js, render_js
+    target = args.binary
+    import os as _os
+    if not _os.path.exists(target):
+        _eprint(f"error: no existe {target}"); sys.exit(2)
+    out = render_js(inspect_js(target))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_dynamic(args, config):
     from .workflows import dynamic as dyn
     k = args.kind
@@ -1107,6 +1118,11 @@ def build_parser() -> argparse.ArgumentParser:
     pei.add_argument("binary", help="path to the .exe/.dll")
     pei.add_argument("-o", "--output")
     pei.set_defaults(func=cmd_pe)
+
+    jsp = sub.add_parser("js", help="inspect JavaScript/Electron statically (source maps, imports, IPC/Electron boundaries, native add-ons)")
+    jsp.add_argument("binary", help="path to a .js, a .js.map, or an extracted app directory")
+    jsp.add_argument("-o", "--output")
+    jsp.set_defaults(func=cmd_js)
 
     dy = sub.add_parser("dynamic", help="RUNTIME analysis (separate from the static core): adb device / frida / live browser — authorized targets only, caller-supplied")
     dy.add_argument("kind", choices=["adb-devices", "adb-packages", "adb-processes", "adb-logcat",
