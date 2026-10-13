@@ -589,6 +589,14 @@ def cmd_har(args, config):
     _write_if(args.output, out)
 
 
+def cmd_java(args, config):
+    from .workflows.jarinspect import inspect_jar, render_jar
+    binary = _require_binary(args.binary)
+    out = render_jar(inspect_jar(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_secrets(args, config):
     from .workflows.iocscan import scan_iocs, render_iocs
     binary = _require_binary(args.binary)
@@ -1017,6 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
     hr.add_argument("binary", help="path to the .har file")
     hr.add_argument("-o", "--output")
     hr.set_defaults(func=cmd_har)
+
+    jv = sub.add_parser("java", help="inspect a Java JAR or .class statically (manifest, classes, framework, bytecode version)")
+    jv.add_argument("binary", help="path to the .jar or .class")
+    jv.add_argument("-o", "--output")
+    jv.set_defaults(func=cmd_java)
 
     se = sub.add_parser("secrets", help="scan ANY artifact for embedded IOCs/secrets (URLs, creds, keys, high-entropy tokens)")
     se.add_argument("binary", help="path to any file")

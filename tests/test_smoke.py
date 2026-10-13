@@ -664,6 +664,19 @@ def test_identify_routes_formats():
         assert identify(ap)["routed"] == "apk"
         assert identify(plp)["routed"] == "plist"
         assert identify(arp)["routed"] == "asar"
+        clp = tempfile.mktemp(suffix=".class")
+        with open(clp, "wb") as f:
+            f.write(_build_class(major=61))
+        made.append(clp)
+        jrp = tempfile.mktemp(suffix=".jar")
+        import zipfile as _zf
+        z2 = _zf.ZipFile(jrp, "w")
+        z2.writestr("META-INF/MANIFEST.MF", "Main-Class: X\r\n")
+        z2.writestr("a/B.class", _build_class("a/B"))
+        z2.close()
+        made.append(jrp)
+        assert identify(clp)["routed"] == "class"
+        assert identify(jrp)["routed"] == "jar"
         if os.path.exists("samples/bin/ret2win"):
             r = identify("samples/bin/ret2win")
             assert r["routed"] == "elf" and "mitigacion" in render_identify(r).lower()
@@ -857,6 +870,74 @@ def test_plist_inspect_bundle_keys_and_privacy():
             assert "com.example.app" in out and "privacidad" in out.lower()
         finally:
             os.remove(p)
+
+
+def _build_class(this_name="com/example/Main", super_name="java/lang/Object", major=52):
+    # constant pool: 1=Utf8(this), 2=Class->1, 3=Utf8(super), 4=Class->3
+    def utf8(s):
+        b = s.encode("utf-8")
+        return bytes([1]) + len(b).to_bytes(2, "big") + b
+    cp = bytearray()
+    cp += utf8(this_name)                     # idx 1
+    cp += bytes([7]) + (1).to_bytes(2, "big")  # idx 2 Class -> 1
+    cp += utf8(super_name)                    # idx 3
+    cp += bytes([7]) + (3).to_bytes(2, "big")  # idx 4 Class -> 3
+    out = bytearray(b"\xca\xfe\xba\xbe")
+    out += (0).to_bytes(2, "big")             # minor
+    out += major.to_bytes(2, "big")           # major
+    out += (5).to_bytes(2, "big")             # cp_count = 5 (entries 1..4)
+    out += cp
+    out += (0x0021).to_bytes(2, "big")        # access_flags
+    out += (2).to_bytes(2, "big")             # this_class -> cp[2]
+    out += (4).to_bytes(2, "big")             # super_class -> cp[4]
+    out += (0).to_bytes(2, "big")             # interfaces_count
+    out += (0).to_bytes(2, "big")             # fields_count
+    out += (0).to_bytes(2, "big")             # methods_count
+    out += (0).to_bytes(2, "big")             # attributes_count
+    return bytes(out)
+
+
+def test_java_standalone_class():
+    import os
+    import tempfile
+    from binoracle.workflows.jarinspect import inspect_jar, render_jar
+    p = tempfile.mktemp(suffix=".class")
+    with open(p, "wb") as f:
+        f.write(_build_class(major=61))       # Java 17
+    try:
+        r = inspect_jar(p)
+        assert r["ok"] and r["kind"] == "class"
+        assert r["major"] == 61 and r["java_version"] == "17"
+        assert r["this_class"] == "com/example/Main"
+        assert r["super_class"] == "java/lang/Object"
+        assert "17" in render_jar(r)
+    finally:
+        os.remove(p)
+
+
+def test_java_jar_manifest_and_classes():
+    import os
+    import tempfile
+    import zipfile
+    from binoracle.workflows.jarinspect import inspect_jar, render_jar
+    p = tempfile.mktemp(suffix=".jar")
+    z = zipfile.ZipFile(p, "w")
+    z.writestr("META-INF/MANIFEST.MF",
+               "Manifest-Version: 1.0\r\nMain-Class: com.example.App\r\nCreated-By: test\r\n")
+    z.writestr("com/example/App.class", _build_class("com/example/App", major=52))
+    z.writestr("org/springframework/boot/Boot.class", _build_class("org/springframework/boot/Boot"))
+    z.close()
+    try:
+        r = inspect_jar(p)
+        assert r["ok"] and r["kind"] == "jar"
+        assert r["main_class"] == "com.example.App"
+        assert r["class_count"] == 2
+        assert "Spring" in r["frameworks"]
+        assert r["bytecode"]["java_version"] in ("8", "17")
+        out = render_jar(r)
+        assert "com.example.App" in out and "Spring" in out
+    finally:
+        os.remove(p)
 
 
 def test_ioc_scan_finds_secrets_and_urls():

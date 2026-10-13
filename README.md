@@ -136,7 +136,8 @@ Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fil
 
 `binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded
 reader — ELF (layout, or a core dump, or Go build-info), Mach-O, PE/.NET, WebAssembly, SQLite,
-Android APK, an Apple property-list, an Electron ASAR archive, or a HAR capture — and prints that
+Android APK, a Java JAR or .class, an Apple property-list, an Electron ASAR archive, or a HAR
+capture — and prints that
 reader's result. Also the `identify_artifact` MCP tool. The "reverse engineer anything" front
 door, with nothing executed.
 
@@ -218,6 +219,13 @@ Notes:
   libraries by ABI, the app framework (Flutter/React Native/Unity/Xamarin), signing (v1 JAR +
   v2/v3 block) and SHA-256 digests of the Flutter snapshots (libapp.so). The binary
   AndroidManifest.xml is detected but not decoded (needs Apktool). Also the `inspect_apk` MCP tool.
+- **Java (JAR / .class)**: `binoracle java ./app.jar` reads a JAR (a ZIP) statically — the
+  MANIFEST.MF (Main-Class, versions), the class/package inventory, the framework by package prefix
+  (Spring/Jakarta/Kotlin/Scala/Android), signing, and the bytecode major version → Java release.
+  Point it at a standalone `.class` and it reads the magic/version and class/super names from the
+  constant pool. Method bodies are not decompiled (needs CFR/Procyon). Also the `inspect_java` MCP
+  tool. (The `.class` magic `0xCAFEBABE` collides with Mach-O fat; detection disambiguates by the
+  bytecode version field.)
 - **Apple property-lists**: `binoracle plist ./Info.plist` reads a binary (bplist00) or XML plist
   with the built-in plistlib — bundle id, executable, versions, minimum OS, the URL schemes it
   registers and the privacy usage-description keys (`NS*UsageDescription`) that reveal what the app

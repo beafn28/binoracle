@@ -2,7 +2,8 @@
 
 One entry point that sniffs an artifact's magic/structure and routes to the matching grounded
 reader -- ELF (layout, or core dump, or Go build-info), Mach-O, PE/.NET, WebAssembly, SQLite,
-Android APK (ZIP), an Apple property-list, an Electron ASAR archive, or a HAR capture. Returns the
+Android APK (ZIP), a Java JAR or .class, an Apple property-list, an Electron ASAR archive, or a
+HAR capture. Returns the
 detected format and that reader's result. This is
 the "reverse engineer anything" front door: give it any file and it figures out what it is and what
 binoracle can say about it, with nothing executed."""
@@ -26,6 +27,10 @@ def detect_format(path: str) -> str:
         # ET_CORE is e_type==4 at offset 16 (little) / 17 (big)
         et = head[16] if head[5] == 1 else head[17]
         return "elf-core" if et == 4 else "elf"
+    # 0xCAFEBABE is BOTH a Java .class and a Mach-O fat binary; a .class has a bytecode major
+    # version (45..75) at offset 6-7, a fat binary has a small nfat_arch count there instead.
+    if head[:4] == b"\xca\xfe\xba\xbe" and 43 <= int.from_bytes(head[6:8], "big") <= 75:
+        return "class"
     if head[:4] in (b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe") \
             or head[:4] in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"):
         return "macho"
@@ -103,11 +108,19 @@ def identify(path: str) -> dict:
                 from .peinspect import inspect_pe
                 routed = "pe"
                 detail = inspect_pe(path)
+        elif fmt == "class":
+            from .jarinspect import inspect_jar
+            detail = inspect_jar(path)
         elif fmt == "zip":
             from .apkinspect import inspect_apk
             apk = inspect_apk(path)
-            routed = "apk" if apk.get("is_apk") else "zip"
-            detail = apk
+            if apk.get("is_apk"):
+                routed, detail = "apk", apk
+            else:
+                from .jarinspect import inspect_jar
+                jar = inspect_jar(path)
+                routed = "jar" if jar.get("kind") == "jar" else "zip"
+                detail = jar if jar.get("kind") == "jar" else apk
         elif fmt == "plist":
             from .plistinspect import inspect_plist
             detail = inspect_plist(path)
@@ -145,6 +158,7 @@ def render_identify(r: dict) -> str:
         "apk": ("apkinspect", "render_apk"), "zip": ("apkinspect", "render_apk"),
         "har": ("harinspect", "render_har"), "json": ("harinspect", "render_har"),
         "plist": ("plistinspect", "render_plist"), "asar": ("asarinspect", "render_asar"),
+        "class": ("jarinspect", "render_jar"), "jar": ("jarinspect", "render_jar"),
     }
     mod_fn = renderers.get(routed)
     if mod_fn:

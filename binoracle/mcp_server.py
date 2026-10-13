@@ -269,6 +269,17 @@ def _h_dotnet(args):
     return render_dotnet(inspect_dotnet(b))
 
 
+@_tool("inspect_java", "Lee un artefacto Java estaticamente: un JAR (ZIP) -> manifiesto "
+       "(Main-Class/versiones), inventario de clases/paquetes, framework (Spring/Jakarta/Kotlin/"
+       "Scala/Android), firma y version de bytecode; o un .class suelto -> magic/version y "
+       "clase/superclase del constant pool. No desensambla ni ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al .jar o .class"}}, ["binary"])
+def _h_java(args):
+    from .workflows.jarinspect import inspect_jar, render_jar
+    b = _binary(args)
+    return render_jar(inspect_jar(b))
+
+
 @_tool("scan_iocs", "Escanea CUALQUIER artefacto (ELF/PE/firmware/config/...) en busca de IOCs y "
        "secretos embebidos: URLs, hosts, IPs, emails, credenciales cloud/API (AWS/GCP/Slack/GitHub/"
        "Stripe), JWT, cabeceras PEM de clave privada y tokens de alta entropia. Heuristico; no "
