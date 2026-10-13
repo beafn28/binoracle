@@ -630,9 +630,9 @@ def cmd_train(args, config):
     print("\n" + render_training(rep, config.lang))
     pb = getattr(args, "export_playbook", None)
     if pb is not None:
-        dest = pb or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                  "binoracle", "kb", "verified-playbook.md")
-        n = export_playbook(rep, dest, config.lang)
+        from .workflows.exploit_trainer import default_playbook_path
+        dest = pb or default_playbook_path()
+        n = export_playbook(rep, dest or None, config.lang)
         print(f"\n[+] playbook: {n} tecnicas verificadas escritas en {dest}" if n
               else "\n[!] playbook no escrito (ninguna tecnica verificada)")
 
