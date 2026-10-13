@@ -180,13 +180,20 @@ def _enum_gadgets(binary: str) -> List[Gadget]:
         # budget is spent: the gadget list is best-effort (the verifiers find their own gadgets
         # via pwntools), so fewer-but-the-useful-ones under time pressure is the right trade.
         budget_s = float(os.environ.get("BINORACLE_GADGET_BUDGET", "40") or 40)
-        patterns = (["pop " + reg for reg in _ARG_REGS]           # rdi, rsi, rdx, rcx, r8, r9
-                    + ["syscall", "int 0x80", "leave"]            # execve / stack pivot
-                    + ["pop " + reg for reg in ("rax", "rbx", "rbp", "rsp")])
+        # ESSENTIAL gadgets are the ones the execve-syscall and ret2libc chains REQUIRE (SysV arg
+        # regs rdi/rsi/rdx, rax for the syscall number, and the syscall itself). These are scanned
+        # UNCONDITIONALLY -- never dropped by the budget -- so a slow/loaded host can't leave a
+        # required gadget unfound and silently skip verification. Previously all six arg-reg scans
+        # (incl. rcx/r8/r9, which no chain needs) ran before `syscall`, so under load the 40s budget
+        # was spent before `syscall` was ever scanned -> unmet_requirements=1 -> "no simulada".
+        essential = ["pop " + reg for reg in _ARG_REGS[:3]] + ["pop rax", "syscall"]  # rdi,rsi,rdx,rax,syscall
+        optional = (["pop " + reg for reg in _ARG_REGS[3:]]       # rcx,r8,r9: extra arg regs (6+ arg calls)
+                    + ["int 0x80", "leave"]                        # 32-bit syscall / stack pivot
+                    + ["pop " + reg for reg in ("rbx", "rbp", "rsp")])
         deadline = _time.time() + budget_s
-        for pat in patterns:
-            if _time.time() > deadline:
-                break                                             # keep what we have; don't blow the budget
+        for pat in essential + optional:
+            if pat not in essential and _time.time() > deadline:
+                break                                             # budget bounds only the OPTIONAL tail
             try:
                 raws = json.loads(r.cmd(f"/Rj {pat}") or "[]")
             except Exception:
