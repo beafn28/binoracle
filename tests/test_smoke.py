@@ -478,6 +478,41 @@ def test_caller_tools_degrade_when_absent():
         os.environ["PATH"] = old
 
 
+def test_caller_tool_apktool_manifest(tmp_path):
+    import os
+    import stat
+    from binoracle.workflows.callertools import apktool_manifest
+    old = os.environ.get("PATH", "")
+    # degrade
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        assert apktool_manifest("/tmp/x.apk")["available"] is False
+    finally:
+        os.environ["PATH"] = old
+    # run path: fake apktool that writes a decoded AndroidManifest.xml into the -o dir
+    fake = tmp_path / "apktool"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "out=\"\"\n"
+        "while [ $# -gt 0 ]; do if [ \"$1\" = \"-o\" ]; then out=\"$2\"; fi; shift; done\n"
+        "mkdir -p \"$out\"\n"
+        "cat > \"$out/AndroidManifest.xml\" <<'XML'\n"
+        "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"com.acme.app\">\n"
+        "  <uses-permission android:name=\"android.permission.INTERNET\"/>\n"
+        "  <application><activity android:name=\".Main\"/></application>\n"
+        "</manifest>\n"
+        "XML\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    os.environ["PATH"] = str(tmp_path) + os.pathsep + old
+    try:
+        r = apktool_manifest("/tmp/whatever.apk")
+        assert r["ok"] and r["package"] == "com.acme.app"
+        assert "android.permission.INTERNET" in r["permissions"]
+        assert ".Main" in r["components"].get("activity", [])
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_caller_tools_one_gadget_and_capinfos(tmp_path):
     import os
     import stat

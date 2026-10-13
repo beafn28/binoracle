@@ -181,6 +181,16 @@ def _h_fw(args):
     return render_caller("firmware", firmware_scan(b))
 
 
+@_tool("apk_manifest", "Decodifica el AndroidManifest.xml binario de un APK (paquete, permisos, "
+       "componentes) via Apktool SI el llamador lo tiene; si no, degrada. Integracion caller-supplied "
+       "(completa inspect_apk, que detecta el manifest pero no lo decodifica).",
+       {"binary": {"type": "string", "description": "ruta al .apk"}}, ["binary"])
+def _h_manifest(args):
+    from .workflows.callertools import apktool_manifest, render_caller
+    b = _binary(args)
+    return render_caller("manifest", apktool_manifest(b))
+
+
 @_tool("one_gadget", "Lista los 'magic gadgets' (una sola direccion que lanza shell) de una libc, "
        "via one_gadget SI el llamador lo tiene; si no, degrada. Integracion caller-supplied.",
        {"binary": {"type": "string", "description": "ruta a la libc (libc.so.6)"}}, ["binary"])

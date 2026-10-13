@@ -123,9 +123,13 @@ shell), bounded, and treats its output as untrusted:
 binoracle caller-tool wat ./mod.wasm        # WAT disassembly via WABT (wasm2wat)
 binoracle caller-tool pcap ./cap.pcap       # protocol-hierarchy summary via TShark
 binoracle caller-tool firmware ./fw.bin     # signature scan via Binwalk (no extraction)
+binoracle caller-tool one_gadget ./libc.so.6  # magic-gadget offsets via one_gadget
+binoracle caller-tool capinfos ./cap.pcap   # capture file metadata via capinfos
+binoracle caller-tool manifest ./app.apk    # decode AndroidManifest.xml via Apktool
 ```
 
-Also the `wasm_to_wat`, `pcap_summary` and `firmware_scan` MCP tools.
+Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fileinfo` and
+`apk_manifest` MCP tools.
 
 ## Reverse engineer anything (one entry point)
 

@@ -625,7 +625,8 @@ def cmd_caller_tool(args, config):
     from .workflows import callertools as ct
     binary = _require_binary(args.binary)
     fn = {"wat": ct.wat_disassemble, "pcap": ct.pcap_summary, "firmware": ct.firmware_scan,
-          "one_gadget": ct.one_gadget, "capinfos": ct.pcap_fileinfo}[args.kind]
+          "one_gadget": ct.one_gadget, "capinfos": ct.pcap_fileinfo,
+          "manifest": ct.apktool_manifest}[args.kind]
     out = ct.render_caller(args.kind, fn(binary))
     print(out)
     _write_if(args.output, out)
@@ -1014,8 +1015,8 @@ def build_parser() -> argparse.ArgumentParser:
     pei.set_defaults(func=cmd_pe)
 
     ct = sub.add_parser("caller-tool", help="optional caller-supplied integrations (wat/pcap/firmware); degrade if tool absent")
-    ct.add_argument("kind", choices=["wat", "pcap", "firmware", "one_gadget", "capinfos"])
-    ct.add_argument("binary", help="path to the artifact (.wasm / .pcap / firmware / libc)")
+    ct.add_argument("kind", choices=["wat", "pcap", "firmware", "one_gadget", "capinfos", "manifest"])
+    ct.add_argument("binary", help="path to the artifact (.wasm / .pcap / firmware / libc / .apk)")
     ct.add_argument("-o", "--output")
     ct.set_defaults(func=cmd_caller_tool)
 

@@ -17,6 +17,7 @@ _INSTALL = {
     "capinfos": "parte de Wireshark/TShark (apt install tshark)",
     "binwalk": "Binwalk (pip install binwalk / apt install binwalk)",
     "one_gadget": "one_gadget (gem install one_gadget): magic gadgets de una libc",
+    "apktool": "Apktool (https://apktool.org): decodifica el AndroidManifest.xml binario y recursos",
 }
 
 
@@ -103,6 +104,46 @@ def pcap_fileinfo(pcap_path: str, timeout: int = 30) -> dict:
             "limitations": ["salida de capinfos"]}
 
 
+def apktool_manifest(apk_path: str, timeout: int = 120) -> dict:
+    """Decode the binary AndroidManifest.xml (package, permissions, components) via Apktool. Runs
+    into a throwaway temp dir (-s skips DEX disassembly); the dir is removed afterwards."""
+    import shutil as _sh
+    import tempfile
+    import os
+    if _sh.which("apktool") is None:
+        return _missing("apktool")
+    tmp = tempfile.mkdtemp(prefix="binoracle_apktool_")
+    try:
+        r = run_caller_tool(["apktool", "d", "-f", "-s", "-o", tmp, apk_path], timeout)
+        if not r.get("ok"):
+            return r
+        mpath = os.path.join(tmp, "AndroidManifest.xml")
+        if not os.path.exists(mpath):
+            return {"ok": False, "available": True, "tool": "apktool",
+                    "note": "apktool no produjo AndroidManifest.xml"}
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(mpath)
+        root = tree.getroot()
+        ns = "{http://schemas.android.com/apk/res/android}"
+        pkg = root.get("package")
+        perms = [e.get(ns + "name") for e in root.iter("uses-permission") if e.get(ns + "name")]
+        comps = {"activity": [], "service": [], "receiver": [], "provider": []}
+        app = root.find("application")
+        if app is not None:
+            for tag in comps:
+                for e in app.iter(tag):
+                    nm = e.get(ns + "name")
+                    if nm:
+                        comps[tag].append(nm)
+        return {"ok": True, "available": True, "tool": "apktool", "package": pkg,
+                "permissions": perms, "components": {k: v for k, v in comps.items() if v},
+                "limitations": ["decodificado por Apktool en un dir temporal (eliminado); solo manifest"]}
+    except Exception as e:
+        return {"ok": False, "available": True, "tool": "apktool", "note": f"fallo al decodificar: {e}"}
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 def render_caller(kind: str, r: dict) -> str:
     out = [f"## Integracion caller-supplied: {kind}\n"]
     if not r.get("ok"):
@@ -124,6 +165,13 @@ def render_caller(kind: str, r: dict) -> str:
         out.append("- capinfos OK")
         for k, v in (r.get("info") or {}).items():
             out.append(f"  - {k}: {v}")
+    elif kind == "manifest":
+        out.append(f"- Apktool OK: paquete `{r.get('package')}`")
+        perms = r.get("permissions") or []
+        if perms:
+            out.append(f"- permisos ({len(perms)}): " + ", ".join(perms[:30]))
+        for tag, items in (r.get("components") or {}).items():
+            out.append(f"- {tag} ({len(items)}): " + ", ".join(items[:12]))
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)
