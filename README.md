@@ -48,6 +48,7 @@ the agent's hard-won, execution-verified playbook ships with the product. The se
 | ret2win on PIE | NX + PIE | resolves the PIE base, jumps to win() |
 | ROP / ret2syscall (static/PIE) | NX (+ PIE) | builds an `execve('/bin/sh')`/ret2libc chain, spawns a shell |
 | ret2libc with leak | NX + ASLR (dynamic) | leaks libc (puts@GOT), computes the base, `system('/bin/sh')` |
+| ret2dlresolve (no leak) | NX, dynamic no-PIE, Partial RELRO | forges the linker's resolver structures → `system('/bin/sh')` with **no libc leak** |
 | format-string (Partial RELRO) | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` |
 | format-string (Full RELRO) | NX + PIE + Full RELRO | GOT is read-only → ret2system by hijacking printf's saved return on the stack |
 | stack-canary bypass | NX + **stack canary** | leaks the canary (via a `%s` echo *or* a `printf(input)` format string), rewrites it in place, overflows past it to win() |

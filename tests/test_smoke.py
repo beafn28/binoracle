@@ -459,6 +459,52 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_autodlresolve_verifies_no_leak_shell():
+    # Verificacion POSITIVA de ret2dlresolve: shell SIN leak de libc forjando el resolver dinamico,
+    # en el sample `dlresolve` (dinamico, no-PIE, Partial RELRO, sin win/system). Se auto-salta
+    # donde el sandbox nativo no aplica o el binario no esta compilado.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/dlresolve"
+    if not os.path.exists(binp):
+        pytest.skip("sample dlresolve no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox nativo no disponible: {why}")
+    from binoracle.workflows.autodlresolve import autodlresolve
+    r = autodlresolve(binp)
+    assert r.get("ok")
+    # En glibc < 2.35 (o con la libc antigua que trae un reto) verifica shell; aqui (glibc moderno)
+    # pwntools igualmente lo logra. Exigimos shell verificada en el sample preparado.
+    assert r.get("verified"), f"ret2dlresolve no verificado: {r.get('note')}"
+    assert "data=" in (r.get("detail") or "")
+
+
+def test_autodlresolve_not_applicable_on_pie():
+    # ret2dlresolve no aplica a PIE (direcciones aleatorias) -> degrada limpio sin afirmar shell.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/ret2win_pie"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win_pie no compilado")
+    ok, _ = native_available(binp)
+    if not ok:
+        pytest.skip("sandbox nativo no disponible")
+    from binoracle.workflows.autodlresolve import autodlresolve
+    r = autodlresolve(binp)
+    assert r.get("ok") and not r.get("verified")
+
+
+def test_autodlresolve_degrades_cleanly():
+    # Ruta inexistente -> degradacion limpia (ok=False + nota) sin arrancar nada.
+    from binoracle.workflows.autodlresolve import autodlresolve, render_dlresolve
+    r = autodlresolve("/nonexistent/dir/dlresolve")
+    assert isinstance(r, dict) and r.get("ok") is False and r.get("note")
+    assert isinstance(render_dlresolve(r), str) and render_dlresolve(r)
+
+
 def test_chainanalyzer_canary_chain_builds():
     # La cadena determinista 'canary bypass' debe construirse (sin sandbox) cuando hay canary + win,
     # ser factible, y NO arrastrar el break-point de canary (su verificador lo rompe por diseno).
