@@ -189,6 +189,10 @@ Notes:
   architecture, file type, segments with protections (W+X flagged), linked dylibs, entry point and
   the mitigation flags (PIE, executable stack); fat/universal binaries are split into slices. Also
   the `inspect_macho` MCP tool.
+- **PE (Windows)**: `binoracle pe ./app.exe` reads a PE statically (pefile) — architecture, sections
+  with Shannon entropy (packing hint), the DllCharacteristics mitigations (ASLR, DEP/NX, Control
+  Flow Guard, SafeSEH, high-entropy ASLR), the imported DLLs, and a capability map of imports
+  (process/network/crypto/injection/registry/anti-debug). Also the `inspect_pe` MCP tool.
 - **Android APKs**: `binoracle apk ./app.apk` reads the APK (a ZIP) statically — DEX files, native
   libraries by ABI, the app framework (Flutter/React Native/Unity/Xamarin), signing (v1 JAR +
   v2/v3 block) and SHA-256 digests of the Flutter snapshots (libapp.so). The binary

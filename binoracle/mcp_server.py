@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_pe", "Lee un PE de Windows (EXE/DLL) estaticamente: arquitectura, secciones con "
+       "entropia (heuristica de packing), mitigaciones (ASLR/DEP/CFG/SafeSEH), imports y un mapa "
+       "de capacidades (proceso/red/cripto/inyeccion/registro/anti-debug). No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al PE (.exe/.dll)"}}, ["binary"])
+def _h_pe(args):
+    from .workflows.peinspect import inspect_pe, render_pe
+    b = _binary(args)
+    return render_pe(inspect_pe(b))
+
+
 @_tool("identify_artifact", "Detecta el formato de CUALQUIER fichero (ELF/core/Mach-O/PE·.NET/WASM/"
        "SQLite/APK/HAR/Go) y lo enruta al lector adecuado de binoracle, devolviendo su analisis. "
        "La puerta de entrada 'reverse engineer anything'. No ejecuta nada.",

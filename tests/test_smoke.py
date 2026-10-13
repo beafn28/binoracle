@@ -459,6 +459,46 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_pe_mitigations_decoder():
+    from binoracle.workflows.peinspect import decode_mitigations
+    m = decode_mitigations(0x0040 | 0x0100 | 0x4000)   # ASLR + DEP + CFG
+    assert m["aslr_dynamic_base"] and m["dep_nx"] and m["control_flow_guard"]
+    assert not m["no_seh"] and not m["high_entropy_va"]
+
+
+def test_pe_inspect_on_real_pe_if_present():
+    import glob
+    import os
+    import pytest
+    from binoracle.workflows.peinspect import inspect_pe, render_pe
+    cands = []
+    for root in ("/usr", "/opt"):
+        cands += glob.glob(os.path.join(root, "**", "*.dll"), recursive=True)[:50]
+        cands += glob.glob(os.path.join(root, "**", "*.exe"), recursive=True)[:50]
+    pe = None
+    for c in cands:
+        r = inspect_pe(c)
+        if r.get("is_pe"):
+            pe = r
+            break
+    if pe is None:
+        pytest.skip("sin PE real en el sistema")
+    assert pe["arch"] and isinstance(pe["mitigations"], dict)
+    assert pe["sections"] and all("entropy" in s for s in pe["sections"])
+    assert "PE" in render_pe(pe)
+
+
+def test_pe_inspect_non_pe():
+    import os
+    from binoracle.workflows.peinspect import inspect_pe
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample no compilado")
+    r = inspect_pe(binp)
+    assert r["ok"] and r["is_pe"] is False
+
+
 def test_identify_routes_formats():
     # El identificador unificado debe detectar y enrutar cada formato al lector correcto.
     import os

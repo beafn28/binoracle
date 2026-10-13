@@ -613,6 +613,14 @@ def cmd_apk(args, config):
     _write_if(args.output, out)
 
 
+def cmd_pe(args, config):
+    from .workflows.peinspect import inspect_pe, render_pe
+    binary = _require_binary(args.binary)
+    out = render_pe(inspect_pe(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_identify(args, config):
     from .workflows.identify import identify, render_identify
     binary = _require_binary(args.binary)
@@ -989,6 +997,11 @@ def build_parser() -> argparse.ArgumentParser:
     ak.add_argument("binary", help="path to the .apk file")
     ak.add_argument("-o", "--output")
     ak.set_defaults(func=cmd_apk)
+
+    pei = sub.add_parser("pe", help="inspect a Windows PE statically (mitigations, sections, imports, capabilities)")
+    pei.add_argument("binary", help="path to the .exe/.dll")
+    pei.add_argument("-o", "--output")
+    pei.set_defaults(func=cmd_pe)
 
     idf = sub.add_parser("identify", help="detect any artifact's format and route it to the right reader")
     idf.add_argument("binary", help="path to any file")

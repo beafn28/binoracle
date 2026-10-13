@@ -85,8 +85,13 @@ def identify(path: str) -> dict:
         elif fmt == "pe":
             from .dotnetinspect import inspect_dotnet
             dn = inspect_dotnet(path)
-            routed = "pe-dotnet" if dn.get("is_dotnet") else "pe"
-            detail = dn
+            if dn.get("is_dotnet"):
+                routed = "pe-dotnet"
+                detail = dn
+            else:
+                from .peinspect import inspect_pe
+                routed = "pe"
+                detail = inspect_pe(path)
         elif fmt == "zip":
             from .apkinspect import inspect_apk
             apk = inspect_apk(path)
@@ -119,7 +124,7 @@ def render_identify(r: dict) -> str:
         "elf-core": ("coredump", "render_core"), "elf": ("elflayout", "render_elf"),
         "elf-go": ("goinspect", "render_go"), "macho": ("machoinspect", "render_macho"),
         "wasm": ("wasminspect", "render_wasm"), "sqlite": ("sqliteinspect", "render_sqlite"),
-        "pe-dotnet": ("dotnetinspect", "render_dotnet"), "pe": ("dotnetinspect", "render_dotnet"),
+        "pe-dotnet": ("dotnetinspect", "render_dotnet"), "pe": ("peinspect", "render_pe"),
         "apk": ("apkinspect", "render_apk"), "zip": ("apkinspect", "render_apk"),
         "har": ("harinspect", "render_har"), "json": ("harinspect", "render_har"),
     }
