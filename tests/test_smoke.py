@@ -478,6 +478,35 @@ def test_caller_tools_degrade_when_absent():
         os.environ["PATH"] = old
 
 
+def test_caller_tool_jadx_decompile(tmp_path):
+    import os
+    import stat
+    from binoracle.workflows.callertools import jadx_decompile
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        assert jadx_decompile("/tmp/x.apk")["available"] is False
+    finally:
+        os.environ["PATH"] = old
+    # fake jadx: writes a couple of .java files into the -d output dir
+    fake = tmp_path / "jadx"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "out=\"\"\n"
+        "while [ $# -gt 0 ]; do if [ \"$1\" = \"-d\" ]; then out=\"$2\"; fi; shift; done\n"
+        "mkdir -p \"$out/sources/com/acme\"\n"
+        "echo 'class Main {}' > \"$out/sources/com/acme/Main.java\"\n"
+        "echo 'class Api {}' > \"$out/sources/com/acme/Api.java\"\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    os.environ["PATH"] = str(tmp_path) + os.pathsep + old
+    try:
+        r = jadx_decompile("/tmp/whatever.apk")
+        assert r["ok"] and r["java_file_count"] == 2
+        assert "com.acme.Main" in r["classes"] and "com.acme.Api" in r["classes"]
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_caller_tool_apktool_manifest(tmp_path):
     import os
     import stat

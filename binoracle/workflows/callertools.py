@@ -18,6 +18,7 @@ _INSTALL = {
     "binwalk": "Binwalk (pip install binwalk / apt install binwalk)",
     "one_gadget": "one_gadget (gem install one_gadget): magic gadgets de una libc",
     "apktool": "Apktool (https://apktool.org): decodifica el AndroidManifest.xml binario y recursos",
+    "jadx": "JADX (https://github.com/skylot/jadx): decompila DEX a codigo Java",
 }
 
 
@@ -144,6 +145,43 @@ def apktool_manifest(apk_path: str, timeout: int = 120) -> dict:
         _sh.rmtree(tmp, ignore_errors=True)
 
 
+def jadx_decompile(apk_path: str, timeout: int = 180) -> dict:
+    """Decompile an APK's DEX to Java via JADX (a decompiler -- it does not run the app). Runs into
+    a throwaway temp dir (--no-res, no deobfuscation) and returns a summary of the recovered sources
+    (count + sample class paths); the dir is removed afterwards."""
+    import os
+    import shutil as _sh
+    import tempfile
+    if _sh.which("jadx") is None:
+        return _missing("jadx")
+    tmp = tempfile.mkdtemp(prefix="binoracle_jadx_")
+    try:
+        r = run_caller_tool(["jadx", "--no-res", "-d", tmp, apk_path], timeout)
+        # jadx returns non-zero on partial failures but still writes sources; don't hard-fail on code
+        if not r.get("available"):
+            return r
+        src_root = os.path.join(tmp, "sources")
+        java = []
+        for root, _dirs, files in os.walk(src_root if os.path.isdir(src_root) else tmp):
+            for fn in files:
+                if fn.endswith(".java"):
+                    rel = os.path.relpath(os.path.join(root, fn), tmp)
+                    java.append(rel)
+                    if len(java) >= 5000:
+                        break
+            if len(java) >= 5000:
+                break
+        classes = sorted(p.replace("sources/", "").replace("/", ".")[:-5] for p in java)
+        return {"ok": True, "available": True, "tool": "jadx", "java_file_count": len(java),
+                "classes": classes[:80],
+                "limitations": ["decompilado por JADX en un dir temporal (eliminado); muestra de clases; "
+                                "JADX decompila, no ejecuta la app"]}
+    except Exception as e:
+        return {"ok": False, "available": True, "tool": "jadx", "note": f"fallo al decompilar: {e}"}
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 def render_caller(kind: str, r: dict) -> str:
     out = [f"## Integracion caller-supplied: {kind}\n"]
     if not r.get("ok"):
@@ -172,6 +210,10 @@ def render_caller(kind: str, r: dict) -> str:
             out.append(f"- permisos ({len(perms)}): " + ", ".join(perms[:30]))
         for tag, items in (r.get("components") or {}).items():
             out.append(f"- {tag} ({len(items)}): " + ", ".join(items[:12]))
+    elif kind == "jadx":
+        out.append(f"- JADX OK: {r.get('java_file_count')} ficheros .java")
+        for c in (r.get("classes") or [])[:40]:
+            out.append(f"  - {c}")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

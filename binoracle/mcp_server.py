@@ -181,6 +181,16 @@ def _h_fw(args):
     return render_caller("firmware", firmware_scan(b))
 
 
+@_tool("apk_decompile", "Decompila el DEX de un APK a codigo Java via JADX (un decompilador: no "
+       "ejecuta la app) SI el llamador lo tiene; si no, degrada. Devuelve un resumen de clases "
+       "recuperadas. Integracion caller-supplied.",
+       {"binary": {"type": "string", "description": "ruta al .apk"}}, ["binary"])
+def _h_jadx(args):
+    from .workflows.callertools import jadx_decompile, render_caller
+    b = _binary(args)
+    return render_caller("jadx", jadx_decompile(b))
+
+
 @_tool("apk_manifest", "Decodifica el AndroidManifest.xml binario de un APK (paquete, permisos, "
        "componentes) via Apktool SI el llamador lo tiene; si no, degrada. Integracion caller-supplied "
        "(completa inspect_apk, que detecta el manifest pero no lo decodifica).",

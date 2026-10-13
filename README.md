@@ -126,10 +126,11 @@ binoracle caller-tool firmware ./fw.bin     # signature scan via Binwalk (no ext
 binoracle caller-tool one_gadget ./libc.so.6  # magic-gadget offsets via one_gadget
 binoracle caller-tool capinfos ./cap.pcap   # capture file metadata via capinfos
 binoracle caller-tool manifest ./app.apk    # decode AndroidManifest.xml via Apktool
+binoracle caller-tool jadx ./app.apk        # decompile DEX to Java via JADX
 ```
 
-Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fileinfo` and
-`apk_manifest` MCP tools.
+Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fileinfo`,
+`apk_manifest` and `apk_decompile` MCP tools.
 
 ## Reverse engineer anything (one entry point)
 
