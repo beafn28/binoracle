@@ -16,8 +16,8 @@ _OPS = {0xF1: "CALL", 0xF2: "CALLCODE", 0xF4: "DELEGATECALL", 0xFA: "STATICCALL"
 
 
 def _load_bytecode(path: str):
-    with open(path, "rb") as f:
-        raw = f.read()
+    from ._artifact import read_bounded
+    raw = read_bounded(path)
     stripped = raw.strip()
     # accept a hex string (optionally 0x-prefixed) or raw bytes
     text = stripped.decode("ascii", "ignore") if stripped else ""

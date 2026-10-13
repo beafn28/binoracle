@@ -114,9 +114,11 @@ def _parse_exports(payload: bytes):
 def inspect_wasm(path: str) -> dict:
     """Parse a WASM module statically. Returns {ok, is_wasm, version, sections, types, imports,
     exports, ...} or {is_wasm: False}."""
+    from ._artifact import read_bounded, ArtifactTooLarge
     try:
-        with open(path, "rb") as f:
-            data = f.read()
+        data = read_bounded(path)
+    except ArtifactTooLarge as e:
+        return {"ok": False, "is_wasm": False, "note": str(e)}
     except Exception as e:
         return {"ok": False, "is_wasm": False, "note": f"no se pudo leer: {e}"}
     if len(data) < 8 or data[:4] != b"\x00asm":

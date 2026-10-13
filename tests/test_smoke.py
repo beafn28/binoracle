@@ -1062,6 +1062,34 @@ def test_coredump_non_core_is_rejected():
     assert r["ok"] and r["is_core"] is False and r.get("note")
 
 
+def test_artifact_size_guard_degrades():
+    # Los lectores que leen el fichero completo deben rechazar artefactos sobre el limite, honesto.
+    import importlib
+    import os
+    import tempfile
+    os.environ["BINORACLE_MAX_ARTIFACT_BYTES"] = "16"
+    try:
+        import binoracle.workflows._artifact as a
+        importlib.reload(a)
+        from binoracle.workflows._artifact import read_bounded, ArtifactTooLarge
+        p = tempfile.mktemp()
+        with open(p, "wb") as f:
+            f.write(b"A" * 100)
+        try:
+            raised = False
+            try:
+                read_bounded(p)
+            except ArtifactTooLarge:
+                raised = True
+            assert raised
+        finally:
+            os.remove(p)
+    finally:
+        os.environ.pop("BINORACLE_MAX_ARTIFACT_BYTES", None)
+        import binoracle.workflows._artifact as a
+        importlib.reload(a)
+
+
 def test_goinspect_parses_inline_buildinfo():
     # Parser de build-info Go sobre un blob INLINE sintetico (sin toolchain de Go): debe extraer
     # version, modulo principal, una dependencia con replacement y un build setting.

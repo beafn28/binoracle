@@ -41,9 +41,11 @@ def _scan_secrets(where: str, text: str, out: list):
 def inspect_har(path: str, max_entries: int = 500) -> dict:
     """Parse a HAR capture. Returns {ok, is_har, entries, hosts, methods, status_codes, secrets}."""
     import json
+    from ._artifact import read_bounded, ArtifactTooLarge
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            doc = json.load(f)
+        doc = json.loads(read_bounded(path).decode("utf-8", "replace"))
+    except ArtifactTooLarge as e:
+        return {"ok": False, "is_har": False, "note": str(e)}
     except Exception as e:
         return {"ok": True, "is_har": False, "note": f"no es JSON HAR valido: {e}"}
     log = doc.get("log") if isinstance(doc, dict) else None

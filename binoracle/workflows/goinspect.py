@@ -120,9 +120,11 @@ def _parse_module_text(text: str) -> dict:
 def inspect_go(path: str) -> dict:
     """Read a binary's Go build info. Returns {is_go, go_version, module..., encoding, ...} or
     {is_go: False} when no build-info blob is present. Never raises on a normal missing blob."""
+    from ._artifact import read_bounded, ArtifactTooLarge
     try:
-        with open(path, "rb") as f:
-            data = f.read()
+        data = read_bounded(path)
+    except ArtifactTooLarge as e:
+        return {"ok": False, "is_go": False, "note": str(e)}
     except Exception as e:
         return {"ok": False, "is_go": False, "note": f"no se pudo leer: {e}"}
     i = data.find(MAGIC)
