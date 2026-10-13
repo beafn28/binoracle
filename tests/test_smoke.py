@@ -437,6 +437,55 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_macho_objc_swift_metadata():
+    import os
+    import struct
+    import tempfile
+    from binoracle.workflows.machoinspect import inspect_macho, render_macho
+    names = b"Foo\x00Bar\x00Baz\x00"            # __objc_classname C-strings
+    sels = b"init\x00doThing:\x00"              # __objc_methname C-strings
+    HDR = 32
+    nsects = 4
+    cmdsize = 72 + nsects * 80
+    data_off = HDR + cmdsize                     # file region after the load commands
+    # section file offsets (within data we append below)
+    name_off = data_off
+    sel_off = name_off + len(names)
+    classlist_off = sel_off + len(sels)          # content irrelevant; only size is read
+    swift_off = classlist_off
+    blob = names + sels
+    # Mach-O 64 header: magic, cputype x86_64, cpusub, filetype DYLIB(6), ncmds=1, sizeofcmds, flags PIE, rsvd
+    hdr = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 6, 1, cmdsize, 0x200000, 0)
+    seg = struct.pack("<II16sQQQQiiII", 0x19, cmdsize, b"__DATA", 0x2000, 0x4000, data_off,
+                      len(blob), 3, 3, nsects, 0)
+
+    def sect(name, addr, size, off):
+        return struct.pack("<16s16sQQIIIIIIII", name, b"__DATA", addr, size, off,
+                           0, 0, 0, 0, 0, 0, 0)
+    sects = (sect(b"__objc_classname", 0x2000, len(names), name_off)
+             + sect(b"__objc_methname", 0x2100, len(sels), sel_off)
+             + sect(b"__objc_classlist", 0x2200, 3 * 8, classlist_off)   # 3 class pointers
+             + sect(b"__swift5_types", 0x2300, 2 * 4, swift_off))        # 2 type descriptors
+    macho = hdr + seg + sects + blob
+    p = tempfile.mktemp(suffix=".macho")
+    with open(p, "wb") as f:
+        f.write(macho)
+    try:
+        r = inspect_macho(p)
+        assert r["ok"] and r["is_macho"]
+        im = r["images"][0]
+        objc = im["objc"]
+        assert objc["present"] and objc["class_count"] == 3
+        assert set(objc["classes"]) == {"Foo", "Bar", "Baz"}
+        assert "doThing:" in objc["selectors"]
+        sw = im["swift"]
+        assert sw["present"] and sw["type_count"] == 2
+        out = render_macho(r)
+        assert "Obj-C" in out and "Swift" in out and "Foo" in out
+    finally:
+        os.remove(p)
+
+
 def test_ghidra_decompile_degrades_and_parses():
     import os
     from binoracle.workflows.callertools import ghidra_decompile, parse_ghidra_pseudocode, render_caller

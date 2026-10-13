@@ -3,7 +3,11 @@
 Parses a Mach-O image header and its load commands from bytes -- no execution. Reports the CPU
 architecture, file type (executable/dylib/bundle), the segments with their protections (flagging
 write+execute), the linked dynamic libraries (LC_LOAD_DYLIB), the entry point (LC_MAIN) and the
-header mitigation flags (PIE, stack-exec via the allow-stack-exec/no-heap-exec bits). Fat (universal)
+header mitigation flags (PIE, stack-exec via the allow-stack-exec/no-heap-exec bits). It also reads
+the section table and surfaces Objective-C metadata (class and selector names from __objc_classname/
+__objc_methname, class/protocol/category counts from the __objc_*list pointer sections) and Swift
+metadata (presence and descriptor counts of the __swift5_* sections) -- grounded names and counts,
+without walking the Obj-C class hierarchy (that needs VM->offset resolution). Fat (universal)
 binaries are detected and their slices listed. Design adapted from REA's Mach-O tooling
 (morluto/rea, MIT); re-implemented in Python."""
 from __future__ import annotations
@@ -42,7 +46,7 @@ def _one_macho(data: bytes, base: int, magic: int) -> dict:
     o += 24
     if bits == "64":
         o += 4  # reserved
-    segments, dylibs, entry, uuid = [], [], None, None
+    segments, dylibs, entry, uuid, sections = [], [], None, None, []
     for _ in range(ncmds):
         if o + 8 > len(data):
             break
@@ -56,11 +60,28 @@ def _one_macho(data: bytes, base: int, magic: int) -> dict:
             if is64:
                 vmaddr, vmsize = struct.unpack_from(e + "QQ", body, 24)
                 maxprot, initprot = struct.unpack_from(e + "ii", body, 24 + 32)
+                nsects = struct.unpack_from(e + "I", body, 24 + 40)[0]
+                shdr, ssz = 72, 80
             else:
                 vmaddr, vmsize = struct.unpack_from(e + "II", body, 24)
                 maxprot, initprot = struct.unpack_from(e + "ii", body, 24 + 16)
+                nsects = struct.unpack_from(e + "I", body, 24 + 24)[0]
+                shdr, ssz = 56, 68
             perms = ("r" if initprot & 1 else "-") + ("w" if initprot & 2 else "-") + ("x" if initprot & 4 else "-")
             segments.append({"name": name, "vmaddr": vmaddr, "vmsize": vmsize, "perms": perms})
+            # secciones del segmento (para Obj-C/Swift metadata): sectname, addr, offset, size
+            for si in range(min(nsects, 256)):
+                so = shdr + si * ssz
+                if so + ssz > len(body):
+                    break
+                sect = body[so:so + 16].split(b"\x00")[0].decode("ascii", "replace")
+                if is64:
+                    saddr, ssize = struct.unpack_from(e + "QQ", body, so + 32)
+                    soff = struct.unpack_from(e + "I", body, so + 48)[0]
+                else:
+                    saddr, ssize = struct.unpack_from(e + "II", body, so + 32)
+                    soff = struct.unpack_from(e + "I", body, so + 40)[0]
+                sections.append({"sect": sect, "seg": name, "addr": saddr, "offset": soff, "size": ssize})
         elif cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_ID_DYLIB):
             noff = struct.unpack_from(e + "I", body, 8)[0]
             if 0 < noff < len(body):
@@ -75,7 +96,70 @@ def _one_macho(data: bytes, base: int, magic: int) -> dict:
             "flags": flags, "pie": bool(flags & MH_PIE),
             "allow_stack_exec": bool(flags & MH_ALLOW_STACK_EXECUTION),
             "segments": segments, "dylibs": dylibs, "entry": entry, "uuid": uuid,
-            "rwx_segments": [s["name"] for s in segments if "w" in s["perms"] and "x" in s["perms"]]}
+            "rwx_segments": [s["name"] for s in segments if "w" in s["perms"] and "x" in s["perms"]],
+            "objc": _objc_metadata(data, sections, bits),
+            "swift": _swift_metadata(sections, bits)}
+
+
+def _cstrings(data: bytes, off: int, size: int, cap: int = 4000):
+    """Cadenas C (terminadas en NUL) de una seccion __cstring-like. Acotado."""
+    out = []
+    if off <= 0 or size <= 0 or off + size > len(data):
+        return out
+    for piece in data[off:off + size].split(b"\x00"):
+        if piece:
+            try:
+                out.append(piece.decode("utf-8"))
+            except UnicodeDecodeError:
+                out.append(piece.decode("latin-1", "replace"))
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _objc_metadata(data: bytes, sections: list, bits: str) -> dict:
+    """Metadatos Obj-C derivados de las secciones __objc_* (estatico, sin runtime).
+    - __objc_classname: nombres de clase (C-strings)
+    - __objc_methname:  nombres de selector/metodo (C-strings)
+    - __objc_classlist / __objc_protolist: conteo por numero de punteros
+    Grounded: los nombres son exactamente las cadenas que el compilador emite; NO se camina la
+    jerarquia de clases (eso requiere resolver class_ro_t via VM->offset)."""
+    byname = {}
+    for s in sections:
+        byname.setdefault(s["sect"], s)
+    if not any(k.startswith("__objc") for k in byname):
+        return {"present": False}
+    word = 8 if bits == "64" else 4
+    classes = sorted(set(_cstrings(data, byname["__objc_classname"]["offset"],
+                                   byname["__objc_classname"]["size"]))) if "__objc_classname" in byname else []
+    methods = sorted(set(_cstrings(data, byname["__objc_methname"]["offset"],
+                                   byname["__objc_methname"]["size"]))) if "__objc_methname" in byname else []
+    def _ptrcount(name):
+        s = byname.get(name)
+        return (s["size"] // word) if s and s["size"] else 0
+    return {"present": True,
+            "class_count": _ptrcount("__objc_classlist") or len(classes),
+            "classes": classes[:200],
+            "protocol_count": _ptrcount("__objc_protolist"),
+            "category_count": _ptrcount("__objc_catlist"),
+            "selector_count": len(methods), "selectors": methods[:200]}
+
+
+def _swift_metadata(sections: list, bits: str) -> dict:
+    """Presencia y conteos de metadatos Swift5 (secciones __swift5_*). Cada descriptor es un offset
+    relativo de 4 bytes, asi que size/4 aproxima el numero de entradas."""
+    byname = {s["sect"]: s for s in sections}
+    swift = {k: v for k, v in byname.items() if k.startswith("__swift5")}
+    if not swift:
+        return {"present": False}
+    def _cnt(name):
+        s = byname.get(name)
+        return (s["size"] // 4) if s and s["size"] else 0
+    return {"present": True, "sections": sorted(swift.keys()),
+            "type_count": _cnt("__swift5_types"),
+            "proto_count": _cnt("__swift5_proto"),
+            "proto_conformance_count": _cnt("__swift5_protos"),
+            "field_md": "__swift5_fieldmd" in byname}
 
 
 def inspect_macho(path: str) -> dict:
@@ -140,6 +224,19 @@ def render_macho(r: dict) -> str:
             out.append("- segmentos: " + ", ".join(f"{s['name']}({s['perms']})" for s in im["segments"][:20]))
         if im.get("rwx_segments"):
             out.append(f"- **segmentos W+X: {', '.join(im['rwx_segments'])}**")
+        objc = im.get("objc") or {}
+        if objc.get("present"):
+            out.append(f"- **Obj-C**: {objc.get('class_count')} clases, {objc.get('protocol_count')} "
+                       f"protocolos, {objc.get('category_count')} categorias, "
+                       f"{objc.get('selector_count')} selectores")
+            if objc.get("classes"):
+                out.append("  - clases: " + ", ".join(objc["classes"][:20]))
+            if objc.get("selectors"):
+                out.append("  - selectores: " + ", ".join(objc["selectors"][:20]))
+        swift = im.get("swift") or {}
+        if swift.get("present"):
+            out.append(f"- **Swift**: {swift.get('type_count')} tipos, "
+                       f"{swift.get('proto_count')} protocolos; secciones: {', '.join(swift['sections'])}")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

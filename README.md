@@ -226,8 +226,10 @@ Notes:
   bodies are not disassembled. Also the `inspect_dotnet_assembly` MCP tool.
 - **Mach-O (macOS)**: `binoracle macho ./bin` reads the Mach-O header and load commands statically —
   architecture, file type, segments with protections (W+X flagged), linked dylibs, entry point and
-  the mitigation flags (PIE, executable stack); fat/universal binaries are split into slices. Also
-  the `inspect_macho` MCP tool.
+  the mitigation flags (PIE, executable stack); fat/universal binaries are split into slices. It
+  also reads the section table for **Objective-C** metadata (class and selector names, class/
+  protocol/category counts) and **Swift** metadata (`__swift5_*` descriptor counts) — grounded
+  names and counts, no runtime. Also the `inspect_macho` MCP tool.
 - **PE (Windows)**: `binoracle pe ./app.exe` reads a PE statically (pefile) — architecture, sections
   with Shannon entropy (packing hint), the DllCharacteristics mitigations (ASLR, DEP/NX, Control
   Flow Guard, SafeSEH, high-entropy ASLR), the imported DLLs, and a capability map of imports
