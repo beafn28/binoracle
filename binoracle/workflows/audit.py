@@ -315,6 +315,27 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             if store:
                 store.add_finding(fnd)
 
+        # Canary + gift but plain ret2win did not verify (a stack canary stops the linear
+        # overflow): try the canary-LEAK bypass -- leak the canary via a %s echo, then overflow
+        # past it to win(). Only when there is a win() and nothing is verified yet.
+        if not _verified_now() and find_win(binary) is not None:
+            try:
+                from .autocanary import autocanary
+                rc = autocanary(binary)
+            except Exception as e:
+                rc = {"note": f"error: {e}"}
+            if rc.get("verified"):
+                res.ledger.record(res.steps + 2, "try_canary (backstop)",
+                                  "autocanary (sandbox-verified)",
+                                  rc.get("detail") or rc.get("output", ""))
+                res.answer += ("\n\n---\n\n### SHELL VERIFICADA via bypass de canary (backstop)\n"
+                               f"{rc.get('detail','')}. Fuga del stack canary + overflow a win() "
+                               "ejecutado en sandbox. [src: try_canary]")
+                _add_verified("Exploit bypass de stack canary verificado", rc.get("detail", ""),
+                              f"{rc.get('detail','')}\n{rc.get('output','')}",
+                              "Canary filtrado por un %s y reescrito; overflow a win() en sandbox.",
+                              "No imprimir el buffer con %s (fuga del canary); PIE + full RELRO.")
+
         tried = []   # (label, reason) of backstop exploits attempted but not verified
         if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
