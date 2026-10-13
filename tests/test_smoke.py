@@ -459,6 +459,33 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_autosrop_verifies_sigreturn_execve():
+    # Verificacion POSITIVA de SROP: shell via rt_sigreturn -> execve('/bin/sh') en el sample
+    # `srop` (estatico, pobre en gadgets, con syscall gadget + '/bin/sh'). Se auto-salta sin
+    # sandbox nativo / sample.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/srop"
+    if not os.path.exists(binp):
+        pytest.skip("sample srop no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox nativo no disponible: {why}")
+    from binoracle.workflows.autosrop import autosrop
+    r = autosrop(binp)
+    assert r.get("ok") and r.get("verified"), f"SROP no verificado: {r.get('note')}"
+    assert "syscall=" in (r.get("detail") or "") and "binsh=" in (r.get("detail") or "")
+
+
+def test_autosrop_degrades_cleanly():
+    # Ruta inexistente -> degradacion limpia (ok=False + nota) sin arrancar nada.
+    from binoracle.workflows.autosrop import autosrop, render_srop
+    r = autosrop("/nonexistent/dir/srop")
+    assert isinstance(r, dict) and r.get("ok") is False and r.get("note")
+    assert isinstance(render_srop(r), str) and render_srop(r)
+
+
 def test_autodlresolve_verifies_no_leak_shell():
     # Verificacion POSITIVA de ret2dlresolve: shell SIN leak de libc forjando el resolver dinamico,
     # en el sample `dlresolve` (dinamico, no-PIE, Partial RELRO, sin win/system). Se auto-salta

