@@ -459,6 +459,43 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_caller_tools_degrade_when_absent():
+    # Sin la herramienta en PATH, cada integracion caller-supplied degrada honestamente nombrandola.
+    import os
+    from binoracle.workflows.callertools import wat_disassemble, pcap_summary, firmware_scan, render_caller
+    # asegura que las herramientas no estan en un PATH vacio
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        for fn, kind, tool in ((wat_disassemble, "wat", "wasm2wat"),
+                               (pcap_summary, "pcap", "tshark"),
+                               (firmware_scan, "firmware", "binwalk")):
+            r = fn("/tmp/whatever")
+            assert r["ok"] is False and r["available"] is False and r["tool"] == tool
+            assert tool in r["note"]
+            assert "No disponible" in render_caller(kind, r)
+    finally:
+        os.environ["PATH"] = old
+
+
+def test_caller_tool_runs_when_present(tmp_path):
+    # Con una herramienta FALSA en PATH que emite WAT conocido, el camino de ejecucion parsea OK.
+    import os
+    import stat
+    fake = tmp_path / "wasm2wat"
+    fake.write_text('#!/bin/sh\necho "(module (func $add (param i32 i32) (result i32)))"\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(tmp_path) + os.pathsep + old
+    try:
+        from binoracle.workflows.callertools import wat_disassemble
+        r = wat_disassemble("/tmp/whatever.wasm")
+        assert r["ok"] and r["available"] and r["tool"] == "wasm2wat"
+        assert r["functions"] == 1 and "(module" in r["wat"]
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_pe_mitigations_decoder():
     from binoracle.workflows.peinspect import decode_mitigations
     m = decode_mitigations(0x0040 | 0x0100 | 0x4000)   # ASLR + DEP + CFG

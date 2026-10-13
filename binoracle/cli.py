@@ -621,6 +621,15 @@ def cmd_pe(args, config):
     _write_if(args.output, out)
 
 
+def cmd_caller_tool(args, config):
+    from .workflows import callertools as ct
+    binary = _require_binary(args.binary)
+    fn = {"wat": ct.wat_disassemble, "pcap": ct.pcap_summary, "firmware": ct.firmware_scan}[args.kind]
+    out = ct.render_caller(args.kind, fn(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_identify(args, config):
     from .workflows.identify import identify, render_identify
     binary = _require_binary(args.binary)
@@ -1002,6 +1011,12 @@ def build_parser() -> argparse.ArgumentParser:
     pei.add_argument("binary", help="path to the .exe/.dll")
     pei.add_argument("-o", "--output")
     pei.set_defaults(func=cmd_pe)
+
+    ct = sub.add_parser("caller-tool", help="optional caller-supplied integrations (wat/pcap/firmware); degrade if tool absent")
+    ct.add_argument("kind", choices=["wat", "pcap", "firmware"])
+    ct.add_argument("binary", help="path to the artifact (.wasm / .pcap / firmware image)")
+    ct.add_argument("-o", "--output")
+    ct.set_defaults(func=cmd_caller_tool)
 
     idf = sub.add_parser("identify", help="detect any artifact's format and route it to the right reader")
     idf.add_argument("binary", help="path to any file")

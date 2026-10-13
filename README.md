@@ -112,6 +112,21 @@ under a Mac's x86-64 emulation the final redirected jump into never-executed cod
 Fully general heap exploitation (arbitrary layouts, libc-leak chains) remains bespoke per
 binary. Everything runs only against binaries you are authorized to analyze.
 
+## Optional caller-supplied tool integrations
+
+Some steps need a heavy external tool that binoracle deliberately does not bundle (offline,
+dependency-light). It drives one when you have it installed and **degrades honestly** (naming the
+tool and how to get it) when absent — each runs the tool with the artifact as an argument (no
+shell), bounded, and treats its output as untrusted:
+
+```bash
+binoracle caller-tool wat ./mod.wasm        # WAT disassembly via WABT (wasm2wat)
+binoracle caller-tool pcap ./cap.pcap       # protocol-hierarchy summary via TShark
+binoracle caller-tool firmware ./fw.bin     # signature scan via Binwalk (no extraction)
+```
+
+Also the `wasm_to_wat`, `pcap_summary` and `firmware_scan` MCP tools.
+
 ## Reverse engineer anything (one entry point)
 
 `binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded

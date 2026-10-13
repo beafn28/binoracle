@@ -153,6 +153,34 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("wasm_to_wat", "Desensambla un modulo .wasm a texto WAT usando WABT (wasm2wat) SI el "
+       "llamador lo tiene instalado; si no, degrada indicando como obtenerlo. Integracion "
+       "caller-supplied (binoracle no empaqueta WABT).",
+       {"binary": {"type": "string", "description": "ruta al .wasm"}}, ["binary"])
+def _h_wat(args):
+    from .workflows.callertools import wat_disassemble, render_caller
+    b = _binary(args)
+    return render_caller("wat", wat_disassemble(b))
+
+
+@_tool("pcap_summary", "Resumen de jerarquia de protocolos de un .pcap usando TShark SI el llamador "
+       "lo tiene; si no, degrada. Integracion caller-supplied (binoracle no empaqueta TShark).",
+       {"binary": {"type": "string", "description": "ruta al .pcap/.pcapng"}}, ["binary"])
+def _h_pcap(args):
+    from .workflows.callertools import pcap_summary, render_caller
+    b = _binary(args)
+    return render_caller("pcap", pcap_summary(b))
+
+
+@_tool("firmware_scan", "Escaneo de firmas de una imagen de firmware con Binwalk (sin extraccion) SI "
+       "el llamador lo tiene; si no, degrada. Integracion caller-supplied.",
+       {"binary": {"type": "string", "description": "ruta a la imagen de firmware"}}, ["binary"])
+def _h_fw(args):
+    from .workflows.callertools import firmware_scan, render_caller
+    b = _binary(args)
+    return render_caller("firmware", firmware_scan(b))
+
+
 @_tool("inspect_pe", "Lee un PE de Windows (EXE/DLL) estaticamente: arquitectura, secciones con "
        "entropia (heuristica de packing), mitigaciones (ASLR/DEP/CFG/SafeSEH), imports y un mapa "
        "de capacidades (proceso/red/cripto/inyeccion/registro/anti-debug). No ejecuta nada.",
