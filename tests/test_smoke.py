@@ -566,6 +566,38 @@ def test_caller_tools_one_gadget_and_capinfos(tmp_path):
         os.environ["PATH"] = old
 
 
+def test_arsenal_one_gadget_integration(tmp_path):
+    import os
+    import stat
+    from binoracle.workflows.chainanalyzer import _detect_one_gadget
+    # dynamic binary -> skipped here (libc resolved in autolibc), regardless of tool presence
+    assert _detect_one_gadget("/tmp/whatever", {"static": False}) is None
+    assert _detect_one_gadget("/tmp/whatever", {"static": None}) is None
+    old = os.environ.get("PATH", "")
+    # static + tool absent -> honest degrade
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        r = _detect_one_gadget("/tmp/static.elf", {"static": True, "pie": False})
+        assert r is not None and r["available"] is False
+    finally:
+        os.environ["PATH"] = old
+    # static + fake one_gadget on PATH -> integrated into arsenal with absolute offsets note
+    fake = tmp_path / "one_gadget"
+    fake.write_text('#!/bin/sh\necho "0x4f2a5 0x4f302 0x10a2fc"\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    os.environ["PATH"] = str(tmp_path) + os.pathsep + old
+    try:
+        r = _detect_one_gadget("/tmp/static.elf", {"static": True, "pie": False})
+        assert r["available"] is True and r["count"] == 3
+        assert r["offsets"][0] == "0x4f2a5"
+        assert "ABSOLUTAS" in r["note"]
+        # PIE static -> note says offsets are load-base relative
+        r2 = _detect_one_gadget("/tmp/static.elf", {"static": True, "pie": True})
+        assert "base" in r2["note"].lower()
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_caller_tool_runs_when_present(tmp_path):
     # Con una herramienta FALSA en PATH que emite WAT conocido, el camino de ejecucion parsea OK.
     import os

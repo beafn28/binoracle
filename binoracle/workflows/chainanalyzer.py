@@ -276,6 +276,32 @@ def _detect_ret2csu(binary: str) -> Optional[dict]:
     return None
 
 
+def _detect_one_gadget(binary: str, f: dict) -> Optional[dict]:
+    """Integra one_gadget en el arsenal para binarios ESTATICOS (la libc va embebida, asi que los
+    magic gadgets viven en el propio target). Para un binario dinamico se omite aqui: hace falta la
+    ruta de la libc (disponible via la herramienta `one_gadget` / el flujo autolibc). Caller-supplied:
+    si la gema no esta instalada, devuelve un degradado honesto con la pista de instalacion."""
+    if f.get("static") is not True:
+        return None            # dinamico: la libc no esta en el target; se resuelve en autolibc
+    try:
+        from .callertools import one_gadget as _og
+    except Exception:
+        return None
+    r = _og(binary)
+    if not r.get("ok"):
+        # degradado honesto: la herramienta no esta -> lo decimos con la pista de instalacion
+        return {"available": False, "note": r.get("note") or "one_gadget no disponible",
+                "hint": r.get("hint")}
+    pie = f.get("pie") is True
+    return {"available": True, "count": r.get("count", 0), "offsets": r.get("gadgets", []),
+            "pie": pie,
+            "note": ("offsets relativos a la base de carga (PIE activo: suma la base filtrada)"
+                     if pie else
+                     "binario estatico sin PIE: estos son direcciones ABSOLUTAS usables directamente"),
+            "constraints": "cada magic gadget tiene precondiciones de registros; se validan por "
+                           "ejecucion (el verificador ret2libc/autolibc las filtra)"}
+
+
 def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
     """El mejor gadget para fijar `reg`: el que hace `pop reg` con menos ruido (menos clobber,
     menor stack delta, sin efectos secundarios)."""
@@ -676,6 +702,15 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         _csu = _detect_ret2csu(binary)
         if _csu:
             _arsenal["ret2csu"] = _csu
+    except Exception:
+        pass
+    # one_gadget: en un binario ESTATICO la libc va embebida, asi que los 'magic gadgets' (una
+    # sola direccion que lanza shell) estan DENTRO del propio target y son direcciones FIJAS si no
+    # hay PIE -> directamente utilizables. Integracion caller-supplied (degrada si no esta la gema).
+    try:
+        og = _detect_one_gadget(binary, f)
+        if og:
+            _arsenal["one_gadget"] = og
     except Exception:
         pass
     an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_arsenal)

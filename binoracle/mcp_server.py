@@ -98,6 +98,16 @@ def _render_chains(an, lang: str = "es") -> str:
                        f"gadget1={csu.get('gadget1')} gadget2={csu.get('gadget2')} "
                        f"{'[completo]' if csu.get('complete') else '[parcial]'} — "
                        f"controla rdi/rsi/rdx sin `pop` directos")
+        og = ars.get("one_gadget")
+        if og:
+            if og.get("available"):
+                offs = ", ".join(og.get("offsets") or [])
+                out.append(f"- **one_gadget** ({og.get('count')} magic gadgets, libc estatica "
+                           f"embebida): {offs}")
+                out.append(f"  - {og.get('note')}; {og.get('constraints')}")
+            else:
+                out.append(f"- one_gadget: no disponible ({og.get('note')})"
+                           + (f" — instala: {og.get('hint')}" if og.get("hint") else ""))
         out.append("")
     for c in getattr(an, "chains", []) or []:
         flag = "VERIFICADA (shell real)" if getattr(c, "verified", False) else (

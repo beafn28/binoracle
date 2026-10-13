@@ -3303,6 +3303,10 @@ def _exploit_html(an, lang: str) -> str:
         _abits.append("ret2csu: __libc_csu_init g1=" + str(_csu.get("gadget1"))
                       + " g2=" + str(_csu.get("gadget2"))
                       + (" [" + ("completo" if es else "complete") + "]" if _csu.get("complete") else ""))
+    _og = _ars.get("one_gadget")
+    if _og and _og.get("available"):
+        _abits.append(f"one_gadget: {_og.get('count')} "
+                      + ("magic gadgets (libc estatica)" if es else "magic gadgets (static libc)"))
     if _abits:
         ctrl_txt += f"<br>{'arsenal ROP' if es else 'ROP arsenal'}: {' &middot; '.join(_abits)}"
     return (

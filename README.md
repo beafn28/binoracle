@@ -62,6 +62,17 @@ A shell is confirmed by having it echo a unique marker. Every run is isolated:
 no network, memory and pid limits, and ASLR disabled (`setarch -R` / `aslr=False`) so the
 local proof-of-concept is deterministic.
 
+**ROP arsenal (grounded reasoning aid).** Alongside the verified classes, `analyze_chains`
+surfaces a ROP arsenal built from the binary: the best gadget per argument register
+(rdi/rsi/rdx/rcx/r8/r9/rax), the syscall gadget, the least-noisy stack pivot, write-what-where and
+register-to-register move gadgets, and an explicit execve-by-syscall coverage check. It also
+detects **ret2csu** (the universal `__libc_csu_init` gadgets, for when direct `pop rsi/rdx` are
+missing) and, for statically-linked binaries, integrates **one_gadget** magic-gadget offsets (the
+embedded libc lives inside the target; absolute addresses when no PIE). These are reported as
+*present/available* — grounded in the binary — not as verified chains, and shown up front in both
+the markdown and the interactive HTML report so the ROP reasoning is explicit. one_gadget is
+caller-supplied and degrades honestly with an install hint when the gem is absent.
+
 ### Requirements
 
 Verification prefers the `binoracle-pwn` Docker image, but **Docker is not required**: when the
