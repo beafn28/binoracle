@@ -16,8 +16,13 @@ La simulacion/verificacion real (opcional, verify=True) reutiliza el sandbox de 
 from __future__ import annotations
 
 import os
+import re as _re_mod
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+# parsing de desensamblado r2 para ret2csu: direccion al inicio de linea (tras el posible prefijo
+# de grafico `| ` de r2); el mnemonico se extrae descartando los tokens de bytes hex.
+_re_csu_addr = _re_mod.compile(r"^(?:\|[\s`\-]*)?(0x[0-9a-fA-F]+)\b")
 
 # registros de argumentos SysV x86-64 (orden de llamada) + los relevantes para syscalls
 _ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -178,6 +183,97 @@ def _classify(raw: dict) -> Optional[Gadget]:
                   sets=sets, clobbers=[c for c in clobbers if c not in sets],
                   stack_delta=stack_delta, kind=kind, side_effects="; ".join(side),
                   mem_write=mem_write, moves=moves)
+
+
+def _parse_csu(disasm: str) -> Optional[dict]:
+    """Detecta los dos gadgets universales de __libc_csu_init en texto desensamblado (r2 `pdf`).
+
+    ret2csu encadena:
+      gadget1 (epilogo pop): `pop rbx; pop rbp; pop r12; pop r13; pop r14; pop r15; ret`
+               -> carga rbx/rbp/r12/r13/r14/r15 desde la pila;
+      gadget2 (mov + call): `mov rdx, r15; mov rsi, r14; mov edi, r13d; call [r12+rbx*8]`
+               -> copia r15->rdx, r14->rsi, r13d->edi y llama a [r12+rbx*8].
+    Con ambos se controlan rdi/rsi/rdx y la llamada sin necesitar `pop rsi`/`pop rdx` directos.
+    Devuelve {gadget1, gadget2, note} o None. Solo detecta presencia (grounded); no verifica."""
+    if not disasm:
+        return None
+    rows = []
+    for line in disasm.splitlines():
+        line = line.strip()
+        # r2 pdf: "0x004011aa      4c89fa    mov rdx, r15"  -> toma addr y el texto del mnemonico
+        m = _re_csu_addr.match(line)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        # tras la direccion van los bytes hex (tokens hex de longitud par) y luego el mnemonico;
+        # descartamos los tokens de bytes para quedarnos con el mnemonico y sus operandos.
+        toks = line[m.end():].strip().split()
+        k = 0
+        while k < len(toks) and len(toks[k]) % 2 == 0 and len(toks[k]) >= 2 \
+                and all(c in "0123456789abcdefABCDEF" for c in toks[k]):
+            k += 1
+        mnem = " ".join(toks[k:]).strip().lower()
+        if mnem:
+            rows.append((addr, mnem))
+    if not rows:
+        return None
+    g1 = g2 = None
+    # gadget2: "mov rdx, r15/r14" seguido (<=4 insns) de un "call" con r12 o rbx
+    for i, (addr, txt) in enumerate(rows):
+        if txt.startswith("mov rdx") and ("r15" in txt or "r14" in txt or "r13" in txt):
+            window = rows[i:i + 6]
+            if any(t.startswith("call") and ("r12" in t or "rbx" in t) for _, t in window):
+                g2 = addr
+                break
+    # gadget1: "pop rbx" cuyo tramo hasta "ret" son solo pops e incluye r12..r15
+    for i, (addr, txt) in enumerate(rows):
+        if txt.startswith("pop rbx"):
+            seq, j = [], i
+            while j < len(rows):
+                t = rows[j][1]
+                if t.startswith("pop "):
+                    seq.append(t.split()[1])
+                    j += 1
+                    continue
+                if t == "ret" or t.startswith("ret"):
+                    break
+                seq = []       # algo que no es pop/ret rompe el gadget limpio
+                break
+            if {"r12", "r13", "r14", "r15"}.issubset(set(seq)):
+                g1 = addr
+                break
+    if g1 is None and g2 is None:
+        return None
+    return {"gadget1": (hex(g1) if g1 is not None else None),
+            "gadget2": (hex(g2) if g2 is not None else None),
+            "complete": g1 is not None and g2 is not None,
+            "note": "ret2csu: gadgets universales de __libc_csu_init para fijar rdi/rsi/rdx y "
+                    "llamar [r12+rbx*8] sin pop directos (presencia detectada, no verificada)"}
+
+
+def _detect_ret2csu(binary: str) -> Optional[dict]:
+    """Localiza __libc_csu_init con r2 y extrae los gadgets ret2csu. Best-effort; None si no hay r2
+    o el binario no tiene ese init (gcc >= 2.34 suele no incluirlo)."""
+    try:
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return None
+        # IMPORTANTE: comprobar primero que el simbolo EXISTE. Si no, `pdf @ sym.__libc_csu_init`
+        # resuelve el flag ausente a 0 y r2 intenta desensamblar/analizar desde la direccion 0,
+        # lo que puede colgarse o tardar minutos. `is~` solo lista simbolos (barato) y no desensambla.
+        syms = r.cmd("is~__libc_csu_init") or ""
+        if "__libc_csu_init" not in syms:
+            return None
+        for sym in ("sym.__libc_csu_init", "__libc_csu_init"):
+            dis = r.cmd(f"pdf @ {sym}") or ""
+            if dis and "__libc_csu_init" in dis:
+                res = _parse_csu(dis)
+                if res:
+                    return res
+    except Exception:
+        return None
+    return None
 
 
 def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
@@ -574,7 +670,15 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                  "equivalent here.")
         return ChainAnalysis(arch=f["arch"], applicable=False, note=note)
     gadgets = _enum_gadgets(binary)
-    an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_build_arsenal(gadgets))
+    _arsenal = _build_arsenal(gadgets)
+    # ret2csu: util sobre todo cuando faltan pop rsi/rdx directos (el caso en que esta tecnica brilla)
+    try:
+        _csu = _detect_ret2csu(binary)
+        if _csu:
+            _arsenal["ret2csu"] = _csu
+    except Exception:
+        pass
+    an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_arsenal)
     # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
     _sink = _overflow_sink(binary)
     _badset = _SINK_BADCHARS.get(_sink, set()) if (_sink and f.get("pie") is not True) else set()

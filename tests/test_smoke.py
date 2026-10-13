@@ -899,6 +899,35 @@ def test_classify_gadget_kinds():
     assert _classify(_mkraw([("jmp rax", "ujmp")])) is None
 
 
+def test_parse_ret2csu_gadgets():
+    from binoracle.workflows.chainanalyzer import _parse_csu
+    # synthetic r2 `pdf` of a classic __libc_csu_init tail
+    disasm = """
+/ (fcn) sym.__libc_csu_init 101
+|   0x00401190      4157           push r15
+|   0x00401192      4989ff         mov r15, rdi
+|   0x004011a0      4c89fa         mov rdx, r15
+|   0x004011a3      4c89f6         mov rsi, r14
+|   0x004011a6      4489ef         mov edi, r13d
+|   0x004011a9      41ff14dc       call qword [r12 + rbx*8]
+|   0x004011b6      4883c408       add rsp, 8
+|   0x004011ba      5b             pop rbx
+|   0x004011bb      5d             pop rbp
+|   0x004011bc      415c           pop r12
+|   0x004011be      415d           pop r13
+|   0x004011c0      415e           pop r14
+|   0x004011c2      415f           pop r15
+|   0x004011c4      c3             ret
+"""
+    r = _parse_csu(disasm)
+    assert r is not None
+    assert r["gadget2"] == hex(0x004011a0)
+    assert r["gadget1"] == hex(0x004011ba)
+    assert r["complete"] is True
+    # a function with no csu shape -> None
+    assert _parse_csu("0x401000  90  nop\n0x401001  c3  ret\n") is None
+
+
 def test_build_arsenal_execve_coverage():
     from binoracle.workflows.chainanalyzer import _classify, _build_arsenal
     gadgets = [

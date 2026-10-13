@@ -3298,6 +3298,11 @@ def _exploit_html(an, lang: str) -> str:
         _covtxt = ("completa" if es else "complete") if _cov.get("complete") else \
             ((", ".join(_cov.get("have") or []) or ("ninguno" if es else "none")))
         _abits.append(f"{'cobertura execve' if es else 'execve coverage'}: {_covtxt}")
+    _csu = _ars.get("ret2csu")
+    if _csu:
+        _abits.append("ret2csu: __libc_csu_init g1=" + str(_csu.get("gadget1"))
+                      + " g2=" + str(_csu.get("gadget2"))
+                      + (" [" + ("completo" if es else "complete") + "]" if _csu.get("complete") else ""))
     if _abits:
         ctrl_txt += f"<br>{'arsenal ROP' if es else 'ROP arsenal'}: {' &middot; '.join(_abits)}"
     return (

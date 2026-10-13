@@ -92,6 +92,12 @@ def _render_chains(an, lang: str = "es") -> str:
         if cov:
             mark = "COMPLETA" if cov.get("complete") else f"parcial ({','.join(cov.get('have') or []) or 'ninguno'})"
             out.append(f"- cobertura execve-por-syscall (rdi/rsi/rdx/rax+syscall): **{mark}**")
+        csu = ars.get("ret2csu")
+        if csu:
+            out.append(f"- **ret2csu disponible** (gadget universal __libc_csu_init): "
+                       f"gadget1={csu.get('gadget1')} gadget2={csu.get('gadget2')} "
+                       f"{'[completo]' if csu.get('complete') else '[parcial]'} — "
+                       f"controla rdi/rsi/rdx sin `pop` directos")
         out.append("")
     for c in getattr(an, "chains", []) or []:
         flag = "VERIFICADA (shell real)" if getattr(c, "verified", False) else (
