@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_har_capture", "Lee una captura de red HAR (JSON) estaticamente: peticiones/"
+       "respuestas, hosts, y SECRETOS expuestos (Authorization/Bearer, api_key/token/password, "
+       "JWT, claves AWS) en URL/cabeceras/cuerpo. Heuristico; no descifra TLS.",
+       {"binary": {"type": "string", "description": "ruta al fichero .har"}}, ["binary"])
+def _h_har(args):
+    from .workflows.harinspect import inspect_har, render_har
+    b = _binary(args)
+    return render_har(inspect_har(b))
+
+
 @_tool("inspect_sqlite_database", "Abre una base SQLite en SOLO LECTURA y reporta su esquema "
        "(tablas, columnas, indices, vistas, triggers) y una muestra acotada de filas. No escribe "
        "nada ni dispara triggers.",

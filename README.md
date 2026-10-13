@@ -171,6 +171,9 @@ Notes:
 - **EVM bytecode**: `binoracle evm ./code.hex` reads EVM runtime bytecode (raw or hex) — the
   function selectors (PUSH4 heuristic), capability opcodes (CALL/DELEGATECALL/CREATE/SELFDESTRUCT)
   and the Solidity metadata CBOR trailer (solc version, IPFS/Swarm hash). Also `inspect_evm_bytecode`.
+- **Network captures (HAR)**: `binoracle har ./capture.har` reads a saved HTTP archive — the
+  request/response inventory, hosts, and secrets exposed in URLs/headers/bodies (Authorization,
+  api_key/token/password, JWT, AWS keys), heuristic and labelled. Also `inspect_har_capture`.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

@@ -459,6 +459,48 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_har_inspect_requests_and_secrets():
+    import json
+    import os
+    import tempfile
+    from binoracle.workflows.harinspect import inspect_har, render_har
+    har = {"log": {"entries": [
+        {"request": {"method": "GET", "url": "https://api.example.com/v1?api_key=SECRETKEY123456",
+                     "headers": [{"name": "Authorization", "value": "Bearer abcdef0123456789"}]},
+         "response": {"status": 200, "content": {"mimeType": "application/json", "size": 10}}},
+        {"request": {"method": "POST", "url": "https://api.example.com/login", "headers": [],
+                     "postData": {"text": "user=admin&password=hunter2"}},
+         "response": {"status": 302, "content": {"mimeType": "text/html", "size": 0}}},
+    ]}}
+    p = tempfile.mktemp(suffix=".har")
+    with open(p, "w") as f:
+        json.dump(har, f)
+    try:
+        r = inspect_har(p)
+        assert r["ok"] and r["is_har"] and r["entry_count"] == 2
+        assert r["hosts"].get("api.example.com") == 2
+        assert r["methods"] == {"GET": 1, "POST": 1}
+        kinds = {s["kind"] for s in r["secrets"]}
+        assert "api-key-param" in kinds and "authorization-header" in kinds
+        assert "HAR" in render_har(r)
+    finally:
+        os.remove(p)
+
+
+def test_har_inspect_non_har():
+    import os
+    import tempfile
+    from binoracle.workflows.harinspect import inspect_har
+    p = tempfile.mktemp()
+    with open(p, "w") as f:
+        f.write('{"not":"a har"}')
+    try:
+        r = inspect_har(p)
+        assert r["ok"] and r["is_har"] is False
+    finally:
+        os.remove(p)
+
+
 def test_sqlite_inspect_reads_schema_readonly():
     import os
     import sqlite3
