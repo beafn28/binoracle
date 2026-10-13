@@ -417,6 +417,28 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_autocanary_verifies_format_string_leak():
+    # Verificacion POSITIVA de la 2a estrategia (fuga del canary por FORMAT-STRING %p, la mas
+    # comun en CTF): en `canfmt` el bypass obtiene shell de verdad. Se auto-salta donde el sandbox
+    # nativo no aplica o el binario no esta compilado.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/canfmt"
+    if not os.path.exists(binp):
+        pytest.skip("sample canfmt no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox nativo no disponible: {why}")
+    from binoracle.workflows.autocanary import autocanary
+    r = autocanary(binp)
+    assert r.get("ok") and r.get("verified"), f"bypass de canary (fmt) no verificado: {r.get('note')}"
+    assert "(fmt)" in (r.get("detail") or ""), f"se esperaba la ruta de fuga por format-string: {r.get('detail')}"
+    import re
+    m = re.search(r"canary=(0x[0-9a-fA-F]+)", r.get("detail") or "")
+    assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
+
+
 def test_chainanalyzer_canary_chain_builds():
     # La cadena determinista 'canary bypass' debe construirse (sin sandbox) cuando hay canary + win,
     # ser factible, y NO arrastrar el break-point de canary (su verificador lo rompe por diseno).
