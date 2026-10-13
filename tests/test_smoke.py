@@ -1005,6 +1005,27 @@ def test_parse_ret2csu_gadgets():
     assert _parse_csu("0x401000  90  nop\n0x401001  c3  ret\n") is None
 
 
+def test_ret2libc_32bit_uses_stack_args():
+    import os
+    import pytest
+    if not os.path.exists("samples/bin/ret2win32"):
+        pytest.skip("sample 32-bit no compilado")
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    an = analyze_chains("samples/bin/ret2win32", None, verify=False, lang="es")
+    assert an.arch.endswith("32")
+    r2l = [c for c in an.chains if c.name == "ret2libc system"]
+    assert r2l, "falta la cadena ret2libc en 32-bit"
+    c = r2l[0]
+    # cdecl: argumentos en la pila -> NO requiere gadget pop de registro
+    assert c.regs_needed == []
+    assert not any("pop rdi" in req for req in c.requirements)
+    assert any("cdecl" in x.lower() for x in c.constraints)
+    # execve chain for the same binary must be the 32-bit int 0x80 variant
+    ex = [c for c in an.chains if c.name == "execve syscall"][0]
+    assert any("int 0x80" in req for req in ex.requirements)
+    assert any("pop eax" in req for req in ex.requirements)
+
+
 def test_build_arsenal_32bit():
     from binoracle.workflows.chainanalyzer import _classify, _build_arsenal
     def mk(ops):
