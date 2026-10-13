@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("identify_artifact", "Detecta el formato de CUALQUIER fichero (ELF/core/Mach-O/PE·.NET/WASM/"
+       "SQLite/APK/HAR/Go) y lo enruta al lector adecuado de binoracle, devolviendo su analisis. "
+       "La puerta de entrada 'reverse engineer anything'. No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta a cualquier artefacto"}}, ["binary"])
+def _h_identify(args):
+    from .workflows.identify import identify, render_identify
+    b = _binary(args)
+    return render_identify(identify(b))
+
+
 @_tool("inspect_apk", "Lee un APK de Android (ZIP) estaticamente: DEX, librerias nativas por ABI, "
        "framework (Flutter/React Native/Unity/Xamarin), firma (v1 JAR y bloque v2/v3) y digests "
        "SHA-256 de los snapshots Flutter (libapp.so). No decodifica el AndroidManifest binario.",

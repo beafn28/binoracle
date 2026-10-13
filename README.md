@@ -112,6 +112,13 @@ under a Mac's x86-64 emulation the final redirected jump into never-executed cod
 Fully general heap exploitation (arbitrary layouts, libc-leak chains) remains bespoke per
 binary. Everything runs only against binaries you are authorized to analyze.
 
+## Reverse engineer anything (one entry point)
+
+`binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded
+reader — ELF (layout, or a core dump, or Go build-info), Mach-O, PE/.NET, WebAssembly, SQLite,
+Android APK, or a HAR capture — and prints that reader's result. Also the `identify_artifact`
+MCP tool. The "reverse engineer anything" front door, with nothing executed.
+
 ## MCP server (one MCP for grounded RE + exploit-dev)
 
 binoracle ships an MCP server so any MCP-capable agent (Claude Code, etc.) can drive its

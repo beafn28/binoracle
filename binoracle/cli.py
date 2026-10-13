@@ -613,6 +613,14 @@ def cmd_apk(args, config):
     _write_if(args.output, out)
 
 
+def cmd_identify(args, config):
+    from .workflows.identify import identify, render_identify
+    binary = _require_binary(args.binary)
+    out = render_identify(identify(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -981,6 +989,11 @@ def build_parser() -> argparse.ArgumentParser:
     ak.add_argument("binary", help="path to the .apk file")
     ak.add_argument("-o", "--output")
     ak.set_defaults(func=cmd_apk)
+
+    idf = sub.add_parser("identify", help="detect any artifact's format and route it to the right reader")
+    idf.add_argument("binary", help="path to any file")
+    idf.add_argument("-o", "--output")
+    idf.set_defaults(func=cmd_identify)
 
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")

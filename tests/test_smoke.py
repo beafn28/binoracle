@@ -459,6 +459,48 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_identify_routes_formats():
+    # El identificador unificado debe detectar y enrutar cada formato al lector correcto.
+    import os
+    import sqlite3
+    import tempfile
+    import zipfile
+    import pytest
+    from binoracle.workflows.identify import detect_format, identify, render_identify
+    made = []
+    try:
+        dbp = tempfile.mktemp(suffix=".db")
+        con = sqlite3.connect(dbp)
+        con.execute("CREATE TABLE t(x)")
+        con.commit()
+        con.close()
+        made.append(dbp)
+        wp = tempfile.mktemp(suffix=".wasm")
+        with open(wp, "wb") as f:
+            f.write(b"\x00asm" + (1).to_bytes(4, "little"))
+        made.append(wp)
+        ap = tempfile.mktemp(suffix=".apk")
+        z = zipfile.ZipFile(ap, "w")
+        z.writestr("AndroidManifest.xml", b"\x03\x00")
+        z.writestr("classes.dex", b"d")
+        z.close()
+        made.append(ap)
+        assert identify(dbp)["routed"] == "sqlite"
+        assert identify(wp)["routed"] == "wasm"
+        assert identify(ap)["routed"] == "apk"
+        if os.path.exists("samples/bin/ret2win"):
+            r = identify("samples/bin/ret2win")
+            assert r["routed"] == "elf" and "mitigacion" in render_identify(r).lower()
+        else:
+            pytest.skip("sample ELF no compilado")
+    finally:
+        for p in made:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 def test_apk_inspect_on_synthetic_apk():
     import os
     import tempfile
