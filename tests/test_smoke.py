@@ -631,6 +631,24 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autosrop_verifies_32bit():
+    # Verificacion POSITIVA de SROP de x86-32 por EJECUCION: en srop32 el sigreturn (syscall 119
+    # via int 0x80) restaura un frame i386 (con los segmentos cs=0x23/ss=0x2b correctos) que lanza
+    # execve('/bin/sh') y obtiene shell. Se auto-salta sin sandbox o sin el sample 32-bit.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/srop32"
+    if not os.path.exists(binp):
+        pytest.skip("sample srop32 no compilado (samples/build.sh; requiere multilib+glibc-static i386)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autosrop import autosrop
+    r = autosrop(binp)
+    assert r.get("ok") and r.get("verified"), f"SROP 32-bit no verificado: {r.get('note')}"
+
+
 def test_autorop_verifies_32bit_ret2libc():
     # Verificacion POSITIVA de una cadena ret2libc de x86-32 (cdecl, argumento en la pila) por
     # EJECUCION: en ret2win32 la cadena system('/bin/sh') obtiene shell de verdad. Confirma que el
