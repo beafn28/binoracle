@@ -426,7 +426,7 @@ def _score(chain: ExploitChain) -> None:
     chain.feasible = (unmet == 0 and blockers == 0)
 
 
-def _should_attempt_verify(c: ExploitChain, f: dict) -> bool:
+def _should_attempt_verify(c: ExploitChain, f: dict, allow_canary: bool = False) -> bool:
     """Decide si merece la pena INTENTAR la verificacion real en sandbox (no solo si la cadena es
     'feasible' en el sentido estatico/teorico). BUG que arregla: `c.feasible` tambien exige CERO
     break_points, y _mitig_breakpoints() anade un break_point de PIE ('direcciones aleatorias, la
@@ -437,11 +437,14 @@ def _should_attempt_verify(c: ExploitChain, f: dict) -> bool:
     `analyze_chains()` nunca los intentaba en NINGUN binario PIE -- confirmado con ret2win_pie:
     autopie_ret2win() por si solo verifica en ~unos segundos, pero la cadena salia
     'feasible=False' por el break_point de PIE y _verify_chain() nunca se invocaba.
-    El canary SI sigue bloqueando el intento (ningun driver hace bypass de canary por fuerza
-    bruta; intentarlo solo gastaria tiempo de sandbox en un fallo casi seguro)."""
+    El canary bloquea el intento para CUALQUIER cadena de overflow lineal (ret2win, ret2libc, ...):
+    ninguno de sus drivers rompe el canary, asi que intentarlo solo gastaria sandbox en un fallo
+    casi seguro. La UNICA excepcion es la cadena 'canary bypass' (allow_canary=True), cuyo driver
+    (autocanary) EXISTE precisamente para eso: filtra el canary via %s y reescribe su valor, por lo
+    que un canary activo es su precondicion, no un bloqueo."""
     if c.unmet_requirements != 0:
         return False
-    if f.get("canary") is True:
+    if f.get("canary") is True and not allow_canary:
         return False
     return True
 
@@ -866,6 +869,52 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "tcache_dup", f, lang)
         chains.append(c)
 
+    # 11) bypass de stack canary: fuga del canary (via %s tras sobrescribir su LSB nulo) ->
+    # reescritura del mismo canary -> overflow hasta win(). Solo tiene sentido cuando el canary
+    # esta ACTIVO (si no, ret2win directo basta) y existe win(). A diferencia del resto de cadenas
+    # de overflow, esta NO queda bloqueada por el canary: su driver (autocanary) lo filtra y lo
+    # reescribe, de modo que el canary es su precondicion, no su punto de rotura.
+    if f.get("canary") is True and f.get("win") is not None:
+        c = ExploitChain(name="canary bypass", target="win()")
+        winaddr = f.get("win") or 0
+        c.requirements = [
+            _req(True, "stack canary ACTIVO (precondicion de esta tecnica)",
+                 "stack canary ON (precondition for this technique)", lang),
+            _req(True, "primitiva de fuga: un `%s`/eco del buffer desbordable que imprima tras "
+                 "sobrescribir el LSB nulo del canary",
+                 "leak primitive: a `%s`/echo of the overflowable buffer that prints after "
+                 "overwriting the canary's null LSB", lang),
+            _req(True, "funcion objetivo win()/giveshell en el binario",
+                 "target function win()/giveshell in the binary", lang)]
+        c.regs_needed = []
+        # el canary deja de ser un break_point para ESTA cadena (se filtra y reescribe)
+        c.mitigations, _ = _mitig_breakpoints(f, True, lang)
+        c.break_points = []
+        c.steps = [
+            ChainStep("vuln", ovf,
+                      L("se sobrescribe SOLO el LSB nulo del canary con un byte no nulo",
+                        "overwrite ONLY the canary's null LSB with a non-zero byte"),
+                      stack=L("el %s posterior continua e imprime los 7 bytes altos del canary",
+                              "the following %s keeps going and prints the upper 7 canary bytes")),
+            ChainStep("primitive", L("Fuga del canary", "Canary leak"),
+                      L("canary = 0x00 | (7 bytes filtrados); el LSB del canary de glibc es siempre 0x00",
+                        "canary = 0x00 | (7 leaked bytes); glibc's canary LSB is always 0x00"),
+                      regs={"canary": L("recuperado", "recovered")}),
+            ChainStep("gadget", "ret",
+                      L("slot `ret` opcional para alinear la pila a 16B si win() llama a system()",
+                        "optional `ret` slot to 16B-align the stack if win() calls system()")),
+            ChainStep("target", "win()",
+                      L(f"2do overflow: reescribe el MISMO canary (pasa la comprobacion), rellena "
+                        f"el rbp guardado y retorna a win() en {hex(winaddr)}",
+                        f"2nd overflow: rewrite the SAME canary (check passes), fill saved rbp and "
+                        f"return to win() at {hex(winaddr)}"),
+                      addr=winaddr or None, regs={"rip": hex(winaddr)})]
+        _apply_badchars(c, [f.get("win")] if f.get("win") else [], _badset, _sink, lang)
+        _score(c)
+        if verify and _should_attempt_verify(c, f, allow_canary=True):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "canary", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -1037,6 +1086,22 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 if m:
                     proof["offset" if key == "off" else key] = m.group(1)
             return ((f"{OK} (ret2libc con fuga de libc: base={proof.get('base')}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "canary":
+            from .autocanary import autocanary
+            r = autocanary(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "canary leak (%s) -> rewrite -> overflow -> win()",
+                     "marker": "BINORACLE_PWNED", "output": (r.get("output", "") or "")[-300:]}
+            for key in ("canary", "win"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"bufsz=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (canary filtrado via %s y reescrito, overflow -> win(), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2win":
             if pie:
