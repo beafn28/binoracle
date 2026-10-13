@@ -459,6 +459,55 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_coredump_reads_signal_registers_mappings():
+    # Genera un core real (crash de un sample con overflow) y verifica que el inspector extrae
+    # senal, registros por hilo y mapeos. Se auto-salta si el entorno no permite volcar cores.
+    import os
+    import resource
+    import shutil
+    import subprocess
+    import tempfile
+    import pytest
+    src = "samples/bin/ret2win"
+    if not os.path.exists(src):
+        pytest.skip("sample no compilado")
+    d = tempfile.mkdtemp()
+    try:
+        binp = os.path.join(d, "crasher")
+        shutil.copy(src, binp)
+
+        def _preexec():
+            try:
+                resource.setrlimit(resource.RLIMIT_CORE, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+            except Exception:
+                pass
+        subprocess.run([binp], input=b"A" * 120, cwd=d, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, preexec_fn=_preexec, timeout=20)
+        cores = [os.path.join(d, f) for f in os.listdir(d) if f == "core" or f.startswith("core.")]
+        if not cores:
+            pytest.skip("el entorno no vuelca cores a cwd (core_pattern)")
+        from binoracle.workflows.coredump import inspect_core, render_core
+        r = inspect_core(cores[0])
+        assert r["ok"] and r["is_core"]
+        assert r["signal_name"] in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL") or r["signal"]
+        assert r["threads"] and r["threads"][0]["regs"].get("rip") is not None
+        assert r["mappings"]  # al menos el propio binario mapeado
+        assert isinstance(render_core(r), str) and "core dump" in render_core(r)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_coredump_non_core_is_rejected():
+    import os
+    from binoracle.workflows.coredump import inspect_core
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample no compilado")
+    r = inspect_core(binp)
+    assert r["ok"] and r["is_core"] is False and r.get("note")
+
+
 def test_goinspect_parses_inline_buildinfo():
     # Parser de build-info Go sobre un blob INLINE sintetico (sin toolchain de Go): debe extraer
     # version, modulo principal, una dependencia con replacement y un build setting.

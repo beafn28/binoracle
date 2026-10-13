@@ -153,6 +153,19 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_core_dump", "Lee estaticamente un core dump ELF (Linux): la senal, la direccion de "
+       "fallo, los registros por hilo y los mapeos de memoria -- el punto de partida fundamentado "
+       "para convertir un crash en exploit (que registro controla la entrada). No ejecuta nada.",
+       {"core": {"type": "string", "description": "ruta al core dump (ELF ET_CORE)"}}, ["core"])
+def _h_core(args):
+    import os
+    from .workflows.coredump import inspect_core, render_core
+    c = (args or {}).get("core") or ""
+    if not c or not os.path.exists(c):
+        raise FileNotFoundError(f"core no encontrado: {c}")
+    return render_core(inspect_core(c))
+
+
 @_tool("kb_search", "Consulta la base de conocimiento de explotacion (RAG) de binoracle: cheat "
        "sheets, metodologia y playbook verificado.",
        {"query": {"type": "string", "description": "consulta en lenguaje natural"},

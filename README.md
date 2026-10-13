@@ -154,6 +154,10 @@ Notes:
   main module, dependencies with replacements, and build settings) **statically, with no Go
   toolchain and without running the target**. Absence of the blob is not a verdict that the
   binary is not Go. Also exposed as the `inspect_go_binary` MCP tool.
+- **Core dumps**: `binoracle core ./core` reads an ELF crash dump statically (no debugger): the
+  killing signal, the fault address, each thread's registers, and the memory mappings — and flags
+  a register that holds printable input bytes (the overflow tell). Also the `inspect_core_dump`
+  MCP tool. The starting point for turning a crash into an exploit.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.
