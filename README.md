@@ -50,6 +50,7 @@ the agent's hard-won, execution-verified playbook ships with the product. The se
 | ret2libc with leak | NX + ASLR (dynamic) | leaks libc (puts@GOT), computes the base, `system('/bin/sh')` |
 | format-string (Partial RELRO) | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` |
 | format-string (Full RELRO) | NX + PIE + Full RELRO | GOT is read-only → ret2system by hijacking printf's saved return on the stack |
+| stack-canary bypass | NX + **stack canary** | leaks the canary (via a `%s` echo *or* a `printf(input)` format string), rewrites it in place, overflows past it to win() |
 | write-what-where | NX | unchecked index → a called function's GOT entry = win() |
 | UAF funcptr-hijack | NX | realloc recycles a freed struct whose first field is a function pointer = win() |
 | heap → shell (tcache poisoning) | NX, glibc ≥ 2.32 safe-linking | leaks the key via an empty bin, `free@GOT = win` (repairs the GOT neighbour the key-clear zeroes) |
@@ -98,7 +99,7 @@ deterministic backstop guarantees a verified exploit when one exists.
 
 ### Scope
 
-Verified-by-execution today covers the six classes above, plus ROP on PIE (`autopie_rop`
+Verified-by-execution today covers the classes tabulated above, plus ROP on PIE (`autopie_rop`
 resolves the ASLR-off PIE base in the sandbox, rebases the chain and confirms a shell; the
 `ropme_pie` static-PIE sample is the target), and heap-to-shell for the common menu-driven
 tcache-UAF shape (`autoheap_shell`: leaks the safe-linking key from a freed chunk, poisons
