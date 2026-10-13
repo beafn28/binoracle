@@ -69,6 +69,30 @@ def _render_chains(an, lang: str = "es") -> str:
     note = getattr(an, "note", "")
     if note:
         out.append(f"> {note}\n")
+    ars = getattr(an, "arsenal", None) or {}
+    if ars.get("total_gadgets"):
+        out.append(f"### Arsenal ROP ({ars['total_gadgets']} gadgets clasificados)")
+        argregs = ars.get("arg_regs") or {}
+        if argregs:
+            out.append("- control de registros:")
+            for r in ("rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax"):
+                g = argregs.get(r)
+                if g:
+                    cl = (" clobbers " + ",".join(g["clobbers"])) if g.get("clobbers") else ""
+                    out.append(f"  - {r.upper()}: `{g['text']}` @ {g['addr']} (delta {g['delta']}B{cl})")
+        if ars.get("syscall"):
+            out.append(f"- syscall/int0x80: `{ars['syscall']['text']}` @ {ars['syscall']['addr']}")
+        if ars.get("pivot"):
+            out.append(f"- pivote de stack: `{ars['pivot']['text']}` @ {ars['pivot']['addr']}")
+        if ars.get("write"):
+            out.append(f"- write-what-where: `{ars['write']['mem_write']}` @ {ars['write']['addr']}")
+        for mv in (ars.get("moves") or [])[:6]:
+            out.append(f"- move {mv['move']}: `{mv['text']}` @ {mv['addr']}")
+        cov = ars.get("execve_coverage") or {}
+        if cov:
+            mark = "COMPLETA" if cov.get("complete") else f"parcial ({','.join(cov.get('have') or []) or 'ninguno'})"
+            out.append(f"- cobertura execve-por-syscall (rdi/rsi/rdx/rax+syscall): **{mark}**")
+        out.append("")
     for c in getattr(an, "chains", []) or []:
         flag = "VERIFICADA (shell real)" if getattr(c, "verified", False) else (
             "factible" if getattr(c, "feasible", False) else "no factible")

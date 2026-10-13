@@ -36,8 +36,10 @@ class Gadget:
     sets: List[str] = field(default_factory=list)       # regs cargados desde el stack (pop reg)
     clobbers: List[str] = field(default_factory=list)   # otros regs escritos
     stack_delta: int = 0                                 # bytes que consume del stack (incl. ret)
-    kind: str = "other"                                  # pop|syscall|pivot|ret|write|other
+    kind: str = "other"                                  # pop|syscall|pivot|ret|write|move|other
     side_effects: str = ""
+    mem_write: str = ""                                  # "mov [dst], src" (write-what-where)
+    moves: List[str] = field(default_factory=list)       # "rdi<-rax" (mov reg,reg: fija reg sin pop)
 
     @property
     def text(self) -> str:
@@ -83,6 +85,7 @@ class ChainAnalysis:
     control: dict = field(default_factory=dict)   # {RIP, RSP_pivot, regs:[...]}
     target: str = ""
     gadgets: List[Gadget] = field(default_factory=list)
+    arsenal: dict = field(default_factory=dict)   # resumen tecnico del arsenal ROP disponible
     chains: List[ExploitChain] = field(default_factory=list)
     graph: dict = field(default_factory=dict)
     note: str = ""
@@ -107,8 +110,12 @@ def _classify(raw: dict) -> Optional[Gadget]:
     lt = last.get("type", "")
     if lt not in ("ret", "syscall") and "ret" not in last.get("opcode", ""):
         return None
-    sets, clobbers, side = [], [], []
+    sets, clobbers, side, moves = [], [], [], []
+    mem_write = ""
     stack_delta = 8 if lt == "ret" else 0   # el ret consume la direccion de retorno
+    _GPR = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+            "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+            "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
     for op in ops[:-1]:
         t = op.get("type", "")
         txt = (op.get("opcode", "") or "").strip()
@@ -116,39 +123,61 @@ def _classify(raw: dict) -> Optional[Gadget]:
             return None                      # gadget sucio: no utilizable
         parts = txt.replace(",", " ").split()
         mn = parts[0] if parts else ""
+        # operandos separados por coma (preserva el especificador de tamano: "qword [rdi]")
+        operands = [o.strip() for o in txt[len(mn):].split(",")] if len(parts) > 1 else []
+        lhs = operands[0] if operands else ""
+        rhs = operands[1] if len(operands) > 1 else ""
+        lhs_reg = lhs.split()[-1] if lhs else ""      # ultimo token: el registro base, sin tamano
+        rhs_reg = rhs.split()[-1] if rhs else ""
         if mn == "pop" and len(parts) >= 2:
             reg = parts[1]
             sets.append(reg)
             stack_delta += 8
-        elif mn == "add" and len(parts) >= 3 and parts[1] == "rsp":
+        elif mn in ("add", "sub") and len(parts) >= 3 and parts[1] == "rsp":
             try:
-                stack_delta += int(parts[2], 0)
+                delta = int(parts[2], 0)
+                stack_delta += delta if mn == "add" else -delta
             except ValueError:
                 pass
             side.append(txt)
-        elif mn in ("mov", "xor", "lea") and len(parts) >= 2:
-            clobbers.append(parts[1])
+        elif mn in ("mov", "movq") and "[" in lhs:
+            # write-what-where: mov [dst], src  (escribe memoria controlada)
+            mem_write = txt
+            side.append(txt)
+        elif mn == "mov" and lhs_reg in _GPR and rhs_reg in _GPR and "[" not in rhs:
+            # mov regA, regB: fija regA desde otro registro (util cuando no hay `pop regA`)
+            moves.append(f"{lhs_reg}<-{rhs_reg}")
+            clobbers.append(lhs_reg)
+        elif mn == "xchg" and ("rsp" in lhs or "rsp" in rhs):
+            side.append(f"{txt}: pivote de stack (xchg con rsp)")
+        elif mn in ("mov", "xor", "lea", "add", "sub", "inc", "dec", "and", "or") and lhs_reg:
+            clobbers.append(lhs_reg)
         elif mn == "leave":
             side.append("leave (rsp<-rbp; pop rbp): pivote de stack")
         elif t not in _BENIGN:
             side.append(txt)
     kind = "ret"
     joined = " ".join((o.get("opcode", "") or "") for o in ops)
-    if "syscall" in joined:
+    if "syscall" in joined or "int 0x80" in joined:
         kind = "syscall"
-    elif "leave" in joined or any("pop rsp" in (o.get("opcode", "") or "") for o in ops):
+    elif ("leave" in joined or any("pop rsp" in (o.get("opcode", "") or "") for o in ops)
+          or any("xchg" in (o.get("opcode", "") or "") and "rsp" in (o.get("opcode", "") or "")
+                 for o in ops)):
         kind = "pivot"
     elif sets:
         kind = "pop"
-    elif any(o.get("opcode", "").startswith("mov ") and "[" in o.get("opcode", "") for o in ops):
+    elif mem_write:
         kind = "write"
+    elif moves:
+        kind = "move"
     # la direccion del gadget es la de su PRIMERA instruccion (la que va en la pila del ROP),
     # no el `retaddr` (que apunta al ret final). r2 usa la clave "offset" en cada opcode.
     entry = ops[0].get("offset", ops[0].get("addr", raw.get("retaddr", 0)))
     return Gadget(addr=entry,
                   insns=[o.get("opcode", "") for o in ops],
                   sets=sets, clobbers=[c for c in clobbers if c not in sets],
-                  stack_delta=stack_delta, kind=kind, side_effects="; ".join(side))
+                  stack_delta=stack_delta, kind=kind, side_effects="; ".join(side),
+                  mem_write=mem_write, moves=moves)
 
 
 def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
@@ -159,6 +188,43 @@ def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
         return None
     return sorted(cands, key=lambda g: (len(g.clobbers), bool(g.side_effects), g.stack_delta,
                                         len(g.sets)))[0]
+
+
+def _build_arsenal(gadgets: List[Gadget]) -> dict:
+    """Resumen tecnico del arsenal ROP: mejor gadget para cada rol clave (arg regs, syscall,
+    pivote, write-what-where, movimientos reg-a-reg). Objetivo: que el razonamiento ROP quede
+    reflejado explicitamente en el informe, no solo enterrado en las cadenas."""
+    def _g(g):
+        return {"addr": hex(g.addr), "text": g.text, "delta": g.stack_delta,
+                "clobbers": g.clobbers}
+    arsenal = {"arg_regs": {}, "syscall": None, "pivot": None, "write": None, "moves": []}
+    for reg in _ARG_REGS + ["rax"]:
+        g = _best_for(gadgets, reg)
+        if g:
+            arsenal["arg_regs"][reg] = _g(g)
+    g_sys = next((g for g in gadgets if g.kind == "syscall"), None)
+    if g_sys:
+        arsenal["syscall"] = _g(g_sys)
+    # pivote: el de menor ruido
+    pivots = [g for g in gadgets if g.kind == "pivot"]
+    if pivots:
+        arsenal["pivot"] = _g(sorted(pivots, key=lambda g: (len(g.clobbers), g.stack_delta))[0])
+    writes = [g for g in gadgets if g.mem_write]
+    if writes:
+        w = sorted(writes, key=lambda g: (len(g.clobbers), g.stack_delta))[0]
+        arsenal["write"] = {**_g(w), "mem_write": w.mem_write}
+    for g in gadgets:
+        for mv in g.moves:
+            arsenal["moves"].append({"move": mv, "addr": hex(g.addr), "text": g.text})
+    arsenal["moves"] = arsenal["moves"][:12]
+    # cobertura: cuantos de los 3 primeros arg regs + rax + syscall tenemos (lo que execve necesita)
+    need = ["rdi", "rsi", "rdx", "rax"]
+    have = [r for r in need if r in arsenal["arg_regs"]]
+    arsenal["execve_coverage"] = {"have": have, "need": need,
+                                  "syscall": arsenal["syscall"] is not None,
+                                  "complete": len(have) == len(need) and arsenal["syscall"] is not None}
+    arsenal["total_gadgets"] = len(gadgets)
+    return arsenal
 
 
 def _enum_gadgets(binary: str) -> List[Gadget]:
@@ -189,7 +255,8 @@ def _enum_gadgets(binary: str) -> List[Gadget]:
         essential = ["pop " + reg for reg in _ARG_REGS[:3]] + ["pop rax", "syscall"]  # rdi,rsi,rdx,rax,syscall
         optional = (["pop " + reg for reg in _ARG_REGS[3:]]       # rcx,r8,r9: extra arg regs (6+ arg calls)
                     + ["int 0x80", "leave"]                        # 32-bit syscall / stack pivot
-                    + ["pop " + reg for reg in ("rbx", "rbp", "rsp")])
+                    + ["pop " + reg for reg in ("rbx", "rbp", "rsp")]
+                    + ["mov qword", "mov dword", "xchg"])          # write-what-where / xchg-rsp pivot
         deadline = _time.time() + budget_s
         for pat in essential + optional:
             if pat not in essential and _time.time() > deadline:
@@ -507,7 +574,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                  "equivalent here.")
         return ChainAnalysis(arch=f["arch"], applicable=False, note=note)
     gadgets = _enum_gadgets(binary)
-    an = ChainAnalysis(arch=f["arch"], gadgets=gadgets)
+    an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_build_arsenal(gadgets))
     # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
     _sink = _overflow_sink(binary)
     _badset = _SINK_BADCHARS.get(_sink, set()) if (_sink and f.get("pie") is not True) else set()

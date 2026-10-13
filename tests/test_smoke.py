@@ -872,6 +872,53 @@ def test_plist_inspect_bundle_keys_and_privacy():
             os.remove(p)
 
 
+def _mkraw(opcodes):
+    # shape of a radare2 /Rj gadget entry
+    return {"opcodes": [{"offset": 0x1000 + i, "opcode": t, "type": ty}
+                        for i, (t, ty) in enumerate(opcodes)]}
+
+
+def test_classify_gadget_kinds():
+    from binoracle.workflows.chainanalyzer import _classify
+    # pop rdi ; ret
+    g = _classify(_mkraw([("pop rdi", "pop"), ("ret", "ret")]))
+    assert g.kind == "pop" and "rdi" in g.sets and g.stack_delta == 16
+    # syscall gadget
+    gs = _classify(_mkraw([("syscall", "syscall")]))
+    assert gs.kind == "syscall"
+    # write-what-where: mov qword [rdi], rax ; ret
+    gw = _classify(_mkraw([("mov qword [rdi], rax", "mov"), ("ret", "ret")]))
+    assert gw.kind == "write" and gw.mem_write and "[rdi]" in gw.mem_write
+    # reg-to-reg move: mov rsi, rax ; ret
+    gm = _classify(_mkraw([("mov rsi, rax", "mov"), ("ret", "ret")]))
+    assert gm.kind == "move" and "rsi<-rax" in gm.moves
+    # pivot via xchg rsp
+    gp = _classify(_mkraw([("xchg rsp, rax", "mov"), ("ret", "ret")]))
+    assert gp.kind == "pivot"
+    # dirty gadget (jmp) rejected
+    assert _classify(_mkraw([("jmp rax", "ujmp")])) is None
+
+
+def test_build_arsenal_execve_coverage():
+    from binoracle.workflows.chainanalyzer import _classify, _build_arsenal
+    gadgets = [
+        _classify(_mkraw([("pop rdi", "pop"), ("ret", "ret")])),
+        _classify(_mkraw([("pop rsi", "pop"), ("ret", "ret")])),
+        _classify(_mkraw([("pop rdx", "pop"), ("ret", "ret")])),
+        _classify(_mkraw([("pop rax", "pop"), ("ret", "ret")])),
+        _classify(_mkraw([("syscall", "syscall")])),
+        _classify(_mkraw([("mov qword [rdi], rsi", "mov"), ("ret", "ret")])),
+    ]
+    ars = _build_arsenal(gadgets)
+    assert ars["total_gadgets"] == 6
+    assert ars["execve_coverage"]["complete"] is True
+    assert ars["syscall"] and ars["write"]
+    assert set(ars["arg_regs"]).issuperset({"rdi", "rsi", "rdx", "rax"})
+    # drop syscall -> coverage incomplete
+    ars2 = _build_arsenal(gadgets[:4])
+    assert ars2["execve_coverage"]["complete"] is False
+
+
 def _build_class(this_name="com/example/Main", super_name="java/lang/Object", major=52):
     # constant pool: 1=Utf8(this), 2=Class->1, 3=Utf8(super), 4=Class->3
     def utf8(s):
