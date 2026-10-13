@@ -248,6 +248,21 @@ def _h_ghidra(args):
     return render_caller("ghidra", ghidra_decompile(b, func=(args or {}).get("func")))
 
 
+@_tool("jeb_connect", "Conecta con un servidor MCP de JEB arrancado por el llamador (motor externo; "
+       "define BINORACLE_JEB_MCP_URL o pasa 'url'). op=list lista sus herramientas; op=call invoca "
+       "'name' con 'arguments'. Salida no confiable; degrada si no hay endpoint.",
+       {"op": {"type": "string", "description": "list|call"},
+        "name": {"type": "string", "description": "herramienta a invocar (op=call)"},
+        "arguments": {"type": "object", "description": "argumentos para la herramienta (op=call)"},
+        "url": {"type": "string", "description": "endpoint MCP de JEB (opcional)"}}, ["op"])
+def _h_jeb(args):
+    from .workflows.jebconnect import jeb_list_tools, jeb_call, render_jeb
+    a = args or {}
+    if a.get("op") == "call":
+        return render_jeb(jeb_call(a.get("name") or "", a.get("arguments") or {}, url=a.get("url")))
+    return render_jeb(jeb_list_tools(url=a.get("url")))
+
+
 @_tool("inspect_javascript", "Lee JavaScript/Electron estaticamente: source maps (fuentes "
        "originales), imports de modulos (paquetes externos vs relativos), fronteras Electron/IPC "
        "(ipcMain/ipcRenderer, contextBridge, preload, child_process), rutas y add-ons nativos. "

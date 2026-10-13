@@ -661,6 +661,19 @@ def cmd_pe(args, config):
     _write_if(args.output, out)
 
 
+def cmd_jeb(args, config):
+    from .workflows.jebconnect import jeb_list_tools, jeb_call, render_jeb
+    if args.call:
+        import json as _json
+        arguments = _json.loads(args.arguments) if args.arguments else {}
+        r = jeb_call(args.call, arguments, url=args.url)
+    else:
+        r = jeb_list_tools(url=args.url)
+    out = render_jeb(r)
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_js(args, config):
     from .workflows.jsinspect import inspect_js, render_js
     target = args.binary
@@ -1118,6 +1131,13 @@ def build_parser() -> argparse.ArgumentParser:
     pei.add_argument("binary", help="path to the .exe/.dll")
     pei.add_argument("-o", "--output")
     pei.set_defaults(func=cmd_pe)
+
+    jb = sub.add_parser("jeb", help="connect to a caller-started JEB MCP server (external engine); list/call its tools")
+    jb.add_argument("--url", help="JEB MCP endpoint (else $BINORACLE_JEB_MCP_URL)")
+    jb.add_argument("--call", help="tool name to call (omit to list tools)")
+    jb.add_argument("--arguments", help="JSON object of arguments for --call")
+    jb.add_argument("-o", "--output")
+    jb.set_defaults(func=cmd_jeb)
 
     jsp = sub.add_parser("js", help="inspect JavaScript/Electron statically (source maps, imports, IPC/Electron boundaries, native add-ons)")
     jsp.add_argument("binary", help="path to a .js, a .js.map, or an extracted app directory")

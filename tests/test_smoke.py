@@ -437,6 +437,29 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_jeb_connector_rpc_and_degrade():
+    import os
+    import json as _json
+    from binoracle.workflows.jebconnect import build_rpc, parse_rpc, jeb_list_tools, render_jeb
+    # pure JSON-RPC build/parse (no network)
+    req = _json.loads(build_rpc("tools/list", {"x": 1}, rid=7))
+    assert req["jsonrpc"] == "2.0" and req["method"] == "tools/list" and req["id"] == 7
+    assert req["params"] == {"x": 1}
+    ok = parse_rpc(b'{"jsonrpc":"2.0","id":1,"result":{"tools":["a"]}}')
+    assert ok["ok"] and ok["result"]["tools"] == ["a"]
+    err = parse_rpc(b'{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"nope"}}')
+    assert err["ok"] is False
+    # degrade honestly when no endpoint configured
+    saved = os.environ.pop("BINORACLE_JEB_MCP_URL", None)
+    try:
+        r = jeb_list_tools()
+        assert r["available"] is False and "BINORACLE_JEB_MCP_URL" in r["note"]
+        assert "No disponible" in render_jeb(r)
+    finally:
+        if saved is not None:
+            os.environ["BINORACLE_JEB_MCP_URL"] = saved
+
+
 def test_js_inspect_electron_bundle_and_sourcemap():
     import os
     import json as _json

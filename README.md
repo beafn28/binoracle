@@ -178,6 +178,12 @@ inline scripts. adb/Frida are caller-supplied and degrade honestly when absent; 
 and `dynamic_browser` MCP tools. **This is the runtime counterpart to REA's device/browser surfaces
 — kept out of the static, never-execute core on purpose.**
 
+**JEB (external engine connector).** JEB is commercial, so — exactly as REA does — binoracle does
+not embed it: you start your own JEB client serving MCP and point binoracle at it with
+`BINORACLE_JEB_MCP_URL` (or `--url`). `binoracle jeb` then speaks JSON-RPC 2.0 to that endpoint to
+list the engine's tools (`--call` to invoke one). Output is untrusted data from your JEB instance;
+it degrades honestly when no endpoint is configured. Also the `jeb_connect` MCP tool.
+
 ## Reverse engineer anything (one entry point)
 
 `binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded
