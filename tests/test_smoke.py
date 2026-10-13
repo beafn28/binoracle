@@ -437,6 +437,37 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_ghidra_decompile_degrades_and_parses():
+    import os
+    from binoracle.workflows.callertools import ghidra_decompile, parse_ghidra_pseudocode, render_caller
+    # degrade honestly when Ghidra is absent (empty PATH + no GHIDRA_* env)
+    old = os.environ.get("PATH", "")
+    saved = {k: os.environ.pop(k) for k in ("GHIDRA_INSTALL_DIR", "GHIDRA_HOME", "GHIDRA_DIR")
+             if k in os.environ}
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        r = ghidra_decompile("/tmp/whatever")
+        assert r["available"] is False and "Ghidra" in r["note"]
+        assert "No disponible" in render_caller("ghidra", r)
+    finally:
+        os.environ["PATH"] = old
+        os.environ.update(saved)
+    # the stdout parser recovers the marked pseudocode blocks (no Ghidra needed)
+    sample = ("INFO  noise\n"
+              "<<<BINO_FN main @ 0x401136>>>\n"
+              "undefined8 main(void)\n{\n  puts(\"hi\");\n  return 0;\n}\n"
+              "<<<BINO_END>>>\n"
+              "<<<BINO_FN helper @ 0x401100>>>\nvoid helper(void){ return; }\n<<<BINO_END>>>\n"
+              "<<<BINO_COUNT 2>>>\n")
+    fns = parse_ghidra_pseudocode(sample)
+    assert len(fns) == 2
+    assert fns[0]["name"] == "main" and fns[0]["addr"] == "0x401136"
+    assert "puts" in fns[0]["pseudocode"]
+    assert fns[1]["name"] == "helper"
+    out = render_caller("ghidra", {"ok": True, "count": 2, "functions": fns})
+    assert "main @ 0x401136" in out and "```c" in out
+
+
 def test_autorop_verifies_32bit_ret2libc():
     # Verificacion POSITIVA de una cadena ret2libc de x86-32 (cdecl, argumento en la pila) por
     # EJECUCION: en ret2win32 la cadena system('/bin/sh') obtiene shell de verdad. Confirma que el

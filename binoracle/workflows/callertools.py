@@ -19,7 +19,121 @@ _INSTALL = {
     "one_gadget": "one_gadget (gem install one_gadget): magic gadgets de una libc",
     "apktool": "Apktool (https://apktool.org): decodifica el AndroidManifest.xml binario y recursos",
     "jadx": "JADX (https://github.com/skylot/jadx): decompila DEX a codigo Java",
+    "analyzeHeadless": "Ghidra (https://ghidra-sre.org): decompilador nativo; define GHIDRA_INSTALL_DIR "
+                       "o pon support/analyzeHeadless en el PATH",
 }
+
+
+def _find_ghidra_headless():
+    """Localiza el lanzador headless de Ghidra: en el PATH, o bajo GHIDRA_INSTALL_DIR/GHIDRA_HOME/
+    support/. Devuelve la ruta o None (sin ejecutar nada)."""
+    import os
+    exe = shutil.which("analyzeHeadless")
+    if exe:
+        return exe
+    for env in ("GHIDRA_INSTALL_DIR", "GHIDRA_HOME", "GHIDRA_DIR"):
+        base = os.environ.get(env)
+        if base:
+            cand = os.path.join(base, "support", "analyzeHeadless")
+            if os.path.exists(cand):
+                return cand
+    return None
+
+
+# postScript Jython que corre dentro de Ghidra: decompila funciones y vuelca su pseudocodigo C
+# delimitado por marcadores que luego parseamos de la salida (ruidosa) de analyzeHeadless.
+_GHIDRA_DECOMP_SCRIPT = r'''# -*- coding: utf-8 -*-
+# binoracle headless decompile post-script (Jython, runs inside Ghidra). Emits each function's
+# pseudocode between <<<BINO_FN ...>>> markers. Bounded by BINORACLE_DECOMP_MAX functions.
+import os
+from ghidra.app.decompiler import DecompInterface
+from ghidra.util.task import ConsoleTaskMonitor
+di = DecompInterface()
+di.openProgram(currentProgram)
+want = os.environ.get("BINORACLE_DECOMP_FN") or ""
+try:
+    maxfn = int(os.environ.get("BINORACLE_DECOMP_MAX") or "40")
+except Exception:
+    maxfn = 40
+mon = ConsoleTaskMonitor()
+n = 0
+for f in currentProgram.getFunctionManager().getFunctions(True):
+    if want and f.getName() != want:
+        continue
+    if f.isExternal() or f.isThunk():
+        continue
+    res = di.decompileFunction(f, 60, mon)
+    if res is None or not res.decompileCompleted():
+        continue
+    df = res.getDecompiledFunction()
+    if df is None:
+        continue
+    print("<<<BINO_FN %s @ %s>>>" % (f.getName(), f.getEntryPoint()))
+    print(df.getC())
+    print("<<<BINO_END>>>")
+    n += 1
+    if n >= maxfn:
+        break
+print("<<<BINO_COUNT %d>>>" % n)
+'''
+
+
+def ghidra_decompile(binary: str, func: str = None, max_functions: int = 40, timeout: int = 300) -> dict:
+    """Decompile a native binary to C pseudocode via Ghidra's headless analyzer, IF the caller has
+    Ghidra installed. Ghidra DECOMPILES statically -- it never runs the target. Imports into a
+    throwaway project dir (removed afterwards). Output is untrusted (derived from the binary).
+    Returns {ok, functions:[{name,addr,pseudocode}], count} or an honest degrade."""
+    import os
+    import re as _re
+    import shutil as _sh
+    import tempfile
+    headless = _find_ghidra_headless()
+    if headless is None:
+        return _missing("analyzeHeadless")
+    proj = tempfile.mkdtemp(prefix="binoracle_ghidra_")
+    spath = tempfile.mkdtemp(prefix="binoracle_gscript_")
+    try:
+        script_file = os.path.join(spath, "binoracle_decomp.py")
+        with open(script_file, "w") as fh:
+            fh.write(_GHIDRA_DECOMP_SCRIPT)
+        env = dict(os.environ)
+        env["BINORACLE_DECOMP_MAX"] = str(int(max_functions))
+        if func:
+            env["BINORACLE_DECOMP_FN"] = func
+        argv = [headless, proj, "binoracle_proj", "-import", binary, "-scriptPath", spath,
+                "-postScript", "binoracle_decomp.py", "-deleteProject", "-analysisTimeoutPerFile",
+                str(max(30, timeout - 30))]
+        try:
+            p = subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "available": True, "tool": "analyzeHeadless",
+                    "note": f"Ghidra excedio {timeout}s (binario grande; sube el timeout o fija una funcion)"}
+        out = p.stdout.decode("utf-8", "replace")
+        funcs = parse_ghidra_pseudocode(out)
+        if not funcs:
+            tail = (p.stderr.decode("utf-8", "replace") or out)[-300:]
+            return {"ok": False, "available": True, "tool": "analyzeHeadless",
+                    "note": f"Ghidra no produjo pseudocodigo (¿binario no soportado?). {tail}"}
+        return {"ok": True, "available": True, "tool": "ghidra", "functions": funcs,
+                "count": len(funcs),
+                "limitations": ["pseudocodigo del decompilador de Ghidra (no verificado por binoracle); "
+                                "Ghidra decompila estaticamente, no ejecuta el binario"]}
+    except Exception as e:
+        return {"ok": False, "available": True, "tool": "analyzeHeadless", "note": f"fallo Ghidra: {e}"}
+    finally:
+        _sh.rmtree(proj, ignore_errors=True)
+        _sh.rmtree(spath, ignore_errors=True)
+
+
+def parse_ghidra_pseudocode(out: str) -> list:
+    """Extrae los bloques <<<BINO_FN name @ addr>>> ... <<<BINO_END>>> del stdout de analyzeHeadless.
+    Pura y testeable sin Ghidra."""
+    import re as _re
+    funcs = []
+    for m in _re.finditer(r"<<<BINO_FN (.+?) @ (\S+)>>>\n(.*?)\n<<<BINO_END>>>", out, _re.S):
+        funcs.append({"name": m.group(1), "addr": m.group(2),
+                      "pseudocode": m.group(3).rstrip()})
+    return funcs
 
 
 def _missing(tool: str) -> dict:
@@ -214,6 +328,11 @@ def render_caller(kind: str, r: dict) -> str:
         out.append(f"- JADX OK: {r.get('java_file_count')} ficheros .java")
         for c in (r.get("classes") or [])[:40]:
             out.append(f"  - {c}")
+    elif kind == "ghidra":
+        fns = r.get("functions") or []
+        out.append(f"- Ghidra OK: {r.get('count')} funcion(es) decompiladas")
+        for fn in fns[:10]:
+            out.append(f"\n### {fn['name']} @ {fn['addr']}\n```c\n{fn['pseudocode'][:4000]}\n```")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

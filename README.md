@@ -138,10 +138,16 @@ binoracle caller-tool one_gadget ./libc.so.6  # magic-gadget offsets via one_gad
 binoracle caller-tool capinfos ./cap.pcap   # capture file metadata via capinfos
 binoracle caller-tool manifest ./app.apk    # decode AndroidManifest.xml via Apktool
 binoracle caller-tool jadx ./app.apk        # decompile DEX to Java via JADX
+binoracle caller-tool ghidra ./prog         # decompile a native binary to C pseudocode via Ghidra
 ```
 
+Native pseudocode is driven through **Ghidra's headless analyzer** (`analyzeHeadless`, found on
+`PATH` or under `GHIDRA_INSTALL_DIR`) — Ghidra decompiles statically and never runs the target. It
+imports into a throwaway project (removed afterwards) and returns per-function C pseudocode; pass a
+function name to scope it. Same model REA uses for native analysis (it requires Hopper/Ghidra/IDA).
+
 Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fileinfo`,
-`apk_manifest` and `apk_decompile` MCP tools.
+`apk_manifest`, `apk_decompile` and `decompile_native` MCP tools.
 
 ## Reverse engineer anything (one entry point)
 

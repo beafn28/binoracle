@@ -235,6 +235,19 @@ def _h_fw(args):
     return render_caller("firmware", firmware_scan(b))
 
 
+@_tool("decompile_native", "Decompila un binario nativo (ELF/PE/Mach-O) a pseudocodigo C via el "
+       "analizador headless de Ghidra SI el llamador lo tiene (Ghidra decompila estaticamente, no "
+       "ejecuta el binario); si no, degrada con la pista de instalacion. Integracion caller-supplied. "
+       "Opcional: 'func' para decompilar solo una funcion.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "func": {"type": "string", "description": "nombre de funcion a decompilar (opcional)"}},
+       ["binary"])
+def _h_ghidra(args):
+    from .workflows.callertools import ghidra_decompile, render_caller
+    b = _binary(args)
+    return render_caller("ghidra", ghidra_decompile(b, func=(args or {}).get("func")))
+
+
 @_tool("apk_decompile", "Decompila el DEX de un APK a codigo Java via JADX (un decompilador: no "
        "ejecuta la app) SI el llamador lo tiene; si no, degrada. Devuelve un resumen de clases "
        "recuperadas. Integracion caller-supplied.",
