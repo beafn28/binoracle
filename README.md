@@ -35,34 +35,45 @@ binoracle does not stop at "this looks exploitable". For several bug classes it 
 real exploit and **runs it in an isolated sandbox to confirm a shell**, so the result is a
 verified exploit, not a claim.
 
-On the authorized training corpus (`binoracle train`), **12/20 (60%) of the sample binaries
-verify end-to-end** with a real shell in the sandbox. Of the remaining 8: 6 are stack-canary
-targets with no leak primitive (a genuine security property, not a tool gap) and 2 have a
-confirmed heap corruption with no reachable gift function or write target (nothing to redirect
-to). Every currently-reachable binary in the corpus verifies.
+binoracle **trains** this skill on an authorized corpus (`binoracle train`): it develops and
+runs an exploit for every binary and records *only what the sandbox confirms*. The verified
+techniques are catalogued in `binoracle/kb/verified-playbook.md` — auto-generated
+(`binoracle train --export-playbook`), regenerated on each run, and fed back into planning, so
+the agent's hard-won, execution-verified playbook ships with the product. The selection logic
+(which technique for which defenses) is documented in `binoracle/kb/exploit-engineering.md`.
 
 | Class | Mitigations handled | How it is verified |
 |-------|--------------------|--------------------|
-| ret2win | overflow + gift/win function | jumps to win() in the sandbox (angr finds the offset) |
+| ret2win (incl. stripped, 32-bit) | overflow + gift/win function | jumps to win() in the sandbox (offset found symbolically, hard time-bounded) |
 | ret2win on PIE | NX + PIE | resolves the PIE base, jumps to win() |
-| ROP / ret2syscall (static) | NX | builds an `execve('/bin/sh')` chain, spawns a shell |
+| ROP / ret2syscall (static/PIE) | NX (+ PIE) | builds an `execve('/bin/sh')`/ret2libc chain, spawns a shell |
 | ret2libc with leak | NX + ASLR (dynamic) | leaks libc (puts@GOT), computes the base, `system('/bin/sh')` |
-| format-string | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` |
-| format-string on PIE | NX + PIE | resolves the PIE base in the sandbox, same overwrite |
+| format-string (Partial RELRO) | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` |
+| format-string (Full RELRO) | NX + PIE + Full RELRO | GOT is read-only → ret2system by hijacking printf's saved return on the stack |
+| write-what-where | NX | unchecked index → a called function's GOT entry = win() |
+| UAF funcptr-hijack | NX | realloc recycles a freed struct whose first field is a function pointer = win() |
+| heap → shell (tcache poisoning) | NX, glibc ≥ 2.32 safe-linking | leaks the key via an empty bin, `free@GOT = win` (repairs the GOT neighbour the key-clear zeroes) |
+| tcache dup (double-free) | NX | makes malloc return an aligned GOT entry, `free@GOT = system` |
 
 A shell is confirmed by having it echo a unique marker. Every run is isolated:
-`--network none`, memory and pid limits, and ASLR disabled (`setarch -R` / `aslr=False`) so
-the local proof-of-concept is deterministic.
+no network, memory and pid limits, and ASLR disabled (`setarch -R` / `aslr=False`) so the
+local proof-of-concept is deterministic.
 
 ### Requirements
 
-The sandbox uses Docker (`gcc:13` for execution) and, for the ret2libc/format-string
-classes, a small pwntools image built once:
+Verification prefers the `binoracle-pwn` Docker image, but **Docker is not required**: when the
+image is absent, binoracle falls back to a **native OS-isolation sandbox** on any Linux x86-64
+host — a user+network namespace (`unshare -rn`, no network like `--network none`), ASLR off
+(`setarch -R`) and resource limits (CPU/memory/pids/file-size/no-core). The result records
+which engine verified it (`docker` or `native`). To use the Docker path, build the image once:
 
 ```bash
 make pwn-image        # builds the 'binoracle-pwn' image (python + pwntools + one_gadget)
 # make clean-docker   # if the Docker build cache fills the disk
 ```
+
+The sample corpus builds with that image too, or with a host `gcc` on Linux when the image is
+absent (`bash samples/build.sh`).
 
 ### Using it
 
