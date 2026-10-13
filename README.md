@@ -178,6 +178,10 @@ Notes:
   locate the CLI header) — runtime/metadata version, the metadata streams, the metadata-table row
   counts (Module/TypeDef/MethodDef/Assembly…) and a sample of the #Strings name heap. CIL method
   bodies are not disassembled. Also the `inspect_dotnet_assembly` MCP tool.
+- **Mach-O (macOS)**: `binoracle macho ./bin` reads the Mach-O header and load commands statically —
+  architecture, file type, segments with protections (W+X flagged), linked dylibs, entry point and
+  the mitigation flags (PIE, executable stack); fat/universal binaries are split into slices. Also
+  the `inspect_macho` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

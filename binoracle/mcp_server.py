@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_macho", "Lee un binario Mach-O (macOS) estaticamente: arquitectura, tipo, "
+       "segmentos y protecciones, dylibs enlazadas (LC_LOAD_DYLIB), entrypoint (LC_MAIN) y "
+       "flags de mitigacion (PIE, pila ejecutable). Detecta binarios universales (fat). No ejecuta.",
+       {"binary": {"type": "string", "description": "ruta al Mach-O"}}, ["binary"])
+def _h_macho(args):
+    from .workflows.machoinspect import inspect_macho, render_macho
+    b = _binary(args)
+    return render_macho(inspect_macho(b))
+
+
 @_tool("inspect_dotnet_assembly", "Lee un ensamblado .NET/CLI (PE gestionado) estaticamente: "
        "version de runtime/metadata, streams, conteos de tablas de metadata (Module/TypeDef/"
        "MethodDef/Assembly...) y una muestra del heap de nombres #Strings. No ejecuta nada.",

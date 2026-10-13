@@ -459,6 +459,48 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_macho_inspect_on_synthetic_binary():
+    import os
+    import struct
+    import tempfile
+    from binoracle.workflows.machoinspect import inspect_macho, render_macho
+    e = "<"
+    segname = b"__TEXT" + b"\x00" * 10
+    seg = (struct.pack(e + "II", 0x19, 72) + segname
+           + struct.pack(e + "QQQQiiII", 0x100000000, 0x1000, 0, 0x1000, 5, 5, 0, 0))
+    name = b"/usr/lib/libSystem.B.dylib\x00"
+    name = name + b"\x00" * ((-len(name)) % 8)
+    dcmd = struct.pack(e + "IIIIII", 0x0C, 24 + len(name), 24, 0, 0, 0) + name
+    main = struct.pack(e + "IIQQ", 0x80000028, 24, 0x1230, 0)
+    cmds = seg + dcmd + main
+    hdr = struct.pack(e + "IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 2, 3, len(cmds), 0x200000, 0)
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(hdr + cmds)
+    try:
+        r = inspect_macho(p)
+        assert r["ok"] and r["is_macho"] and not r["fat"]
+        im = r["images"][0]
+        assert im["arch"] == "x86_64" and im["filetype"] == "EXECUTE" and im["pie"] is True
+        assert im["dylibs"] == ["/usr/lib/libSystem.B.dylib"]
+        assert any(s["name"] == "__TEXT" and s["perms"] == "r-x" for s in im["segments"])
+        assert im["entry"] == 0x1230
+        assert "Mach-O" in render_macho(r)
+    finally:
+        os.remove(p)
+
+
+def test_macho_inspect_non_macho():
+    import os
+    from binoracle.workflows.machoinspect import inspect_macho
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample no compilado")
+    r = inspect_macho(binp)
+    assert r["ok"] and r["is_macho"] is False
+
+
 def test_dotnet_metadata_parser_on_synthetic_root():
     # Parsea un metadata root BSJB sintetico: version, streams, conteos de tablas y nombres.
     import struct
