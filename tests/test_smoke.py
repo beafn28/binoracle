@@ -459,6 +459,61 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_goinspect_parses_inline_buildinfo():
+    # Parser de build-info Go sobre un blob INLINE sintetico (sin toolchain de Go): debe extraer
+    # version, modulo principal, una dependencia con replacement y un build setting.
+    from binoracle.workflows.goinspect import inspect_go, MODULE_START, MODULE_END, MAGIC
+    import tempfile, os
+    def uvarint(n):
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+    version = b"go1.22.1"
+    modtext = (b"path\tgithub.com/acme/tool\n"
+               b"mod\tgithub.com/acme/tool\t(devel)\t\n"
+               b"dep\tgithub.com/pkg/errors\tv0.9.1\th1:abc\n"
+               b"=>\tgithub.com/fork/errors\tv0.9.2\th1:def\n"
+               b"build\t-trimpath=true\n"
+               b"build\tGOARCH=amd64\n")
+    mod = MODULE_START + modtext + MODULE_END
+    header = MAGIC + bytes([8, 2])    # [0:14] magic, [14]=ptrSize=8, [15]=flags=0x02 (inline, little)
+    header = header + b"\x00" * (32 - len(header))
+    blob = b"\x00" * 64 + header + uvarint(len(version)) + version + uvarint(len(mod)) + mod + b"\x00" * 16
+    p = tempfile.mktemp(suffix=".gobin")
+    try:
+        with open(p, "wb") as f:
+            f.write(blob)
+        r = inspect_go(p)
+        assert r["ok"] and r["is_go"] and r["encoding"] == "inline"
+        assert r["go_version"] == "go1.22.1"
+        assert r["main_path"] == "github.com/acme/tool"
+        deps = r["dependencies"]
+        assert any(d["path"] == "github.com/pkg/errors" and d["replacement"] and
+                   d["replacement"]["path"] == "github.com/fork/errors" for d in deps)
+        assert r["build_settings"].get("-trimpath") == "true" and r["build_settings"].get("GOARCH") == "amd64"
+    finally:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def test_goinspect_non_go_is_not_a_verdict():
+    # Un ELF que NO es Go -> is_go False, pero sin afirmar nada mas (honesto).
+    import os
+    from binoracle.workflows.goinspect import inspect_go
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample no compilado")
+    r = inspect_go(binp)
+    assert r["ok"] and r["is_go"] is False and r.get("note")
+
+
 def test_mcp_server_handshake_and_tools():
     # El servidor MCP debe anunciar binoracle, listar sus tools, marcar el output derivado del
     # binario como contenido no confiable, y manejar una tool call sin sandbox (kb_search).

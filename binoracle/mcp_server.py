@@ -143,6 +143,16 @@ def _h_primitives(args):
     return str(getattr(r, "answer", None) or getattr(r, "text", None) or r)
 
 
+@_tool("inspect_go_binary", "Lee estaticamente la build-info de un binario Go (version del "
+       "compilador, modulo principal, dependencias, replacements y build settings) SIN toolchain de "
+       "Go ni ejecutar el binario. La ausencia de build-info no prueba que no sea Go.",
+       {"binary": {"type": "string", "description": "ruta al binario (ELF/PE/Mach-O)"}}, ["binary"])
+def _h_go(args):
+    from .workflows.goinspect import inspect_go, render_go
+    b = _binary(args)
+    return render_go(inspect_go(b))
+
+
 @_tool("kb_search", "Consulta la base de conocimiento de explotacion (RAG) de binoracle: cheat "
        "sheets, metodologia y playbook verificado.",
        {"query": {"type": "string", "description": "consulta en lenguaje natural"},

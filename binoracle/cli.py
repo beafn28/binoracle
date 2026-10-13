@@ -530,6 +530,14 @@ def cmd_mcp(args, config):
     serve()
 
 
+def cmd_go(args, config):
+    from .workflows.goinspect import inspect_go, render_go
+    binary = _require_binary(args.binary)
+    out = render_go(inspect_go(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -848,6 +856,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     mc = sub.add_parser("mcp", help="run the binoracle MCP server (stdio) so any agent can drive its tools")
     mc.set_defaults(func=cmd_mcp)
+
+    go = sub.add_parser("go", help="read a Go binary's build info (version, modules, build settings) statically")
+    go.add_argument("binary")
+    go.add_argument("-o", "--output")
+    go.set_defaults(func=cmd_go)
 
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")

@@ -150,6 +150,10 @@ Notes:
   tools simply report themselves unavailable and radare2 covers the equivalent ground.
 - Dynamic execution (`dbg_run_input`) can only run a binary the host can execute: a Linux
   ELF on Linux, a Windows .exe under Windows/wine, a Mach-O on macOS.
+- **Go binaries**: `binoracle go ./target` reads the embedded build info (compiler version,
+  main module, dependencies with replacements, and build settings) **statically, with no Go
+  toolchain and without running the target**. Absence of the blob is not a verdict that the
+  binary is not Go. Also exposed as the `inspect_go_binary` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.
