@@ -15,6 +15,7 @@ La simulacion/verificacion real (opcional, verify=True) reutiliza el sandbox de 
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -167,13 +168,25 @@ def _enum_gadgets(binary: str) -> List[Gadget]:
     seen = set()
     try:
         import json
+        import time as _time
         from ..oracles.r2session import get as _r2get
         r = _r2get(binary)
         if r is None:
             return out
-        patterns = (["pop " + reg for reg in _ARG_REGS + ["rax", "rbx", "rbp", "rsp"]]
-                    + ["syscall", "leave", "int 0x80"])
+        # Each `/Rj <pat>` is a full ROP scan of .text; on a big STATIC binary (~800KB) that is
+        # ~6s EACH, so ~17 patterns = ~110s -- which alone blew the per-binary budget before any
+        # exploit was even attempted. Order the patterns by usefulness (arg regs + syscall first,
+        # the ones ret2libc/execve chains actually need) and stop scanning once a wall-clock
+        # budget is spent: the gadget list is best-effort (the verifiers find their own gadgets
+        # via pwntools), so fewer-but-the-useful-ones under time pressure is the right trade.
+        budget_s = float(os.environ.get("BINORACLE_GADGET_BUDGET", "40") or 40)
+        patterns = (["pop " + reg for reg in _ARG_REGS]           # rdi, rsi, rdx, rcx, r8, r9
+                    + ["syscall", "int 0x80", "leave"]            # execve / stack pivot
+                    + ["pop " + reg for reg in ("rax", "rbx", "rbp", "rsp")])
+        deadline = _time.time() + budget_s
         for pat in patterns:
+            if _time.time() > deadline:
+                break                                             # keep what we have; don't blow the budget
             try:
                 raws = json.loads(r.cmd(f"/Rj {pat}") or "[]")
             except Exception:
