@@ -74,8 +74,11 @@ def _render_chains(an, lang: str = "es") -> str:
         out.append(f"### Arsenal ROP ({ars['total_gadgets']} gadgets clasificados)")
         argregs = ars.get("arg_regs") or {}
         if argregs:
+            _b = ars.get("bits", 64)
+            _order = (["ebx", "ecx", "edx", "esi", "edi", "eax"] if _b == 32
+                      else ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax"])
             out.append("- control de registros:")
-            for r in ("rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax"):
+            for r in _order:
                 g = argregs.get(r)
                 if g:
                     cl = (" clobbers " + ",".join(g["clobbers"])) if g.get("clobbers") else ""
@@ -91,7 +94,8 @@ def _render_chains(an, lang: str = "es") -> str:
         cov = ars.get("execve_coverage") or {}
         if cov:
             mark = "COMPLETA" if cov.get("complete") else f"parcial ({','.join(cov.get('have') or []) or 'ninguno'})"
-            out.append(f"- cobertura execve-por-syscall (rdi/rsi/rdx/rax+syscall): **{mark}**")
+            _needtxt = "/".join(cov.get("need") or []) + ("+int0x80" if ars.get("bits") == 32 else "+syscall")
+            out.append(f"- cobertura execve-por-syscall ({_needtxt}): **{mark}**")
         csu = ars.get("ret2csu")
         if csu:
             out.append(f"- **ret2csu disponible** (gadget universal __libc_csu_init): "

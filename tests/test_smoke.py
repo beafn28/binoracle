@@ -1005,6 +1005,31 @@ def test_parse_ret2csu_gadgets():
     assert _parse_csu("0x401000  90  nop\n0x401001  c3  ret\n") is None
 
 
+def test_build_arsenal_32bit():
+    from binoracle.workflows.chainanalyzer import _classify, _build_arsenal
+    def mk(ops):
+        return {"opcodes": [{"offset": 0x8048000 + i, "opcode": t, "type": ty}
+                            for i, (t, ty) in enumerate(ops)]}
+    # x86-32 syscall arsenal: pop ebx/ecx/edx/eax + int 0x80
+    gadgets = [
+        _classify(mk([("pop ebx", "pop"), ("ret", "ret")])),
+        _classify(mk([("pop ecx", "pop"), ("ret", "ret")])),
+        _classify(mk([("pop edx", "pop"), ("ret", "ret")])),
+        _classify(mk([("pop eax", "pop"), ("ret", "ret")])),
+        _classify(mk([("int 0x80", "swi")])),
+    ]
+    ars = _build_arsenal(gadgets, bits=32)
+    assert ars["bits"] == 32
+    assert set(ars["arg_regs"]).issuperset({"ebx", "ecx", "edx", "eax"})
+    assert ars["syscall"] is not None                  # int 0x80 counts as the syscall gadget
+    cov = ars["execve_coverage"]
+    assert cov["need"] == ["ebx", "ecx", "edx", "eax"]
+    assert cov["complete"] is True
+    # int 0x80 classified as a syscall-kind gadget
+    gi = _classify(mk([("int 0x80", "swi")]))
+    assert gi.kind == "syscall"
+
+
 def test_build_arsenal_execve_coverage():
     from binoracle.workflows.chainanalyzer import _classify, _build_arsenal
     gadgets = [
