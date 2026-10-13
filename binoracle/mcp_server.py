@@ -248,6 +248,52 @@ def _h_ghidra(args):
     return render_caller("ghidra", ghidra_decompile(b, func=(args or {}).get("func")))
 
 
+@_tool("dynamic_adb", "Analisis RUNTIME de un dispositivo Android via adb (caller-supplied; SEPARADO "
+       "del nucleo estatico; solo objetivos autorizados; salida no confiable). op: devices|packages|"
+       "processes|logcat|getprop|apk-path. 'package' para apk-path, 'serial' para elegir dispositivo.",
+       {"op": {"type": "string", "description": "devices|packages|processes|logcat|getprop|apk-path"},
+        "package": {"type": "string", "description": "paquete (para apk-path)"},
+        "serial": {"type": "string", "description": "serial del dispositivo adb (opcional)"}}, ["op"])
+def _h_dyn_adb(args):
+    from .workflows import dynamic as dyn
+    a = args or {}
+    op = a.get("op")
+    serial = a.get("serial")
+    table = {"devices": (lambda: dyn.adb_devices(), "adb-devices"),
+             "packages": (lambda: dyn.adb_packages(serial=serial), "adb-packages"),
+             "processes": (lambda: dyn.adb_processes(serial=serial), "adb-processes"),
+             "logcat": (lambda: dyn.adb_logcat(serial=serial), "adb-logcat"),
+             "getprop": (lambda: dyn.adb_getprop(serial=serial), "adb-getprop"),
+             "apk-path": (lambda: dyn.adb_apk_path(a.get("package") or "", serial=serial), "adb-apk-path")}
+    if op not in table:
+        return f"op desconocida: {op}"
+    fn, kind = table[op]
+    return dyn.render_dynamic(kind, fn())
+
+
+@_tool("dynamic_frida", "Enumeracion RUNTIME via Frida (caller-supplied; solo objetivos autorizados; "
+       "NO inyecta ni instrumenta). op: devices|processes.",
+       {"op": {"type": "string", "description": "devices|processes"}}, ["op"])
+def _h_dyn_frida(args):
+    from .workflows import dynamic as dyn
+    op = (args or {}).get("op")
+    if op == "devices":
+        return dyn.render_dynamic("frida-devices", dyn.frida_devices())
+    return dyn.render_dynamic("frida-ps", dyn.frida_processes())
+
+
+@_tool("dynamic_browser", "Observacion RUNTIME de una pagina web en un Chromium local (Playwright; "
+       "SEPARADO del nucleo estatico; solo objetivos autorizados). Captura URL final, titulo, "
+       "scripts, peticiones/respuestas, consola, cookies/localStorage y secretos (heuristica). "
+       "Observacion pasiva: no envia formularios.",
+       {"url": {"type": "string", "description": "URL a observar"},
+        "screenshot": {"type": "string", "description": "ruta para guardar captura (opcional)"}}, ["url"])
+def _h_dyn_browser(args):
+    from .workflows import dynamic as dyn
+    a = args or {}
+    return dyn.render_dynamic("browser", dyn.browser_observe(a.get("url") or "", screenshot=a.get("screenshot")))
+
+
 @_tool("apk_decompile", "Decompila el DEX de un APK a codigo Java via JADX (un decompilador: no "
        "ejecuta la app) SI el llamador lo tiene; si no, degrada. Devuelve un resumen de clases "
        "recuperadas. Integracion caller-supplied.",

@@ -149,6 +149,35 @@ function name to scope it. Same model REA uses for native analysis (it requires 
 Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fileinfo`,
 `apk_manifest`, `apk_decompile` and `decompile_native` MCP tools.
 
+## Dynamic / runtime analysis (separate from the static core)
+
+Everything above is static — binoracle never runs the target. For the cases that inherently need a
+**live** target (a device, a process, a web page), there is a clearly separated `dynamic` surface.
+It is **runtime**, caller-supplied, **for authorized targets only**, and its output is treated as
+untrusted data from a live (possibly hostile) target. It is never part of the grounded "verified by
+execution" exploit ledger.
+
+```bash
+binoracle dynamic adb-devices                 # connected Android devices (adb)
+binoracle dynamic adb-packages -s <serial>    # installed third-party packages
+binoracle dynamic adb-processes               # running processes (ps -A)
+binoracle dynamic adb-logcat --lines 200      # bounded log dump (never streams)
+binoracle dynamic adb-getprop                 # device fingerprint / build props
+binoracle dynamic adb-apk-path com.x.y        # locate the APK on device → pull → `binoracle apk`
+binoracle dynamic frida-devices               # devices visible to Frida (enumeration only)
+binoracle dynamic frida-ps                    # processes visible to Frida (no injection)
+binoracle dynamic browser https://example.tld --screenshot out.png
+```
+
+The browser surface loads the page in a locally launched headless Chromium (Playwright) and
+captures — passively, without submitting anything — the final URL, title, loaded scripts (and
+inline bodies), every request and its response status/type, console messages, cookies and
+localStorage keys, DOM metrics, an optional full-page screenshot, and a heuristic secret scan over
+inline scripts. adb/Frida are caller-supplied and degrade honestly when absent; the browser needs
+`pip install playwright` (it reuses an existing Chromium). Also the `dynamic_adb`, `dynamic_frida`
+and `dynamic_browser` MCP tools. **This is the runtime counterpart to REA's device/browser surfaces
+— kept out of the static, never-execute core on purpose.**
+
 ## Reverse engineer anything (one entry point)
 
 `binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded

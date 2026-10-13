@@ -661,6 +661,34 @@ def cmd_pe(args, config):
     _write_if(args.output, out)
 
 
+def cmd_dynamic(args, config):
+    from .workflows import dynamic as dyn
+    k = args.kind
+    if k == "adb-devices":
+        r = dyn.adb_devices()
+    elif k == "adb-packages":
+        r = dyn.adb_packages(serial=args.serial)
+    elif k == "adb-processes":
+        r = dyn.adb_processes(serial=args.serial)
+    elif k == "adb-logcat":
+        r = dyn.adb_logcat(serial=args.serial, lines=args.lines or 200)
+    elif k == "adb-getprop":
+        r = dyn.adb_getprop(serial=args.serial)
+    elif k == "adb-apk-path":
+        r = dyn.adb_apk_path(args.target or "", serial=args.serial)
+    elif k == "frida-devices":
+        r = dyn.frida_devices()
+    elif k == "frida-ps":
+        r = dyn.frida_processes()
+    elif k == "browser":
+        r = dyn.browser_observe(args.target or "", screenshot=args.screenshot)
+    else:
+        _eprint(f"error: kind desconocido {k}"); sys.exit(2)
+    out = dyn.render_dynamic(k, r)
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_caller_tool(args, config):
     from .workflows import callertools as ct
     binary = _require_binary(args.binary)
@@ -1079,6 +1107,16 @@ def build_parser() -> argparse.ArgumentParser:
     pei.add_argument("binary", help="path to the .exe/.dll")
     pei.add_argument("-o", "--output")
     pei.set_defaults(func=cmd_pe)
+
+    dy = sub.add_parser("dynamic", help="RUNTIME analysis (separate from the static core): adb device / frida / live browser — authorized targets only, caller-supplied")
+    dy.add_argument("kind", choices=["adb-devices", "adb-packages", "adb-processes", "adb-logcat",
+                                     "adb-getprop", "adb-apk-path", "frida-devices", "frida-ps", "browser"])
+    dy.add_argument("target", nargs="?", help="URL (browser) or package name (adb-apk-path)")
+    dy.add_argument("-s", "--serial", help="adb device serial")
+    dy.add_argument("--lines", type=int, help="adb-logcat: number of lines")
+    dy.add_argument("--screenshot", help="browser: save a full-page screenshot to this path")
+    dy.add_argument("-o", "--output")
+    dy.set_defaults(func=cmd_dynamic)
 
     ct = sub.add_parser("caller-tool", help="optional caller-supplied integrations (wat/pcap/firmware); degrade if tool absent")
     ct.add_argument("kind", choices=["wat", "pcap", "firmware", "one_gadget", "capinfos", "manifest", "jadx", "ghidra"])

@@ -437,6 +437,51 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_dynamic_adb_frida_degrade():
+    # El modulo dinamico es caller-supplied: sin adb/frida en PATH debe degradar con honestidad.
+    import os
+    from binoracle.workflows import dynamic as dyn
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        for r, kind in ((dyn.adb_devices(), "adb-devices"), (dyn.adb_packages(), "adb-packages"),
+                        (dyn.adb_getprop(), "adb-getprop"), (dyn.frida_processes(), "frida-ps"),
+                        (dyn.frida_devices(), "frida-devices")):
+            assert r["available"] is False
+            assert "No disponible" in dyn.render_dynamic(kind, r)
+        # apk-path valida el nombre de paquete antes de tocar adb
+        bad = dyn.adb_apk_path("../etc/passwd")
+        assert bad["ok"] is False
+    finally:
+        os.environ["PATH"] = old
+
+
+def test_dynamic_browser_observes_data_url():
+    # Observacion RUNTIME real pero HERMETICA: una data: URL (sin red) con un script inline que
+    # contiene un secreto -> el navegador la carga y binoracle extrae metricas + secreto.
+    import pytest
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+    except Exception:
+        pytest.skip("Playwright no disponible")
+    from binoracle.workflows import dynamic as dyn
+    html = ("<html><head><title>BinoDyn</title>"
+            "<script>var k='AKIAIOSFODNN7EXAMPLE'; console.log('hi');</script>"
+            "</head><body><form><input name=x></form><a href='#'>l</a></body></html>")
+    import urllib.parse
+    url = "data:text/html," + urllib.parse.quote(html)
+    r = dyn.browser_observe(url, timeout_s=20)
+    if not r.get("ok"):
+        pytest.skip(f"navegador no operativo en este entorno: {r.get('note')}")
+    assert r["title"] == "BinoDyn"
+    assert r["metrics"]["forms"] == 1 and r["metrics"]["inputs"] == 1
+    assert r["inline_scripts"] >= 1
+    kinds = {s["kind"] for s in (r.get("secrets") or [])}
+    assert "aws-access-key" in kinds
+    out = dyn.render_dynamic("browser", r)
+    assert "BinoDyn" in out and "RUNTIME" in out
+
+
 def test_macho_objc_swift_metadata():
     import os
     import struct
