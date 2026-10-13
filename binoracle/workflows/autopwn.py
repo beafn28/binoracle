@@ -26,6 +26,12 @@ class AutopwnResult:
     win_exploit: bool = False
     ai_plan: str = ""
     ai_conclusion: str = ""
+    # contexto del binario (defensas/primitivas), para que el informe refleje POR QUE cada tecnica
+    arch: str = ""
+    bits: str = ""
+    mit: dict = field(default_factory=dict)      # nx/pic/canary/relro, tal cual los da checksec
+    sinks: List[str] = field(default_factory=list)
+    has_win: bool = False
 
 
 def autopwn(binary: str, config=None, store=None,
@@ -57,6 +63,10 @@ def autopwn(binary: str, config=None, store=None,
     sink_names = sinks.meta.get("sinks", []) if sinks.ok else []
     log(f"[recon] sinks: {', '.join(sink_names) or 'ninguno'}")
     learn(f"sinks: {sink_names}")
+
+    # guarda el contexto estructurado para el informe (no solo en la traza)
+    res.arch, res.bits, res.mit, res.sinks = str(arch), str(bits), dict(mit), list(sink_names)
+    res.has_win = find_win(binary) is not None
 
     gad = reg.get("r2_rop").run(filter="pop rdi") if reg.get("r2_rop") else None
     has_pop_rdi = bool(gad and gad.ok and gad.meta.get("count", 0) > 0)
@@ -297,12 +307,57 @@ def _ai_conclude(llm, res) -> str:
         return ""
 
 
+def _flag(v) -> bool:
+    return str(v).lower() in ("true", "1")
+
+
+def _why(mit: dict, has_win: bool, technique: str) -> str:
+    """Razon 'defensa -> tecnica': por que ESTA tecnica es la adecuada para este contexto."""
+    t = (technique or "").lower()
+    pie = _flag(mit.get("pic")); can = _flag(mit.get("canary"))
+    if "canary" in t:
+        return "canary ACTIVO + win() + buffer impreso -> fuga del canary, reescritura y overflow a win()"
+    if "ret2win" in t:
+        return ("win() presente" + (" con PIE -> se resuelve la base en sandbox" if pie
+                else " sin canary -> retorno directo a win() (direccion fija)"))
+    if "ret2libc" in t:
+        return "sin win(): fuga de libc (puts@GOT) -> base -> system('/bin/sh')"
+    if "rop" in t:
+        return ("sin win()/system directo -> cadena ROP execve por syscall"
+                + (" (PIE: base resuelta en sandbox)" if pie else ""))
+    if "format" in t:
+        return "printf(entrada) controlado -> escritura via %n (GOT o retorno segun RELRO)"
+    if "heap" in t or "tcache" in t or "uaf" in t:
+        return "primitiva de heap (UAF/tcache) -> secuestro de puntero/GOT a win()/system"
+    if "wow" in t or "write" in t:
+        return "escritura arbitraria (indice sin check) -> GOT de funcion llamada despues = win()"
+    return "seleccionada segun las defensas y primitivas observadas"
+
+
 def render_autopwn(res: AutopwnResult, lang: str = "es") -> str:
     out = [f"## Auto-explotacion de `{res.binary}`\n"]
     if res.win_exploit:
         techs = [n for n, ok, _ in res.attempts if ok is True]
         out.append("> EXPLOIT VERIFICADO: se ejecuto un exploit (" + ", ".join(techs) +
                    ") en sandbox y se consiguio el objetivo.\n")
+    # Contexto (defensas/primitivas): refleja POR QUE se eligio cada tecnica, no solo el resultado
+    if res.mit or res.arch:
+        m = res.mit or {}
+        defs = []
+        defs.append("NX " + ("ON" if _flag(m.get("nx")) else "off"))
+        defs.append("PIE " + ("ON" if _flag(m.get("pic")) else "off"))
+        defs.append("canary " + ("ON" if _flag(m.get("canary")) else "off"))
+        if m.get("relro"):
+            defs.append("RELRO " + str(m.get("relro")))
+        out.append("### Contexto del binario (defensas detectadas)\n")
+        out.append(f"- arquitectura: **{res.arch or '?'} {res.bits or '?'}-bit**")
+        out.append(f"- mitigaciones: **{' · '.join(defs)}**")
+        out.append(f"- funcion gift `win()`: **{'si' if res.has_win else 'no'}**")
+        out.append(f"- sinks peligrosos: {', '.join(res.sinks) if res.sinks else 'ninguno'}")
+        if res.win_exploit:
+            techs = [n for n, ok, _ in res.attempts if ok is True]
+            out.append("- **por que la tecnica elegida**: " + _why(res.mit, res.has_win, techs[0] if techs else ""))
+        out.append("")
     out.append(f"- hallazgos verificados: {res.verified_findings}")
     if res.ai_plan:
         out.append("\n### Plan de la IA (que probar segun lo observado)\n" + res.ai_plan)
@@ -321,10 +376,14 @@ def render_autopwn(res: AutopwnResult, lang: str = "es") -> str:
 
 def autopwn_to_json(res: "AutopwnResult") -> str:
     import json
+    techs = [n for n, ok, _ in res.attempts if ok is True]
     return json.dumps({
         "binary": res.binary,
+        "context": {"arch": res.arch, "bits": res.bits, "mitigations": res.mit,
+                    "sinks": res.sinks, "has_win": res.has_win},
         "verified_findings": res.verified_findings,
         "exploit_verified": res.win_exploit,
+        "rationale": (_why(res.mit, res.has_win, techs[0]) if (res.win_exploit and techs) else ""),
         "attempts": [{"technique": n, "result": ("works" if ok is True else
                      ("no" if ok is False else "possible")), "detail": d}
                      for n, ok, d in res.attempts],
