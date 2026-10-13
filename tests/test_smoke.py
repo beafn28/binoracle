@@ -437,6 +437,26 @@ def test_autocanary_verifies_leakable_sample():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_autorop_verifies_32bit_ret2libc():
+    # Verificacion POSITIVA de una cadena ret2libc de x86-32 (cdecl, argumento en la pila) por
+    # EJECUCION: en ret2win32 la cadena system('/bin/sh') obtiene shell de verdad. Confirma que el
+    # motor ROP de 32-bit construye+verifica (pwntools rop.call -> layout cdecl) y que el sandbox
+    # trae libc6:i386. Se auto-salta donde el sandbox no aplica o el binario no esta compilado.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/ret2win32"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win32 no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autopoc import autorop
+    r = autorop(binp, run=True)
+    assert r.get("ok") and r.get("verified"), f"ret2libc 32-bit no verificado: {r.get('note')}"
+    assert "ret2libc" in (r.get("strategy") or ""), f"estrategia inesperada: {r.get('strategy')}"
+
+
 def test_autocanary_verifies_format_string_leak():
     # Verificacion POSITIVA de la 2a estrategia (fuga del canary por FORMAT-STRING %p, la mas
     # comun en CTF): en `canfmt` el bypass obtiene shell de verdad. Se auto-salta donde el sandbox

