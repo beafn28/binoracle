@@ -89,6 +89,8 @@ echo "[*] srop32 (32-bit, static, SROP via int 0x80; requiere multilib+glibc-sta
 run "gcc -m32 -fno-stack-protector -no-pie -static -w -o bin/srop32 src/srop32.c" || echo "  (srop32 build omitido: sin multilib/glibc-static i386)"
 echo "[*] ret2csu (x86-64, no-PIE, gadgets universales + call con args controlados)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/ret2csu src/ret2csu.c"
+echo "[*] fmtgot32 (32-bit, format-string -> printf@GOT=system; requiere multilib)"
+run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/fmtgot32 src/fmtgot32.c" || echo "  (fmtgot32 build omitido: sin multilib)"
 echo "[*] win_chall.exe (Windows PE via mingw)"
 docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
   'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"

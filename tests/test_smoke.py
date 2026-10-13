@@ -631,6 +631,26 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autofmt_verifies_32bit_got_overwrite():
+    # Verificacion POSITIVA de format-string de x86-32 por EJECUCION: en fmtgot32 el bug
+    # printf(buf) permite sobrescribir printf@GOT con system (Partial RELRO, no-PIE) y luego
+    # printf("/bin/sh") lanza shell. Prueba que la deteccion de offset es arch-aware (marcador
+    # 0x41414141 de 4 bytes) y que fmtstr_payload escribe en 4 bytes. Auto-salta sin sandbox/sample.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/fmtgot32"
+    if not os.path.exists(binp):
+        pytest.skip("sample fmtgot32 no compilado (samples/build.sh; requiere multilib)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autofmt import autofmt
+    r = autofmt(binp)
+    assert r.get("ok") and r.get("verified"), f"format-string 32-bit no verificado: {r.get('note')}"
+    assert "printf_got=" in (r.get("detail") or "")
+
+
 def test_autocsu_verifies_ret2csu():
     # Verificacion POSITIVA de ret2csu por EJECUCION: los gadgets universales de __libc_csu_init
     # fijan rdi/rsi/rdx (edi via r13d) y hacen `call [r12+rbx*8]` sobre win(), que con los args
