@@ -384,3 +384,12 @@ def test_autoheap_shell_degrades_cleanly():
     from binoracle.workflows.autoheap import autoheap_shell
     r = autoheap_shell("/nonexistent/dir/heapexp")
     assert isinstance(r, dict) and r.get("ok") is False and r.get("note")
+
+
+def test_autocanary_degrades_cleanly():
+    # El bypass de canary por fuga (autocanary) se verifica en sandbox; con una ruta inexistente
+    # se ejerce la degradacion limpia (ok=False + nota) sin arrancar nada, en cualquier entorno.
+    from binoracle.workflows.autocanary import autocanary, render_canary
+    r = autocanary("/nonexistent/dir/canary")
+    assert isinstance(r, dict) and r.get("ok") is False and r.get("note")
+    assert isinstance(render_canary(r), str) and render_canary(r)
