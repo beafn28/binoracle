@@ -165,6 +165,12 @@ Notes:
 - **WebAssembly**: `binoracle wasm ./mod.wasm` reads a module statically (no WABT) — version,
   section inventory, function type signatures, and every import/export with its kind. Instruction
   bodies are not decoded to WAT (that needs WABT); the limit is reported. Also `inspect_wasm_artifact`.
+- **SQLite databases**: `binoracle sqlite ./app.db` opens the file read-only and reports the schema
+  (tables, columns, indexes, views, triggers) and a bounded row sample — no writes, no triggers
+  fired. Built-in sqlite3, no dependency. Also the `inspect_sqlite_database` MCP tool.
+- **EVM bytecode**: `binoracle evm ./code.hex` reads EVM runtime bytecode (raw or hex) — the
+  function selectors (PUSH4 heuristic), capability opcodes (CALL/DELEGATECALL/CREATE/SELFDESTRUCT)
+  and the Solidity metadata CBOR trailer (solc version, IPFS/Swarm hash). Also `inspect_evm_bytecode`.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

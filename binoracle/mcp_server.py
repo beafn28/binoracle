@@ -153,6 +153,26 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_sqlite_database", "Abre una base SQLite en SOLO LECTURA y reporta su esquema "
+       "(tablas, columnas, indices, vistas, triggers) y una muestra acotada de filas. No escribe "
+       "nada ni dispara triggers.",
+       {"binary": {"type": "string", "description": "ruta al fichero .sqlite/.db"}}, ["binary"])
+def _h_sqlite(args):
+    from .workflows.sqliteinspect import inspect_sqlite, render_sqlite
+    b = _binary(args)
+    return render_sqlite(inspect_sqlite(b))
+
+
+@_tool("inspect_evm_bytecode", "Lee bytecode EVM (raw o hex) estaticamente: selectores de funcion "
+       "(heuristica PUSH4), opcodes de capacidad (CALL/DELEGATECALL/CREATE/SELFDESTRUCT) y la "
+       "metadata CBOR de Solidity (version de solc, hash IPFS/Swarm). No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al bytecode (raw o hex)"}}, ["binary"])
+def _h_evm(args):
+    from .workflows.evminspect import inspect_evm, render_evm
+    b = _binary(args)
+    return render_evm(inspect_evm(b))
+
+
 @_tool("inspect_wasm_artifact", "Lee un modulo WebAssembly (.wasm) estaticamente: version, "
        "secciones, firmas de tipos, imports y exports con su kind. No decodifica cuerpos a WAT "
        "(eso requiere WABT). No ejecuta nada.",

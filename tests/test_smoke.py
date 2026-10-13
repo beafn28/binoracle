@@ -459,6 +459,81 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_sqlite_inspect_reads_schema_readonly():
+    import os
+    import sqlite3
+    import tempfile
+    from binoracle.workflows.sqliteinspect import inspect_sqlite, render_sqlite
+    p = tempfile.mktemp(suffix=".db")
+    con = sqlite3.connect(p)
+    c = con.cursor()
+    c.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, pw TEXT)")
+    c.execute("CREATE INDEX idx_name ON users(name)")
+    c.execute('CREATE VIEW admins AS SELECT * FROM users')
+    c.execute("CREATE TRIGGER t_ins AFTER INSERT ON users BEGIN SELECT 1; END")
+    c.executemany("INSERT INTO users(name,pw) VALUES(?,?)", [("admin", "s3cr3t"), ("bob", "x")])
+    con.commit()
+    con.close()
+    try:
+        r = inspect_sqlite(p)
+        assert r["ok"] and r["is_sqlite"]
+        users = [t for t in r["tables"] if t["name"] == "users"]
+        assert users and users[0]["row_count"] == 2
+        cols = {c["name"]: c for c in users[0]["columns"]}
+        assert cols["id"]["pk"] and cols["name"]["notnull"]
+        assert users[0]["sample"] and users[0]["sample"][0]["name"] == "admin"
+        assert any(v["name"] == "admins" for v in r["views"])
+        assert any(t["name"] == "t_ins" for t in r["triggers"])
+        assert r["indexes"]
+        assert "SQLite" in render_sqlite(r)
+    finally:
+        os.remove(p)
+
+
+def test_sqlite_inspect_non_sqlite():
+    import os
+    import tempfile
+    from binoracle.workflows.sqliteinspect import inspect_sqlite
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"not a database")
+    try:
+        r = inspect_sqlite(p)
+        assert r["ok"] and r["is_sqlite"] is False
+    finally:
+        os.remove(p)
+
+
+def test_evm_inspect_selectors_and_metadata():
+    import os
+    import tempfile
+    from binoracle.workflows.evminspect import inspect_evm, render_evm
+    code = bytes.fromhex("63" + "70a08231" + "14" + "63" + "a9059cbb" + "14" + "f1")  # 2 sel + CALL
+    cbor = (bytes.fromhex("a2") + b"\x64ipfs" + bytes.fromhex("42") + bytes.fromhex("1220")
+            + b"\x64solc" + bytes.fromhex("43") + bytes.fromhex("000812"))
+    blob = code + cbor + len(cbor).to_bytes(2, "big")
+    p = tempfile.mktemp(suffix=".evm")
+    try:
+        with open(p, "wb") as f:
+            f.write(blob)
+        r = inspect_evm(p)
+        assert r["ok"] and r["is_evm"]
+        assert r["selectors"] == ["0x70a08231", "0xa9059cbb"]
+        assert r["opcodes"].get("CALL") == 1
+        assert r["metadata"]["solc"] == "0.8.18" and r["metadata"]["ipfs"] == "1220"
+        assert "EVM" in render_evm(r)
+        # hex-text input path
+        p2 = tempfile.mktemp()
+        with open(p2, "w") as f:
+            f.write("0x" + blob.hex())
+        try:
+            assert inspect_evm(p2)["selectors"] == ["0x70a08231", "0xa9059cbb"]
+        finally:
+            os.remove(p2)
+    finally:
+        os.remove(p)
+
+
 def test_wasm_inspect_parses_synthetic_module():
     # Parser WASM sobre un modulo minimo hecho a mano (sin WABT): type (i32,i32)->i32, un import
     # env.print y un export 'add'.

@@ -565,6 +565,22 @@ def cmd_wasm(args, config):
     _write_if(args.output, out)
 
 
+def cmd_sqlite(args, config):
+    from .workflows.sqliteinspect import inspect_sqlite, render_sqlite
+    binary = _require_binary(args.binary)
+    out = render_sqlite(inspect_sqlite(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_evm(args, config):
+    from .workflows.evminspect import inspect_evm, render_evm
+    binary = _require_binary(args.binary)
+    out = render_evm(inspect_evm(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -903,6 +919,16 @@ def build_parser() -> argparse.ArgumentParser:
     wa.add_argument("binary", help="path to the .wasm module")
     wa.add_argument("-o", "--output")
     wa.set_defaults(func=cmd_wasm)
+
+    sq = sub.add_parser("sqlite", help="inspect a SQLite database read-only (schema + bounded row sample)")
+    sq.add_argument("binary", help="path to the .sqlite/.db file")
+    sq.add_argument("-o", "--output")
+    sq.set_defaults(func=cmd_sqlite)
+
+    ev = sub.add_parser("evm", help="inspect EVM bytecode statically (selectors, opcodes, Solidity metadata)")
+    ev.add_argument("binary", help="path to the EVM bytecode (raw or hex)")
+    ev.add_argument("-o", "--output")
+    ev.set_defaults(func=cmd_evm)
 
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")
