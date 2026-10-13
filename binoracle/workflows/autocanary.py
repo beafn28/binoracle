@@ -109,7 +109,28 @@ def _canary_like(toks):
             out.append(v)
     return out
 SCAN = b"%p." * 60 + b"\n"      # sequential scan; 180B stays within typical input buffers
-for rank in range(5):
+def _fmt_leaks():
+    # ONE cheap scan: does this binary leak a canary-like value via printf(input)? If not, the
+    # whole fmt brute-force below (up to 5*18*3*2 process spawns) is pointless -- skip it. This
+    # keeps autocanary fast as a backstop on binaries with no format-string leak at all.
+    io = None
+    try:
+        io = process([elf.path], aslr=False, stderr=STDOUT)
+        io.send(SCAN)
+        try:
+            out = io.recvrepeat(0.6)
+        except Exception:
+            out = b""
+        io.close()
+        return bool(_canary_like(_re.findall(rb"0x[0-9a-fA-F]+", out)))
+    except Exception:
+        try:
+            if io: io.close()
+        except Exception:
+            pass
+        return False
+_has_fmt = _fmt_leaks()
+for rank in range(5 if _has_fmt else 0):
     for bufsz in (72, 64, 56, 88, 40, 48, 80, 96, 104, 120, 264, 256, 272, 280, 136, 152, 168, 200):
         for rbpgap in (8, 0, 16):
             for align in ((ret,) if ret else (None,)) + ((None,) if ret else ()):
