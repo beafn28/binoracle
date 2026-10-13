@@ -3286,6 +3286,20 @@ def _exploit_html(an, lang: str) -> str:
         + (f"{ripyes} ({ctrl['pivot_gadget']})" if ctrl.get('pivot_gadget') else ripno)
         + f" &middot; SysV AMD{_bits}"
         + f"<br>{'gadgets de registro' if es else 'register gadgets'}: <code>{_regtxt}</code>")
+    # arsenal ROP: syscall, write-what-where y cobertura execve -> se refleja el razonamiento ROP
+    _ars = getattr(an, "arsenal", None) or {}
+    _abits = []
+    if _ars.get("syscall"):
+        _abits.append(f"syscall @ {_ars['syscall']['addr']}")
+    if _ars.get("write"):
+        _abits.append(f"{'escritura' if es else 'write'} @ {_ars['write']['addr']}")
+    _cov = _ars.get("execve_coverage") or {}
+    if _cov:
+        _covtxt = ("completa" if es else "complete") if _cov.get("complete") else \
+            ((", ".join(_cov.get("have") or []) or ("ninguno" if es else "none")))
+        _abits.append(f"{'cobertura execve' if es else 'execve coverage'}: {_covtxt}")
+    if _abits:
+        ctrl_txt += f"<br>{'arsenal ROP' if es else 'ROP arsenal'}: {' &middot; '.join(_abits)}"
     return (
         f'<h2 data-i18n="exploit_chains" id="sec-xchain"></h2>'
         f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["score_note"])}</p>'
