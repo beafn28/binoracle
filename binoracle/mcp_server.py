@@ -152,6 +152,16 @@ def _h_chains(args):
     return _render_chains(an)
 
 
+@_tool("rop_arsenal", "Arsenal ROP del binario (ELF x86): mejor gadget por registro de argumento, "
+       "syscall, pivote de stack, write-what-where, movimientos reg-a-reg, cobertura execve-por-"
+       "syscall, ret2csu (__libc_csu_init) y one_gadget (libc estatica). Fundamentado; no ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al ELF"}}, ["binary"])
+def _h_arsenal(args):
+    from .workflows.chainanalyzer import analyze_arsenal, render_arsenal
+    b = _binary(args)
+    return render_arsenal(analyze_arsenal(b, None, lang="es"), lang="es")
+
+
 @_tool("hunt", "Busca hipotesis de vulnerabilidad y las verifica contra oraculos (grounding). "
        "Devuelve hallazgos con su evidencia.",
        {"binary": {"type": "string", "description": "ruta al ELF"}}, ["binary"])

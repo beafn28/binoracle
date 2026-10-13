@@ -931,6 +931,33 @@ def test_classify_gadget_kinds():
     assert _classify(_mkraw([("jmp rax", "ujmp")])) is None
 
 
+def test_render_arsenal_surface():
+    from binoracle.workflows.chainanalyzer import render_arsenal
+    # not applicable (non-ELF)
+    assert "no aplicable" in render_arsenal({"ok": True, "applicable": False,
+                                             "note": "binario pe no aplicable"}).lower()
+    # a populated arsenal renders every section
+    r = {"ok": True, "applicable": True, "arch": "x86_64", "static": True, "pie": False,
+         "arsenal": {
+             "total_gadgets": 9,
+             "arg_regs": {"rdi": {"addr": "0x401000", "text": "pop rdi; ret", "delta": 16, "clobbers": []},
+                          "rsi": {"addr": "0x401010", "text": "pop rsi; ret", "delta": 16, "clobbers": ["r15"]}},
+             "syscall": {"addr": "0x401100", "text": "syscall"},
+             "pivot": {"addr": "0x401200", "text": "leave; ret"},
+             "write": {"addr": "0x401300", "mem_write": "mov [rdi], rax"},
+             "moves": [{"move": "rdx<-rax", "addr": "0x401400", "text": "mov rdx, rax; ret"}],
+             "execve_coverage": {"have": ["rdi", "rsi"], "need": ["rdi", "rsi", "rdx", "rax"],
+                                 "complete": False},
+             "ret2csu": {"gadget1": "0x4011ba", "gadget2": "0x4011a0", "complete": True},
+             "one_gadget": {"available": True, "count": 2, "offsets": ["0x4f2a5", "0x10a2fc"],
+                            "note": "absolutas", "constraints": "precondiciones"},
+         }}
+    out = render_arsenal(r)
+    for needle in ("RDI", "pop rdi; ret", "syscall", "write-what-where", "rdx<-rax",
+                   "ret2csu", "__libc_csu_init", "one_gadget", "0x4f2a5", "parcial"):
+        assert needle in out, needle
+
+
 def test_execve_arsenal_fallback_notes():
     from binoracle.workflows.chainanalyzer import _execve_arsenal_notes
     # no missing args, empty arsenal -> no notes

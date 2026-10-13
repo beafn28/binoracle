@@ -374,6 +374,26 @@ def _build_arsenal(gadgets: List[Gadget]) -> dict:
     return arsenal
 
 
+def _full_arsenal(binary: str, gadgets: List[Gadget], f: dict) -> dict:
+    """Arsenal base (_build_arsenal) enriquecido con las tecnicas que requieren el binario:
+    ret2csu (gadgets universales de __libc_csu_init) y one_gadget (magic gadgets de libc estatica
+    embebida). Compartido por analyze_chains y analyze_arsenal."""
+    arsenal = _build_arsenal(gadgets)
+    try:
+        csu = _detect_ret2csu(binary)
+        if csu:
+            arsenal["ret2csu"] = csu
+    except Exception:
+        pass
+    try:
+        og = _detect_one_gadget(binary, f)
+        if og:
+            arsenal["one_gadget"] = og
+    except Exception:
+        pass
+    return arsenal
+
+
 def _enum_gadgets(binary: str) -> List[Gadget]:
     """Enumera y clasifica gadgets reales del binario con radare2 (`/Rj`). Busca patrones utiles
     para control de registros de argumentos, syscall y pivote. Best-effort; [] si no hay r2."""
@@ -721,23 +741,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                  "equivalent here.")
         return ChainAnalysis(arch=f["arch"], applicable=False, note=note)
     gadgets = _enum_gadgets(binary)
-    _arsenal = _build_arsenal(gadgets)
-    # ret2csu: util sobre todo cuando faltan pop rsi/rdx directos (el caso en que esta tecnica brilla)
-    try:
-        _csu = _detect_ret2csu(binary)
-        if _csu:
-            _arsenal["ret2csu"] = _csu
-    except Exception:
-        pass
-    # one_gadget: en un binario ESTATICO la libc va embebida, asi que los 'magic gadgets' (una
-    # sola direccion que lanza shell) estan DENTRO del propio target y son direcciones FIJAS si no
-    # hay PIE -> directamente utilizables. Integracion caller-supplied (degrada si no esta la gema).
-    try:
-        og = _detect_one_gadget(binary, f)
-        if og:
-            _arsenal["one_gadget"] = og
-    except Exception:
-        pass
+    _arsenal = _full_arsenal(binary, gadgets, f)
     an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_arsenal)
     # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
     _sink = _overflow_sink(binary)
@@ -1246,6 +1250,78 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         an.note = L("sin gadgets enumerados (binario pequeno/dinamico); el analisis se basa en primitivas.",
                     "no gadgets enumerated (small/dynamic binary); the analysis relies on primitives.")
     return an
+
+
+def analyze_arsenal(binary: str, reg=None, lang: str = "es") -> dict:
+    """Superficie dedicada al arsenal ROP: enumera gadgets y devuelve el arsenal (control de
+    registros, syscall, pivote, write-what-where, movimientos, cobertura execve, ret2csu,
+    one_gadget) sin construir ni puntuar cadenas. Grounded; nada se ejecuta."""
+    f = _facts(binary, reg)
+    if f.get("bintype") not in (None, "elf"):
+        return {"ok": True, "applicable": False, "arch": f.get("arch"),
+                "note": (f"arsenal ROP no aplicable: binario {f.get('bintype')} "
+                         f"({f.get('arch','?')}), no ELF/Linux x86" if lang == "es" else
+                         f"ROP arsenal not applicable: {f.get('bintype')} "
+                         f"({f.get('arch','?')}) binary, not ELF/Linux x86")}
+    gadgets = _enum_gadgets(binary)
+    arsenal = _full_arsenal(binary, gadgets, f)
+    return {"ok": True, "applicable": True, "arch": f.get("arch"),
+            "static": f.get("static"), "pie": f.get("pie"), "arsenal": arsenal}
+
+
+def render_arsenal(r: dict, lang: str = "es") -> str:
+    es = lang == "es"
+    out = ["## Arsenal ROP (estatico, fundamentado)\n"]
+    if not r.get("ok"):
+        return "\n".join(out + ["No disponible: " + (r.get("note") or "")])
+    if not r.get("applicable"):
+        return "\n".join(out + ["- " + (r.get("note") or "no aplicable")])
+    ars = r.get("arsenal") or {}
+    out.append(f"- arquitectura: {r.get('arch')}  |  estatico: {r.get('static')}  |  PIE: {r.get('pie')}")
+    out.append(f"- gadgets clasificados: {ars.get('total_gadgets', 0)}")
+    argregs = ars.get("arg_regs") or {}
+    if argregs:
+        out.append("\n### Control de registros (SysV: rdi, rsi, rdx, rcx, r8, r9, rax)")
+        for rg in ("rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax"):
+            g = argregs.get(rg)
+            if g:
+                cl = (" | clobbers: " + ", ".join(g["clobbers"])) if g.get("clobbers") else ""
+                out.append(f"- **{rg.upper()}**: `{g['text']}` @ {g['addr']} (delta {g['delta']}B{cl})")
+    if ars.get("syscall"):
+        out.append(f"\n- **syscall**: `{ars['syscall']['text']}` @ {ars['syscall']['addr']}")
+    if ars.get("pivot"):
+        out.append(f"- **pivote de stack**: `{ars['pivot']['text']}` @ {ars['pivot']['addr']}")
+    if ars.get("write"):
+        out.append(f"- **write-what-where**: `{ars['write']['mem_write']}` @ {ars['write']['addr']}")
+    moves = ars.get("moves") or []
+    if moves:
+        out.append("\n### Movimientos reg-a-reg (fijar registros sin `pop`)")
+        for mv in moves[:10]:
+            out.append(f"- {mv['move']}: `{mv['text']}` @ {mv['addr']}")
+    cov = ars.get("execve_coverage") or {}
+    if cov:
+        mark = "COMPLETA" if cov.get("complete") else \
+            f"parcial (tiene: {', '.join(cov.get('have') or []) or 'ninguno'})"
+        out.append(f"\n### Cobertura execve-por-syscall (rdi/rsi/rdx/rax + syscall): **{mark}**")
+    csu = ars.get("ret2csu")
+    if csu:
+        out.append(f"\n### ret2csu (gadget universal __libc_csu_init)")
+        out.append(f"- gadget1 (pop rbx..r15): {csu.get('gadget1')}")
+        out.append(f"- gadget2 (mov rdx/rsi/edi; call [r12+rbx*8]): {csu.get('gadget2')}")
+        out.append(f"- {'completo' if csu.get('complete') else 'parcial'}: controla rdi/rsi/rdx sin `pop` directos")
+    og = ars.get("one_gadget")
+    if og:
+        out.append("\n### one_gadget (magic gadgets de libc estatica embebida)")
+        if og.get("available"):
+            out.append(f"- {og.get('count')} gadget(s): {', '.join(og.get('offsets') or [])}")
+            out.append(f"- {og.get('note')}")
+            out.append(f"- {og.get('constraints')}")
+        else:
+            out.append(f"- no disponible: {og.get('note')}")
+    out.append("\n_fundamentado en el binario; presencia de gadgets/tecnicas, no cadenas verificadas_"
+               if es else
+               "\n_grounded in the binary; gadget/technique presence, not verified chains_")
+    return "\n".join(out)
 
 
 def _build_graph(an: ChainAnalysis) -> dict:

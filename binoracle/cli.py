@@ -327,6 +327,14 @@ def cmd_primitives(args, config):
     store.close()
 
 
+def cmd_arsenal(args, config):
+    from .workflows.chainanalyzer import analyze_arsenal, render_arsenal
+    binary = _require_binary(args.binary)
+    out = render_arsenal(analyze_arsenal(binary, None, lang="es"), lang="es")
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_gadgets(args, config):
     binary = _require_binary(args.binary)
     reg = build_registry(binary)
@@ -913,6 +921,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("binary")
     g.add_argument("-f", "--filter", help="substring/regex, e.g. 'pop rdi'")
     g.set_defaults(func=cmd_gadgets)
+
+    ar2 = sub.add_parser("arsenal", help="ROP arsenal: best gadget per arg reg, syscall, pivot, write, ret2csu, one_gadget")
+    ar2.add_argument("binary", help="path to the ELF")
+    ar2.add_argument("-o", "--output")
+    ar2.set_defaults(func=cmd_arsenal)
 
     cy = sub.add_parser("cyclic", help="De Bruijn pattern generate / offset find")
     cy.add_argument("binary", nargs="?", help="optional (not needed)")
