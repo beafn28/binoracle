@@ -589,6 +589,14 @@ def cmd_har(args, config):
     _write_if(args.output, out)
 
 
+def cmd_secrets(args, config):
+    from .workflows.iocscan import scan_iocs, render_iocs
+    binary = _require_binary(args.binary)
+    out = render_iocs(scan_iocs(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_asar(args, config):
     from .workflows.asarinspect import inspect_asar, render_asar
     binary = _require_binary(args.binary)
@@ -1009,6 +1017,11 @@ def build_parser() -> argparse.ArgumentParser:
     hr.add_argument("binary", help="path to the .har file")
     hr.add_argument("-o", "--output")
     hr.set_defaults(func=cmd_har)
+
+    se = sub.add_parser("secrets", help="scan ANY artifact for embedded IOCs/secrets (URLs, creds, keys, high-entropy tokens)")
+    se.add_argument("binary", help="path to any file")
+    se.add_argument("-o", "--output")
+    se.set_defaults(func=cmd_secrets)
 
     ar = sub.add_parser("asar", help="inspect an Electron ASAR archive statically (file tree, package.json, entry point)")
     ar.add_argument("binary", help="path to the .asar archive")

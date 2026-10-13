@@ -859,6 +859,56 @@ def test_plist_inspect_bundle_keys_and_privacy():
             os.remove(p)
 
 
+def test_ioc_scan_finds_secrets_and_urls():
+    import os
+    import tempfile
+    from binoracle.workflows.iocscan import scan_iocs, render_iocs
+    blob = (b"\x00\x01binary prefix\x00"
+            b"connect https://api.example.com/v1/users please\x00"
+            b"AKIAIOSFODNN7EXAMPLE\x00"
+            b"token=ghp_" + b"A1b2C3d4E5f6G7h8I9j0" * 2 + b"\x00"
+            b"contact admin@example.com for help\x00"
+            b"server at 203.0.113.42 listening\x00"
+            b"-----BEGIN RSA PRIVATE KEY-----\x00"
+            b"\xff\xfe random tail \x00")
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(blob)
+    try:
+        r = scan_iocs(p)
+        assert r["ok"], r
+        f = r["findings"]
+        assert any("api.example.com" in u for u in f.get("url", []))
+        assert f.get("aws-access-key") and f["aws-access-key"][0].startswith("AKIAIOSFOD")
+        assert f.get("github-token")
+        assert any("admin@example.com" in e for e in f.get("email", []))
+        assert "203.0.113.42" in f.get("ipv4", [])
+        assert f.get("private-key-pem")
+        assert "api.example.com" in r["hosts"]
+        assert "aws-access-key" in r["secret_kinds"]
+        out = render_iocs(r)
+        assert "IOC" in out and "aws-access-key" in out
+    finally:
+        os.remove(p)
+
+
+def test_ioc_scan_utf16_strings():
+    import os
+    import tempfile
+    from binoracle.workflows.iocscan import scan_iocs
+    # UTF-16LE encoded URL (common in Windows PE resources)
+    u = "https://evil.example.net/beacon".encode("utf-16-le")
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"MZ\x00\x00" + u + b"\x00\x00")
+    try:
+        r = scan_iocs(p)
+        assert r["ok"]
+        assert any("evil.example.net" in x for x in r["findings"].get("url", []))
+    finally:
+        os.remove(p)
+
+
 def _build_asar(tree_files):
     """Build a minimal real ASAR archive in memory. tree_files: {path: bytes}."""
     import json as _json

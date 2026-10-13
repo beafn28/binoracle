@@ -226,6 +226,11 @@ Notes:
   bytes — the file/directory tree, the embedded `package.json` (name, version, `main` entry point,
   declared dependencies), the JavaScript modules and the per-file integrity blocks. `package.json`
   is sliced out by offset; JS is never executed or deminified. Also the `inspect_asar` MCP tool.
+- **Embedded secrets / IOCs (any file)**: `binoracle secrets ./anything` extracts printable strings
+  (ASCII + UTF-16LE) from any artifact and flags embedded URLs, hosts, IPs, e-mails, cloud/API
+  credentials (AWS/GCP/Slack/GitHub/Stripe), JWTs, private-key PEM headers and high-entropy tokens.
+  Secret values are redacted in the output; everything is heuristic and labelled. The cross-cutting
+  companion to the format readers. Also the `scan_iocs` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

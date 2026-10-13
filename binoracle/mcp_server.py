@@ -269,6 +269,17 @@ def _h_dotnet(args):
     return render_dotnet(inspect_dotnet(b))
 
 
+@_tool("scan_iocs", "Escanea CUALQUIER artefacto (ELF/PE/firmware/config/...) en busca de IOCs y "
+       "secretos embebidos: URLs, hosts, IPs, emails, credenciales cloud/API (AWS/GCP/Slack/GitHub/"
+       "Stripe), JWT, cabeceras PEM de clave privada y tokens de alta entropia. Heuristico; no "
+       "ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta a cualquier fichero"}}, ["binary"])
+def _h_iocscan(args):
+    from .workflows.iocscan import scan_iocs, render_iocs
+    b = _binary(args)
+    return render_iocs(scan_iocs(b))
+
+
 @_tool("inspect_plist", "Lee un property-list de Apple (Info.plist binario bplist00 o XML) "
        "estaticamente: bundle id, ejecutable, versiones, min OS, esquemas URL y las claves de "
        "privacidad NS*UsageDescription (lo que la app toca). No ejecuta nada.",
