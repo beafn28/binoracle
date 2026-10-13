@@ -579,6 +579,10 @@ _exploit_tool("autosrop", "SROP: rt_sigreturn restaura un frame forjado -> execv
 _exploit_tool("autodlresolve", "ret2dlresolve: forja el resolver dinamico -> system('/bin/sh') sin leak.",
               lambda: (__import__("binoracle.workflows.autodlresolve", fromlist=["autodlresolve"]).autodlresolve,
                        __import__("binoracle.workflows.autodlresolve", fromlist=["render_dlresolve"]).render_dlresolve))
+_exploit_tool("autocsu", "ret2csu: gadgets universales de __libc_csu_init fijan rdi/rsi/rdx y hacen "
+              "una llamada indirecta (sin pop rsi/rdx directos), verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autocsu", fromlist=["autocsu"]).autocsu,
+                       __import__("binoracle.workflows.autocsu", fromlist=["render_csu"]).render_csu))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

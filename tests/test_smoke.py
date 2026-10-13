@@ -631,6 +631,37 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autocsu_verifies_ret2csu():
+    # Verificacion POSITIVA de ret2csu por EJECUCION: los gadgets universales de __libc_csu_init
+    # fijan rdi/rsi/rdx (edi via r13d) y hacen `call [r12+rbx*8]` sobre win(), que con los args
+    # correctos lanza shell. Prueba el control de argumentos + la llamada indirecta + el ret-slide
+    # de alineacion 16B. Se auto-salta sin sandbox o sin el sample.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/ret2csu"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2csu no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autocsu import autocsu
+    r = autocsu(binp)
+    assert r.get("ok") and r.get("verified"), f"ret2csu no verificado: {r.get('note')}"
+    assert "align=" in (r.get("detail") or "")   # proves the 16B ret-slide was applied
+
+
+def test_csu_gadget_detection_on_sample():
+    import os
+    import pytest
+    binp = "samples/bin/ret2csu"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2csu no compilado")
+    from binoracle.workflows.chainanalyzer import _find_csu_gadgets
+    r = _find_csu_gadgets(binp)
+    assert r and r.get("complete") and r.get("gadget1") and r.get("gadget2")
+
+
 def test_autosrop_verifies_32bit():
     # Verificacion POSITIVA de SROP de x86-32 por EJECUCION: en srop32 el sigreturn (syscall 119
     # via int 0x80) restaura un frame i386 (con los segmentos cs=0x23/ss=0x2b correctos) que lanza

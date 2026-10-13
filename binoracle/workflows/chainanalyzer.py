@@ -20,9 +20,10 @@ import re as _re_mod
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-# parsing de desensamblado r2 para ret2csu: direccion al inicio de linea (tras el posible prefijo
-# de grafico `| ` de r2); el mnemonico se extrae descartando los tokens de bytes hex.
-_re_csu_addr = _re_mod.compile(r"^(?:\|[\s`\-]*)?(0x[0-9a-fA-F]+)\b")
+# parsing de desensamblado r2 para ret2csu: la primera direccion `0x...` de la linea (r2 antepone
+# un prefijo de grafico que puede ser ASCII `|` o caracteres de caja Unicode `│┌└├`); el mnemonico
+# se extrae descartando los tokens de bytes hex que siguen a la direccion.
+_re_csu_addr = _re_mod.compile(r"(0x[0-9a-fA-F]+)\b")
 
 # registros de argumentos SysV x86-64 (orden de llamada) + los relevantes para syscalls
 _ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -232,8 +233,8 @@ def _parse_csu(disasm: str) -> Optional[dict]:
     rows = []
     for line in disasm.splitlines():
         line = line.strip()
-        # r2 pdf: "0x004011aa      4c89fa    mov rdx, r15"  -> toma addr y el texto del mnemonico
-        m = _re_csu_addr.match(line)
+        # r2 pd: "│ 0x004011aa      4c89fa    mov rdx, r15"  -> 1a direccion + texto del mnemonico
+        m = _re_csu_addr.search(line)
         if not m:
             continue
         addr = int(m.group(1), 16)
@@ -280,7 +281,8 @@ def _parse_csu(disasm: str) -> Optional[dict]:
             "gadget2": (hex(g2) if g2 is not None else None),
             "complete": g1 is not None and g2 is not None,
             "note": "ret2csu: gadgets universales de __libc_csu_init para fijar rdi/rsi/rdx y "
-                    "llamar [r12+rbx*8] sin pop directos (presencia detectada, no verificada)"}
+                    "llamar [r12+rbx*8] sin pop directos (gadgets detectados; la cadena se verifica "
+                    "por ejecucion con verify=True)"}
 
 
 def _detect_ret2csu(binary: str) -> Optional[dict]:
@@ -298,11 +300,35 @@ def _detect_ret2csu(binary: str) -> Optional[dict]:
         if "__libc_csu_init" not in syms:
             return None
         for sym in ("sym.__libc_csu_init", "__libc_csu_init"):
-            dis = r.cmd(f"pdf @ {sym}") or ""
-            if dis and "__libc_csu_init" in dis:
+            # `pd` (linear) in case the function's `ret` splits the view -- gadget2 lives AFTER the
+            # gadget1 `ret`, which `pdf` would not include.
+            dis = r.cmd(f"pd 48 @ {sym}") or ""
+            if dis:
                 res = _parse_csu(dis)
                 if res:
                     return res
+    except Exception:
+        return None
+    return None
+
+
+def _find_csu_gadgets(binary: str) -> Optional[dict]:
+    """Localiza los dos gadgets ret2csu en un binario via los simbolos tipicos que los contienen
+    (__libc_csu_init o un bloque de gadgets dedicado), sin disparar un analisis completo (aaa/aflj),
+    que es lento. El verificador hace su propia busqueda por bytes; esto es para la deteccion."""
+    try:
+        from ..oracles.r2session import get as _r2get
+        r = _r2get(binary)
+        if r is None:
+            return None
+        syms = r.cmd("is~__libc_csu_init,gadget_block") or ""   # cheap existence check (no disasm)
+        for base, sym in (("__libc_csu_init", "sym.__libc_csu_init"), ("gadget_block", "sym.gadget_block")):
+            if base not in syms:
+                continue                        # avoid `pd @ 0` (hang) when the symbol is absent
+            dis = r.cmd(f"pd 48 @ {sym}") or ""
+            res = _parse_csu(dis) if dis else None
+            if res and res.get("complete"):
+                return res
     except Exception:
         return None
     return None
@@ -417,7 +443,9 @@ def _full_arsenal(binary: str, gadgets: List[Gadget], f: dict) -> dict:
     embebida). Compartido por analyze_chains y analyze_arsenal."""
     arsenal = _build_arsenal(gadgets, bits=(32 if _is32(f.get("arch")) else 64))
     try:
-        csu = _detect_ret2csu(binary)
+        # prefer the generalized finder (covers __libc_csu_init AND dedicated gadget blocks),
+        # falling back to the symbol-gated detector.
+        csu = _find_csu_gadgets(binary) or _detect_ret2csu(binary)
         if csu:
             arsenal["ret2csu"] = csu
     except Exception:
@@ -1319,6 +1347,45 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "srop", f, lang)
         chains.append(c)
 
+    # 11c) ret2csu: binario x86-64 no-PIE con los gadgets universales de __libc_csu_init (detectados
+    # en el arsenal) -> controla rdi/rsi/rdx y hace una llamada indirecta SIN pop rsi/rdx directos.
+    _csu = (_arsenal.get("ret2csu") if _bits == 64 else None)
+    if _csu and _csu.get("complete") and not f.get("pie"):
+        c = ExploitChain(name="ret2csu", target="call(target, arg1, arg2, arg3)")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(True, f"gadget1 (pop rbx..r15) @ {_csu.get('gadget1')}",
+                 f"gadget1 (pop rbx..r15) @ {_csu.get('gadget1')}", lang),
+            _req(True, f"gadget2 (mov rdx,r15; mov rsi,r14; mov edi,r13d; call [r12+rbx*8]) @ {_csu.get('gadget2')}",
+                 f"gadget2 (mov rdx,r15; mov rsi,r14; mov edi,r13d; call [r12+rbx*8]) @ {_csu.get('gadget2')}", lang),
+            _req(True, "puntero a funcion conocido para `call [r12+rbx*8]` (p.ej. GOT/.data)",
+                 "a known function pointer for `call [r12+rbx*8]` (e.g. GOT/.data)", lang)]
+        c.regs_needed = ["rdi", "rsi", "rdx"]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.constraints.append(L(
+            "arg1 pasa por edi (mov edi, r13d): se trunca a 32 bits; requiere alinear la pila 16B "
+            "(ret-slide) antes de llamar a funciones glibc (MOVAPS)",
+            "arg1 goes through edi (mov edi, r13d): truncated to 32 bits; needs 16B stack alignment "
+            "(a ret-slide) before calling glibc functions (MOVAPS)"))
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("gadget", "gadget1 (pop rbx,rbp,r12,r13,r14,r15)",
+                      L("rbx=0, rbp=1, r12=&fnptr, r13=arg1, r14=arg2, r15=arg3",
+                        "rbx=0, rbp=1, r12=&fnptr, r13=arg1, r14=arg2, r15=arg3"),
+                      addr=int(_csu["gadget1"], 16),
+                      regs={"rbx": "0", "r12": "&fnptr", "r13": "arg1", "r14": "arg2", "r15": "arg3"}),
+            ChainStep("gadget", "gadget2 (mov rdx,r15; mov rsi,r14; mov edi,r13d; call [r12+rbx*8])",
+                      L("fija rdx=r15, rsi=r14, edi=r13d y llama a fnptr",
+                        "sets rdx=r15, rsi=r14, edi=r13d and calls fnptr"),
+                      addr=int(_csu["gadget2"], 16),
+                      regs={"rdi": "arg1", "rsi": "arg2", "rdx": "arg3"}),
+            ChainStep("target", "target(arg1, arg2, arg3)",
+                      L("llamada con los 3 argumentos controlados", "call with all 3 arguments controlled"))]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "csu", f, lang)
+        chains.append(c)
+
     # 12) ret2dlresolve: dinamico no-PIE, Partial RELRO, SIN win()/system() ni leak. Se forjan las
     # estructuras del enlazador dinamico (Elf64_Rela/Sym/Str) para que resuelva y llame a
     # system('/bin/sh') sin fugar libc. No aplica a estaticos (no hay resolver) ni a Full RELRO
@@ -1598,6 +1665,22 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 if m:
                     proof["offset" if key == "off" else key] = m.group(1)
             return ((f"{OK} (ret2libc con fuga de libc: base={proof.get('base')}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "csu":
+            from .autocsu import autocsu
+            r = autocsu(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "ret2csu (__libc_csu_init -> call con args controlados)",
+                     "marker": "BINORACLE_CSU_PWNED", "output": (r.get("output", "") or "")[-300:]}
+            for key in ("g1", "g2", "fnptr"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"off=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (ret2csu: rdi/rsi/rdx controlados via __libc_csu_init -> call, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "srop":
             from .autosrop import autosrop
