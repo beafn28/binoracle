@@ -157,6 +157,26 @@ def test_autopwn_render():
     assert "Auto-explotacion" in out and "ret2win" in out and "EXPLOIT VERIFICADO" in out
 
 
+def test_autopwn_render_shows_context_and_rationale():
+    # El informe debe reflejar el CONTEXTO (defensas) y POR QUE se eligio la tecnica, no solo el
+    # resultado -- para que se lea como un analisis de exploiting profesional por binario.
+    import json as _json
+    from binoracle.workflows.autopwn import AutopwnResult, render_autopwn, autopwn_to_json
+    r = AutopwnResult(binary="/tmp/x", verified_findings=1, win_exploit=True,
+                      attempts=[("ret2win", False, "canary"),
+                                ("canary-bypass", True, "VERIFIED bufsz=72 canary=0x..00")],
+                      arch="x86", bits="64",
+                      mit={"nx": "true", "pic": "false", "canary": "true", "relro": "partial"},
+                      sinks=["system", "read"], has_win=True)
+    out = render_autopwn(r)
+    assert "Contexto del binario" in out
+    assert "canary ON" in out and "NX ON" in out and "PIE off" in out
+    assert "por que la tecnica elegida" in out and "fuga del canary" in out
+    j = _json.loads(autopwn_to_json(r))
+    assert j["context"]["mitigations"]["canary"] == "true"
+    assert "fuga del canary" in j["rationale"]
+
+
 def test_autolibc_render():
     from binoracle.workflows.autolibc import render_libc
     out = render_libc({"ok": True, "verified": True, "detail": "VERIFIED off=88 base=0x7f...",
