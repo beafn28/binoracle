@@ -524,6 +524,12 @@ def cmd_serve(args, config):
     serve(host=args.host, port=args.port, open_browser=not args.no_open)
 
 
+def cmd_mcp(args, config):
+    # stdio MCP server: speaks JSON-RPC on stdin/stdout, so nothing must be printed to stdout here.
+    from .mcp_server import serve
+    serve()
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -839,6 +845,9 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--port", type=int, default=8765)
     sv.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
     sv.set_defaults(func=cmd_serve)
+
+    mc = sub.add_parser("mcp", help="run the binoracle MCP server (stdio) so any agent can drive its tools")
+    mc.set_defaults(func=cmd_mcp)
 
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")

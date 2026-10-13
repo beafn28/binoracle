@@ -112,6 +112,24 @@ under a Mac's x86-64 emulation the final redirected jump into never-executed cod
 Fully general heap exploitation (arbitrary layouts, libc-leak chains) remains bespoke per
 binary. Everything runs only against binaries you are authorized to analyze.
 
+## MCP server (one MCP for grounded RE + exploit-dev)
+
+binoracle ships an MCP server so any MCP-capable agent (Claude Code, etc.) can drive its
+grounded tools. It speaks JSON-RPC 2.0 over stdio with **no extra dependency**:
+
+```bash
+binoracle mcp     # stdio MCP server; register it with your agent as a command server
+```
+
+Tools exposed: `triage`, `analyze_chains` (static or `verify`-by-execution), `hunt`,
+`primitives`, `kb_search`, and the authorized exploit-development tools `autopwn`, `autopoc`,
+`autolibc`, `autofmt`, `autoheap`, `autocanary`, `autosrop`, `autodlresolve`. Every result that
+derives from the analysis target is tagged `_meta.provenance.untrusted_content` so the host treats
+it as data, not instructions. Exploit tools are for AUTHORIZED / CTF / research targets only.
+
+The MCP design (one server registering many grounded tools over stdio, untrusted-target-content
+marking) is adapted from [REA](https://github.com/morluto/rea) (MIT); see THIRD_PARTY_NOTICES.
+
 ## Supported executable formats
 
 binoracle is not ELF-only. The static and symbolic layers are format-agnostic because they

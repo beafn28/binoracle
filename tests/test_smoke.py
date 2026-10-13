@@ -459,6 +459,39 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_mcp_server_handshake_and_tools():
+    # El servidor MCP debe anunciar binoracle, listar sus tools, marcar el output derivado del
+    # binario como contenido no confiable, y manejar una tool call sin sandbox (kb_search).
+    import binoracle.mcp_server as m
+    assert len(m._TOOLS) >= 10
+    names = {t["name"] for t in m._TOOLS}
+    assert {"triage", "analyze_chains", "autopwn", "autosrop", "autodlresolve", "kb_search"} <= names
+    init = m.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert init["result"]["serverInfo"]["name"] == "binoracle"
+    assert "tools" in init["result"]["capabilities"]
+    # una notificacion no lleva respuesta
+    assert m.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
+    tl = m.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert len(tl["result"]["tools"]) == len(m._TOOLS)
+    # cada contrato tiene schema de objeto
+    for t in tl["result"]["tools"]:
+        assert t["inputSchema"]["type"] == "object"
+    # tool call sin sandbox + marcador untrusted
+    call = m.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                     "params": {"name": "kb_search", "arguments": {"query": "canary", "k": 1}}})
+    res = call["result"]
+    assert not res.get("isError") and res["content"][0]["text"]
+    assert res["_meta"]["provenance"]["untrusted_content"] is True
+    # tool desconocida -> error de protocolo
+    bad = m.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                    "params": {"name": "nope", "arguments": {}}})
+    assert "error" in bad
+    # argumento faltante -> error de tool (isError), no crash de protocolo
+    miss = m.handle({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                     "params": {"name": "triage", "arguments": {}}})
+    assert miss["result"].get("isError") is True
+
+
 def test_autosrop_verifies_sigreturn_execve():
     # Verificacion POSITIVA de SROP: shell via rt_sigreturn -> execve('/bin/sh') en el sample
     # `srop` (estatico, pobre en gadgets, con syscall gadget + '/bin/sh'). Se auto-salta sin
