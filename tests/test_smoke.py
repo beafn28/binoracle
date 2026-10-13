@@ -931,6 +931,24 @@ def test_classify_gadget_kinds():
     assert _classify(_mkraw([("jmp rax", "ujmp")])) is None
 
 
+def test_execve_arsenal_fallback_notes():
+    from binoracle.workflows.chainanalyzer import _execve_arsenal_notes
+    # no missing args, empty arsenal -> no notes
+    assert _execve_arsenal_notes([], {}) == []
+    # missing rsi/rdx + complete ret2csu -> a grounded alternative note mentioning ret2csu
+    ars = {"ret2csu": {"gadget1": "0x401190", "gadget2": "0x4011a0", "complete": True}}
+    notes = _execve_arsenal_notes(["rsi", "rdx"], ars)
+    assert notes and "ret2csu" in notes[0][0] and "__libc_csu_init" in notes[0][1]
+    # ret2csu only helps when args are actually missing
+    assert _execve_arsenal_notes([], ars) == []
+    # one_gadget available -> a shortcut note with the offsets, independent of missing args
+    ars2 = {"one_gadget": {"available": True, "count": 2, "offsets": ["0x4f2a5", "0x10a2fc"]}}
+    n2 = _execve_arsenal_notes([], ars2)
+    assert n2 and "one_gadget" in n2[0][1] and "0x4f2a5" in n2[0][0]
+    # unavailable one_gadget -> no shortcut note
+    assert _execve_arsenal_notes([], {"one_gadget": {"available": False}}) == []
+
+
 def test_parse_ret2csu_gadgets():
     from binoracle.workflows.chainanalyzer import _parse_csu
     # synthetic r2 `pdf` of a classic __libc_csu_init tail

@@ -276,6 +276,31 @@ def _detect_ret2csu(binary: str) -> Optional[dict]:
     return None
 
 
+def _execve_arsenal_notes(missing_args: List[str], arsenal: dict) -> List[tuple]:
+    """Vias alternativas para la cadena execve-por-syscall a partir del arsenal detectado.
+    Devuelve una lista de (texto_es, texto_en). Pura (sin r2) para poder testearla."""
+    notes = []
+    csu = (arsenal or {}).get("ret2csu")
+    if missing_args and csu and csu.get("complete"):
+        pops = "`/`pop ".join(missing_args)
+        notes.append((
+            f"faltan `pop {pops}` directos, pero hay ret2csu "
+            f"(__libc_csu_init g1={csu.get('gadget1')} g2={csu.get('gadget2')}): fija rdx<-r15, "
+            "rsi<-r14, edi<-r13d via los gadgets universales -> via alternativa sin esos pops",
+            f"no direct `pop {pops}`, but ret2csu is available "
+            f"(__libc_csu_init g1={csu.get('gadget1')} g2={csu.get('gadget2')}): sets rdx<-r15, "
+            "rsi<-r14, edi<-r13d via the universal gadgets -> alternative path without those pops"))
+    og = (arsenal or {}).get("one_gadget")
+    if og and og.get("available") and og.get("count"):
+        offs = ", ".join(og.get("offsets") or [])
+        notes.append((
+            f"atajo: {og['count']} one_gadget(s) en la libc estatica embebida ({offs}); "
+            "un solo salto lanza shell si se cumplen sus precondiciones de registros",
+            f"shortcut: {og['count']} one_gadget(s) in the embedded static libc ({offs}); "
+            "a single jump spawns a shell if its register preconditions hold"))
+    return notes
+
+
 def _detect_one_gadget(binary: str, f: dict) -> Optional[dict]:
     """Integra one_gadget en el arsenal para binarios ESTATICOS (la libc va embebida, asi que los
     magic gadgets viven en el propio target). Para un binario dinamico se omite aqui: hace falta la
@@ -853,6 +878,11 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     c.regs_needed = ["rax", "rdi", "rsi", "rdx"]
     c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
     c.gadgets_used = [g.addr for g in list(need.values()) + [g_sys] if g]
+    # RAZONAMIENTO arsenal -> cadena: conecta lo detectado en el arsenal (ret2csu, one_gadget) con
+    # los huecos de esta cadena execve-por-syscall (pops de rsi/rdx que falten) como vias alternativas.
+    _missing_args = [r for r in ("rsi", "rdx") if not need[r]]
+    for note_es, note_en in _execve_arsenal_notes(_missing_args, _arsenal):
+        c.constraints.append(L(note_es, note_en))
     for rname, g in need.items():
         if g and g.clobbers:
             other = [x for x in g.clobbers if x in c.regs_needed and x != rname]
