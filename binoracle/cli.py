@@ -589,6 +589,22 @@ def cmd_har(args, config):
     _write_if(args.output, out)
 
 
+def cmd_asar(args, config):
+    from .workflows.asarinspect import inspect_asar, render_asar
+    binary = _require_binary(args.binary)
+    out = render_asar(inspect_asar(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_plist(args, config):
+    from .workflows.plistinspect import inspect_plist, render_plist
+    binary = _require_binary(args.binary)
+    out = render_plist(inspect_plist(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_dotnet(args, config):
     from .workflows.dotnetinspect import inspect_dotnet, render_dotnet
     binary = _require_binary(args.binary)
@@ -993,6 +1009,16 @@ def build_parser() -> argparse.ArgumentParser:
     hr.add_argument("binary", help="path to the .har file")
     hr.add_argument("-o", "--output")
     hr.set_defaults(func=cmd_har)
+
+    ar = sub.add_parser("asar", help="inspect an Electron ASAR archive statically (file tree, package.json, entry point)")
+    ar.add_argument("binary", help="path to the .asar archive")
+    ar.add_argument("-o", "--output")
+    ar.set_defaults(func=cmd_asar)
+
+    pl = sub.add_parser("plist", help="inspect an Apple property-list (Info.plist) statically (bundle id, usage keys, URL schemes)")
+    pl.add_argument("binary", help="path to the .plist file (binary bplist00 or XML)")
+    pl.add_argument("-o", "--output")
+    pl.set_defaults(func=cmd_plist)
 
     dn = sub.add_parser("dotnet", help="inspect a .NET/CLI managed assembly statically (metadata, tables, names)")
     dn.add_argument("binary", help="path to the managed .dll/.exe")

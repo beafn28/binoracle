@@ -269,6 +269,26 @@ def _h_dotnet(args):
     return render_dotnet(inspect_dotnet(b))
 
 
+@_tool("inspect_plist", "Lee un property-list de Apple (Info.plist binario bplist00 o XML) "
+       "estaticamente: bundle id, ejecutable, versiones, min OS, esquemas URL y las claves de "
+       "privacidad NS*UsageDescription (lo que la app toca). No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al fichero .plist"}}, ["binary"])
+def _h_plist(args):
+    from .workflows.plistinspect import inspect_plist, render_plist
+    b = _binary(args)
+    return render_plist(inspect_plist(b))
+
+
+@_tool("inspect_asar", "Lee un archivo ASAR de Electron (app.asar) estaticamente: arbol de "
+       "ficheros, package.json (nombre/version/main/dependencias), modulos JS y bloques de "
+       "integridad. Extrae package.json por offset pero NO ejecuta ni desminifica JS.",
+       {"binary": {"type": "string", "description": "ruta al archivo .asar"}}, ["binary"])
+def _h_asar(args):
+    from .workflows.asarinspect import inspect_asar, render_asar
+    b = _binary(args)
+    return render_asar(inspect_asar(b))
+
+
 @_tool("inspect_har_capture", "Lee una captura de red HAR (JSON) estaticamente: peticiones/"
        "respuestas, hosts, y SECRETOS expuestos (Authorization/Bearer, api_key/token/password, "
        "JWT, claves AWS) en URL/cabeceras/cuerpo. Heuristico; no descifra TLS.",

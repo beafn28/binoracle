@@ -136,8 +136,9 @@ Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fil
 
 `binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded
 reader — ELF (layout, or a core dump, or Go build-info), Mach-O, PE/.NET, WebAssembly, SQLite,
-Android APK, or a HAR capture — and prints that reader's result. Also the `identify_artifact`
-MCP tool. The "reverse engineer anything" front door, with nothing executed.
+Android APK, an Apple property-list, an Electron ASAR archive, or a HAR capture — and prints that
+reader's result. Also the `identify_artifact` MCP tool. The "reverse engineer anything" front
+door, with nothing executed.
 
 ## MCP server (one MCP for grounded RE + exploit-dev)
 
@@ -217,6 +218,14 @@ Notes:
   libraries by ABI, the app framework (Flutter/React Native/Unity/Xamarin), signing (v1 JAR +
   v2/v3 block) and SHA-256 digests of the Flutter snapshots (libapp.so). The binary
   AndroidManifest.xml is detected but not decoded (needs Apktool). Also the `inspect_apk` MCP tool.
+- **Apple property-lists**: `binoracle plist ./Info.plist` reads a binary (bplist00) or XML plist
+  with the built-in plistlib — bundle id, executable, versions, minimum OS, the URL schemes it
+  registers and the privacy usage-description keys (`NS*UsageDescription`) that reveal what the app
+  touches (camera, location, microphone…). Also the `inspect_plist` MCP tool.
+- **Electron apps (ASAR)**: `binoracle asar ./app.asar` reads an Electron archive straight from
+  bytes — the file/directory tree, the embedded `package.json` (name, version, `main` entry point,
+  declared dependencies), the JavaScript modules and the per-file integrity blocks. `package.json`
+  is sliced out by offset; JS is never executed or deminified. Also the `inspect_asar` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

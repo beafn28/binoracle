@@ -2,7 +2,8 @@
 
 One entry point that sniffs an artifact's magic/structure and routes to the matching grounded
 reader -- ELF (layout, or core dump, or Go build-info), Mach-O, PE/.NET, WebAssembly, SQLite,
-Android APK (ZIP), or a HAR capture. Returns the detected format and that reader's result. This is
+Android APK (ZIP), an Apple property-list, an Electron ASAR archive, or a HAR capture. Returns the
+detected format and that reader's result. This is
 the "reverse engineer anything" front door: give it any file and it figures out what it is and what
 binoracle can say about it, with nothing executed."""
 from __future__ import annotations
@@ -32,12 +33,22 @@ def detect_format(path: str) -> str:
         return "wasm"
     if head[:16] == b"SQLite format 3\x00":
         return "sqlite"
+    if head[:8] == b"bplist00":
+        return "plist"
+    # ASAR (Electron): pickle1 payload length == 4, and the JSON header starts at offset 16
+    if head[:4] == b"\x04\x00\x00\x00" and head[16:17] == b"{":
+        return "asar"
     if head[:2] == b"MZ":
         return "pe"
     if head[:2] == b"PK" and head[2:4] in (b"\x03\x04", b"\x05\x06", b"\x07\x08"):
         return "zip"
-    # text-ish: HAR (JSON with log.entries)
+    # text-ish: XML plist (conservative: only when the plist DOCTYPE/root is visible)
     stripped = head.lstrip()
+    if stripped[:5] == b"<?xml" and b"plist" in head:
+        return "plist"
+    if stripped[:6] == b"<plist":
+        return "plist"
+    # HAR (JSON with log.entries)
     if stripped[:1] == b"{":
         try:
             import json
@@ -97,6 +108,12 @@ def identify(path: str) -> dict:
             apk = inspect_apk(path)
             routed = "apk" if apk.get("is_apk") else "zip"
             detail = apk
+        elif fmt == "plist":
+            from .plistinspect import inspect_plist
+            detail = inspect_plist(path)
+        elif fmt == "asar":
+            from .asarinspect import inspect_asar
+            detail = inspect_asar(path)
         elif fmt in ("har", "json"):
             from .harinspect import inspect_har
             har = inspect_har(path)
@@ -127,6 +144,7 @@ def render_identify(r: dict) -> str:
         "pe-dotnet": ("dotnetinspect", "render_dotnet"), "pe": ("peinspect", "render_pe"),
         "apk": ("apkinspect", "render_apk"), "zip": ("apkinspect", "render_apk"),
         "har": ("harinspect", "render_har"), "json": ("harinspect", "render_har"),
+        "plist": ("plistinspect", "render_plist"), "asar": ("asarinspect", "render_asar"),
     }
     mod_fn = renderers.get(routed)
     if mod_fn:

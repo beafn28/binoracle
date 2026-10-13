@@ -650,9 +650,20 @@ def test_identify_routes_formats():
         z.writestr("classes.dex", b"d")
         z.close()
         made.append(ap)
+        plp = tempfile.mktemp(suffix=".plist")
+        import plistlib
+        with open(plp, "wb") as f:
+            plistlib.dump({"CFBundleIdentifier": "com.x.y"}, f, fmt=plistlib.FMT_BINARY)
+        made.append(plp)
+        arp = tempfile.mktemp(suffix=".asar")
+        with open(arp, "wb") as f:
+            f.write(_build_asar({"package.json": b'{"name":"z","main":"m.js"}'}))
+        made.append(arp)
         assert identify(dbp)["routed"] == "sqlite"
         assert identify(wp)["routed"] == "wasm"
         assert identify(ap)["routed"] == "apk"
+        assert identify(plp)["routed"] == "plist"
+        assert identify(arp)["routed"] == "asar"
         if os.path.exists("samples/bin/ret2win"):
             r = identify("samples/bin/ret2win")
             assert r["routed"] == "elf" and "mitigacion" in render_identify(r).lower()
@@ -810,6 +821,129 @@ def test_har_inspect_requests_and_secrets():
         kinds = {s["kind"] for s in r["secrets"]}
         assert "api-key-param" in kinds and "authorization-header" in kinds
         assert "HAR" in render_har(r)
+    finally:
+        os.remove(p)
+
+
+def test_plist_inspect_bundle_keys_and_privacy():
+    import os
+    import plistlib
+    import tempfile
+    from binoracle.workflows.plistinspect import inspect_plist, render_plist
+    doc = {
+        "CFBundleIdentifier": "com.example.app",
+        "CFBundleExecutable": "ExampleApp",
+        "CFBundleShortVersionString": "1.2.3",
+        "MinimumOSVersion": "15.0",
+        "NSCameraUsageDescription": "We need the camera to scan QR codes",
+        "NSLocationWhenInUseUsageDescription": "To show nearby stores",
+        "CFBundleURLTypes": [{"CFBundleURLSchemes": ["exampleapp", "exapp"]}],
+    }
+    for fmt in (plistlib.FMT_BINARY, plistlib.FMT_XML):
+        p = tempfile.mktemp(suffix=".plist")
+        with open(p, "wb") as f:
+            plistlib.dump(doc, f, fmt=fmt)
+        try:
+            r = inspect_plist(p)
+            assert r["ok"] and r["is_plist"]
+            assert r["bundle_id"] == "com.example.app"
+            assert r["executable"] == "ExampleApp"
+            assert r["version"] == "1.2.3"
+            assert set(r["url_schemes"]) == {"exampleapp", "exapp"}
+            usage = r["usage_descriptions"]
+            assert "NSCameraUsageDescription" in usage
+            assert "NSLocationWhenInUseUsageDescription" in usage
+            out = render_plist(r)
+            assert "com.example.app" in out and "privacidad" in out.lower()
+        finally:
+            os.remove(p)
+
+
+def _build_asar(tree_files):
+    """Build a minimal real ASAR archive in memory. tree_files: {path: bytes}."""
+    import json as _json
+    # lay out file data, recording offsets; build a nested header tree
+    data = bytearray()
+    root = {"files": {}}
+    for path, content in tree_files.items():
+        off = len(data)
+        data += content
+        node = root
+        parts = path.split("/")
+        for p in parts[:-1]:
+            node = node["files"].setdefault(p, {"files": {}})
+        node["files"][parts[-1]] = {"size": len(content), "offset": str(off)}
+    header_str = _json.dumps(root).encode("utf-8")
+    str_len = len(header_str)
+    pad = (-(4 + str_len)) % 4
+    payload = str_len.to_bytes(4, "little") + header_str + b"\x00" * pad
+    payload_len = len(payload)
+    header_size = 4 + payload_len
+    out = bytearray()
+    out += (4).to_bytes(4, "little")             # pickle1 payload len
+    out += header_size.to_bytes(4, "little")     # size of pickle2 buffer
+    out += payload_len.to_bytes(4, "little")     # pickle2 payload len
+    out += payload                               # str_len + json + pad
+    out += data                                  # file data region
+    return bytes(out)
+
+
+def test_asar_inspect_tree_and_package():
+    import os
+    import json as _json
+    import tempfile
+    from binoracle.workflows.asarinspect import inspect_asar, render_asar
+    pkg = _json.dumps({"name": "myapp", "version": "2.0.1", "main": "main.js",
+                       "dependencies": {"electron-store": "^8.0.0", "axios": "^1.0.0"}}).encode()
+    asar = _build_asar({
+        "package.json": pkg,
+        "main.js": b"require('./lib/x')\n",
+        "lib/x.js": b"module.exports = 1\n",
+        "node_modules/axios/index.js": b"// axios\n",
+    })
+    p = tempfile.mktemp(suffix=".asar")
+    with open(p, "wb") as f:
+        f.write(asar)
+    try:
+        r = inspect_asar(p)
+        assert r["ok"] and r["is_asar"], r
+        assert r["file_count"] == 4
+        assert r["package"]["name"] == "myapp"
+        assert r["package"]["version"] == "2.0.1"
+        assert r["entry_point"] == "main.js"
+        assert "axios" in r["package"]["dependencies"]
+        assert r["js_count"] == 3
+        assert "axios" in r["node_modules"]
+        out = render_asar(r)
+        assert "myapp" in out and "main.js" in out
+    finally:
+        os.remove(p)
+
+
+def test_asar_inspect_non_asar():
+    import os
+    import tempfile
+    from binoracle.workflows.asarinspect import inspect_asar
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"\x00\x01\x02\x03 this is not an asar archive at all")
+    try:
+        r = inspect_asar(p)
+        assert r["ok"] and r["is_asar"] is False
+    finally:
+        os.remove(p)
+
+
+def test_plist_inspect_non_plist():
+    import os
+    import tempfile
+    from binoracle.workflows.plistinspect import inspect_plist
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"not a plist at all")
+    try:
+        r = inspect_plist(p)
+        assert r["ok"] and r["is_plist"] is False
     finally:
         os.remove(p)
 
