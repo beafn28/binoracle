@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_wasm_artifact", "Lee un modulo WebAssembly (.wasm) estaticamente: version, "
+       "secciones, firmas de tipos, imports y exports con su kind. No decodifica cuerpos a WAT "
+       "(eso requiere WABT). No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al modulo .wasm"}}, ["binary"])
+def _h_wasm(args):
+    from .workflows.wasminspect import inspect_wasm, render_wasm
+    b = _binary(args)
+    return render_wasm(inspect_wasm(b))
+
+
 @_tool("inspect_elf_layout", "Layout ELF offline: cabecera, secciones, segmentos, simbolos, "
        "reubicaciones, linkage (libs/interprete) y candidatos de mitigacion (PIE/NX/pila "
        "ejecutable/canary/RELRO, segmentos RWX). Todo derivado del fichero; no ejecuta nada.",

@@ -162,6 +162,9 @@ Notes:
   segments, symbol/relocation counts, linkage (needed libs, interpreter) and the static
   mitigation candidates (PIE, NX, executable stack, stack-canary presence, RELRO Partial/Full,
   RWX segments), each labelled inferred with its limitations. Also the `inspect_elf_layout` MCP tool.
+- **WebAssembly**: `binoracle wasm ./mod.wasm` reads a module statically (no WABT) — version,
+  section inventory, function type signatures, and every import/export with its kind. Instruction
+  bodies are not decoded to WAT (that needs WABT); the limit is reported. Also `inspect_wasm_artifact`.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

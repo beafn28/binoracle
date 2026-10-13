@@ -459,6 +459,64 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_wasm_inspect_parses_synthetic_module():
+    # Parser WASM sobre un modulo minimo hecho a mano (sin WABT): type (i32,i32)->i32, un import
+    # env.print y un export 'add'.
+    import tempfile, os
+    from binoracle.workflows.wasminspect import inspect_wasm, render_wasm
+
+    def leb(n):
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+
+    def sec(sid, payload):
+        return bytes([sid]) + leb(len(payload)) + payload
+
+    def nm(s):
+        return leb(len(s)) + s.encode()
+
+    mod = (b"\x00asm" + (1).to_bytes(4, "little")
+           + sec(1, leb(1) + b"\x60" + leb(2) + b"\x7f\x7f" + leb(1) + b"\x7f")
+           + sec(2, leb(1) + nm("env") + nm("print") + b"\x00" + leb(0))
+           + sec(3, leb(1) + leb(0))
+           + sec(7, leb(1) + nm("add") + b"\x00" + leb(0)))
+    p = tempfile.mktemp(suffix=".wasm")
+    try:
+        with open(p, "wb") as f:
+            f.write(mod)
+        r = inspect_wasm(p)
+        assert r["ok"] and r["is_wasm"] and r["version"] == 1
+        assert [s["name"] for s in r["sections"]] == ["type", "import", "function", "export"]
+        assert r["types"] == [{"params": ["i32", "i32"], "results": ["i32"]}]
+        assert r["imports"] == [{"module": "env", "name": "print", "kind": "func"}]
+        assert r["exports"] == [{"name": "add", "kind": "func"}]
+        assert r["counts"]["function"] == 1
+        assert "WAT" in render_wasm(r) or "WABT" in render_wasm(r)
+    finally:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def test_wasm_inspect_non_wasm():
+    from binoracle.workflows.wasminspect import inspect_wasm
+    import tempfile, os
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"\x7fELFnot wasm")
+    try:
+        r = inspect_wasm(p)
+        assert r["ok"] and r["is_wasm"] is False
+    finally:
+        os.remove(p)
+
+
 def test_elf_layout_mitigations_match_known_samples():
     # El layout ELF debe derivar correctamente las mitigaciones de samples conocidos.
     import os
