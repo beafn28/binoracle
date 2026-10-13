@@ -621,13 +621,20 @@ def cmd_learn(args, config):
 def cmd_train(args, config):
     """Agente entrenador: desarrolla + verifica exploits sobre un corpus y cura lo verificado,
     subiendo la habilidad de forma medible. Sin binarios, usa el corpus de ejemplo del repo."""
-    from .workflows.exploit_trainer import train, render_training
+    from .workflows.exploit_trainer import train, render_training, export_playbook
     bins = list(getattr(args, "binaries", None) or [])
     rep = train(binaries=bins or None, config=config,
                 verify=not getattr(args, "no_verify", False),
                 on_step=lambda m: print("  " + m), lang=config.lang,
                 budget_s=float(getattr(args, "budget", 240) or 240))
     print("\n" + render_training(rep, config.lang))
+    pb = getattr(args, "export_playbook", None)
+    if pb is not None:
+        dest = pb or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "binoracle", "kb", "verified-playbook.md")
+        n = export_playbook(rep, dest, config.lang)
+        print(f"\n[+] playbook: {n} tecnicas verificadas escritas en {dest}" if n
+              else "\n[!] playbook no escrito (ninguna tecnica verificada)")
 
 
 def cmd_autofuzz(args, config):
@@ -892,6 +899,9 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--no-verify", action="store_true", help="skip sandbox verification (faster)")
     tp.add_argument("--budget", type=float, default=240,
                     help="per-binary time budget in seconds (skip if exceeded; default 240)")
+    tp.add_argument("--export-playbook", nargs="?", const="", default=None, metavar="PATH",
+                    help="write a curated RAG playbook of the VERIFIED techniques (default path: "
+                         "binoracle/kb/verified-playbook.md) so the learned knowledge ships")
     tp.set_defaults(func=cmd_train)
 
     dp = sub.add_parser("dataset", help="build the SFT JSONL to fine-tune an LLM to develop exploits "
