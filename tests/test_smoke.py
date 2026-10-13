@@ -393,3 +393,42 @@ def test_autocanary_degrades_cleanly():
     r = autocanary("/nonexistent/dir/canary")
     assert isinstance(r, dict) and r.get("ok") is False and r.get("note")
     assert isinstance(render_canary(r), str) and render_canary(r)
+
+
+def test_autocanary_verifies_leakable_sample():
+    # Verificacion POSITIVA: en el sample `canleak` (canary + fuga real via %s) el bypass obtiene
+    # shell de verdad. Se auto-salta donde el sandbox nativo no aplica (sin pwntools / no x86-64 /
+    # sin setarch) o el binario aun no esta compilado, de modo que no rompe CI en esos entornos.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/canleak"
+    if not os.path.exists(binp):
+        pytest.skip("sample canleak no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox nativo no disponible: {why}")
+    from binoracle.workflows.autocanary import autocanary
+    r = autocanary(binp)
+    assert r.get("ok") and r.get("verified"), f"bypass de canary no verificado: {r.get('note')}"
+    # el canary de glibc tiene LSB nulo (0x..00): el valor filtrado debe reflejarlo
+    import re
+    m = re.search(r"canary=(0x[0-9a-fA-F]+)", r.get("detail") or "")
+    assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
+
+
+def test_chainanalyzer_canary_chain_builds():
+    # La cadena determinista 'canary bypass' debe construirse (sin sandbox) cuando hay canary + win,
+    # ser factible, y NO arrastrar el break-point de canary (su verificador lo rompe por diseno).
+    import os
+    import pytest
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    binp = "samples/bin/canary"
+    if not os.path.exists(binp):
+        pytest.skip("sample canary no compilado")
+    an = analyze_chains(binp, verify=False, lang="en")
+    cc = [c for c in an.chains if c.name == "canary bypass"]
+    assert cc, "no se emitio la cadena 'canary bypass' pese a canary ON + win()"
+    c = cc[0]
+    assert c.unmet_requirements == 0 and c.feasible
+    assert c.break_points == [], "el canary no debe ser un break-point para la propia cadena de bypass"
