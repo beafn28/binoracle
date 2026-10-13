@@ -16,6 +16,7 @@ _INSTALL = {
     "tshark": "Wireshark/TShark (apt install tshark); capinfos viene con el paquete",
     "capinfos": "parte de Wireshark/TShark (apt install tshark)",
     "binwalk": "Binwalk (pip install binwalk / apt install binwalk)",
+    "one_gadget": "one_gadget (gem install one_gadget): magic gadgets de una libc",
 }
 
 
@@ -71,6 +72,37 @@ def firmware_scan(path: str, timeout: int = 120) -> dict:
             "limitations": ["escaneo de firmas (sin extraccion); salida de Binwalk"]}
 
 
+def one_gadget(libc_path: str, timeout: int = 60) -> dict:
+    """libc-relative 'magic gadget' offsets (a single address that spawns a shell), via one_gadget."""
+    r = run_caller_tool(["one_gadget", "--raw", libc_path], timeout)
+    if not r.get("ok"):
+        return r
+    offs = []
+    for tok in (r["stdout"] or "").split():
+        try:
+            offs.append(int(tok, 0))
+        except ValueError:
+            pass
+    return {"ok": True, "available": True, "tool": "one_gadget",
+            "gadgets": [hex(o) for o in offs], "count": len(offs),
+            "limitations": ["offsets relativos a la libc; sus restricciones de registros se validan "
+                            "por ejecucion (autolibc ya las filtra al verificar ret2libc)"]}
+
+
+def pcap_fileinfo(pcap_path: str, timeout: int = 30) -> dict:
+    """Capture file metadata (packet count, duration, data rates) via capinfos."""
+    r = run_caller_tool(["capinfos", pcap_path], timeout)
+    if not r.get("ok"):
+        return r
+    info = {}
+    for line in (r["stdout"] or "").splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            info[k.strip()] = v.strip()
+    return {"ok": True, "available": True, "tool": "capinfos", "info": info,
+            "limitations": ["salida de capinfos"]}
+
+
 def render_caller(kind: str, r: dict) -> str:
     out = [f"## Integracion caller-supplied: {kind}\n"]
     if not r.get("ok"):
@@ -84,6 +116,14 @@ def render_caller(kind: str, r: dict) -> str:
         out.append(f"- Binwalk OK: {r.get('signature_count')} firmas")
         for s in (r.get("signatures") or [])[:40]:
             out.append(f"  - {s}")
+    elif kind == "one_gadget":
+        out.append(f"- one_gadget OK: {r.get('count')} gadgets")
+        for g in (r.get("gadgets") or [])[:20]:
+            out.append(f"  - {g}")
+    elif kind == "capinfos":
+        out.append("- capinfos OK")
+        for k, v in (r.get("info") or {}).items():
+            out.append(f"  - {k}: {v}")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

@@ -478,6 +478,30 @@ def test_caller_tools_degrade_when_absent():
         os.environ["PATH"] = old
 
 
+def test_caller_tools_one_gadget_and_capinfos(tmp_path):
+    import os
+    import stat
+    from binoracle.workflows.callertools import one_gadget, pcap_fileinfo
+    # degrade (empty PATH)
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        assert one_gadget("/tmp/libc")["available"] is False
+        assert pcap_fileinfo("/tmp/x.pcap")["available"] is False
+    finally:
+        os.environ["PATH"] = old
+    # run path via fake one_gadget emitting raw offsets
+    fake = tmp_path / "one_gadget"
+    fake.write_text('#!/bin/sh\necho "0x4f2a5 0x4f302 0x10a2fc"\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    os.environ["PATH"] = str(tmp_path) + os.pathsep + old
+    try:
+        r = one_gadget("/tmp/libc.so.6")
+        assert r["ok"] and r["count"] == 3 and r["gadgets"][0] == "0x4f2a5"
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_caller_tool_runs_when_present(tmp_path):
     # Con una herramienta FALSA en PATH que emite WAT conocido, el camino de ejecucion parsea OK.
     import os

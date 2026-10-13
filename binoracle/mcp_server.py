@@ -181,6 +181,24 @@ def _h_fw(args):
     return render_caller("firmware", firmware_scan(b))
 
 
+@_tool("one_gadget", "Lista los 'magic gadgets' (una sola direccion que lanza shell) de una libc, "
+       "via one_gadget SI el llamador lo tiene; si no, degrada. Integracion caller-supplied.",
+       {"binary": {"type": "string", "description": "ruta a la libc (libc.so.6)"}}, ["binary"])
+def _h_onegadget(args):
+    from .workflows.callertools import one_gadget, render_caller
+    b = _binary(args)
+    return render_caller("one_gadget", one_gadget(b))
+
+
+@_tool("pcap_fileinfo", "Metadata de un fichero de captura (numero de paquetes, duracion, tasas) "
+       "via capinfos SI el llamador lo tiene; si no, degrada. Integracion caller-supplied.",
+       {"binary": {"type": "string", "description": "ruta al .pcap/.pcapng"}}, ["binary"])
+def _h_capinfos(args):
+    from .workflows.callertools import pcap_fileinfo, render_caller
+    b = _binary(args)
+    return render_caller("capinfos", pcap_fileinfo(b))
+
+
 @_tool("inspect_pe", "Lee un PE de Windows (EXE/DLL) estaticamente: arquitectura, secciones con "
        "entropia (heuristica de packing), mitigaciones (ASLR/DEP/CFG/SafeSEH), imports y un mapa "
        "de capacidades (proceso/red/cripto/inyeccion/registro/anti-debug). No ejecuta nada.",
