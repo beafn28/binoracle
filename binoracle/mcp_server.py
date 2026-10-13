@@ -153,6 +153,16 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_elf_layout", "Layout ELF offline: cabecera, secciones, segmentos, simbolos, "
+       "reubicaciones, linkage (libs/interprete) y candidatos de mitigacion (PIE/NX/pila "
+       "ejecutable/canary/RELRO, segmentos RWX). Todo derivado del fichero; no ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta al ELF"}}, ["binary"])
+def _h_elf(args):
+    from .workflows.elflayout import inspect_elf, render_elf
+    b = _binary(args)
+    return render_elf(inspect_elf(b))
+
+
 @_tool("inspect_core_dump", "Lee estaticamente un core dump ELF (Linux): la senal, la direccion de "
        "fallo, los registros por hilo y los mapeos de memoria -- el punto de partida fundamentado "
        "para convertir un crash en exploit (que registro controla la entrada). No ejecuta nada.",

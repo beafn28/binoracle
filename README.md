@@ -158,6 +158,10 @@ Notes:
   killing signal, the fault address, each thread's registers, and the memory mappings — and flags
   a register that holds printable input bytes (the overflow tell). Also the `inspect_core_dump`
   MCP tool. The starting point for turning a crash into an exploit.
+- **ELF layout**: `binoracle elf ./target` gives an offline layout — header, sections, load
+  segments, symbol/relocation counts, linkage (needed libs, interpreter) and the static
+  mitigation candidates (PIE, NX, executable stack, stack-canary presence, RELRO Partial/Full,
+  RWX segments), each labelled inferred with its limitations. Also the `inspect_elf_layout` MCP tool.
 
 So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
 search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.

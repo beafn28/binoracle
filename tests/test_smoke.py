@@ -459,6 +459,58 @@ def test_autocanary_verifies_format_string_leak():
     assert m and int(m.group(1), 16) % 0x100 == 0, f"canary filtrado invalido: {r.get('detail')}"
 
 
+def test_elf_layout_mitigations_match_known_samples():
+    # El layout ELF debe derivar correctamente las mitigaciones de samples conocidos.
+    import os
+    import pytest
+    from binoracle.workflows.elflayout import inspect_elf, render_elf
+    checks = {
+        "ret2win": {"position_independent": False, "nx": True, "stack_canary": False, "relro": "Partial"},
+        "canary": {"position_independent": False, "stack_canary": True},
+        "fmtstring_pie": {"position_independent": True, "relro": "Full"},
+    }
+    ran = 0
+    for name, want in checks.items():
+        p = "samples/bin/" + name
+        if not os.path.exists(p):
+            continue
+        ran += 1
+        r = inspect_elf(p)
+        assert r["ok"] and r["is_elf"]
+        m = r["mitigations"]
+        for k, v in want.items():
+            assert m[k] == v, f"{name}: {k}={m[k]} != {v}"
+        assert isinstance(render_elf(r), str) and "mitigacion" in render_elf(r).lower()
+    if ran == 0:
+        pytest.skip("samples no compilados")
+
+
+def test_elf_layout_static_canary_caveat():
+    # En un estatico, __stack_chk_* puede venir de libc: el tool debe avisarlo honestamente.
+    import os
+    import pytest
+    from binoracle.workflows.elflayout import inspect_elf
+    p = "samples/bin/srop"
+    if not os.path.exists(p):
+        pytest.skip("sample no compilado")
+    r = inspect_elf(p)
+    if r["mitigations"]["stack_canary"]:
+        assert any("estatico" in lim for lim in r.get("limitations", []))
+
+
+def test_elf_layout_non_elf():
+    from binoracle.workflows.elflayout import inspect_elf
+    import tempfile, os
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(b"not an elf at all")
+    try:
+        r = inspect_elf(p)
+        assert r["ok"] and r["is_elf"] is False
+    finally:
+        os.remove(p)
+
+
 def test_coredump_reads_signal_registers_mappings():
     # Genera un core real (crash de un sample con overflow) y verifica que el inspector extrae
     # senal, registros por hilo y mapeos. Se auto-salta si el entorno no permite volcar cores.

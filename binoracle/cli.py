@@ -549,6 +549,14 @@ def cmd_core(args, config):
     _write_if(args.output, out)
 
 
+def cmd_elf(args, config):
+    from .workflows.elflayout import inspect_elf, render_elf
+    binary = _require_binary(args.binary)
+    out = render_elf(inspect_elf(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -877,6 +885,11 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("core", help="path to the core dump (ELF ET_CORE)")
     co.add_argument("-o", "--output")
     co.set_defaults(func=cmd_core)
+
+    el = sub.add_parser("elf", help="offline ELF layout + static mitigation candidates (sections/segments/symbols)")
+    el.add_argument("binary")
+    el.add_argument("-o", "--output")
+    el.set_defaults(func=cmd_elf)
 
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")
