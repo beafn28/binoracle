@@ -182,7 +182,7 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 54 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 51 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
 - **Tests:** `tests/test_smoke.py` — 110 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
