@@ -188,6 +188,49 @@ def call_path(binary: str, src: str, dst: str, max_depth: int = 12) -> dict:
             "limitations": ["ruta por llamadas directas estaticas; indirectas/virtuales no se siguen"]}
 
 
+def inspect_native_api(binary: str) -> dict:
+    """inspect_native_api: the binary's API surface -- imported functions (+ their library), exported
+    symbols, and linked libraries (DT_NEEDED) -- via radare2 (ii/iE/il). Static; degrades if no r2."""
+    if r2session.get(binary) is None:
+        return _no_r2()
+    imps = _j(binary, "iij") or []
+    exps = _j(binary, "iEj") or []
+    libs = _j(binary, "ilj") or []
+    imports = [{"name": i.get("name"), "library": i.get("libname"), "type": i.get("type"),
+                "plt": i.get("plt")} for i in imps if isinstance(i, dict)]
+    exports = [{"name": e.get("name"), "type": e.get("type"), "vaddr": e.get("vaddr")}
+               for e in exps if isinstance(e, dict)]
+    return {"ok": True, "available": True, "tool": "native_query",
+            "libraries": [str(x) for x in libs][:60],
+            "import_count": len(imports), "export_count": len(exports),
+            "imports": imports[:300], "exports": exports[:300],
+            "limitations": ["superficie de API estatica (radare2); importaciones resueltas en runtime "
+                            "(dlopen/dlsym) no se ven"]}
+
+
+def binary_overview(binary: str) -> dict:
+    """binary_overview / inspect_analysis_view: a one-shot static analysis view -- arch/bits/type/OS,
+    entrypoint, counts of functions/imports/exports/sections, and the top sections, via radare2."""
+    if r2session.get(binary) is None:
+        return _no_r2()
+    info = _j(binary, "ij") or {}
+    bcatch = info.get("bin", {}) if isinstance(info, dict) else {}
+    fns = _functions(binary) or []
+    imps = _j(binary, "iij") or []
+    exps = _j(binary, "iEj") or []
+    secs = _j(binary, "iSj") or []
+    sections = [{"name": s.get("name"), "size": s.get("size"), "perm": s.get("perm")}
+                for s in secs if isinstance(s, dict)][:40]
+    return {"ok": True, "available": True, "tool": "native_query",
+            "arch": bcatch.get("arch"), "bits": bcatch.get("bits"), "type": bcatch.get("bintype"),
+            "os": bcatch.get("os"), "class": bcatch.get("class"), "endian": bcatch.get("endian"),
+            "pic": bcatch.get("pic"), "canary": bcatch.get("canary"), "nx": bcatch.get("nx"),
+            "entrypoint": (info.get("core", {}) or {}).get("baddr") if isinstance(info, dict) else None,
+            "function_count": len(fns), "import_count": len(imps), "export_count": len(exps),
+            "section_count": len(secs), "sections": sections,
+            "limitations": ["vista de analisis estatica de radare2; no se ejecuta el binario"]}
+
+
 def render_native_query(kind: str, r: dict) -> str:
     out = [f"## Consulta nativa estatica: {kind}\n"]
     if not r.get("ok"):
@@ -219,6 +262,21 @@ def render_native_query(kind: str, r: dict) -> str:
         else:
             out.append(f"- ruta ({r['length']}): "
                        + " -> ".join((p.get("name") or hex(p["addr"])) for p in r["path"]))
+    elif kind == "native_api":
+        out.append(f"- librerias: {', '.join(r.get('libraries') or []) or '-'}")
+        out.append(f"- imports: {r.get('import_count')} | exports: {r.get('export_count')}")
+        for i in (r.get("imports") or [])[:30]:
+            out.append(f"  - import {i.get('name')} ({i.get('library') or '?'})")
+        for e in (r.get("exports") or [])[:15]:
+            out.append(f"  - export {e.get('name')}")
+    elif kind == "overview":
+        out.append(f"- {r.get('arch')}/{r.get('bits')}-bit {r.get('type')} ({r.get('os')}, "
+                   f"{r.get('class')}, {r.get('endian')})")
+        out.append(f"- PIC={r.get('pic')} NX={r.get('nx')} canary={r.get('canary')} | "
+                   f"funciones={r.get('function_count')} imports={r.get('import_count')} "
+                   f"exports={r.get('export_count')} secciones={r.get('section_count')}")
+        for s in (r.get("sections") or [])[:14]:
+            out.append(f"  - {s.get('name')} ({s.get('size')} B, {s.get('perm')})")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

@@ -484,6 +484,11 @@ def test_native_query_static_tools():
     assert an["ok"] and (an["function"] or "").endswith("main")
     cp = call_path(binp, "main", "win")
     assert cp["ok"] and cp["reachable"] and cp["path"][0]["name"].endswith("main")
+    from binoracle.workflows.nativequery import inspect_native_api, binary_overview
+    api = inspect_native_api(binp)
+    assert api["ok"] and api["import_count"] >= 1 and any("libc" in l for l in api["libraries"])
+    ov = binary_overview(binp)
+    assert ov["ok"] and ov["bits"] == 64 and ov["function_count"] > 0 and ov["section_count"] > 0
 
 
 def test_recover_javascript_sources(tmp_path):
@@ -521,7 +526,9 @@ def test_native_query_degrades_without_r2(monkeypatch):
                      (nativequery.get_call_graph, ("x",)),
                      (nativequery.find_xrefs_to_name, ("x", "win")),
                      (nativequery.address_name, ("x", "0x1000")),
-                     (nativequery.call_path, ("x", "main", "win"))):
+                     (nativequery.call_path, ("x", "main", "win")),
+                     (nativequery.inspect_native_api, ("x",)),
+                     (nativequery.binary_overview, ("x",))):
         r = fn(*args)
         assert r["ok"] is False and r["available"] is False and "radare2" in r["note"]
 

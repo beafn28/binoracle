@@ -328,6 +328,24 @@ def _h_callpath(args):
                                                        max_depth=int(a.get("max_depth") or 12)))
 
 
+@_tool("inspect_native_api", "Superficie de API de un binario via radare2: funciones importadas (+ "
+       "su libreria), simbolos exportados y librerias enlazadas (DT_NEEDED). Estatico; degrada si no "
+       "hay r2.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"}}, ["binary"])
+def _h_native_api(args):
+    from .workflows.nativequery import inspect_native_api, render_native_query
+    return render_native_query("native_api", inspect_native_api(_binary(args)))
+
+
+@_tool("binary_overview", "Vista de analisis estatica de un binario via radare2: arch/bits/tipo/OS, "
+       "mitigaciones (PIC/NX/canary), entrypoint y conteos de funciones/imports/exports/secciones. "
+       "Equivalente stateless a open_binary/inspect_analysis_view. Degrada si no hay r2.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"}}, ["binary"])
+def _h_overview(args):
+    from .workflows.nativequery import binary_overview, render_native_query
+    return render_native_query("overview", binary_overview(_binary(args)))
+
+
 @_tool("jeb_connect", "Conecta con un servidor MCP de JEB arrancado por el llamador (motor externo; "
        "define BINORACLE_JEB_MCP_URL o pasa 'url'). op=list lista sus herramientas; op=call invoca "
        "'name' con 'arguments'. Salida no confiable; degrada si no hay endpoint.",
