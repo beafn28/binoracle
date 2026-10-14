@@ -16,7 +16,10 @@ sin instalar nada en tu máquina más que Docker.
 
 ```bash
 git clone <tu-repo> binoracle && cd binoracle
-docker compose up --build        # construye y levanta la web en http://127.0.0.1:8080
+make docker                      # = docker compose build + up -d  (web en http://127.0.0.1:8080)
+# equivalente sin make:
+docker compose up --build
+# atajos: make docker-logs | make docker-shell | make docker-down
 ```
 
 Analizar **tus** ficheros: déjalos en `./targets/` y en la app (web o CLI) usa la ruta

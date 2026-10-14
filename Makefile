@@ -1,7 +1,8 @@
 # binoracle - developer tasks
 PY ?= python3
 
-.PHONY: help install install-all install-tools test samples lint clean
+.PHONY: help install install-all install-tools test samples lint clean \
+        docker docker-build docker-down docker-shell docker-logs pwn-image clean-docker
 
 help:
 	@echo 'make install       - editable install (core, stdlib only)'
@@ -11,6 +12,11 @@ help:
 	@echo 'make samples       - build the practice ELF/PE corpus via Docker'
 	@echo 'make lint          - byte-compile the package'
 	@echo 'make clean         - remove build artifacts and local state'
+	@echo 'make docker        - build + run binoracle in Docker (web UI on http://127.0.0.1:8080)'
+	@echo 'make docker-build  - build the image only (no run)'
+	@echo 'make docker-shell  - open a shell inside the running container'
+	@echo 'make docker-logs   - follow the container logs'
+	@echo 'make docker-down   - stop and remove the container'
 
 install-tools:
 	bash scripts/install-tools.sh
@@ -33,6 +39,26 @@ lint:
 clean:
 	rm -rf build dist *.egg-info .binoracle .pytest_cache
 	find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+
+# --- Docker (app image): one-command local run, incl. the exploit engine ---
+# Uses `docker compose` (v2) if present, else falls back to legacy `docker-compose`.
+DC := $(shell if docker compose version >/dev/null 2>&1; then echo 'docker compose'; else echo 'docker-compose'; fi)
+
+docker: docker-build
+	$(DC) up -d
+	@echo 'binoracle web UI -> http://127.0.0.1:8080   (make docker-logs | make docker-down)'
+
+docker-build:
+	$(DC) build
+
+docker-shell:
+	$(DC) exec binoracle bash || $(DC) run --rm binoracle bash
+
+docker-logs:
+	$(DC) logs -f binoracle
+
+docker-down:
+	$(DC) down
 
 pwn-image:
 	docker build --platform linux/amd64 -t binoracle-pwn -f .docker/Dockerfile.pwn .docker
