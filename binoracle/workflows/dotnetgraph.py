@@ -264,6 +264,299 @@ def build_graph_from_metadata(md: bytes, max_types: int = 20000) -> dict:
             "edges": edges[:4000], "edge_count": len(edges)}
 
 
+# --- reusable table index (shared by the type graph and the CIL call graph) ----------------------
+
+class _Tables:
+    """Parse the #~ metadata-tables stream once and expose row reads + heap/coded helpers."""
+
+    def __init__(self, md: bytes):
+        self.md = md
+        streams = _streams(md)
+        ts = streams.get("#~") or streams.get("#-")
+        if not ts:
+            raise _MDError("sin stream de tablas (#~/#-)")
+        self.t = md[ts[0]:ts[0] + ts[1]]
+        if len(self.t) < 24:
+            raise _MDError("stream de tablas truncado")
+        self.heap_sizes = self.t[6]
+        valid = struct.unpack_from("<Q", self.t, 8)[0]
+        self.present = [i for i in range(64) if valid & (1 << i)]
+        p = 24
+        self.rows = {}
+        for i in self.present:
+            self.rows[i] = struct.unpack_from("<I", self.t, p)[0]
+            p += 4
+        self.base = {}
+        cur = p
+        for i in self.present:
+            self.base[i] = cur
+            cur += _row_size(i, self.rows, self.heap_sizes) * self.rows[i]
+        sidx = streams.get("#Strings")
+        self.strings = md[sidx[0]:sidx[0] + sidx[1]] if sidx else b"\x00"
+
+    def string(self, off):
+        return _str_at(self.strings, off)
+
+    def row(self, tid, k):
+        """Read row k (0-based) of table tid as a list of (col, value). None if out of range."""
+        if tid not in self.base or k < 0 or k >= self.rows[tid]:
+            return None
+        rs = _row_size(tid, self.rows, self.heap_sizes)
+        pos = self.base[tid] + k * rs
+        cols = []
+        for col in _SCHEMA[tid]:
+            v, pos = _read_index(self.t, pos, col, self.rows, self.heap_sizes)
+            cols.append((col, v))
+        return cols
+
+    def iter_rows(self, tid, cap=200000):
+        if tid not in self.base:
+            return
+        for k in range(min(self.rows[tid], cap)):
+            yield k, self.row(tid, k)
+
+
+# --- CIL method-body decoding (ECMA-335 III) ------------------------------------------------------
+# Operand size (in bytes) per single-byte opcode; InlineSwitch(0x45) is special; unknown -> stop.
+_OPSIZE = {}
+for _o in list(range(0x00, 0x0E)) + [0x14] + list(range(0x15, 0x1F)) + [0x25, 0x26, 0x2A] + \
+        list(range(0x46, 0x6F)) + [0x76, 0x7A] + list(range(0x82, 0x8D)) + [0x8E] + \
+        list(range(0x90, 0xA3)) + [0xB3] + list(range(0xB4, 0xBB)) + [0xC3] + \
+        list(range(0xD1, 0xDC)) + [0xDC, 0xDF, 0xE0]:
+    _OPSIZE[_o] = 0
+for _o in (0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x1F) + tuple(range(0x2B, 0x38)) + (0xDE,):
+    _OPSIZE[_o] = 1                                 # ShortInline* (1-byte)
+for _o in (0x20, 0x22, 0x27, 0x28, 0x29, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x79,
+           0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x8D, 0x8F, 0xA3, 0xA4, 0xA5, 0xC2,
+           0xC6, 0xD0, 0xDD) + tuple(range(0x38, 0x45)):
+    _OPSIZE[_o] = 4                                 # Inline* 4-byte (incl. branches/tokens)
+for _o in (0x21, 0x23):
+    _OPSIZE[_o] = 8                                 # InlineI8 / InlineR
+# two-byte 0xFE xx
+_OPSIZE_FE = {0x00: 0, 0x01: 0, 0x02: 0, 0x03: 0, 0x04: 0, 0x05: 0, 0x06: 4, 0x07: 4,
+              0x09: 2, 0x0A: 2, 0x0B: 2, 0x0C: 2, 0x0D: 2, 0x0E: 2, 0x0F: 0, 0x11: 0,
+              0x12: 1, 0x13: 0, 0x14: 0, 0x15: 4, 0x16: 4, 0x17: 0, 0x18: 0, 0x19: 1,
+              0x1A: 0, 0x1C: 4, 0x1D: 0, 0x1E: 0}
+# opcodes whose 4-byte token names a method (call family)
+_CALL_OPS = {0x28, 0x6F, 0x73, 0x27}                # call, callvirt, newobj, jmp
+_CALL_OPS_FE = {0x06, 0x07}                         # ldftn, ldvirtftn
+
+
+def _method_body_il(body: bytes):
+    """Return the IL bytecode of a method body (tiny or fat header), or b'' on a bad header."""
+    if not body:
+        return b""
+    b0 = body[0]
+    if (b0 & 0x03) == 0x02:                         # tiny format
+        size = b0 >> 2
+        return body[1:1 + size]
+    if (b0 & 0x03) == 0x03:                         # fat format
+        if len(body) < 12:
+            return b""
+        code_size = struct.unpack_from("<I", body, 4)[0]
+        return body[12:12 + code_size]
+    return b""
+
+
+def _scan_il_calls(il: bytes):
+    """Linear-sweep the IL, returning the metadata tokens of call/callvirt/newobj/jmp/ldftn."""
+    tokens = []
+    i = 0
+    n = len(il)
+    while i < n:
+        op = il[i]
+        i += 1
+        if op == 0xFE:                              # two-byte opcode
+            if i >= n:
+                break
+            op2 = il[i]
+            i += 1
+            sz = _OPSIZE_FE.get(op2)
+            if sz is None:
+                break                               # unknown -> stop (avoid desync)
+            if op2 in _CALL_OPS_FE and i + 4 <= n:
+                tokens.append(struct.unpack_from("<I", il, i)[0])
+            i += sz
+            continue
+        if op == 0x45:                              # switch: uint32 N, then N*int32
+            if i + 4 > n:
+                break
+            cnt = struct.unpack_from("<I", il, i)[0]
+            i += 4 + 4 * cnt
+            continue
+        sz = _OPSIZE.get(op)
+        if sz is None:
+            break
+        if op in _CALL_OPS and i + 4 <= n:
+            tokens.append(struct.unpack_from("<I", il, i)[0])
+        i += sz
+    return tokens
+
+
+def build_call_graph(tables: "_Tables", read_body, max_methods: int = 40000) -> dict:
+    """Build the method call graph. `read_body(rva)` returns a method's raw body bytes (header+IL),
+    or None. Tokens in call instructions are resolved by table+row to method display names."""
+    # type names
+    typedef_name = {}
+    typedef_methodlist = []        # (methodlist_start_1based, typename) sorted
+    for k, cols in tables.iter_rows(2):
+        name = tables.string(cols[1][1])
+        ns = tables.string(cols[2][1])
+        full = f"{ns}.{name}" if ns else name
+        typedef_name[k + 1] = full
+        typedef_methodlist.append((cols[5][1], full))   # MethodList is col index 5
+    typedef_methodlist.sort()
+    typeref_name = {}
+    for k, cols in tables.iter_rows(1):
+        name = tables.string(cols[1][1])
+        ns = tables.string(cols[2][1])
+        typeref_name[k + 1] = (f"{ns}.{name}" if ns else name)
+
+    def owner_type(method_row_1based):
+        # last type whose MethodList start <= method_row
+        lo, hi, found = 0, len(typedef_methodlist) - 1, None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if typedef_methodlist[mid][0] <= method_row_1based:
+                found = typedef_methodlist[mid][1]
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return found or "<global>"
+
+    # MethodDef rows: (rva, name, owner)
+    methods = []                   # index 0 == MethodDef row 1
+    for k, cols in tables.iter_rows(6):
+        rva = cols[0][1]
+        name = tables.string(cols[3][1])
+        methods.append({"rva": rva, "name": name, "owner": owner_type(k + 1)})
+
+    def resolve_methodref_parent(coded_v):
+        table, row = _decode_coded(coded_v, "MemberRefParent")
+        if table == 2:
+            return typedef_name.get(row, f"<TypeDef#{row}>")
+        if table == 1:
+            return typeref_name.get(row, f"<TypeRef#{row}>")
+        if table == 27:
+            return f"<TypeSpec#{row}>"
+        if table == 26:
+            return "<ModuleRef>"
+        if table == 6 and 1 <= row <= len(methods):
+            return methods[row - 1]["owner"]
+        return "<?>"
+
+    def resolve_token(tok):
+        table = (tok >> 24) & 0xFF
+        row = tok & 0x00FFFFFF
+        if table == 0x06 and 1 <= row <= len(methods):      # MethodDef
+            m = methods[row - 1]
+            return f"{m['owner']}::{m['name']}", False
+        if table == 0x0A:                                   # MemberRef
+            cols = tables.row(10, row - 1)
+            if cols:
+                parent = resolve_methodref_parent(cols[0][1])
+                return f"{parent}::{tables.string(cols[1][1])}", True
+        if table == 0x2B:                                   # MethodSpec -> underlying method
+            cols = tables.row(43, row - 1)
+            if cols:
+                mt, mr = _decode_coded(cols[0][1], "MethodDefOrRef")
+                return resolve_token(((0x06 if mt == 6 else 0x0A) << 24) | mr)
+        return None
+
+    edges = []
+    scanned = 0
+    for idx, m in enumerate(methods[:max_methods]):
+        if not m["rva"]:
+            continue
+        body = read_body(m["rva"])
+        if not body:
+            continue
+        scanned += 1
+        caller = f"{m['owner']}::{m['name']}"
+        seen = set()
+        for tok in _scan_il_calls(_method_body_il(body)):
+            callee = resolve_token(tok)
+            if not callee or callee[0] in seen:
+                continue
+            seen.add(callee[0])
+            edges.append({"from": caller, "to": callee[0], "external": callee[1]})
+            if len(edges) >= 20000:
+                break
+        if len(edges) >= 20000:
+            break
+    return {"method_count": len(methods), "scanned_methods": scanned,
+            "edge_count": len(edges), "edges": edges[:4000],
+            "callers": sorted({e["from"] for e in edges})[:400]}
+
+
+def project_call_graph(path: str) -> dict:
+    """CIL-level call graph: decode each method body's IL and resolve call tokens to methods."""
+    try:
+        import pefile
+    except Exception as e:
+        return {"ok": False, "tool": "dotnet_callgraph", "note": f"falta pefile: {e}"}
+    try:
+        pe = pefile.PE(path, fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR"]])
+    except Exception as e:
+        return {"ok": False, "tool": "dotnet_callgraph", "note": f"no es PE: {e}"}
+    try:
+        dd = pe.OPTIONAL_HEADER.DATA_DIRECTORY[14]
+        if not dd.VirtualAddress or not dd.Size:
+            return {"ok": False, "tool": "dotnet_callgraph", "note": "PE nativo (no es .NET)"}
+        cli = pe.get_data(dd.VirtualAddress, min(dd.Size, 72))
+        md_rva, md_size = struct.unpack_from("<II", cli, 8)
+        md = pe.get_data(md_rva, md_size)
+        tables = _Tables(md)
+
+        def read_body(rva):
+            try:
+                hdr = pe.get_data(rva, 12)
+            except Exception:
+                return None
+            b0 = hdr[0]
+            if (b0 & 0x03) == 0x02:
+                size = (b0 >> 2) + 1
+            elif (b0 & 0x03) == 0x03:
+                size = 12 + struct.unpack_from("<I", hdr, 4)[0]
+            else:
+                return None
+            try:
+                return pe.get_data(rva, min(size, 2 * 1024 * 1024))
+            except Exception:
+                return None
+
+        g = build_call_graph(tables, read_body)
+    except _MDError as e:
+        return {"ok": False, "tool": "dotnet_callgraph", "note": f"metadata ilegible: {e}"}
+    except Exception as e:
+        return {"ok": False, "tool": "dotnet_callgraph", "note": f"error: {e.__class__.__name__}"}
+    finally:
+        try:
+            pe.close()
+        except Exception:
+            pass
+    g.update({"ok": True, "tool": "dotnet_callgraph",
+              "limitations": ["grafo de llamadas por IL (call/callvirt/newobj/jmp/ldftn), tokens "
+                              "resueltos por tabla+fila; calli y llamadas por delegado/reflexion no "
+                              "se resuelven; genericos via MethodSpec se mapean al metodo base"]})
+    return g
+
+
+def render_call_graph(r: dict) -> str:
+    out = ["## Grafo de llamadas .NET (CIL, por token)\n"]
+    if not r.get("ok"):
+        return "\n".join(out + [f"- No disponible: {r.get('note','')}"])
+    out.append(f"- metodos: {r['method_count']} | con cuerpo escaneado: {r['scanned_methods']} | "
+               f"aristas: {r['edge_count']}")
+    for e in r["edges"][:60]:
+        mark = " (ext)" if e.get("external") else ""
+        out.append(f"  - {e['from']} -> {e['to']}{mark}")
+    for lim in r.get("limitations", []):
+        out.append(f"\n_limite: {lim}_")
+    return "\n".join(out)
+
+
 def _metadata_blob(path: str):
     """Extract the metadata-root blob from a managed PE via pefile. Returns (md, None) or (None, err)."""
     try:

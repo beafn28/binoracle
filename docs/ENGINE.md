@@ -147,7 +147,7 @@ ideas were re-implemented in Python with attribution, not copied.)
 | WASM | `wasminspect` | sections, imports/exports, function table |
 | SQLite | `sqliteinspect` | schema, pages, embedded blobs |
 | EVM bytecode | `evminspect` | opcode disasm, selectors, storage layout |
-| .NET assemblies | `dotnetinspect`, `dotnet` | metadata, types, IL; `compare_managed_members`, `verify_reconstruction` (obligation-gated), `verify_managed_native_boundaries` (P/Invoke surface); `project_managed_application_graph` — **token-resolved type graph** (parses `#~` tables, coded indices → TypeDef/TypeRef/extends/implements/nested_in) |
+| .NET assemblies | `dotnetinspect`, `dotnet` | metadata, types, IL; `compare_managed_members`, `verify_reconstruction` (obligation-gated), `verify_managed_native_boundaries` (P/Invoke surface); `project_managed_application_graph` — **token-resolved type graph** (parses `#~` tables, coded indices → TypeDef/TypeRef/extends/implements/nested_in); `project_managed_call_graph` — **CIL-level call graph** (decodes each method's IL, resolves call/callvirt/newobj/jmp/ldftn tokens to methods) |
 | Mach-O | `machoinspect` | load commands **+ Objective-C & Swift metadata** (classes, methods, protocols) |
 | PE | `peinspect` | imports/exports, sections, resources |
 | APK | `apkinspect` | manifest + decompile path; JADX class/method queries (`search_android_classes`, `inspect_android_class`/`method`/`package`, `trace_android_references`); apktool `decode_android_resources` + `project_mobile_application_graph` (components/intent graph) |
@@ -226,9 +226,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 92 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 93 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 136 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 137 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

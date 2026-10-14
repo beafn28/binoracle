@@ -907,6 +907,16 @@ def _h_dotnet_graph(args):
     return render_type_graph(project_type_graph(_binary(args)))
 
 
+@_tool("project_managed_call_graph", "Construye el grafo de LLAMADAS de un ensamblado .NET "
+       "decodificando el IL (CIL) de cada metodo: opcodes call/callvirt/newobj/jmp/ldftn con sus "
+       "tokens resueltos por tabla+fila a metodos (MethodDef internos, MemberRef externos, "
+       "MethodSpec->metodo base). Estatico; no ejecuta. calli/delegados/reflexion no se resuelven.",
+       {"binary": {"type": "string", "description": "ruta al ensamblado .NET (.dll/.exe gestionado)"}}, ["binary"])
+def _h_dotnet_callgraph(args):
+    from .workflows.dotnetgraph import project_call_graph, render_call_graph
+    return render_call_graph(project_call_graph(_binary(args)))
+
+
 @_tool("inspect_java", "Lee un artefacto Java estaticamente: un JAR (ZIP) -> manifiesto "
        "(Main-Class/versiones), inventario de clases/paquetes, framework (Spring/Jakarta/Kotlin/"
        "Scala/Android), firma y version de bytecode; o un .class suelto -> magic/version y "

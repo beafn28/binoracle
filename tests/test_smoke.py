@@ -1504,6 +1504,54 @@ def test_dotnet_type_graph_non_dotnet_degrades():
     assert r["ok"] is False and r.get("note")
 
 
+def test_dotnet_cil_call_graph_by_token():
+    # Decode CIL method bodies and resolve call tokens: App.Foo::DoA calls the internal MethodDef
+    # App.Bar::DoB and the external MemberRef Sys.Console::WriteLine. Metadata + IL are hand-built.
+    import struct
+    from binoracle.workflows.dotnetgraph import _Tables, build_call_graph, render_call_graph
+    strings = bytearray(b"\x00")
+    o = {}
+
+    def addn(s):
+        o[s] = len(strings)
+        strings.extend(s.encode() + b"\x00")
+    for s in ("App", "Foo", "Bar", "Sys", "Console", "DoA", "DoB", "WriteLine"):
+        addn(s)
+    valid = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 6) | (1 << 10)
+    hdr = struct.pack("<IBBBBQQ", 0, 2, 0, 0, 1, valid, 0)
+    counts = struct.pack("<IIIII", 1, 1, 2, 2, 1)
+    mod = struct.pack("<HHHHH", 0, o["App"], 0, 0, 0)
+    tref = struct.pack("<HHH", 0, o["Console"], o["Sys"])
+    td1 = struct.pack("<IHHHHH", 0, o["Foo"], o["App"], 0, 1, 1)   # MethodList=1
+    td2 = struct.pack("<IHHHHH", 0, o["Bar"], o["App"], 0, 1, 2)   # MethodList=2
+    md1 = struct.pack("<IHHHHH", 0x100, 0, 0, o["DoA"], 0, 1)
+    md2 = struct.pack("<IHHHHH", 0x200, 0, 0, o["DoB"], 0, 1)
+    mr1 = struct.pack("<HHH", 9, o["WriteLine"], 0)               # parent = TypeRef#1 ((1<<3)|1)
+    tstream = hdr + counts + mod + tref + td1 + td2 + md1 + md2 + mr1
+    ver = b"v4.0\x00"
+    ver += b"\x00" * ((4 - len(ver) % 4) % 4)
+
+    def sh(off, size, name):
+        nb = name.encode() + b"\x00"
+        nb += b"\x00" * ((4 - len(nb) % 4) % 4)
+        return struct.pack("<II", off, size) + nb
+    root = struct.pack("<IHHII", 0x424A5342, 1, 1, 0, len(ver)) + ver + struct.pack("<HH", 0, 2)
+    hl = len(root) + len(sh(0, 0, "#Strings")) + len(sh(0, 0, "#~"))
+    so = hl
+    to = so + len(strings)
+    md = root + sh(so, len(strings), "#Strings") + sh(to, len(tstream), "#~") + bytes(strings) + tstream
+
+    tables = _Tables(md)
+    il = bytes([0x28, 0x02, 0x00, 0x00, 0x06, 0x28, 0x01, 0x00, 0x00, 0x0A, 0x2A])
+    bodies = {0x100: bytes([(len(il) << 2) | 2]) + il, 0x200: bytes([(1 << 2) | 2, 0x2A])}
+    g = build_call_graph(tables, lambda rva: bodies.get(rva))
+    assert g["method_count"] == 2 and g["scanned_methods"] == 2
+    e = {(x["from"], x["to"], x["external"]) for x in g["edges"]}
+    assert ("App.Foo::DoA", "App.Bar::DoB", False) in e
+    assert ("App.Foo::DoA", "Sys.Console::WriteLine", True) in e
+    assert "Grafo de llamadas" in render_call_graph({**g, "ok": True})
+
+
 def test_managed_non_dotnet_degrades(monkeypatch):
     # A non-.NET input degrades honestly rather than inventing members.
     from binoracle.workflows import managedquery as M
