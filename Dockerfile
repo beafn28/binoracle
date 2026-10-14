@@ -26,9 +26,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Paquetes CRITICOS (si fallan, el build debe fallar):
 RUN dpkg --add-architecture i386 \
     && apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl file binutils make python3-dev \
+        git ca-certificates curl unzip file binutils make python3-dev \
         gcc gcc-multilib libc6-dev libc6-dev-i386 libc6:i386 \
-        ruby strace ltrace \
+        ruby ruby-dev strace ltrace \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # radare2: NO esta en los repos de Debian (retirado), asi que se instala desde el .deb OFICIAL de
@@ -46,23 +46,52 @@ RUN apt-get update \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && (radare2 -v || true)
 
-# Android a nivel clase/metodo/recursos: apktool (AndroidManifest + smali + recursos) y jadx
-# (DEX -> pseudo-Java). Arrastran un JRE headless. BEST-EFFORT: si no estan en el repo el build no
-# muere (inspect_apk estatico sigue funcionando; apk-manifest/apk-decompile avisan si faltan).
+# Android (jadx + apktool). OJO: jadx NO existe como paquete Debian y apktool solo a veces, por eso
+# NO se instalan por apt (un fallo tumbaba tambien el JRE). Se instalan desde sus releases OFICIALES,
+# cada pieza por separado y best-effort (si una falla, las demas siguen; inspect_apk estatico va igual).
+# 1) JRE headless (lo necesitan ambos):
 RUN apt-get update \
-    && (apt-get install -y --no-install-recommends default-jre-headless apktool jadx \
-        || echo 'WARN: apktool/jadx no disponibles; inspect_apk estatico sigue OK') \
+    && (apt-get install -y --no-install-recommends default-jre-headless \
+        || echo 'WARN: JRE no instalado; jadx/apktool no podran ejecutarse') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# 2) apktool (wrapper oficial + jar) -> AndroidManifest + smali + recursos:
+ARG APKTOOL_VERSION=2.10.0
+RUN (curl -fsSL -o /usr/local/bin/apktool \
+        https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool \
+     && curl -fsSL -o /usr/local/bin/apktool.jar \
+        "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" \
+     && chmod +x /usr/local/bin/apktool /usr/local/bin/apktool.jar) \
+    || echo 'WARN: apktool no instalado'
+# 3) jadx (release zip) -> DEX a pseudo-Java:
+ARG JADX_VERSION=1.5.1
+RUN (curl -fsSL -o /tmp/jadx.zip \
+        "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" \
+     && mkdir -p /opt/jadx && unzip -q /tmp/jadx.zip -d /opt/jadx \
+     && ln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx \
+     && ln -sf /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui) \
+    || echo 'WARN: jadx no instalado'; rm -f /tmp/jadx.zip
 
-# Extras BEST-EFFORT que mejoran cobertura sin inflar demasiado:
-# - gdb: debug dinamico (oraculo dynamic_dbg, confirmar crashes en vivo).
-# - patchelf: cambiar interprete/RPATH del ELF (usar la libc de un reto).
-# - binwalk: carve de firmware/blobs empotrados (inspect firmware).
-# Si alguno no esta, el build NO muere; esa capacidad simplemente se marca no disponible.
+# Extras BEST-EFFORT (debug/firmware): gdb (dynamic_dbg), patchelf (interprete/RPATH), binwalk (carve).
 RUN apt-get update \
     && (apt-get install -y --no-install-recommends gdb patchelf binwalk \
-        || echo 'WARN: gdb/patchelf/binwalk no disponibles; se degradan esas capacidades') \
+        || echo 'WARN: gdb/patchelf/binwalk no disponibles') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- COBERTURA MAXIMA ("lo mas completo posible") ---
+# Herramientas apt extra: yara (reglas/deteccion), qemu-user (ejecutar/emular ARM/MIPS + gdbstub),
+# valgrind (memcheck: UAF/double-free/OOB), dex2jar (DEX->JAR). Best-effort e independientes.
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends yara qemu-user valgrind dex2jar \
+        || echo 'WARN: algun paquete apt extra no disponible') \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Oraculos/tools Python extra. Cada uno por separado para que un fallo NO bloquee al resto.
+# angr = ejecucion simbolica (sube verdicts a 'verified'); es el mas pesado, va el ultimo.
+RUN pip install keystone-engine || echo 'WARN: keystone-engine no instalado'
+RUN pip install frida-tools    || echo 'WARN: frida-tools no instalado'
+RUN pip install flare-capa     || echo 'WARN: flare-capa (capa) no instalado'
+RUN pip install angr           || echo 'WARN: angr no instalado (simbolico opcional)'
+# seccomp-tools (gem): volcar el filtro seccomp de un binario.
+RUN gem install seccomp-tools --no-document || echo 'WARN: seccomp-tools no instalado'
 
 # Oraculos de analisis + pwntools (angr se omite a proposito: es enorme y carga perezosamente;
 # instalalo con `pip install angr` dentro del contenedor si lo necesitas para reachability simbolica).
