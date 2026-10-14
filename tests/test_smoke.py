@@ -526,6 +526,46 @@ def test_native_query_degrades_without_r2(monkeypatch):
         assert r["ok"] is False and r["available"] is False and "radare2" in r["note"]
 
 
+def test_android_query_over_decompiled_tree(tmp_path, monkeypatch):
+    # Android class/method queries over a (seeded) JADX source tree: search, package listing, class
+    # body + methods, and reference tracing. The JADX run itself is monkeypatched out so the query
+    # logic is tested without the tool; the real tools degrade honestly when JADX is absent.
+    import os
+    from binoracle.workflows import androidquery as A
+    root = tmp_path / "sources"
+    (root / "com" / "app" / "net").mkdir(parents=True)
+    (root / "com" / "app" / "MainActivity.java").write_text(
+        "package com.app;\npublic class MainActivity {\n public void onCreate(){ Net.send(secretKey); }\n}\n")
+    (root / "com" / "app" / "net" / "Net.java").write_text(
+        "package com.app.net;\npublic class Net { public static void send(String s){} String secretKey; }\n")
+    monkeypatch.setattr(A, "_decompile", lambda apk, timeout=240: (str(root), None))
+    assert A.search_android_classes("x.apk", "Net")["classes"] == ["com.app.net.Net"]
+    assert A.inspect_android_package("x.apk", "com.app.net")["classes"] == ["com.app.net.Net"]
+    cl = A.inspect_android_class("x.apk", "com.app.MainActivity")
+    assert cl["ok"] and "onCreate" in cl["methods"] and "class MainActivity" in cl["java"]
+    refs = A.trace_android_references("x.apk", "secretKey")
+    assert refs["ref_count"] == 2
+    classes = {r["class"] for r in refs["references"]}
+    assert "com.app.MainActivity" in classes and "com.app.net.Net" in classes
+
+
+def test_android_query_degrades_without_jadx(monkeypatch):
+    # With no jadx on PATH, every Android query tool degrades honestly (available False).
+    import os
+    from binoracle.workflows import androidquery as A
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        for fn, a in ((A.search_android_classes, ("x.apk",)),
+                      (A.inspect_android_class, ("x.apk", "C")),
+                      (A.inspect_android_package, ("x.apk", "p")),
+                      (A.trace_android_references, ("x.apk", "n"))):
+            r = fn(*a)
+            assert r["ok"] is False and r["available"] is False and "JADX" in r["note"]
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_native_connectors_degrade():
     # IDA/Hopper connectors: pure degrade when no endpoint is configured (no network).
     import os

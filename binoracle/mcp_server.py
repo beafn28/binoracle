@@ -655,6 +655,49 @@ def _h_jadx(args):
     return render_caller("jadx", jadx_decompile(b))
 
 
+@_tool("search_android_classes", "Lista las clases decompiladas de un APK cuyo nombre completo "
+       "contiene una subcadena, via JADX (decompila, no ejecuta). Degrada si no hay JADX.",
+       {"binary": {"type": "string", "description": "ruta al .apk"},
+        "query": {"type": "string", "description": "subcadena del nombre de clase (opcional)"}}, ["binary"])
+def _h_android_search(args):
+    from .workflows.androidquery import search_android_classes, render_android_query
+    a = args or {}
+    return render_android_query("search", search_android_classes(_binary(a), a.get("query") or ""))
+
+
+@_tool("inspect_android_class", "Devuelve el Java decompilado de una clase de un APK (+ sus metodos "
+       "declarados), via JADX. Estatico; degrada si no hay JADX.",
+       {"binary": {"type": "string", "description": "ruta al .apk"},
+        "classname": {"type": "string", "description": "nombre completo de la clase (p.ej. com.app.MainActivity)"}},
+       ["binary", "classname"])
+def _h_android_class(args):
+    from .workflows.androidquery import inspect_android_class, render_android_query
+    a = args or {}
+    return render_android_query("class", inspect_android_class(_binary(a), a.get("classname") or ""))
+
+
+@_tool("inspect_android_package", "Lista las clases declaradas bajo un prefijo de paquete de un APK, "
+       "via JADX. Estatico; degrada si no hay JADX.",
+       {"binary": {"type": "string", "description": "ruta al .apk"},
+        "package": {"type": "string", "description": "prefijo de paquete (p.ej. com.app.net)"}},
+       ["binary", "package"])
+def _h_android_pkg(args):
+    from .workflows.androidquery import inspect_android_package, render_android_query
+    a = args or {}
+    return render_android_query("package", inspect_android_package(_binary(a), a.get("package") or ""))
+
+
+@_tool("trace_android_references", "Lista cada sitio decompilado que menciona un identificador "
+       "(clase/metodo/campo/cadena) de un APK como clase:linea, via JADX. Grep estatico; degrada si "
+       "no hay JADX.",
+       {"binary": {"type": "string", "description": "ruta al .apk"},
+        "name": {"type": "string", "description": "identificador a rastrear"}}, ["binary", "name"])
+def _h_android_refs(args):
+    from .workflows.androidquery import trace_android_references, render_android_query
+    a = args or {}
+    return render_android_query("references", trace_android_references(_binary(a), a.get("name") or ""))
+
+
 @_tool("apk_manifest", "Decodifica el AndroidManifest.xml binario de un APK (paquete, permisos, "
        "componentes) via Apktool SI el llamador lo tiene; si no, degrada. Integracion caller-supplied "
        "(completa inspect_apk, que detecta el manifest pero no lo decodifica).",
