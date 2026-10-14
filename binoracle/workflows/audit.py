@@ -107,10 +107,29 @@ def _decompile_vuln_funcs(reg, binary, llm, limit: int = 2):
     return out or None
 
 
+def _is_apk(path: str) -> bool:
+    """True si el fichero es un APK (ZIP con classes.dex / AndroidManifest.xml)."""
+    try:
+        if path.lower().endswith(".apk"):
+            return True
+        import zipfile
+        if not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+        return any(n == "AndroidManifest.xml" or n.endswith(".dex") for n in names)
+    except Exception:
+        return False
+
+
 def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
-    """Auditoria autonoma. Si Ghidra + el plugin estan instalados y no hay servidor arriba, binoracle
-    ARRANCA el servidor Ghidra headless automaticamente para este binario (decompilacion grado Ghidra
-    en recon e informe) y lo APAGA al terminar. Si falta algo, se sigue con r2 (fallback)."""
+    """Auditoria autonoma. Enruta por tipo: un APK va a la auditoria ANDROID (manifest + Java
+    decompilado + patrones inseguros), un ELF/PE/Mach-O al desarrollo de exploits de memoria.
+    Si Ghidra + el plugin estan instalados y no hay servidor arriba, binoracle ARRANCA el servidor
+    Ghidra headless automaticamente para este binario y lo APAGA al terminar; si falta, sigue con r2."""
+    if _is_apk(binary):
+        from .androidaudit import run_android_audit
+        return run_android_audit(binary, llm=llm, config=config, store=store, on_step=on_step)
     _gh = None
     try:
         from ..oracles import ghidra_server

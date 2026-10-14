@@ -770,6 +770,43 @@ def run_streaming(command, binary, ai, emit, text=""):
             store.close()
             emit("step", "auditoria terminada; generando informe...")
             emit("html", html)
+        elif command in ("analizar", "scan"):
+            # UNIVERSAL: detecta el tipo y hace lo apropiado y COMPLETO, con UN informe.
+            import zipfile as _zip
+            from .agent.grounding import GroundingLedger
+            from .workflows.audit import _is_apk
+            if _is_apk(binary):
+                emit("step", "APK detectado -> auditoria Android (manifest + Java decompilado + patrones inseguros)")
+                from .workflows.androidaudit import run_android_audit
+                store = SessionStore(config.db_path(), binary)
+                res = run_android_audit(binary, llm=None, config=config, store=store,
+                                        on_step=lambda s, a: emit("step", _fmt_step(s, a)))
+                html = render_html(binary, triage=None, findings=res.findings, ledger=res.ledger,
+                                   answer=res.answer, lang=config.lang, embed=True)
+                store.close()
+                emit("html", html)
+            elif os.path.isdir(binary) or _zip.is_zipfile(binary):
+                emit("step", "bundle detectado -> identificando y auditando TODOS los artefactos de dentro")
+                from .workflows.universal import analyze_bundle
+                store = SessionStore(config.db_path(), binary)
+                r = analyze_bundle(binary, config=config, store=store,
+                                   on_step=lambda m: emit("step", m))
+                html = render_html(binary, triage=None, findings=r.get("findings", []),
+                                   ledger=GroundingLedger(), answer=r.get("report_md", ""),
+                                   lang=config.lang, embed=True)
+                store.close()
+                emit("html", html)
+            else:
+                from .workflows.identify import detect_format, identify, render_identify
+                fmt = detect_format(binary)
+                if fmt in ("elf", "elf-core", "macho", "pe"):
+                    emit("step", f"binario nativo ({fmt}) -> panel de analisis (triage + cadenas)")
+                    run_streaming("dashboard", binary, ai, emit, text=text)
+                    return
+                emit("step", f"formato {fmt} -> lector fundamentado")
+                html = render_html(binary, triage=None, findings=[], ledger=GroundingLedger(),
+                                   answer=render_identify(identify(binary)), lang=config.lang, embed=True)
+                emit("html", html)
         elif command == "autopwn":
             from .workflows.autopwn import autopwn, render_autopwn
             store = SessionStore(config.db_path(), binary)
@@ -1299,18 +1336,9 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 <header>
   <div class="brand">binoracle</div>
   <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario (cualquier tamano)  o  fuente.c  -  o pulsa + para adjuntar cualquier fichero" spellcheck="false"></div>
-  <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
-  <input type="file" id="file" style="display:none"><button class="icon-btn" id="ragbtn" title="RAG: busqueda del conocimiento">RAG</button><button class="icon-btn" id="attach" title="adjuntar CUALQUIER fichero (binario, firmware, apk, .exe...) sin limite de tamano">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
+  <button class="go" onclick="dash()">Analizar</button>
+  <input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar CUALQUIER fichero (binario, firmware, apk, .exe...) sin limite de tamano">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
-<div id="ragpop" class="ragpop" style="display:none">
-  <div class="rt">Retrieval del conocimiento</div>
-  <div id="ragauto" class="ragauto">Automatico &middot; activo</div>
-  <div class="rhint" style="margin:0 0 10px">Se configura solo con el mejor modelo local. No hay que tocar nada; las casillas son solo un override.</div>
-  <label><input type="checkbox" id="rag_embed"> Semantico (embeddings)</label>
-  <label><input type="checkbox" id="rag_expand"> Expandir consulta (IA)</label>
-  <label><input type="checkbox" id="rag_rerank"> Rerank de candidatos (IA)</label>
-  <div id="ragstatus" class="rst">TF-IDF (base)</div>
-</div>
 <main>
   <nav class="side" id="side"></nav>
   <section class="work">
@@ -1369,9 +1397,9 @@ function reportView(container,html){
  var ifr=document.createElement('iframe');ifr.style.height='72vh';container.appendChild(ifr);ifr.srcdoc=html;}
 function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.getElementById('opt_'+x.k);o[x.k]=x.t==='check'?el.checked:el.value;});return o;}
 async function api(command,options){const binary=document.getElementById('target').value.trim();
- var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
+ var ai=true;var opt=Object.assign({ai:ai},options||{});
  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:opt})});return r.json();}
-function stream(command,options){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
+function stream(command,options){var out=document.getElementById('out');var ai=1;var bin=encodeURIComponent(document.getElementById('target').value.trim());
  out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo<button id="stopstream" class="stopbtn">parar</button></div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
  var log=document.getElementById('livelog');
  var extra=(options&&options.text)?('&text='+encodeURIComponent(options.text)):'';
@@ -1382,7 +1410,7 @@ function stream(command,options){var out=document.getElementById('out');var g=do
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['analizar','scan','audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';
@@ -1396,7 +1424,7 @@ async function exec(command,options){closeStream();if(['audit','autopwn','report
 async function dash(){const out=document.getElementById('out');const bin=document.getElementById('target').value.trim();
  if(!bin){out.innerHTML='<div class="empty"><div class="big">&#10095;_</div><div>Pon la ruta de un binario arriba y pulsa Analizar</div></div>';return;}
  out.innerHTML='<div class="empty"><div class="spin">analizando '+bin.split('/').pop()+'...</div></div>';
- stream('dashboard');
+ stream('analizar');
 }
 function donut(bySev,total){const r=52,c=2*Math.PI*r;let off=0;let segs='';
  ['critical','high','medium','low','info'].forEach(k=>{const v=bySev[k]||0;if(!v)return;const frac=v/total;const len=frac*c;
