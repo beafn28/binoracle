@@ -42,9 +42,12 @@ techniques are catalogued in `binoracle/kb/verified-playbook.md` — auto-genera
 the agent's hard-won, execution-verified playbook ships with the product. The selection logic
 (which technique for which defenses) is documented in `binoracle/kb/exploit-engineering.md`.
 
-> **One professional overview of the whole engine** — all ~19 execution-verified exploit
-> families (x86-64 and x86-32), the chain analyzer / ROP arsenal, full REA parity, and the
+> **One professional overview of the whole engine** — all ~25 execution-verified exploit
+> families (x86-64, x86-32, aarch64), the chain analyzer / ROP arsenal, full REA parity, and the
 > grounding mechanics — lives in **[`docs/ENGINE.md`](docs/ENGINE.md)**.
+>
+> **How to run it** (local setup, analyzing an APK/ELF, MCP server, web UI) — see
+> **[`docs/USAGE.md`](docs/USAGE.md)**.
 
 | Class | Mitigations handled | How it is verified |
 |-------|--------------------|--------------------|

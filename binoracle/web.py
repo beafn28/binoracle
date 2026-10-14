@@ -491,7 +491,6 @@ def run_command(payload: dict) -> dict:
             return {"ok": False, "text": "no hay modelo local disponible (arranca ollama)"}
         store = SessionStore(config.db_path(), binary)
         res = run_audit(binary, llm, config, store=store)
-        from .report.html import render_html
         html = render_html(binary, triage=getattr(res, "triage", None),
                            findings=res.findings, ledger=res.ledger,
                            answer=res.answer, lang=config.lang, embed=True,
@@ -570,6 +569,18 @@ def run_command(payload: dict) -> dict:
                            answer=answer, lang=config.lang, embed=True)
         store.close()
         return {"ok": True, "html": html, "text": f"{len(findings)} finding(s). Report rendered below."}
+
+    # static readers: route by format (apk/elf/macho/pe/go/wasm/sqlite/evm/dotnet/js/plist/asar/
+    # har/java/flutter/identify) through the unified identifier so the web UI can analyze any artifact.
+    if cmd in ("identify", "apk", "elf", "macho", "pe", "go", "wasm", "sqlite", "evm", "dotnet",
+               "js", "plist", "asar", "har", "java", "flutter", "firmware", "secrets"):
+        if not binary or not os.path.exists(binary):
+            return {"ok": False, "text": f"binary not found: {binary!r}"}
+        try:
+            from .workflows.identify import identify, render_identify
+            return {"ok": True, "text": render_identify(identify(binary))}
+        except Exception as e:
+            return {"ok": False, "text": f"error: {e}"}
 
     return {"ok": False, "text": f"unknown command: {cmd}"}
 
@@ -751,7 +762,6 @@ def run_streaming(command, binary, ai, emit, text=""):
             store = SessionStore(config.db_path(), binary)
             res = run_audit(binary, llm, config, store=store,
                             on_step=lambda step, action: emit("step", _fmt_step(step, action)))
-            from .report.html import render_html
             html = render_html(binary, triage=getattr(res, "triage", None),
                                findings=res.findings, ledger=res.ledger,
                                answer=res.answer, lang=config.lang, embed=True,
@@ -863,7 +873,6 @@ def run_streaming(command, binary, ai, emit, text=""):
             run_streaming("dashboard", binary, ai, emit, text=text)
             return
         elif command in ("report", "hunt", "dashboard"):
-            from .report.html import render_html
             from .agent.grounding import GroundingLedger
             reg = _reg(binary)
             store = SessionStore(config.db_path(), binary)
