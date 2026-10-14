@@ -592,6 +592,11 @@ _exploit_tool("autohof", "house-of-force: sobrescribe el tamano del top chunk ->
               "verificado en sandbox (glibc >=2.29 lo mitiga; se usa un asignador pre-2.29).",
               lambda: (__import__("binoracle.workflows.autohof", fromlist=["autohof"]).autohof,
                        __import__("binoracle.workflows.autohof", fromlist=["render_hof"]).render_hof))
+_exploit_tool("autohos", "house-of-spirit: libera un chunk FALSO que entra en tcache; el siguiente "
+              "malloc lo devuelve -> escritura sobre un puntero de funcion -> shell. Verificado en "
+              "sandbox (tcache de glibc real; no mitigado).",
+              lambda: (__import__("binoracle.workflows.autohos", fromlist=["autohos"]).autohos,
+                       __import__("binoracle.workflows.autohos", fromlist=["render_hos"]).render_hos))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

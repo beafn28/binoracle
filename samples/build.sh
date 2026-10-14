@@ -93,6 +93,8 @@ echo "[*] csuexec (x86-64, no-PIE, ret2csu -> execve encadenado: csu fija rsi/rd
 run "gcc -fno-stack-protector -no-pie -w -o bin/csuexec src/csuexec.c"
 echo "[*] hof (x86-64, no-PIE, house-of-force: top-chunk pre-2.29 reproducido en el binario)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/hof src/hof.c"
+echo "[*] hos (x86-64, no-PIE, house-of-spirit: chunk falso en tcache de glibc real)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/hos src/hos.c"
 echo "[*] fmtgot32 (32-bit, format-string -> printf@GOT=system; requiere multilib)"
 run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/fmtgot32 src/fmtgot32.c" || echo "  (fmtgot32 build omitido: sin multilib)"
 echo "[*] pivot (x86-64, static, short overflow -> stack migration to .bss)"

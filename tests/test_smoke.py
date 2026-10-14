@@ -631,6 +631,25 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autohos_verifies_house_of_spirit():
+    # Verificacion POSITIVA de house-of-spirit por EJECUCION (tcache de glibc real, NO mitigado):
+    # se planta el tamano de un chunk falso solapando un puntero de funcion, se libera (entra en
+    # tcache), el siguiente malloc lo devuelve y una escritura pone handler=win -> shell.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/hos"
+    if not os.path.exists(binp):
+        pytest.skip("sample hos no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autohos import autohos
+    r = autohos(binp)
+    assert r.get("ok") and r.get("verified"), f"house-of-spirit no verificado: {r.get('note')}"
+    assert "size=" in (r.get("detail") or "")
+
+
 def test_autohof_verifies_house_of_force():
     # Verificacion POSITIVA de house-of-force por EJECUCION: se sobrescribe el tamano del top chunk
     # con un valor enorme; una peticion huge (con wraparound) mueve `top` a &handler; la siguiente
