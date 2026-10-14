@@ -116,13 +116,18 @@ class _Lab:
         self._created.append(("volume", self.vol))
 
     def start_mysql(self, root_pw: str, db_pw: str):
-        self.sh("run", "-d", "--name", self.mysql, "--network", self.net,
+        self.sh("run", "-d", "--name", self.mysql, "--network", self.net, "--platform", "linux/amd64",
                "-e", f"MYSQL_ROOT_PASSWORD={root_pw}", "-e", "MYSQL_DATABASE=wordpress",
                "-e", "MYSQL_USER=wordpress", f"-e", f"MYSQL_PASSWORD={db_pw}", _MYSQL_IMAGE,
                timeout=90)
         self._created.append(("container", self.mysql))
 
-    def mysql_ready(self, db_pw: str, tries: int = 40, delay: float = 2.0) -> bool:
+    def mysql_ready(self, db_pw: str, tries: int = 150, delay: float = 3.0) -> bool:
+        # tries*delay ~ 7.5 min por defecto: en Mac Apple Silicon, mysql:5.7 (sin imagen arm64)
+        # corre bajo emulacion (Rosetta/QEMU en Docker Desktop) y el arranque de InnoDB en la
+        # PRIMERA ejecucion puede tardar varios minutos -- confirmado en vivo: 40 intentos x 2s
+        # (80s) no bastaban y 'MySQL no respondio a tiempo' salia con el contenedor aun
+        # inicializando, no realmente colgado.
         for _ in range(tries):
             r = self.sh("exec", self.mysql, "mysqladmin", "ping", "-uwordpress",
                        f"-p{db_pw}", "-h", "127.0.0.1", timeout=10)
@@ -141,7 +146,7 @@ class _Lab:
         # valor por defecto ('mysql') y wp-cli intenta conectar a un host que no existe.
         self._db_env = ["-e", f"WORDPRESS_DB_HOST={self.mysql}", "-e", "WORDPRESS_DB_NAME=wordpress",
                         "-e", "WORDPRESS_DB_USER=wordpress", "-e", f"WORDPRESS_DB_PASSWORD={db_pw}"]
-        self.sh("run", "-d", "--name", self.wp, "--network", self.net,
+        self.sh("run", "-d", "--name", self.wp, "--network", self.net, "--platform", "linux/amd64",
                "-v", f"{self.vol}:/var/www/html", *self._db_env,
                "-p", "127.0.0.1::80", _WP_IMAGE, timeout=90)
         self._created.append(("container", self.wp))
@@ -149,7 +154,8 @@ class _Lab:
         m = re.search(r":(\d+)\s*$", (r.stdout or "").strip())
         return m.group(1) if m else None
 
-    def http_ready(self, port: str, tries: int = 40, delay: float = 2.0) -> bool:
+    def http_ready(self, port: str, tries: int = 80, delay: float = 3.0) -> bool:
+        # igual que mysql_ready: mas margen por la emulacion amd64 en Apple Silicon.
         import urllib.request
         url = f"http://127.0.0.1:{port}/wp-login.php"
         for _ in range(tries):
@@ -163,15 +169,15 @@ class _Lab:
         return False
 
     def wp_cli(self, *args, timeout=120.0) -> subprocess.CompletedProcess:
-        return self.sh("run", "--rm", "--network", self.net, "-v", f"{self.vol}:/var/www/html",
-                       *self._db_env, "--user", "33:33", _WPCLI_IMAGE, "wp", "--path=/var/www/html",
-                       *args, timeout=timeout)
+        return self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
+                       "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
+                       _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
 
     def install_plugin(self, host_plugin_dir: str, slug: str, timeout=60.0) -> bool:
         """Copia el plugin (ya descargado a `host_plugin_dir`, que contiene <slug>/...) dentro del
         volumen compartido via un contenedor Alpine efimero. No usa el host directamente: Docker
         Desktop en Mac resuelve los bind mounts igual, sea Linux o macOS el host."""
-        r = self.sh("run", "--rm", "-v", f"{self.vol}:/var/www/html",
+        r = self.sh("run", "--rm", "--platform", "linux/amd64", "-v", f"{self.vol}:/var/www/html",
                    "-v", f"{host_plugin_dir}:/src:ro", _ALPINE_IMAGE, "sh", "-c",
                    f"mkdir -p /var/www/html/wp-content/plugins && "
                    f"cp -r /src/{slug} /var/www/html/wp-content/plugins/{slug}",
@@ -211,7 +217,11 @@ def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
 def verify_wordpress_account_takeover(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, id_param_hint: str = "", email_param_hint: str = "", pass_param_hint: str = "",
-    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 600.0,
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    # 1200s (20 min): en Mac Apple Silicon, mysql:5.7/wordpress no tienen imagen arm64 nativa y
+    # corren emulados (linux/amd64) via Docker Desktop -- el arranque de MySQL en la PRIMERA
+    # ejecucion puede tardar varios minutos por si solo (ver mysql_ready). 600s se quedaba corto
+    # y el laboratorio se desmontaba con MySQL aun inicializando, no realmente colgado.
 ) -> WpVerifyResult:
     """Levanta WordPress+MySQL en Docker, instala el plugin ya descargado en `plugin_source_dir`
     (debe contener `<slug>/...`), crea un usuario subscriber y un admin, inicia sesion como el
