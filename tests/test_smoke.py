@@ -1292,6 +1292,44 @@ def test_autosrop_aarch64_applicability_and_honesty():
             assert "no verificado" in (r2.get("note") or "")
 
 
+def test_autohomind_verifies():
+    # Verificacion POSITIVA de house-of-mind por EJECUCION: free() toma la arena de
+    # heap_for_ptr(p)->ar_ptr; con ar_ptr falso, arena->fastbinsY[idx]=&chunk escribe en &hom_slot
+    # -> se llama al puntero de funcion del chunk (win) -> shell. Reproduce la seleccion de arena.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/homind"
+    if not os.path.exists(binp):
+        pytest.skip("sample homind no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autohomind import autohomind
+    r = autohomind(binp)
+    assert r.get("ok") and r.get("verified"), f"house-of-mind no verificado: {r.get('note')}"
+    assert "ar_ptr=" in (r.get("detail") or "")
+
+
+def test_autoiofile_verifies_fsop():
+    # Verificacion POSITIVA de IO_FILE/FSOP por EJECUCION: se reapunta fp->vtable a una vtable falsa
+    # cuyo slot __overflow (vtable+0x18) = win; la operacion de flujo lo invoca -> shell. Reproduce
+    # la llamada vtable[__overflow](fp) (glibc moderno chequea la vtable; por eso se reproduce).
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/iofile"
+    if not os.path.exists(binp):
+        pytest.skip("sample iofile no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autoiofile import autoiofile
+    r = autoiofile(binp)
+    assert r.get("ok") and r.get("verified"), f"FSOP no verificado: {r.get('note')}"
+    assert "fake_vtable=" in (r.get("detail") or "")
+
+
 def test_autofastbindup_verifies():
     # Verificacion POSITIVA de fastbin-dup clasico por EJECUCION: el doble-free A,B,A esquiva el
     # chequeo debil ==fasttop; se envenena fd hacia un chunk falso (con size valido) y una alloc
@@ -1384,7 +1422,9 @@ def test_heap_families_as_verified_chains():
              ("samples/bin/stash", "tcache stashing unlink"),
              ("samples/bin/hoc", "house-of-corrosion"),
              ("samples/bin/unsafeunlink", "unsafe-unlink"),
-             ("samples/bin/fastbindup", "fastbin-dup")]
+             ("samples/bin/fastbindup", "fastbin-dup"),
+             ("samples/bin/homind", "house-of-mind"),
+             ("samples/bin/iofile", "IO_FILE/FSOP")]
     ran = 0
     from binoracle.workflows.chainanalyzer import analyze_chains
     for binp, chain_name in cases:

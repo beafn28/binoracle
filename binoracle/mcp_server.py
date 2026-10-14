@@ -1182,6 +1182,16 @@ _exploit_tool("autosrop_aarch64", "SROP en aarch64 (ARM64): un overflow hace que
               "(host ARM64 o qemu-aarch64); en x86-64 sin emulacion degrada honestamente.",
               lambda: (__import__("binoracle.workflows.autosrop_aarch64", fromlist=["autosrop_aarch64"]).autosrop_aarch64,
                        __import__("binoracle.workflows.autosrop_aarch64", fromlist=["render_srop_aarch64"]).render_srop_aarch64))
+_exploit_tool("autohomind", "house-of-mind: free() selecciona la arena via heap_for_ptr(p)->ar_ptr; "
+              "al corromper ar_ptr a una arena falsa, la insercion en fastbin `arena->fastbinsY[idx]="
+              "chunk` escribe en una direccion elegida -> hijack -> shell. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autohomind", fromlist=["autohomind"]).autohomind,
+                       __import__("binoracle.workflows.autohomind", fromlist=["render_homind"]).render_homind))
+_exploit_tool("autoiofile", "IO_FILE/FSOP: se reapunta la vtable de un _IO_FILE a una vtable falsa; la "
+              "operacion de flujo (__overflow en vtable+0x18) llama al puntero del atacante -> shell. "
+              "Verificado en sandbox (reproduce la llamada vtable[__overflow](fp)).",
+              lambda: (__import__("binoracle.workflows.autoiofile", fromlist=["autoiofile"]).autoiofile,
+                       __import__("binoracle.workflows.autoiofile", fromlist=["render_iofile"]).render_iofile))
 _exploit_tool("autofastbindup", "fastbin-dup clasico (pre-2.32): doble-free A,B,A esquiva el chequeo "
               "debil ==fasttop -> se envenena fd hacia un chunk falso (con size valido) -> una alloc "
               "posterior devuelve una direccion elegida -> hijack -> shell. Verificado en sandbox.",

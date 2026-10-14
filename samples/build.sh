@@ -109,6 +109,10 @@ echo "[*] unsafeunlink (x86-64, no-PIE, unsafe-unlink: unlink() corruption + byp
 run "gcc -fno-stack-protector -no-pie -w -o bin/unsafeunlink src/unsafeunlink.c"
 echo "[*] fastbindup (x86-64, no-PIE, fastbin-dup clasico: doble-free A,B,A + fd poison, pre-safe-linking)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/fastbindup src/fastbindup.c"
+echo "[*] homind (x86-64, no-PIE, house-of-mind: heap_for_ptr -> ar_ptr -> fastbin insertion write)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/homind src/homind.c"
+echo "[*] iofile (x86-64, no-PIE, IO_FILE/FSOP: hijack de vtable de _IO_FILE -> __overflow)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/iofile src/iofile.c"
 echo "[*] srop_aarch64 (ARM64, static, no-PIE, SROP; requiere aarch64-linux-gnu-gcc; se omite si no esta)"
 if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
   ( cd "$here" && aarch64-linux-gnu-gcc -fno-stack-protector -no-pie -static -w -o bin/srop_aarch64 src/srop_aarch64.c ) \

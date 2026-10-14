@@ -530,7 +530,7 @@ def _facts(binary: str, reg=None) -> dict:
          "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False,
          "hof_ok": False, "hos_ok": False, "hoe_ok": False, "botcake_ok": False,
          "largebin_ok": False, "stash_ok": False, "hoc_ok": False, "unlink_ok": False,
-         "fastdup_ok": False,
+         "fastdup_ok": False, "homind_ok": False, "fsop_ok": False,
          "static": None, "relro": None}
     try:
         import json
@@ -676,6 +676,8 @@ def _facts(binary: str, reg=None) -> dict:
             f["hoc_ok"] = _win and "global_max_fast" in _syms and "fastbinsY" in _syms
             f["unlink_ok"] = _win and "chunkptr" in _syms and _handler
             f["fastdup_ok"] = _win and "fasttop" in _syms and any(s in _syms for s in ("hslot", "fake"))
+            f["homind_ok"] = _win and "hom_slot" in _syms and "heap" in _syms
+            f["fsop_ok"] = _win and "fake_vtable" in _syms and ("fp" in _syms or "file" in _syms)
     except Exception:
         pass
     return f
@@ -1349,6 +1351,18 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
            "a largebin insertion with a corrupted bk_nextsize runs "
            "`victim->bk_nextsize->fd_nextsize = victim`: arbitrary pointer write -> `slot` points at "
            "a controlled chunk -> hijack. glibc>=2.30 adds a check -> reproduced")),
+        ("homind_ok", "homind", "house-of-mind",
+         L("ar_ptr de heap_info corrompido (seleccion de arena)", "Corrupted heap_info ar_ptr (arena selection)"),
+         L("free() toma la arena de heap_for_ptr(p)->ar_ptr; con ar_ptr falso, la insercion en "
+           "fastbin `arena->fastbinsY[idx]=chunk` escribe en una direccion elegida -> hijack",
+           "free() takes the arena from heap_for_ptr(p)->ar_ptr; with a forged ar_ptr, the fastbin "
+           "insertion `arena->fastbinsY[idx]=chunk` writes to a chosen address -> hijack")),
+        ("fsop_ok", "fsop", "IO_FILE/FSOP",
+         L("vtable de _IO_FILE reapuntada", "Repointed _IO_FILE vtable"),
+         L("se sobrescribe fp->vtable a una vtable falsa; la operacion de flujo llama "
+           "`vtable->__overflow(fp)` (vtable+0x18) = puntero del atacante -> control de flujo",
+           "overwrite fp->vtable to a fake vtable; the stream op calls `vtable->__overflow(fp)` "
+           "(vtable+0x18) = attacker pointer -> control flow")),
         ("fastdup_ok", "fastdup", "fastbin-dup",
          L("Doble-free en fastbin (A,B,A esquiva el chequeo ==fasttop)", "Fastbin double-free (A,B,A slips the ==fasttop check)"),
          L("tras el doble-free se envenena fd hacia un chunk falso (con size valido); una alloc "
@@ -1796,7 +1810,7 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 proof["system"] = m.group(1)
             return ((f"{OK} (tcache dup: GOT sobrescrito con system, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
-        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash", "hoc", "unlink", "fastdup"):
+        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash", "hoc", "unlink", "fastdup", "homind", "fsop"):
             _HEAP_VERIFY = {
                 "hof": ("autohof", "autohof", "house-of-force (top-chunk -> alloc arbitraria -> win)"),
                 "hos": ("autohos", "autohos", "house-of-spirit (chunk falso en tcache real -> win)"),
@@ -1807,6 +1821,8 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 "hoc": ("autohoc", "autohoc", "house-of-corrosion (global_max_fast -> fastbin index write -> win)"),
                 "unlink": ("autounsafeunlink", "autounsafeunlink", "unsafe-unlink (unlink write + 2.3.4+ bypass -> win)"),
                 "fastdup": ("autofastbindup", "autofastbindup", "fastbin-dup clasico (doble-free -> fd poison -> win)"),
+                "homind": ("autohomind", "autohomind", "house-of-mind (arena forjada -> fastbin insertion write -> win)"),
+                "fsop": ("autoiofile", "autoiofile", "IO_FILE/FSOP (vtable hijack -> __overflow -> win)"),
             }
             mod, fn, strat = _HEAP_VERIFY[kind]
             run = getattr(__import__(f"binoracle.workflows.{mod}", fromlist=[fn]), fn)
