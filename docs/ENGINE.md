@@ -208,6 +208,10 @@ authorized targets only; all output is untrusted data.
   stdout/stderr, sha256 seal); `compare_process_captures` diffs two captures to
   surface changed behaviour. Normalization (addresses/PIDs/timestamps/temp
   paths) makes deterministic runs compare equal so a real change stands out.
+  `find_changed_behavior` runs two builds on the same input and reports the
+  behavioural delta (the runtime counterpart to `patchdiff`);
+  `correlate_static_and_runtime` links a run's output back to the ELF's static
+  symbols + caller markers (an observable trace, not proof of execution).
 - **Ghidra headless** (`callertools.py`): `ghidra_decompile` locates a
   caller-provided Ghidra headless install and parses its pseudocode.
 - **JEB** (`jebconnect.py`): JSON-RPC over HTTP to `BINORACLE_JEB_MCP_URL`.
@@ -219,9 +223,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 73 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 75 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 125 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 126 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

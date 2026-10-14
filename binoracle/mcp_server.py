@@ -611,6 +611,40 @@ def _h_proc_compare(args):
     return render_compare(compare_captures(a.get("a") or "", a.get("b") or ""))
 
 
+@_tool("find_changed_behavior", "Ejecuta DOS builds (A y B) con la MISMA entrada y reporta como "
+       "difiere su comportamiento observable: codigo de salida, timing y diff normalizado de stdout/"
+       "stderr. RUNTIME, solo objetivos AUTORIZADOS; salida no confiable. Contraparte runtime de "
+       "patchdiff. Opcional 'args' (lista) y 'stdin'.",
+       {"a": {"type": "string", "description": "ruta al binario A"},
+        "b": {"type": "string", "description": "ruta al binario B"},
+        "args": {"type": "array", "items": {"type": "string"}, "description": "argumentos (opcional)"},
+        "stdin": {"type": "string", "description": "datos para stdin (opcional)"},
+        "timeout": {"type": "integer", "description": "timeout en segundos (def. 20)"}}, ["a", "b"])
+def _h_changed(args):
+    from .workflows.proccapture import find_changed_behavior, render_changed_behavior
+    a = args or {}
+    return render_changed_behavior(find_changed_behavior(
+        a.get("a") or "", a.get("b") or "", args=a.get("args"),
+        stdin_data=(a.get("stdin") or "").encode("utf-8", "replace"), timeout=int(a.get("timeout") or 20)))
+
+
+@_tool("correlate_static_and_runtime", "Ejecuta el objetivo una vez y correlaciona su salida runtime "
+       "con hechos ESTATICOS (nombres de simbolos dinamicos del ELF + 'markers' del llamador), "
+       "reportando que nombres presentes estaticamente dejaron una traza observable. RUNTIME, solo "
+       "AUTORIZADOS; salida no confiable; la correlacion es una traza, no prueba de ejecucion.",
+       {"binary": {"type": "string", "description": "ruta al binario objetivo"},
+        "args": {"type": "array", "items": {"type": "string"}, "description": "argumentos (opcional)"},
+        "stdin": {"type": "string", "description": "datos para stdin (opcional)"},
+        "markers": {"type": "array", "items": {"type": "string"}, "description": "cadenas de interes (opcional)"},
+        "timeout": {"type": "integer", "description": "timeout en segundos (def. 20)"}}, ["binary"])
+def _h_correlate(args):
+    from .workflows.proccapture import correlate_static_and_runtime, render_correlate
+    a = args or {}
+    return render_correlate(correlate_static_and_runtime(
+        _binary(a), args=a.get("args"), markers=a.get("markers"),
+        stdin_data=(a.get("stdin") or "").encode("utf-8", "replace"), timeout=int(a.get("timeout") or 20)))
+
+
 @_tool("apk_decompile", "Decompila el DEX de un APK a codigo Java via JADX (un decompilador: no "
        "ejecuta la app) SI el llamador lo tiene; si no, degrada. Devuelve un resumen de clases "
        "recuperadas. Integracion caller-supplied.",

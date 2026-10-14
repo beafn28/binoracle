@@ -130,6 +130,102 @@ def compare_captures(a, b) -> dict:
                             "deterministas pueden quedar fuera del alcance del normalizador"]}
 
 
+def find_changed_behavior(binary_a: str, binary_b: str, args=None, stdin_data: bytes = b"",
+                          timeout: int = 20) -> dict:
+    """find_changed_behavior: run two builds (A and B) on the SAME input and report how their
+    observable behaviour differs -- exit status, timing, and a normalized stdout/stderr diff. Both
+    are AUTHORIZED targets; output is untrusted. This is the runtime counterpart to patchdiff."""
+    argv_a = [binary_a] + list(args or [])
+    argv_b = [binary_b] + list(args or [])
+    ca = capture_process(argv_a, stdin_data=stdin_data, timeout=timeout)
+    cb = capture_process(argv_b, stdin_data=stdin_data, timeout=timeout)
+    if not ca.get("ok") or not cb.get("ok"):
+        return {"ok": False, "tool": "changed_behavior",
+                "note": "no se pudo capturar " + ("A" if not ca.get("ok") else "B")
+                        + ": " + (ca.get("note") or cb.get("note") or "")}
+    cmp = compare_captures(ca["scenario"], cb["scenario"])
+    cmp["tool"] = "changed_behavior"
+    cmp["a"] = {"argv": ca["scenario"]["argv"], "exit_code": ca["scenario"]["exit_code"]}
+    cmp["b"] = {"argv": cb["scenario"]["argv"], "exit_code": cb["scenario"]["exit_code"]}
+    # Two builds always differ in argv (different paths), so the argv-inclusive digest is not the
+    # signal here: "changed" means an actual BEHAVIOURAL delta -- exit/timeout/duration, or a
+    # difference in the normalized stdout/stderr.
+    cmp["changed"] = bool(cmp.get("behavior_changes") or cmp.get("stdout_diff") or cmp.get("stderr_diff"))
+    return cmp
+
+
+def correlate_static_and_runtime(binary: str, args=None, stdin_data: bytes = b"",
+                                 markers=None, timeout: int = 20) -> dict:
+    """correlate_static_and_runtime: run the target once, then correlate its runtime output against
+    STATIC facts -- the ELF's dynamic-symbol names and any caller-supplied markers -- reporting which
+    statically-present names left an observable runtime trace. A grounded static<->runtime link, not
+    a guess. AUTHORIZED target; output untrusted."""
+    cap = capture_process([binary] + list(args or []), stdin_data=stdin_data, timeout=timeout)
+    if not cap.get("ok"):
+        return {"ok": False, "tool": "correlate", "note": cap.get("note", "captura fallida")}
+    s = cap["scenario"]
+    out_blob = (s.get("stdout_normalized", "") + "\n" + s.get("stderr_normalized", ""))
+    # static side: ELF dynamic symbol names (reuse the generic ELF parser) + caller markers
+    static_names = []
+    try:
+        from .flutterinspect import _parse_elf
+        with open(binary, "rb") as f:
+            elf = _parse_elf(f.read(64 * 1024 * 1024))
+        if elf:
+            static_names = [n for n in elf["symbols"].keys() if n and len(n) >= 4][:2000]
+    except Exception:
+        pass
+    probes = list(markers or []) + static_names
+    hits = []
+    seen = set()
+    for name in probes:
+        if name in seen:
+            continue
+        seen.add(name)
+        if name and name in out_blob:
+            where = []
+            if name in s.get("stdout_normalized", ""):
+                where.append("stdout")
+            if name in s.get("stderr_normalized", ""):
+                where.append("stderr")
+            hits.append({"name": name, "where": where,
+                         "source": "marker" if name in (markers or []) else "symbol"})
+    return {"ok": True, "tool": "correlate", "scenario": s,
+            "static_symbol_count": len(static_names), "marker_count": len(markers or []),
+            "correlations": hits[:200], "correlation_count": len(hits),
+            "limitations": ["EJECUTA el objetivo (solo AUTORIZADOS); salida no confiable",
+                            "correlacion por aparicion literal del nombre en la salida; no prueba "
+                            "ejecucion de la rutina, solo una traza observable"]}
+
+
+def render_changed_behavior(r: dict) -> str:
+    out = ["## Comportamiento cambiado entre dos builds (runtime)\n"]
+    if not r.get("ok"):
+        return "\n".join(out + [f"- No disponible: {r.get('note','')}"])
+    out.append(f"- cambiado: **{'SI' if r.get('changed') else 'no'}**")
+    out.append(f"- A exit={r.get('a',{}).get('exit_code')} | B exit={r.get('b',{}).get('exit_code')}")
+    for c in r.get("behavior_changes", []):
+        out.append(f"- {c}")
+    if r.get("stdout_diff"):
+        out.append("\n### diff stdout\n```diff\n" + "\n".join(r["stdout_diff"][:120]) + "\n```")
+    for lim in r.get("limitations", []):
+        out.append(f"\n_limite: {lim}_")
+    return "\n".join(out)
+
+
+def render_correlate(r: dict) -> str:
+    out = ["## Correlacion estatico <-> runtime\n"]
+    if not r.get("ok"):
+        return "\n".join(out + [f"- No disponible: {r.get('note','')}"])
+    out.append(f"- simbolos estaticos considerados: {r.get('static_symbol_count')} | "
+               f"markers: {r.get('marker_count')} | correlaciones: {r.get('correlation_count')}")
+    for h in (r.get("correlations") or [])[:40]:
+        out.append(f"  - `{h['name']}` [{h['source']}] en {', '.join(h['where'])}")
+    for lim in r.get("limitations", []):
+        out.append(f"\n_limite: {lim}_")
+    return "\n".join(out)
+
+
 def render_capture(r: dict) -> str:
     out = ["## Captura de escenario de proceso (runtime, autorizado)\n"]
     if not r.get("ok"):

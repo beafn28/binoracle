@@ -1282,6 +1282,38 @@ def test_process_capture_normalizes_and_diffs():
     assert any("exit_code: 3 -> 0" in ch for ch in cmp2["behavior_changes"])
 
 
+def test_find_changed_behavior_and_correlate(tmp_path):
+    # find_changed_behavior: two scripts with different observable output -> changed; identical ->
+    # not changed. correlate_static_and_runtime: a caller marker that appears at runtime is reported.
+    import os
+    import shutil
+    import stat
+    import pytest
+    if shutil.which("sh") is None:
+        pytest.skip("sin /bin/sh")
+    from binoracle.workflows.proccapture import find_changed_behavior, correlate_static_and_runtime
+
+    def script(name, body):
+        p = tmp_path / name
+        p.write_text("#!/bin/sh\n" + body + "\n")
+        p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRUSR)
+        return str(p)
+    a = script("a.sh", "echo ALPHA; exit 0")
+    b = script("b.sh", "echo BETA; exit 7")
+    same = script("same.sh", "echo ALPHA; exit 0")
+
+    r = find_changed_behavior(a, b)
+    assert r["ok"] and r["changed"] is True
+    assert any("exit_code" in c for c in r["behavior_changes"])
+    r2 = find_changed_behavior(a, same)
+    assert r2["ok"] and r2["changed"] is False
+
+    cor = correlate_static_and_runtime(a, markers=["ALPHA", "NOTPRESENT"])
+    assert cor["ok"]
+    names = {h["name"] for h in cor["correlations"]}
+    assert "ALPHA" in names and "NOTPRESENT" not in names
+
+
 def test_evidence_ledger_obligation_and_bundle(tmp_path):
     # El ledger solo cierra una incognita cuando una evidencia ALCANZA su obligacion
     # (authority+confidence); exporta/importa bundles sellados y rechaza los alterados.
