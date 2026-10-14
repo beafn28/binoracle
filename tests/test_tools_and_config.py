@@ -3670,6 +3670,18 @@ def test_cve_agent_renders_real_evidence_not_a_placeholder_on_verified(monkeypat
     assert "Evidencia real" in rendered
 
 
+def test_md_rich_renders_blockquote_as_callout_not_literal_gt():
+    # Bug real encontrado al revisar el informe exportado: "> **EXPLOIT VERIFICADO**..." (el
+    # veredicto mas importante del informe) se renderizaba como texto plano con un '>' suelto
+    # delante -- _md_rich no tenia ninguna regla para citas markdown. Debe agruparse en un
+    # <blockquote class="callout"> y el '>' no debe sobrevivir como caracter literal.
+    from binoracle.report.html import _md_rich
+    html = _md_rich("\n> **EXPLOIT VERIFICADO** (sandbox): ACCOUNT TAKEOVER confirmado")
+    assert '<blockquote class="callout">' in html
+    assert "EXPLOIT VERIFICADO" in html
+    assert "<p>&gt;" not in html and "<p>>" not in html
+
+
 def test_md_rich_renders_base64_image_as_img_tag():
     # Soporte nuevo: las capturas de wpverify.py (PNG base64) se insertan como markdown
     # ![alt](data:image/png;base64,...) en el informe -- _md_rich debe convertirlo en un <img>
