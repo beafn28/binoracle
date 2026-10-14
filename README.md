@@ -3,10 +3,167 @@
 Local LLM copilot for binary reverse engineering and exploitation, grounded on real
 analysis oracles.
 
-> **¿Quieres todo en un sitio?** [`docs/BINORACLE.md`](docs/BINORACLE.md) es el documento
-> maestro: qué lee, qué explota (con estado de verificación), todas las herramientas, CLI,
-> tests y plataformas. Para levantarlo: [`docs/USAGE.md`](docs/USAGE.md). Interior del motor:
-> [`docs/ENGINE.md`](docs/ENGINE.md).
+Herramienta de ingeniería inversa + desarrollo de exploits **fundamentada en oráculos**: combina
+lectores estáticos deterministas con un motor de explotación **verificado por ejecución**. Es
+**local y offline** (nada sale del host), iguala y supera a [REA](https://github.com/morluto/rea), y
+tiene el motor de exploits reproducible más amplio posible en x86-64 / x86-32 (y aarch64 donde el
+entorno lo permite).
+
+> **Regla de oro (grounding).** binoracle no marca nada como `verified` sin haber **popeado una
+> shell real** en un sandbox. Todo informe lleva evidencia y, cuando algo no se puede comprobar,
+> **degrada con honestidad** (`NOT_VERIFIED` / `NOT_APPLICABLE` + `limitations`), nunca finge. Los
+> lectores estáticos **nunca ejecutan** el objetivo; la ejecución vive en módulos de runtime
+> separados y en sandbox. Todo dato subido/externo es **no confiable**.
+
+Este README es el documento único y completo. Índice:
+
+- [Resumen: todo binoracle de un vistazo](#resumen-todo-binoracle-de-un-vistazo)
+  - [Lectores estáticos](#lectores-estáticos-reversea-cualquier-cosa)
+  - [Motor de exploits (familias + verificación)](#motor-de-exploits-familias--estado-de-verificación)
+  - [Paridad REA](#paridad-rea-igualar-y-superar)
+  - [Interfaces: CLI / MCP / web](#interfaces-cli--mcp--web)
+  - [Tests](#verificación-y-tests)
+  - [Plataformas](#plataformas-soportadas)
+- [Arranque rápido (Docker y nativo)](#arranque-rápido)
+- [El resto de este documento](#why-this-is-different) desarrolla cada parte en detalle.
+
+---
+
+# Resumen: todo binoracle de un vistazo
+
+Tres planos, bien separados: **(1) lectores estáticos** que identifican el formato y extraen hechos
+sin ejecutar nada, **(2) análisis / arsenal** (chain-analyzer, gadgets ROP, primitivas, superficie),
+y **(3) motor de exploits** que reproduce cada familia y **confirma con shell real**. Encima, una
+capa de **paridad REA** y tres interfaces (CLI, MCP, web).
+
+## Lectores estáticos (reversea "cualquier cosa")
+
+`binoracle identify <fichero>` detecta el formato y enruta al lector adecuado:
+
+| Área | Formatos / lectores |
+|---|---|
+| **Nativo** | ELF, Mach-O, PE/COFF, Go, WebAssembly (`.wasm` → WAT), core dumps |
+| **Móvil** | APK (manifest, DEX/ABIs/firma), AndroidManifest (apktool), DEX→Java (jadx) |
+| **Flutter/Dart** | snapshot AOT (`f5f5dcdc`, hash, features), engine `libflutter.so`, `flutter_assets`, `AssetManifest.bin` (StandardMessageCodec) |
+| **Managed** | .NET/CLI (metadata `#~`, tablas ECMA-335, tokens, CIL) |
+| **Web / JS** | bundles JS, source recovery, imports de módulos, `.asar` (Electron), HAR, descubrimiento WebMCP |
+| **Datos / otros** | SQLite, EVM bytecode, `.jar`/`.class`, plist (bin/xml), firmware, escaneo de secretos/IOCs |
+
+## Motor de exploits (familias + estado de verificación)
+
+Cada familia tiene su sample en `samples/src/*.c` (compilado por `samples/build.sh`) y un flujo
+`autoX` que marca `verified: true` **solo si popea shell**. Cuando la glibc moderna bloquea la
+técnica, se reproduce in-binary; algunas se comprueban sobre glibc 2.39 real. Las que requieren una
+plataforma ausente **degradan con honestidad**, nunca dan falso positivo.
+
+**Stack / ROP / control de flujo:** ret2win (incl. stripped, 32-bit) · ret2win sobre PIE · ret2libc
+(con fuga) · ret2csu (+ cadena a execve) · SROP x86-64 **y** x86-32 · SROP aarch64 (degrada si no
+hay aarch64) · ret2dlresolve x64 **y** 32-bit (sin fuga de libc) · format-string Partial/Full RELRO
+(x64 y x86-32) · canary leak/bypass · PIE defeat · stack pivot · one_gadget · shellcode.
+
+**Heap (glibc):** tcache poison/dup · UAF (funcptr-hijack) · write-what-where · house-of-force ·
+house-of-spirit · house-of-einherjar · house-of-botcake · largebin attack · tcache-stashing-unlink ·
+house-of-corrosion · unsafe-unlink · fastbin-dup · House of Mind · IO_FILE/FSOP.
+
+Todas las familias de heap están **integradas en el chain-analyzer**: `analyze_chains` emite una
+`ExploitChain` por familia aplicable (detectada vía símbolos del ELF) y `_verify_chain` la despacha
+al verificador `autoX`, de modo que el grafo de cadenas refleja lo que de verdad popea shell. Una
+shell se confirma haciendo que imprima un marcador único; cada ejecución está aislada (sin red,
+límites de memoria/pid, ASLR off con `setarch -R`) para que el PoC sea determinista.
+
+> La tabla **detallada** por clase (mitigaciones manejadas y cómo se verifica cada una) está más
+> abajo, en [Verified exploitation](#verified-exploitation).
+
+## Paridad REA (igualar y superar)
+
+| Categoría | Capacidades | Módulos |
+|---|---|---|
+| **A. Estático nativo a nivel función** | analyze_function, call-graph, xrefs, address↔name, call-path, inspect_native_api, binary_overview, trace_feature; **sesión nativa con estado** (open/inspect/session/close/list) | `nativequery`, `nativesession`, `nativeconnect` (ida/hopper), `jebconnect` |
+| **B. Reconstrucción managed** | metadata → **grafo de tipos por token**, call-graph CIL, comparación de miembros, verificación de frontera managed/nativo | `managedquery`, `dotnetgraph`, `dotnetinspect` |
+| **C. Android** | clase/método, paquete, búsqueda de clases, refs, **grafo de app móvil**, recursos | `androidquery`, `androidmanifest`, `apkinspect` |
+| **D. JS / web** | recover sources, analyze bundle, trace imports, descubrir herramientas WebMCP | `jsinspect` |
+| **E. Orquestación** | correlate estático↔runtime, find_changed_behavior, trace_feature, captura de procesos, evidence bundles, ledger | `proccapture`, `ledger`, `nativequery` |
+
+## Interfaces: CLI / MCP / web
+
+**CLI** — subcomandos (`binoracle <cmd> --help`):
+
+```
+doctor cveplan triage hunt ask chat report primitives gadgets arsenal cyclic
+exploit-skeleton explain diff verify view rop shellcode fuzz fmtstring analyze
+serve mcp go core elf wasm sqlite evm har java secrets asar plist dotnet macho
+apk pe jeb js dynamic caller-tool identify autopoc autopwn audit regress tools
+rag kb learn heap train dataset autofuzz fetch investigate
+```
+
+**MCP** — `binoracle mcp` habla JSON-RPC por stdio y expone **~100 herramientas**: inspección
+(`inspect_apk`, `inspect_flutter`, `inspect_dotnet_assembly`, `inspect_elf_layout`…), exploits
+(`autopwn`, `analyze_chains`, `one_gadget`, `rop_arsenal`…), consulta nativa (`analyze_function`,
+`get_call_graph`, `open_binary`…), managed/android/js, dinámico (`dynamic_frida`, `dynamic_adb`,
+`dynamic_browser`) y evidencia (`record_evidence`, `export_evidence_bundle`).
+
+**Web** — `binoracle serve` (por defecto `http://127.0.0.1:8080`). API `POST /api/run` con
+`{"command","binary","options"}`.
+
+## Verificación y tests
+
+Suite offline en `tests/` (auto-salta lo que no aplica): `test_smoke.py` (lectores + todas las
+familias de exploits + grafo de cadenas de heap), `test_tools_and_config.py` (herramientas MCP, CLI,
+config, routing), `test_autoheap.py` (heap aislado), `test_sandbox.py` (el `run_driver`),
+`test_rag.py` / `test_trainer.py` (RAG local y dataset/trainer). Ejecutar: `pytest tests/ -v`; una
+familia: `pytest tests/test_smoke.py -k fastbindup -v`.
+
+## Plataformas soportadas
+
+| Plataforma | Lectores estáticos | Verificación de exploits (ejecución) |
+|---|---|---|
+| **Linux x86-64** (referencia) | ✅ | ✅ todo (x86-64 / x86-32) |
+| **Windows + WSL2** (x86-64) | ✅ | ✅ igual que Linux |
+| **Mac M1 + Docker `linux/amd64`** | ✅ | ✅ x86 por emulación (más lento) |
+| **Mac M1 nativo / VM ARM64** | ✅ | ⚠️ solo aarch64 nativo |
+| **Windows / macOS nativos** | ✅ | ❌ (sin ELF/`/proc`/glibc/`unshare`) |
+
+Lo único imprescindible para los exploits es un **kernel Linux** debajo; por eso en Mac/Windows la
+vía recomendada es Docker.
+
+---
+
+# Arranque rápido
+
+**Docker (recomendado en Mac / Windows)** — trae Linux x86-64 dentro, así funcionan tanto los
+lectores como la verificación de exploits sin instalar nada más que Docker:
+
+```bash
+git clone https://github.com/beafn28/binoracle.git && cd binoracle
+docker compose up --build        # web en http://127.0.0.1:8080  (la 1ª vez tarda)
+# atajos (con GNU make; en Mac: brew install make && gmake docker):
+#   make docker | make docker-logs | make docker-shell | make docker-down
+```
+
+Analizar **tus** ficheros: déjalos en `./targets/` y usa la ruta `/targets/<fichero>`:
+
+```bash
+cp ~/Downloads/tu-app.apk targets/
+docker compose run --rm binoracle binoracle apk /targets/tu-app.apk    # CLI puntual
+docker compose exec binoracle pytest tests/test_smoke.py -v            # verificar exploits
+```
+
+> En **Mac M1** la imagen corre como `linux/amd64` por emulación (más lento pero funcional para los
+> exploits x86). El bloque `cap_add`/`security_opt` del `docker-compose.yml` es **solo** para la
+> verificación de exploits por ejecución (objetivos AUTORIZADOS / CTF); si solo quieres lectura
+> estática, puedes borrarlo.
+
+**Nativo (Linux x86-64):**
+
+```bash
+pip install -e . && bash samples/build.sh
+pytest tests/test_smoke.py -v
+binoracle serve
+```
+
+El resto del documento desarrolla cada parte en detalle.
+
+---
 
 ## Why this is different
 
@@ -47,12 +204,11 @@ techniques are catalogued in `binoracle/kb/verified-playbook.md` — auto-genera
 the agent's hard-won, execution-verified playbook ships with the product. The selection logic
 (which technique for which defenses) is documented in `binoracle/kb/exploit-engineering.md`.
 
-> **One professional overview of the whole engine** — all ~25 execution-verified exploit
-> families (x86-64, x86-32, aarch64), the chain analyzer / ROP arsenal, full REA parity, and the
-> grounding mechanics — lives in **[`docs/ENGINE.md`](docs/ENGINE.md)**.
->
-> **How to run it** (local setup, analyzing an APK/ELF, MCP server, web UI) — see
-> **[`docs/USAGE.md`](docs/USAGE.md)**.
+The whole engine — all ~25 execution-verified exploit families (x86-64, x86-32, aarch64), the chain
+analyzer / ROP arsenal, full REA parity and the grounding mechanics — is summarised above in
+[Resumen: todo binoracle de un vistazo](#resumen-todo-binoracle-de-un-vistazo) and detailed class by
+class here. (`docs/ENGINE.md` and `docs/USAGE.md` keep deeper internals, but this README is
+self-contained.)
 
 | Class | Mitigations handled | How it is verified |
 |-------|--------------------|--------------------|
