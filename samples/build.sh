@@ -105,6 +105,15 @@ echo "[*] largebin (x86-64, no-PIE, largebin attack: escritura de insercion repr
 run "gcc -fno-stack-protector -no-pie -w -o bin/largebin src/largebin.c"
 echo "[*] hoc (x86-64, no-PIE, house-of-corrosion: global_max_fast -> fastbin index write reproducido)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/hoc src/hoc.c"
+echo "[*] unsafeunlink (x86-64, no-PIE, unsafe-unlink: unlink() corruption + bypass del chequeo 2.3.4+)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/unsafeunlink src/unsafeunlink.c"
+echo "[*] srop_aarch64 (ARM64, static, no-PIE, SROP; requiere aarch64-linux-gnu-gcc; se omite si no esta)"
+if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+  ( cd "$here" && aarch64-linux-gnu-gcc -fno-stack-protector -no-pie -static -w -o bin/srop_aarch64 src/srop_aarch64.c ) \
+    || echo "  (srop_aarch64 build fallo)"
+else
+  echo "  (srop_aarch64 build omitido: sin aarch64-linux-gnu-gcc)"
+fi
 echo "[*] stash (x86-64, no-PIE, tcache stashing unlink: stash smallbin->tcache con chequeo >=2.31)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/stash src/stash.c"
 echo "[*] fmtgot32 (32-bit, format-string -> printf@GOT=system; requiere multilib)"

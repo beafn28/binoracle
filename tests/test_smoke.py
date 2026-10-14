@@ -1271,6 +1271,47 @@ def test_autolargebin_verifies_insertion_write():
     assert "slot=" in (r.get("detail") or "")
 
 
+def test_autosrop_aarch64_applicability_and_honesty():
+    # SROP aarch64: on a non-aarch64 binary it must say NOT applicable and never claim a shell. If an
+    # aarch64 sample exists AND an aarch64 runtime is present, it verifies a shell; otherwise it
+    # degrades honestly (built, not executable here) -- a false positive is never allowed.
+    import os
+    from binoracle.workflows.autosrop_aarch64 import autosrop_aarch64, render_srop_aarch64
+    # non-aarch64 input -> not applicable, not verified
+    if os.path.exists("samples/bin/ret2win"):
+        r = autosrop_aarch64("samples/bin/ret2win")
+        assert r.get("verified") is not True and "no aplica" in (r.get("note") or "")
+        assert "SROP aarch64" in render_srop_aarch64(r)
+    # aarch64 sample (only where the cross-toolchain built it): verify or honest degrade, never false
+    binp = "samples/bin/srop_aarch64"
+    if os.path.exists(binp):
+        r2 = autosrop_aarch64(binp)
+        if r2.get("verified"):
+            assert "tramp=" in (r2.get("detail") or "")
+        else:
+            assert "no verificado" in (r2.get("note") or "")
+
+
+def test_autounsafeunlink_verifies():
+    # Verificacion POSITIVA de unsafe-unlink por EJECUCION: fd=&ptr-0x18 y bk=&ptr-0x10 satisfacen el
+    # chequeo 2.3.4+ (FD->bk==P && BK->fd==P) y unlink deja ptr=&ptr-0x18; editando a traves de ptr se
+    # redirige ptr a &handler y se escribe win -> shell. El sample reproduce la escritura de unlink +
+    # el chequeo de consistencia.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/unsafeunlink"
+    if not os.path.exists(binp):
+        pytest.skip("sample unsafeunlink no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autounsafeunlink import autounsafeunlink
+    r = autounsafeunlink(binp)
+    assert r.get("ok") and r.get("verified"), f"unsafe-unlink no verificado: {r.get('note')}"
+    assert "chunkptr=" in (r.get("detail") or "")
+
+
 def test_autohoc_verifies_house_of_corrosion():
     # Verificacion POSITIVA de house-of-corrosion por EJECUCION: al corromper global_max_fast a un
     # valor enorme, free() trata un chunk grande como fastbin e indexa fastbinsY[(size-0x20)>>4] sin
@@ -1322,7 +1363,8 @@ def test_heap_families_as_verified_chains():
     cases = [("samples/bin/hos", "house-of-spirit"),
              ("samples/bin/largebin", "largebin attack"),
              ("samples/bin/stash", "tcache stashing unlink"),
-             ("samples/bin/hoc", "house-of-corrosion")]
+             ("samples/bin/hoc", "house-of-corrosion"),
+             ("samples/bin/unsafeunlink", "unsafe-unlink")]
     ran = 0
     from binoracle.workflows.chainanalyzer import analyze_chains
     for binp, chain_name in cases:

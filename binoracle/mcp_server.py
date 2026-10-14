@@ -1176,6 +1176,17 @@ _exploit_tool("autolargebin", "largebin attack: una insercion en largebin con bk
               "-> hijack -> shell. Verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autolargebin", fromlist=["autolargebin"]).autolargebin,
                        __import__("binoracle.workflows.autolargebin", fromlist=["render_largebin"]).render_largebin))
+_exploit_tool("autosrop_aarch64", "SROP en aarch64 (ARM64): un overflow hace que el epilogo retorne a "
+              "`mov x8,#139; svc #0` (rt_sigreturn) que restaura un sigframe forjado con x8=221 "
+              "(execve), x0=&'/bin/sh' -> shell. Verificado por ejecucion DONDE hay runtime aarch64 "
+              "(host ARM64 o qemu-aarch64); en x86-64 sin emulacion degrada honestamente.",
+              lambda: (__import__("binoracle.workflows.autosrop_aarch64", fromlist=["autosrop_aarch64"]).autosrop_aarch64,
+                       __import__("binoracle.workflows.autosrop_aarch64", fromlist=["render_srop_aarch64"]).render_srop_aarch64))
+_exploit_tool("autounsafeunlink", "unsafe-unlink: forja P->fd=&ptr-0x18 y P->bk=&ptr-0x10 (satisface "
+              "el chequeo 2.3.4+ `FD->bk==P && BK->fd==P`); unlink() deja ptr=&ptr-0x18 -> edicion "
+              "redirige ptr a un puntero de funcion -> se escribe win -> shell. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autounsafeunlink", fromlist=["autounsafeunlink"]).autounsafeunlink,
+                       __import__("binoracle.workflows.autounsafeunlink", fromlist=["render_unsafeunlink"]).render_unsafeunlink))
 _exploit_tool("autohoc", "house-of-corrosion: al corromper global_max_fast, un free() de un chunk "
               "grande se trata como fastbin y se indexa `fastbinsY[(size-0x20)>>4]` sin cota -> "
               "escritura de indice de fastbin en una direccion elegida -> hijack -> shell. Verificado en sandbox.",

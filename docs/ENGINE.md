@@ -50,6 +50,7 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | **ret2libc (cdecl)** | x86-32 | `autolibc` / chain | `ret2libc` | 32-bit cdecl stack args: `system` + fake ret + `&"/bin/sh"` |
 | **execve by syscall** | x86-64, x86-32 | `autopoc` (step 2) | `srop`, `srop32`, `staticrop` | x64 `syscall` execve=59; x86 `int 0x80` execve=11 — full register setup by ROP |
 | **SROP** | x86-64, x86-32 | `autosrop`, `autopoc` | `srop`, `srop32` | Forged sigreturn frame → execve. i386 needs explicit segment selectors (cs=0x23/ss=0x2b/ds=es=0x2b/gs=0x63) — proven, not assumed |
+| **SROP (aarch64)** | ARM64 | `autosrop_aarch64` | `srop_aarch64` | rt_sigreturn (139) restores a forged sigframe → execve (221). **Verified on an aarch64 runtime** (ARM64 host / qemu-aarch64); on x86-64 with no emulation it degrades honestly — never a false shell |
 | **ret2csu (call)** | x86-64 | `autocsu` (mode=win) | `ret2csu`, `csuexec` | Universal `__libc_csu_init` gadgets control rdi/rsi/rdx and make a 3-arg call |
 | **ret2csu → execve** | x86-64 | `autocsu` (mode=execve) | `csuexec` | csu sets rsi/rdx, benign call, then pop rdi=/bin/sh / pop rax=59 / syscall |
 | **ret2dlresolve** | x86-64, x86-32 | `autodlresolve` | `dlresolve`, `dlresolve32` | Shell on a dynamic no-PIE Partial-RELRO binary with **no libc leak and no gift** (forges Elf64_Rela/Elf32_Rel resolver structs; i386 is cdecl) |
@@ -71,6 +72,7 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | **house-of-botcake** | real 2.39 | `autobotcake` | `botcake` | Double-free routed through the **unsorted bin** to clear the tcache key → chunk overlap → safe-linked tcache poison → shell |
 | **largebin attack** | ≥2.30 (reproduced) | `autolargebin` | `largebin` | Corrupt a largebin chunk's `bk_nextsize` so a later large-chunk insertion runs `victim->bk_nextsize->fd_nextsize = victim` → arbitrary pointer write → hijack → shell |
 | **house-of-corrosion** | reproduced | `autohoc` | `hoc` | Corrupt `global_max_fast` so a large `free()` is a fastbin free indexed `fastbinsY[(size-0x20)>>4]` unbounded → a chosen size aliases an arbitrary slot → `&chunk` written there → hijack → shell |
+| **unsafe-unlink** | reproduced | `autounsafeunlink` | `unsafeunlink` | Forge `P->fd=&ptr-0x18`, `P->bk=&ptr-0x10` (satisfies the 2.3.4+ `FD->bk==P && BK->fd==P` check) → `unlink()` leaves `ptr=&ptr-0x18` → edit redirects `ptr` to a function pointer → hijack → shell |
 | **tcache stashing unlink** | ≥2.31 (reproduced) | `autostash` | `stash` | Smallbin→tcache stash with a corrupted `bk` stashes a **fake chunk** → later alloc returns an attacker address → hijack → shell. Reproduces **and satisfies** the ≥2.31 `bck->fd == tc_victim` check (calloc trigger) |
 
 **Honest notes on the heap families.** house-of-spirit and house-of-botcake
@@ -238,9 +240,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 99 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 101 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 143 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 145 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

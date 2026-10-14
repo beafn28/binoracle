@@ -529,7 +529,7 @@ def _facts(binary: str, reg=None) -> dict:
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
          "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False,
          "hof_ok": False, "hos_ok": False, "hoe_ok": False, "botcake_ok": False,
-         "largebin_ok": False, "stash_ok": False, "hoc_ok": False,
+         "largebin_ok": False, "stash_ok": False, "hoc_ok": False, "unlink_ok": False,
          "static": None, "relro": None}
     try:
         import json
@@ -673,6 +673,7 @@ def _facts(binary: str, reg=None) -> dict:
             f["largebin_ok"] = _win and "heap" in _syms and any(s in _syms for s in ("slot", "target", "fnptr"))
             f["stash_ok"] = _win and any(s in _syms for s in ("hobj", "fake", "fnptr"))
             f["hoc_ok"] = _win and "global_max_fast" in _syms and "fastbinsY" in _syms
+            f["unlink_ok"] = _win and "chunkptr" in _syms and _handler
     except Exception:
         pass
     return f
@@ -1346,6 +1347,13 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
            "a largebin insertion with a corrupted bk_nextsize runs "
            "`victim->bk_nextsize->fd_nextsize = victim`: arbitrary pointer write -> `slot` points at "
            "a controlled chunk -> hijack. glibc>=2.30 adds a check -> reproduced")),
+        ("unlink_ok", "unlink", "unsafe-unlink",
+         L("unlink() de un chunk con fd/bk forjados", "unlink() of a chunk with forged fd/bk"),
+         L("fd=&ptr-0x18, bk=&ptr-0x10 satisfacen el chequeo 2.3.4+ (`FD->bk==P && BK->fd==P`) y "
+           "unlink deja ptr=&ptr-0x18; editar a traves de ptr redirige ptr a &handler y luego "
+           "escribe win -> hijack", "fd=&ptr-0x18, bk=&ptr-0x10 satisfy the 2.3.4+ check "
+           "(`FD->bk==P && BK->fd==P`) and unlink leaves ptr=&ptr-0x18; editing through ptr "
+           "redirects ptr to &handler and then writes win -> hijack")),
         ("hoc_ok", "hoc", "house-of-corrosion",
          L("global_max_fast corrompido (free grande tratado como fastbin)", "Corrupted global_max_fast (a large free treated as a fastbin free)"),
          L("con global_max_fast enorme, free() indexa `fastbinsY[(size-0x20)>>4]` sin cota: un "
@@ -1780,7 +1788,7 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 proof["system"] = m.group(1)
             return ((f"{OK} (tcache dup: GOT sobrescrito con system, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
-        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash", "hoc"):
+        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash", "hoc", "unlink"):
             _HEAP_VERIFY = {
                 "hof": ("autohof", "autohof", "house-of-force (top-chunk -> alloc arbitraria -> win)"),
                 "hos": ("autohos", "autohos", "house-of-spirit (chunk falso en tcache real -> win)"),
@@ -1789,6 +1797,7 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 "largebin": ("autolargebin", "autolargebin", "largebin attack (escritura de insercion -> win)"),
                 "stash": ("autostash", "autostash", "tcache stashing unlink (stash smallbin->tcache -> win)"),
                 "hoc": ("autohoc", "autohoc", "house-of-corrosion (global_max_fast -> fastbin index write -> win)"),
+                "unlink": ("autounsafeunlink", "autounsafeunlink", "unsafe-unlink (unlink write + 2.3.4+ bypass -> win)"),
             }
             mod, fn, strat = _HEAP_VERIFY[kind]
             run = getattr(__import__(f"binoracle.workflows.{mod}", fromlist=[fn]), fn)
