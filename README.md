@@ -54,6 +54,7 @@ the agent's hard-won, execution-verified playbook ships with the product. The se
 | format-string (Partial RELRO, x86-64 **and x86-32**) | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` (offset detection is arch-aware) |
 | format-string (Full RELRO) | NX + PIE + Full RELRO | GOT is read-only → ret2system by hijacking printf's saved return on the stack |
 | stack-canary bypass | NX + **stack canary** | leaks the canary (via a `%s` echo *or* a `printf(input)` format string), rewrites it in place, overflows past it to win() |
+| stack pivot (migration) | NX, **short** overflow | overflow reaches only saved RBP+RIP → set saved RBP=&staging buffer, RIP=`leave; ret` → RSP pivots into a full chain staged in .bss |
 | write-what-where | NX | unchecked index → a called function's GOT entry = win() |
 | UAF funcptr-hijack | NX | realloc recycles a freed struct whose first field is a function pointer = win() |
 | heap → shell (tcache poisoning) | NX, glibc ≥ 2.32 safe-linking | leaks the key via an empty bin, `free@GOT = win` (repairs the GOT neighbour the key-clear zeroes) |

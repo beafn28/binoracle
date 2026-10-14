@@ -583,6 +583,10 @@ _exploit_tool("autocsu", "ret2csu: gadgets universales de __libc_csu_init fijan 
               "una llamada indirecta (sin pop rsi/rdx directos), verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autocsu", fromlist=["autocsu"]).autocsu,
                        __import__("binoracle.workflows.autocsu", fromlist=["render_csu"]).render_csu))
+_exploit_tool("autopivot", "stack pivot: overflow corto -> migra RSP a un buffer fijo en .bss con la "
+              "cadena escalonada (saved rbp=&buf, saved rip=`leave; ret`), verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autopivot", fromlist=["autopivot"]).autopivot,
+                       __import__("binoracle.workflows.autopivot", fromlist=["render_pivot"]).render_pivot))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

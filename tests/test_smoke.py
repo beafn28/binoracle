@@ -631,6 +631,25 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autopivot_verifies_stack_migration():
+    # Verificacion POSITIVA de stack pivot por EJECUCION: en pivot el overflow es corto (solo llega
+    # a saved rbp + saved rip), asi que se migra RSP a un buffer fijo en .bss (notes) donde se
+    # escalona la cadena -> win() -> shell. Prueba saved_rbp=&buf + `leave; ret` + ret-slide 16B.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/pivot"
+    if not os.path.exists(binp):
+        pytest.skip("sample pivot no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autopivot import autopivot
+    r = autopivot(binp)
+    assert r.get("ok") and r.get("verified"), f"stack pivot no verificado: {r.get('note')}"
+    assert "leave_ret=" in (r.get("detail") or "")
+
+
 def test_autofmt_verifies_32bit_got_overwrite():
     # Verificacion POSITIVA de format-string de x86-32 por EJECUCION: en fmtgot32 el bug
     # printf(buf) permite sobrescribir printf@GOT con system (Partial RELRO, no-PIE) y luego
