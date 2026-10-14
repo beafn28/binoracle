@@ -1322,6 +1322,42 @@ def test_process_capture_normalizes_and_diffs():
     assert any("exit_code: 3 -> 0" in ch for ch in cmp2["behavior_changes"])
 
 
+def test_managed_compare_verify_boundaries(monkeypatch):
+    # Managed (.NET) member comparison + reconstruction verification + native-boundary surface,
+    # grounded on the CLI metadata reader (stubbed here so the logic is tested without a .NET sample).
+    from binoracle.workflows import managedquery as M
+
+    facts = {
+        "orig.dll": {"ok": True, "is_dotnet": True, "runtime_version": "4.0",
+                     "tables": {"TypeDef": 10, "MethodDef": 40, "ImplMap": 2},
+                     "string_names": ["Foo", "Bar", "Baz", "send", "kernel32.dll"]},
+        "recon.dll": {"ok": True, "is_dotnet": True, "runtime_version": "4.0",
+                      "tables": {"TypeDef": 10, "MethodDef": 39, "ImplMap": 2},
+                      "string_names": ["Foo", "Bar", "send", "kernel32.dll"]},  # missing Baz
+    }
+    monkeypatch.setattr(M, "inspect_dotnet", lambda p: facts[p])
+
+    c = M.compare_managed_members("orig.dll", "recon.dll")
+    assert c["ok"] and c["removed"] == ["Baz"] and c["table_delta"]["MethodDef"] == [40, 39]
+
+    v = M.verify_reconstruction("orig.dll", "recon.dll", threshold=0.9)
+    assert v["ok"] and v["verified"] is False and "Baz" in v["missing_members"]
+    v2 = M.verify_reconstruction("orig.dll", "recon.dll", threshold=0.8)
+    assert v2["verified"] is True        # 83% coverage clears a 0.8 obligation
+
+    nb = M.verify_managed_native_boundaries("orig.dll")
+    assert nb["pinvoke_implmap_rows"] == 2 and "kernel32.dll" in nb["native_libraries"]
+
+
+def test_managed_non_dotnet_degrades(monkeypatch):
+    # A non-.NET input degrades honestly rather than inventing members.
+    from binoracle.workflows import managedquery as M
+    monkeypatch.setattr(M, "inspect_dotnet",
+                        lambda p: {"ok": True, "is_dotnet": False, "note": "PE nativo"})
+    r = M.verify_managed_native_boundaries("x.exe")
+    assert r["ok"] is False and "nativo" in (r.get("note") or "")
+
+
 def test_find_changed_behavior_and_correlate(tmp_path):
     # find_changed_behavior: two scripts with different observable output -> changed; identical ->
     # not changed. correlate_static_and_runtime: a caller marker that appears at runtime is reported.

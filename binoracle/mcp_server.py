@@ -776,6 +776,39 @@ def _h_dotnet(args):
     return render_dotnet(inspect_dotnet(b))
 
 
+@_tool("compare_managed_members", "Compara dos ensamblados .NET a nivel de nombres de miembros "
+       "(heap #Strings) y forma de tablas de metadata: añadidos, eliminados y cambios de conteo de "
+       "tabla. Estatico; no desensambla CIL.",
+       {"a": {"type": "string", "description": "ruta al ensamblado A"},
+        "b": {"type": "string", "description": "ruta al ensamblado B"}}, ["a", "b"])
+def _h_managed_compare(args):
+    from .workflows.managedquery import compare_managed_members, render_managed
+    a = args or {}
+    return render_managed("compare", compare_managed_members(a.get("a") or "", a.get("b") or ""))
+
+
+@_tool("verify_reconstruction", "Verifica cuan fielmente un ensamblado .NET reconstruido reproduce "
+       "al original (cobertura de nombres de miembros + similitud de forma de tablas), y declara la "
+       "obligacion cumplida o no (no afirma fidelidad sin alcanzar el umbral). Estatico.",
+       {"original": {"type": "string", "description": "ensamblado original"},
+        "reconstructed": {"type": "string", "description": "ensamblado reconstruido"},
+        "threshold": {"type": "number", "description": "umbral de cobertura (def. 0.9)"}}, ["original", "reconstructed"])
+def _h_managed_verify(args):
+    from .workflows.managedquery import verify_reconstruction, render_managed
+    a = args or {}
+    return render_managed("verify", verify_reconstruction(
+        a.get("original") or "", a.get("reconstructed") or "", threshold=float(a.get("threshold") or 0.9)))
+
+
+@_tool("verify_managed_native_boundaries", "Expone la frontera gestionado<->nativo de un ensamblado "
+       ".NET: el tamaño de la tabla P/Invoke ImplMap y los nombres de librerias nativas presentes en "
+       "#Strings. Estatico.",
+       {"binary": {"type": "string", "description": "ruta al ensamblado .NET"}}, ["binary"])
+def _h_managed_boundaries(args):
+    from .workflows.managedquery import verify_managed_native_boundaries, render_managed
+    return render_managed("boundaries", verify_managed_native_boundaries(_binary(args)))
+
+
 @_tool("inspect_java", "Lee un artefacto Java estaticamente: un JAR (ZIP) -> manifiesto "
        "(Main-Class/versiones), inventario de clases/paquetes, framework (Spring/Jakarta/Kotlin/"
        "Scala/Android), firma y version de bytecode; o un .class suelto -> magic/version y "
