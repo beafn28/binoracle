@@ -981,6 +981,27 @@ def test_caller_tools_degrade_when_absent():
         os.environ["PATH"] = old
 
 
+def test_process_capture_normalizes_and_diffs():
+    # Captura de escenario de proceso (runtime): la NORMALIZACION hace que dos corridas con el mismo
+    # argv pero salida no determinista (PID) comparen IGUAL; un cambio real de exit_code se detecta.
+    import shutil
+    import pytest
+    if shutil.which("sh") is None:
+        pytest.skip("sin /bin/sh")
+    from binoracle.workflows.proccapture import capture_process, compare_captures
+    a = capture_process(["sh", "-c", "echo run pid=$$"])
+    b = capture_process(["sh", "-c", "echo run pid=$$"])
+    assert a["ok"] and b["ok"]
+    cmp = compare_captures(a["scenario"], b["scenario"])
+    assert cmp["identical"] is True and cmp["stdout_diff"] == []
+    # un cambio de comportamiento real (exit code) se reporta y rompe la identidad
+    c = capture_process(["sh", "-c", "exit 3"])
+    d = capture_process(["sh", "-c", "exit 0"])
+    cmp2 = compare_captures(c["scenario"], d["scenario"])
+    assert cmp2["identical"] is False
+    assert any("exit_code: 3 -> 0" in ch for ch in cmp2["behavior_changes"])
+
+
 def test_evidence_ledger_obligation_and_bundle(tmp_path):
     # El ledger solo cierra una incognita cuando una evidencia ALCANZA su obligacion
     # (authority+confidence); exporta/importa bundles sellados y rechaza los alterados.

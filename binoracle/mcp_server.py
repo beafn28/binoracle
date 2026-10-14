@@ -506,6 +506,38 @@ def _h_dyn_browser(args):
     return dyn.render_dynamic("browser", dyn.browser_observe(a.get("url") or "", screenshot=a.get("screenshot")))
 
 
+@_tool("capture_process_scenario", "Captura RUNTIME de un escenario de proceso (SEPARADO del nucleo "
+       "estatico; EJECUTA el objetivo -> solo objetivos AUTORIZADOS; salida no confiable). Corre el "
+       "binario una vez con timeout acotado y registra argv, codigo de salida, bucket de duracion y "
+       "stdout/stderr NORMALIZADOS (direcciones/PIDs/timestamps colapsados), con sello sha256. "
+       "Opcional: 'args' (lista), 'stdin', 'out_path' para guardar la captura.",
+       {"binary": {"type": "string", "description": "ruta al ejecutable objetivo"},
+        "args": {"type": "array", "items": {"type": "string"}, "description": "argumentos (opcional)"},
+        "stdin": {"type": "string", "description": "datos para stdin (opcional)"},
+        "out_path": {"type": "string", "description": "ruta para guardar la captura JSON (opcional)"},
+        "timeout": {"type": "integer", "description": "timeout en segundos (def. 20)"}}, ["binary"])
+def _h_proc_capture(args):
+    from .workflows.proccapture import capture_process, render_capture
+    a = args or {}
+    argv = [_binary(a)] + list(a.get("args") or [])
+    stdin = (a.get("stdin") or "").encode("utf-8", "replace")
+    return render_capture(capture_process(argv, stdin_data=stdin,
+                                          timeout=int(a.get("timeout") or 20),
+                                          out_path=a.get("out_path")))
+
+
+@_tool("compare_process_captures", "Compara dos capturas de escenario de proceso (rutas JSON de "
+       "capture_process_scenario) y resalta el comportamiento cambiado: codigo de salida/timeout, "
+       "bucket de duracion y un diff unificado de stdout/stderr normalizados. 'identical' es cierto "
+       "solo si los sellos coinciden.",
+       {"a": {"type": "string", "description": "ruta de la captura A"},
+        "b": {"type": "string", "description": "ruta de la captura B"}}, ["a", "b"])
+def _h_proc_compare(args):
+    from .workflows.proccapture import compare_captures, render_compare
+    a = args or {}
+    return render_compare(compare_captures(a.get("a") or "", a.get("b") or ""))
+
+
 @_tool("apk_decompile", "Decompila el DEX de un APK a codigo Java via JADX (un decompilador: no "
        "ejecuta la app) SI el llamador lo tiene; si no, degrada. Devuelve un resumen de clases "
        "recuperadas. Integracion caller-supplied.",

@@ -197,6 +197,12 @@ authorized targets only; all output is untrusted data.
 - **Dynamic module** (`dynamic.py`): `dynamic_adb` (device/prop/getprop
   inspection), `dynamic_frida` (instrumentation), `dynamic_browser`
   (Playwright-driven, using the pre-installed Chromium).
+- **Process-scenario capture** (`proccapture.py`): `capture_process_scenario`
+  runs an authorized target once under a bounded timeout and records its
+  observable behaviour (argv, exit, duration bucket, **normalized**
+  stdout/stderr, sha256 seal); `compare_process_captures` diffs two captures to
+  surface changed behaviour. Normalization (addresses/PIDs/timestamps/temp
+  paths) makes deterministic runs compare equal so a real change stands out.
 - **Ghidra headless** (`callertools.py`): `ghidra_decompile` locates a
   caller-provided Ghidra headless install and parses its pseudocode.
 - **JEB** (`jebconnect.py`): JSON-RPC over HTTP to `BINORACLE_JEB_MCP_URL`.
@@ -208,9 +214,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 65 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 67 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 115 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 116 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.
