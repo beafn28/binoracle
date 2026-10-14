@@ -1210,15 +1210,6 @@ header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:
 .prompt{flex:1;display:flex;align-items:center;gap:8px;background:var(--field);border:1px solid var(--line);border-radius:9px;padding:0 12px;min-width:180px}
 .prompt span{color:var(--acc);font:13px ui-monospace,monospace}
 #target{flex:1;background:none;border:none;color:var(--fg);padding:9px 0;font-family:ui-monospace,monospace;outline:none}
-.aitoggle{display:flex;align-items:center;gap:6px;color:var(--mut);font:12px ui-monospace,monospace;padding:0 6px;user-select:none}
-.aitoggle input{accent-color:var(--acc)}
-.ragpop{position:absolute;top:52px;right:14px;z-index:50;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.25);width:288px}
-.ragpop .rt{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin-bottom:10px}
-.ragpop label{display:flex;align-items:center;gap:8px;font-size:13px;padding:5px 0;cursor:pointer}
-.ragpop label input{accent-color:var(--acc)}
-.ragpop .rst{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font:11px ui-monospace,Menlo,monospace;color:var(--acc);word-break:break-word}
-.ragpop .rhint{margin-top:8px;font-size:11px;color:var(--mut);line-height:1.4}
-.ragauto{display:inline-block;background:rgba(48,163,108,.16);color:#30a46c;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:20px;margin:2px 0 4px}
 .go{background:linear-gradient(135deg,var(--acc),#1fbf8a);color:#04120c;border:none;border-radius:9px;padding:9px 16px;font-weight:700;cursor:pointer}
 .go:hover{filter:brightness(1.08)}
 .icon-btn{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
@@ -1227,7 +1218,7 @@ main{flex:1;display:flex;min-height:0}
 .side.collapsed{width:54px}
 .side.collapsed .lab,.side.collapsed .grp{display:none}
 .side.collapsed button{justify-content:center;padding:9px 0}
-.side.collapsed .ic{width:auto;font-size:15px}
+.side.collapsed .ic{width:auto;font-size:11px}
 .hrow{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:8px 0;background:var(--panel2);display:flex;align-items:center;gap:12px}
 .hrow:hover{border-color:var(--acc)}
 .hrow .hinfo{flex:1;min-width:0}
@@ -1255,7 +1246,7 @@ main{flex:1;display:flex;min-height:0}
 .side .lab{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
 .side .cn{font-size:13px;font-weight:600}
 .side .cd{font-size:10.5px;color:var(--mut);line-height:1.3;margin-top:2px;display:block}
-.side button .ic{width:16px;text-align:center;color:var(--mut);font-size:13px;margin-top:1px}
+.side button .ic{width:22px;flex:none;text-align:center;color:var(--mut);font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.02em;margin-top:2px}
 .side button:hover{background:var(--panel)}
 .side button.active{background:var(--panel);border-left-color:var(--acc);color:var(--acc)}
 .side button.active .ic{color:var(--acc)}
@@ -1351,15 +1342,15 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"Desarrollo de exploits"},
- {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"}]},
- {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
- {c:"dataset",n:"Dataset LLM",ic:"#",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
+ {c:"exploit",n:"CVE → Exploit",ic:"CV",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"}]},
+ {c:"fetch",n:"Fetch binario",ic:"FE",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
+ {c:"dataset",n:"Dataset LLM",ic:"DS",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {g:"Pentest / Reversing de binarios"},
- {c:"audit",n:"Auditar",ic:"*",d:"Analiza el binario y LISTA sus vulnerabilidades (hallazgos con evidencia), construye y verifica el exploit"},
- {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
+ {c:"audit",n:"Auditar",ic:"AU",d:"Analiza el binario y LISTA sus vulnerabilidades (hallazgos con evidencia), construye y verifica el exploit"},
+ {c:"report",n:"Informe",ic:"IN",d:"Genera un informe profesional del binario y lo exporta"},
  {g:"Herramientas"},
- {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
- {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
+ {c:"kb",n:"Conocimiento",ic:"KB",d:"Biblioteca de teoria de explotacion",nobin:true},
+ {c:"doctor",n:"Estado",ic:"ES",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
 ];
 const side=document.getElementById('side');
 var _tb=document.createElement('div');_tb.className='sidetb';_tb.innerHTML='<button class="stb" id="collapse" title="colapsar menu">&laquo;</button><button class="stb" id="hist" title="historial de binarios">H</button>';side.appendChild(_tb);
@@ -1544,26 +1535,6 @@ async function delHistory(binIds,name){
   else{alert('No se pudo borrar: '+(j.error||'error'));}
  }catch(e){alert('error borrando: '+e);}}
 function toggleTheme(){const r=document.documentElement;r.setAttribute('data-theme',r.getAttribute('data-theme')==='light'?'dark':'light');}
-async function applyRag(setk){
- var st=document.getElementById('ragstatus'); if(st) st.textContent='aplicando...';
- var o={}; if(setk){o[setk]=document.getElementById('rag_'+setk).checked?1:0;}
- try{
-  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'rag',binary:'',options:o})});
-  var j=await r.json();
-  if(j.rag){document.getElementById('rag_embed').checked=j.rag.embed;
-   document.getElementById('rag_expand').checked=j.rag.expand;
-   document.getElementById('rag_rerank').checked=j.rag.rerank;
-   if(st) st.textContent=j.rag.status;}
- }catch(e){ if(st) st.textContent='error'; }
-}
-(function(){
- var btn=document.getElementById('ragbtn'), pop=document.getElementById('ragpop');
- if(btn&&pop){
-  btn.onclick=function(){var vis=pop.style.display!=='none';pop.style.display=vis?'none':'block';if(!vis)applyRag();};
-  ['embed','expand','rerank'].forEach(function(k){var el=document.getElementById('rag_'+k);if(el)el.addEventListener('change',function(){applyRag(k);});});
-  document.addEventListener('click',function(e){if(pop.style.display!=='none'&&!pop.contains(e.target)&&e.target!==btn)pop.style.display='none';});
- }
-})();
 async function loadStatus(){try{const j=await api('doctor','');const f=document.getElementById('footer');const lines=(j.text||'').split('\n');
  const pills=lines.filter(l=>l.includes('[ok]')||l.includes('[--]')).map(l=>{const on=l.includes('[ok]');const name=l.replace(/\[..\]/,'').split(':')[0].trim();return '<span class="pill '+(on?'on':'off')+'">'+name+'</span>';});
  const llm=(lines.find(l=>l.startsWith('LLM'))||'').replace('LLM backend:','LLM:').trim();
