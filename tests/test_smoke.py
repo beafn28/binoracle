@@ -186,6 +186,31 @@ def test_autolibc_render():
     assert "No disponible" in out2
 
 
+def test_autolibc_one_gadget_path_is_honest():
+    # The aggressive one_gadget path (og_only=True) prefers the one_gadget tool, falls back to an
+    # execve-reach pure-python finder, and sweeps alignment+NULL-tails to satisfy stack constraints.
+    # Grounding check: it runs cleanly and NEVER claims 'verified' without a real shell (if a firing
+    # gadget exists on the sandbox libc the detail says one_gadget=...; many hardened glibc builds
+    # have none, in which case it degrades honestly -- both outcomes are acceptable, a false positive
+    # is not).
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/ret2libc"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2libc no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autolibc import autolibc
+    r = autolibc(binp, og_only=True)
+    assert r.get("ok")
+    if r.get("verified"):
+        assert "one_gadget=" in (r.get("detail") or "")   # a shell via a magic gadget, really fired
+    else:
+        assert "no verificado" in (r.get("note") or "")   # honest degrade, no false claim
+
+
 def test_autofmt_render():
     from binoracle.workflows.autofmt import render_fmt
     out = render_fmt({"ok": True, "verified": True, "detail": "VERIFIED offset=6",

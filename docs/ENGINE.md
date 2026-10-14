@@ -46,7 +46,7 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | Technique | Arch | Verifier | Sample | What is proven |
 |---|---|---|---|---|
 | **ret2win** | x86-64, x86-32 | `autopoc` | `ret2win`, `ret2win32` | Overflow → redirect to `win()`; offset found by execution, marker read back |
-| **ret2libc (leak)** | x86-64 | `autolibc` | `ret2libc` | Leak libc via puts@plt → return into `system("/bin/sh")`, SysV arg in `rdi` |
+| **ret2libc (leak)** | x86-64 | `autolibc` | `ret2libc` | Leak libc via puts@plt → return into `system("/bin/sh")`, SysV arg in `rdi`; **aggressive one-gadget fallback** (prefers the `one_gadget` tool, else an execve-reach finder) that sweeps stack alignment + NULL-tails to satisfy a magic gadget's `[rsp+N]==NULL` constraints — `og_only` mode forces it |
 | **ret2libc (cdecl)** | x86-32 | `autolibc` / chain | `ret2libc` | 32-bit cdecl stack args: `system` + fake ret + `&"/bin/sh"` |
 | **execve by syscall** | x86-64, x86-32 | `autopoc` (step 2) | `srop`, `srop32`, `staticrop` | x64 `syscall` execve=59; x86 `int 0x80` execve=11 — full register setup by ROP |
 | **SROP** | x86-64, x86-32 | `autosrop`, `autopoc` | `srop`, `srop32` | Forged sigreturn frame → execve. i386 needs explicit segment selectors (cs=0x23/ss=0x2b/ds=es=0x2b/gs=0x63) — proven, not assumed |
@@ -240,7 +240,7 @@ authorized targets only; all output is untrusted data.
 
 - **MCP tools:** 99 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 142 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 143 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.
