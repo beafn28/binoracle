@@ -15,7 +15,7 @@ covers three pillars:
    execute it. Full parity with (and a superset of) the surfaces in
    `morluto/rea`.
 2. **The exploit-development engine** — execution-verified exploit builders for
-   ~18 stack/ROP and heap technique families, in both x86-64 and x86-32.
+   ~19 stack/ROP and heap technique families, in both x86-64 and x86-32.
 3. **Runtime / external connectors** — a separate dynamic module (adb / Frida /
    browser) and caller-supplied decompilers (Ghidra headless, JEB) that run
    only against authorized targets and whose output is treated as untrusted.
@@ -70,6 +70,7 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | **house-of-einherjar** | reproduced | `autohoe` | `hoe` | Backward consolidation via a crafted `prev_size` + off-by-null, reproduced in-binary |
 | **house-of-botcake** | real 2.39 | `autobotcake` | `botcake` | Double-free routed through the **unsorted bin** to clear the tcache key → chunk overlap → safe-linked tcache poison → shell |
 | **largebin attack** | ≥2.30 (reproduced) | `autolargebin` | `largebin` | Corrupt a largebin chunk's `bk_nextsize` so a later large-chunk insertion runs `victim->bk_nextsize->fd_nextsize = victim` → arbitrary pointer write → hijack → shell |
+| **tcache stashing unlink** | ≥2.31 (reproduced) | `autostash` | `stash` | Smallbin→tcache stash with a corrupted `bk` stashes a **fake chunk** → later alloc returns an attacker address → hijack → shell. Reproduces **and satisfies** the ≥2.31 `bck->fd == tc_victim` check (calloc trigger) |
 
 **Honest notes on the heap families.** house-of-spirit and house-of-botcake
 run against **real, modern glibc (verified on 2.39)** — they defeat the current
@@ -181,9 +182,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 53 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 54 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 109 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 110 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

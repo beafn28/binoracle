@@ -612,6 +612,11 @@ _exploit_tool("autolargebin", "largebin attack: una insercion en largebin con bk
               "-> hijack -> shell. Verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autolargebin", fromlist=["autolargebin"]).autolargebin,
                        __import__("binoracle.workflows.autolargebin", fromlist=["render_largebin"]).render_largebin))
+_exploit_tool("autostash", "tcache stashing unlink: un stash de smallbin->tcache con bk corrupto "
+              "mete un chunk falso en el tcache (satisface el chequeo >=2.31 `bck->fd==tc_victim`, "
+              "disparo via calloc) -> alloc en direccion elegida -> hijack -> shell. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autostash", fromlist=["autostash"]).autostash,
+                       __import__("binoracle.workflows.autostash", fromlist=["render_stash"]).render_stash))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

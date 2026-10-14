@@ -729,6 +729,27 @@ def test_autolargebin_verifies_insertion_write():
     assert "slot=" in (r.get("detail") or "")
 
 
+def test_autostash_verifies_tcache_stashing():
+    # Verificacion POSITIVA del tcache-stashing-unlink por EJECUCION: al servir de la smallbin con
+    # hueco en el tcache, glibc "stashea" los chunks restantes al tcache; corrompiendo el `bk` de un
+    # chunk se mete un chunk FALSO en el tcache -> el siguiente alloc devuelve una direccion elegida
+    # -> se escribe win sobre un puntero de funcion -> shell. glibc >=2.31 endurece el bucle con
+    # `bck->fd == tc_victim`; el sample reproduce ese chequeo y lo SATISFACE (disparo via calloc).
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/stash"
+    if not os.path.exists(binp):
+        pytest.skip("sample stash no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autostash import autostash
+    r = autostash(binp)
+    assert r.get("ok") and r.get("verified"), f"tcache stashing no verificado: {r.get('note')}"
+    assert "hobj=" in (r.get("detail") or "")
+
+
 def test_autocsu_verifies_execve_chain():
     # Verificacion POSITIVA de ret2csu -> execve ENCADENADO por EJECUCION: en csuexec no hay
     # `pop rsi`/`pop rdx`, asi que los gadgets csu fijan rsi=0/rdx=0 (la call forzada de gadget2
