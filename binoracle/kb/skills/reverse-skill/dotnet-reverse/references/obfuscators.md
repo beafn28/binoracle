@@ -6,14 +6,14 @@ Reverse-engineering and CTF techniques for mainstream .NET obfuscators, includin
 
 | Obfuscator | de4dot type | Typical Features | Automatic Decryption | Manual Points |
 |------------|-------------|------------------|----------------------|---------------|
-| ConfuserEx 1.x/2.x | `cfze` | anti-tamper, control flow obfuscation, string encryption, anti-debugging | ✅ Most automatic | New versions need to be patched for anti-tamper |
-| ConfuserEx 3.x / Custom | `cfze` | Same as above + custom protector | ⚠️ Partial | Runtime dump / dnlib |
-| SmartAssembly | `sa` | String encoding, resource compression, method call hiding | ✅ Automatic | Resource extraction |
-| Babel.NET | `babel` | Method body encryption, control flow, strings | ✅ Automatic | — |
-| Eazfuscator.NET | `eaz` | String/resource encryption, expression obfuscation | ⚠️ Partial | String decryption tool |
-| .NET Reactor | `reactor` | necrobit (code segment encryption) + anti-tamper | ⚠️ New versions difficult | Runtime dump + rebuild metadata |
-| Themida .NET | — | Shell + virtualization | ❌ de4dot doesn't work | Memory dump, native approach |
-| Agile.NET / CliSecure | `agile` | Method body encryption | ✅ Automatic | — |
+| ConfuserEx 1.x/2.x | `cfze` | anti-tamper, control flow obfuscation, string encryption, anti-debugging | [OK] Most automatic | New versions need to be patched for anti-tamper |
+| ConfuserEx 3.x / Custom | `cfze` | Same as above + custom protector | [WARN] Partial | Runtime dump / dnlib |
+| SmartAssembly | `sa` | String encoding, resource compression, method call hiding | [OK] Automatic | Resource extraction |
+| Babel.NET | `babel` | Method body encryption, control flow, strings | [OK] Automatic | — |
+| Eazfuscator.NET | `eaz` | String/resource encryption, expression obfuscation | [WARN] Partial | String decryption tool |
+| .NET Reactor | `reactor` | necrobit (code segment encryption) + anti-tamper | [WARN] New versions difficult | Runtime dump + rebuild metadata |
+| Themida .NET | — | Shell + virtualization | [FAIL] de4dot doesn't work | Memory dump, native approach |
+| Agile.NET / CliSecure | `agile` | Method body encryption | [OK] Automatic | — |
 
 ## Standard Usage of de4dot
 

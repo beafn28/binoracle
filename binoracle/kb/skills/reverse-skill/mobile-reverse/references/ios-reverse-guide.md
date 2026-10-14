@@ -108,27 +108,27 @@ Tools: swift-demangle, Hopper (automatic demangling)
 Detection Method Classification:
 
 1. File System Check:
-   □ /Applications/Cydia.app
-   □ /var/lib/apt/
-   □ /bin/bash
-   □ /usr/sbin/sshd
+   - /Applications/Cydia.app
+   - /var/lib/apt/
+   - /bin/bash
+   - /usr/sbin/sshd
    → Hook NSFileManager.fileExistsAtPath:
 
 2. Sandbox Escape Detection:
-   □ fork() success (prohibited within the sandbox)
-   □ system() call
+   - fork() success (prohibited within the sandbox)
+   - system() call
    → Hook fork → return -1
 
 3. Dyld Injection Detection:
-   □ _dyld_get_image_count > limit value
+   - _dyld_get_image_count > limit value
    → Restrict return value to a reasonable range
 
 4. Scheme Detection:
-   □ cydia:// URL Scheme
+   - cydia:// URL Scheme
    → Hook UIApplication.canOpenURL:
 
 5. sysctl Detection:
-   □ CTL_KERN/KERN_PROC/KERN_PROC_PID → kinfo_proc
+   - CTL_KERN/KERN_PROC/KERN_PROC_PID → kinfo_proc
    → Hook sysctl → clear p_flag P_TRACED bit
 ```
 

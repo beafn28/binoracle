@@ -322,9 +322,9 @@ Correct sequence:
 Example of incorrect sequence:
 
 ```text
-❌ Unhook ntdll first → ETW-TI immediately reports PROTECTVM + module modification → SOC has already received the alert
-❌ Dump LSASS → AMSI / ETW haven't been suppressed yet → High-confidence T1003.001 alarm
-✅ AMSI → ETW → unhook → spoof → payload
+[FAIL] Unhook ntdll first → ETW-TI immediately reports PROTECTVM + module modification → SOC has already received the alert
+[FAIL] Dump LSASS → AMSI / ETW haven't been suppressed yet → High-confidence T1003.001 alarm
+[OK] AMSI → ETW → unhook → spoof → payload
 ```
 
 ## References

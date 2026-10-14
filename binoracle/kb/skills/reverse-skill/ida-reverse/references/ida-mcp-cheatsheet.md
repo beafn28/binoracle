@@ -421,7 +421,7 @@ idapro_int_convert(inputs=["4198400"])
 idapro_int_convert(inputs=["0xDEAD", "0xBEEF", "12345"])
 ```
 
-> ⚠️ **Always use this tool for base conversions, never calculate manually!**
+> [WARN] **Always use this tool for base conversions, never calculate manually!**
 
 ---
 

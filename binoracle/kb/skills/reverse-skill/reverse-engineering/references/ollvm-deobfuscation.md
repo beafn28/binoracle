@@ -37,9 +37,9 @@ OLLVM is no longer just the original repository from 2017. Below are the current
 | **Obfuscator** (Original) | 3.3~4.0 | sub + bcf + fla (three foundational passes) | Standard tools can handle them |
 | **Hikari** | 6~8 | Anti Class Dump, Function Call Obfuscate, Function Wrapper, Indirect Branching, Split BB, String Encryption | Decrypt strings first + fix indirect jumps |
 | **Hikari-LLVM15** | 15~19 | + Anti Debugging, Anti Hook, Constant Encryption | Closed source; Constant Encryption increases static analysis difficulty |
-| **goron** | 7~10 | Indirect Branch/Call/GlobalVariable | ⚠️ Goron-style indirect obfuscation can be easily countered by setting the data segment to read-only |
+| **goron** | 7~10 | Indirect Branch/Call/GlobalVariable | [WARN] Goron-style indirect obfuscation can be easily countered by setting the data segment to read-only |
 | **Arkari** (komimoe/Hikari) | 14~latest | Based on goron, continuously maintained | Similar to goron; data segment only readable partially counters it |
-| **Pluto** | 14 | MBA Obfuscation, Random CF, Split BB, **Trap Angr** (specifically for angr) | ⚠️ Trap Angr pass makes angr symbolic execution ineffective; switch tools or bypass the trap |
+| **Pluto** | 14 | MBA Obfuscation, Random CF, Split BB, **Trap Angr** (specifically for angr) | [WARN] Trap Angr pass makes angr symbolic execution ineffective; switch tools or bypass the trap |
 | **Polaris** (Original Pluto) | 16 | Alias Access, Indirect Branch/Call, String Encryption, Merge Function, Linear MBA, Dirty Bytes Insertion, Function Splitting, Junk Insertion | Combines Hikari+Pluto, most challenging; requires layer-by-layer handling |
 | **O-MVLL** | open-obfuscator | Python-driven pass manager; Anti Hooking, Arithmetic(MBA), BB Duplicate, CF Breaking, Function Outline, Indirect Branch/Call, Opaque Constants | Commonly used for modern Android hardening; easy customization with Python configuration |
 | **amice** (Rust) | Rust implementation | Full suite + VM Flatten, Instruction Virtualization, Delayed Offset Loading, Parameter Aggregation | Includes VMization; requires VM handler restoration rather than simple deflat |
@@ -121,7 +121,7 @@ a - b  →  a + (~b) + 1
 
 ### 3.1 obpo-plugin — Strongest Effect, Cloud Plugin
 
-> [obpo-project/obpo-plugin](https://github.com/obpo-project/obpo-plugin) · 629⭐ · 2026-06 Active
+> [obpo-project/obpo-plugin](https://github.com/obpo-project/obpo-plugin) · 629 stars · 2026-06 Active
 
 A pseudocode optimizer based on Hex-Rays **microcode**, using **data flow tracking + program slicing + hybrid execution (concolic)** to reconstruct flattened control flow. It is one of the strongest effects recognized by the community.
 
@@ -145,14 +145,14 @@ A pseudocode optimizer based on Hex-Rays **microcode**, using **data flow tracki
 ```
 
 **Applicable Scenarios and Limitations:**
-- ✅ Standard and nested fla, good effect
-- ⚠️ Requires internet connection, sensitive samples (internal undisclosed vulnerabilities, commercial secrets) use with caution — binaries will be uploaded
-- ⚠️ Server may go down, depends on author maintenance
-- ❌ Cannot solve all obfuscations (author explicitly states)
+- [OK] Standard and nested fla, good effect
+- [WARN] Requires internet connection, sensitive samples (internal undisclosed vulnerabilities, commercial secrets) use with caution — binaries will be uploaded
+- [WARN] Server may go down, depends on author maintenance
+- [FAIL] Cannot solve all obfuscations (author explicitly states)
 
 ### 3.2 d810-ng — Local One-Stop Choice
 
-> [w00tzenheimer/d810-ng](https://github.com/w00tzenheimer/d810-ng) · 223⭐ · Updated on 2026-06-26
+> [w00tzenheimer/d810-ng](https://github.com/w00tzenheimer/d810-ng) · 223 stars · Updated on 2026-06-26
 
 The modern maintenance/rewrite version of D-810 (Next Generation). Runs locally, open-source, integrates **Z3 SMT** solver, covers the widest variety of obfuscations.
 
@@ -198,7 +198,7 @@ The modern maintenance/rewrite version of D-810 (Next Generation). Runs locally,
 
 ### 3.3 ollvm-unflattener — Miasm Symbolic Execution, Pure Script
 
-> [cdong1012/ollvm-unflattener](https://github.com/cdong1012/ollvm-unflattener) · 265⭐ · 2026-06 活跃
+> [cdong1012/ollvm-unflattener](https://github.com/cdong1012/ollvm-unflattener) · 265 stars · 2026-06 活跃
 
 Based on the **Miasm** symbolic execution engine, without relying on IDA/BN, purely Python command-line.
 
@@ -223,7 +223,7 @@ python unflattener -i <input.bin> -o <output.bin> -t <function_addr> -a
 
 ### 3.4 ollvm-breaker — Binary Ninja 实战
 
-> [amimo/ollvm-breaker](https://github.com/amimo/ollvm-breaker) · 441⭐
+> [amimo/ollvm-breaker](https://github.com/amimo/ollvm-breaker) · 441 stars
 
 Uses **Binary Ninja** to de-flatten binaries, with the repository自带 Android 加固样本 `libvdog.so` as a test case, fixing functions like JNI_OnLoad, crazy::GetPackageName, and prevent_attach_one.
 
@@ -231,17 +231,17 @@ Uses **Binary Ninja** to de-flatten binaries, with the repository自带 Android 
 
 ### 3.5 deollvm — ARM64 Unicorn
 
-> [GeT1t/deollvm](https://github.com/GeT1t/deollvm) · 34⭐ · 2026-04
+> [GeT1t/deollvm](https://github.com/GeT1t/deollvm) · 34 stars · 2026-04
 
 Based on **Unicorn** for ARM64 OLLVM deflattening. A backup option when no IDA is available.
 
 ### 3.6 DeObfBR — BR 混淆专项
 
-> [Mrack/DeObfBR](https://github.com/Mrack/DeObfBR) · 96⭐ · 2026-06-25
+> [Mrack/DeObfBR](https://github.com/Mrack/DeObfBR) · 96 stars · 2026-06-25
 
 Specialized in removing **BR 混淆** (indirect branch obfuscation, Goron/Arkari style).
 
-**⚠️ Simple countermeasure technique (from awesome-ollvm):** For indirect related obfuscation in the Goron/Arkari style, you can simply set the data segment to read-only—indirect jumps depend on writable data segments at runtime. Setting it to read-only makes it statically solvable.
+**[WARN] Simple countermeasure technique (from awesome-ollvm):** For indirect related obfuscation in the Goron/Arkari style, you can simply set the data segment to read-only—indirect jumps depend on writable data segments at runtime. Setting it to read-only makes it statically solvable.
 
 ### 3.7 angr — 符号执行通用框架
 
@@ -257,7 +257,7 @@ deob = proj.analyses.Deobfuscator(func=func)
 deob.normalize()
 ```
 
-**⚠️ Pluto/Polaris 的 Trap Angr pass:** These variants specifically wrote traps to trick angr's symbolic execution. If angr experiences path explosion or exceptions, suspect the target used Trap Angr → switch to d810-ng or Unicorn dynamic methods.
+**[WARN] Pluto/Polaris 的 Trap Angr pass:** These variants specifically wrote traps to trick angr's symbolic execution. If angr experiences path explosion or exceptions, suspect the target used Trap Angr → switch to d810-ng or Unicorn dynamic methods.
 
 ---
 
@@ -418,7 +418,7 @@ echo "    Save IDB"
 
 echo "[*] Stage 2: obpo-plugin (if d810-ng is insufficient and online access is available)"
 echo "    IDA → Right-click dispatcher → OBPO → Mark and process"
-echo "    ⚠️ Do not use on sensitive samples (binary upload to cloud services)"
+echo "    [WARN] Do not use on sensitive samples (binary upload to cloud services)"
 
 echo "[*] Stage 3: Alternative without IDA (x86/x64)"
 echo "    python unflattener -i $BINARY -o deobf.bin -t <func_addr> -a"
@@ -453,15 +453,15 @@ echo "[+] Done. Reanalyze in IDA to verify."
 | Tool | Platform | Method | Stars/Cost | Last Updated | Open Source | Remarks |
 |------|----------|--------|-------------|--------------|-------------|---------|
 | **obpo-plugin** | IDA | microcode+concolic (cloud) | 629 | 2026-06 | Plugin open-source/Core closed-source | Strongest effect, needs internet connection |
-| **ollvm-breaker** | Binary Ninja | BN API | 441 | 2026-06 | ✅ | Android .so practical use |
-| **ollvm-unflattener** | CLI | Miasm symbolic execution | 265 | 2026-06 | ✅ | x86/x64, BFS multi-layer |
-| **d810-ng** | IDA | microcode+Z3 | 223 | 2026-06 | ✅ | **Preferred local tool**, broad variant coverage |
-| **DeObfBR** | — | BR obfuscation specialized | 96 | 2026-06 | ✅ | Goron/Arkari indirect branch |
-| **IDA_Ollvm-unflattener** | IDA | Miasm plugin version | 90 | 2026-04 | ✅ | IDA plugin wrapper for ollvm-unflattener |
-| **deollvm** | CLI | Unicorn | 34 | 2026-04 | ✅ | ARM64 specialized |
-| **angr** | CLI | Symbolic execution | — | Active | ✅ | General-purpose, suppressed by Trap Angr |
-| **SiMBA** | CLI/Library | MBA simplification | — | — | ✅ | Expression simplification |
-| **Triton** | CLI | Symbolic execution+taint | — | Active | ✅ | Dynamic symbolic execution |
+| **ollvm-breaker** | Binary Ninja | BN API | 441 | 2026-06 | [OK] | Android .so practical use |
+| **ollvm-unflattener** | CLI | Miasm symbolic execution | 265 | 2026-06 | [OK] | x86/x64, BFS multi-layer |
+| **d810-ng** | IDA | microcode+Z3 | 223 | 2026-06 | [OK] | **Preferred local tool**, broad variant coverage |
+| **DeObfBR** | — | BR obfuscation specialized | 96 | 2026-06 | [OK] | Goron/Arkari indirect branch |
+| **IDA_Ollvm-unflattener** | IDA | Miasm plugin version | 90 | 2026-04 | [OK] | IDA plugin wrapper for ollvm-unflattener |
+| **deollvm** | CLI | Unicorn | 34 | 2026-04 | [OK] | ARM64 specialized |
+| **angr** | CLI | Symbolic execution | — | Active | [OK] | General-purpose, suppressed by Trap Angr |
+| **SiMBA** | CLI/Library | MBA simplification | — | — | [OK] | Expression simplification |
+| **Triton** | CLI | Symbolic execution+taint | — | Active | [OK] | Dynamic symbolic execution |
 
 ## 9. References
 

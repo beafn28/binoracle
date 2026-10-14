@@ -10,37 +10,37 @@
 ### Manifest Audit
 
 ```text
-□ android:debuggable="true" → Debuggable (should not appear in production)
-□ android:allowBackup="true" → Data can be backed up and extracted
-□ android:exported="true" components → Exported Activity/Service/Receiver/Provider
-□ Custom permissions protectionLevel → Should be signature (not normal)
-□ intent-filter schemes → Custom deep link susceptibility to hijacking
-□ android:usesCleartextTraffic="true" → Allows cleartext HTTP
-□ minSdkVersion too low → May lack security features
+- android:debuggable="true" → Debuggable (should not appear in production)
+- android:allowBackup="true" → Data can be backed up and extracted
+- android:exported="true" components → Exported Activity/Service/Receiver/Provider
+- Custom permissions protectionLevel → Should be signature (not normal)
+- intent-filter schemes → Custom deep link susceptibility to hijacking
+- android:usesCleartextTraffic="true" → Allows cleartext HTTP
+- minSdkVersion too low → May lack security features
 ```
 
 ### Key Points in Code Audit
 
 ```text
-□ Hardcoded keys/tokens (search for "key", "secret", "password", "api_key")
-□ Insecure random number generation (java.util.Random instead of SecureRandom)
-□ Insecure encryption (ECB mode, DES, MD5 for passwords)
-□ WebView configuration (setJavaScriptEnabled + addJavascriptInterface = RCE risk)
-□ SQL injection (rawQuery with user input)
-□ Path traversal (ContentProvider's openFile without path validation)
-□ Log leak (Log.d/Log.i outputting sensitive information)
-□ Clipboard leak (ClipboardManager storing sensitive data)
-□ Implicit Intent leak (sendBroadcast without specifying package name)
+- Hardcoded keys/tokens (search for "key", "secret", "password", "api_key")
+- Insecure random number generation (java.util.Random instead of SecureRandom)
+- Insecure encryption (ECB mode, DES, MD5 for passwords)
+- WebView configuration (setJavaScriptEnabled + addJavascriptInterface = RCE risk)
+- SQL injection (rawQuery with user input)
+- Path traversal (ContentProvider's openFile without path validation)
+- Log leak (Log.d/Log.i outputting sensitive information)
+- Clipboard leak (ClipboardManager storing sensitive data)
+- Implicit Intent leak (sendBroadcast without specifying package name)
 ```
 
 ### Third-Party Library Audit
 
 ```text
-□ Outdated OkHttp/Retrofit version (known vulnerabilities)
-□ Outdated WebView kernel
-□ SDKs with known vulnerabilities (check CVEs)
-□ Ad SDK data collection scope
-□ Push SDK configuration (whether token leakage occurs)
+- Outdated OkHttp/Retrofit version (known vulnerabilities)
+- Outdated WebView kernel
+- SDKs with known vulnerabilities (check CVEs)
+- Ad SDK data collection scope
+- Push SDK configuration (whether token leakage occurs)
 ```
 
 ---
@@ -114,16 +114,16 @@ Method 3: Frida + r2frida
 ### Check Items
 
 ```text
-□ Whether using HTTPS (all API calls)
-□ Whether there is SSL Pinning (certificate binding)
-□ Whether certificate verification is correct (does not accept self-signed certificates)
-□ Whether there is Certificate Transparency (CT) check
-□ Whether the API key is transmitted in plain text in requests
-□ Whether there is an expiration mechanism for tokens
-□ Whether there is a request signature anti-tamper protection
-□ Whether there is replay attack protection (nonce/timestamp)
-□ Whether WebSocket is encrypted
-□ Whether sensitive data is in URL parameters (will be logged)
+- Whether using HTTPS (all API calls)
+- Whether there is SSL Pinning (certificate binding)
+- Whether certificate verification is correct (does not accept self-signed certificates)
+- Whether there is Certificate Transparency (CT) check
+- Whether the API key is transmitted in plain text in requests
+- Whether there is an expiration mechanism for tokens
+- Whether there is a request signature anti-tamper protection
+- Whether there is replay attack protection (nonce/timestamp)
+- Whether WebSocket is encrypted
+- Whether sensitive data is in URL parameters (will be logged)
 ```
 
 ---
@@ -146,11 +146,11 @@ Method 3: Frida + r2frida
 
 | Scheme | Security | Description |
 |--------|----------|-------------|
-| SharedPreferences plain text | ❌ | Can be read directly after rooting |
-| EncryptedSharedPreferences | ✓ | AndroidX Security library |
-| SQLCipher | ✓ | Encrypts SQLite database |
-| Android Keystore | ✓✓ | Hardware-level key protection |
-| Custom AES encryption | ⚠️ | Depends on key management |
+| SharedPreferences plain text | [FAIL] | Can be read directly after rooting |
+| EncryptedSharedPreferences | Yes | AndroidX Security library |
+| SQLCipher | Yes | Encrypts SQLite database |
+| Android Keystore | YesYes | Hardware-level key protection |
+| Custom AES encryption | [WARN] | Depends on key management |
 
 ---
 

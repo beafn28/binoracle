@@ -10,26 +10,26 @@
 ## APK / Android Reverse Engineering - Executed Operations
 
 ```text
-□ jadx -d output_dir/ target.apk                          — APK decompilation, countless times
-□ jadx --no-res --no-dex target.apk                        — Only decompile dex, skip resources
-□ apktool d target.apk -o unpacked/                        — Unpack APK to smali
-□ apktool d -r target.apk -o unpacked/                     — Unpack but skip resource decompilation
-□ apktool b unpacked/ -o repacked.apk                      — Repackage
-□ jarsigner -keystore debug.keystore -storepass android repacked.apk androiddebugkey — Sign
-□ adb install repacked.apk                                 — Install on emulator/device
-□ adb logcat | grep "frida\|hook\|SSL"                     — Filter logs
-□ frida -U -f com.example.app -l hook.js --no-pause        — Frida spawn mode injection
-□ frida -U -n "app_name" -l hook.js                        — Frida attach mode injection
-□ frida-ps -U                                              — List USB device processes
-□ objection -g com.example.app explore                     — Objection exploration mode
-□ android sslpinning disable                               — Objection disable SSL Pin (general bypass)
-□ android root disable                                     — Objection disable Root detection
-□ android hooking list classes                             — Objection enumerate all classes
-□ android hooking watch class com.example.ClassName         — Objection monitor class method calls
-□ jadx search: "sign\|signature\|hmac\|md5\|sha\|encrypt\|decrypt\|AES\|RSA\|Base64\|token" — Locate signature/encryption logic
-□ apktool d after directly grep -r "native" smali/                  — Find native method declarations
-□ grep -r "System.loadLibrary\|System.load" smali/         — Find so load points
-□ IDA Pro open lib/*.so → find JNI_OnLoad → static registration/dynamic registration → Frida hook native functions
+- jadx -d output_dir/ target.apk                          — APK decompilation, countless times
+- jadx --no-res --no-dex target.apk                        — Only decompile dex, skip resources
+- apktool d target.apk -o unpacked/                        — Unpack APK to smali
+- apktool d -r target.apk -o unpacked/                     — Unpack but skip resource decompilation
+- apktool b unpacked/ -o repacked.apk                      — Repackage
+- jarsigner -keystore debug.keystore -storepass android repacked.apk androiddebugkey — Sign
+- adb install repacked.apk                                 — Install on emulator/device
+- adb logcat | grep "frida\|hook\|SSL"                     — Filter logs
+- frida -U -f com.example.app -l hook.js --no-pause        — Frida spawn mode injection
+- frida -U -n "app_name" -l hook.js                        — Frida attach mode injection
+- frida-ps -U                                              — List USB device processes
+- objection -g com.example.app explore                     — Objection exploration mode
+- android sslpinning disable                               — Objection disable SSL Pin (general bypass)
+- android root disable                                     — Objection disable Root detection
+- android hooking list classes                             — Objection enumerate all classes
+- android hooking watch class com.example.ClassName         — Objection monitor class method calls
+- jadx search: "sign\|signature\|hmac\|md5\|sha\|encrypt\|decrypt\|AES\|RSA\|Base64\|token" — Locate signature/encryption logic
+- apktool d after directly grep -r "native" smali/                  — Find native method declarations
+- grep -r "System.loadLibrary\|System.load" smali/         — Find so load points
+- IDA Pro open lib/*.so → find JNI_OnLoad → static registration/dynamic registration → Frida hook native functions
 ```
 
 **Scenarios Handled**:
@@ -43,22 +43,22 @@
 ## IDA Pro / Ghidra — Executed Operations
 
 ```text
-□ ida64.exe target.so                                       — Open so/ELF/PE
-□ ida64.exe -B target.so                                    — Automatic batch analysis (generate .i64)
-□ ida64.exe -A -S"script.py" target.so                      — Headless mode run script
-□ Shortcut: Shift+F12 → Strings window → Search "http\|key\|secret\|encrypt\|decrypt\|AES\|RSA"
-□ Shortcut: G → Jump to address
-□ Shortcut: X → View cross-references (who calls this function/data)
-□ Shortcut: F5 → Disassemble (Hex-Rays)
-□ Shortcut: N → Rename function/variable
-□ Shortcut: Y → Modify type
-□ Shortcut: Ctrl+E → Export data
-□ Shortcut: Shift+E → Export as C array
-□ IDAPython: idc.get_func_name(ea) / idc.get_func_off_str(ea) / ida_xref.xrefsto(ea)
-□ Ghidra: File → Import → Select file → Confirm format → Double-click → Analysis → Auto Analyze
-□ Ghidra: Window → Defined Strings → Search keyword
-□ Ghidra: Right-click → References → Show references to address
-□ Ghidra: Right-click → Patch Instruction → Modify assembly instruction → File → Export Program → Export patch binary
+- ida64.exe target.so                                       — Open so/ELF/PE
+- ida64.exe -B target.so                                    — Automatic batch analysis (generate .i64)
+- ida64.exe -A -S"script.py" target.so                      — Headless mode run script
+- Shortcut: Shift+F12 → Strings window → Search "http\|key\|secret\|encrypt\|decrypt\|AES\|RSA"
+- Shortcut: G → Jump to address
+- Shortcut: X → View cross-references (who calls this function/data)
+- Shortcut: F5 → Disassemble (Hex-Rays)
+- Shortcut: N → Rename function/variable
+- Shortcut: Y → Modify type
+- Shortcut: Ctrl+E → Export data
+- Shortcut: Shift+E → Export as C array
+- IDAPython: idc.get_func_name(ea) / idc.get_func_off_str(ea) / ida_xref.xrefsto(ea)
+- Ghidra: File → Import → Select file → Confirm format → Double-click → Analysis → Auto Analyze
+- Ghidra: Window → Defined Strings → Search keyword
+- Ghidra: Right-click → References → Show references to address
+- Ghidra: Right-click → Patch Instruction → Modify assembly instruction → File → Export Program → Export patch binary
 ```
 
 **Processed Scenarios**:
@@ -160,14 +160,14 @@ $ strings target.bin | grep "cargo"                         — Find Cargo infor
 ## Binary Patch / Modification — Executed Operations
 
 ```text
-□ IDA: Edit → Patch program → Change byte → Modify instruction bytes → Edit → Patch program → Apply patches to input file
-□ Ghidra: Right-click → Patch Instruction → Modify → File → Export Program → Select format → Export
-□ r2: wx <hex_bytes> @ <address>                           — Direct patch
-□ xxd target.bin | sed 's/xxxx/yyyy/' | xxd -r > patched.bin — Command-line patch
-□ echo -ne '\x90\x90\x90' | dd of=target.bin bs=1 seek=0x1234 conv=notrunc — Direct write
-□ apktool b after jarsigner signing → adb install
-□ iOS: optool install -p "@executable_path/libFridaGadget.dylib" target.ipa — Inject Frida Gadget
-□ iOS: ldid -S target.app/target                            — Self-sign (bypass code sign)
+- IDA: Edit → Patch program → Change byte → Modify instruction bytes → Edit → Patch program → Apply patches to input file
+- Ghidra: Right-click → Patch Instruction → Modify → File → Export Program → Select format → Export
+- r2: wx <hex_bytes> @ <address>                           — Direct patch
+- xxd target.bin | sed 's/xxxx/yyyy/' | xxd -r > patched.bin — Command-line patch
+- echo -ne '\x90\x90\x90' | dd of=target.bin bs=1 seek=0x1234 conv=notrunc — Direct write
+- apktool b after jarsigner signing → adb install
+- iOS: optool install -p "@executable_path/libFridaGadget.dylib" target.ipa — Inject Frida Gadget
+- iOS: ldid -S target.app/target                            — Self-sign (bypass code sign)
 ```
 
 ---
