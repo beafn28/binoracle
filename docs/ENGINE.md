@@ -153,7 +153,7 @@ ideas were re-implemented in Python with attribution, not copied.)
 | APK | `apkinspect` | manifest + decompile path |
 | Java / JAR | `jarinspect` | classes, manifest, constant pool |
 | JavaScript / Electron | `jsinspect` | bundle/entrypoint analysis |
-| **Flutter / Dart AOT** | `flutterinspect` | snapshot magic + hash (SDK/engine revision), build-id, Dart VM version, `_kDart*Snapshot*` AOT symbols — from an APK or `libapp.so`/`libflutter.so` |
+| **Flutter / Dart AOT** | `flutterinspect` | resolves `_kDart*Snapshot*` symbols (section `.dynsym` **or** stripped-`ET_DYN` PT_DYNAMIC), maps them through PT_LOAD, parses each **snapshot header** — version hash (SDK/engine revision) + features string → **target arch** (x64/arm64/…) and **runtime mode** (product/profile/release); plus ELF arch, build-id, per-ABI, Dart VM version (absence reported, not guessed) |
 | ASAR (Electron) | `asarinspect` | archive listing + file extraction |
 | macOS plist | `plistinspect` | binary & XML plists |
 | HAR captures | `harinspect` | request/response, secrets scan |
@@ -216,7 +216,7 @@ authorized targets only; all output is untrusted data.
 
 - **MCP tools:** 67 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 116 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 118 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

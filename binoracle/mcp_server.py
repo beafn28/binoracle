@@ -440,8 +440,10 @@ def _h_flutter(args):
     return render_flutter(inspect_flutter(b))
 
 
-@_tool("inspect_dart_aot", "Inspecciona el snapshot AOT de Dart de una libreria (libapp.so): los "
-       "cuatro simbolos _kDart*Snapshot*, magics/hashes de snapshot y build-id. Lectura estatica.",
+@_tool("inspect_dart_aot", "Inspecciona el snapshot AOT de Dart de una libreria (libapp.so): mapea "
+       "los simbolos _kDart*Snapshot* por PT_LOAD, parsea la cabecera de cada snapshot (hash de "
+       "version + cadena de features -> arquitectura objetivo x64/arm64/... y modo runtime product/"
+       "profile/release) y lee la arquitectura ELF y el build-id. Lectura estatica.",
        {"binary": {"type": "string", "description": "ruta a libapp.so (o un APK que lo contenga)"}}, ["binary"])
 def _h_dart(args):
     from .workflows.flutterinspect import inspect_dart_aot, render_dart_aot

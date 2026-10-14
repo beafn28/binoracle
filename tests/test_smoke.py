@@ -507,6 +507,96 @@ def test_flutter_dart_aot_static_reader():
         os.remove(p)
 
 
+def _build_libapp_fixture(snapshot_hash=b"a" * 32,
+                          features=b"product no-causal_async_stacks x64-sysv"):
+    # Minimal but REAL ELF64 .so: one PT_LOAD (identity VA=offset), a .dynsym/.dynstr carrying the
+    # four _kDart*Snapshot* symbols, and a genuine Dart snapshot header (magic + length + 32-hex
+    # version hash at +20 + null-terminated features string at +52) at the VM/Isolate data symbols.
+    # Lets the reader exercise VA->offset mapping and snapshot-header parsing without a toolchain.
+    import struct
+    MAGIC = b"\xf5\xf5\xdc\xdc"
+    snap = MAGIC + struct.pack("<q", 0x4000) + struct.pack("<q", 2) + snapshot_hash + features + b"\x00"
+    SNAP_OFF, DYNSTR_OFF, DYNSYM_OFF, SH_OFF = 0x1000, 0x1800, 0x1900, 0x1c00
+    names = [b"_kDartVmSnapshotData", b"_kDartIsolateSnapshotData",
+             b"_kDartVmSnapshotInstructions", b"_kDartIsolateSnapshotInstructions"]
+    dynstr = b"\x00"
+    noff = {}
+    for n in names:
+        noff[n] = len(dynstr)
+        dynstr += n + b"\x00"
+
+    def sym(nameoff, val, size):
+        return struct.pack("<IBBHQQ", nameoff, 0x12, 0, 1, val, size)
+    dynsym = sym(0, 0, 0)
+    dynsym += sym(noff[b"_kDartVmSnapshotData"], SNAP_OFF, len(snap))
+    dynsym += sym(noff[b"_kDartIsolateSnapshotData"], SNAP_OFF, len(snap))
+    dynsym += sym(noff[b"_kDartVmSnapshotInstructions"], SNAP_OFF + 0x100, 0x10)
+    dynsym += sym(noff[b"_kDartIsolateSnapshotInstructions"], SNAP_OFF + 0x200, 0x10)
+    shstr = b"\x00"
+    shn = {}
+    for s in (b".dynsym", b".dynstr", b".shstrtab"):
+        shn[s] = len(shstr)
+        shstr += s + b"\x00"
+    SHSTR_OFF = SH_OFF + 4 * 64
+    total = max(SHSTR_OFF + len(shstr), SNAP_OFF + len(snap),
+                DYNSTR_OFF + len(dynstr), DYNSYM_OFF + len(dynsym))
+    buf = bytearray(total + 16)
+    hdr = struct.pack("<4sBBBBB7xHHIQQQIHHHHHH", b"\x7fELF", 2, 1, 1, 0, 0, 3, 0x3e, 1, 0,
+                      0x40, SH_OFF, 0, 64, 56, 1, 64, 4, 3)
+    buf[0:len(hdr)] = hdr
+    buf[0x40:0x40 + 56] = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, len(buf), len(buf), 0x1000)
+    buf[SNAP_OFF:SNAP_OFF + len(snap)] = snap
+    buf[DYNSTR_OFF:DYNSTR_OFF + len(dynstr)] = dynstr
+    buf[DYNSYM_OFF:DYNSYM_OFF + len(dynsym)] = dynsym
+    buf[SHSTR_OFF:SHSTR_OFF + len(shstr)] = shstr
+
+    def sh(name, typ, off, size, link, entsize):
+        return struct.pack("<IIQQQQIIQQ", name, typ, 0, 0, off, size, link, 0, 0, entsize)
+    sh_all = (sh(0, 0, 0, 0, 0, 0)
+              + sh(shn[b".dynsym"], 11, DYNSYM_OFF, len(dynsym), 2, 24)
+              + sh(shn[b".dynstr"], 3, DYNSTR_OFF, len(dynstr), 0, 0)
+              + sh(shn[b".shstrtab"], 3, SHSTR_OFF, len(shstr), 0, 0))
+    buf[SH_OFF:SH_OFF + len(sh_all)] = sh_all
+    struct.pack_into("<H", buf, 0x3e, 3)
+    return bytes(buf)
+
+
+def test_dart_aot_deep_snapshot_parse(tmp_path):
+    # Deep path: resolve the four AOT symbols from .dynsym, map the snapshot-data symbols through
+    # PT_LOAD, parse the snapshot header, and decode the features string -> target arch + runtime mode.
+    from binoracle.workflows.flutterinspect import inspect_dart_aot, inspect_flutter, render_dart_aot
+    p = tmp_path / "libapp.so"
+    p.write_bytes(_build_libapp_fixture())
+    r = inspect_dart_aot(str(p))
+    assert r["ok"] and r["is_dart_aot"]
+    assert r["elf_arch"] == "x86-64" and r["elf_bits"] == 64
+    assert r["dart_target_arch"] == "x64"          # decoded from the features string, not guessed
+    assert r["dart_runtime_mode"] == "product"
+    assert set(r["aot_snapshot_symbols"]) == {
+        "_kDartVmSnapshotData", "_kDartIsolateSnapshotData",
+        "_kDartVmSnapshotInstructions", "_kDartIsolateSnapshotInstructions"}
+    syms = {s["symbol"] for s in r["snapshots"]}
+    assert "_kDartVmSnapshotData" in syms and "_kDartIsolateSnapshotData" in syms
+    assert all(s["version_hash"] == "a" * 32 for s in r["snapshots"])
+    assert all("x64-sysv" in (s["features"] or "") for s in r["snapshots"])
+    assert "Dart AOT" in render_dart_aot(r)
+    # identify_flutter_build surfaces the same decoded facts
+    rf = inspect_flutter(str(p))
+    assert rf["is_flutter"] and rf["dart_target_arch"] == "x64" and rf["dart_runtime_mode"] == "product"
+
+
+def test_dart_aot_release_build_version_capped(tmp_path):
+    # A release snapshot with no "product/profile" token and no "Dart VM version:" label must report
+    # the absence honestly (dart_version_capped) rather than inventing a mode/version.
+    from binoracle.workflows.flutterinspect import inspect_dart_aot
+    p = tmp_path / "libapp.so"
+    p.write_bytes(_build_libapp_fixture(features=b"arm64-sysv no-causal_async_stacks"))
+    r = inspect_dart_aot(str(p))
+    assert r["is_dart_aot"] and r["dart_target_arch"] == "arm64"
+    assert r["dart_runtime_mode"] == "release/jit"
+    assert r["dart_vm_version"] is None and r["dart_version_capped"] is True
+
+
 def test_flutter_non_flutter_is_not_a_verdict():
     # A plain ELF with no Dart snapshot must degrade honestly, not claim "not Flutter" as proof.
     import os
