@@ -151,7 +151,85 @@ def _llm_research(llm, cve_id: str, description: str) -> Optional[dict]:
     return None
 
 
-def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
+_REFINE_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Te doy "
+    "un fragmento de codigo PHP REAL de un plugin de WordPress, alrededor de una funcion vulnerable "
+    "ya confirmada. Tu trabajo es leerlo y extraer los datos EXACTOS para construir la peticion HTTP "
+    "real -- no adivines desde la descripcion de la CVE, lee el codigo. Responde SOLO con JSON valido "
+    "con las claves: ajax_action (el string EXACTO registrado en add_action('wp_ajax_...', ...) o "
+    "'wp_ajax_nopriv_...' que dispara esta funcion; vacio si no es un handler AJAX), http_method "
+    "(GET o POST, segun que superglobal lee: $_POST->POST, $_GET->GET, $_REQUEST->POST por defecto), "
+    "parameters (lista de los nombres EXACTOS de parametro que el codigo lee, tal cual aparecen en "
+    "$_POST['x']/$_GET['x']/$_REQUEST['x'] o en llamadas a sanitizadores como "
+    "Helper::sanitize('x','post',...) -- incluye el nombre LITERAL, con guiones/mayusculas si los "
+    "tiene, nunca lo traduzcas), id_param (cual de esos parametros es el ID del usuario/recurso "
+    "objetivo, vacio si ninguno), email_param (cual es el nuevo email, vacio si ninguno), pass_param "
+    "(cual es la nueva password, vacio si ninguno O si el codigo exige la password ACTUAL antes de "
+    "aceptar una password nueva -- en ese caso no sirve para un ataque sin credenciales, dejalo vacio "
+    "y el ataque se centra solo en el email). Se exacto: un nombre de parametro mal copiado hace que "
+    "la peticion real falle."
+)
+
+
+def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lines: int = 50) -> Optional[dict]:
+    """Tras el grounding (confirmar que la funcion citada existe de verdad), lee el codigo REAL
+    alrededor de cada ubicacion encontrada y le pide al LLM que extraiga el endpoint/parametros
+    EXACTOS de ahi -- en vez de quedarse con la primera suposicion que hizo solo a partir de la
+    descripcion de la CVE (que a menudo no cita el nombre real del action o de los parametros,
+    como se confirmo en vivo con CVE-2025-3605: la hipotesis inicial decia action=flr_blocks_user_
+    settings y parameters=[email,password], pero el codigo real registra flrblocksusersettings
+    updatehandle y lee flr-blocks-email-update). Devuelve el dict de overrides, o None si no hay
+    LLM disponible o no se pudo leer/parsear nada util."""
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return None
+    import os as _os
+    snippets = []
+    for name, locs in (found or {}).items():
+        for loc in locs[:2]:          # como mucho 2 ubicaciones por funcion, evita contexto gigante
+            file_part, _, line_part = loc.rpartition(":")
+            try:
+                line_no = int(line_part)
+            except ValueError:
+                continue
+            fpath = _os.path.join(local_path, file_part)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            lo = max(0, line_no - 5)
+            hi = min(len(lines), line_no + context_lines)
+            snippets.append(f"# {file_part} (funcion '{name}' citada en la linea {line_no})\n"
+                            + "".join(lines[lo:hi]))
+    if not snippets:
+        return None
+    code = "\n\n".join(snippets)[:6000]     # tope generoso pero acotado para el contexto del LLM
+    from ..llm.base import Message
+    try:
+        raw = llm.chat([Message("system", _REFINE_SYS),
+                        Message("user", f"Codigo real:\n```php\n{code}\n```")], json_mode=True)
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = {}
+    action = (data.get("ajax_action") or "").strip()
+    if action:
+        out["endpoint"] = f"/wp-admin/admin-ajax.php?action={action}"
+    if data.get("http_method"):
+        out["http_method"] = str(data["http_method"]).strip().upper()
+    params = data.get("parameters")
+    if isinstance(params, list) and params:
+        out["parameters"] = [str(p) for p in params if p]
+    for key in ("id_param", "email_param", "pass_param"):
+        v = (data.get(key) or "").strip()
+        if v:
+            out[key] = v
+    return out or None
+
+
+def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
     del LLM contra el (grep de las funciones citadas) y desarrolla el PoC HTTP/HTML. Muta `inv` in
     place.
@@ -201,6 +279,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                           f"nombre, o hipotesis del LLM)" if es else
                           f"not found in the fetched source: {nf} (could be a different version/"
                           f"name, or an LLM hypothesis)"))
+                # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
+                # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
+                # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara
+                # vez cita el nombre exacto del action o de los parametros del formulario).
+                if inv.source_grounding["found"]:
+                    step("leyendo el codigo real para refinar endpoint/parametros..." if es else
+                         "reading the real source to refine endpoint/parameters...")
+                    refined = _refine_web_hints_from_source(llm, fr.local_path,
+                                                            inv.source_grounding["found"])
+                    if refined:
+                        notes = {**notes, **refined}
+                        inv.llm_notes.update(refined)
+                        step((f"refinado con el codigo real: endpoint={notes.get('endpoint')}, "
+                             f"parameters={notes.get('parameters')}") if es else
+                             (f"refined from the real source: endpoint={notes.get('endpoint')}, "
+                             f"parameters={notes.get('parameters')}"))
+                    else:
+                        step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
+                             "inicial" if es else "no LLM available or nothing to refine: keeping "
+                             "the initial hypothesis")
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
@@ -223,9 +321,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                                        verify_wordpress_direct_login_as, _pick_param,
                                        _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
                 params = notes.get("parameters") or []
-                id_p = _pick_param(params, _ID_HINTS)
-                email_p = _pick_param(params, _EMAIL_HINTS)
-                pass_p = _pick_param(params, _PASS_HINTS)
+                # preferir el mapeo de rol que el LLM extrajo LEYENDO el codigo real (mas fiable
+                # que adivinar por el nombre del parametro); cae a la heuristica por nombre si no
+                # hay refinamiento (sin LLM, o el refinamiento no incluyo esa clave).
+                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
+                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
+                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
                 wr = None
                 if email_p or pass_p:
                     step(("intentando verificacion DINAMICA -- patron de cambio de credencial "
@@ -234,7 +335,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                          "(ephemeral WordPress+MySQL in Docker)..."))
                     wr = verify_wordpress_account_takeover(
                         fr.local_path, plugin_dir, notes.get("endpoint"),
-                        notes.get("http_method") or "POST", params, on_step=step)
+                        notes.get("http_method") or "POST", params,
+                        id_param_hint=id_p or "", email_param_hint=email_p or "",
+                        pass_param_hint=pass_p or "", on_step=step)
                 elif id_p:
                     step(("intentando verificacion DINAMICA -- patron de login-as directo "
                          "(WordPress+MySQL efimero en Docker)..." if es else
@@ -242,7 +345,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                          "(ephemeral WordPress+MySQL in Docker)..."))
                     wr = verify_wordpress_direct_login_as(
                         fr.local_path, plugin_dir, notes.get("endpoint"),
-                        notes.get("http_method") or "GET", params, on_step=step)
+                        notes.get("http_method") or "GET", params,
+                        id_param_hint=id_p or "", on_step=step)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -400,7 +504,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         #      grep que las funciones citadas por el LLM existen de verdad (evidencia GROUNDED),
         #   2) desarrolla el PoC HTTP (o la pagina para CSRF) a partir de la hipotesis del LLM.
         # Nunca se marca 'verificado' aqui: eso exige lanzar el PoC contra un objetivo autorizado real.
-        _run_web_investigation(inv, lang=lang, step=step)
+        _run_web_investigation(inv, lang=lang, step=step, llm=(llm if llm_on else None))
         inv.steps = []
         return inv
 

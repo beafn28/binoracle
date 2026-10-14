@@ -4123,7 +4123,7 @@ def test_cve_agent_dynamic_verify_gate_accepts_local_zip_not_only_wordpress_plug
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
 
     called = {}
-    def fake_verify(plugin_dir_path, slug, endpoint, method, params, on_step=None, budget_s=600.0):
+    def fake_verify(plugin_dir_path, slug, endpoint, method, params, **kwargs):
         called["slug"] = slug
         return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
                                        detail="ACCOUNT TAKEOVER confirmado (fake)")
@@ -4171,6 +4171,67 @@ def test_cve_agent_dynamic_verify_gate_picks_login_as_when_only_id_param(monkeyp
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("login_as") == "LoginAsUsers"
     assert "account_takeover" not in called
+    assert inv.verified is True
+
+
+def test_cve_agent_refines_endpoint_from_real_source_when_hypothesis_wrong(monkeypatch, tmp_path):
+    # Reproduce en vivo lo pedido por el usuario ("eso debe hacer la LLM mismo, probar, ver codigo
+    # y hacer eso") con el caso real que lo disparo: CVE-2025-3605 (Frontend Login and Registration
+    # Blocks). La hipotesis inicial (solo a partir de la descripcion de la CVE) decia
+    # action=flr_blocks_user_settings y parameters=[email,password] -- INCORRECTO. El codigo real
+    # registra flrblocksusersettingsupdatehandle y el parametro real es 'flr-blocks-email-update'
+    # (confirmado leyendo el codigo real que el usuario pego). El refinamiento debe corregirlo
+    # SOLO, sin que el analista tenga que leer el codigo y pasarselo a mano por CLI.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    plugin_dir = tmp_path / "frontend-login-and-registration-blocks" / "inc"
+    plugin_dir.mkdir(parents=True)
+    php = plugin_dir / "class-flr-blocks-user-settings.php"
+    php.write_text(
+        "<?php\n" * 55 +     # relleno para que la linea real caiga donde el test la busca
+        "\tadd_action( 'wp_ajax_nopriv_flrblocksusersettingsupdatehandle', [$this,'x'] );\n"
+        "\tpublic function flr_blocks_user_settings_handle_ajax_callback() {\n"
+        "\t\t$user_id = Flr_Blocks_Helper::sanitize( 'user_id', 'post', 'id' );\n"
+        "\t\t$user_info->user_email = Flr_Blocks_Helper::sanitize( 'flr-blocks-email-update', 'post', 'email' );\n"
+        "\t}\n"
+    )
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+        return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
+                                           local_path=str(tmp_path),
+                                           plugin_dir="frontend-login-and-registration-blocks")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "ajax_action": "flrblocksusersettingsupdatehandle", "http_method": "POST",
+                "parameters": ["user_id", "flr-blocks-email-update"],
+                "id_param": "user_id", "email_param": "flr-blocks-email-update", "pass_param": "",
+            })
+
+    called = {}
+    def fake_account_takeover(plugin_dir_path, slug, endpoint, method, params, **kw):
+        called["endpoint"] = endpoint
+        called["email_param_hint"] = kw.get("email_param_hint")
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True)
+    monkeypatch.setattr(wpverify, "verify_wordpress_account_takeover", fake_account_takeover)
+
+    inv = Investigation(cve_id="CVE-2025-3605")
+    inv.vuln_class = "missing-authorization"
+    # hipotesis inicial INCORRECTA, igual que la del LLM en vivo
+    inv.llm_notes = {"source_url": "frontend-login-and-registration-blocks",
+                     "endpoint": "/wp-admin/admin-ajax.php?action=flr_blocks_user_settings",
+                     "http_method": "POST", "parameters": ["user_id", "email", "password"],
+                     "vulnerable_functions": ["flr_blocks_user_settings_handle_ajax_callback"]}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert called.get("endpoint") == "/wp-admin/admin-ajax.php?action=flrblocksusersettingsupdatehandle"
+    assert called.get("email_param_hint") == "flr-blocks-email-update"
     assert inv.verified is True
 
 
