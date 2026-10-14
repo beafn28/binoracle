@@ -318,6 +318,118 @@ def _h_hopper(args):
     return render_hopper(hopper_list_tools(url=a.get("url")))
 
 
+@_tool("record_unknown", "Registra una incognita residual del objetivo (pregunta abierta) con su "
+       "obligacion para resolverse: required_authority (static-only|controlled-replay|instrumented|"
+       "live) y required_confidence (asserted|observed|reproduced|verified), mas sondas sugeridas. "
+       "Ledger JSON persistente ('ledger' opcional).",
+       {"question": {"type": "string", "description": "la pregunta abierta"},
+        "severity": {"type": "string", "description": "info|low|medium|high|critical"},
+        "domain": {"type": "string", "description": "dominio (protocol|crypto|heap|...)"},
+        "required_authority": {"type": "string", "description": "obligacion de fuente"},
+        "required_confidence": {"type": "string", "description": "obligacion de establecimiento"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, ["question"])
+def _h_rec_unk(args):
+    from .workflows.ledger import record_unknown, render_ledger
+    a = args or {}
+    return render_ledger(record_unknown(a.get("question") or "", a.get("severity") or "medium",
+                                        a.get("domain") or "general",
+                                        a.get("required_authority") or "static-only",
+                                        a.get("required_confidence") or "observed",
+                                        ledger=a.get("ledger")))
+
+
+@_tool("record_evidence", "Registra una evidencia (observacion) con su authority y confidence y un "
+       "sello de contenido sha256, para luego saldar la obligacion de una incognita.",
+       {"summary": {"type": "string", "description": "resumen de la evidencia"},
+        "kind": {"type": "string", "description": "tipo (observation|disasm|trace|...)"},
+        "source": {"type": "string", "description": "herramienta/origen"},
+        "authority": {"type": "string", "description": "static-only|controlled-replay|instrumented|live"},
+        "confidence": {"type": "string", "description": "asserted|observed|reproduced|verified"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, ["summary"])
+def _h_rec_ev(args):
+    from .workflows.ledger import add_evidence, render_ledger
+    a = args or {}
+    return render_ledger(add_evidence(a.get("summary") or "", a.get("kind") or "observation",
+                                      a.get("source") or "binoracle", a.get("authority") or "static-only",
+                                      a.get("confidence") or "observed", ledger=a.get("ledger")))
+
+
+@_tool("update_unknown", "Actualiza una incognita con concurrencia optimista (expected_revision). "
+       "Puede cambiar status (open|investigating|resolved|wont-fix), adjuntar evidencias de apoyo o "
+       "contradictorias, y fijar la resolucion.",
+       {"unknown_id": {"type": "string", "description": "id de la incognita"},
+        "expected_revision": {"type": "integer", "description": "revision esperada (concurrencia)"},
+        "status": {"type": "string", "description": "nuevo status"},
+        "supporting_evidence_ids": {"type": "array", "items": {"type": "string"}, "description": "ids de apoyo"},
+        "contradicting_evidence_ids": {"type": "array", "items": {"type": "string"}, "description": "ids contra"},
+        "resolution": {"type": "string", "description": "texto de resolucion"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, ["unknown_id"])
+def _h_upd_unk(args):
+    from .workflows.ledger import update_unknown, render_ledger
+    a = args or {}
+    return render_ledger(update_unknown(a.get("unknown_id") or "", a.get("expected_revision"),
+                                        status=a.get("status"),
+                                        supporting_evidence_ids=a.get("supporting_evidence_ids"),
+                                        contradicting_evidence_ids=a.get("contradicting_evidence_ids"),
+                                        resolution=a.get("resolution"), ledger=a.get("ledger")))
+
+
+@_tool("list_unknowns", "Lista las incognitas residuales del ledger (mas recientes primero) con su "
+       "estado y obligacion. offset/limit para paginar.",
+       {"offset": {"type": "integer", "description": "desplazamiento"},
+        "limit": {"type": "integer", "description": "maximo a devolver"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, [])
+def _h_list_unk(args):
+    from .workflows.ledger import list_unknowns, render_ledger
+    a = args or {}
+    return render_ledger(list_unknowns(int(a.get("offset") or 0), int(a.get("limit") or 50),
+                                       ledger=a.get("ledger")))
+
+
+@_tool("verify_unknown_resolution", "Cierra una incognita SOLO si cumple su obligacion: tiene "
+       "resolucion, >=1 evidencia de apoyo que alcanza authority y confidence requeridas, y ninguna "
+       "evidencia contradictoria. Si no, dice que obligacion falta y la deja abierta (fundamentado).",
+       {"unknown_id": {"type": "string", "description": "id de la incognita"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, ["unknown_id"])
+def _h_verify_unk(args):
+    from .workflows.ledger import verify_unknown_resolution, render_ledger
+    a = args or {}
+    return render_ledger(verify_unknown_resolution(a.get("unknown_id") or "", ledger=a.get("ledger")))
+
+
+@_tool("export_evidence_bundle", "Serializa todo el ledger (incognitas + evidencias) a un bundle "
+       "JSON sellado con un digest sha256 sobre su forma canonica (detecta alteraciones al importar).",
+       {"out_path": {"type": "string", "description": "ruta de salida del bundle"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, ["out_path"])
+def _h_exp_bundle(args):
+    from .workflows.ledger import export_evidence_bundle, render_ledger
+    a = args or {}
+    return render_ledger(export_evidence_bundle(a.get("out_path") or "binoracle_bundle.json",
+                                                ledger=a.get("ledger")))
+
+
+@_tool("import_evidence_bundle", "Carga un bundle sellado, verifica su digest sha256 y lo importa al "
+       "ledger (merge por defecto). Rechaza bundles alterados.",
+       {"bundle_path": {"type": "string", "description": "ruta del bundle"},
+        "merge": {"type": "boolean", "description": "fusionar (true) o reemplazar (false)"},
+        "ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, ["bundle_path"])
+def _h_imp_bundle(args):
+    from .workflows.ledger import import_evidence_bundle, render_ledger
+    a = args or {}
+    merge = a.get("merge")
+    return render_ledger(import_evidence_bundle(a.get("bundle_path") or "",
+                                                ledger=a.get("ledger"),
+                                                merge=(True if merge is None else bool(merge))))
+
+
+@_tool("get_evidence_bundle", "Devuelve el ledger actual como vista de bundle con su digest canonico "
+       "(cuenta de incognitas y evidencias).",
+       {"ledger": {"type": "string", "description": "ruta del ledger (opcional)"}}, [])
+def _h_get_bundle(args):
+    from .workflows.ledger import get_evidence_bundle, render_ledger
+    return render_ledger(get_evidence_bundle(ledger=(args or {}).get("ledger")))
+
+
 @_tool("inspect_flutter", "Identifica una app Flutter/Dart AOT estaticamente (desde un APK o un "
        "libapp.so/libflutter.so): magic de snapshot Dart, hashes de snapshot (fijan la revision del "
        "SDK/engine), build-id GNU, version de Dart VM y simbolos AOT _kDart*Snapshot*. No ejecuta nada.",

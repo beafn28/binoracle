@@ -981,6 +981,44 @@ def test_caller_tools_degrade_when_absent():
         os.environ["PATH"] = old
 
 
+def test_evidence_ledger_obligation_and_bundle(tmp_path):
+    # El ledger solo cierra una incognita cuando una evidencia ALCANZA su obligacion
+    # (authority+confidence); exporta/importa bundles sellados y rechaza los alterados.
+    import json
+    import os
+    from binoracle.workflows import ledger as L
+    lp = str(tmp_path / "led.json")
+    u = L.record_unknown("branch X needs external svc?", severity="high", domain="protocol",
+                         required_authority="controlled-replay", required_confidence="reproduced", ledger=lp)
+    uid = u["unknown"]["id"]
+    assert u["ok"] and u["unknown"]["revision"] == 1 and u["unknown"]["status"] == "open"
+    # nada -> sigue abierta
+    assert L.verify_unknown_resolution(uid, ledger=lp)["verified"] is False
+    # evidencia debil no basta
+    ew = L.add_evidence("static hint", authority="static-only", confidence="observed", ledger=lp)["evidence"]["id"]
+    L.update_unknown(uid, supporting_evidence_ids=[ew], resolution="needs replay", ledger=lp)
+    assert L.verify_unknown_resolution(uid, ledger=lp)["verified"] is False
+    # evidencia fuerte cumple la obligacion
+    es = L.add_evidence("replayed branch", authority="controlled-replay",
+                        confidence="reproduced", ledger=lp)["evidence"]["id"]
+    rev = L.list_unknowns(ledger=lp)["unknowns"][0]["revision"]
+    L.update_unknown(uid, expected_revision=rev, supporting_evidence_ids=[ew, es], ledger=lp)
+    v = L.verify_unknown_resolution(uid, ledger=lp)
+    assert v["verified"] is True and v["status"] == "resolved"
+    # concurrencia optimista: una revision caduca falla
+    assert L.update_unknown(uid, expected_revision=1, status="open", ledger=lp)["ok"] is False
+    # bundle sellado round-trip + deteccion de alteracion
+    bp = str(tmp_path / "bundle.json")
+    exp = L.export_evidence_bundle(bp, ledger=lp)
+    assert exp["ok"] and exp["digest"].startswith("sha256:")
+    imp = L.import_evidence_bundle(bp, ledger=str(tmp_path / "led2.json"))
+    assert imp["ok"] and imp["unknown_count"] == 1 and imp["evidence_count"] == 2
+    b = json.load(open(bp))
+    b["payload"]["unknowns"][uid]["severity"] = "low"
+    json.dump(b, open(bp, "w"))
+    assert L.import_evidence_bundle(bp, ledger=str(tmp_path / "led3.json"))["ok"] is False
+
+
 def test_signal_tools_degrade_when_absent():
     # sigrok-cli ausente -> inspect_signal_decoders / decode_signal_recording degradan nombrando
     # la herramienta (integracion caller-supplied, igual que TShark/Binwalk).

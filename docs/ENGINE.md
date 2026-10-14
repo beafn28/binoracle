@@ -166,6 +166,27 @@ Plus cross-cutting analysis: `identify` (routes any artifact to the right
 reader), `hardening`, `cfg`, `reachability`, `vulnhunt`, `cvelookup` /
 `cve_agent`, `patchdiff`, `coredump`.
 
+### 4.1 Evidence ledger — grounded reconstruction with obligations
+
+`ledger.py` is the formal backbone of the "fundamentado" promise: a stateful
+**residual-unknown** lifecycle where every open question carries an
+*obligation* and can only be closed when the evidence meets it.
+
+- `record_unknown` / `update_unknown` / `list_unknowns` — track open questions
+  with a `required_authority` (`static-only` → `controlled-replay` →
+  `instrumented` → `live`) and `required_confidence` (`asserted` → `observed`
+  → `reproduced` → `verified`), plus recommended probes and optimistic-
+  concurrency revisions.
+- `record_evidence` — observations carrying their own authority/confidence and
+  a sha256 content seal.
+- `verify_unknown_resolution` — closes an unknown **only** when it has a
+  resolution, ≥1 supporting evidence that meets *both* obligation ladders, and
+  no contradicting evidence; otherwise it names the unmet obligation and leaves
+  it open. This is the engine refusing to call something resolved on faith.
+- `export_evidence_bundle` / `import_evidence_bundle` / `get_evidence_bundle` —
+  JSON bundles sealed with a canonical sha256 digest; a tampered bundle is
+  rejected on import.
+
 ---
 
 ## 5. Runtime & external connectors (separate module)
@@ -187,9 +208,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 57 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 65 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 114 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 115 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.
