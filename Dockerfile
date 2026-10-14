@@ -26,18 +26,32 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Paquetes CRITICOS (si fallan, el build debe fallar):
 RUN dpkg --add-architecture i386 \
     && apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates file binutils make python3-dev \
+        git ca-certificates curl file binutils make python3-dev \
         gcc gcc-multilib libc6-dev libc6-dev-i386 libc6:i386 \
         ruby strace ltrace \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# radare2: BEST-EFFORT. En bookworm existe; si en una base futura desaparece del repo, el build
-# NO debe morir por ello (chain-analyzer/nativequery/arsenal degradan sin r2). Por eso va aparte
-# con "|| true". Si quieres r2 garantizado aqui y no esta en el repo, instalalo luego con el
-# script oficial dentro del contenedor:  r2pm -U  o  bash <(curl -fsSL https://.../r2_install.sh)
+# radare2: NO esta en los repos de Debian (retirado), asi que se instala desde el .deb OFICIAL de
+# su repo de releases (amd64, coincide con la imagen linux/amd64). Se intenta apt primero por si
+# una base futura vuelve a traerlo; si el .deb tampoco se puede, se degrada honestamente (el
+# chain-analyzer/arsenal avisan "r2 no disponible" en vez de romperse).
+ARG R2_VERSION=5.9.8
 RUN apt-get update \
     && (apt-get install -y --no-install-recommends radare2 \
-        || echo 'WARN: radare2 no disponible en este repo; binoracle degrada sin r2') \
+        || (curl -fsSL -o /tmp/r2.deb \
+              "https://github.com/radareorg/radare2/releases/download/${R2_VERSION}/radare2_${R2_VERSION}_amd64.deb" \
+            && apt-get install -y --no-install-recommends /tmp/r2.deb \
+            && rm -f /tmp/r2.deb) \
+        || echo 'WARN: radare2 no disponible; binoracle degrada sin r2') \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && (radare2 -v || true)
+
+# Android a nivel clase/metodo/recursos: apktool (AndroidManifest + smali + recursos) y jadx
+# (DEX -> pseudo-Java). Arrastran un JRE headless. BEST-EFFORT: si no estan en el repo el build no
+# muere (inspect_apk estatico sigue funcionando; apk-manifest/apk-decompile avisan si faltan).
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends default-jre-headless apktool jadx \
+        || echo 'WARN: apktool/jadx no disponibles; inspect_apk estatico sigue OK') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Oraculos de analisis + pwntools (angr se omite a proposito: es enorme y carga perezosamente;

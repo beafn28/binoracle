@@ -18,6 +18,16 @@ services:
       - "8080:8080"              # UI web: http://127.0.0.1:8080
     volumes:
       - ./targets:/targets       # deja aqui tus APK/binarios -> en la app usa /targets/<fichero>
+    # Para que el contenedor pueda llegar a servicios de tu Mac (p.ej. Ollama en el host).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # --- IA (OPCIONAL) ---  El nucleo estatico + verificacion de exploits NO necesita modelo.
+      # Para activar audit / ask / CVE->Exploit / narrativa IA: arranca Ollama EN TU MAC
+      #   (brew install ollama; ollama serve; ollama pull qwen2.5-coder:7b)
+      # y descomenta la linea siguiente para que el contenedor hable con el Ollama del host:
+      # - BINORACLE_BASE_URL=http://host.docker.internal:11434
+      BINORACLE_LANG: es
     # --- Solo para la VERIFICACION DE EXPLOITS por ejecucion (objetivos AUTORIZADOS / CTF) ---
     # El sandbox usa namespaces de Linux (unshare) y desactiva ASLR (setarch -R); eso requiere
     # capacidades extra y un seccomp relajado. Si solo vas a hacer analisis ESTATICO, puedes
