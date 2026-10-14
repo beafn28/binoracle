@@ -9,7 +9,35 @@ por CLI, servidor MCP o la UI web.
 
 ---
 
-## 1. Instalación (una vez)
+## 0. Opción más fácil: Docker (recomendada en Mac / Windows)
+
+Trae Linux x86-64 dentro, así que funcionan **tanto los lectores como la verificación de exploits**
+sin instalar nada en tu máquina más que Docker.
+
+```bash
+git clone <tu-repo> binoracle && cd binoracle
+docker compose up --build        # construye y levanta la web en http://127.0.0.1:8080
+```
+
+Analizar **tus** ficheros: déjalos en `./targets/` y en la app (web o CLI) usa la ruta
+`/targets/<fichero>`:
+
+```bash
+# copia tu APK a ./targets/ y:
+docker compose run --rm binoracle binoracle apk /targets/tu-app.apk
+# verificar exploits dentro del contenedor:
+docker compose exec binoracle pytest tests/test_smoke.py -v
+```
+
+> En **Mac M1** Docker ejecuta la imagen como `linux/amd64` por emulación (más lento pero funcional
+> para los exploits x86). Si solo quieres lectura estática, puedes quitar `platform: linux/amd64` del
+> `docker-compose.yml` y correrá nativo arm64. El bloque `cap_add`/`security_opt` del compose es
+> **solo** para la verificación de exploits por ejecución (objetivos AUTORIZADOS/CTF); si no lo
+> necesitas, bórralo.
+
+---
+
+## 1. Instalación nativa (alternativa)
 
 ```bash
 cd binoracle

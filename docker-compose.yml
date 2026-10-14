@@ -1,0 +1,32 @@
+# binoracle en local con Docker.
+#
+#   docker compose up --build      # construye y levanta (web en http://127.0.0.1:8080)
+#   docker compose run --rm binoracle binoracle apk /targets/tu.apk   # CLI puntual
+#   docker compose exec binoracle pytest tests/test_smoke.py -v       # verificar exploits
+#
+# Para analizar TUS ficheros: ponlos en ./targets y referencialos como /targets/<fichero>
+# (en la UI web o en el CLI). Nada sale del host: binoracle es local y offline.
+services:
+  binoracle:
+    build: .
+    image: binoracle:latest
+    # linux/amd64 incluso en Mac M1 / ARM: necesario para EJECUTAR los binarios x86-64/x86-32 de
+    # los exploits (en M1 corre por emulacion, mas lento pero funcional). Para solo lectura
+    # estatica (APK/ELF/.NET/Flutter...) puedes quitar esta linea y usar tu arquitectura nativa.
+    platform: linux/amd64
+    ports:
+      - "8080:8080"              # UI web: http://127.0.0.1:8080
+    volumes:
+      - ./targets:/targets       # deja aqui tus APK/binarios -> en la app usa /targets/<fichero>
+    # --- Solo para la VERIFICACION DE EXPLOITS por ejecucion (objetivos AUTORIZADOS / CTF) ---
+    # El sandbox usa namespaces de Linux (unshare) y desactiva ASLR (setarch -R); eso requiere
+    # capacidades extra y un seccomp relajado. Si solo vas a hacer analisis ESTATICO, puedes
+    # borrar este bloque entero (la imagen sigue sirviendo la UI y los lectores igual).
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    # mantener el contenedor vivo re-arranca la UI si se cae
+    restart: unless-stopped

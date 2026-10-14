@@ -1,0 +1,9 @@
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+samples/bin/
+*.egg-info/
+.pytest_cache/
+.binoracle_*.py
+node_modules/
