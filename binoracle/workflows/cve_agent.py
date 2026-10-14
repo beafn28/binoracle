@@ -21,6 +21,75 @@ from typing import Callable, List, Optional
 
 _B64_PNG_PREFIX = "data:image/png;base64,"
 
+# impacto tipico por clase de vulnerabilidad -- una frase clara y concreta de que gana un
+# atacante, no una etiqueta vaga. Usado para dejar el impacto marcado y visible en el informe,
+# no enterrado dentro de la descripcion en prosa de la CVE.
+_IMPACT_BY_CLASS = {
+    "missing-authorization": ("CRITICO", "Un usuario autenticado de BAJO privilegio puede tomar "
+                              "el control de CUALQUIER otra cuenta (incluida la de administrador): "
+                              "cambiar su email/password sin que el sistema compruebe que tiene "
+                              "permiso sobre ese recurso concreto.", "CRITICAL", "A LOW-privilege "
+                              "authenticated user can take over ANY other account (including "
+                              "admin): change its email/password without the system checking "
+                              "they have permission over that specific resource."),
+    "idor": ("ALTO", "Un usuario autenticado puede leer o modificar recursos de OTROS usuarios "
+            "(pedidos, documentos, datos personales) cambiando un identificador en la peticion.",
+            "HIGH", "An authenticated user can read or modify OTHER users' resources (orders, "
+            "documents, personal data) by changing an identifier in the request."),
+    "auth-bypass": ("CRITICO", "Un atacante puede saltarse la autenticacion por completo y "
+                    "acceder como si estuviera logueado, sin credenciales validas.", "CRITICAL",
+                    "An attacker can bypass authentication entirely and access the system as if "
+                    "logged in, with no valid credentials."),
+    "sqli": ("CRITICO", "Lectura/modificacion arbitraria de la base de datos completa (usuarios, "
+            "credenciales, contenido); en motores con privilegios amplios, puede escalar a "
+            "ejecucion de comandos en el servidor.", "CRITICAL", "Arbitrary read/write of the "
+            "entire database (users, credentials, content); on engines with broad privileges, "
+            "can escalate to command execution on the server."),
+    "rce": ("CRITICO", "Ejecucion remota de codigo arbitrario: control total del servidor que "
+           "aloja el sitio.", "CRITICAL", "Arbitrary remote code execution: full control of the "
+           "server hosting the site."),
+    "command-injection": ("CRITICO", "Ejecucion de comandos del sistema operativo con los "
+                          "privilegios del proceso web: control total del servidor.", "CRITICAL",
+                          "Operating-system command execution with the web process's privileges: "
+                          "full control of the server."),
+    "file-upload": ("CRITICO", "Subida de un fichero malicioso (p.ej. un webshell) que, al "
+                    "ejecutarse, da control remoto del servidor.", "CRITICAL", "Upload of a "
+                    "malicious file (e.g. a webshell) that, once executed, gives remote control "
+                    "of the server."),
+    "deserialization": ("CRITICO", "Deserializar datos controlados por el atacante puede derivar "
+                        "en ejecucion remota de codigo, segun los objetos disponibles en la "
+                        "aplicacion.", "CRITICAL", "Deserializing attacker-controlled data can "
+                        "lead to remote code execution, depending on the objects available in "
+                        "the application."),
+    "xxe": ("ALTO", "Lectura de ficheros arbitrarios del servidor y, en configuraciones "
+           "vulnerables, peticiones de red desde el propio servidor (SSRF via XXE).", "HIGH",
+           "Arbitrary server file read, and in vulnerable configurations, network requests "
+           "originating from the server itself (SSRF via XXE)."),
+    "ssrf": ("ALTO", "El servidor hace peticiones a donde el atacante decide: acceso a servicios "
+            "internos no expuestos (metadatos de nube, APIs internas, red privada).", "HIGH",
+            "The server makes requests wherever the attacker decides: access to internal, "
+            "unexposed services (cloud metadata, internal APIs, private network)."),
+    "ssti": ("CRITICO", "Inyeccion en el motor de plantillas del lado servidor: habitualmente "
+            "deriva en ejecucion remota de codigo.", "CRITICAL", "Server-side template engine "
+            "injection: typically leads to remote code execution."),
+    "path-traversal": ("ALTO", "Lectura (y a veces escritura) de ficheros arbitrarios fuera del "
+                       "directorio previsto, incluyendo configuracion con credenciales.", "HIGH",
+                       "Read (and sometimes write) of arbitrary files outside the intended "
+                       "directory, including configuration files with credentials."),
+    "xss": ("MEDIO", "Ejecucion de JavaScript arbitrario en el navegador de otros usuarios: robo "
+           "de sesion, phishing dentro del propio sitio, acciones en su nombre.", "MEDIUM",
+           "Arbitrary JavaScript execution in other users' browsers: session theft, phishing "
+           "within the site itself, acting on their behalf."),
+    "csrf": ("MEDIO", "Un sitio malicioso puede hacer que el navegador de la victima, ya logueada, "
+            "ejecute una accion no deseada sin que se de cuenta.", "MEDIUM", "A malicious site "
+            "can make the victim's already-logged-in browser perform an unwanted action without "
+            "them noticing."),
+    "open-redirect": ("BAJO", "Util como pieza de apoyo en campanas de phishing (una URL del "
+                      "dominio legitimo que redirige a un sitio controlado por el atacante).",
+                      "LOW", "Useful as a supporting piece in phishing campaigns (a URL on the "
+                      "legitimate domain that redirects to an attacker-controlled site)."),
+}
+
 
 @dataclass
 class Investigation:
@@ -383,6 +452,12 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
         pub = (inv.lookup_note or ("no consultado" if es else "not checked"))
     out.append("\n- " + ("Estado exploit publico: " if es else "Public exploit: ") + pub)
     out.append("- " + ("Clase: " if es else "Class: ") + (inv.vuln_class or "?"))
+    impact = _IMPACT_BY_CLASS.get(inv.vuln_class)
+    if impact:
+        sev_es, txt_es, sev_en, txt_en = impact
+        sev, txt = (sev_es, txt_es) if es else (sev_en, txt_en)
+        out.append(f"\n### " + ("Impacto" if es else "Impact"))
+        out.append(f"\n> **[{sev}]** {txt}")
     if inv.llm_notes:
         out.append("\n### " + ("Investigacion del LLM (hipotesis)" if es else "LLM research (hypothesis)"))
         for k in ("primitive", "target_binary", "trigger", "strategy", "source_url",
@@ -473,6 +548,9 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
                 if not png:
                     continue
                 out.append(f"\n_{caption}_")
+                if sh.get("url"):
+                    out.append(("- Peticion capturada: " if es else "- Request captured: ")
+                               + f"`GET {sh['url']}`")
                 out.append(f"![paso]({_B64_PNG_PREFIX}{png})")
         elif inv.dynamic_verify.get("attempted"):
             out.append(("\n_(sin captura de pantalla: Playwright no esta disponible en este "

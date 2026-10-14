@@ -70,6 +70,10 @@ def _md_rich(s: str) -> str:
                    r'style="max-width:100%;border:1px solid var(--border,#333);'
                    r'border-radius:8px;margin:10px 0;display:block">', h)
         h = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
+        # cursiva ("_texto_", p.ej. los pies de foto de wpverify.py) -- SOLO en frontera de
+        # palabra (como CommonMark): sin esto "login_bajo_privilegio" o "user_id" se rompian,
+        # convirtiendo el trozo entre guiones bajos en <em> dentro del propio identificador.
+        h = _re.sub(r"(?<![\w_])_(?!_)(.+?)(?<!_)_(?![\w_])", r"<em>\1</em>", h)
         h = _re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
         return h
 
@@ -3503,6 +3507,7 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .md li{margin:3px 0;white-space:normal}
 .md p{white-space:normal}
 .md strong{font-weight:700}
+.md em{color:var(--mut);font-style:italic}
 .md blockquote.callout{margin:16px 0;padding:12px 16px;border-left:4px solid var(--acc);
   background:color-mix(in srgb, var(--acc) 10%, transparent);border-radius:0 8px 8px 0;
   font-size:14px;line-height:1.6}

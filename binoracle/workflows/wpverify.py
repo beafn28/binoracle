@@ -444,7 +444,8 @@ def verify_wordpress_account_takeover(
         def capture(sess_, url_path, es_caption, en_caption):
             png = _screenshot_authenticated(base_url, sess_, url_path)
             if png:
-                shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png})
+                shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png,
+                             "url": base_url + url_path})
 
         r = lab.wp_cli("core", "install", f"--url={base_url}", "--title=binoracle-lab",
                        f"--admin_user={admin_user}", f"--admin_password={admin_pass}",
@@ -577,7 +578,7 @@ def verify_wordpress_account_takeover(
                                    f"password (from before the attack) now FAILS -- WordPress "
                                    f"rejects the real login form, proof the password was really "
                                    f"overwritten, not that two passwords are now valid."),
-                    "png_b64": old_pw_shot,
+                    "png_b64": old_pw_shot, "url": base_url + "/wp-login.php",
                 })
             res.evidence["screenshots"] = shots
             return res

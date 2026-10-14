@@ -3670,6 +3670,35 @@ def test_cve_agent_renders_real_evidence_not_a_placeholder_on_verified(monkeypat
     assert "Evidencia real" in rendered
 
 
+def test_md_rich_renders_italics_without_breaking_snake_case_identifiers():
+    # Bug real: "_Paso 1: WordPress recien instalado._" (los pies de foto de wpverify.py) salia
+    # con los guiones bajos literales -- _md_rich no soportaba cursiva markdown en absoluto. El
+    # fix debe activar <em> en frontera de palabra SIN romper identificadores snake_case como
+    # "user_id" o "login_bajo_privilegio" (no deben convertirse en <em> a medias).
+    from binoracle.report.html import _md_rich
+    html = _md_rich("_Paso 1: WordPress recien instalado._")
+    assert "<em>Paso 1: WordPress recien instalado.</em>" in html
+    assert "_Paso" not in html and "instalado._" not in html
+
+    html2 = _md_rich("id=user_id, email=email, password=pass")
+    assert "<em>" not in html2
+    assert "user_id" in html2
+
+    html3 = _md_rich("Usuario: `login_bajo_privilegio`")
+    assert "<em>" not in html3
+    assert "<code>login_bajo_privilegio</code>" in html3
+
+
+def test_cve_agent_render_includes_impact_section():
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+    inv = Investigation(cve_id="CVE-TEST")
+    inv.vuln_class = "missing-authorization"
+    md = render_investigation(inv, lang="es")
+    assert "### Impacto" in md
+    assert "[CRITICO]" in md
+    assert "tomar" in md.lower() or "control" in md.lower()
+
+
 def test_md_rich_renders_blockquote_as_callout_not_literal_gt():
     # Bug real encontrado al revisar el informe exportado: "> **EXPLOIT VERIFICADO**..." (el
     # veredicto mas importante del informe) se renderizaba como texto plano con un '>' suelto
