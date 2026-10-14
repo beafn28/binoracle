@@ -471,7 +471,11 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     return inv
 
 
-def render_investigation(inv: Investigation, lang: str = "es") -> str:
+def render_investigation(inv: Investigation, lang: str = "es", embed_images: bool = True) -> str:
+    """`embed_images=False` sustituye cada captura por un aviso corto en vez del PNG en base64
+    completo -- para la salida de TERMINAL, que no puede pintar imagenes y donde el base64
+    (decenas de KB por captura) es solo ruido ilegible. render_investigation_page() (el export
+    HTML, que SI las pinta) sigue llamando con embed_images=True (el valor por defecto)."""
     es = lang == "es"
     out = ["## " + ("Investigacion de explotacion" if es else "Exploitation investigation")
            + f": {inv.cve_id}"]
@@ -585,7 +589,15 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
                 if sh.get("url"):
                     out.append(("- Peticion capturada: " if es else "- Request captured: ")
                                + f"`GET {sh['url']}`")
-                out.append(f"![paso]({_B64_PNG_PREFIX}{png})")
+                if embed_images:
+                    out.append(f"![paso]({_B64_PNG_PREFIX}{png})")
+                else:
+                    kb = len(png) * 3 // 4 // 1024   # tamano real aprox. (base64 -> bytes)
+                    out.append((f"[captura disponible, ~{kb} KB -- usa --html/-o para exportar el "
+                               f"informe completo con las imagenes, el terminal no las puede "
+                               f"pintar]" if es else
+                               f"[screenshot available, ~{kb} KB -- use --html/-o to export the "
+                               f"full report with images, the terminal cannot render them]"))
         elif inv.dynamic_verify.get("attempted"):
             out.append(("\n_(sin captura de pantalla: Playwright no esta disponible en este "
                        "contenedor -- la evidencia textual de arriba, el payload/password/"

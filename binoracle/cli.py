@@ -902,14 +902,15 @@ def cmd_investigate(args, config):
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
                           config=config, on_step=lambda m: print("  " + m), lang=config.lang,
                           budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None)
-    md = render_investigation(inv, config.lang)
-    print("\n" + md)
+    # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
+    # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
+    # SI usa embed_images=True (el default), esas son las que de verdad se pintan como <img>.
+    print("\n" + render_investigation(inv, config.lang, embed_images=False))
     if getattr(args, "html", None):
-        # el terminal no puede pintar las capturas de pantalla (data URI base64 gigante como
-        # texto); solo el HTML exportado las renderiza como <img> de verdad.
         from .report.html import render_investigation_page
+        md_full = render_investigation(inv, config.lang)
         Path(args.html).write_text(
-            render_investigation_page(md, script=inv.developed_script, cve=args.cve,
+            render_investigation_page(md_full, script=inv.developed_script, cve=args.cve,
                                       lang=config.lang, poc_kind=inv.poc_kind))
         _eprint(f"(HTML written to {args.html})")
 

@@ -3767,6 +3767,29 @@ def test_cve_agent_renders_screenshots_when_present_in_evidence():
     assert "Playwright no esta disponible" in md2
 
 
+def test_cve_agent_embed_images_false_drops_base64_for_terminal():
+    # El usuario lo vio en vivo: la salida de terminal de `investigate` volcaba decenas de KB de
+    # base64 por cada captura (texto ilegible, nada que ver). embed_images=False debe sustituir
+    # cada captura por un aviso corto; embed_images=True (el default, para el export --html) debe
+    # seguir incrustando el PNG real.
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+    tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    inv = Investigation(cve_id="CVE-TEST")
+    inv.verified = True
+    inv.verified_detail = "test"
+    inv.verified_evidence = {"screenshots": [
+        {"caption_es": "Paso 1", "png_b64": tiny, "url": "http://x/y"}]}
+    inv.dynamic_verify = {"attempted": True}
+
+    md_terminal = render_investigation(inv, lang="es", embed_images=False)
+    assert "base64" not in md_terminal
+    assert "captura disponible" in md_terminal
+    assert "--html" in md_terminal
+
+    md_full = render_investigation(inv, lang="es")   # default: embed_images=True
+    assert "data:image/png;base64," + tiny in md_full
+
+
 def test_wpverify_pick_param_heuristic():
     from binoracle.workflows.wpverify import _pick_param, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
     assert _pick_param(["user_id", "email", "pass"], _ID_HINTS) == "user_id"
