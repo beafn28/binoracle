@@ -201,6 +201,154 @@ def render_js_recover(r: dict) -> str:
     return "\n".join(out)
 
 
+# bundler fingerprints + module-count heuristics
+_BUNDLER_SIGS = (
+    ("__webpack_require__", "webpack"), ("webpackJsonp", "webpack"), ("webpackChunk", "webpack"),
+    ("System.register", "SystemJS"), ("__esm(", "esbuild"), ("__commonJS(", "esbuild"),
+    ("define.amd", "AMD/RequireJS"), ("parcelRequire", "Parcel"), ("__vite__", "Vite"),
+    ("/* @vite", "Vite"), ("rollup", "rollup"),
+)
+_WEBMCP_SIGS = (
+    "navigator.modelContext", "window.mcp", "window.__MCP", "registerTool(", "provideContext(",
+    "modelcontextprotocol", "@modelcontextprotocol", "McpServer(", "listTools(", "callTool(",
+    "window.agent", "navigator.ai",
+)
+_TOOL_NAME_RE = re.compile(r"""(?:registerTool|tool|name)\s*[:(]\s*['"]([a-zA-Z0-9_.\-]{2,64})['"]""")
+
+
+def analyze_web_bundle(path: str, max_bytes: int = 32 * 1024 * 1024) -> dict:
+    """analyze_web_bundle: fingerprint a bundled .js (webpack/rollup/esbuild/Vite/Parcel/SystemJS),
+    estimate the module count, and sample module/chunk ids. Static read; nothing executed."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read(max_bytes)
+    except Exception as e:
+        return {"ok": False, "tool": "web_bundle", "note": f"no se pudo leer: {e}"}
+    bundlers = sorted({label for sig, label in _BUNDLER_SIGS if sig in text})
+    # webpack module map: numeric or string module keys in a big object/array; esbuild: __commonJS({...})
+    modules = len(re.findall(r"""\b\d{1,6}\s*:\s*(?:function|\(function|\(\s*\w*\s*=>|\[function)""", text))
+    modules += len(re.findall(r"""['"][^'"]+['"]\s*:\s*(?:function|\(function)\s*\(""", text))
+    chunks = re.findall(r"""webpackChunk\w*|chunk-[0-9a-f]{6,}|\b(\d{1,5})\.[0-9a-f]{8,}\.js""", text)
+    return {"ok": True, "tool": "web_bundle", "bundlers": bundlers,
+            "is_bundle": bool(bundlers) or modules > 5,
+            "estimated_modules": modules, "size": len(text),
+            "minified": (text.count("\n") < len(text) / 200) if text else False,
+            "chunk_hints": sorted({c for c in chunks if c})[:40],
+            "limitations": ["fingerprint estatico por patrones; conteo de modulos aproximado"]}
+
+
+def _collect_imports(text: str):
+    ext, rel, dyn = set(), set(), set()
+    for m in _REQUIRE.findall(text) + _IMPORT.findall(text):
+        (rel if m.startswith(".") or m.startswith("/") else ext).add(m)
+    for m in _DYN_IMPORT.findall(text):
+        dyn.add(m)
+    return ext, rel, dyn
+
+
+def trace_web_module_imports(path: str, max_files: int = 4000) -> dict:
+    """trace_web_module_imports: the module import graph of a file or app directory -- each file's
+    static imports (require / import / dynamic import), split into external packages and relative
+    modules. Static; nothing executed."""
+    files = []
+    if os.path.isdir(path):
+        for base, _dirs, names in os.walk(path):
+            if "node_modules" in base.split(os.sep):
+                continue
+            for n in names:
+                if n.endswith((".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx")):
+                    files.append(os.path.join(base, n))
+                    if len(files) >= max_files:
+                        break
+    elif os.path.isfile(path):
+        files = [path]
+    else:
+        return {"ok": False, "tool": "web_imports", "note": "ruta no encontrada"}
+    edges = []
+    packages = set()
+    for fp in files:
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read(8 * 1024 * 1024)
+        except Exception:
+            continue
+        rel_name = os.path.relpath(fp, path) if os.path.isdir(path) else os.path.basename(fp)
+        ext, rel, dyn = _collect_imports(text)
+        packages |= ext
+        for spec in sorted(ext):
+            edges.append({"from": rel_name, "to": spec, "kind": "external"})
+        for spec in sorted(rel):
+            edges.append({"from": rel_name, "to": spec, "kind": "relative"})
+        for spec in sorted(dyn):
+            edges.append({"from": rel_name, "to": spec, "kind": "dynamic"})
+    return {"ok": True, "tool": "web_imports", "file_count": len(files),
+            "package_count": len(packages), "packages": sorted(packages)[:200],
+            "edge_count": len(edges), "edges": edges[:3000],
+            "limitations": ["grafo estatico de imports (require/import/import()); "
+                            "node_modules se omite; imports calculados en runtime no se ven"]}
+
+
+def discover_webmcp_tools(path: str, max_bytes: int = 32 * 1024 * 1024) -> dict:
+    """discover_webmcp_tools: find WebMCP / in-page agent tool declarations in JS (navigator.
+    modelContext, window.mcp, registerTool(...), MCP server/tool APIs) and extract candidate tool
+    names. Static pattern scan; nothing executed."""
+    paths = []
+    if os.path.isdir(path):
+        for base, _dirs, names in os.walk(path):
+            if "node_modules" in base.split(os.sep):
+                continue
+            for n in names:
+                if n.endswith((".js", ".mjs", ".cjs", ".ts")):
+                    paths.append(os.path.join(base, n))
+    elif os.path.isfile(path):
+        paths = [path]
+    else:
+        return {"ok": False, "tool": "webmcp", "note": "ruta no encontrada"}
+    signals = {}
+    tool_names = set()
+    for fp in paths[:4000]:
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read(max_bytes)
+        except Exception:
+            continue
+        for sig in _WEBMCP_SIGS:
+            if sig in text:
+                signals[sig] = signals.get(sig, 0) + text.count(sig)
+        if "registerTool(" in text or "modelContext" in text or "McpServer(" in text:
+            for nm in _TOOL_NAME_RE.findall(text):
+                tool_names.add(nm)
+    return {"ok": True, "tool": "webmcp", "is_webmcp": bool(signals),
+            "signals": signals, "tool_names": sorted(tool_names)[:100],
+            "limitations": ["deteccion estatica por patrones de WebMCP/agente; los nombres de tool "
+                            "son candidatos (de literales cercanos), no una enumeracion ejecutada"]}
+
+
+def render_web(kind: str, r: dict) -> str:
+    out = [f"## Web ({kind})\n"]
+    if not r.get("ok"):
+        return "\n".join(out + [f"- No disponible: {r.get('note','')}"])
+    if kind == "bundle":
+        out.append(f"- bundlers: {', '.join(r['bundlers']) or '-'} | bundle: {r['is_bundle']} | "
+                   f"modulos~{r['estimated_modules']} | minificado: {r['minified']}")
+        if r.get("chunk_hints"):
+            out.append(f"- chunks: {', '.join(r['chunk_hints'][:12])}")
+    elif kind == "imports":
+        out.append(f"- ficheros: {r['file_count']} | paquetes externos: {r['package_count']} | "
+                   f"aristas: {r['edge_count']}")
+        if r.get("packages"):
+            out.append(f"- paquetes: {', '.join(r['packages'][:30])}")
+    elif kind == "webmcp":
+        out.append(f"- WebMCP detectado: **{'SI' if r['is_webmcp'] else 'no'}**")
+        if r.get("signals"):
+            out.append("- señales: " + ", ".join(f"{k}×{v}" for k, v in list(r["signals"].items())[:12]))
+        if r.get("tool_names"):
+            out.append(f"- tools candidatas: {', '.join(r['tool_names'][:20])}")
+    for lim in r.get("limitations", []):
+        out.append(f"\n_limite: {lim}_")
+    return "\n".join(out)
+
+
 def inspect_js(path: str) -> dict:
     """Inspect a .js file, a .js.map, or an app directory. Returns a static summary."""
     if os.path.isfile(path) and (path.endswith(".map") or path.endswith(".js.map")):

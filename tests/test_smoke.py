@@ -491,6 +491,35 @@ def test_native_query_static_tools():
     assert ov["ok"] and ov["bits"] == 64 and ov["function_count"] > 0 and ov["section_count"] > 0
 
 
+def test_web_bundle_imports_and_webmcp(tmp_path):
+    # analyze_web_bundle (bundler + module estimate), trace_web_module_imports (external/relative/
+    # dynamic edges), discover_webmcp_tools (WebMCP signals + candidate tool names). All static.
+    import os
+    from binoracle.workflows.jsinspect import (analyze_web_bundle, trace_web_module_imports,
+                                               discover_webmcp_tools)
+    (tmp_path / "app.bundle.js").write_text(
+        "!function(e){function __webpack_require__(n){}webpackChunkapp=[];}();\n"
+        "0:function(){};\n1:function(){};\n")
+    b = analyze_web_bundle(str(tmp_path / "app.bundle.js"))
+    assert b["ok"] and "webpack" in b["bundlers"] and b["is_bundle"]
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.js").write_text(
+        "import x from 'react';\nconst y = require('./util');\nimport('./lazy');\n")
+    ti = trace_web_module_imports(str(tmp_path))
+    assert ti["ok"] and "react" in ti["packages"]
+    kinds = {e["kind"] for e in ti["edges"]}
+    assert {"external", "relative", "dynamic"} <= kinds
+
+    (tmp_path / "mcp.js").write_text(
+        "navigator.modelContext.registerTool({name:'search_files'});\n"
+        "window.mcp = 1;\nregisterTool({name:'run_query'});\n")
+    w = discover_webmcp_tools(str(tmp_path))
+    assert w["ok"] and w["is_webmcp"]
+    assert "search_files" in w["tool_names"] and "run_query" in w["tool_names"]
+    assert "navigator.modelContext" in w["signals"]
+
+
 def test_recover_javascript_sources(tmp_path):
     # Reconstruct the original source tree a bundle shipped in its .js.map (sourcesContent), with
     # path traversal neutralized so nothing escapes out_dir. Nothing executed.

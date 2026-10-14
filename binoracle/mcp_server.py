@@ -551,6 +551,32 @@ def _h_js_recover(args):
     return render_js_recover(recover_js_sources(_binary(a), out_dir=a.get("out_dir")))
 
 
+@_tool("analyze_web_bundle", "Fingerprint de un bundle .js (webpack/rollup/esbuild/Vite/Parcel/"
+       "SystemJS), estimacion del numero de modulos y muestra de ids de chunk. Estatico; no ejecuta.",
+       {"binary": {"type": "string", "description": "ruta al .js empaquetado"}}, ["binary"])
+def _h_web_bundle(args):
+    from .workflows.jsinspect import analyze_web_bundle, render_web
+    return render_web("bundle", analyze_web_bundle(_binary(args)))
+
+
+@_tool("trace_web_module_imports", "Grafo de imports de modulos de un fichero .js o un directorio de "
+       "app: imports estaticos (require/import/import()) por fichero, separando paquetes externos de "
+       "modulos relativos. Estatico; omite node_modules.",
+       {"binary": {"type": "string", "description": "ruta a un .js o directorio de app"}}, ["binary"])
+def _h_web_imports(args):
+    from .workflows.jsinspect import trace_web_module_imports, render_web
+    return render_web("imports", trace_web_module_imports(_binary(args)))
+
+
+@_tool("discover_webmcp_tools", "Detecta declaraciones de herramientas WebMCP / agente en JS "
+       "(navigator.modelContext, window.mcp, registerTool(...), APIs de servidor/tool MCP) y extrae "
+       "nombres candidatos de tool. Escaneo estatico por patrones; no ejecuta.",
+       {"binary": {"type": "string", "description": "ruta a un .js o directorio de app"}}, ["binary"])
+def _h_webmcp(args):
+    from .workflows.jsinspect import discover_webmcp_tools, render_web
+    return render_web("webmcp", discover_webmcp_tools(_binary(args)))
+
+
 @_tool("dynamic_adb", "Analisis RUNTIME de un dispositivo Android via adb (caller-supplied; SEPARADO "
        "del nucleo estatico; solo objetivos autorizados; salida no confiable). op: devices|packages|"
        "processes|logcat|getprop|apk-path. 'package' para apk-path, 'serial' para elegir dispositivo.",
