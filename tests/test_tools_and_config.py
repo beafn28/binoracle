@@ -3625,3 +3625,115 @@ def test_cve_agent_web_investigation_never_claims_verified(monkeypatch):
     assert inv.poc_kind == "http"
     assert "import requests" in inv.developed_script
     assert any("source_url" in b or "autorizado" in b for b in inv.blockers)
+
+
+def test_wpverify_pick_param_heuristic():
+    from binoracle.workflows.wpverify import _pick_param, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
+    assert _pick_param(["user_id", "email", "pass"], _ID_HINTS) == "user_id"
+    assert _pick_param(["user_id", "email", "pass"], _EMAIL_HINTS) == "email"
+    assert _pick_param(["user_id", "email", "pass"], _PASS_HINTS) == "pass"
+    assert _pick_param({"uid": "", "new_password": ""}, _ID_HINTS) == "uid"
+    assert _pick_param({"uid": "", "new_password": ""}, _PASS_HINTS) == "new_password"
+    assert _pick_param([], _ID_HINTS) is None
+    assert _pick_param(["foo", "bar"], _ID_HINTS) is None
+
+
+def test_wpverify_docker_daemon_check_is_safe():
+    # No debe lanzar jamas, exista o no 'docker', este o no el daemon arriba.
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+    assert isinstance(_docker_daemon_ok(timeout=3.0), bool)
+
+
+def test_wpverify_unavailable_without_docker_daemon(monkeypatch):
+    # Cuando no hay daemon Docker, degrada honestamente: available=False, verified=False, y
+    # NO intenta levantar nada (nunca llega a crear red/contenedores).
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    r = wv.verify_wordpress_account_takeover(
+        "/nonexistent", "some-plugin", "/wp-admin/admin-ajax.php?action=x", "POST",
+        ["user_id", "email"], on_step=lambda m: None)
+    assert r.available is False
+    assert r.verified is False
+    assert r.limitations
+
+
+def test_wpverify_missing_plugin_dir_degrades(monkeypatch):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    r = wv.verify_wordpress_account_takeover(
+        "/tmp/definitely-does-not-exist-binoracle-test", "some-plugin",
+        "/wp-admin/admin-ajax.php?action=x", "POST", ["user_id"], on_step=lambda m: None)
+    assert r.ok is False and r.verified is False
+    assert "no se encuentra" in r.detail
+
+
+def test_wpverify_missing_id_or_value_param_degrades(monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    d = tmp_path / "some-plugin"
+    d.mkdir()
+    (d / "some-plugin.php").write_text("<?php // placeholder\n")
+    # parametros sin nada que parezca un ID (user_id/uid/id/target) ni email/password
+    r = wv.verify_wordpress_account_takeover(
+        str(tmp_path), "some-plugin", "/wp-admin/admin-ajax.php?action=x", "POST",
+        ["foo", "bar"], on_step=lambda m: None)
+    assert r.ok is False and r.verified is False
+    assert "parametro" in r.detail
+
+
+def test_wpverify_live_account_takeover_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): levanta un
+    # WordPress+MySQL real, instala un plugin SINTETICO que reproduce la forma exacta de
+    # CVE-2026-5523 (missing-authorization en un handler que cambia el email/password de OTRO
+    # usuario por un user_id de la peticion, sin comprobar permiso), confirma el account-takeover
+    # con un segundo login real, y repite contra una version PARCHEADA (control negativo: no debe
+    # dar un falso positivo). Pesado (pull de imagenes + 2 instalaciones WP); se salta sin Docker.
+    import pytest
+    from binoracle.workflows.wpverify import verify_wordpress_account_takeover, _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    endpoint = "/wp-admin/admin-ajax.php?action=vuln_update_user"
+    params = ["user_id", "email", "pass"]
+
+    vuln_root = tmp_path / "vuln"
+    (vuln_root / "my-vuln-plugin").mkdir(parents=True)
+    (vuln_root / "my-vuln-plugin" / "my-vuln-plugin.php").write_text(
+        "<?php\n/*\nPlugin Name: My Vuln Plugin\n*/\n"
+        "add_action('wp_ajax_vuln_update_user', 'vuln_update_user');\n"
+        "function vuln_update_user() {\n"
+        "    if (!is_user_logged_in()) { wp_die('no'); }\n"
+        "    $user_id = intval($_POST['user_id']);\n"
+        "    $data = array('ID' => $user_id);\n"
+        "    if (!empty($_POST['email'])) { $data['user_email'] = sanitize_email($_POST['email']); }\n"
+        "    if (!empty($_POST['pass']))  { $data['user_pass']  = $_POST['pass']; }\n"
+        "    $r = wp_update_user($data);\n"
+        "    wp_die(is_wp_error($r) ? 'error' : 'ok');\n"
+        "}\n")
+
+    fixed_root = tmp_path / "fixed"
+    (fixed_root / "my-vuln-plugin").mkdir(parents=True)
+    (fixed_root / "my-vuln-plugin" / "my-vuln-plugin.php").write_text(
+        "<?php\n/*\nPlugin Name: My Vuln Plugin\n*/\n"
+        "add_action('wp_ajax_vuln_update_user', 'vuln_update_user');\n"
+        "function vuln_update_user() {\n"
+        "    if (!is_user_logged_in()) { wp_die('no'); }\n"
+        "    $user_id = intval($_POST['user_id']);\n"
+        "    if (!current_user_can('edit_user', $user_id)) { wp_die('forbidden'); }\n"
+        "    $data = array('ID' => $user_id);\n"
+        "    if (!empty($_POST['email'])) { $data['user_email'] = sanitize_email($_POST['email']); }\n"
+        "    if (!empty($_POST['pass']))  { $data['user_pass']  = $_POST['pass']; }\n"
+        "    $r = wp_update_user($data);\n"
+        "    wp_die(is_wp_error($r) ? 'error' : 'ok');\n"
+        "}\n")
+
+    r_vuln = verify_wordpress_account_takeover(str(vuln_root), "my-vuln-plugin", endpoint,
+                                               "POST", params, on_step=lambda m: None, budget_s=420)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+
+    r_fixed = verify_wordpress_account_takeover(str(fixed_root), "my-vuln-plugin", endpoint,
+                                                "POST", params, on_step=lambda m: None, budget_s=420)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: el plugin PARCHEADO no deberia verificar"

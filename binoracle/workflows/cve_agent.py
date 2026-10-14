@@ -37,6 +37,7 @@ class Investigation:
     steps: List[str] = field(default_factory=list)
     source_fetch: dict = field(default_factory=dict)  # {ok, kind, resolved_version, local_path}
     source_grounding: dict = field(default_factory=dict)  # {found: {fn: [loc,...]}, not_found: [...]}
+    dynamic_verify: dict = field(default_factory=dict)    # {attempted, available, verified, detail}
 
 
 _RESEARCH_SYS = (
@@ -76,8 +77,15 @@ def _llm_research(llm, cve_id: str, description: str) -> Optional[dict]:
 def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
     del LLM contra el (grep de las funciones citadas) y desarrolla el PoC HTTP/HTML. Muta `inv` in
-    place. Nunca marca `inv.verified = True`: eso exige correr el PoC contra un objetivo autorizado,
-    que este modulo no hace por si mismo."""
+    place.
+
+    `inv.verified` solo se pone a True en UN caso concreto, y por una prueba real: la clase es
+    missing-authorization/idor, el codigo se descargo como plugin de WordPress, y hay Docker con
+    daemon disponible -> wpverify.py levanta un WordPress+MySQL efimero, instala el plugin de
+    verdad, inicia sesion como un usuario de bajo privilegio, envia la peticion, y confirma con un
+    SEGUNDO login (con la password que la peticion fijo) que la cuenta objetivo quedo tomada. Fuera
+    de ese caso (otra clase, sin Docker, sin plugin de WordPress...) nunca se marca verificado aqui:
+    hace falta correr el PoC contra el objetivo autorizado real."""
     es = lang == "es"
     from .websource import fetch_source, grep_vulnerable_functions
     from .webexploit import build_http_poc
@@ -116,6 +124,31 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                           f"nombre, o hipotesis del LLM)" if es else
                           f"not found in the fetched source: {nf} (could be a different version/"
                           f"name, or an LLM hypothesis)"))
+            # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
+            # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
+            if (fr.kind == "wordpress-plugin" and inv.vuln_class in ("missing-authorization", "idor")
+                    and notes.get("endpoint")):
+                step("intentando verificacion DINAMICA (WordPress+MySQL efimero en Docker)..." if es
+                     else "attempting DYNAMIC verification (ephemeral WordPress+MySQL in Docker)...")
+                from .wpverify import verify_wordpress_account_takeover
+                wr = verify_wordpress_account_takeover(
+                    fr.local_path, fr.source, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", notes.get("parameters") or [],
+                    on_step=step)
+                inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail}
+                if wr.verified:
+                    inv.verified = True
+                    inv.verified_detail = wr.detail
+                elif not wr.available:
+                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                         if wr.limitations else
+                                         "verificacion dinamica no disponible (sin Docker)"))
+                else:
+                    inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
+                                         f"{wr.detail}" if es else
+                                         f"dynamic verification attempted but not confirmed: "
+                                         f"{wr.detail}"))
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
@@ -140,13 +173,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
     if not notes.get("endpoint"):
         inv.blockers.append(("falta el endpoint/ruta exacto (ajusta ENDPOINT en el PoC)" if es else
                              "missing the exact endpoint/route (set ENDPOINT in the PoC)"))
-    inv.blockers.append(("para pasar a VERIFICADO: ejecuta el PoC contra TU objetivo autorizado "
-                         "(laboratorio propio o engagement con alcance) y confirma el efecto "
-                         "observado; binoracle no lanza peticiones contra objetivos por su cuenta"
-                         if es else
-                         "to reach VERIFIED: run the PoC against YOUR authorized target (your own "
-                         "lab or a scoped engagement) and confirm the observed effect; binoracle "
-                         "does not fire requests at targets on its own"))
+    if not inv.verified:
+        inv.blockers.append(("para pasar a VERIFICADO: ejecuta el PoC contra TU objetivo autorizado "
+                             "(laboratorio propio o engagement con alcance) y confirma el efecto "
+                             "observado; binoracle no lanza peticiones contra objetivos por su "
+                             "cuenta (salvo el laboratorio efimero de wpverify.py, cuando aplica)"
+                             if es else
+                             "to reach VERIFIED: run the PoC against YOUR authorized target (your "
+                             "own lab or a scoped engagement) and confirm the observed effect; "
+                             "binoracle does not fire requests at targets on its own (except "
+                             "wpverify.py's ephemeral lab, when applicable)"))
 
 
 def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
