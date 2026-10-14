@@ -529,7 +529,7 @@ def _facts(binary: str, reg=None) -> dict:
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
          "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False,
          "hof_ok": False, "hos_ok": False, "hoe_ok": False, "botcake_ok": False,
-         "largebin_ok": False, "stash_ok": False,
+         "largebin_ok": False, "stash_ok": False, "hoc_ok": False,
          "static": None, "relro": None}
     try:
         import json
@@ -672,6 +672,7 @@ def _facts(binary: str, reg=None) -> dict:
             f["botcake_ok"] = _win and "chunks" in _syms and any(s in _syms for s in ("handler", "fnptr"))
             f["largebin_ok"] = _win and "heap" in _syms and any(s in _syms for s in ("slot", "target", "fnptr"))
             f["stash_ok"] = _win and any(s in _syms for s in ("hobj", "fake", "fnptr"))
+            f["hoc_ok"] = _win and "global_max_fast" in _syms and "fastbinsY" in _syms
     except Exception:
         pass
     return f
@@ -1345,6 +1346,14 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
            "a largebin insertion with a corrupted bk_nextsize runs "
            "`victim->bk_nextsize->fd_nextsize = victim`: arbitrary pointer write -> `slot` points at "
            "a controlled chunk -> hijack. glibc>=2.30 adds a check -> reproduced")),
+        ("hoc_ok", "hoc", "house-of-corrosion",
+         L("global_max_fast corrompido (free grande tratado como fastbin)", "Corrupted global_max_fast (a large free treated as a fastbin free)"),
+         L("con global_max_fast enorme, free() indexa `fastbinsY[(size-0x20)>>4]` sin cota: un "
+           "`size` elegido alias-a una direccion arbitraria y la insercion escribe &chunk ahi -> "
+           "hijack. glibc real encadena hacia _IO_list_all/stdout -> reproducido en el binario",
+           "with a huge global_max_fast, free() indexes `fastbinsY[(size-0x20)>>4]` unbounded: a "
+           "chosen `size` aliases an arbitrary address and the insertion writes &chunk there -> "
+           "hijack. real glibc chains it into _IO_list_all/stdout -> reproduced in the binary")),
         ("stash_ok", "stash", "tcache stashing unlink",
          L("Stash de smallbin->tcache con bk corrupto", "Smallbin->tcache stash with a corrupted bk"),
          L("al servir de la smallbin con hueco en el tcache, glibc 'stashea' los restantes; con un "
@@ -1771,7 +1780,7 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 proof["system"] = m.group(1)
             return ((f"{OK} (tcache dup: GOT sobrescrito con system, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
-        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash"):
+        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash", "hoc"):
             _HEAP_VERIFY = {
                 "hof": ("autohof", "autohof", "house-of-force (top-chunk -> alloc arbitraria -> win)"),
                 "hos": ("autohos", "autohos", "house-of-spirit (chunk falso en tcache real -> win)"),
@@ -1779,6 +1788,7 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 "botcake": ("autobotcake", "autobotcake", "house-of-botcake (doble-free via unsorted -> overlap -> win)"),
                 "largebin": ("autolargebin", "autolargebin", "largebin attack (escritura de insercion -> win)"),
                 "stash": ("autostash", "autostash", "tcache stashing unlink (stash smallbin->tcache -> win)"),
+                "hoc": ("autohoc", "autohoc", "house-of-corrosion (global_max_fast -> fastbin index write -> win)"),
             }
             mod, fn, strat = _HEAP_VERIFY[kind]
             run = getattr(__import__(f"binoracle.workflows.{mod}", fromlist=[fn]), fn)
@@ -1787,7 +1797,7 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
             detail = r.get("detail", "") or ""
             proof = {"strategy": strat, "marker": f"BINORACLE_{kind.upper()}_PWNED",
                      "output": (r.get("output", "") or "")[-300:]}
-            for key in ("win", "handler", "slot", "hobj", "a", "heap"):
+            for key in ("win", "handler", "slot", "hobj", "hook", "a", "heap"):
                 m = _re_cv.search(rf"\b{key}=(0x[0-9a-fA-F]+)", detail)
                 if m:
                     proof[key] = m.group(1)

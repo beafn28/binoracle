@@ -1246,6 +1246,27 @@ def test_autolargebin_verifies_insertion_write():
     assert "slot=" in (r.get("detail") or "")
 
 
+def test_autohoc_verifies_house_of_corrosion():
+    # Verificacion POSITIVA de house-of-corrosion por EJECUCION: al corromper global_max_fast a un
+    # valor enorme, free() trata un chunk grande como fastbin e indexa fastbinsY[(size-0x20)>>4] sin
+    # cota; un `size` elegido hace que ese indice alias &hook_slot.target y la insercion escribe
+    # &chunk ahi -> se llama al puntero de funcion del chunk (win) -> shell. glibc real encadena
+    # hacia _IO_list_all/stdout; el sample reproduce la escritura de indice de fastbin sin cota.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/hoc"
+    if not os.path.exists(binp):
+        pytest.skip("sample hoc no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autohoc import autohoc
+    r = autohoc(binp)
+    assert r.get("ok") and r.get("verified"), f"house-of-corrosion no verificado: {r.get('note')}"
+    assert "idx=" in (r.get("detail") or "")
+
+
 def test_autostash_verifies_tcache_stashing():
     # Verificacion POSITIVA del tcache-stashing-unlink por EJECUCION: al servir de la smallbin con
     # hueco en el tcache, glibc "stashea" los chunks restantes al tcache; corrompiendo el `bk` de un
@@ -1275,7 +1296,8 @@ def test_heap_families_as_verified_chains():
     from binoracle.workflows._sandbox import native_available
     cases = [("samples/bin/hos", "house-of-spirit"),
              ("samples/bin/largebin", "largebin attack"),
-             ("samples/bin/stash", "tcache stashing unlink")]
+             ("samples/bin/stash", "tcache stashing unlink"),
+             ("samples/bin/hoc", "house-of-corrosion")]
     ran = 0
     from binoracle.workflows.chainanalyzer import analyze_chains
     for binp, chain_name in cases:

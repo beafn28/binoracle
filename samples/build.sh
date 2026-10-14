@@ -103,6 +103,8 @@ echo "[*] botcake (x86-64, no-PIE, house-of-botcake: doble-free via unsorted en 
 run "gcc -fno-stack-protector -no-pie -w -o bin/botcake src/botcake.c"
 echo "[*] largebin (x86-64, no-PIE, largebin attack: escritura de insercion reproducida)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/largebin src/largebin.c"
+echo "[*] hoc (x86-64, no-PIE, house-of-corrosion: global_max_fast -> fastbin index write reproducido)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/hoc src/hoc.c"
 echo "[*] stash (x86-64, no-PIE, tcache stashing unlink: stash smallbin->tcache con chequeo >=2.31)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/stash src/stash.c"
 echo "[*] fmtgot32 (32-bit, format-string -> printf@GOT=system; requiere multilib)"
