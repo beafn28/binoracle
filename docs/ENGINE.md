@@ -174,6 +174,13 @@ session — r2 disassembles, never executes): `analyze_function`,
 `trace_feature` (tie functions + strings + imports for a keyword into one
 cross-cutting map). They degrade honestly when radare2/r2pipe is absent.
 
+A **stateful session model** (`nativesession.py`) sits on top without changing
+the grounding: `open_binary` warms + names the analysis and returns a handle,
+`inspect_analysis_view` / `binary_session` query by handle, `close_binary`
+frees the r2 process, `list_binary_sessions` lists them. A handle resolves back
+to its path, so every native query tool accepts it as `binary` — open once,
+query many, close to free.
+
 ### 4.1 Evidence ledger — grounded reconstruction with obligations
 
 `ledger.py` is the formal backbone of the "fundamentado" promise: a stateful
@@ -226,9 +233,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 93 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 98 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 137 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 139 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

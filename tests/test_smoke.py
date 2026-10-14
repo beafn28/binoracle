@@ -550,6 +550,38 @@ def test_recover_javascript_sources(tmp_path):
     assert recover_js_sources(str(mp2))["recovered"] == 0
 
 
+def test_native_binary_session_lifecycle():
+    # Stateful session over the cached r2 analysis: open -> handle resolves to the path and drives
+    # the query tools -> analysis view -> close frees the handle. r2-gated skip.
+    import os
+    import pytest
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win no compilado (samples/build.sh)")
+    from binoracle.oracles import r2session
+    if r2session.get(binp) is None:
+        pytest.skip("radare2/r2pipe no disponible")
+    from binoracle.workflows import nativesession as NS
+    from binoracle.workflows.nativequery import analyze_function
+    o = NS.open_binary(binp, label="demo")
+    assert o["ok"] and o["warmed"] and o["session_id"].startswith("bin_")
+    sid = o["session_id"]
+    assert NS.resolve(sid) == os.path.abspath(binp)          # handle -> path
+    assert analyze_function(NS.resolve(sid), "main")["ok"]    # query by handle
+    v = NS.inspect_analysis_view(sid)
+    assert v["ok"] and v["function_count"] > 0
+    assert NS.binary_session(sid)["closed"] is False
+    assert NS.close_binary(sid)["ok"] and NS.resolve(sid) is None   # closed -> no longer resolvable
+    assert any(s["session_id"] == sid and s["closed"] for s in NS.list_binary_sessions()["sessions"])
+
+
+def test_native_binary_session_bad_handle():
+    from binoracle.workflows import nativesession as NS
+    assert NS.open_binary("/nonexistent")["ok"] is False
+    assert NS.inspect_analysis_view("bin_doesnotexist")["ok"] is False
+    assert NS.close_binary("bin_doesnotexist")["ok"] is False
+
+
 def test_native_query_degrades_without_r2(monkeypatch):
     # With no r2 session, every native-query tool degrades honestly (available False), never crashes.
     from binoracle.oracles import r2session

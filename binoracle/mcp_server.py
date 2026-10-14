@@ -59,6 +59,18 @@ def _binary(args: dict) -> str:
     return b
 
 
+def _native_bin(args: dict) -> str:
+    """Like _binary, but a `binary` that is an open session handle (bin_...) resolves to its path."""
+    import os
+    b = (args or {}).get("binary") or ""
+    if b and not os.path.exists(b):
+        from .workflows.nativesession import resolve
+        path = resolve(b)
+        if path:
+            return path
+    return _binary(args)
+
+
 def _reg(binary: str):
     from .oracles import build_registry
     return build_registry(binary)
@@ -273,6 +285,49 @@ def _h_ghidra(args):
     return render_caller("ghidra", ghidra_decompile(b, func=(args or {}).get("func")))
 
 
+@_tool("open_binary", "Abre una SESION de analisis nativo: registra el binario, precalienta el "
+       "analisis de radare2 (cacheado) y devuelve un handle de sesion + la vista inicial. Las "
+       "consultas nativas (analyze_function, get_call_graph, ...) aceptan luego ese handle como "
+       "'binary'. Estado local; r2 desensambla, no ejecuta.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "label": {"type": "string", "description": "etiqueta opcional para la sesion"}}, ["binary"])
+def _h_open_binary(args):
+    from .workflows.nativesession import open_binary, render_session
+    a = args or {}
+    return render_session("open", open_binary(_binary(a), label=a.get("label")))
+
+
+@_tool("inspect_analysis_view", "Vista de analisis estatica (arch/bits/mitigaciones/entry + conteos) "
+       "de una sesion (handle) o de una ruta. Via radare2.",
+       {"session": {"type": "string", "description": "handle de sesion (bin_...) o ruta al binario"}},
+       ["session"])
+def _h_analysis_view(args):
+    from .workflows.nativesession import inspect_analysis_view, render_session
+    return render_session("view", inspect_analysis_view((args or {}).get("session") or ""))
+
+
+@_tool("binary_session", "Estado de una sesion de binario (por handle o ruta): binario, etiqueta, "
+       "cuando se abrio y si esta cerrada.",
+       {"session": {"type": "string", "description": "handle de sesion (bin_...) o ruta"}}, ["session"])
+def _h_binary_session(args):
+    from .workflows.nativesession import binary_session, render_session
+    return render_session("status", binary_session((args or {}).get("session") or ""))
+
+
+@_tool("close_binary", "Cierra una sesion de binario y libera el proceso de radare2 subyacente.",
+       {"session": {"type": "string", "description": "handle de sesion (bin_...)"}}, ["session"])
+def _h_close_binary(args):
+    from .workflows.nativesession import close_binary, render_session
+    return render_session("close", close_binary((args or {}).get("session") or ""))
+
+
+@_tool("list_binary_sessions", "Lista los handles de sesion de binario abiertos (y recien cerrados).",
+       {}, [])
+def _h_list_sessions(args):
+    from .workflows.nativesession import list_binary_sessions, render_session
+    return render_session("list", list_binary_sessions())
+
+
 @_tool("analyze_function", "Analiza UNA funcion estaticamente via radare2 (desensambla, no ejecuta): "
        "info (nombre/addr/tamaño/bloques) y desensamblado. Degrada si no hay r2. 'func' por nombre o "
        "direccion.",
@@ -281,7 +336,7 @@ def _h_ghidra(args):
 def _h_analyze_fn(args):
     from .workflows.nativequery import analyze_function, render_native_query
     a = args or {}
-    return render_native_query("analyze_function", analyze_function(_binary(a), a.get("func") or ""))
+    return render_native_query("analyze_function", analyze_function(_native_bin(a), a.get("func") or ""))
 
 
 @_tool("get_call_graph", "Grafo de llamadas estatico (nodos=funciones, aristas=llamadas directas) via "
@@ -291,7 +346,7 @@ def _h_analyze_fn(args):
 def _h_callgraph(args):
     from .workflows.nativequery import get_call_graph, render_native_query
     a = args or {}
-    return render_native_query("get_call_graph", get_call_graph(_binary(a), int(a.get("limit") or 400)))
+    return render_native_query("get_call_graph", get_call_graph(_native_bin(a), int(a.get("limit") or 400)))
 
 
 @_tool("find_xrefs_to_name", "Lista todas las referencias cruzadas (call/data) que alcanzan un "
@@ -301,7 +356,7 @@ def _h_callgraph(args):
 def _h_xrefs(args):
     from .workflows.nativequery import find_xrefs_to_name, render_native_query
     a = args or {}
-    return render_native_query("find_xrefs_to_name", find_xrefs_to_name(_binary(a), a.get("name") or ""))
+    return render_native_query("find_xrefs_to_name", find_xrefs_to_name(_native_bin(a), a.get("name") or ""))
 
 
 @_tool("address_name", "Resuelve una direccion a su funcion contenedora y el flag/simbolo mas cercano "
@@ -311,7 +366,7 @@ def _h_xrefs(args):
 def _h_addrname(args):
     from .workflows.nativequery import address_name, render_native_query
     a = args or {}
-    return render_native_query("address_name", address_name(_binary(a), a.get("addr") or ""))
+    return render_native_query("address_name", address_name(_native_bin(a), a.get("addr") or ""))
 
 
 @_tool("trace_call_path", "Encuentra una ruta de llamadas estatica entre dos funciones (BFS sobre el "
@@ -324,7 +379,7 @@ def _h_addrname(args):
 def _h_callpath(args):
     from .workflows.nativequery import call_path, render_native_query
     a = args or {}
-    return render_native_query("call_path", call_path(_binary(a), a.get("src") or "", a.get("dst") or "",
+    return render_native_query("call_path", call_path(_native_bin(a), a.get("src") or "", a.get("dst") or "",
                                                        max_depth=int(a.get("max_depth") or 12)))
 
 
@@ -334,7 +389,7 @@ def _h_callpath(args):
        {"binary": {"type": "string", "description": "ruta al binario nativo"}}, ["binary"])
 def _h_native_api(args):
     from .workflows.nativequery import inspect_native_api, render_native_query
-    return render_native_query("native_api", inspect_native_api(_binary(args)))
+    return render_native_query("native_api", inspect_native_api(_native_bin(args)))
 
 
 @_tool("binary_overview", "Vista de analisis estatica de un binario via radare2: arch/bits/tipo/OS, "
@@ -343,7 +398,7 @@ def _h_native_api(args):
        {"binary": {"type": "string", "description": "ruta al binario nativo"}}, ["binary"])
 def _h_overview(args):
     from .workflows.nativequery import binary_overview, render_native_query
-    return render_native_query("overview", binary_overview(_binary(args)))
+    return render_native_query("overview", binary_overview(_native_bin(args)))
 
 
 @_tool("trace_feature", "Rastrea una caracteristica/termino a traves de las superficies estaticas de "
@@ -355,7 +410,7 @@ def _h_overview(args):
 def _h_trace_feature(args):
     from .workflows.nativequery import trace_feature, render_native_query
     a = args or {}
-    return render_native_query("feature", trace_feature(_binary(a), a.get("feature") or ""))
+    return render_native_query("feature", trace_feature(_native_bin(a), a.get("feature") or ""))
 
 
 @_tool("jeb_connect", "Conecta con un servidor MCP de JEB arrancado por el llamador (motor externo; "
