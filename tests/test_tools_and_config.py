@@ -3757,3 +3757,41 @@ def test_cli_argv_survives_pwntools_import_mutation():
         cwd=".", capture_output=True, text=True, timeout=30)
     assert "http_method=POST" in out.stdout, (out.stdout, out.stderr)
     assert "expected one argument" not in out.stderr
+
+
+def test_investigate_cve_lookup_note_not_misleading_on_network_failure():
+    # Regresion: cuando fetch_cve() falla por RED (no por id invalido), el informe decia
+    # siempre "no es un id CVE" -- enganoso para una CVE real cuya consulta a NVD solo fallo
+    # por falta de conectividad/rate-limit. Debe mostrar el motivo REAL.
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+    inv = Investigation(cve_id="CVE-2026-5523")
+    inv.lookup_ok = False
+    inv.lookup_note = "no se pudo consultar la NVD (sin internet o rate-limit): timeout"
+    out = render_investigation(inv, lang="es")
+    assert "no se pudo consultar la NVD" in out
+    assert "no es un id CVE" not in out
+
+
+def test_investigate_cve_vuln_class_hint_triggers_web_path_without_nvd_or_llm(monkeypatch):
+    # Regresion: con NVD/LLM inaccesibles (caso real de este sandbox), la clase nunca se
+    # determinaba pese a que el analista YA la conoce (texto del aviso oficial) y dio hechos
+    # web explicitos (endpoint/parametros/slug) -- investigate_cve caia al camino NATIVO
+    # generico ("falta el binario vulnerable concreto") en vez del camino WEB real (fetch +
+    # grounding + PoC HTTP). --vuln-class / hints['vuln_class'] debe bastar para disparar el
+    # camino correcto incluso sin texto de descripcion que clasificar.
+    from binoracle.workflows.cve_agent import investigate_cve
+    from binoracle.workflows import websource
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+        return websource.SourceFetchResult(note="red no disponible en el test")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    inv = investigate_cve(
+        "CVE-2026-5523", config=None, llm=None, on_step=lambda m: None, lang="es",
+        hints={"vuln_class": "missing-authorization", "source_url": "divi-form-builder",
+              "endpoint": "/wp-admin/admin-ajax.php?action=x", "http_method": "POST",
+              "parameters": ["user_id", "email", "pass"]})
+    assert inv.vuln_class == "missing-authorization"
+    assert inv.poc_kind == "http"
+    assert "import requests" in inv.developed_script
+    assert not any("falta el binario vulnerable concreto" in b for b in inv.blockers)

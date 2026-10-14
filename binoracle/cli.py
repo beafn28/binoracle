@@ -885,6 +885,8 @@ def cmd_investigate(args, config):
     en Docker, ver wpverify.py)."""
     from .workflows.cve_agent import investigate_cve, render_investigation
     hints = {}
+    if getattr(args, "vuln_class", None):
+        hints["vuln_class"] = args.vuln_class
     if getattr(args, "source", None):
         hints["source_url"] = args.source
     if getattr(args, "version", None):
@@ -1284,6 +1286,10 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--binary", help="vulnerable binary to actually try + verify against")
     ip.add_argument("--budget", type=float, default=300,
                     help="sandbox verification budget in seconds (default 300)")
+    ip.add_argument("--vuln-class", help="known vulnerability class (e.g. missing-authorization, "
+                                         "idor, sqli, rce, stack-overflow...) when the advisory text "
+                                         "already states it; lets the web/HTTP-PoC path trigger even "
+                                         "without NVD access or a local LLM to classify the text")
     ip.add_argument("--source", help="known source for a web CVE: a WordPress.org plugin slug "
                                      "(e.g. divi-form-builder) or a git URL; overrides the LLM's guess")
     ip.add_argument("--version", help="affected version for --source (e.g. 5.1.8)")

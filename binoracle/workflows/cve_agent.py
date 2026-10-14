@@ -25,6 +25,7 @@ class Investigation:
     cve_id: str
     description: str = ""
     lookup_ok: bool = False
+    lookup_note: str = ""     # por que lookup_ok es False: formato invalido, red/rate-limit...
     is_gap: bool = False
     vuln_class: str = ""
     llm_notes: dict = field(default_factory=dict)     # hipotesis del modelo (target, trigger, plan)
@@ -217,6 +218,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     info = fetch_cve(inv.cve_id)
     inv.description = info.description
     inv.lookup_ok = info.ok
+    inv.lookup_note = info.note
     inv.is_gap = info.is_gap
     if info.ok:
         step((f"{inv.cve_id}: {'HUECO (sin exploit publico)' if info.is_gap else 'ya tiene exploit publico'}"
@@ -342,7 +344,10 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
     if inv.lookup_ok:
         pub = ("HUECO (no consta)" if es else "GAP (none)") if inv.is_gap else ("existe" if es else "exists")
     else:
-        pub = "no consultado (no es un id CVE)" if es else "not checked (not a CVE id)"
+        # el motivo REAL (formato invalido / sin red / rate-limit...) lo da fetch_cve(); mostrar
+        # siempre "no es un id CVE" aqui era enganoso cuando el id era valido pero la consulta
+        # fallo por red (confirmado: una CVE real con NVD bloqueada por proxy decia "not a CVE id").
+        pub = (inv.lookup_note or ("no consultado" if es else "not checked"))
     out.append("\n- " + ("Estado exploit publico: " if es else "Public exploit: ") + pub)
     out.append("- " + ("Clase: " if es else "Class: ") + (inv.vuln_class or "?"))
     if inv.llm_notes:
