@@ -169,9 +169,10 @@ reader), `hardening`, `cfg`, `reachability`, `vulnhunt`, `cvelookup` /
 First-class native static queries (`nativequery.py`, on the shared radare2
 session — r2 disassembles, never executes): `analyze_function`,
 `get_call_graph`, `find_xrefs_to_name`, `address_name`, `trace_call_path`,
-`inspect_native_api` (imports/exports/linked libs) and `binary_overview`
-(a stateless analysis view: arch/bits/mitigations/entry + counts). They
-degrade honestly when radare2/r2pipe is absent.
+`inspect_native_api` (imports/exports/linked libs), `binary_overview`
+(a stateless analysis view: arch/bits/mitigations/entry + counts) and
+`trace_feature` (tie functions + strings + imports for a keyword into one
+cross-cutting map). They degrade honestly when radare2/r2pipe is absent.
 
 ### 4.1 Evidence ledger — grounded reconstruction with obligations
 
@@ -225,7 +226,7 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 91 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 92 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
 - **Tests:** `tests/test_smoke.py` — 136 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is

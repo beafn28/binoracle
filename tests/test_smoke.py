@@ -489,6 +489,10 @@ def test_native_query_static_tools():
     assert api["ok"] and api["import_count"] >= 1 and any("libc" in l for l in api["libraries"])
     ov = binary_overview(binp)
     assert ov["ok"] and ov["bits"] == 64 and ov["function_count"] > 0 and ov["section_count"] > 0
+    from binoracle.workflows.nativequery import trace_feature
+    tf = trace_feature(binp, "win")
+    assert tf["ok"] and tf["hit_count"] >= 1
+    assert any((f["name"] or "").endswith("win") for f in tf["functions"])
 
 
 def test_web_bundle_imports_and_webmcp(tmp_path):

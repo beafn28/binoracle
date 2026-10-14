@@ -346,6 +346,18 @@ def _h_overview(args):
     return render_native_query("overview", binary_overview(_binary(args)))
 
 
+@_tool("trace_feature", "Rastrea una caracteristica/termino a traves de las superficies estaticas de "
+       "un binario via radare2: funciones cuyo nombre casa, strings que lo contienen (con las "
+       "funciones que las referencian) e imports que casan. Mapa transversal; estatico, degrada si no "
+       "hay r2.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "feature": {"type": "string", "description": "termino/caracteristica a rastrear"}}, ["binary", "feature"])
+def _h_trace_feature(args):
+    from .workflows.nativequery import trace_feature, render_native_query
+    a = args or {}
+    return render_native_query("feature", trace_feature(_binary(a), a.get("feature") or ""))
+
+
 @_tool("jeb_connect", "Conecta con un servidor MCP de JEB arrancado por el llamador (motor externo; "
        "define BINORACLE_JEB_MCP_URL o pasa 'url'). op=list lista sus herramientas; op=call invoca "
        "'name' con 'arguments'. Salida no confiable; degrada si no hay endpoint.",

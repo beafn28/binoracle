@@ -231,6 +231,41 @@ def binary_overview(binary: str) -> dict:
             "limitations": ["vista de analisis estatica de radare2; no se ejecuta el binario"]}
 
 
+def trace_feature(binary: str, feature: str, limit: int = 80) -> dict:
+    """trace_feature: tie the static surfaces together for a keyword -- functions whose name matches,
+    strings that contain it (with the functions that reference them), and imports that match. A
+    cross-cutting "where does this feature live" map over radare2's analysis. Static."""
+    if r2session.get(binary) is None:
+        return _no_r2()
+    kw = (feature or "").lower()
+    if not kw:
+        return {"ok": False, "available": True, "tool": "native_query", "note": "feature vacio"}
+    funcs = [{"name": f.get("name"), "addr": f.get("offset")}
+             for f in (_functions(binary) or []) if kw in (f.get("name") or "").lower()][:limit]
+    imps = [i.get("name") for i in (_j(binary, "iij") or [])
+            if isinstance(i, dict) and kw in (i.get("name") or "").lower()][:limit]
+    strings = []
+    for s in (_j(binary, "izzj") or _j(binary, "izj") or []):
+        if not isinstance(s, dict):
+            continue
+        val = s.get("string") or ""
+        if kw in val.lower():
+            vaddr = s.get("vaddr") or s.get("offset")
+            referers = []
+            if vaddr:
+                for x in (_j(binary, f"axtj @ {vaddr}") or []):
+                    if isinstance(x, dict) and x.get("fcn_name"):
+                        referers.append(x["fcn_name"])
+            strings.append({"addr": vaddr, "text": val[:120], "referenced_by": sorted(set(referers))[:10]})
+            if len(strings) >= limit:
+                break
+    return {"ok": True, "available": True, "tool": "native_query", "feature": feature,
+            "functions": funcs, "strings": strings, "imports": imps,
+            "hit_count": len(funcs) + len(strings) + len(imps),
+            "limitations": ["traza estatica (radare2): nombres de funcion, strings + sus referencias, "
+                            "e imports que casan el termino; no sigue flujo de datos en runtime"]}
+
+
 def render_native_query(kind: str, r: dict) -> str:
     out = [f"## Consulta nativa estatica: {kind}\n"]
     if not r.get("ok"):
@@ -269,6 +304,16 @@ def render_native_query(kind: str, r: dict) -> str:
             out.append(f"  - import {i.get('name')} ({i.get('library') or '?'})")
         for e in (r.get("exports") or [])[:15]:
             out.append(f"  - export {e.get('name')}")
+    elif kind == "feature":
+        out.append(f"- `{r['feature']}`: {r['hit_count']} coincidencia(s) "
+                   f"(funciones {len(r['functions'])}, strings {len(r['strings'])}, imports {len(r['imports'])})")
+        for f in r["functions"][:15]:
+            out.append(f"  - fn {f['name']} @ {hex(f['addr']) if isinstance(f.get('addr'), int) else f.get('addr')}")
+        for s in r["strings"][:15]:
+            ref = (" <- " + ", ".join(s["referenced_by"])) if s.get("referenced_by") else ""
+            out.append(f"  - str \"{s['text']}\"{ref}")
+        for i in r["imports"][:15]:
+            out.append(f"  - import {i}")
     elif kind == "overview":
         out.append(f"- {r.get('arch')}/{r.get('bits')}-bit {r.get('type')} ({r.get('os')}, "
                    f"{r.get('class')}, {r.get('endian')})")
