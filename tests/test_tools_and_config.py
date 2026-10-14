@@ -3707,11 +3707,14 @@ def test_cve_agent_renders_screenshots_when_present_in_evidence():
     inv = Investigation(cve_id="CVE-TEST")
     inv.verified = True
     inv.verified_detail = "test"
-    inv.verified_evidence = {"screenshot_admin_dashboard_png_b64": tiny,
-                             "screenshot_before_subscriber_png_b64": tiny}
+    inv.verified_evidence = {"screenshots": [
+        {"caption_es": "Paso 1: lab en vivo", "caption_en": "Step 1: live lab", "png_b64": tiny},
+        {"caption_es": "Paso 4: takeover confirmado", "caption_en": "Step 4: confirmed takeover", "png_b64": tiny},
+    ]}
     inv.dynamic_verify = {"attempted": True}
     md = render_investigation(inv, lang="es")
     assert "Capturas de pantalla" in md
+    assert "paso a paso" in md
     assert md.count("data:image/png;base64,") == 2
 
     # sin capturas pero con verificacion dinamica intentada: dice honestamente por que faltan

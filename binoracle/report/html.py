@@ -2295,13 +2295,33 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                               lang: str = "es", poc_kind: str = "pwntools") -> str:
     """Pagina del agente de investigacion: informe (markdown) + descarga del exploit/PoC desarrollado.
     `poc_kind` ajusta etiqueta/extension/mimetype del boton: 'pwntools' (memoria, .py), 'http' (PoC
-    web con requests, .py), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python)."""
+    web con requests, .py), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python). Autocontenida
+    (CSS y capturas de pantalla embebidas en base64): un solo fichero que se abre, se comparte o se
+    imprime como PDF desde el propio navegador sin depender de nada mas."""
     import base64
     import re as _re
+    from datetime import datetime, timezone
     es = lang == "es"
-    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+    title = _esc(cve or ("informe" if es else "report"))
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    banner = (
+        f'<div class="invhdr">'
+        f'<div class="invhdr-title">{title}</div>'
+        f'<div class="invhdr-meta">'
+        f'{"Generado" if es else "Generated"}: {generated} &middot; binoracle'
+        f'<br>{"Uso exclusivo para objetivos autorizados (pentest / CTF / investigacion de seguridad)." if es else "For authorized targets only (pentest / CTF / security research)."}'
+        f'</div></div>'
+    )
+    print_css = ("<style>@media print{.dlbtn{display:none !important}"
+                "body{background:#fff !important}.invhdr{border-bottom:2px solid #000}}</style>")
+    head = (f"<!doctype html><html lang='{lang}'><head>"
+            f"<meta charset='utf-8'><title>{title}</title>"
             f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            f"<style>{_CSS}</style></head><body><main class='md' style='padding:16px'>")
+            f"<style>{_CSS}</style>{print_css}"
+            f"<style>.invhdr{{padding:18px 16px 14px;border-bottom:1px solid var(--line,#1e2632);"
+            f"margin-bottom:6px}}.invhdr-title{{font-size:20px;font-weight:800;letter-spacing:.2px}}"
+            f".invhdr-meta{{color:var(--mut,#7b8794);font-size:12px;margin-top:4px;line-height:1.5}}"
+            f"</style></head><body>{banner}<main class='md' style='padding:16px'>")
     dl = ""
     if script:
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")

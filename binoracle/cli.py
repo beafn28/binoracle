@@ -902,7 +902,16 @@ def cmd_investigate(args, config):
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
                           config=config, on_step=lambda m: print("  " + m), lang=config.lang,
                           budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None)
-    print("\n" + render_investigation(inv, config.lang))
+    md = render_investigation(inv, config.lang)
+    print("\n" + md)
+    if getattr(args, "html", None):
+        # el terminal no puede pintar las capturas de pantalla (data URI base64 gigante como
+        # texto); solo el HTML exportado las renderiza como <img> de verdad.
+        from .report.html import render_investigation_page
+        Path(args.html).write_text(
+            render_investigation_page(md, script=inv.developed_script, cve=args.cve,
+                                      lang=config.lang, poc_kind=inv.poc_kind))
+        _eprint(f"(HTML written to {args.html})")
 
 
 def cmd_dataset(args, config):
@@ -1298,6 +1307,10 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--params", help="comma-separated request parameter names (e.g. user_id,email,pass)")
     ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
                                         "against the fetched source (e.g. update_user,handle_register_submission)")
+    ip.add_argument("-o", "--html", help="also export the full report (including any real "
+                                         "screenshots from a dynamic verification) as a standalone "
+                                         "HTML file at this path -- the terminal output cannot "
+                                         "render images, only this file can")
     ip.set_defaults(func=cmd_investigate)
 
     return p

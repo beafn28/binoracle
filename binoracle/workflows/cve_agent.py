@@ -461,24 +461,19 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
             for label, value in rows:
                 if value and value not in ("None", "`None`"):
                     out.append(f"- **{label}**: {value}")
-        shot_before = (inv.verified_evidence or {}).get("screenshot_before_subscriber_png_b64")
-        shot_after = (inv.verified_evidence or {}).get("screenshot_admin_dashboard_png_b64")
-        if shot_before or shot_after:
-            out.append("\n" + ("**Capturas de pantalla (evidencia visual real, navegador "
-                               "headless contra el laboratorio efimero):**" if es else
-                               "**Screenshots (real visual evidence, headless browser against "
-                               "the ephemeral lab):**"))
-            if shot_before:
-                out.append(("_Antes: sesion del usuario de bajo privilegio, su propio "
-                           "perfil._" if es else "_Before: the low-privilege user's own "
-                           "session, their own profile._"))
-                out.append(f"![antes]({_B64_PNG_PREFIX}{shot_before})")
-            if shot_after:
-                out.append(("_Despues: panel de administracion de WordPress, YA con la "
-                           "password fijada por el ataque._" if es else
-                           "_After: the WordPress admin dashboard, logged in with the "
-                           "password the attack set._"))
-                out.append(f"![despues]({_B64_PNG_PREFIX}{shot_after})")
+        shots = (inv.verified_evidence or {}).get("screenshots") or []
+        if shots:
+            out.append("\n" + ("**Capturas de pantalla, paso a paso (evidencia visual real, "
+                               "navegador headless contra el laboratorio efimero):**" if es else
+                               "**Step-by-step screenshots (real visual evidence, headless "
+                               "browser against the ephemeral lab):**"))
+            for sh in shots:
+                caption = sh.get("caption_es" if es else "caption_en") or ""
+                png = sh.get("png_b64")
+                if not png:
+                    continue
+                out.append(f"\n_{caption}_")
+                out.append(f"![paso]({_B64_PNG_PREFIX}{png})")
         elif inv.dynamic_verify.get("attempted"):
             out.append(("\n_(sin captura de pantalla: Playwright no esta disponible en este "
                        "contenedor -- la evidencia textual de arriba, el payload/password/"
