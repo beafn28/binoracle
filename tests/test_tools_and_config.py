@@ -3870,3 +3870,78 @@ def test_websource_wp_plugin_404_mentions_commercial_plugin_possibility(monkeypa
     assert r.ok is False
     assert "COMERCIAL" in r.note or "premium" in r.note
     assert "--source" in r.note
+
+
+def test_websource_detect_plugin_folder_single_dir(tmp_path):
+    (tmp_path / "AnyNameAtAll").mkdir()
+    (tmp_path / "AnyNameAtAll" / "x.php").write_text("<?php echo 1;")
+    from binoracle.workflows.websource import detect_plugin_folder
+    assert detect_plugin_folder(str(tmp_path)) == "AnyNameAtAll"
+
+
+def test_websource_detect_plugin_folder_by_header_among_several(tmp_path):
+    # Regresion real: un .zip COMERCIAL (p.ej. CVE-2026-5523) puede extraer a una carpeta que NO
+    # coincide con el nombre del fichero/slug ('divi-form-builder.zip' -> 'DiviFormBuilder/').
+    # Con varias carpetas de primer nivel, debe elegir la que tiene la cabecera real de WordPress.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.php").write_text("<?php // no es un plugin")
+    (tmp_path / "DiviFormBuilder").mkdir()
+    (tmp_path / "DiviFormBuilder" / "divi-form-builder.php").write_text(
+        "<?php\n/*\nPlugin Name: Divi Form Builder\n*/\n")
+    from binoracle.workflows.websource import detect_plugin_folder
+    assert detect_plugin_folder(str(tmp_path)) == "DiviFormBuilder"
+    # el hint (p.ej. el slug pedido) gana si de verdad existe como carpeta
+    (tmp_path / "divi-form-builder").mkdir()
+    assert detect_plugin_folder(str(tmp_path), hint="divi-form-builder") == "divi-form-builder"
+
+
+def test_websource_detect_plugin_folder_ambiguous_returns_empty(tmp_path):
+    (tmp_path / "a").mkdir(); (tmp_path / "a" / "x.txt").write_text("x")
+    (tmp_path / "b").mkdir(); (tmp_path / "b" / "y.txt").write_text("y")
+    from binoracle.workflows.websource import detect_plugin_folder
+    assert detect_plugin_folder(str(tmp_path)) == ""
+
+
+def test_websource_local_zip_sets_plugin_dir_even_when_folder_name_differs(tmp_path):
+    import zipfile
+    zpath = tmp_path / "divi-form-builder.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("DiviFormBuilder/divi-form-builder.php",
+                  "<?php\n/*\nPlugin Name: Divi Form Builder\n*/\n")
+        z.writestr("DiviFormBuilder/includes/class-user.php",
+                  "<?php function update_user($id,$d){ wp_update_user($d); }")
+    from binoracle.workflows.websource import fetch_source
+    r = fetch_source(str(zpath))
+    assert r.ok and r.kind == "local-zip"
+    assert r.plugin_dir == "DiviFormBuilder"
+
+
+def test_cve_agent_dynamic_verify_gate_accepts_local_zip_not_only_wordpress_plugin(monkeypatch):
+    # Regresion real (encontrada probando el flujo completo con el plugin comercial real de
+    # CVE-2026-5523): la verificacion dinamica solo se intentaba para fr.kind=='wordpress-plugin',
+    # asi que anadir soporte de .zip local/URL (para plugins COMERCIALES, el caso mas comun en la
+    # practica) no servia de nada: nunca llegaba a wpverify.py. Debe activarse tambien para
+    # local-zip/zip-url usando fr.plugin_dir (la carpeta auto-detectada, no necesariamente igual
+    # al nombre del fichero/slug).
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+        return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
+                                           local_path="/tmp/fake", plugin_dir="DiviFormBuilder")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_verify(plugin_dir_path, slug, endpoint, method, params, on_step=None, budget_s=600.0):
+        called["slug"] = slug
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="ACCOUNT TAKEOVER confirmado (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_account_takeover", fake_verify)
+
+    inv = Investigation(cve_id="CVE-2026-5523")
+    inv.vuln_class = "missing-authorization"
+    inv.llm_notes = {"source_url": "/tmp/divi-form-builder.zip", "endpoint": "/x", "http_method": "POST",
+                     "parameters": ["user_id"], "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("slug") == "DiviFormBuilder"
+    assert inv.verified is True

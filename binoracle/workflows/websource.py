@@ -45,10 +45,13 @@ _MAX_SCAN_BYTES = 1_500_000           # por fichero
 @dataclass
 class SourceFetchResult:
     ok: bool = False
-    kind: str = ""              # "wordpress-plugin" | "git" | ""
-    source: str = ""            # slug o URL pedido
+    kind: str = ""              # "wordpress-plugin" | "git" | "local-zip" | "zip-url" | ""
+    source: str = ""            # slug/URL/ruta pedido (tal cual, para mostrar)
     resolved_version: str = ""
     local_path: str = ""        # directorio con el codigo ya extraido/clonado
+    plugin_dir: str = ""        # carpeta DENTRO de local_path que contiene el plugin (ver
+                                 # detect_plugin_folder: para wordpress-plugin coincide con el
+                                 # slug; para local-zip/zip-url/git NO tiene por que, se detecta)
     note: str = ""
 
 
@@ -143,6 +146,7 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             pass
     res.ok = True
     res.local_path = dest_dir
+    res.plugin_dir = slug          # convencion de WordPress.org: la carpeta del zip es el slug
     step(f"codigo del plugin obtenido en {dest_dir}")
     return res
 
@@ -174,8 +178,45 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
     res.ok = True
     res.local_path = dest_dir
     res.resolved_version = ref or "HEAD"
+    # plugin_dir se deja vacio a proposito: un repo git normalmente tiene el plugin EN LA RAIZ
+    # del clon (no en una subcarpeta como los zips), asi que "" significa aqui "esta en local_path
+    # mismo". Si el repo SI anida el plugin en una subcarpeta, pasa --functions/--source ajustados
+    # o usa el .zip/carpeta real en vez del repo completo.
     step(f"repositorio clonado en {dest_dir}")
     return res
+
+
+def detect_plugin_folder(local_path: str, hint: str = "") -> str:
+    """Nombre de la carpeta, DENTRO de `local_path`, que contiene el plugin de verdad. Para un zip
+    de WordPress.org coincide siempre con el slug; para un .zip comercial (local o por URL) o un
+    repo git NO hay garantia de que el nombre del fichero/URL coincida con la carpeta real (p.ej.
+    'divi-form-builder.zip' puede extraer a 'DiviFormBuilder/' o similar) -- necesario para que
+    wpverify.py sepa que copiar dentro del laboratorio Docker. Estrategia: 1) si `hint` ya es una
+    carpeta real ahi, usala tal cual; 2) si solo hay UNA carpeta de primer nivel, es esa; 3) si hay
+    varias, busca la que tenga un .php con una cabecera 'Plugin Name:' (la convencion de WordPress).
+    Cadena vacia si no se puede determinar con confianza (ambiguo)."""
+    try:
+        if hint and os.path.isdir(os.path.join(local_path, hint)):
+            return hint
+        entries = [e for e in os.listdir(local_path)
+                  if os.path.isdir(os.path.join(local_path, e)) and not e.startswith((".", "__MACOSX"))]
+        if len(entries) == 1:
+            return entries[0]
+        for e in entries:
+            sub = os.path.join(local_path, e)
+            for fn in os.listdir(sub):
+                if not fn.lower().endswith(".php"):
+                    continue
+                try:
+                    with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
+                        head = f.read(4000)
+                except Exception:
+                    continue
+                if re.search(r"Plugin\s*Name\s*:", head, re.I):
+                    return e
+    except Exception:
+        pass
+    return ""
 
 
 def _safe_extract_zip(zpath: str, dest_dir: str) -> None:
@@ -216,7 +257,9 @@ def fetch_local_zip(path: str, dest_dir: str = "",
         return res
     res.ok = True
     res.local_path = dest_dir
-    step(f"codigo extraido en {dest_dir}")
+    res.plugin_dir = detect_plugin_folder(dest_dir)
+    step(f"codigo extraido en {dest_dir}" +
+        (f" (carpeta del plugin: {res.plugin_dir})" if res.plugin_dir else ""))
     return res
 
 
@@ -257,7 +300,9 @@ def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str]
             pass
     res.ok = True
     res.local_path = dest_dir
-    step(f"codigo obtenido en {dest_dir}")
+    res.plugin_dir = detect_plugin_folder(dest_dir)
+    step(f"codigo obtenido en {dest_dir}" +
+        (f" (carpeta del plugin: {res.plugin_dir})" if res.plugin_dir else ""))
     return res
 
 

@@ -127,13 +127,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                           f"name, or an LLM hypothesis)"))
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
-            if (fr.kind == "wordpress-plugin" and inv.vuln_class in ("missing-authorization", "idor")
-                    and notes.get("endpoint")):
+            # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
+            # WordPress.org: un .zip comercial (local o por URL) es el caso REAL mas comun (la
+            # mayoria de plugins con CVEs de este tipo son de pago, nunca estaran en el directorio
+            # gratuito). `plugin_dir` es la carpeta DENTRO de local_path que de verdad contiene el
+            # plugin (== slug para WordPress.org; auto-detectada para zip local/URL -- ver
+            # websource.detect_plugin_folder).
+            plugin_dir = fr.plugin_dir or (fr.source if fr.kind == "wordpress-plugin" else "")
+            if (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                    and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
                 step("intentando verificacion DINAMICA (WordPress+MySQL efimero en Docker)..." if es
                      else "attempting DYNAMIC verification (ephemeral WordPress+MySQL in Docker)...")
                 from .wpverify import verify_wordpress_account_takeover
                 wr = verify_wordpress_account_takeover(
-                    fr.local_path, fr.source, notes.get("endpoint"),
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "POST", notes.get("parameters") or [],
                     on_step=step)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
@@ -150,6 +157,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                                          f"{wr.detail}" if es else
                                          f"dynamic verification attempted but not confirmed: "
                                          f"{wr.detail}"))
+            elif (fr.kind in ("local-zip", "zip-url") and not plugin_dir
+                  and inv.vuln_class in ("missing-authorization", "idor")):
+                inv.blockers.append(("verificacion dinamica no intentada: no se pudo determinar "
+                                     "automaticamente la carpeta del plugin dentro del .zip "
+                                     "(varias carpetas de primer nivel, ninguna con una cabecera "
+                                     "'Plugin Name:' reconocible)" if es else
+                                     "dynamic verification not attempted: could not auto-detect "
+                                     "the plugin folder inside the .zip (multiple top-level "
+                                     "folders, none with a recognizable 'Plugin Name:' header)"))
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
