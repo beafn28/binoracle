@@ -190,7 +190,7 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
         # Analisis dinamico real: ejecuta el binario en el sandbox e intercepta red/ficheros/exec
         # (LD_PRELOAD). Lo observado es comportamiento VERIFICADO en ejecucion. Best-effort.
         try:
-            from .dynamic import dynamic_trace, dynamic_findings
+            from .dynamictrace import dynamic_trace, dynamic_findings
             dt = dynamic_trace(binary, stdin=b"A" * 64, timeout=8)
             if dt.ok:
                 dynf = dynamic_findings(dt, lang=_lang)

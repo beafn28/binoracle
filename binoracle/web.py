@@ -740,7 +740,8 @@ def _build_dashboard_data(reg, findings):
             "sink_detail": (sink_detail.data.strip()[:1500] if sink_detail.ok else "")}
 
 
-def run_streaming(command, binary, ai, emit, text=""):
+def run_streaming(command, binary, ai, emit, text="", opts=None):
+    opts = opts or {}
     config = load_config()
     import os
     # 'train' corre sobre el corpus del repo; 'exploit' puede derivar el esquema+plantilla solo con
@@ -845,8 +846,18 @@ def run_streaming(command, binary, ai, emit, text=""):
                 emit("done", "")
                 return
             binp = binary if (binary and os.path.exists(binary)) else ""
+            hints = {}
+            if opts.get("source"): hints["source_url"] = opts["source"]
+            if opts.get("version"): hints["affected_version"] = opts["version"]
+            if opts.get("endpoint"): hints["endpoint"] = opts["endpoint"]
+            if opts.get("method"): hints["http_method"] = opts["method"]
+            if opts.get("params"):
+                hints["parameters"] = [p.strip() for p in str(opts["params"]).split(",") if p.strip()]
+            if opts.get("functions"):
+                hints["vulnerable_functions"] = [f.strip() for f in str(opts["functions"]).split(",") if f.strip()]
             inv = investigate_cve(cve_or_desc, binary=binp, config=config,
-                                  on_step=lambda m: emit("step", m), lang=config.lang)
+                                  on_step=lambda m: emit("step", m), lang=config.lang,
+                                  hints=hints or None)
             emit("html", render_investigation_page(render_investigation(inv, config.lang),
                                                    inv.developed_script, inv.cve_id, config.lang,
                                                    poc_kind=inv.poc_kind))
@@ -939,7 +950,7 @@ def run_streaming(command, binary, ai, emit, text=""):
             # analisis dinamico real (LD_PRELOAD en sandbox): red/ficheros/exec en runtime
             try:
                 emit("step", "analisis dinamico (ejecucion + interceptacion en sandbox)...")
-                from .workflows.dynamic import dynamic_trace, dynamic_findings
+                from .workflows.dynamictrace import dynamic_trace, dynamic_findings
                 dt = dynamic_trace(binary, stdin=b"A" * 64, timeout=8)
                 if dt.ok:
                     dynf = dynamic_findings(dt, lang=config.lang)
@@ -1144,6 +1155,10 @@ class Handler(BaseHTTPRequestHandler):
             binary = q.get("binary", [""])[0]
             ai = q.get("ai", ["0"])[0] == "1"
             text = q.get("text", [""])[0]
+            try:
+                extra_opts = json.loads(q.get("opts", ["{}"])[0]) or {}
+            except Exception:
+                extra_opts = {}
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -1156,7 +1171,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 except Exception:
                     pass
-            run_streaming(command, binary, ai, emit, text=text)
+            run_streaming(command, binary, ai, emit, text=text, opts=extra_opts)
         else:
             self._send(404, "not found", "text/plain")
 
@@ -1343,7 +1358,15 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"Desarrollo de exploits"},
- {c:"exploit",n:"CVE → Exploit",ic:"CV",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"}]},
+ {c:"exploit",n:"CVE → Exploit",ic:"CV",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Para una CVE web, los campos opcionales de abajo (slug/version/endpoint/parametros) dejan aportar lo que YA sabes del aviso oficial en vez de depender de que el LLM lo adivine, y permiten la VERIFICACION DINAMICA (WordPress real en Docker) cuando aplica. Informe honesto.",opts:[
+   {k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"},
+   {k:"source",label:"(opcional, CVE web) slug de WordPress.org o URL git del codigo vulnerable",t:"text",placeholder:"p.ej. divi-form-builder"},
+   {k:"version",label:"(opcional) version afectada",t:"text",placeholder:"p.ej. 5.1.8"},
+   {k:"endpoint",label:"(opcional) endpoint/ruta exacto",t:"text",placeholder:"p.ej. /wp-admin/admin-ajax.php?action=..."},
+   {k:"method",label:"(opcional) metodo HTTP",t:"text",placeholder:"POST"},
+   {k:"params",label:"(opcional) parametros, separados por coma",t:"text",placeholder:"user_id,email,pass"},
+   {k:"functions",label:"(opcional) funciones vulnerables citadas, separadas por coma",t:"text",placeholder:"update_user,handle_register_submission"},
+ ]},
  {c:"fetch",n:"Fetch binario",ic:"FE",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"DS",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {g:"Pentest / Reversing de binarios"},
@@ -1395,6 +1418,8 @@ function stream(command,options){var out=document.getElementById('out');var ai=1
  out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo<button id="stopstream" class="stopbtn">parar</button></div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
  var log=document.getElementById('livelog');
  var extra=(options&&options.text)?('&text='+encodeURIComponent(options.text)):'';
+ var rest=options?Object.fromEntries(Object.entries(options).filter(function(kv){return kv[0]!=='text'&&kv[1];})):{};
+ if(Object.keys(rest).length)extra+='&opts='+encodeURIComponent(JSON.stringify(rest));
  closeStream(); var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai+extra); activeES=es;
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
  es.addEventListener('html',function(e){var d=document.getElementById('streamresult');d.innerHTML='';reportView(d,JSON.parse(e.data));});

@@ -187,8 +187,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
 
 def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     on_step: Optional[Callable[[str], None]] = None, lang: str = "es",
-                    budget_s: float = 300.0) -> Investigation:
-    """Investiga una CVE con el LLM y prueba lo que se pueda. No lanza."""
+                    budget_s: float = 300.0, hints: Optional[dict] = None) -> Investigation:
+    """Investiga una CVE con el LLM y prueba lo que se pueda. No lanza.
+
+    `hints` deja al analista aportar lo que YA SABE de la CVE (igual que un exploit developer real:
+    la hipotesis del LLM es un punto de partida, no la unica fuente) y pisa lo que proponga el LLM en
+    esas claves exactas: source_url (slug de WordPress.org o URL git), affected_version, endpoint,
+    http_method, parameters (lista), vulnerable_functions (lista). Util cuando ya tienes el aviso
+    oficial delante y no quieres depender de que el modelo adivine el slug/endpoint correctos."""
     import os
     from ..config import load_config
     from ..llm import make_backend
@@ -234,6 +240,15 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     elif not llm_on:
         step("sin modelo LLM disponible: via determinista (arranca ollama para el modo agente)" if es else
              "no LLM available: deterministic path (start ollama for agent mode)")
+
+    # 2b) hechos conocidos del analista: PISAN la hipotesis del LLM en esas claves (el analista
+    # que tiene el aviso oficial delante sabe el slug/endpoint reales mejor que una adivinanza).
+    if hints:
+        given = {k: v for k, v in hints.items() if v}
+        if given:
+            inv.llm_notes = {**inv.llm_notes, **given}
+            step(("hechos del analista aplicados: " if es else "analyst-supplied facts applied: ")
+                 + ", ".join(f"{k}={v}" for k, v in given.items()))
 
     # 3) clasifica + desarrolla la plantilla (grounded, deterministico)
     inv.vuln_class = (classify_cve(inv.description) or

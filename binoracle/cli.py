@@ -868,11 +868,28 @@ def cmd_fetch(args, config):
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
-    verificado y lo bloqueado."""
+    verificado y lo bloqueado. Para una CVE WEB, --source/--version/--endpoint/--method/--params
+    dejan aportar lo que YA sabes del aviso oficial (el slug/endpoint reales) en vez de depender de
+    que el LLM los adivine; con --source + --endpoint apuntando a un plugin de WordPress vulnerable
+    a missing-authorization/IDOR, intenta ademas la VERIFICACION DINAMICA (WordPress+MySQL efimero
+    en Docker, ver wpverify.py)."""
     from .workflows.cve_agent import investigate_cve, render_investigation
+    hints = {}
+    if getattr(args, "source", None):
+        hints["source_url"] = args.source
+    if getattr(args, "version", None):
+        hints["affected_version"] = args.version
+    if getattr(args, "endpoint", None):
+        hints["endpoint"] = args.endpoint
+    if getattr(args, "method", None):
+        hints["http_method"] = args.method
+    if getattr(args, "params", None):
+        hints["parameters"] = [p.strip() for p in args.params.split(",") if p.strip()]
+    if getattr(args, "functions", None):
+        hints["vulnerable_functions"] = [f.strip() for f in args.functions.split(",") if f.strip()]
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
                           config=config, on_step=lambda m: print("  " + m), lang=config.lang,
-                          budget_s=float(getattr(args, "budget", 300) or 300))
+                          budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None)
     print("\n" + render_investigation(inv, config.lang))
 
 
@@ -1257,6 +1274,14 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--binary", help="vulnerable binary to actually try + verify against")
     ip.add_argument("--budget", type=float, default=300,
                     help="sandbox verification budget in seconds (default 300)")
+    ip.add_argument("--source", help="known source for a web CVE: a WordPress.org plugin slug "
+                                     "(e.g. divi-form-builder) or a git URL; overrides the LLM's guess")
+    ip.add_argument("--version", help="affected version for --source (e.g. 5.1.8)")
+    ip.add_argument("--endpoint", help="exact vulnerable endpoint/route for a web CVE")
+    ip.add_argument("--method", help="HTTP method for --endpoint (default POST)")
+    ip.add_argument("--params", help="comma-separated request parameter names (e.g. user_id,email,pass)")
+    ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
+                                        "against the fetched source (e.g. update_user,handle_register_submission)")
     ip.set_defaults(func=cmd_investigate)
 
     return p

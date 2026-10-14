@@ -254,7 +254,7 @@ def test_callers_of_falls_back_to_deep_analysis_when_light_analysis_finds_nothin
 
 def test_dynamic_parse_and_findings():
     # Parser del shim LD_PRELOAD + generacion de hallazgos (sin docker: se prueba _parse directo).
-    from binoracle.workflows.dynamic import _parse, dynamic_findings
+    from binoracle.workflows.dynamictrace import _parse, dynamic_findings
     # formato del shim: el valor con espacios (cmd/path) va SIEMPRE al final de linea
     log = (
         "__BO__ connect ip=10.13.37.7 port=4444\n"
