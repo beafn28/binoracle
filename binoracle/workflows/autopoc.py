@@ -78,6 +78,15 @@ def find_win(binary: str) -> Optional[int]:
     # es la funcion gift, tenga o no un nombre. Confirmado con un binario real (ret2win.stripped):
     # fcn.00401176 (sin nombre) llama a system("/bin/sh"), misma direccion que 'win' en la
     # variante no-stripped del mismo reto.
+    #
+    # NOTA (investigado en vivo, descartado adrede): probar aqui la sesion r2 CACHEADA (r2session)
+    # en vez de un subproceso nuevo por llamada parecia la optimizacion obvia (evita repetir
+    # `aaa`) -- pero `r.cmd('axt @ sym.imp.<sink>')` sobre esa sesion PERSISTENTE se cuelga de
+    # verdad en esta version de radare2 (5.5.0; confirmado con y sin el simbolo presente, y
+    # `cmd_timeout()` -- pensado exactamente para esto -- tampoco recuperaba el pipe a tiempo de
+    # forma fiable aqui). El subproceso ONE-SHOT de abajo (`_r2()`) SI es fiable: cada llamada es
+    # un `radare2` nuevo con su propio `subprocess.run(..., timeout=90)`, que Python SI mata de
+    # forma dura si se cuelga. Mas lento (repite `aaa`), pero nunca cuelga el pipeline.
     for sink in ("system", "execve", "execl", "execlp"):
         # Xrefs to an import are only populated by FULL analysis (`aaa`); plain `aa` leaves
         # `axt @ sym.imp.<sink>` empty, so the stripped gift was never found (confirmed on
@@ -223,11 +232,25 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
             pass
 
 
+_STATIC_OFFSET_FN_CAP = 400       # ver nota de regresion mas abajo
+_STATIC_OFFSET_TIME_BUDGET = 20.0  # segundos
+
+
 def _static_offset(binary: str) -> Optional[int]:
     """Offset a la direccion de retorno guardada para el caso clasico de buffer de pila, SIN
     ejecutar: la variable local (base rbp) mas profunda de la funcion que llama a un sink de
     lectura, mas el tamano del rbp/ebp guardado (word size: 4 en x86, 8 en x86_64). Robusto
-    donde la ejecucion simbolica de angr se equivoca."""
+    donde la ejecucion simbolica de angr se equivoca.
+
+    REGRESION encontrada en vivo (corriendo la suite de tests completa): el bucle hacia UN
+    `pdf @ fn` (desensamblado completo) POR FUNCION de `aflj`, sin limite ni presupuesto. En un
+    binario estaticamente enlazado (p.ej. ropme_pie: 1086 funciones, la libc entera queda
+    embebida) eso son 1000+ viajes de ida y vuelta sincronos por el pipe de r2 -- minutos, no
+    milisegundos -- colgando el pipeline entero (chain-analyzer, audit, investigate) para
+    cualquier binario estatico. El caso comun (binario dinamico, decenas de funciones propias)
+    sigue siendo instantaneo; esto solo acota el caso patologico, degradando a 'no concluyente'
+    (best=None, ya manejado por _offset_candidates) en vez de colgar."""
+    import time as _time
     try:
         import r2pipe
         r = r2pipe.open(binary, flags=["-2"])
@@ -235,7 +258,10 @@ def _static_offset(binary: str) -> Optional[int]:
         fns = json.loads(r.cmd("aflj") or "[]")
         read_sinks = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "recv", "fread", "gets_s")
         best = None
-        for fn in fns:
+        t0 = _time.time()
+        for i, fn in enumerate(fns):
+            if i >= _STATIC_OFFSET_FN_CAP or (_time.time() - t0) > _STATIC_OFFSET_TIME_BUDGET:
+                break
             name = fn.get("name", "")
             dis = r.cmd(f"pdf @ {name}") or ""
             if not any(s in dis for s in read_sinks):

@@ -535,6 +535,7 @@ def _facts(binary: str, reg=None) -> dict:
     try:
         import json
         import re as _re
+        import time as _time
         from ..oracles.r2session import get as _r2get
         r = _r2get(binary)
         if r is not None:
@@ -608,7 +609,16 @@ def _facts(binary: str, reg=None) -> dict:
                     # en binarios estaticos): \b solo no basta, "_" es caracter de palabra en
                     # regex y no forma limite entre "__" y "read".
                     sink_re = _re.compile(r"call\s+\S*[._](?:" + "|".join(read_sinks) + r")\b")
-                    for fn in json.loads(r.cmd("aflj") or "[]"):
+                    # REGRESION encontrada en vivo (misma familia que autopoc._static_offset): sin
+                    # cap, un binario estatico con "vuln"/"sym.vuln" ausente (convencion no usada)
+                    # desensambla TODAS sus funciones (cientos/miles en un binario estatico) una a
+                    # una buscando el sink -- minutos colgando el pipeline. Acota por cantidad y
+                    # tiempo; si no se encuentra a tiempo, canary se queda en su valor binario-ancho
+                    # (el conservador: asume que SI hay canary salvo prueba de lo contrario).
+                    _t0 = _time.time()
+                    for _i, fn in enumerate(json.loads(r.cmd("aflj") or "[]")):
+                        if _i >= 400 or (_time.time() - _t0) > 20.0:
+                            break
                         name = fn.get("name", "")
                         cand = r.cmd(f"pdf @ {name}") or ""
                         if sink_re.search(cand):
