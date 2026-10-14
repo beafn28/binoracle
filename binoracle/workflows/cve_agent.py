@@ -144,7 +144,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                     notes.get("http_method") or "POST", notes.get("parameters") or [],
                     on_step=step)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail}
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                      "logs": wr.logs}
                 if wr.verified:
                     inv.verified = True
                     inv.verified_detail = wr.detail
@@ -157,6 +158,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                                          f"{wr.detail}" if es else
                                          f"dynamic verification attempted but not confirmed: "
                                          f"{wr.detail}"))
+                    # si wpverify.py capturo logs del contenedor que no arranco a tiempo (p.ej.
+                    # MySQL/Apache bajo emulacion lenta), se adjuntan recortados: evita tener que
+                    # reproducir el fallo a ciegas para diagnosticarlo.
+                    for entry in wr.logs:
+                        if entry.startswith("docker logs"):
+                            head, _, body = entry.partition("\n")
+                            trimmed = "\n".join(body.splitlines()[-15:])
+                            inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
             elif (fr.kind in ("local-zip", "zip-url") and not plugin_dir
                   and inv.vuln_class in ("missing-authorization", "idor")):
                 inv.blockers.append(("verificacion dinamica no intentada: no se pudo determinar "

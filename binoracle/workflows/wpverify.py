@@ -154,8 +154,10 @@ class _Lab:
         m = re.search(r":(\d+)\s*$", (r.stdout or "").strip())
         return m.group(1) if m else None
 
-    def http_ready(self, port: str, tries: int = 80, delay: float = 3.0) -> bool:
-        # igual que mysql_ready: mas margen por la emulacion amd64 en Apple Silicon.
+    def http_ready(self, port: str, tries: int = 150, delay: float = 3.0) -> bool:
+        # igual que mysql_ready (~7.5 min): confirmado en vivo que 80x3s (4 min) tampoco bastaba
+        # en Apple Silicon -- Apache/PHP bajo emulacion amd64 puede tardar varios minutos en
+        # responder al primer arranque, igual que le pasaba a MySQL.
         import urllib.request
         url = f"http://127.0.0.1:{port}/wp-login.php"
         for _ in range(tries):
@@ -167,6 +169,15 @@ class _Lab:
                 pass
             time.sleep(delay)
         return False
+
+    def logs_tail(self, name: str, lines: int = 40) -> str:
+        """Ultimas lineas del log de un contenedor, para diagnosticar fallos de arranque sin
+        tener que reproducirlos (p.ej. por que Apache/MySQL no respondieron a tiempo)."""
+        try:
+            r = self.sh("logs", "--tail", str(lines), name, timeout=15)
+            return ((r.stdout or "") + (r.stderr or "")).strip()
+        except Exception as e:
+            return f"(no se pudieron leer logs de {name}: {e})"
 
     def wp_cli(self, *args, timeout=120.0) -> subprocess.CompletedProcess:
         return self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
@@ -281,14 +292,17 @@ def verify_wordpress_account_takeover(
         lab.start_mysql(root_pw, db_pw)
         if not lab.mysql_ready(db_pw):
             res.detail = "MySQL no respondio a tiempo"
+            res.logs.append("docker logs (mysql):\n" + lab.logs_tail(lab.mysql))
             return res
         step("MySQL listo; arrancando WordPress...")
         port = lab.start_wordpress(db_pw)
         if not port:
             res.detail = "no se pudo publicar el puerto de WordPress"
+            res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
             return res
         if not lab.http_ready(port):
             res.detail = "WordPress no respondio a tiempo"
+            res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
             return res
         base_url = f"http://127.0.0.1:{port}"
         step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
