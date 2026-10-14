@@ -460,6 +460,69 @@ def test_jeb_connector_rpc_and_degrade():
             os.environ["BINORACLE_JEB_MCP_URL"] = saved
 
 
+def test_native_connectors_degrade():
+    # IDA/Hopper connectors: pure degrade when no endpoint is configured (no network).
+    import os
+    from binoracle.workflows.nativeconnect import (ida_list_tools, hopper_list_tools,
+                                                    render_ida, render_hopper)
+    saved_i = os.environ.pop("BINORACLE_IDA_MCP_URL", None)
+    saved_h = os.environ.pop("BINORACLE_HOPPER_MCP_URL", None)
+    try:
+        ri = ida_list_tools()
+        assert ri["available"] is False and "BINORACLE_IDA_MCP_URL" in ri["note"]
+        assert "No disponible" in render_ida(ri)
+        rh = hopper_list_tools()
+        assert rh["available"] is False and "BINORACLE_HOPPER_MCP_URL" in rh["note"]
+        assert "No disponible" in render_hopper(rh)
+    finally:
+        if saved_i is not None:
+            os.environ["BINORACLE_IDA_MCP_URL"] = saved_i
+        if saved_h is not None:
+            os.environ["BINORACLE_HOPPER_MCP_URL"] = saved_h
+
+
+def test_flutter_dart_aot_static_reader():
+    # Static Flutter/Dart AOT facts from a synthetic libapp.so-shaped blob: the Dart snapshot magic
+    # (f5 f5 dc dc), the 32-hex snapshot hash 20 bytes after it, and the Dart VM version string.
+    # Nothing is executed; this is pure byte observation.
+    import os
+    import tempfile
+    from binoracle.workflows.flutterinspect import (inspect_flutter, inspect_dart_aot,
+                                                     render_flutter, render_dart_aot,
+                                                     DART_SNAPSHOT_MAGIC)
+    h = b"0123456789abcdef0123456789abcdef"
+    blob = b"\x7fELF" + b"\x00" * 60 + DART_SNAPSHOT_MAGIC + b"P" * 16 + h + b"Dart VM version: 3.4.1\x00"
+    p = tempfile.mktemp(suffix=".so")
+    with open(p, "wb") as f:
+        f.write(blob)
+    try:
+        rd = inspect_dart_aot(p)
+        assert rd["ok"] and rd["is_dart_aot"] and h.decode() in rd["snapshot_hashes"]
+        assert rd["dart_vm_version"] == "3.4.1"
+        assert "Dart AOT" in render_dart_aot(rd)
+        rf = inspect_flutter(p)
+        assert rf["ok"] and rf["is_flutter"] and h.decode() in rf["snapshot_hashes"]
+        assert "Flutter" in render_flutter(rf)
+    finally:
+        os.remove(p)
+
+
+def test_flutter_non_flutter_is_not_a_verdict():
+    # A plain ELF with no Dart snapshot must degrade honestly, not claim "not Flutter" as proof.
+    import os
+    import tempfile
+    from binoracle.workflows.flutterinspect import inspect_flutter
+    p = tempfile.mktemp(suffix=".so")
+    with open(p, "wb") as f:
+        f.write(b"\x7fELF" + b"\x00" * 200)
+    try:
+        r = inspect_flutter(p)
+        assert r["ok"] and r["is_flutter"] is False
+        assert any("estatica" in l for l in r.get("limitations", []))
+    finally:
+        os.remove(p)
+
+
 def test_js_inspect_electron_bundle_and_sourcemap():
     import os
     import json as _json

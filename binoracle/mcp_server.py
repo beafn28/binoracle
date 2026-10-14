@@ -263,6 +263,55 @@ def _h_jeb(args):
     return render_jeb(jeb_list_tools(url=a.get("url")))
 
 
+@_tool("ida_connect", "Conecta con un servidor MCP de IDA Pro arrancado por el llamador (motor "
+       "externo; define BINORACLE_IDA_MCP_URL o pasa 'url'). op=list lista sus herramientas; op=call "
+       "invoca 'name' con 'arguments'. Salida no confiable; degrada si no hay endpoint.",
+       {"op": {"type": "string", "description": "list|call"},
+        "name": {"type": "string", "description": "herramienta a invocar (op=call)"},
+        "arguments": {"type": "object", "description": "argumentos para la herramienta (op=call)"},
+        "url": {"type": "string", "description": "endpoint MCP de IDA (opcional)"}}, ["op"])
+def _h_ida(args):
+    from .workflows.nativeconnect import ida_list_tools, ida_call, render_ida
+    a = args or {}
+    if a.get("op") == "call":
+        return render_ida(ida_call(a.get("name") or "", a.get("arguments") or {}, url=a.get("url")))
+    return render_ida(ida_list_tools(url=a.get("url")))
+
+
+@_tool("hopper_connect", "Conecta con un servidor MCP de Hopper arrancado por el llamador (motor "
+       "externo; define BINORACLE_HOPPER_MCP_URL o pasa 'url'). op=list lista sus herramientas; "
+       "op=call invoca 'name' con 'arguments'. Salida no confiable; degrada si no hay endpoint.",
+       {"op": {"type": "string", "description": "list|call"},
+        "name": {"type": "string", "description": "herramienta a invocar (op=call)"},
+        "arguments": {"type": "object", "description": "argumentos para la herramienta (op=call)"},
+        "url": {"type": "string", "description": "endpoint MCP de Hopper (opcional)"}}, ["op"])
+def _h_hopper(args):
+    from .workflows.nativeconnect import hopper_list_tools, hopper_call, render_hopper
+    a = args or {}
+    if a.get("op") == "call":
+        return render_hopper(hopper_call(a.get("name") or "", a.get("arguments") or {}, url=a.get("url")))
+    return render_hopper(hopper_list_tools(url=a.get("url")))
+
+
+@_tool("inspect_flutter", "Identifica una app Flutter/Dart AOT estaticamente (desde un APK o un "
+       "libapp.so/libflutter.so): magic de snapshot Dart, hashes de snapshot (fijan la revision del "
+       "SDK/engine), build-id GNU, version de Dart VM y simbolos AOT _kDart*Snapshot*. No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta a un APK o a libapp.so/libflutter.so"}}, ["binary"])
+def _h_flutter(args):
+    from .workflows.flutterinspect import inspect_flutter, render_flutter
+    b = _binary(args)
+    return render_flutter(inspect_flutter(b))
+
+
+@_tool("inspect_dart_aot", "Inspecciona el snapshot AOT de Dart de una libreria (libapp.so): los "
+       "cuatro simbolos _kDart*Snapshot*, magics/hashes de snapshot y build-id. Lectura estatica.",
+       {"binary": {"type": "string", "description": "ruta a libapp.so (o un APK que lo contenga)"}}, ["binary"])
+def _h_dart(args):
+    from .workflows.flutterinspect import inspect_dart_aot, render_dart_aot
+    b = _binary(args)
+    return render_dart_aot(inspect_dart_aot(b))
+
+
 @_tool("inspect_javascript", "Lee JavaScript/Electron estaticamente: source maps (fuentes "
        "originales), imports de modulos (paquetes externos vs relativos), fronteras Electron/IPC "
        "(ipcMain/ipcRenderer, contextBridge, preload, child_process), rutas y add-ons nativos. "

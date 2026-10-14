@@ -153,6 +153,7 @@ ideas were re-implemented in Python with attribution, not copied.)
 | APK | `apkinspect` | manifest + decompile path |
 | Java / JAR | `jarinspect` | classes, manifest, constant pool |
 | JavaScript / Electron | `jsinspect` | bundle/entrypoint analysis |
+| **Flutter / Dart AOT** | `flutterinspect` | snapshot magic + hash (SDK/engine revision), build-id, Dart VM version, `_kDart*Snapshot*` AOT symbols — from an APK or `libapp.so`/`libflutter.so` |
 | ASAR (Electron) | `asarinspect` | archive listing + file extraction |
 | macOS plist | `plistinspect` | binary & XML plists |
 | HAR captures | `harinspect` | request/response, secrets scan |
@@ -177,14 +178,17 @@ authorized targets only; all output is untrusted data.
 - **Ghidra headless** (`callertools.py`): `ghidra_decompile` locates a
   caller-provided Ghidra headless install and parses its pseudocode.
 - **JEB** (`jebconnect.py`): JSON-RPC over HTTP to `BINORACLE_JEB_MCP_URL`.
+- **IDA Pro & Hopper** (`nativeconnect.py`): JSON-RPC over HTTP to
+  `BINORACLE_IDA_MCP_URL` / `BINORACLE_HOPPER_MCP_URL` — `list`/`call` the
+  caller's own IDA/Hopper MCP tools (decompile, xrefs, call graph, search).
 
 ---
 
 ## 6. Verification status
 
-- **MCP tools:** 51 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 55 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 110 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 113 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.
