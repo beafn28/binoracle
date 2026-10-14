@@ -99,6 +99,8 @@ echo "[*] hoe (x86-64, no-PIE, house-of-einherjar: consolidacion hacia atras rep
 run "gcc -fno-stack-protector -no-pie -w -o bin/hoe src/hoe.c"
 echo "[*] botcake (x86-64, no-PIE, house-of-botcake: doble-free via unsorted en glibc real)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/botcake src/botcake.c"
+echo "[*] largebin (x86-64, no-PIE, largebin attack: escritura de insercion reproducida)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/largebin src/largebin.c"
 echo "[*] fmtgot32 (32-bit, format-string -> printf@GOT=system; requiere multilib)"
 run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/fmtgot32 src/fmtgot32.c" || echo "  (fmtgot32 build omitido: sin multilib)"
 echo "[*] pivot (x86-64, static, short overflow -> stack migration to .bss)"

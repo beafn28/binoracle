@@ -607,6 +607,11 @@ _exploit_tool("autobotcake", "house-of-botcake: doble-free enrutado por la unsor
               "un puntero de funcion -> shell. Verificado en glibc real 2.39.",
               lambda: (__import__("binoracle.workflows.autobotcake", fromlist=["autobotcake"]).autobotcake,
                        __import__("binoracle.workflows.autobotcake", fromlist=["render_botcake"]).render_botcake))
+_exploit_tool("autolargebin", "largebin attack: una insercion en largebin con bk_nextsize corrupto "
+              "ejecuta `victim->bk_nextsize->fd_nextsize = victim` -> escritura de puntero arbitraria "
+              "-> hijack -> shell. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autolargebin", fromlist=["autolargebin"]).autolargebin,
+                       __import__("binoracle.workflows.autolargebin", fromlist=["render_largebin"]).render_largebin))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

@@ -15,7 +15,7 @@ covers three pillars:
    execute it. Full parity with (and a superset of) the surfaces in
    `morluto/rea`.
 2. **The exploit-development engine** — execution-verified exploit builders for
-   ~17 stack/ROP and heap technique families, in both x86-64 and x86-32.
+   ~18 stack/ROP and heap technique families, in both x86-64 and x86-32.
 3. **Runtime / external connectors** — a separate dynamic module (adb / Frida /
    browser) and caller-supplied decompilers (Ghidra headless, JEB) that run
    only against authorized targets and whose output is treated as untrusted.
@@ -69,16 +69,18 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | **house-of-spirit** | real 2.39 | `autohos` | `hos` | Forge a fake chunk straight into the real glibc tcache → arbitrary alloc → shell |
 | **house-of-einherjar** | reproduced | `autohoe` | `hoe` | Backward consolidation via a crafted `prev_size` + off-by-null, reproduced in-binary |
 | **house-of-botcake** | real 2.39 | `autobotcake` | `botcake` | Double-free routed through the **unsorted bin** to clear the tcache key → chunk overlap → safe-linked tcache poison → shell |
+| **largebin attack** | ≥2.30 (reproduced) | `autolargebin` | `largebin` | Corrupt a largebin chunk's `bk_nextsize` so a later large-chunk insertion runs `victim->bk_nextsize->fd_nextsize = victim` → arbitrary pointer write → hijack → shell |
 
 **Honest notes on the heap families.** house-of-spirit and house-of-botcake
 run against **real, modern glibc (verified on 2.39)** — they defeat the current
-tcache double-free key and smallbin hardening. house-of-force and
-house-of-einherjar are blocked on modern glibc by well-known checks
-(top-chunk size check ≥2.29; backward-consolidation checks); binoracle
-**documents the mitigation** and then reproduces the classical allocator
-behaviour **inside the practice binary** so the primitive still executes and is
-observable end-to-end, rather than silently claiming a bypass that modern glibc
-would refuse. This is the honest-degradation rule applied to the heap.
+tcache double-free key and smallbin hardening. house-of-force,
+house-of-einherjar, and the largebin attack are blocked on modern glibc by
+well-known checks (top-chunk size check ≥2.29; backward-consolidation checks;
+the ≥2.30 `bk_nextsize` sanity check); binoracle **documents the mitigation**
+and then reproduces the classical allocator behaviour **inside the practice
+binary** so the primitive still executes and is observable end-to-end, rather
+than silently claiming a bypass that modern glibc would refuse. This is the
+honest-degradation rule applied to the heap.
 
 ### 2.3 Why these actually run: the grounding mechanics
 
@@ -179,9 +181,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 52 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 53 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 108 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 109 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

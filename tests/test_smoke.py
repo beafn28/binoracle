@@ -708,6 +708,27 @@ def test_autohof_verifies_house_of_force():
     assert "need_a=" in (r.get("detail") or "")
 
 
+def test_autolargebin_verifies_insertion_write():
+    # Verificacion POSITIVA del largebin attack por EJECUCION: se corrompe bk_nextsize del chunk
+    # residente en la largebin; al insertar un segundo chunk grande, el asignador ejecuta
+    # `victim->bk_nextsize->fd_nextsize = victim`, escribiendo &victim en `slot` (direccion elegida);
+    # slot apunta ahora a un chunk cuyo contenido controlamos -> se planta win -> shell. glibc >=2.30
+    # endurece el largebin real, por eso el sample reproduce la escritura de insercion caracteristica.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/largebin"
+    if not os.path.exists(binp):
+        pytest.skip("sample largebin no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autolargebin import autolargebin
+    r = autolargebin(binp)
+    assert r.get("ok") and r.get("verified"), f"largebin attack no verificado: {r.get('note')}"
+    assert "slot=" in (r.get("detail") or "")
+
+
 def test_autocsu_verifies_execve_chain():
     # Verificacion POSITIVA de ret2csu -> execve ENCADENADO por EJECUCION: en csuexec no hay
     # `pop rsi`/`pop rdx`, asi que los gadgets csu fijan rsi=0/rdx=0 (la call forzada de gadget2
