@@ -809,6 +809,16 @@ def _h_managed_boundaries(args):
     return render_managed("boundaries", verify_managed_native_boundaries(_binary(args)))
 
 
+@_tool("project_managed_application_graph", "Construye el grafo de TIPOS de un ensamblado .NET "
+       "resolviendo tokens de la metadata CLI (tablas #~): nodos = TypeDef (internos) y TypeRef "
+       "(externos); aristas = extends / implements / nested_in. Resolucion por token (tabla+fila), "
+       "no por nombre. Estatico; no sigue cuerpos CIL.",
+       {"binary": {"type": "string", "description": "ruta al ensamblado .NET (.dll/.exe gestionado)"}}, ["binary"])
+def _h_dotnet_graph(args):
+    from .workflows.dotnetgraph import project_type_graph, render_type_graph
+    return render_type_graph(project_type_graph(_binary(args)))
+
+
 @_tool("inspect_java", "Lee un artefacto Java estaticamente: un JAR (ZIP) -> manifiesto "
        "(Main-Class/versiones), inventario de clases/paquetes, framework (Spring/Jakarta/Kotlin/"
        "Scala/Android), firma y version de bytecode; o un .class suelto -> magic/version y "

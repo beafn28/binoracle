@@ -1349,6 +1349,59 @@ def test_managed_compare_verify_boundaries(monkeypatch):
     assert nb["pinvoke_implmap_rows"] == 2 and "kernel32.dll" in nb["native_libraries"]
 
 
+def _build_dotnet_metadata():
+    # Hand-build a minimal CLI metadata root (BSJB) with #Strings + #~ tables Module/TypeRef/TypeDef,
+    # so the token-level type-graph parser can be tested without a real .NET assembly or pefile.
+    import struct
+    strings = bytearray(b"\x00")
+    offs = {}
+
+    def addn(s):
+        offs[s] = len(strings)
+        strings.extend(s.encode() + b"\x00")
+    for n in ("App", "Foo", "Bar", "Base", "Sys", "Mod"):
+        addn(n)
+    valid = (1 << 0) | (1 << 1) | (1 << 2)                 # Module, TypeRef, TypeDef present
+    hdr = struct.pack("<IBBBBQQ", 0, 2, 0, 0, 1, valid, 0)
+    counts = struct.pack("<III", 1, 1, 2)
+    mod = struct.pack("<HHHHH", 0, offs["Mod"], 0, 0, 0)
+    tref = struct.pack("<HHH", 0, offs["Base"], offs["Sys"])          # ResolutionScope null
+    td1 = struct.pack("<IHHHHH", 0, offs["Foo"], offs["App"], 5, 1, 1)  # extends TypeRef#1 (Base)
+    td2 = struct.pack("<IHHHHH", 0, offs["Bar"], offs["App"], 4, 1, 1)  # extends TypeDef#1 (Foo)
+    tstream = hdr + counts + mod + tref + td1 + td2
+    ver = b"v4.0.30319\x00"
+    ver += b"\x00" * ((4 - len(ver) % 4) % 4)
+
+    def sh(offset, size, name):
+        nb = name.encode() + b"\x00"
+        nb += b"\x00" * ((4 - len(nb) % 4) % 4)
+        return struct.pack("<II", offset, size) + nb
+    root = struct.pack("<IHHII", 0x424A5342, 1, 1, 0, len(ver)) + ver + struct.pack("<HH", 0, 2)
+    header_len = len(root) + len(sh(0, 0, "#Strings")) + len(sh(0, 0, "#~"))
+    str_off = header_len
+    ts_off = str_off + len(strings)
+    return (root + sh(str_off, len(strings), "#Strings") + sh(ts_off, len(tstream), "#~")
+            + bytes(strings) + tstream)
+
+
+def test_dotnet_type_graph_by_token():
+    # Parse the CLI metadata tables and resolve TypeDef/TypeRef Extends tokens into a type graph.
+    from binoracle.workflows.dotnetgraph import build_graph_from_metadata, render_type_graph
+    g = build_graph_from_metadata(_build_dotnet_metadata())
+    assert g["typedef_count"] == 2 and g["typeref_count"] == 1
+    assert g["types"] == ["App.Foo", "App.Bar"] and g["external_types"] == ["Sys.Base"]
+    edges = {(e["from"], e["kind"], e["to"], e["external"]) for e in g["edges"]}
+    assert ("App.Foo", "extends", "Sys.Base", True) in edges       # resolved to the external TypeRef
+    assert ("App.Bar", "extends", "App.Foo", False) in edges        # resolved to the internal TypeDef
+    assert "Grafo de tipos" in render_type_graph({**g, "ok": True})
+
+
+def test_dotnet_type_graph_non_dotnet_degrades():
+    from binoracle.workflows.dotnetgraph import project_type_graph
+    r = project_type_graph("/nonexistent.dll")
+    assert r["ok"] is False and r.get("note")
+
+
 def test_managed_non_dotnet_degrades(monkeypatch):
     # A non-.NET input degrades honestly rather than inventing members.
     from binoracle.workflows import managedquery as M
