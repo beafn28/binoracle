@@ -90,15 +90,28 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             import json
             info = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
     except Exception as e:
-        # 404 en esta API es LITERAL: el slug no existe en el directorio GRATUITO de WordPress.org.
-        # Confirmado en vivo con CVE-2026-5523 (Divi Form Builder, vendedor Divi Engine): el aviso
-        # oficial (Wordfence) lo documenta, pero el plugin se vende directo por el fabricante (zip
-        # desde su cuenta o el Marketplace de Elegant Themes), nunca sube al directorio gratuito.
-        # Esa es la causa mas probable de un 404 aqui, no necesariamente un slug mal escrito.
-        res.note = (f"plugin '{slug}' no resuelto en WordPress.org: {e}. Si es un plugin COMERCIAL/"
-                    f"premium (vendido directo por el fabricante, no en el directorio gratuito), "
-                    f"wordpress.org nunca lo tendra: pasa --source con la ruta a tu .zip ya "
-                    f"descargado, o una URL de descarga directa (https://.../plugin.zip)")
+        # 404 en esta API tiene VARIAS causas reales, no solo "slug mal escrito":
+        # 1) plugin COMERCIAL/premium (confirmado en vivo con CVE-2026-5523, Divi Form Builder):
+        #    nunca estuvo en el directorio gratuito, se vende directo por el fabricante.
+        # 2) plugin CERRADO/retirado del directorio (confirmado en vivo con CVE-2024-43982, Login
+        #    As Users: cerrado el 5-nov-2024 tras el aviso de seguridad) -- SI fue gratuito, pero
+        #    la API de info ya no lo lista. En este caso el zip de una VERSION CONCRETA a veces
+        #    sigue descargable directamente aunque la API de info ya no exista: si se pidio
+        #    --version, se intenta igualmente antes de rendirse.
+        if version:
+            step(f"la API de info fallo ({e}), pero se pidio la version {version}: probando la "
+                 f"descarga directa igualmente (algunos plugins cerrados siguen sirviendo zips "
+                 f"de versiones concretas aunque ya no esten listados)...")
+            return _download_wp_zip(slug, _WP_DOWNLOAD.format(slug=slug, version=version),
+                                    version, dest_dir, step, timeout, res)
+        res.note = (f"plugin '{slug}' no resuelto en WordPress.org: {e}. Posibles causas: (a) es "
+                    f"COMERCIAL/premium (vendido directo por el fabricante, nunca estuvo en el "
+                    f"directorio gratuito), o (b) fue CERRADO/retirado del directorio (frecuente "
+                    f"tras un aviso de seguridad) -- en este ultimo caso, prueba pasando --version "
+                    f"con la version vulnerable exacta: a veces el zip de esa version concreta "
+                    f"sigue descargable aunque el plugin ya no aparezca listado. Si nada de esto "
+                    f"funciona, pasa --source con la ruta a tu .zip ya descargado, o una URL de "
+                    f"descarga directa (https://.../plugin.zip)")
         return res
     if not isinstance(info, dict) or info.get("error"):
         res.note = f"plugin '{slug}' no encontrado en WordPress.org (sin detalle adicional)"
@@ -115,7 +128,16 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
     else:
         url = info.get("download_link") or _WP_DOWNLOAD_LATEST.format(slug=slug)
         res.resolved_version = info.get("version", "")
-    step(f"descargando {slug} {res.resolved_version or '(ultima)'} ({url})...")
+    return _download_wp_zip(slug, url, res.resolved_version, dest_dir, step, timeout, res)
+
+
+def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, step,
+                     timeout: float, res: "SourceFetchResult") -> "SourceFetchResult":
+    """Descarga+extrae un zip de plugin de WordPress.org ya resuelto a una URL concreta. Compartido
+    por el camino normal (API de info resuelta) y el de respaldo (API caida pero se pidio una
+    version concreta, ver fetch_wordpress_plugin)."""
+    res.resolved_version = resolved_version
+    step(f"descargando {slug} {resolved_version or '(ultima)'} ({url})...")
     dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_wp_")
     zfd, zpath = tempfile.mkstemp(prefix="binoracle_wp_", suffix=".zip")
     os.close(zfd)

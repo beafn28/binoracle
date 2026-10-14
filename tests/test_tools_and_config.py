@@ -4012,6 +4012,34 @@ def test_websource_wp_plugin_404_mentions_commercial_plugin_possibility(monkeypa
     assert "--source" in r.note
 
 
+def test_websource_wp_plugin_404_with_version_tries_direct_download_fallback(monkeypatch):
+    # Regresion real encontrada en vivo con CVE-2024-43982 (Login As Users): la API de info de
+    # WordPress.org puede dar 404 no porque el plugin sea comercial, sino porque fue CERRADO del
+    # directorio tras el aviso de seguridad (confirmado: cerrado el 5-nov-2024). Antes, binoracle
+    # se rendia ahi mismo sin intentar nada mas. Si se pidio --version, debe intentar igualmente
+    # la descarga directa versionada (a veces sigue sirviendose aunque la API ya no liste el plugin).
+    import binoracle.workflows.websource as ws
+
+    calls = []
+    def fake_urlopen(url, timeout=30.0):
+        calls.append(url)
+        if "api.wordpress.org" in url:
+            raise Exception("HTTP Error 404: Not Found")
+        raise Exception("tampoco hay red real en el test; solo nos interesa que lo intento")
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+    r = ws.fetch_wordpress_plugin("login-as-users", version="1.4.3")
+    assert any("downloads.wordpress.org" in c and "1.4.3" in c for c in calls), calls
+    assert r.ok is False   # en el test no hay red real para completar la descarga
+    assert "fallo descargando" in r.note
+
+    # sin --version, el 404 de la API sigue sin intentar nada mas (no hay version concreta que
+    # probar a ciegas) -- mismo comportamiento que antes, mensaje honesto con las dos causas.
+    calls.clear()
+    r2 = ws.fetch_wordpress_plugin("login-as-users")
+    assert not any("downloads.wordpress.org" in c for c in calls)
+    assert "CERRADO" in r2.note or "cerrado" in r2.note.lower()
+
+
 def test_websource_detect_plugin_folder_single_dir(tmp_path):
     (tmp_path / "AnyNameAtAll").mkdir()
     (tmp_path / "AnyNameAtAll" / "x.php").write_text("<?php echo 1;")
