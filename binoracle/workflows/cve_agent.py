@@ -37,13 +37,19 @@ class Investigation:
 
 
 _RESEARCH_SYS = (
-    "Eres un investigador de explotacion de binarios para retos AUTORIZADOS (CTF/research). Analizas "
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Analizas "
     "una vulnerabilidad y propones un plan tecnico. Responde SOLO con JSON valido con las claves: "
-    "vuln_class (una de: stack-overflow, heap-overflow, uaf, double-free, format-string, oob-write, "
-    "oob-read, integer-overflow, type-confusion, u otra), primitive (que primitiva concede), "
-    "target_binary (que binario/componente concreto habria que obtener para explotarlo), trigger "
-    "(como se alcanza el codigo vulnerable: stdin, argumento, fichero, peticion de red...), strategy "
-    "(estrategia de explotacion en una frase), steps (lista de pasos concretos). Se tecnico y breve."
+    "vuln_class (memoria: stack-overflow, heap-overflow, uaf, double-free, format-string, oob-write, "
+    "oob-read, integer-overflow, type-confusion; WEB/APP: missing-authorization, idor, auth-bypass, "
+    "sqli, xss, ssrf, command-injection, rce, path-traversal, file-upload, deserialization, xxe, "
+    "ssti, csrf, open-redirect; u otra), primitive (que concede), target_binary (binario/componente "
+    "a obtener, o el plugin/paquete), source_url (si lo sabes: repo git o zip del codigo vulnerable; "
+    "para plugins WordPress deja el slug), affected_version (version afectada, p.ej. '5.1.8'), "
+    "vulnerable_functions (lista de funciones/metodos citados, p.ej. update_user), trigger (como se "
+    "alcanza: stdin/argumento/fichero/peticion HTTP...), http_method (GET/POST si es web), endpoint "
+    "(ruta/accion si es web, p.ej. /wp-admin/admin-ajax.php?action=...), parameters (lista de "
+    "parametros relevantes), auth_required (true/false/rol minimo), strategy (una frase), steps "
+    "(lista de pasos concretos). Se tecnico y breve; deja vacio lo que no sepas."
 )
 
 
