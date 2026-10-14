@@ -212,37 +212,71 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
             plugin_dir = fr.plugin_dir or (fr.source if fr.kind == "wordpress-plugin" else "")
             if (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                     and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
-                step("intentando verificacion DINAMICA (WordPress+MySQL efimero en Docker)..." if es
-                     else "attempting DYNAMIC verification (ephemeral WordPress+MySQL in Docker)...")
-                from .wpverify import verify_wordpress_account_takeover
-                wr = verify_wordpress_account_takeover(
-                    fr.local_path, plugin_dir, notes.get("endpoint"),
-                    notes.get("http_method") or "POST", notes.get("parameters") or [],
-                    on_step=step)
-                inv.dynamic_verify = {"attempted": True, "available": wr.available,
-                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
-                                      "logs": wr.logs}
-                if wr.verified:
-                    inv.verified = True
-                    inv.verified_detail = wr.detail
-                    inv.verified_evidence = wr.evidence
-                elif not wr.available:
-                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
-                                         if wr.limitations else
-                                         "verificacion dinamica no disponible (sin Docker)"))
+                # el mecanismo exacto de account-takeover no es siempre el mismo (ver wpverify.py):
+                # unos plugins te dejan CAMBIAR la password/email de otro usuario (confirmable con
+                # un segundo login), otros te dejan CONVERTIRTE DIRECTAMENTE en su sesion sin tocar
+                # ninguna credencial (p.ej. CVE-2024-43982 en Login As Users). No se le pide al
+                # analista que lo sepa de antemano: se deriva de la FORMA de los parametros que la
+                # hipotesis del LLM (o los hints) ya trae -- si hay un parametro de email/password,
+                # es el primer caso; si solo hay un ID objetivo, el segundo.
+                from .wpverify import (verify_wordpress_account_takeover,
+                                       verify_wordpress_direct_login_as, _pick_param,
+                                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
+                params = notes.get("parameters") or []
+                id_p = _pick_param(params, _ID_HINTS)
+                email_p = _pick_param(params, _EMAIL_HINTS)
+                pass_p = _pick_param(params, _PASS_HINTS)
+                wr = None
+                if email_p or pass_p:
+                    step(("intentando verificacion DINAMICA -- patron de cambio de credencial "
+                         "(WordPress+MySQL efimero en Docker)..." if es else
+                         "attempting DYNAMIC verification -- credential-change pattern "
+                         "(ephemeral WordPress+MySQL in Docker)..."))
+                    wr = verify_wordpress_account_takeover(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", params, on_step=step)
+                elif id_p:
+                    step(("intentando verificacion DINAMICA -- patron de login-as directo "
+                         "(WordPress+MySQL efimero en Docker)..." if es else
+                         "attempting DYNAMIC verification -- direct login-as pattern "
+                         "(ephemeral WordPress+MySQL in Docker)..."))
+                    wr = verify_wordpress_direct_login_as(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "GET", params, on_step=step)
+                if wr is None:
+                    inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
+                                         "ni un parametro de email/password ni uno de ID "
+                                         "reconocible; afina 'parameters' en la hipotesis del LLM "
+                                         "o pasalos a mano" if es else
+                                         "dynamic verification not attempted: the hypothesis has "
+                                         "neither a recognizable email/password parameter nor an "
+                                         "ID one; refine 'parameters' in the LLM hypothesis or "
+                                         "pass them by hand"))
                 else:
-                    inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
-                                         f"{wr.detail}" if es else
-                                         f"dynamic verification attempted but not confirmed: "
-                                         f"{wr.detail}"))
-                    # si wpverify.py capturo logs del contenedor que no arranco a tiempo (p.ej.
-                    # MySQL/Apache bajo emulacion lenta), se adjuntan recortados: evita tener que
-                    # reproducir el fallo a ciegas para diagnosticarlo.
-                    for entry in wr.logs:
-                        if entry.startswith("docker logs"):
-                            head, _, body = entry.partition("\n")
-                            trimmed = "\n".join(body.splitlines()[-15:])
-                            inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+                    inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                          "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                          "logs": wr.logs}
+                    if wr.verified:
+                        inv.verified = True
+                        inv.verified_detail = wr.detail
+                        inv.verified_evidence = wr.evidence
+                    elif not wr.available:
+                        inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                             if wr.limitations else
+                                             "verificacion dinamica no disponible (sin Docker)"))
+                    else:
+                        inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
+                                             f"{wr.detail}" if es else
+                                             f"dynamic verification attempted but not confirmed: "
+                                             f"{wr.detail}"))
+                        # si wpverify.py capturo logs del contenedor que no arranco a tiempo (p.ej.
+                        # MySQL/Apache bajo emulacion lenta), se adjuntan recortados: evita tener
+                        # que reproducir el fallo a ciegas para diagnosticarlo.
+                        for entry in wr.logs:
+                            if entry.startswith("docker logs"):
+                                head, _, body = entry.partition("\n")
+                                trimmed = "\n".join(body.splitlines()[-15:])
+                                inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
             elif (fr.kind in ("local-zip", "zip-url") and not plugin_dir
                   and inv.vuln_class in ("missing-authorization", "idor")):
                 inv.blockers.append(("verificacion dinamica no intentada: no se pudo determinar "

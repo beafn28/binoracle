@@ -4080,10 +4080,46 @@ def test_cve_agent_dynamic_verify_gate_accepts_local_zip_not_only_wordpress_plug
 
     inv = Investigation(cve_id="CVE-2026-5523")
     inv.vuln_class = "missing-authorization"
+    # 'pass' en parameters es lo que hace que el gate elija el patron de cambio de credencial
+    # (verify_wordpress_account_takeover) en vez del de login-as directo -- ver el test dedicado
+    # test_cve_agent_dynamic_verify_gate_picks_login_as_when_only_id_param para ese otro camino.
     inv.llm_notes = {"source_url": "/tmp/divi-form-builder.zip", "endpoint": "/x", "http_method": "POST",
-                     "parameters": ["user_id"], "vulnerable_functions": []}
+                     "parameters": ["user_id", "pass"], "vulnerable_functions": []}
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("slug") == "DiviFormBuilder"
+    assert inv.verified is True
+
+
+def test_cve_agent_dynamic_verify_gate_picks_login_as_when_only_id_param(monkeypatch):
+    # El usuario pidio que esto lo decida el pipeline solo, sin que el analista tenga que saber de
+    # antemano si el plugin cambia una credencial o deja un login-as directo (CVE-2024-43982 en
+    # Login As Users es de este segundo tipo: solo un ID objetivo, nunca un email/password).
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+        return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
+                                           local_path="/tmp/fake", plugin_dir="LoginAsUsers")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_account_takeover(*a, **k):
+        called["account_takeover"] = True
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True)
+    def fake_login_as(plugin_dir_path, slug, endpoint, method, params, **k):
+        called["login_as"] = slug
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="LOGIN-AS confirmado (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_account_takeover", fake_account_takeover)
+    monkeypatch.setattr(wpverify, "verify_wordpress_direct_login_as", fake_login_as)
+
+    inv = Investigation(cve_id="CVE-2024-43982")
+    inv.vuln_class = "missing-authorization"
+    inv.llm_notes = {"source_url": "/tmp/login-as-users.zip", "endpoint": "/x", "http_method": "GET",
+                     "parameters": ["user_id"], "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("login_as") == "LoginAsUsers"
+    assert "account_takeover" not in called
     assert inv.verified is True
 
 

