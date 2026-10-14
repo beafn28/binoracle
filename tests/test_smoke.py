@@ -486,6 +486,32 @@ def test_native_query_static_tools():
     assert cp["ok"] and cp["reachable"] and cp["path"][0]["name"].endswith("main")
 
 
+def test_recover_javascript_sources(tmp_path):
+    # Reconstruct the original source tree a bundle shipped in its .js.map (sourcesContent), with
+    # path traversal neutralized so nothing escapes out_dir. Nothing executed.
+    import json
+    import os
+    from binoracle.workflows.jsinspect import recover_js_sources, render_js_recover, _safe_rel
+    assert _safe_rel("webpack://app/../../etc/passwd") == os.path.join("app", "etc", "passwd")
+    assert _safe_rel("/abs/x.js") == os.path.join("abs", "x.js")
+    mp = tmp_path / "bundle.js.map"
+    mp.write_text(json.dumps({
+        "version": 3,
+        "sources": ["webpack://app/src/a.js", "webpack://app/../evil.js", "b.js"],
+        "sourcesContent": ["console.log('a')", "EVIL", "export const b=1"]}))
+    out = tmp_path / "recovered"
+    r = recover_js_sources(str(mp), out_dir=str(out))
+    assert r["ok"] and r["recovered"] == 3 and r["with_content"] == 3
+    assert (out / "app" / "src" / "a.js").read_text() == "console.log('a')"
+    # the "../evil.js" entry is contained under out_dir, never written outside it
+    assert not (tmp_path / "evil.js").exists()
+    assert "Recuperacion" in render_js_recover(r)
+    # a map without sourcesContent yields nothing to recover, honestly
+    mp2 = tmp_path / "nc.js.map"
+    mp2.write_text(json.dumps({"version": 3, "sources": ["x.js"]}))
+    assert recover_js_sources(str(mp2))["recovered"] == 0
+
+
 def test_native_query_degrades_without_r2(monkeypatch):
     # With no r2 session, every native-query tool degrades honestly (available False), never crashes.
     from binoracle.oracles import r2session

@@ -90,6 +90,117 @@ def _inspect_sourcemap(path: str) -> dict:
             "limitations": ["source map: rutas de fuentes originales; no reconstruye el arbol completo"]}
 
 
+def _safe_rel(source: str) -> str | None:
+    """Map a source-map `sources` entry to a safe relative output path (no traversal, no absolute,
+    strip the webpack:// etc. scheme and leading ../). None if nothing usable remains."""
+    import posixpath
+    s = str(source)
+    for scheme in ("webpack://", "rollup://", "esbuild://"):
+        if s.startswith(scheme):
+            s = s[len(scheme):]
+    s = s.split("://", 1)[-1]                 # drop any remaining scheme
+    s = s.lstrip("/")
+    parts = []
+    for part in s.replace("\\", "/").split("/"):
+        if part in ("", ".", ".."):
+            continue
+        parts.append(part)
+    rel = posixpath.join(*parts) if parts else None
+    return rel
+
+
+def recover_js_sources(path: str, out_dir: str = None, max_files: int = 5000) -> dict:
+    """recover_javascript_sources: reconstruct the ORIGINAL source tree a bundle shipped in its
+    `.js.map` via sourcesContent. Reads a `.js.map` (or a `.js` whose trailing sourceMappingURL
+    points at a sibling `.map`). Writes nothing unless `out_dir` is given. Nothing executed."""
+    import json
+    import os
+    from ._artifact import read_bounded, ArtifactTooLarge
+
+    mappath = path
+    if os.path.isfile(path) and not path.endswith(".map"):
+        # follow a trailing //# sourceMappingURL=... to a sibling .map (no remote fetch)
+        try:
+            tail = read_bounded(path)[-4096:].decode("utf-8", "replace")
+        except Exception:
+            tail = ""
+        hint = None
+        for line in tail.splitlines():
+            if "sourceMappingURL=" in line:
+                hint = line.split("sourceMappingURL=", 1)[1].strip()
+        cand = os.path.join(os.path.dirname(path), hint) if hint and "://" not in hint else path + ".map"
+        if os.path.isfile(cand):
+            mappath = cand
+        elif os.path.isfile(path + ".map"):
+            mappath = path + ".map"
+        else:
+            return {"ok": True, "tool": "js_recover", "recovered": 0,
+                    "note": "no se encontro un .js.map adyacente con sourcesContent",
+                    "limitations": ["solo lectura local; no se descargan source maps remotos"]}
+    try:
+        doc = json.loads(read_bounded(mappath).decode("utf-8", "replace"))
+    except ArtifactTooLarge as e:
+        return {"ok": False, "tool": "js_recover", "note": str(e)}
+    except Exception as e:
+        return {"ok": False, "tool": "js_recover", "note": f"no es un source map JSON: {e}"}
+
+    sources = doc.get("sources") or []
+    contents = doc.get("sourcesContent") or []
+    if not contents:
+        return {"ok": True, "tool": "js_recover", "recovered": 0, "source_count": len(sources),
+                "note": "el source map no incluye sourcesContent (solo rutas); nada que reconstruir",
+                "limitations": ["sin sourcesContent no hay codigo original embebido"]}
+
+    files = []
+    written = 0
+    base = os.path.abspath(out_dir) if out_dir else None
+    if base:
+        os.makedirs(base, exist_ok=True)
+    for i, src in enumerate(sources[:max_files]):
+        if i >= len(contents) or contents[i] is None:
+            continue
+        rel = _safe_rel(src)
+        if not rel:
+            continue
+        code = contents[i]
+        files.append({"path": rel, "bytes": len(code.encode("utf-8", "replace"))})
+        if base:
+            dest = os.path.join(base, rel)
+            # containment check: never write outside out_dir
+            if not os.path.abspath(dest).startswith(base + os.sep):
+                continue
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "w", encoding="utf-8") as f:
+                    f.write(code)
+                written += 1
+            except Exception:
+                pass
+    return {"ok": True, "tool": "js_recover", "map": mappath, "source_count": len(sources),
+            "with_content": len(files), "recovered": written,
+            "files": [f["path"] for f in files[:200]], "out_dir": base,
+            "note": (f"reconstruidos {written} fichero(s) en {base}" if base
+                     else f"{len(files)} fuente(s) con codigo embebido (pasa out_dir para escribir)"),
+            "limitations": ["reconstruye desde sourcesContent del .js.map; no deofusca ni re-bundlea",
+                            "rutas saneadas (sin traversal); objetivo autorizado"]}
+
+
+def render_js_recover(r: dict) -> str:
+    out = ["## Recuperacion de fuentes JS (desde source map)\n"]
+    if not r.get("ok"):
+        return "\n".join(out + [f"- No disponible: {r.get('note','')}"])
+    out.append(f"- fuentes en el mapa: {r.get('source_count', 0)} | con codigo embebido: "
+               f"{r.get('with_content', 0)} | escritas: {r.get('recovered', 0)}")
+    if r.get("out_dir"):
+        out.append(f"- directorio: `{r['out_dir']}`")
+    for f in (r.get("files") or [])[:40]:
+        out.append(f"  - {f}")
+    out.append("- " + r.get("note", ""))
+    for lim in r.get("limitations", []):
+        out.append(f"\n_limite: {lim}_")
+    return "\n".join(out)
+
+
 def inspect_js(path: str) -> dict:
     """Inspect a .js file, a .js.map, or an app directory. Returns a static summary."""
     if os.path.isfile(path) and (path.endswith(".map") or path.endswith(".js.map")):

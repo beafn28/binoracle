@@ -152,7 +152,7 @@ ideas were re-implemented in Python with attribution, not copied.)
 | PE | `peinspect` | imports/exports, sections, resources |
 | APK | `apkinspect` | manifest + decompile path |
 | Java / JAR | `jarinspect` | classes, manifest, constant pool |
-| JavaScript / Electron | `jsinspect` | bundle/entrypoint analysis |
+| JavaScript / Electron | `jsinspect` | bundle/entrypoint analysis; `recover_javascript_sources` rebuilds the original source tree from a `.js.map` `sourcesContent` (path-traversal-safe) |
 | **Flutter / Dart AOT** | `flutterinspect` | resolves `_kDart*Snapshot*` symbols (section `.dynsym` **or** stripped-`ET_DYN` PT_DYNAMIC), maps them through PT_LOAD, parses each **snapshot header** — version hash (SDK/engine revision) + features string → **target arch** (x64/arm64/…) and **runtime mode** (product/profile/release); the **libflutter.so engine** (build-id revision, Dart version line, Impeller/Skia backend, Vulkan/GLES API, toolchain); and the **flutter_assets** bundle (AOT vs debug/JIT; **AssetManifest.bin decoded via a bounded StandardMessageCodec reader** — declared assets + variant count; FontManifest fonts, shaders, NOTICES, version.json); plus ELF arch, per-ABI, Dart VM version (absence reported, not guessed) |
 | ASAR (Electron) | `asarinspect` | archive listing + file extraction |
 | macOS plist | `plistinspect` | binary & XML plists |
@@ -219,9 +219,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 72 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 73 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 124 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 125 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

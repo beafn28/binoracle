@@ -520,6 +520,19 @@ def _h_js(args):
     return render_js(inspect_js(b))
 
 
+@_tool("recover_javascript_sources", "Reconstruye el ARBOL de fuentes original que un bundle "
+       "incluyo en su .js.map (sourcesContent). Acepta un .js.map o un .js con sourceMappingURL a un "
+       ".map adyacente (sin descargas remotas). Con 'out_dir' escribe los ficheros (rutas saneadas, "
+       "sin traversal); sin el, solo lista. No ejecuta nada.",
+       {"binary": {"type": "string", "description": "ruta a un .js.map o .js"},
+        "out_dir": {"type": "string", "description": "directorio de salida (opcional; si falta, solo lista)"}},
+       ["binary"])
+def _h_js_recover(args):
+    from .workflows.jsinspect import recover_js_sources, render_js_recover
+    a = args or {}
+    return render_js_recover(recover_js_sources(_binary(a), out_dir=a.get("out_dir")))
+
+
 @_tool("dynamic_adb", "Analisis RUNTIME de un dispositivo Android via adb (caller-supplied; SEPARADO "
        "del nucleo estatico; solo objetivos autorizados; salida no confiable). op: devices|packages|"
        "processes|logcat|getprop|apk-path. 'package' para apk-path, 'serial' para elegir dispositivo.",
