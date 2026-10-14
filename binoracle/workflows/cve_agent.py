@@ -33,6 +33,11 @@ class Investigation:
     poc_kind: str = "pwntools"                        # "pwntools" (memoria) | "http" | "html" (web)
     verified: bool = False
     verified_detail: str = ""
+    verified_evidence: dict = field(default_factory=dict)   # datos REALES de la ejecucion verificada
+                                                              # (payload enviado, admin_id, status
+                                                              # code, password/email reales que
+                                                              # funcionaron) -- de un laboratorio
+                                                              # desechable, nunca de un objetivo real
     trigger: str = ""                                 # disparador descubierto por auto-fuzzing
     blockers: List[str] = field(default_factory=list)
     steps: List[str] = field(default_factory=list)
@@ -149,6 +154,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
                 if wr.verified:
                     inv.verified = True
                     inv.verified_detail = wr.detail
+                    inv.verified_evidence = wr.evidence
                 elif not wr.available:
                     inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
                                          if wr.limitations else
@@ -415,6 +421,44 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
     if inv.verified:
         out.append("\n> **" + ("EXPLOIT VERIFICADO" if es else "VERIFIED EXPLOIT")
                    + "** (sandbox): " + inv.verified_detail)
+        if inv.verified_evidence:
+            ev = inv.verified_evidence
+            out.append("\n### " + ("Evidencia real de la ejecucion (laboratorio efimero)" if es else
+                                   "Real evidence from the run (ephemeral lab)"))
+            out.append(("_Datos reales de la peticion que SE EJECUTO y SE CONFIRMO de verdad contra "
+                        "el WordPress desechable de arriba -- no una plantilla. El laboratorio ya "
+                        "esta destruido: estas credenciales no abren nada, se muestran como prueba "
+                        "de que el flujo corrio de verdad, no que se simulo._" if es else
+                        "_Real data from the request that WAS ACTUALLY SENT and CONFIRMED against "
+                        "the throwaway WordPress above -- not a template. The lab is already torn "
+                        "down: these credentials unlock nothing, shown as proof the flow really "
+                        "ran, not that it was simulated._"))
+            rows = [
+                (("Usuario de bajo privilegio" if es else "Low-privilege user"),
+                 f"`{ev.get('login_bajo_privilegio')}` / `{ev.get('login_bajo_privilegio_password')}`"),
+                (("Admin objetivo (laboratorio)" if es else "Target admin (lab)"),
+                 f"`{ev.get('admin_user')}` (id={ev.get('admin_id')})"),
+                (("Parametros (rol -> nombre real)" if es else "Parameters (role -> real name)"),
+                 ", ".join(f"{role}={name}" for role, name in
+                          (("id", ev.get("id_param")), ("email", ev.get("email_param")),
+                           ("password", ev.get("pass_param"))) if name)),
+                (("Peticion enviada" if es else "Request sent"),
+                 f"`{ev.get('metodo')} {ev.get('endpoint')}`"),
+                (("Payload real" if es else "Real payload"), f"`{ev.get('payload_enviado')}`"),
+                (("Codigo de respuesta" if es else "Response status"),
+                 str(ev.get("status_code_respuesta"))),
+            ]
+            if ev.get("password_nueva_confirmada"):
+                rows.append((("Password fijada y CONFIRMADA por segundo login" if es else
+                             "Password set and CONFIRMED by second login"),
+                            f"`{ev['password_nueva_confirmada']}`"))
+            if ev.get("email_nuevo_confirmado"):
+                rows.append((("Email fijado y CONFIRMADO leyendo el usuario" if es else
+                             "Email set and CONFIRMED by reading the user"),
+                            f"`{ev['email_nuevo_confirmado']}` (leido: `{ev.get('email_leido_tras_ataque')}`)"))
+            for label, value in rows:
+                if value and value not in ("None", "`None`"):
+                    out.append(f"- **{label}**: {value}")
     if inv.blockers:
         out.append("\n### " + ("Bloqueos para el exploit real" if es else "Blockers for a real exploit"))
         out += [f"- {b}" for b in inv.blockers]

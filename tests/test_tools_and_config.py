@@ -3627,6 +3627,49 @@ def test_cve_agent_web_investigation_never_claims_verified(monkeypatch):
     assert any("source_url" in b or "autorizado" in b for b in inv.blockers)
 
 
+def test_cve_agent_renders_real_evidence_not_a_placeholder_on_verified(monkeypatch):
+    # El usuario pidio evidencia PURA, no plantilla: cuando la verificacion dinamica confirma el
+    # account-takeover, el informe debe traer el payload REAL que se envio, el admin_id REAL del
+    # laboratorio, el codigo de respuesta REAL y la password REAL que el segundo login confirmo --
+    # no placeholders. Son datos de un laboratorio ya destruido, inofensivos de mostrar.
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation, render_investigation
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    inv = Investigation(cve_id="CVE-2026-5523")
+    inv.vuln_class = "missing-authorization"
+    inv.llm_notes = {"http_method": "POST", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+                     "parameters": ["user_id", "email", "pass"]}
+
+    fake_wr = WpVerifyResult(
+        ok=True, verified=True,
+        detail="ACCOUNT TAKEOVER confirmado: login como 'binoracle_admin' funciono de verdad (admin_id=1)",
+        evidence={"login_bajo_privilegio": "binoracle_subscriber", "login_bajo_privilegio_password": "x1y2",
+                  "admin_user": "binoracle_admin", "admin_id": "1",
+                  "id_param": "user_id", "email_param": "email", "pass_param": "pass",
+                  "metodo": "POST", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+                  "payload_enviado": {"user_id": "1", "email": "takeover@x.invalid", "pass": "realpass123"},
+                  "status_code_respuesta": 200, "password_nueva_confirmada": "realpass123"})
+
+    import binoracle.workflows.websource as websource
+    from binoracle.workflows.websource import SourceFetchResult
+    monkeypatch.setattr(websource, "fetch_source",
+                        lambda *a, **k: SourceFetchResult(ok=True, kind="local-zip", source="x",
+                                                          local_path="/tmp/x", plugin_dir="Plugin"))
+    monkeypatch.setattr(websource, "grep_vulnerable_functions", lambda *a, **k: {"found": {}, "not_found": []})
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "verify_wordpress_account_takeover", lambda *a, **k: fake_wr)
+    inv.llm_notes["source_url"] = "/tmp/x.zip"
+
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert inv.verified is True
+    assert inv.verified_evidence.get("status_code_respuesta") == 200
+    rendered = render_investigation(inv, lang="es")
+    assert "realpass123" in rendered            # la password REAL, no un placeholder
+    assert "takeover@x.invalid" in rendered
+    assert "admin_id=1" in rendered or "id=1" in rendered
+    assert "Evidencia real" in rendered
+
+
 def test_wpverify_pick_param_heuristic():
     from binoracle.workflows.wpverify import _pick_param, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
     assert _pick_param(["user_id", "email", "pass"], _ID_HINTS) == "user_id"
