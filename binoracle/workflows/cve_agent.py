@@ -19,6 +19,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+_B64_PNG_PREFIX = "data:image/png;base64,"
+
 
 @dataclass
 class Investigation:
@@ -459,6 +461,31 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
             for label, value in rows:
                 if value and value not in ("None", "`None`"):
                     out.append(f"- **{label}**: {value}")
+        shot_before = (inv.verified_evidence or {}).get("screenshot_before_subscriber_png_b64")
+        shot_after = (inv.verified_evidence or {}).get("screenshot_admin_dashboard_png_b64")
+        if shot_before or shot_after:
+            out.append("\n" + ("**Capturas de pantalla (evidencia visual real, navegador "
+                               "headless contra el laboratorio efimero):**" if es else
+                               "**Screenshots (real visual evidence, headless browser against "
+                               "the ephemeral lab):**"))
+            if shot_before:
+                out.append(("_Antes: sesion del usuario de bajo privilegio, su propio "
+                           "perfil._" if es else "_Before: the low-privilege user's own "
+                           "session, their own profile._"))
+                out.append(f"![antes]({_B64_PNG_PREFIX}{shot_before})")
+            if shot_after:
+                out.append(("_Despues: panel de administracion de WordPress, YA con la "
+                           "password fijada por el ataque._" if es else
+                           "_After: the WordPress admin dashboard, logged in with the "
+                           "password the attack set._"))
+                out.append(f"![despues]({_B64_PNG_PREFIX}{shot_after})")
+        elif inv.dynamic_verify.get("attempted"):
+            out.append(("\n_(sin captura de pantalla: Playwright no esta disponible en este "
+                       "contenedor -- la evidencia textual de arriba, el payload/password/"
+                       "status code reales, es igualmente valida sin ella)_" if es else
+                       "\n_(no screenshot: Playwright is not available in this container -- "
+                       "the textual evidence above, the real payload/password/status code, "
+                       "is equally valid without it)_"))
     if inv.blockers:
         out.append("\n### " + ("Bloqueos para el exploit real" if es else "Blockers for a real exploit"))
         out += [f"- {b}" for b in inv.blockers]

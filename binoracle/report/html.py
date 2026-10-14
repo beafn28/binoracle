@@ -63,6 +63,12 @@ def _md_rich(s: str) -> str:
 
     def inline(t: str) -> str:
         h = _esc(t)
+        # imagen embebida (evidencia visual: capturas de pantalla de wpverify.py como data URI) --
+        # antes de negrita/codigo porque el base64 puede contener secuencias que no deben tocarse.
+        h = _re.sub(r"!\[([^\]]*)\]\((data:image/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]+)\)",
+                   r'<img src="\2" alt="\1" loading="lazy" '
+                   r'style="max-width:100%;border:1px solid var(--border,#333);'
+                   r'border-radius:8px;margin:10px 0;display:block">', h)
         h = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
         h = _re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
         return h

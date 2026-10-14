@@ -101,6 +101,13 @@ RUN pip install flare-capa     || echo 'WARN: flare-capa (capa) no instalado'
 RUN pip install angr           || echo 'WARN: angr no instalado (simbolico opcional)'
 # seccomp-tools (gem): volcar el filtro seccomp de un binario.
 RUN gem install seccomp-tools --no-document || echo 'WARN: seccomp-tools no instalado'
+# Playwright (Chromium headless): capturas de pantalla reales de wpverify.py (evidencia visual del
+# account-takeover confirmado) y browser_observe() de dynamic.py. Best-effort e independiente del
+# resto: sin esto, la verificacion dinamica sigue dando verified=True con evidencia TEXTUAL (payload/
+# password/status code reales), solo sin la foto. --with-deps instala las librerias del sistema que
+# Chromium headless necesita (fuentes, libnss3, etc.) en Debian/Ubuntu.
+RUN (pip install playwright && playwright install --with-deps chromium) \
+    || echo 'WARN: Playwright/Chromium no instalado; las capturas de pantalla degradan (texto igual)'
 
 # Oraculos de analisis + pwntools (angr se omite a proposito: es enorme y carga perezosamente;
 # instalalo con `pip install angr` dentro del contenedor si lo necesitas para reachability simbolica).

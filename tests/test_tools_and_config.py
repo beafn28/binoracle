@@ -3670,6 +3670,59 @@ def test_cve_agent_renders_real_evidence_not_a_placeholder_on_verified(monkeypat
     assert "Evidencia real" in rendered
 
 
+def test_md_rich_renders_base64_image_as_img_tag():
+    # Soporte nuevo: las capturas de wpverify.py (PNG base64) se insertan como markdown
+    # ![alt](data:image/png;base64,...) en el informe -- _md_rich debe convertirlo en un <img>
+    # real, no escaparlo como texto.
+    from binoracle.report.html import _md_rich
+    tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    html = _md_rich(f"![captura]({_PNG_B64_PREFIX}{tiny})")
+    assert f'<img src="{_PNG_B64_PREFIX}{tiny}"' in html
+    assert "alt=\"captura\"" in html
+
+
+_PNG_B64_PREFIX = "data:image/png;base64,"
+
+
+def test_wpverify_screenshot_authenticated_degrades_without_playwright(monkeypatch):
+    # Mismo patron de degradacion honesta que el resto de oraculos opcionales (frida/angr/...):
+    # sin Playwright instalado, la captura devuelve None sin romper la verificacion dinamica.
+    import binoracle.workflows.wpverify as wv
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "playwright.sync_api" or name.startswith("playwright"):
+            raise ImportError("no playwright")
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    import requests
+    sess = requests.Session()
+    assert wv._screenshot_authenticated("http://127.0.0.1:1", sess, "/wp-admin/") is None
+
+
+def test_cve_agent_renders_screenshots_when_present_in_evidence():
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+    tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    inv = Investigation(cve_id="CVE-TEST")
+    inv.verified = True
+    inv.verified_detail = "test"
+    inv.verified_evidence = {"screenshot_admin_dashboard_png_b64": tiny,
+                             "screenshot_before_subscriber_png_b64": tiny}
+    inv.dynamic_verify = {"attempted": True}
+    md = render_investigation(inv, lang="es")
+    assert "Capturas de pantalla" in md
+    assert md.count("data:image/png;base64,") == 2
+
+    # sin capturas pero con verificacion dinamica intentada: dice honestamente por que faltan
+    inv2 = Investigation(cve_id="CVE-TEST-2")
+    inv2.verified = True
+    inv2.verified_detail = "test"
+    inv2.dynamic_verify = {"attempted": True}
+    md2 = render_investigation(inv2, lang="es")
+    assert "Playwright no esta disponible" in md2
+
+
 def test_wpverify_pick_param_heuristic():
     from binoracle.workflows.wpverify import _pick_param, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
     assert _pick_param(["user_id", "email", "pass"], _ID_HINTS) == "user_id"
