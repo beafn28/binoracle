@@ -3737,3 +3737,23 @@ def test_wpverify_live_account_takeover_and_negative_control(tmp_path):
                                                 "POST", params, on_step=lambda m: None, budget_s=420)
     assert r_fixed.ok is True, r_fixed.detail
     assert r_fixed.verified is False, "falso positivo: el plugin PARCHEADO no deberia verificar"
+
+
+def test_cli_argv_survives_pwntools_import_mutation():
+    # Regresion real: pwntools MUTA sys.argv al importarse (escanea sus propios flags de
+    # log-level/terminal), y varios workflows que cli.py importa a nivel de modulo (rop.py,
+    # shellcode.py, fmtstring.py...) tiran de pwntools -- asi que para cuando main() llegaba a
+    # leer sys.argv, un token ya habia desaparecido. Confirmado en vivo: 'binoracle investigate
+    # CVE-X --method POST' perdia 'POST' (consumido como si fuera el valor de --method, con
+    # argparse quejandose "expected one argument"). Simula el entry point instalado
+    # (`binoracle = "binoracle.cli:main"`, pyproject.toml): import + main() sin argv explicito,
+    # leyendo sys.argv real.
+    import subprocess
+    import sys
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.argv=['binoracle','investigate','CVE-TEST','--method','POST',"
+         "'--endpoint','/x?a=1']; from binoracle.cli import main; sys.exit(main())"],
+        cwd=".", capture_output=True, text=True, timeout=30)
+    assert "http_method=POST" in out.stdout, (out.stdout, out.stderr)
+    assert "expected one argument" not in out.stderr

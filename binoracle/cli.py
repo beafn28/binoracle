@@ -5,6 +5,16 @@ import argparse
 import sys
 from pathlib import Path
 
+# REGRESION encontrada en vivo (`binoracle investigate ... --method POST` perdia "POST" de
+# sys.argv): pwntools escanea y MUTA sys.argv al importarse (busca sus propios flags de
+# log-level/terminal), y los imports de abajo (p.ej. .workflows.rop) tiran de pwntools a nivel
+# de MODULO. El entry point instalado (`binoracle = "binoracle.cli:main"`, ver pyproject.toml)
+# hace `from binoracle.cli import main` antes de llamar a main() -- para cuando main() lee
+# sys.argv, ya esta mutado. Se captura ANTES de que ese import chain corra (primera linea
+# ejecutable del modulo, antes de cualquier `from .workflows...`), y main() lo usa por defecto
+# en vez de releer sys.argv. Protege tanto el entry point instalado como `python -m binoracle`.
+_ARGV = sys.argv[1:]
+
 from .config import load_config
 from .llm import make_backend
 from .oracles import build_registry
@@ -1288,6 +1298,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
+    # Si no se da argv explicito, usa la captura temprana (_ARGV, arriba) en vez de releer
+    # sys.argv aqui: para cuando esta funcion se ejecuta, los imports de pwntools de este mismo
+    # modulo ya han mutado sys.argv (ver la nota junto a _ARGV).
+    if argv is None:
+        argv = _ARGV
     parser = build_parser()
     args = parser.parse_args(argv)
     config = load_config()
