@@ -59,6 +59,7 @@ the agent's hard-won, execution-verified playbook ships with the product. The se
 | write-what-where | NX | unchecked index → a called function's GOT entry = win() |
 | UAF funcptr-hijack | NX | realloc recycles a freed struct whose first field is a function pointer = win() |
 | heap → shell (tcache poisoning) | NX, glibc ≥ 2.32 safe-linking | leaks the key via an empty bin, `free@GOT = win` (repairs the GOT neighbour the key-clear zeroes) |
+| house-of-force | NX, top-chunk overwrite | overwrites top->size huge → a wrapping malloc moves `top` to an arbitrary address → next alloc writes there → hijack a function pointer (real glibc HoF is mitigated ≥ 2.29; verified against an in-binary pre-2.29 top-chunk carve) |
 | tcache dup (double-free) | NX | makes malloc return an aligned GOT entry, `free@GOT = system` |
 
 A shell is confirmed by having it echo a unique marker. Every run is isolated:

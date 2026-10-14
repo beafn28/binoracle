@@ -631,6 +631,26 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autohof_verifies_house_of_force():
+    # Verificacion POSITIVA de house-of-force por EJECUCION: se sobrescribe el tamano del top chunk
+    # con un valor enorme; una peticion huge (con wraparound) mueve `top` a &handler; la siguiente
+    # asignacion devuelve ese puntero -> escritura arbitraria -> handler=win -> shell. glibc >=2.29
+    # mitiga el HoF real, por eso el sample reproduce el carve del top-chunk pre-2.29 en el binario.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/hof"
+    if not os.path.exists(binp):
+        pytest.skip("sample hof no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autohof import autohof
+    r = autohof(binp)
+    assert r.get("ok") and r.get("verified"), f"house-of-force no verificado: {r.get('note')}"
+    assert "need_a=" in (r.get("detail") or "")
+
+
 def test_autocsu_verifies_execve_chain():
     # Verificacion POSITIVA de ret2csu -> execve ENCADENADO por EJECUCION: en csuexec no hay
     # `pop rsi`/`pop rdx`, asi que los gadgets csu fijan rsi=0/rdx=0 (la call forzada de gadget2

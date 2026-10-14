@@ -587,6 +587,11 @@ _exploit_tool("autopivot", "stack pivot: overflow corto -> migra RSP a un buffer
               "cadena escalonada (saved rbp=&buf, saved rip=`leave; ret`), verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autopivot", fromlist=["autopivot"]).autopivot,
                        __import__("binoracle.workflows.autopivot", fromlist=["render_pivot"]).render_pivot))
+_exploit_tool("autohof", "house-of-force: sobrescribe el tamano del top chunk -> alloc huge mueve "
+              "`top` a direccion arbitraria -> escritura -> hijack de puntero de funcion -> shell, "
+              "verificado en sandbox (glibc >=2.29 lo mitiga; se usa un asignador pre-2.29).",
+              lambda: (__import__("binoracle.workflows.autohof", fromlist=["autohof"]).autohof,
+                       __import__("binoracle.workflows.autohof", fromlist=["render_hof"]).render_hof))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------
