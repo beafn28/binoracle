@@ -848,7 +848,8 @@ def run_streaming(command, binary, ai, emit, text=""):
             inv = investigate_cve(cve_or_desc, binary=binp, config=config,
                                   on_step=lambda m: emit("step", m), lang=config.lang)
             emit("html", render_investigation_page(render_investigation(inv, config.lang),
-                                                   inv.developed_script, inv.cve_id, config.lang))
+                                                   inv.developed_script, inv.cve_id, config.lang,
+                                                   poc_kind=inv.poc_kind))
         elif command == "fetch":
             # Extrae el binario vulnerable real de una imagen Docker (docker create + cp, sin ejecutar
             # el entrypoint). Entrada de texto: "<imagen> <ruta_o_nombre>".

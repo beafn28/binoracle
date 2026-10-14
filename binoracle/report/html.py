@@ -2286,8 +2286,10 @@ def render_training_page(markdown: str, lang: str = "es") -> str:
 
 
 def render_investigation_page(markdown: str, script: str = "", cve: str = "target",
-                              lang: str = "es") -> str:
-    """Pagina del agente de investigacion: informe (markdown) + descarga del exploit desarrollado."""
+                              lang: str = "es", poc_kind: str = "pwntools") -> str:
+    """Pagina del agente de investigacion: informe (markdown) + descarga del exploit/PoC desarrollado.
+    `poc_kind` ajusta etiqueta/extension/mimetype del boton: 'pwntools' (memoria, .py), 'http' (PoC
+    web con requests, .py), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python)."""
     import base64
     import re as _re
     es = lang == "es"
@@ -2298,9 +2300,17 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     if script:
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
         safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", cve or "target")
-        label = ("Descargar exploit (pwntools)" if es else "Download exploit (pwntools)")
-        dl = (f'<p><a class="dlbtn" download="exploit_{safe}.py" '
-              f'href="data:text/x-python;base64,{b64}">&#8681; {label}</a></p>')
+        if poc_kind == "html":
+            label = "Descargar PoC (HTML, CSRF)" if es else "Download PoC (HTML, CSRF)"
+            fname, mime = f"poc_{safe}.html", "text/html"
+        elif poc_kind == "http":
+            label = "Descargar PoC (HTTP/requests)" if es else "Download PoC (HTTP/requests)"
+            fname, mime = f"poc_{safe}.py", "text/x-python"
+        else:
+            label = "Descargar exploit (pwntools)" if es else "Download exploit (pwntools)"
+            fname, mime = f"exploit_{safe}.py", "text/x-python"
+        dl = (f'<p><a class="dlbtn" download="{fname}" '
+              f'href="data:{mime};base64,{b64}">&#8681; {label}</a></p>')
     return head + dl + _md_rich(markdown or "") + "</main></body></html>"
 
 

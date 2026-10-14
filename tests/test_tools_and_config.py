@@ -3483,3 +3483,145 @@ def test_decompiled_func_has_ok_property():
     assert DecompiledFunc(func="main", raw="int main(){}", engine="pdc").ok is True
     assert DecompiledFunc(func="main", raw="   ", engine="pdc").ok is False
     assert DecompiledFunc(func="main").ok is False
+
+
+def test_classify_cve_web_classes():
+    # Regresion: una CVE web (missing authorization, IDOR, SQLi...) caia en 'uaf'/None porque la
+    # taxonomia solo cubria clases de memoria. Debe clasificar correctamente y marcarse como web.
+    from binoracle.workflows.cveplan import classify_cve, is_web_class
+    real_desc = (
+        "The Divi Form Builder plugin for WordPress is vulnerable to Missing Authorization in "
+        "versions up to, and including, 5.1.8. This is due to the update_user() function accepting "
+        "a user ID parameter from form submissions without verifying that the authenticated user "
+        "has permission to edit that specific user account, and the handle_register_submission() "
+        "function only checking if any user is logged in rather than validating permissions for "
+        "the target user."
+    )
+    assert classify_cve(real_desc) == "missing-authorization"
+    assert is_web_class("missing-authorization") is True
+    assert is_web_class("stack-overflow") is False
+    assert classify_cve("this app is vulnerable to SQL injection via the id parameter") == "sqli"
+    assert classify_cve("stored XSS in the comment field") == "xss"
+    assert classify_cve("an insecure direct object reference (IDOR) in /api/orders/{id}") == "idor"
+    assert classify_cve("SSRF via the webhook URL parameter") == "ssrf"
+    assert classify_cve("remote code execution via unauthenticated file upload") in ("rce", "file-upload")
+    assert classify_cve("path traversal in the download endpoint") == "path-traversal"
+    assert classify_cve("insecure deserialization of untrusted objects") == "deserialization"
+    assert classify_cve("XML external entity (XXE) injection") == "xxe"
+    assert classify_cve("server-side template injection (SSTI) in the report name") == "ssti"
+    assert classify_cve("cross-site request forgery (CSRF) on the password change form") == "csrf"
+    assert classify_cve("open redirect via the 'next' parameter") == "open-redirect"
+
+
+def test_cveplan_plan_skips_pwntools_for_web_class():
+    # Regresion: plan() generaba un esqueleto pwntools (process(BINARY) inexistente) incluso para
+    # clases web, que no tienen binario que explotar. Debe dejar el script vacio para esa clase;
+    # el PoC real lo construye webexploit.build_http_poc con la hipotesis del LLM.
+    from binoracle.workflows.cveplan import plan
+    pl = plan("missing authorization: the endpoint does not verify permission for the target user")
+    assert pl.vuln_class == "missing-authorization"
+    assert pl.script == ""
+    pl2 = plan("a stack-based buffer overflow in the request parser")
+    assert pl2.vuln_class == "stack-overflow"
+    assert "pwn" in pl2.script.lower() or "ELF(" in pl2.script
+
+
+def test_webexploit_builds_valid_poc_for_every_web_class():
+    import ast
+    from binoracle.workflows.webexploit import build_http_poc, WEB_CLASSES
+    notes = {"endpoint": "/api/x", "http_method": "POST", "parameters": ["id", "value"],
+            "strategy": "test"}
+    for cls in sorted(WEB_CLASSES):
+        out = build_http_poc(cls, "CVE-TEST-0001", notes, lang="es")
+        assert out, f"{cls}: no PoC generated"
+        if cls == "csrf":
+            assert "<html" in out and "<form" in out
+            continue
+        ast.parse(out)   # el PoC generado debe ser Python valido
+        assert "TU-OBJETIVO-AUTORIZADO" in out    # nunca apunta a un host real por defecto
+
+
+def test_webexploit_missing_authorization_poc_param_logic():
+    # Regresion: la condicion que elige el parametro del ID objetivo estaba invertida
+    # ("user_id" if "user_id" not in PARAMS else list(PARAMS)[0]), asi que si 'user_id' YA estaba
+    # en PARAMS usaba el PRIMER parametro (posiblemente otro) en vez de 'user_id'.
+    from binoracle.workflows.webexploit import build_http_poc
+    notes = {"endpoint": "/x", "http_method": "POST", "parameters": ["user_id", "email"]}
+    out = build_http_poc("missing-authorization", "CVE-X", notes, lang="es")
+    assert 'ID_PARAM = "user_id" if "user_id" in PARAMS else' in out
+
+
+def test_build_http_poc_unknown_class_returns_empty():
+    from binoracle.workflows.webexploit import build_http_poc
+    assert build_http_poc("stack-overflow", "CVE-X", {}, lang="es") == ""
+    assert build_http_poc("not-a-real-class", "CVE-X", {}, lang="es") == ""
+
+
+def test_websource_grep_vulnerable_functions(tmp_path):
+    from binoracle.workflows.websource import grep_vulnerable_functions
+    php = tmp_path / "class-form.php"
+    php.write_text(
+        "<?php\n"
+        "class DiviFormHandler {\n"
+        "    public function update_user( $user_id, $data ) {\n"
+        "        wp_update_user( array('ID' => $user_id) );\n"
+        "    }\n"
+        "    public function handle_register_submission( $request ) {\n"
+        "        if ( is_user_logged_in() ) { $this->update_user( $request['user_id'], $request ); }\n"
+        "    }\n"
+        "}\n"
+    )
+    g = grep_vulnerable_functions(str(tmp_path), ["update_user", "handle_register_submission", "nope"])
+    assert "update_user" in g["found"] and len(g["found"]["update_user"]) >= 2
+    assert "handle_register_submission" in g["found"]
+    assert g["not_found"] == ["nope"]
+    # evidencia con file:line reales
+    m = g["found"]["update_user"][0]
+    assert m.file.endswith("class-form.php") and m.line > 0
+
+
+def test_websource_fetch_source_dispatch_by_shape():
+    from binoracle.workflows.websource import looks_like_git_url, looks_like_wp_slug
+    assert looks_like_git_url("https://github.com/org/repo.git") is True
+    assert looks_like_git_url("git@github.com:org/repo.git") is True
+    assert looks_like_git_url("divi-form-builder") is False
+    assert looks_like_wp_slug("divi-form-builder") is True
+    assert looks_like_wp_slug("https://github.com/org/repo") is False
+    assert looks_like_wp_slug("not a slug with spaces") is False
+
+
+def test_render_investigation_page_poc_kind_sets_filename_and_mime():
+    # Regresion: el boton de descarga del informe de investigacion SIEMPRE decia "pwntools" y
+    # forzaba extension .py / mimetype text/x-python, incluso para un PoC CSRF que es una pagina
+    # HTML (descargarla como .py con mimetype python era incorrecto y confuso).
+    from binoracle.report.html import render_investigation_page
+    html_pwn = render_investigation_page("# informe", "print(1)", "CVE-1", "es", poc_kind="pwntools")
+    assert "pwntools" in html_pwn and 'download="exploit_CVE-1.py"' in html_pwn
+    html_http = render_investigation_page("# informe", "import requests", "CVE-2", "es", poc_kind="http")
+    assert "HTTP" in html_http and 'download="poc_CVE-2.py"' in html_http
+    html_csrf = render_investigation_page("# informe", "<html></html>", "CVE-3", "es", poc_kind="html")
+    assert 'download="poc_CVE-3.html"' in html_csrf and "text/html" in html_csrf
+    assert ".py" not in html_csrf.split('download="')[1].split('"')[0]
+
+
+def test_cve_agent_web_investigation_never_claims_verified(monkeypatch):
+    # Nucleo del fix: una CVE web nunca debe terminar con inv.verified=True (binoracle no lanza
+    # peticiones contra objetivos por su cuenta) y debe generar un PoC HTTP, no un esqueleto pwntools.
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource
+
+    # evita red real en el test: simula que no hay source_url (camino determinista, sin red)
+    inv = Investigation(cve_id="CVE-2026-5523")
+    inv.description = "missing authorization: no checks the target user id"
+    inv.vuln_class = "missing-authorization"
+    inv.llm_notes = {
+        "primitive": "arbitrary-write", "target_binary": "some plugin",
+        "trigger": "form-submission", "strategy": "change any user's password",
+        "http_method": "POST", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+        "parameters": ["user_id", "email", "pass"],
+    }
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert inv.verified is False
+    assert inv.poc_kind == "http"
+    assert "import requests" in inv.developed_script
+    assert any("source_url" in b or "autorizado" in b for b in inv.blockers)

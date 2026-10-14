@@ -29,11 +29,14 @@ class Investigation:
     vuln_class: str = ""
     llm_notes: dict = field(default_factory=dict)     # hipotesis del modelo (target, trigger, plan)
     developed_script: str = ""
+    poc_kind: str = "pwntools"                        # "pwntools" (memoria) | "http" | "html" (web)
     verified: bool = False
     verified_detail: str = ""
     trigger: str = ""                                 # disparador descubierto por auto-fuzzing
     blockers: List[str] = field(default_factory=list)
     steps: List[str] = field(default_factory=list)
+    source_fetch: dict = field(default_factory=dict)  # {ok, kind, resolved_version, local_path}
+    source_grounding: dict = field(default_factory=dict)  # {found: {fn: [loc,...]}, not_found: [...]}
 
 
 _RESEARCH_SYS = (
@@ -70,6 +73,82 @@ def _llm_research(llm, cve_id: str, description: str) -> Optional[dict]:
     return None
 
 
+def _run_web_investigation(inv: "Investigation", lang: str, step) -> None:
+    """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
+    del LLM contra el (grep de las funciones citadas) y desarrolla el PoC HTTP/HTML. Muta `inv` in
+    place. Nunca marca `inv.verified = True`: eso exige correr el PoC contra un objetivo autorizado,
+    que este modulo no hace por si mismo."""
+    es = lang == "es"
+    from .websource import fetch_source, grep_vulnerable_functions
+    from .webexploit import build_http_poc
+
+    notes = inv.llm_notes or {}
+    source = (notes.get("source_url") or "").strip()
+    version = (notes.get("affected_version") or "").strip()
+    fn_names = notes.get("vulnerable_functions") or []
+    if isinstance(fn_names, str):
+        fn_names = [fn_names]
+
+    if source:
+        step(f"intentando obtener el codigo real ({source})..." if es else
+             f"attempting to fetch the real source ({source})...")
+        fr = fetch_source(source, version=version, on_step=step)
+        inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
+                            "resolved_version": fr.resolved_version,
+                            "local_path": fr.local_path, "note": fr.note}
+        if fr.ok:
+            step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
+                 f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
+            if fn_names:
+                step("confirmando en el codigo real las funciones citadas por el LLM..." if es else
+                     "confirming the LLM-cited functions in the real source...")
+                g = grep_vulnerable_functions(fr.local_path, fn_names)
+                inv.source_grounding = {
+                    "found": {k: [f"{m.file}:{m.line}" for m in v] for k, v in g["found"].items()},
+                    "not_found": g["not_found"],
+                }
+                for name, locs in inv.source_grounding["found"].items():
+                    step((f"GROUNDED: '{name}' existe en el codigo real -> {locs[0]}" if es else
+                          f"GROUNDED: '{name}' exists in the real source -> {locs[0]}"))
+                if inv.source_grounding["not_found"]:
+                    nf = ", ".join(inv.source_grounding["not_found"])
+                    step((f"no localizadas en el codigo descargado: {nf} (puede ser otra version/"
+                          f"nombre, o hipotesis del LLM)" if es else
+                          f"not found in the fetched source: {nf} (could be a different version/"
+                          f"name, or an LLM hypothesis)"))
+        else:
+            step(f"no se pudo obtener el codigo: {fr.note}" if es else
+                 f"could not fetch the source: {fr.note}")
+            inv.blockers.append((f"no se pudo descargar el codigo ({fr.note})" if es else
+                                 f"could not download the source ({fr.note})"))
+    else:
+        inv.blockers.append(("el LLM no indico un source_url/slug del plugin: sin codigo real que "
+                             "confirmar (la clase/hipotesis siguen siendo validas)" if es else
+                             "the LLM did not provide a source_url/plugin slug: no real source to "
+                             "confirm against (the class/hypothesis are still valid)"))
+
+    step("desarrollando el PoC HTTP a partir de la hipotesis..." if es else
+         "developing the HTTP PoC from the hypothesis...")
+    poc = build_http_poc(inv.vuln_class, inv.cve_id, notes, lang=lang)
+    if poc:
+        inv.developed_script = poc
+        inv.poc_kind = "html" if inv.vuln_class == "csrf" else "http"
+    else:
+        inv.blockers.append(("sin plantilla de PoC para esta clase todavia" if es else
+                             "no PoC template for this class yet"))
+
+    if not notes.get("endpoint"):
+        inv.blockers.append(("falta el endpoint/ruta exacto (ajusta ENDPOINT en el PoC)" if es else
+                             "missing the exact endpoint/route (set ENDPOINT in the PoC)"))
+    inv.blockers.append(("para pasar a VERIFICADO: ejecuta el PoC contra TU objetivo autorizado "
+                         "(laboratorio propio o engagement con alcance) y confirma el efecto "
+                         "observado; binoracle no lanza peticiones contra objetivos por su cuenta"
+                         if es else
+                         "to reach VERIFIED: run the PoC against YOUR authorized target (your own "
+                         "lab or a scoped engagement) and confirm the observed effect; binoracle "
+                         "does not fire requests at targets on its own"))
+
+
 def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     on_step: Optional[Callable[[str], None]] = None, lang: str = "es",
                     budget_s: float = 300.0) -> Investigation:
@@ -78,7 +157,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     from ..config import load_config
     from ..llm import make_backend
     from .cvelookup import fetch_cve
-    from .cveplan import classify_cve, classify_binary, plan, plan_for_binary
+    from .cveplan import classify_cve, classify_binary, plan, plan_for_binary, is_web_class
 
     step = on_step or (lambda _m: None)
     es = lang == "es"
@@ -124,6 +203,18 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     inv.vuln_class = (classify_cve(inv.description) or
                       classify_cve(inv.llm_notes.get("vuln_class", "")) or "")
     has_bin = bool(binary and os.path.exists(binary))
+
+    if is_web_class(inv.vuln_class):
+        # Clase WEB/APP (missing-authorization, IDOR, SQLi, RCE...): no hay binario que explotar con
+        # pwntools, el "exploit" es una peticion HTTP. En vez de forzar el camino de memoria, esto:
+        #   1) intenta DESCARGAR el codigo real (plugin de WordPress.org o repo git) y confirmar por
+        #      grep que las funciones citadas por el LLM existen de verdad (evidencia GROUNDED),
+        #   2) desarrolla el PoC HTTP (o la pagina para CSRF) a partir de la hipotesis del LLM.
+        # Nunca se marca 'verificado' aqui: eso exige lanzar el PoC contra un objetivo autorizado real.
+        _run_web_investigation(inv, lang=lang, step=step)
+        inv.steps = []
+        return inv
+
     if has_bin:
         # 4a) AUTO-FUZZING: descubre dinamicamente el disparador (stdin/argv/format-string)
         try:
@@ -205,9 +296,13 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
     out.append("- " + ("Clase: " if es else "Class: ") + (inv.vuln_class or "?"))
     if inv.llm_notes:
         out.append("\n### " + ("Investigacion del LLM (hipotesis)" if es else "LLM research (hypothesis)"))
-        for k in ("primitive", "target_binary", "trigger", "strategy"):
-            if inv.llm_notes.get(k):
-                out.append(f"- **{k}**: {inv.llm_notes[k]}")
+        for k in ("primitive", "target_binary", "trigger", "strategy", "source_url",
+                  "affected_version", "vulnerable_functions", "http_method", "endpoint",
+                  "parameters", "auth_required"):
+            v = inv.llm_notes.get(k)
+            if v:
+                v = ", ".join(v) if isinstance(v, list) else v
+                out.append(f"- **{k}**: {v}")
         steps = inv.llm_notes.get("steps")
         if isinstance(steps, list) and steps:
             out.append("- " + ("pasos" if es else "steps") + ":")
@@ -218,6 +313,24 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
     if inv.trigger:
         out.append("- " + ("Disparador descubierto (auto-fuzzing): " if es else
                            "Trigger discovered (auto-fuzzing): ") + f"`{inv.trigger}`")
+    if inv.source_fetch:
+        sf = inv.source_fetch
+        out.append("\n### " + ("Codigo fuente" if es else "Source code"))
+        if sf.get("ok"):
+            out.append("- " + (f"obtenido ({sf.get('kind')}, version {sf.get('resolved_version') or '?'}): "
+                               f"`{sf.get('local_path')}`" if es else
+                               f"fetched ({sf.get('kind')}, version {sf.get('resolved_version') or '?'}): "
+                               f"`{sf.get('local_path')}`"))
+            g = inv.source_grounding or {}
+            for name, locs in (g.get("found") or {}).items():
+                out.append(f"  - **GROUNDED** `{name}` -> " + ", ".join(locs[:5])
+                           + (f"  (+{len(locs)-5})" if len(locs) > 5 else ""))
+            if g.get("not_found"):
+                out.append("  - " + ("no localizadas: " if es else "not found: ")
+                           + ", ".join(g["not_found"]))
+        else:
+            out.append("- " + (f"no obtenido: {sf.get('note')}" if es else
+                               f"not fetched: {sf.get('note')}"))
     if inv.verified:
         out.append("\n> **" + ("EXPLOIT VERIFICADO" if es else "VERIFIED EXPLOIT")
                    + "** (sandbox): " + inv.verified_detail)
@@ -225,8 +338,16 @@ def render_investigation(inv: Investigation, lang: str = "es") -> str:
         out.append("\n### " + ("Bloqueos para el exploit real" if es else "Blockers for a real exploit"))
         out += [f"- {b}" for b in inv.blockers]
     if inv.developed_script:
-        out.append("\n### " + ("Exploit desarrollado (pwntools)" if es else "Developed exploit (pwntools)")
-                   + "\n```python\n" + inv.developed_script + "\n```")
+        if inv.poc_kind == "http":
+            title = "PoC desarrollado (HTTP / requests)" if es else "Developed PoC (HTTP / requests)"
+            fence = "python"
+        elif inv.poc_kind == "html":
+            title = "PoC desarrollado (CSRF, pagina HTML)" if es else "Developed PoC (CSRF, HTML page)"
+            fence = "html"
+        else:
+            title = "Exploit desarrollado (pwntools)" if es else "Developed exploit (pwntools)"
+            fence = "python"
+        out.append(f"\n### {title}\n```{fence}\n" + inv.developed_script + "\n```")
     out.append("\n_" + ("El LLM propone e investiga; el sandbox decide lo VERIFICADO. Solo objetivos "
                         "autorizados / CTF / research." if es else
                         "The LLM proposes and investigates; the sandbox decides what is VERIFIED. "
