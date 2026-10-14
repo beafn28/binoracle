@@ -150,7 +150,7 @@ ideas were re-implemented in Python with attribution, not copied.)
 | .NET assemblies | `dotnetinspect`, `dotnet` | metadata, types, IL; `compare_managed_members`, `verify_reconstruction` (obligation-gated), `verify_managed_native_boundaries` (P/Invoke surface); `project_managed_application_graph` — **token-resolved type graph** (parses `#~` tables, coded indices → TypeDef/TypeRef/extends/implements/nested_in) |
 | Mach-O | `machoinspect` | load commands **+ Objective-C & Swift metadata** (classes, methods, protocols) |
 | PE | `peinspect` | imports/exports, sections, resources |
-| APK | `apkinspect` | manifest + decompile path; JADX-backed class/method queries (`search_android_classes`, `inspect_android_class`/`package`, `trace_android_references`) |
+| APK | `apkinspect` | manifest + decompile path; JADX class/method queries (`search_android_classes`, `inspect_android_class`/`method`/`package`, `trace_android_references`); apktool `decode_android_resources` + `project_mobile_application_graph` (components/intent graph) |
 | Java / JAR | `jarinspect` | classes, manifest, constant pool |
 | JavaScript / Electron | `jsinspect` | bundle/entrypoint analysis; `recover_javascript_sources` rebuilds the original source tree from a `.js.map` `sourcesContent` (path-traversal-safe) |
 | **Flutter / Dart AOT** | `flutterinspect` | resolves `_kDart*Snapshot*` symbols (section `.dynsym` **or** stripped-`ET_DYN` PT_DYNAMIC), maps them through PT_LOAD, parses each **snapshot header** — version hash (SDK/engine revision) + features string → **target arch** (x64/arm64/…) and **runtime mode** (product/profile/release); the **libflutter.so engine** (build-id revision, Dart version line, Impeller/Skia backend, Vulkan/GLES API, toolchain); and the **flutter_assets** bundle (AOT vs debug/JIT; **AssetManifest.bin decoded via a bounded StandardMessageCodec reader** — declared assets + variant count; FontManifest fonts, shaders, NOTICES, version.json); plus ELF arch, per-ABI, Dart VM version (absence reported, not guessed) |
@@ -225,9 +225,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 85 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 88 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 132 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 135 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

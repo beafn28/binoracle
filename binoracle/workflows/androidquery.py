@@ -122,6 +122,39 @@ def inspect_android_class(apk: str, classname: str, max_bytes: int = 200000) -> 
             "limitations": ["Java decompilado por JADX (aproximado); JADX decompila, no ejecuta"]}
 
 
+def _extract_method(code: str, method: str):
+    """Return the source slice of the first method named `method` (brace-matched). None if absent."""
+    import re as _re
+    for m in _re.finditer(r"\b" + _re.escape(method) + r"\s*\([^;{)]*\)\s*(?:throws[^\{;]*)?\{", code):
+        start = m.start()
+        i = code.index("{", m.start())
+        depth = 0
+        for j in range(i, len(code)):
+            if code[j] == "{":
+                depth += 1
+            elif code[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return code[start:j + 1]
+    return None
+
+
+def inspect_android_method(apk: str, classname: str, method: str) -> dict:
+    """inspect_android_method: the decompiled body of one method of a class (brace-matched from the
+    JADX Java). Static; degrades if JADX is absent or the class/method is not found."""
+    cls = inspect_android_class(apk, classname)
+    if not cls.get("ok"):
+        return cls
+    body = _extract_method(cls.get("java", ""), method)
+    if body is None:
+        return {"ok": False, "available": True, "tool": "android_query",
+                "note": f"metodo no encontrado en {classname}: {method}",
+                "methods_available": cls.get("methods", [])}
+    return {"ok": True, "available": True, "tool": "android_query", "class": cls["class"],
+            "method": method, "body": body[:20000],
+            "limitations": ["cuerpo decompilado por JADX (aproximado); JADX decompila, no ejecuta"]}
+
+
 def inspect_android_package(apk: str, package: str, limit: int = 400) -> dict:
     """inspect_android_package: the classes declared under a package prefix."""
     root, err = _decompile(apk)
@@ -188,6 +221,9 @@ def render_android_query(kind: str, r: dict) -> str:
         out.append(f"- `{r['name']}`: {r['ref_count']} referencia(s)")
         for x in r["references"][:40]:
             out.append(f"  - {x['class']}:{x['line']}  {x['text']}")
+    elif kind == "method":
+        out.append(f"- `{r['class']}#{r['method']}`")
+        out.append("\n```java\n" + (r.get("body", "")[:4000]) + "\n```")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

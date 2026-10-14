@@ -556,6 +556,68 @@ def test_android_query_over_decompiled_tree(tmp_path, monkeypatch):
     assert "com.app.MainActivity" in classes and "com.app.net.Net" in classes
 
 
+def test_android_method_extraction(tmp_path, monkeypatch):
+    # inspect_android_method pulls one method's brace-matched body from the class Java (JADX stubbed).
+    from binoracle.workflows import androidquery as A
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "C.java").write_text(
+        "package com.app;\nclass C {\n public void foo(){ if (x) { y(); } }\n int bar(){ return 1; }\n}\n")
+    monkeypatch.setattr(A, "_decompile", lambda apk, timeout=240: (str(root), None))
+    r = A.inspect_android_method("x.apk", "com.app.C", "foo")
+    assert r["ok"] and r["method"] == "foo" and "if (x)" in r["body"] and "bar" not in r["body"]
+    miss = A.inspect_android_method("x.apk", "com.app.C", "nope")
+    assert miss["ok"] is False and "bar" in miss["methods_available"]
+
+
+def test_android_manifest_graph_and_resources(tmp_path, monkeypatch):
+    # Mobile application graph from a decoded AndroidManifest: components + exported flag + intent
+    # actions. The manifest XML parsing is pure; apktool is stubbed via a seeded decode dir.
+    from binoracle.workflows import androidmanifest as AM
+    xml = ('<?xml version="1.0"?>\n'
+           '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.demo">\n'
+           ' <uses-permission android:name="android.permission.INTERNET"/>\n'
+           ' <application>\n'
+           '  <activity android:name=".MainActivity">\n'
+           '   <intent-filter><action android:name="android.intent.action.MAIN"/>'
+           '<category android:name="android.intent.category.LAUNCHER"/></intent-filter>\n'
+           '  </activity>\n'
+           '  <service android:name="com.demo.Bg" android:exported="false"/>\n'
+           ' </application>\n</manifest>\n')
+    m = AM.parse_manifest_xml(xml)
+    assert m["ok"] and m["package"] == "com.demo"
+    comps = {c["name"]: c for c in m["components"]}
+    assert comps[".MainActivity"]["exported"] is True
+    assert "android.intent.action.MAIN" in comps[".MainActivity"]["actions"]
+    assert comps["com.demo.Bg"]["exported"] is False
+
+    out = tmp_path / "out"
+    (out / "res" / "layout").mkdir(parents=True)
+    (out / "res" / "layout" / "main.xml").write_text("<x/>")
+    (out / "res" / "drawable").mkdir()
+    (out / "res" / "drawable" / "ic.png").write_bytes(b"\x89PNG")
+    (out / "AndroidManifest.xml").write_text(xml)
+    monkeypatch.setattr(AM, "_apktool_decode", lambda apk, timeout=240: (str(out), None))
+    g = AM.project_mobile_application_graph("x.apk")
+    assert g["ok"] and g["component_count"] == 2 and g["exported_count"] == 1
+    assert any(e["kind"] == "intent-action" and e["to"].endswith("MAIN") for e in g["edges"])
+    res = AM.decode_android_resources("x.apk")
+    assert res["ok"] and res["resource_total"] == 2 and res["resource_buckets"]["layout"] == 1
+
+
+def test_android_manifest_degrades_without_apktool(monkeypatch):
+    import os
+    from binoracle.workflows import androidmanifest as AM
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        for fn in (AM.project_mobile_application_graph, AM.decode_android_resources):
+            r = fn("x.apk")
+            assert r["ok"] is False and r["available"] is False and "apktool" in r["note"]
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_android_query_degrades_without_jadx(monkeypatch):
     # With no jadx on PATH, every Android query tool degrades honestly (available False).
     import os

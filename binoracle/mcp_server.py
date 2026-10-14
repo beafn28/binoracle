@@ -716,6 +716,38 @@ def _h_android_refs(args):
     return render_android_query("references", trace_android_references(_binary(a), a.get("name") or ""))
 
 
+@_tool("inspect_android_method", "Devuelve el cuerpo decompilado de UN metodo de una clase de un APK "
+       "(emparejado por llaves desde el Java de JADX). Estatico; degrada si no hay JADX o no se "
+       "encuentra la clase/metodo.",
+       {"binary": {"type": "string", "description": "ruta al .apk"},
+        "classname": {"type": "string", "description": "nombre completo de la clase"},
+        "method": {"type": "string", "description": "nombre del metodo"}}, ["binary", "classname", "method"])
+def _h_android_method(args):
+    from .workflows.androidquery import inspect_android_method, render_android_query
+    a = args or {}
+    return render_android_query("method", inspect_android_method(
+        _binary(a), a.get("classname") or "", a.get("method") or ""))
+
+
+@_tool("decode_android_resources", "Resume el arbol res/ decodificado (layouts/drawables/values) y "
+       "el paquete/permisos del manifest de un APK, via apktool (decodifica, no ejecuta). Degrada si "
+       "no hay apktool.",
+       {"binary": {"type": "string", "description": "ruta al .apk"}}, ["binary"])
+def _h_android_res(args):
+    from .workflows.androidmanifest import decode_android_resources, render_android_manifest
+    return render_android_manifest("resources", decode_android_resources(_binary(args)))
+
+
+@_tool("project_mobile_application_graph", "Construye el grafo de componentes de una app Android "
+       "desde el AndroidManifest decodificado (apktool): activities/services/receivers/providers con "
+       "su flag exported y las acciones de intent que responden (superficie de entrada externa). "
+       "Degrada si no hay apktool.",
+       {"binary": {"type": "string", "description": "ruta al .apk"}}, ["binary"])
+def _h_mobile_graph(args):
+    from .workflows.androidmanifest import project_mobile_application_graph, render_android_manifest
+    return render_android_manifest("graph", project_mobile_application_graph(_binary(args)))
+
+
 @_tool("apk_manifest", "Decodifica el AndroidManifest.xml binario de un APK (paquete, permisos, "
        "componentes) via Apktool SI el llamador lo tiene; si no, degrada. Integracion caller-supplied "
        "(completa inspect_apk, que detecta el manifest pero no lo decodifica).",
