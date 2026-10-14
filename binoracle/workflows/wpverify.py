@@ -31,6 +31,7 @@ exit — not by network isolation, so only run this against trusted hosts/networ
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -38,6 +39,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import tarfile
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
@@ -216,13 +218,27 @@ class _Lab:
 
     def install_plugin(self, host_plugin_dir: str, slug: str, timeout=60.0) -> bool:
         """Copia el plugin (ya descargado a `host_plugin_dir`, que contiene <slug>/...) dentro del
-        volumen compartido via un contenedor Alpine efimero. No usa el host directamente: Docker
-        Desktop en Mac resuelve los bind mounts igual, sea Linux o macOS el host."""
-        r = self.sh("run", "--rm", "--platform", "linux/amd64", "-v", f"{self.vol}:/var/www/html",
-                   "-v", f"{host_plugin_dir}:/src:ro", _ALPINE_IMAGE, "sh", "-c",
-                   f"mkdir -p /var/www/html/wp-content/plugins && "
-                   f"cp -r /src/{slug} /var/www/html/wp-content/plugins/{slug}",
-                   timeout=timeout)
+        volumen compartido. NO usa un bind mount de `host_plugin_dir`: ese directorio lo creo YO
+        (websource.py), dentro del PROPIO contenedor de binoracle -- con Docker-fuera-de-Docker el
+        `docker run` real lo ejecuta el daemon del HOST, que no tiene forma de ver una ruta que solo
+        existe en nuestro filesystem (confirmado en vivo: tras arreglar la resolucion de red,
+        'no se pudo copiar el plugin al laboratorio' seguia saliendo). En vez de eso, empaqueto el
+        plugin en un tar EN MEMORIA (si que puedo leerlo yo, es mi propio disco) y lo paso por
+        stdin a un contenedor Alpine efimero que solo necesita el volumen Docker con nombre (ese si
+        es un recurso del daemon, visible sea donde sea que corra binoracle)."""
+        plugin_path = os.path.join(host_plugin_dir, slug)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            tf.add(plugin_path, arcname=slug)
+        try:
+            r = subprocess.run(
+                ["docker", "run", "-i", "--rm", "--platform", "linux/amd64",
+                 "-v", f"{self.vol}:/var/www/html", _ALPINE_IMAGE, "sh", "-c",
+                 "mkdir -p /var/www/html/wp-content/plugins && "
+                 "tar -xf - -C /var/www/html/wp-content/plugins"],
+                input=buf.getvalue(), capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
         return r.returncode == 0
 
     def teardown(self):
