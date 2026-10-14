@@ -460,6 +460,46 @@ def test_jeb_connector_rpc_and_degrade():
             os.environ["BINORACLE_JEB_MCP_URL"] = saved
 
 
+def test_native_query_static_tools():
+    # First-class static function-level tools over the shared r2 session: analyze a function, read
+    # the call graph, resolve xrefs/address, and find a static call path. r2 DISASSEMBLES (never
+    # runs the target); skip cleanly when r2/r2pipe or the sample is unavailable.
+    import os
+    import pytest
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win no compilado (samples/build.sh)")
+    from binoracle.oracles import r2session
+    if r2session.get(binp) is None:
+        pytest.skip("radare2/r2pipe no disponible")
+    from binoracle.workflows.nativequery import (analyze_function, get_call_graph,
+                                                 find_xrefs_to_name, address_name, call_path)
+    af = analyze_function(binp, "main")
+    assert af["ok"] and af["func"].endswith("main") and len(af["disasm"]) > 0
+    g = get_call_graph(binp)
+    assert g["ok"] and g["function_count"] > 0 and isinstance(g["edges"], list)
+    x = find_xrefs_to_name(binp, "win")
+    assert x["ok"] and x["xref_count"] >= 1
+    an = address_name(binp, hex(af["addr"]))
+    assert an["ok"] and (an["function"] or "").endswith("main")
+    cp = call_path(binp, "main", "win")
+    assert cp["ok"] and cp["reachable"] and cp["path"][0]["name"].endswith("main")
+
+
+def test_native_query_degrades_without_r2(monkeypatch):
+    # With no r2 session, every native-query tool degrades honestly (available False), never crashes.
+    from binoracle.oracles import r2session
+    from binoracle.workflows import nativequery
+    monkeypatch.setattr(r2session, "get", lambda *a, **k: None)
+    for fn, args in ((nativequery.analyze_function, ("x", "main")),
+                     (nativequery.get_call_graph, ("x",)),
+                     (nativequery.find_xrefs_to_name, ("x", "win")),
+                     (nativequery.address_name, ("x", "0x1000")),
+                     (nativequery.call_path, ("x", "main", "win"))):
+        r = fn(*args)
+        assert r["ok"] is False and r["available"] is False and "radare2" in r["note"]
+
+
 def test_native_connectors_degrade():
     # IDA/Hopper connectors: pure degrade when no endpoint is configured (no network).
     import os

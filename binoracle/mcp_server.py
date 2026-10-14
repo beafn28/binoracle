@@ -273,6 +273,61 @@ def _h_ghidra(args):
     return render_caller("ghidra", ghidra_decompile(b, func=(args or {}).get("func")))
 
 
+@_tool("analyze_function", "Analiza UNA funcion estaticamente via radare2 (desensambla, no ejecuta): "
+       "info (nombre/addr/tamaño/bloques) y desensamblado. Degrada si no hay r2. 'func' por nombre o "
+       "direccion.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "func": {"type": "string", "description": "nombre o direccion de la funcion"}}, ["binary", "func"])
+def _h_analyze_fn(args):
+    from .workflows.nativequery import analyze_function, render_native_query
+    a = args or {}
+    return render_native_query("analyze_function", analyze_function(_binary(a), a.get("func") or ""))
+
+
+@_tool("get_call_graph", "Grafo de llamadas estatico (nodos=funciones, aristas=llamadas directas) via "
+       "radare2. Degrada si no hay r2. 'limit' acota el numero de funciones.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "limit": {"type": "integer", "description": "maximo de funciones (def. 400)"}}, ["binary"])
+def _h_callgraph(args):
+    from .workflows.nativequery import get_call_graph, render_native_query
+    a = args or {}
+    return render_native_query("get_call_graph", get_call_graph(_binary(a), int(a.get("limit") or 400)))
+
+
+@_tool("find_xrefs_to_name", "Lista todas las referencias cruzadas (call/data) que alcanzan un "
+       "simbolo o funcion, via radare2 (axt). Estatico; degrada si no hay r2.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "name": {"type": "string", "description": "nombre de simbolo/funcion o direccion"}}, ["binary", "name"])
+def _h_xrefs(args):
+    from .workflows.nativequery import find_xrefs_to_name, render_native_query
+    a = args or {}
+    return render_native_query("find_xrefs_to_name", find_xrefs_to_name(_binary(a), a.get("name") or ""))
+
+
+@_tool("address_name", "Resuelve una direccion a su funcion contenedora y el flag/simbolo mas cercano "
+       "via radare2. Estatico; degrada si no hay r2.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "addr": {"type": "string", "description": "direccion (0x...) o entero"}}, ["binary", "addr"])
+def _h_addrname(args):
+    from .workflows.nativequery import address_name, render_native_query
+    a = args or {}
+    return render_native_query("address_name", address_name(_binary(a), a.get("addr") or ""))
+
+
+@_tool("trace_call_path", "Encuentra una ruta de llamadas estatica entre dos funciones (BFS sobre el "
+       "grafo de llamadas directas) via radare2. Estatico; degrada si no hay r2. 'src' y 'dst' por "
+       "nombre o direccion.",
+       {"binary": {"type": "string", "description": "ruta al binario nativo"},
+        "src": {"type": "string", "description": "funcion origen"},
+        "dst": {"type": "string", "description": "funcion destino"},
+        "max_depth": {"type": "integer", "description": "profundidad maxima (def. 12)"}}, ["binary", "src", "dst"])
+def _h_callpath(args):
+    from .workflows.nativequery import call_path, render_native_query
+    a = args or {}
+    return render_native_query("call_path", call_path(_binary(a), a.get("src") or "", a.get("dst") or "",
+                                                       max_depth=int(a.get("max_depth") or 12)))
+
+
 @_tool("jeb_connect", "Conecta con un servidor MCP de JEB arrancado por el llamador (motor externo; "
        "define BINORACLE_JEB_MCP_URL o pasa 'url'). op=list lista sus herramientas; op=call invoca "
        "'name' con 'arguments'. Salida no confiable; degrada si no hay endpoint.",

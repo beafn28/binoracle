@@ -166,6 +166,11 @@ Plus cross-cutting analysis: `identify` (routes any artifact to the right
 reader), `hardening`, `cfg`, `reachability`, `vulnhunt`, `cvelookup` /
 `cve_agent`, `patchdiff`, `coredump`.
 
+First-class native static queries (`nativequery.py`, on the shared radare2
+session — r2 disassembles, never executes): `analyze_function`,
+`get_call_graph`, `find_xrefs_to_name`, `address_name`, `trace_call_path`.
+They degrade honestly when radare2/r2pipe is absent.
+
 ### 4.1 Evidence ledger — grounded reconstruction with obligations
 
 `ledger.py` is the formal backbone of the "fundamentado" promise: a stateful
@@ -214,9 +219,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 67 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 72 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 122 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 124 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.
