@@ -16,11 +16,18 @@ This reader goes to the structure, not just a byte scan:
   and the runtime mode (`product`/`profile`/`release`/`jit`) -- these are read out of the snapshot,
   never guessed;
 * it reads the ELF machine (`e_machine`) and bitness, the GNU build-id note, and labelled `Dart VM
-  version:` strings, and honestly reports when a release engine carries no version label.
+  version:` strings, and honestly reports when a release engine carries no version label;
+* for the engine library `libflutter.so` it builds a fingerprint -- the build-id (engine revision),
+  the deduplicated labelled Dart version line and clang/LLVM toolchain lines, the rendering backend
+  (Impeller vs Skia) and the graphics API (Vulkan/GLES/Metal) by string presence;
+* for an APK it also reads the `flutter_assets` bundle -- build type (AOT vs debug/JIT when
+  `kernel_blob.bin` is present), `AssetManifest`/`FontManifest`, declared fonts, shaders, embedded
+  license NOTICES and any `version.json` app identity.
 
 Works on a raw ELF (`libapp.so`/`libflutter.so`) or straight on an APK (ZIP): it finds the Flutter
 payload libraries under `lib/<abi>/`, records the ABI, and reads them in place. Design parity with
-REA's Flutter tools (morluto/rea, MIT). Input is untrusted data; the reader only reads bytes."""
+REA's Flutter tools (morluto/rea, MIT), and goes further with the asset bundle. Input is untrusted
+data; the reader only reads bytes."""
 from __future__ import annotations
 
 import re
@@ -271,6 +278,174 @@ def _gnu_build_id(data: bytes) -> str | None:
     return None
 
 
+# --- labeled strings + engine fingerprint ---------------------------------------------------------
+
+_DART_VER_LINE = re.compile(rb"Dart VM version:[^\x00\n]{0,200}")
+_TOOLCHAIN_LINE = re.compile(rb"(?:Android \(|based on LLVM )[^\x00\n]{0,200}")
+
+
+def _labeled_strings(data: bytes) -> dict:
+    """Extract the engine's labelled version/toolchain lines the way REA does: the exact
+    `Dart VM version:` line (deduplicated -> capped when several distinct ones appear, honest about
+    ambiguity) and the clang/LLVM toolchain lines."""
+    ver_line = None
+    capped = False
+    seen = set()
+    for m in _DART_VER_LINE.finditer(data):
+        line = m.group(0).decode("latin1", "replace").rstrip()
+        seen.add(line)
+    if len(seen) == 1:
+        ver_line = next(iter(seen))
+    elif len(seen) > 1:
+        capped = True                     # multiple distinct version lines -> ambiguous, don't pick
+    toolchain = []
+    for m in _TOOLCHAIN_LINE.finditer(data):
+        t = m.group(0).decode("latin1", "replace").rstrip()
+        if t not in toolchain and len(toolchain) < 8:
+            toolchain.append(t)
+    return {"dart_version_line": ver_line, "version_line_capped": capped, "toolchain": toolchain}
+
+
+# Rendering-backend / graphics fingerprints for the engine library (string presence only).
+_BACKENDS = (
+    (b"Impeller", "Impeller"),
+    (b"impeller", "Impeller"),
+    (b"GrGLInterface", "Skia/GL"),
+    (b"libskia", "Skia"),
+    (b"SkSL", "Skia"),
+    (b"skia", "Skia"),
+)
+_GRAPHICS = (
+    (b"VK_VERSION", "Vulkan"), (b"vkCreateInstance", "Vulkan"), (b"vulkan", "Vulkan"),
+    (b"glGetString", "OpenGL ES"), (b"eglGetDisplay", "EGL/GLES"), (b"Metal", "Metal"),
+)
+
+
+def _analyze_engine(data: bytes) -> dict:
+    """Fingerprint libflutter.so (the Flutter engine): build-id (engine revision), labelled Dart VM
+    version + toolchain, rendering backend (Impeller vs Skia) and graphics API (Vulkan/GLES), all by
+    string presence -- never by executing anything."""
+    labeled = _labeled_strings(data)
+    backends = sorted({label for sig, label in _BACKENDS if sig in data})
+    graphics = sorted({label for sig, label in _GRAPHICS if sig in data})
+    return {
+        "build_id": _gnu_build_id(data),           # the engine revision fingerprint
+        "dart_version_line": labeled["dart_version_line"],
+        "version_line_capped": labeled["version_line_capped"],
+        "toolchain": labeled["toolchain"],
+        "render_backends": backends,
+        "graphics_apis": graphics,
+    }
+
+
+# --- flutter_assets (APK) -------------------------------------------------------------------------
+
+def _assets_from_apk(path: str) -> dict | None:
+    """Enumerate and read the flutter_assets bundle inside an APK: build type (AOT vs debug/JIT
+    kernel), AssetManifest / FontManifest, embedded license NOTICES, shaders, and any version.json.
+    Returns None when the APK carries no flutter_assets. Pure reading of ZIP members."""
+    import json
+    try:
+        z = zipfile.ZipFile(path)
+    except Exception:
+        return None
+    members = []
+    try:
+        members = z.infolist()
+    except Exception:
+        z.close()
+        return None
+
+    prefixes = ("assets/flutter_assets/",)
+    asset_names = [i.filename for i in members
+                   if any(i.filename.startswith(p) for p in prefixes)]
+    if not asset_names:
+        z.close()
+        return None
+
+    def _rel(n):
+        return n.split("flutter_assets/", 1)[-1]
+
+    rels = [_rel(n) for n in asset_names if not n.endswith("/")]
+    has = lambda name: any(r == name for r in rels)
+
+    out = {
+        "asset_count": len(rels),
+        "has_kernel_blob": has("kernel_blob.bin"),           # debug/JIT build marker
+        "has_vm_snapshot_in_assets": has("vm_snapshot_data"),
+        "has_isolate_snapshot_in_assets": has("isolate_snapshot_data"),
+        "has_shaders": any(r.startswith("shaders/") for r in rels),
+        "has_notices": has("NOTICES") or has("NOTICES.Z"),
+        "fonts": [], "font_families": [], "declared_assets": 0,
+        "version_json": None, "sample_assets": sorted(rels)[:30],
+        "asset_manifest_format": None,
+    }
+    # build type inferred from markers (corroborated by libapp.so presence elsewhere in the APK)
+    if out["has_kernel_blob"]:
+        out["build_type"] = "debug/JIT (kernel_blob.bin presente)"
+    elif out["has_vm_snapshot_in_assets"]:
+        out["build_type"] = "AOT con snapshots en assets"
+    else:
+        out["build_type"] = "AOT (snapshots en libapp.so)"
+
+    def _read(name, limit=4 * 1024 * 1024):
+        full = "assets/flutter_assets/" + name
+        try:
+            with z.open(full) as f:
+                return f.read(limit)
+        except Exception:
+            return None
+
+    # AssetManifest: modern builds ship AssetManifest.bin(.json); older ship AssetManifest.json
+    if has("AssetManifest.json"):
+        out["asset_manifest_format"] = "json"
+        raw = _read("AssetManifest.json")
+        try:
+            doc = json.loads(raw.decode("utf-8", "replace"))
+            if isinstance(doc, dict):
+                out["declared_assets"] = len(doc)
+        except Exception:
+            pass
+    elif has("AssetManifest.bin.json"):
+        out["asset_manifest_format"] = "bin.json"
+    elif has("AssetManifest.bin"):
+        out["asset_manifest_format"] = "bin (binario; no se decodifica)"
+
+    # FontManifest.json: [{family, fonts:[{asset}]}]
+    if has("FontManifest.json"):
+        raw = _read("FontManifest.json")
+        try:
+            doc = json.loads(raw.decode("utf-8", "replace"))
+            fams, assets = [], []
+            for entry in doc if isinstance(doc, list) else []:
+                fam = entry.get("family")
+                if fam:
+                    fams.append(fam)
+                for fspec in entry.get("fonts", []) or []:
+                    a = fspec.get("asset")
+                    if a:
+                        assets.append(a)
+            out["font_families"] = fams[:40]
+            out["fonts"] = assets[:60]
+        except Exception:
+            pass
+
+    # version.json (app identity written by the Flutter tool for some builds)
+    if has("version.json"):
+        raw = _read("version.json")
+        try:
+            doc = json.loads(raw.decode("utf-8", "replace"))
+            if isinstance(doc, dict):
+                out["version_json"] = {k: doc.get(k) for k in
+                                       ("app_name", "version", "build_number", "package_name")
+                                       if k in doc}
+        except Exception:
+            pass
+
+    z.close()
+    return out
+
+
 # --- payload analysis -----------------------------------------------------------------------------
 
 def _analyze_payload(data: bytes, label: str, abi: str = None) -> dict:
@@ -300,8 +475,11 @@ def _analyze_payload(data: bytes, label: str, abi: str = None) -> dict:
     eng = _FLUTTER_ENGINE_RE.search(data)
     arch = next((s["architecture"] for s in snapshots if s.get("architecture")), None)
     mode = next((s["runtime_mode"] for s in snapshots if s.get("runtime_mode")), None)
-    return {
-        "name": label, "abi": abi,
+    base = (label.rsplit("/", 1)[-1]).lower()
+    role = "engine" if base == "libflutter.so" else ("app" if base == "libapp.so" else "payload")
+    is_aot = len(aot_syms) >= 2 or sources > 0
+    info = {
+        "name": label, "abi": abi, "role": role,
         "is_elf": data[:4] == b"\x7fELF",
         "elf_arch": elf["arch"] if elf else None,
         "elf_bits": elf["bits"] if elf else None,
@@ -311,12 +489,20 @@ def _analyze_payload(data: bytes, label: str, abi: str = None) -> dict:
         "snapshots": snapshots,
         "snapshot_hashes": hashes,
         "aot_snapshot_symbols": aot_syms,
-        "is_dart_aot": len(aot_syms) >= 2 or sources > 0,
+        "is_dart_aot": is_aot,
         "gnu_build_id": _gnu_build_id(data),
         "dart_vm_version": ver.group(1).decode("latin1") if ver else None,
-        "dart_version_capped": ver is None and (len(aot_syms) >= 2 or sources > 0),
         "flutter_engine": eng.group(0).decode("latin1", "replace")[:80] if eng else None,
     }
+    # The engine library gets the full fingerprint (build-id = engine revision, backend, graphics).
+    if role == "engine":
+        info["engine"] = _analyze_engine(data)
+        lc = info["engine"]
+        info["dart_version_capped"] = (info["dart_vm_version"] is None and lc["dart_version_line"] is None) \
+            or lc["version_line_capped"]
+    else:
+        info["dart_version_capped"] = ver is None and is_aot
+    return info
 
 
 def _abi_of(path: str) -> str | None:
@@ -353,11 +539,13 @@ def inspect_flutter(path: str) -> dict:
         return {"ok": False, "tool": "flutter", "note": f"no se pudo abrir: {e}"}
 
     payloads = []
+    assets = None
     if head == b"PK\x03\x04":
         payloads = _payloads_from_apk(path)
-        if not payloads:
+        assets = _assets_from_apk(path)
+        if not payloads and not assets:
             return {"ok": True, "tool": "flutter", "is_flutter": False,
-                    "note": "ZIP/APK sin libapp.so/libflutter.so: no parece una app Flutter",
+                    "note": "ZIP/APK sin libapp.so/libflutter.so ni flutter_assets: no parece Flutter",
                     "limitations": ["solo lectura estatica; no se ejecuta nada"]}
     else:
         try:
@@ -368,11 +556,14 @@ def inspect_flutter(path: str) -> dict:
         payloads = [(path.rsplit("/", 1)[-1], data, None)]
 
     libs = [_analyze_payload(d, name, abi) for name, d, abi in payloads]
-    is_flutter = any(l["is_dart_aot"] for l in libs) or any("flutter" in l["name"].lower() for l in libs)
+    is_flutter = (any(l["is_dart_aot"] for l in libs)
+                  or any("flutter" in l["name"].lower() for l in libs)
+                  or assets is not None)
     all_hashes = sorted({h for l in libs for h in l["snapshot_hashes"]})
     abis = sorted({l["abi"] for l in libs if l.get("abi")})
     arch = next((l["dart_target_arch"] for l in libs if l.get("dart_target_arch")), None)
     mode = next((l["dart_runtime_mode"] for l in libs if l.get("dart_runtime_mode")), None)
+    engine = next((l["engine"] for l in libs if l.get("role") == "engine" and l.get("engine")), None)
     notes = []
     if any(l.get("dart_version_capped") for l in libs):
         notes.append("una build de release no suele traer etiqueta de version de Dart; "
@@ -381,6 +572,8 @@ def inspect_flutter(path: str) -> dict:
         "ok": True, "tool": "flutter", "is_flutter": is_flutter,
         "libraries": libs, "snapshot_hashes": all_hashes, "abis": abis,
         "dart_target_arch": arch, "dart_runtime_mode": mode,
+        "engine": engine, "flutter_assets": assets,
+        "build_type": (assets or {}).get("build_type") if assets else None,
         "note": ("app Flutter/Dart AOT detectada" if is_flutter
                  else "sin evidencia de payload Flutter/Dart AOT"),
         "limitations": ["solo lectura estatica (observacion de bytes); no se ejecuta nada",
@@ -448,6 +641,8 @@ def render_flutter(r: dict) -> str:
     if not r.get("ok"):
         return "\n".join(out + [f"- No disponible: {r.get('note','')}"])
     out.append(f"- app Flutter: **{'SI' if r.get('is_flutter') else 'no'}**")
+    if r.get("build_type"):
+        out.append(f"- tipo de build: {r['build_type']}")
     if r.get("abis"):
         out.append(f"- ABIs: {', '.join(r['abis'])}")
     if r.get("dart_target_arch") or r.get("dart_runtime_mode"):
@@ -455,6 +650,41 @@ def render_flutter(r: dict) -> str:
     if r.get("snapshot_hashes"):
         out.append(f"- hashes de snapshot Dart: `{', '.join(r['snapshot_hashes'][:4])}`"
                    + (" …" if len(r["snapshot_hashes"]) > 4 else ""))
+    eng = r.get("engine")
+    if eng:
+        out.append("\n### engine (libflutter.so)")
+        if eng.get("build_id"):
+            out.append(f"- revision (build-id): `{eng['build_id']}`")
+        if eng.get("dart_version_line"):
+            out.append(f"- `{eng['dart_version_line']}`")
+        elif eng.get("version_line_capped"):
+            out.append("- version de Dart ambigua (varias etiquetas distintas): no se elige una")
+        if eng.get("render_backends"):
+            out.append(f"- backend de render: {', '.join(eng['render_backends'])}")
+        if eng.get("graphics_apis"):
+            out.append(f"- APIs graficas: {', '.join(eng['graphics_apis'])}")
+        if eng.get("toolchain"):
+            out.append(f"- toolchain: `{eng['toolchain'][0]}`")
+    a = r.get("flutter_assets")
+    if a:
+        out.append("\n### flutter_assets")
+        out.append(f"- {a['asset_count']} recursos | tipo: {a.get('build_type')}")
+        bits = []
+        if a.get("has_kernel_blob"):
+            bits.append("kernel_blob.bin")
+        if a.get("has_shaders"):
+            bits.append("shaders")
+        if a.get("has_notices"):
+            bits.append("NOTICES")
+        if bits:
+            out.append(f"- presentes: {', '.join(bits)}")
+        if a.get("asset_manifest_format"):
+            out.append(f"- AssetManifest: {a['asset_manifest_format']}"
+                       + (f" ({a['declared_assets']} declarados)" if a.get("declared_assets") else ""))
+        if a.get("font_families"):
+            out.append(f"- fuentes ({len(a['font_families'])}): {', '.join(a['font_families'][:10])}")
+        if a.get("version_json"):
+            out.append(f"- version.json: {a['version_json']}")
     for lib in r.get("libraries", []):
         out.extend(_render_lib(lib))
     out.append("\n- " + r.get("note", ""))

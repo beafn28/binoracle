@@ -585,6 +585,65 @@ def test_dart_aot_deep_snapshot_parse(tmp_path):
     assert rf["is_flutter"] and rf["dart_target_arch"] == "x64" and rf["dart_runtime_mode"] == "product"
 
 
+def test_flutter_apk_engine_and_assets(tmp_path):
+    # inspect_flutter on an APK surfaces the libflutter.so engine fingerprint (build-id revision,
+    # labeled Dart version line, render backend, graphics APIs, toolchain) AND the flutter_assets
+    # bundle (build type, AssetManifest, FontManifest, shaders/NOTICES, version.json). All static.
+    import json
+    import struct
+    import zipfile
+    from binoracle.workflows.flutterinspect import inspect_flutter, render_flutter
+    libapp = _build_libapp_fixture()
+    note = struct.pack("<III", 4, 16, 3) + b"GNU\x00" + bytes(range(16))   # .note.gnu.build-id
+    engine = (libapp + note
+              + b"\x00Dart VM version: 3.4.1 (stable) on android_arm64\x00"
+              + b"\x00Impeller\x00vkCreateInstance\x00glGetString\x00"
+              + b"Android (12345 based on r487747) clang version 17\x00")
+    apk = tmp_path / "app.apk"
+    with zipfile.ZipFile(apk, "w") as z:
+        z.writestr("lib/arm64-v8a/libapp.so", libapp)
+        z.writestr("lib/arm64-v8a/libflutter.so", engine)
+        z.writestr("assets/flutter_assets/AssetManifest.json",
+                   json.dumps({"assets/a.png": ["assets/a.png"], "assets/b.json": ["assets/b.json"]}))
+        z.writestr("assets/flutter_assets/FontManifest.json",
+                   json.dumps([{"family": "Roboto", "fonts": [{"asset": "fonts/Roboto.ttf"}]}]))
+        z.writestr("assets/flutter_assets/NOTICES.Z", b"\x78\x9c\x03\x00\x00\x00\x00\x01")
+        z.writestr("assets/flutter_assets/shaders/ink_sparkle.frag", b"\x00")
+        z.writestr("assets/flutter_assets/version.json",
+                   json.dumps({"app_name": "demo", "version": "1.2.3",
+                               "build_number": "45", "package_name": "com.demo"}))
+    r = inspect_flutter(str(apk))
+    assert r["is_flutter"] and r["abis"] == ["arm64-v8a"]
+    eng = r["engine"]
+    assert eng and eng["build_id"] == "000102030405060708090a0b0c0d0e0f"
+    assert eng["dart_version_line"].startswith("Dart VM version: 3.4.1")
+    assert "Impeller" in eng["render_backends"]
+    assert "Vulkan" in eng["graphics_apis"] and "OpenGL ES" in eng["graphics_apis"]
+    assert eng["toolchain"] and "clang" in eng["toolchain"][0]
+    a = r["flutter_assets"]
+    assert a and a["asset_manifest_format"] == "json" and a["declared_assets"] == 2
+    assert a["font_families"] == ["Roboto"] and a["has_shaders"] and a["has_notices"]
+    assert a["version_json"]["package_name"] == "com.demo"
+    assert a["build_type"].startswith("AOT")
+    assert "flutter_assets" in render_flutter(r) and "Impeller" in render_flutter(r)
+
+
+def test_flutter_apk_debug_kernel_build(tmp_path):
+    # A debug/JIT APK ships kernel_blob.bin in flutter_assets and (often) no libapp.so; the reader
+    # must label it debug/JIT from that marker, not misreport it as AOT.
+    import zipfile
+    from binoracle.workflows.flutterinspect import inspect_flutter
+    apk = tmp_path / "debug.apk"
+    with zipfile.ZipFile(apk, "w") as z:
+        z.writestr("assets/flutter_assets/kernel_blob.bin", b"\x90\x0b\xf0\x00" + b"\x00" * 64)
+        z.writestr("assets/flutter_assets/AssetManifest.bin", b"\x00\x01\x02")
+    r = inspect_flutter(str(apk))
+    assert r["is_flutter"] is True
+    a = r["flutter_assets"]
+    assert a["has_kernel_blob"] and "debug/JIT" in a["build_type"]
+    assert a["asset_manifest_format"].startswith("bin")
+
+
 def test_dart_aot_release_build_version_capped(tmp_path):
     # A release snapshot with no "product/profile" token and no "Dart VM version:" label must report
     # the absence honestly (dart_version_capped) rather than inventing a mode/version.

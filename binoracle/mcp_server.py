@@ -431,8 +431,11 @@ def _h_get_bundle(args):
 
 
 @_tool("inspect_flutter", "Identifica una app Flutter/Dart AOT estaticamente (desde un APK o un "
-       "libapp.so/libflutter.so): magic de snapshot Dart, hashes de snapshot (fijan la revision del "
-       "SDK/engine), build-id GNU, version de Dart VM y simbolos AOT _kDart*Snapshot*. No ejecuta nada.",
+       "libapp.so/libflutter.so): hashes de snapshot (fijan la revision del SDK/engine), arquitectura "
+       "objetivo y modo runtime, ABIs; el engine libflutter.so (build-id=revision, linea de version "
+       "de Dart, backend Impeller/Skia, API grafica Vulkan/GLES, toolchain); y el bundle "
+       "flutter_assets (tipo de build AOT vs debug/JIT, AssetManifest/FontManifest, fuentes, shaders, "
+       "NOTICES, version.json). No ejecuta nada.",
        {"binary": {"type": "string", "description": "ruta a un APK o a libapp.so/libflutter.so"}}, ["binary"])
 def _h_flutter(args):
     from .workflows.flutterinspect import inspect_flutter, render_flutter
