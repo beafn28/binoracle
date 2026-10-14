@@ -3795,3 +3795,78 @@ def test_investigate_cve_vuln_class_hint_triggers_web_path_without_nvd_or_llm(mo
     assert inv.poc_kind == "http"
     assert "import requests" in inv.developed_script
     assert not any("falta el binario vulnerable concreto" in b for b in inv.blockers)
+
+
+def test_websource_dispatch_recognizes_zip_and_local_paths(tmp_path):
+    from binoracle.workflows.websource import (looks_like_zip_url, looks_like_local_zip,
+                                               looks_like_git_url, looks_like_wp_slug)
+    assert looks_like_zip_url("https://vendor.example/downloads/plugin.zip") is True
+    assert looks_like_zip_url("https://vendor.example/downloads/plugin.zip?token=abc") is True
+    assert looks_like_zip_url("https://github.com/org/repo.git") is False
+    assert looks_like_zip_url("divi-form-builder") is False
+    f = tmp_path / "plugin.zip"
+    f.write_bytes(b"PK\x05\x06" + b"\x00" * 18)   # cabecera minima de ZIP vacio
+    assert looks_like_local_zip(str(f)) is True
+    assert looks_like_local_zip(str(tmp_path / "nope.zip")) is False   # no existe
+    assert looks_like_git_url("https://github.com/org/repo.git") is True
+    assert looks_like_wp_slug("divi-form-builder") is True
+
+
+def test_websource_fetch_source_prefers_zip_url_over_git_host_match():
+    # Regresion: una URL de github.com que en realidad apunta a un .zip (p.ej.
+    # github.com/.../archive/x.zip) se enrutaba a `git clone` por coincidir el host, en vez de
+    # descargarse como el .zip que realmente es. El despacho por .zip debe ganar.
+    import binoracle.workflows.websource as ws
+
+    called = {}
+    def fake_fetch_zip_url(url, dest_dir="", on_step=None, timeout=60.0):
+        called["zip_url"] = url
+        return ws.SourceFetchResult(ok=True, kind="zip-url", source=url, local_path="/tmp/x")
+
+    def fail_fetch_git_source(*a, **kw):
+        raise AssertionError("no deberia llamar a fetch_git_source para una URL de .zip")
+
+    orig_zip, orig_git = ws.fetch_zip_url, ws.fetch_git_source
+    ws.fetch_zip_url = fake_fetch_zip_url
+    ws.fetch_git_source = fail_fetch_git_source
+    try:
+        r = ws.fetch_source("https://github.com/org/repo/archive/refs/tags/1.0.zip")
+        assert r.ok and r.kind == "zip-url"
+        assert called.get("zip_url") == "https://github.com/org/repo/archive/refs/tags/1.0.zip"
+    finally:
+        ws.fetch_zip_url, ws.fetch_git_source = orig_zip, orig_git
+
+
+def test_websource_fetch_local_zip_end_to_end(tmp_path):
+    import zipfile
+    from binoracle.workflows.websource import fetch_source, grep_vulnerable_functions
+    zpath = tmp_path / "divi-form-builder.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("divi-form-builder/includes/class-user.php",
+                  "<?php function update_user($user_id,$data){ wp_update_user($data); }")
+    r = fetch_source(str(zpath))
+    assert r.ok and r.kind == "local-zip"
+    g = grep_vulnerable_functions(r.local_path, ["update_user"])
+    assert "update_user" in g["found"]
+
+
+def test_websource_fetch_local_zip_missing_file_degrades():
+    from binoracle.workflows.websource import fetch_local_zip
+    r = fetch_local_zip("/definitely/not/a/real/path.zip")
+    assert r.ok is False and "no existe" in r.note
+
+
+def test_websource_wp_plugin_404_mentions_commercial_plugin_possibility(monkeypatch):
+    # Regresion de usabilidad real: un 404 de la API de WordPress.org se mostraba como un error
+    # generico ("no resuelto"); para un plugin COMERCIAL (p.ej. CVE-2026-5523, Divi Form Builder
+    # de Divi Engine -- vendido directo, nunca en el directorio gratuito) eso no explica nada y el
+    # analista no sabe que hacer. El mensaje debe sugerir las alternativas reales (.zip local/URL).
+    import binoracle.workflows.websource as ws
+
+    def fake_urlopen(url, timeout=30.0):
+        raise Exception("HTTP Error 404: Not Found")
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+    r = ws.fetch_wordpress_plugin("divi-form-builder")
+    assert r.ok is False
+    assert "COMERCIAL" in r.note or "premium" in r.note
+    assert "--source" in r.note

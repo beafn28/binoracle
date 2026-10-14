@@ -3,11 +3,19 @@
 This closes the same blocker dockerfetch.py closes for native binaries ("hace falta el binario
 concreto") but for web CVEs ("hace falta el plugin/repo concreto"): download the actual vulnerable
 source so the LLM's hypothesis (vulnerable_functions, trigger, endpoint) can be checked against real
-code instead of staying a guess. Two sources, both WITHOUT executing anything:
+code instead of staying a guess. Four sources, all WITHOUT executing anything:
 
   - a WordPress.org plugin slug (+ optional version)  -> downloads the official release zip
-    (downloads.wordpress.org), the same artifact `wp plugin install` would fetch.
+    (downloads.wordpress.org), the same artifact `wp plugin install` would fetch. Only covers
+    plugins in the FREE directory; a commercial/premium plugin (sold directly by its vendor, e.g.
+    Divi Engine's own "Divi Form Builder" vs. the unrelated free "forms-for-divi" on WordPress.org)
+    is NOT there and this 404s honestly — see the other three sources for that case.
   - a git repository URL                               -> `git clone --depth 1` (optionally a ref).
+  - a direct HTTPS URL to a .zip                       -> downloads it (e.g. a vendor's own direct
+    download link, or one from an account/marketplace you have access to).
+  - a LOCAL .zip path already on disk                  -> extracts it directly. The realistic path
+    for a commercial plugin: you buy/download it yourself from the vendor (Divi Engine, Elegant
+    Themes Marketplace, CodeCanyon...) and point --source at that file.
 
 Then `grep_vulnerable_functions` searches the fetched tree for the function/method names the LLM
 cited, with file:line evidence. A match is GROUNDED evidence ("this function exists in the real
@@ -79,10 +87,18 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             import json
             info = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
     except Exception as e:
-        res.note = f"plugin '{slug}' no resuelto en WordPress.org: {e}"
+        # 404 en esta API es LITERAL: el slug no existe en el directorio GRATUITO de WordPress.org.
+        # Confirmado en vivo con CVE-2026-5523 (Divi Form Builder, vendedor Divi Engine): el aviso
+        # oficial (Wordfence) lo documenta, pero el plugin se vende directo por el fabricante (zip
+        # desde su cuenta o el Marketplace de Elegant Themes), nunca sube al directorio gratuito.
+        # Esa es la causa mas probable de un 404 aqui, no necesariamente un slug mal escrito.
+        res.note = (f"plugin '{slug}' no resuelto en WordPress.org: {e}. Si es un plugin COMERCIAL/"
+                    f"premium (vendido directo por el fabricante, no en el directorio gratuito), "
+                    f"wordpress.org nunca lo tendra: pasa --source con la ruta a tu .zip ya "
+                    f"descargado, o una URL de descarga directa (https://.../plugin.zip)")
         return res
     if not isinstance(info, dict) or info.get("error"):
-        res.note = f"plugin '{slug}' no encontrado en WordPress.org"
+        res.note = f"plugin '{slug}' no encontrado en WordPress.org (sin detalle adicional)"
         return res
     versions = info.get("versions") or {}
     if version and version in versions:
@@ -116,12 +132,7 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
         res.note = f"fallo descargando {url}: {e}"
         return res
     try:
-        with zipfile.ZipFile(zpath) as z:
-            for info_z in z.infolist():
-                name = info_z.filename
-                if name.startswith("/") or ".." in name.replace("\\", "/").split("/"):
-                    continue
-                z.extract(info_z, dest_dir)
+        _safe_extract_zip(zpath, dest_dir)
     except Exception as e:
         res.note = f"fallo extrayendo {zpath}: {e}"
         return res
@@ -167,19 +178,110 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
     return res
 
 
+def _safe_extract_zip(zpath: str, dest_dir: str) -> None:
+    """Extraccion de ZIP sin path-traversal (zip-slip): comun a las cuatro vias de fetch."""
+    with zipfile.ZipFile(zpath) as z:
+        for info_z in z.infolist():
+            name = info_z.filename
+            if name.startswith("/") or ".." in name.replace("\\", "/").split("/"):
+                continue
+            z.extract(info_z, dest_dir)
+
+
+def looks_like_zip_url(text: str) -> bool:
+    t = (text or "").strip()
+    return bool(re.match(r"^https?://", t)) and (t.split("?", 1)[0].lower().endswith(".zip"))
+
+
+def looks_like_local_zip(text: str) -> bool:
+    t = (text or "").strip()
+    return bool(t) and t.lower().endswith(".zip") and os.path.isfile(t)
+
+
+def fetch_local_zip(path: str, dest_dir: str = "",
+                    on_step: Optional[Callable[[str], None]] = None) -> SourceFetchResult:
+    """Extrae un .zip YA EN DISCO (el caso real de un plugin comercial: lo compraste/descargaste tu
+    mismo del vendedor y le pasas la ruta). No descarga nada, no ejecuta nada del contenido."""
+    step = on_step or (lambda _m: None)
+    res = SourceFetchResult(kind="local-zip", source=path)
+    if not os.path.isfile(path):
+        res.note = f"no existe el fichero: {path}"
+        return res
+    step(f"extrayendo {path} (ya en disco)...")
+    dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_localzip_")
+    try:
+        _safe_extract_zip(path, dest_dir)
+    except Exception as e:
+        res.note = f"fallo extrayendo {path}: {e}"
+        return res
+    res.ok = True
+    res.local_path = dest_dir
+    step(f"codigo extraido en {dest_dir}")
+    return res
+
+
+def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str], None]] = None,
+                  timeout: float = 60.0) -> SourceFetchResult:
+    """Descarga un .zip de una URL DIRECTA (no WordPress.org): un enlace de descarga del propio
+    vendedor, de una cuenta/Marketplace al que tengas acceso, etc."""
+    step = on_step or (lambda _m: None)
+    res = SourceFetchResult(kind="zip-url", source=url)
+    step(f"descargando {url}...")
+    dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_zipurl_")
+    zfd, zpath = tempfile.mkstemp(prefix="binoracle_zipurl_", suffix=".zip")
+    os.close(zfd)
+    try:
+        with _urlopen(url, timeout=timeout) as r:
+            total = 0
+            with open(zpath, "wb") as f:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_DOWNLOAD:
+                        raise ValueError(f"descarga excede {_MAX_DOWNLOAD} bytes (abortada)")
+                    f.write(chunk)
+    except Exception as e:
+        res.note = f"fallo descargando {url}: {e}"
+        return res
+    try:
+        _safe_extract_zip(zpath, dest_dir)
+    except Exception as e:
+        res.note = f"fallo extrayendo {zpath}: {e}"
+        return res
+    finally:
+        try:
+            os.remove(zpath)
+        except Exception:
+            pass
+    res.ok = True
+    res.local_path = dest_dir
+    step(f"codigo obtenido en {dest_dir}")
+    return res
+
+
 def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str], None]] = None,
                  timeout: float = 90.0) -> SourceFetchResult:
-    """Despacha por la forma de `target`: URL de git -> clone; si no, se trata como slug de
-    WordPress.org. Punto de entrada unico para cve_agent."""
+    """Despacha por la forma de `target`: .zip ya en disco -> extrae; URL http(s) directa a un .zip
+    -> descarga (ANTES que la comprobacion de git: una URL de github.com/.../archive/x.zip es un
+    .zip, no un repo a clonar, aunque el host coincida); URL de git -> clone; si no, se trata como
+    slug de WordPress.org (el directorio GRATUITO; un plugin comercial nunca estara ahi, usa las
+    otras tres vias). Punto de entrada unico para cve_agent."""
     target = (target or "").strip()
     if not target:
         return SourceFetchResult(note="sin source_url/slug para resolver")
+    if looks_like_local_zip(target):
+        return fetch_local_zip(target, on_step=on_step)
+    if looks_like_zip_url(target):
+        return fetch_zip_url(target, on_step=on_step, timeout=timeout)
     if looks_like_git_url(target):
         return fetch_git_source(target, ref=version, on_step=on_step, timeout=timeout)
     if looks_like_wp_slug(target):
         return fetch_wordpress_plugin(target, version=version, on_step=on_step, timeout=timeout)
     return SourceFetchResult(source=target,
-                             note=f"'{target}' no parece una URL de git ni un slug de WordPress.org")
+                             note=f"'{target}' no parece una URL de git, un .zip (local o URL) ni "
+                                 f"un slug de WordPress.org")
 
 
 # --- confirmacion fundamentada: ¿existen de verdad las funciones citadas por el LLM? ---
