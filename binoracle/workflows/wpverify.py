@@ -224,10 +224,20 @@ def verify_wordpress_account_takeover(
 
     if not _docker_daemon_ok():
         res.available = False
-        res.detail = "sin daemon Docker alcanzable"
-        res.limitations.append("verificacion dinamica NO intentada: necesita un daemon Docker "
-                               "en marcha (docker CLI presente no basta); arranca Docker Desktop/"
-                               "dockerd y reintenta")
+        # distingue las dos causas reales (el mensaje anterior asumia SIEMPRE "CLI presente, falta
+        # el daemon", enganoso cuando el CLI ni siquiera esta instalado en la imagen).
+        if not shutil.which("docker"):
+            res.detail = "sin cliente docker instalado"
+            res.limitations.append("verificacion dinamica NO intentada: el CLI de `docker` no "
+                                   "esta instalado en este contenedor (reconstruye la imagen: "
+                                   "`docker compose up --build`, ya deberia traerlo)")
+        else:
+            res.detail = "sin daemon Docker alcanzable"
+            res.limitations.append("verificacion dinamica NO intentada: el CLI de docker esta, "
+                                   "pero no se alcanza ningun daemon. Si corres binoracle dentro "
+                                   "de Docker, monta el socket del host en docker-compose.yml "
+                                   "(/var/run/docker.sock:/var/run/docker.sock) y confirma que "
+                                   "Docker Desktop/dockerd esta arrancado en tu maquina")
         return res
 
     if not os.path.isdir(os.path.join(plugin_source_dir, slug)):

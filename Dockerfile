@@ -84,6 +84,15 @@ RUN apt-get update \
     && (apt-get install -y --no-install-recommends yara qemu-user valgrind dex2jar \
         || echo 'WARN: algun paquete apt extra no disponible') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Cliente docker (SOLO el CLI, no un daemon aparte): necesario para wpverify.py (levanta un
+# WordPress+MySQL efimero para confirmar CVEs web de verdad) y para los sandboxes LD_PRELOAD/heap
+# que invocan `docker run`. No arranca ningun dockerd dentro del contenedor: habla con el daemon
+# del HOST (Docker Desktop en Mac/Windows, o el daemon nativo en Linux) a traves del socket que
+# docker-compose.yml monta en /var/run/docker.sock -- el patron estandar "Docker fuera de Docker".
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends docker.io \
+        || echo 'WARN: docker CLI no instalado; wpverify.py y los sandboxes basados en Docker degradan') \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 # Oraculos/tools Python extra. Cada uno por separado para que un fallo NO bloquee al resto.
 # angr = ejecucion simbolica (sube verdicts a 'verified'); es el mas pesado, va el ultimo.
 RUN pip install keystone-engine || echo 'WARN: keystone-engine no instalado'

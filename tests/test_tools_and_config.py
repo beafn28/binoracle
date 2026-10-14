@@ -3945,3 +3945,20 @@ def test_cve_agent_dynamic_verify_gate_accepts_local_zip_not_only_wordpress_plug
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("slug") == "DiviFormBuilder"
     assert inv.verified is True
+
+
+def test_wpverify_distinguishes_missing_cli_from_missing_daemon(monkeypatch):
+    # Regresion de usabilidad real: el mensaje de "sin Docker" SIEMPRE decia "CLI presente, falta
+    # el daemon" -- enganoso cuando el CLI de docker ni siquiera estaba instalado en la imagen
+    # (confirmado en vivo: la primera build del compose no lo traia). Debe distinguir las dos
+    # causas y dar el paso siguiente correcto para cada una.
+    import binoracle.workflows.wpverify as wv
+
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    monkeypatch.setattr(wv.shutil, "which", lambda name: None)
+    r1 = wv.verify_wordpress_account_takeover("/tmp", "x", "/x", "POST", ["id"], on_step=lambda m: None)
+    assert "no esta instalado" in r1.limitations[0]
+
+    monkeypatch.setattr(wv.shutil, "which", lambda name: "/usr/bin/docker")
+    r2 = wv.verify_wordpress_account_takeover("/tmp", "x", "/x", "POST", ["id"], on_step=lambda m: None)
+    assert "monta el socket" in r2.limitations[0]

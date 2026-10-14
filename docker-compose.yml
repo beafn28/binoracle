@@ -22,6 +22,11 @@ services:
       - "8080:8080"              # UI web: http://127.0.0.1:8080
     volumes:
       - ./targets:/targets       # deja aqui tus APK/binarios -> en la app usa /targets/<fichero>
+      # Socket de Docker del HOST (Docker Desktop en Mac/Windows, daemon nativo en Linux): el
+      # contenedor NO corre su propio dockerd, habla con este. Necesario para wpverify.py
+      # (WordPress+MySQL efimero que confirma CVEs web de verdad) y los sandboxes LD_PRELOAD/heap
+      # que hacen `docker run`. Sin esto degradan honestamente (available=False), nunca fallan mal.
+      - /var/run/docker.sock:/var/run/docker.sock
     # Para que el contenedor pueda llegar a servicios del host si los necesitas.
     extra_hosts:
       - "host.docker.internal:host-gateway"
