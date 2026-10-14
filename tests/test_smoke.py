@@ -631,6 +631,25 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autocsu_verifies_execve_chain():
+    # Verificacion POSITIVA de ret2csu -> execve ENCADENADO por EJECUCION: en csuexec no hay
+    # `pop rsi`/`pop rdx`, asi que los gadgets csu fijan rsi=0/rdx=0 (la call forzada de gadget2
+    # apunta a un `ret` benigno) y luego pop rdi=&binsh, pop rax=59, syscall -> execve -> shell.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/csuexec"
+    if not os.path.exists(binp):
+        pytest.skip("sample csuexec no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autocsu import autocsu
+    r = autocsu(binp)
+    assert r.get("ok") and r.get("verified"), f"ret2csu->execve no verificado: {r.get('note')}"
+    assert "mode=execve" in (r.get("detail") or "")
+
+
 def test_autopivot_verifies_stack_migration():
     # Verificacion POSITIVA de stack pivot por EJECUCION: en pivot el overflow es corto (solo llega
     # a saved rbp + saved rip), asi que se migra RSP a un buffer fijo en .bss (notes) donde se

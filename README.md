@@ -51,6 +51,7 @@ the agent's hard-won, execution-verified playbook ships with the product. The se
 | ret2dlresolve (no leak) | NX, dynamic no-PIE, Partial RELRO | forges the linker's resolver structures → `system('/bin/sh')` with **no libc leak** |
 | SROP (sigreturn, x86-64 **and x86-32**) | NX, gadget-poor no-PIE | one sigreturn restores a forged register frame → `execve('/bin/sh')` with only `pop {r,e}ax` + a syscall gate (`syscall` / `int 0x80`) |
 | ret2csu | NX, gadget-poor no-PIE, x86-64 | the two universal `__libc_csu_init` gadgets set rdi/rsi/rdx and make an indirect `call [r12+rbx*8]` — no `pop rsi/rdx` needed; 16B ret-slide handled |
+| ret2csu → execve (chained) | NX, no `pop rsi`/`pop rdx`, x86-64 | csu sets rsi=0/rdx=0 (gadget2's forced call aimed at a benign `ret`), then `pop rdi`=&'/bin/sh', `pop rax`=59, `syscall` → `execve('/bin/sh',0,0)` |
 | format-string (Partial RELRO, x86-64 **and x86-32**) | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` (offset detection is arch-aware) |
 | format-string (Full RELRO) | NX + PIE + Full RELRO | GOT is read-only → ret2system by hijacking printf's saved return on the stack |
 | stack-canary bypass | NX + **stack canary** | leaks the canary (via a `%s` echo *or* a `printf(input)` format string), rewrites it in place, overflows past it to win() |
