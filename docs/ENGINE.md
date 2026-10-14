@@ -52,7 +52,7 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | **SROP** | x86-64, x86-32 | `autosrop`, `autopoc` | `srop`, `srop32` | Forged sigreturn frame → execve. i386 needs explicit segment selectors (cs=0x23/ss=0x2b/ds=es=0x2b/gs=0x63) — proven, not assumed |
 | **ret2csu (call)** | x86-64 | `autocsu` (mode=win) | `ret2csu`, `csuexec` | Universal `__libc_csu_init` gadgets control rdi/rsi/rdx and make a 3-arg call |
 | **ret2csu → execve** | x86-64 | `autocsu` (mode=execve) | `csuexec` | csu sets rsi/rdx, benign call, then pop rdi=/bin/sh / pop rax=59 / syscall |
-| **ret2dlresolve** | x86-64 | `autodlresolve` | `dlresolve` | Shell on a dynamic no-PIE Partial-RELRO binary with **no libc leak and no gift** |
+| **ret2dlresolve** | x86-64, x86-32 | `autodlresolve` | `dlresolve`, `dlresolve32` | Shell on a dynamic no-PIE Partial-RELRO binary with **no libc leak and no gift** (forges Elf64_Rela/Elf32_Rel resolver structs; i386 is cdecl) |
 | **stack pivot** | x86-64 | `autopivot` | `pivot` | Short overflow → migrate the stack to `.bss` via `leave;ret`, then run a full chain |
 | **format-string** | x86-64, x86-32 | `autofmt` | `fmtstring`, `fmt_got`, `fmtgot32` | `%n` GOT overwrite → `system`; handles Partial & Full RELRO; robust probe with retry |
 | **canary bypass** | x86-64 | `autocanary` | `canleak`, `canfmt` | Leak the canary (via `%s`/`%p`), re-plant it, then overflow past it to a shell |
@@ -239,7 +239,7 @@ authorized targets only; all output is untrusted data.
 
 - **MCP tools:** 98 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 140 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 141 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

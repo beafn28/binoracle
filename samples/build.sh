@@ -71,6 +71,8 @@ echo "[*] canfmt (stack overflow con canary + fuga via format-string %p: bypass 
 run "gcc -fstack-protector-all -no-pie -w -o bin/canfmt src/canfmt.c"
 echo "[*] dlresolve (dinamico, no-PIE, Partial RELRO: ret2dlresolve sin leak; con gadgets asm)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/dlresolve src/dlresolve.c"
+echo "[*] dlresolve32 (32-bit, dinamico, no-PIE, Partial RELRO: ret2dlresolve i386; requiere multilib)"
+run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/dlresolve32 src/dlresolve32.c" || echo "  (dlresolve32 build omitido: sin multilib)"
 echo "[*] fmt_got (format string -> GOT overwrite)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/fmt_got src/fmt_got.c"
 echo "[*] uaf (use-after-free con puntero de funcion)"

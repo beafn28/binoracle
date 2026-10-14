@@ -2924,6 +2924,24 @@ def test_autodlresolve_verifies_no_leak_shell():
     assert "data=" in (r.get("detail") or "")
 
 
+def test_autodlresolve_verifies_32bit():
+    # Verificacion POSITIVA de ret2dlresolve en 32-bit (i386, cdecl): forja Elf32_Rel+Elf32_Sym y
+    # llama al stub del resolver -> system('/bin/sh'), sin leak. Auto-salta sin multilib o sandbox.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/dlresolve32"
+    if not os.path.exists(binp):
+        pytest.skip("sample dlresolve32 no compilado (sin multilib i386)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox nativo no disponible: {why}")
+    from binoracle.workflows.autodlresolve import autodlresolve
+    r = autodlresolve(binp)
+    assert r.get("ok") and r.get("verified"), f"ret2dlresolve 32-bit no verificado: {r.get('note')}"
+    assert "bits=32" in (r.get("detail") or "")
+
+
 def test_autodlresolve_not_applicable_on_pie():
     # ret2dlresolve no aplica a PIE (direcciones aleatorias) -> degrada limpio sin afirmar shell.
     import os
