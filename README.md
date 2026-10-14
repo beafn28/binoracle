@@ -3,6 +3,11 @@
 Local LLM copilot for binary reverse engineering and exploitation, grounded on real
 analysis oracles.
 
+> **¿Quieres todo en un sitio?** [`docs/BINORACLE.md`](docs/BINORACLE.md) es el documento
+> maestro: qué lee, qué explota (con estado de verificación), todas las herramientas, CLI,
+> tests y plataformas. Para levantarlo: [`docs/USAGE.md`](docs/USAGE.md). Interior del motor:
+> [`docs/ENGINE.md`](docs/ENGINE.md).
+
 ## Why this is different
 
 Most LLM-for-RE tools do one of two things: they call a cloud API (so you cannot feed
