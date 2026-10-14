@@ -981,6 +981,25 @@ def test_caller_tools_degrade_when_absent():
         os.environ["PATH"] = old
 
 
+def test_signal_tools_degrade_when_absent():
+    # sigrok-cli ausente -> inspect_signal_decoders / decode_signal_recording degradan nombrando
+    # la herramienta (integracion caller-supplied, igual que TShark/Binwalk).
+    import os
+    from binoracle.workflows.callertools import signal_decoders, decode_signal, render_caller
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        r = signal_decoders("i2c")
+        assert r["ok"] is False and r["available"] is False and r["tool"] == "sigrok-cli"
+        assert "sigrok-cli" in r["note"]
+        assert "No disponible" in render_caller("signal_decoders", r)
+        d = decode_signal("/tmp/cap.sr", "i2c")
+        assert d["ok"] is False and d["available"] is False and d["tool"] == "sigrok-cli"
+        assert "No disponible" in render_caller("signal", d)
+    finally:
+        os.environ["PATH"] = old
+
+
 def test_caller_tool_jadx_decompile(tmp_path):
     import os
     import stat

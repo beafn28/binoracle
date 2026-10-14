@@ -21,6 +21,8 @@ _INSTALL = {
     "jadx": "JADX (https://github.com/skylot/jadx): decompila DEX a codigo Java",
     "analyzeHeadless": "Ghidra (https://ghidra-sre.org): decompilador nativo; define GHIDRA_INSTALL_DIR "
                        "o pon support/analyzeHeadless en el PATH",
+    "sigrok-cli": "sigrok-cli (https://sigrok.org / apt install sigrok-cli): decodificadores de "
+                  "protocolo (I2C/SPI/UART/USB/1-Wire...) sobre capturas de analizador logico",
 }
 
 
@@ -188,6 +190,52 @@ def firmware_scan(path: str, timeout: int = 120) -> dict:
             "limitations": ["escaneo de firmas (sin extraccion); salida de Binwalk"]}
 
 
+def signal_decoders(query: str = "", timeout: int = 60) -> dict:
+    """inspect_signal_decoders: list the protocol decoders sigrok offers (I2C/SPI/UART/USB/...),
+    optionally filtered by a substring, via sigrok-cli if the caller supplied it. Nothing is
+    recorded or decoded here -- this only enumerates the engine's catalog."""
+    r = run_caller_tool(["sigrok-cli", "--list-supported"], timeout)
+    if not r.get("ok"):
+        return r
+    decoders = []
+    in_section = False
+    for ln in (r["stdout"] or "").splitlines():
+        if ln.startswith("Supported protocol decoders:"):
+            in_section = True
+            continue
+        if in_section:
+            if not ln.strip() or not ln.startswith("  "):
+                if ln.strip() and not ln.startswith("  "):
+                    in_section = False
+                continue
+            parts = ln.strip().split(None, 1)
+            if parts:
+                did, name = parts[0], (parts[1] if len(parts) > 1 else "")
+                if not query or query.lower() in (did + " " + name).lower():
+                    decoders.append({"id": did, "name": name})
+    return {"ok": True, "available": True, "tool": "sigrok-cli", "decoders": decoders,
+            "decoder_count": len(decoders),
+            "limitations": ["catalogo de sigrok (no verificado por binoracle)"]}
+
+
+def decode_signal(recording_path: str, decoder: str, channels: str = "", timeout: int = 120) -> dict:
+    """decode_signal_recording: decode a logic-analyzer capture (.sr) with a sigrok protocol decoder
+    and return its annotations, via sigrok-cli if present. The capture path is passed as an argument
+    (never through a shell); the decoder output is untrusted data derived from the capture."""
+    argv = ["sigrok-cli", "-i", recording_path, "-P", decoder, "-A", decoder]
+    if channels:
+        argv += ["-C", channels]
+    r = run_caller_tool(argv, timeout)
+    if not r.get("ok"):
+        return r
+    annotations = [ln for ln in (r["stdout"] or "").splitlines() if ln.strip()]
+    return {"ok": True, "available": True, "tool": "sigrok-cli", "decoder": decoder,
+            "annotations": annotations[:500], "annotation_count": len(annotations),
+            "raw": (r["stdout"] or "")[:8000],
+            "limitations": ["anotaciones de sigrok (" + decoder + "); salida no verificada; "
+                            "objetivo/captura autorizados"]}
+
+
 def one_gadget(libc_path: str, timeout: int = 60) -> dict:
     """libc-relative 'magic gadget' offsets (a single address that spawns a shell), via one_gadget."""
     r = run_caller_tool(["one_gadget", "--raw", libc_path], timeout)
@@ -333,6 +381,14 @@ def render_caller(kind: str, r: dict) -> str:
         out.append(f"- Ghidra OK: {r.get('count')} funcion(es) decompiladas")
         for fn in fns[:10]:
             out.append(f"\n### {fn['name']} @ {fn['addr']}\n```c\n{fn['pseudocode'][:4000]}\n```")
+    elif kind == "signal_decoders":
+        out.append(f"- sigrok-cli OK: {r.get('decoder_count')} decodificador(es)")
+        for d in (r.get("decoders") or [])[:40]:
+            out.append(f"  - `{d['id']}` — {d['name']}")
+    elif kind == "signal":
+        out.append(f"- sigrok-cli OK: decodificador `{r.get('decoder')}`, "
+                   f"{r.get('annotation_count')} anotacion(es)")
+        out.append("\n```\n" + "\n".join((r.get("annotations") or [])[:60]) + "\n```")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

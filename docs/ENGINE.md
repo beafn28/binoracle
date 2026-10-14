@@ -158,6 +158,7 @@ ideas were re-implemented in Python with attribution, not copied.)
 | macOS plist | `plistinspect` | binary & XML plists |
 | HAR captures | `harinspect` | request/response, secrets scan |
 | Firmware | `firmware_scan` | embedded filesystem / blob carving |
+| **RF / logic signals** | `signal_decoders`, `decode_signal` (sigrok) | protocol-decoder catalog + decode a logic-analyzer capture (I2C/SPI/UART/USB/…) — caller-supplied sigrok-cli |
 | pcap | (capinfos) | capture metadata |
 | Secrets / IOCs | `secrets`, `iocscan` | credential & indicator scanning |
 
@@ -186,9 +187,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 55 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 57 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 113 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 114 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

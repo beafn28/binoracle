@@ -235,6 +235,31 @@ def _h_fw(args):
     return render_caller("firmware", firmware_scan(b))
 
 
+@_tool("inspect_signal_decoders", "Lista los decodificadores de protocolo de sigrok (I2C/SPI/UART/"
+       "USB/1-Wire...) via sigrok-cli SI el llamador lo tiene; si no, degrada. Opcional 'query' para "
+       "filtrar. Integracion caller-supplied (binoracle no empaqueta sigrok). No decodifica nada aqui.",
+       {"query": {"type": "string", "description": "subcadena para filtrar decodificadores (opcional)"}},
+       [])
+def _h_sigdec(args):
+    from .workflows.callertools import signal_decoders, render_caller
+    return render_caller("signal_decoders", signal_decoders((args or {}).get("query") or ""))
+
+
+@_tool("decode_signal_recording", "Decodifica una captura de analizador logico (.sr) con un "
+       "decodificador de protocolo de sigrok y devuelve sus anotaciones, via sigrok-cli SI el "
+       "llamador lo tiene; si no, degrada. Integracion caller-supplied; salida no confiable; captura "
+       "y objetivo autorizados. 'decoder' (p.ej. i2c, spi, uart) y opcional 'channels'.",
+       {"binary": {"type": "string", "description": "ruta a la captura .sr (sigrok)"},
+        "decoder": {"type": "string", "description": "decodificador de protocolo (i2c|spi|uart|...)"},
+        "channels": {"type": "string", "description": "mapeo de canales, p.ej. 'scl=0,sda=1' (opcional)"}},
+       ["binary", "decoder"])
+def _h_sigdecode(args):
+    from .workflows.callertools import decode_signal, render_caller
+    a = args or {}
+    return render_caller("signal", decode_signal(_binary(a), a.get("decoder") or "",
+                                                 channels=a.get("channels") or ""))
+
+
 @_tool("decompile_native", "Decompila un binario nativo (ELF/PE/Mach-O) a pseudocodigo C via el "
        "analizador headless de Ghidra SI el llamador lo tiene (Ghidra decompila estaticamente, no "
        "ejecuta el binario); si no, degrada con la pista de instalacion. Integracion caller-supplied. "
