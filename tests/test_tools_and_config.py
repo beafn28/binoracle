@@ -3962,3 +3962,25 @@ def test_wpverify_distinguishes_missing_cli_from_missing_daemon(monkeypatch):
     monkeypatch.setattr(wv.shutil, "which", lambda name: "/usr/bin/docker")
     r2 = wv.verify_wordpress_account_takeover("/tmp", "x", "/x", "POST", ["id"], on_step=lambda m: None)
     assert "monta el socket" in r2.limitations[0]
+
+
+def test_wpverify_lab_host_picks_docker_internal_only_inside_a_container(monkeypatch):
+    # Regresion real: binoracle corre dentro de un contenedor y pilota el daemon del HOST via el
+    # socket montado (Docker-fuera-de-Docker). El puerto publicado de WordPress se abre en el
+    # 127.0.0.1 del HOST, no en el de nuestro propio contenedor -- confirmado en vivo: Apache
+    # arrancaba bien (logs con 'resuming normal operations') pero http_ready() nunca lo alcanzaba.
+    # Dentro de un contenedor con host.docker.internal resoluble, debe usarlo; fuera de un
+    # contenedor (o si no resuelve), debe seguir usando 127.0.0.1 como antes.
+    import binoracle.workflows.wpverify as wv
+
+    monkeypatch.setattr(wv.os.path, "exists", lambda p: p == "/.dockerenv")
+    monkeypatch.setattr(wv.socket, "gethostbyname", lambda name: "172.17.0.1")
+    assert wv._lab_host() == "host.docker.internal"
+
+    def _raise(name):
+        raise OSError("no resuelve")
+    monkeypatch.setattr(wv.socket, "gethostbyname", _raise)
+    assert wv._lab_host() == "127.0.0.1"
+
+    monkeypatch.setattr(wv.os.path, "exists", lambda p: False)
+    assert wv._lab_host() == "127.0.0.1"

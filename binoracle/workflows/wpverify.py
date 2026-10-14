@@ -22,8 +22,12 @@ That is unambiguous proof of account takeover, not a 200 status code or a guess.
 Requires a reachable Docker DAEMON (not just the `docker` CLI) — checked explicitly, since the CLI
 can be installed with no daemon running (degrades honestly, NOT_APPLICABLE, same pattern as
 autosrop_aarch64.py for a missing cross toolchain). Pulls wordpress/mysql/alpine images on first use
-(internet needed for that one-time cost, same as `make pwn-image`); the WordPress instance itself is
-published only on 127.0.0.1, on an isolated per-run Docker network, and is always torn down.
+(internet needed for that one-time cost, same as `make pwn-image`); the WordPress instance runs on
+an isolated per-run Docker network/volume and is always torn down. Its HTTP port is published on a
+random high port on all interfaces (see start_wordpress()/_lab_host(): binoracle normally drives
+the HOST's daemon through a mounted socket, so a 127.0.0.1-only bind would be unreachable from
+binoracle's own container), scoped down by being ephemeral, randomly-ported, and torn down on every
+exit — not by network isolation, so only run this against trusted hosts/networks.
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -93,6 +98,27 @@ def _token() -> str:
     return secrets.token_hex(4)
 
 
+def _lab_host() -> str:
+    """Host desde el que ESTE PROCESO (el propio binoracle, haciendo las peticiones HTTP del
+    ataque) debe hablarle al laboratorio. Cuando binoracle corre dentro de un contenedor y usa el
+    socket del HOST para pilotar Docker (Docker-fuera-de-Docker, el patron que docker-compose.yml
+    monta), el puerto que publicamos para WordPress se abre en el 127.0.0.1 del HOST, NO en el
+    127.0.0.1 de nuestro propio contenedor -- son namespaces de red distintos. Sin esto, http_ready
+    y las peticiones del ataque nunca llegaban a WordPress aunque Apache arrancara bien (confirmado
+    en vivo: los logs mostraban 'resuming normal operations' pero 'WordPress no respondio a
+    tiempo' seguia saliendo). host.docker.internal resuelve al HOST de verdad (Docker Desktop en
+    Mac/Windows de forma nativa; en Linux via el extra_hosts que docker-compose.yml anade). Si
+    binoracle NO corre en un contenedor (p.ej. los tests de este repo en el sandbox de desarrollo),
+    127.0.0.1 ya es correcto y host.docker.internal no existira."""
+    if os.path.exists("/.dockerenv"):
+        try:
+            socket.gethostbyname("host.docker.internal")
+            return "host.docker.internal"
+        except OSError:
+            pass
+    return "127.0.0.1"
+
+
 class _Lab:
     """Agrupa los recursos Docker efimeros de una verificacion (red/volumen/contenedores) y
     garantiza su limpieza. Nunca deja nada vivo, tampoco si algo falla a mitad de camino."""
@@ -137,8 +163,12 @@ class _Lab:
         return False
 
     def start_wordpress(self, db_pw: str) -> Optional[str]:
-        """Publica el puerto 80 SOLO en 127.0.0.1 (nunca 0.0.0.0): el laboratorio no debe ser
-        alcanzable desde fuera de este host. Devuelve el puerto publicado del host, o None."""
+        """Publica el puerto 80 en un puerto ALEATORIO de todas las interfaces del host (0.0.0.0).
+        No se puede restringir a 127.0.0.1: cuando binoracle corre en un contenedor (el caso real,
+        via Docker-fuera-de-Docker), un bind a 127.0.0.1 solo seria alcanzable desde el PROPIO
+        host, nunca desde nuestro contenedor ni desde ningun otro -- ver _lab_host(). El riesgo se
+        acota con un puerto aleatorio de corta vida, torn down siempre al final, y siendo esto un
+        laboratorio efimero pensado solo para objetivos/engagements autorizados."""
         # Guardadas para reusar en wp_cli(): wp-config.php (de la imagen oficial) lee estas
         # variables en TIEMPO DE EJECUCION via getenv_docker(), no las hornea en el fichero. El
         # contenedor wp-cli es OTRO contenedor (solo comparte el volumen, no el entorno del
@@ -148,7 +178,7 @@ class _Lab:
                         "-e", "WORDPRESS_DB_USER=wordpress", "-e", f"WORDPRESS_DB_PASSWORD={db_pw}"]
         self.sh("run", "-d", "--name", self.wp, "--network", self.net, "--platform", "linux/amd64",
                "-v", f"{self.vol}:/var/www/html", *self._db_env,
-               "-p", "127.0.0.1::80", _WP_IMAGE, timeout=90)
+               "-p", "0.0.0.0::80", _WP_IMAGE, timeout=90)
         self._created.append(("container", self.wp))
         r = self.sh("port", self.wp, "80", timeout=15)
         m = re.search(r":(\d+)\s*$", (r.stdout or "").strip())
@@ -159,7 +189,7 @@ class _Lab:
         # en Apple Silicon -- Apache/PHP bajo emulacion amd64 puede tardar varios minutos en
         # responder al primer arranque, igual que le pasaba a MySQL.
         import urllib.request
-        url = f"http://127.0.0.1:{port}/wp-login.php"
+        url = f"http://{_lab_host()}:{port}/wp-login.php"
         for _ in range(tries):
             try:
                 with urllib.request.urlopen(url, timeout=5) as r:
@@ -304,7 +334,7 @@ def verify_wordpress_account_takeover(
             res.detail = "WordPress no respondio a tiempo"
             res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
             return res
-        base_url = f"http://127.0.0.1:{port}"
+        base_url = f"http://{_lab_host()}:{port}"
         step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
 
         r = lab.wp_cli("core", "install", f"--url={base_url}", "--title=binoracle-lab",
