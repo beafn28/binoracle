@@ -107,6 +107,8 @@ echo "[*] hoc (x86-64, no-PIE, house-of-corrosion: global_max_fast -> fastbin in
 run "gcc -fno-stack-protector -no-pie -w -o bin/hoc src/hoc.c"
 echo "[*] unsafeunlink (x86-64, no-PIE, unsafe-unlink: unlink() corruption + bypass del chequeo 2.3.4+)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/unsafeunlink src/unsafeunlink.c"
+echo "[*] fastbindup (x86-64, no-PIE, fastbin-dup clasico: doble-free A,B,A + fd poison, pre-safe-linking)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/fastbindup src/fastbindup.c"
 echo "[*] srop_aarch64 (ARM64, static, no-PIE, SROP; requiere aarch64-linux-gnu-gcc; se omite si no esta)"
 if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
   ( cd "$here" && aarch64-linux-gnu-gcc -fno-stack-protector -no-pie -static -w -o bin/srop_aarch64 src/srop_aarch64.c ) \

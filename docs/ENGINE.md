@@ -73,6 +73,7 @@ primitive effect) in the sandbox and read back a marker / `uid=` line.
 | **largebin attack** | ≥2.30 (reproduced) | `autolargebin` | `largebin` | Corrupt a largebin chunk's `bk_nextsize` so a later large-chunk insertion runs `victim->bk_nextsize->fd_nextsize = victim` → arbitrary pointer write → hijack → shell |
 | **house-of-corrosion** | reproduced | `autohoc` | `hoc` | Corrupt `global_max_fast` so a large `free()` is a fastbin free indexed `fastbinsY[(size-0x20)>>4]` unbounded → a chosen size aliases an arbitrary slot → `&chunk` written there → hijack → shell |
 | **unsafe-unlink** | reproduced | `autounsafeunlink` | `unsafeunlink` | Forge `P->fd=&ptr-0x18`, `P->bk=&ptr-0x10` (satisfies the 2.3.4+ `FD->bk==P && BK->fd==P` check) → `unlink()` leaves `ptr=&ptr-0x18` → edit redirects `ptr` to a function pointer → hijack → shell |
+| **fastbin-dup** | pre-2.32 (reproduced) | `autofastbindup` | `fastbindup` | Double-free `A,B,A` slips the weak `==fasttop` check → poison `fd` toward a fake chunk (valid size) → a later alloc returns a chosen address → hijack → shell |
 | **tcache stashing unlink** | ≥2.31 (reproduced) | `autostash` | `stash` | Smallbin→tcache stash with a corrupted `bk` stashes a **fake chunk** → later alloc returns an attacker address → hijack → shell. Reproduces **and satisfies** the ≥2.31 `bck->fd == tc_victim` check (calloc trigger) |
 
 **Honest notes on the heap families.** house-of-spirit and house-of-botcake
@@ -240,9 +241,9 @@ authorized targets only; all output is untrusted data.
 
 ## 6. Verification status
 
-- **MCP tools:** 101 registered (`binoracle/mcp_server.py`).
+- **MCP tools:** 102 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 145 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 146 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.

@@ -1182,6 +1182,11 @@ _exploit_tool("autosrop_aarch64", "SROP en aarch64 (ARM64): un overflow hace que
               "(host ARM64 o qemu-aarch64); en x86-64 sin emulacion degrada honestamente.",
               lambda: (__import__("binoracle.workflows.autosrop_aarch64", fromlist=["autosrop_aarch64"]).autosrop_aarch64,
                        __import__("binoracle.workflows.autosrop_aarch64", fromlist=["render_srop_aarch64"]).render_srop_aarch64))
+_exploit_tool("autofastbindup", "fastbin-dup clasico (pre-2.32): doble-free A,B,A esquiva el chequeo "
+              "debil ==fasttop -> se envenena fd hacia un chunk falso (con size valido) -> una alloc "
+              "posterior devuelve una direccion elegida -> hijack -> shell. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autofastbindup", fromlist=["autofastbindup"]).autofastbindup,
+                       __import__("binoracle.workflows.autofastbindup", fromlist=["render_fastbindup"]).render_fastbindup))
 _exploit_tool("autounsafeunlink", "unsafe-unlink: forja P->fd=&ptr-0x18 y P->bk=&ptr-0x10 (satisface "
               "el chequeo 2.3.4+ `FD->bk==P && BK->fd==P`); unlink() deja ptr=&ptr-0x18 -> edicion "
               "redirige ptr a un puntero de funcion -> se escribe win -> shell. Verificado en sandbox.",

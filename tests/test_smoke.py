@@ -1292,6 +1292,25 @@ def test_autosrop_aarch64_applicability_and_honesty():
             assert "no verificado" in (r2.get("note") or "")
 
 
+def test_autofastbindup_verifies():
+    # Verificacion POSITIVA de fastbin-dup clasico por EJECUCION: el doble-free A,B,A esquiva el
+    # chequeo debil ==fasttop; se envenena fd hacia un chunk falso (con size valido) y una alloc
+    # posterior devuelve &hslot.fn -> se escribe win -> shell. Reproduce el fastbin pre-2.32.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/fastbindup"
+    if not os.path.exists(binp):
+        pytest.skip("sample fastbindup no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autofastbindup import autofastbindup
+    r = autofastbindup(binp)
+    assert r.get("ok") and r.get("verified"), f"fastbin-dup no verificado: {r.get('note')}"
+    assert "hslot=" in (r.get("detail") or "")
+
+
 def test_autounsafeunlink_verifies():
     # Verificacion POSITIVA de unsafe-unlink por EJECUCION: fd=&ptr-0x18 y bk=&ptr-0x10 satisfacen el
     # chequeo 2.3.4+ (FD->bk==P && BK->fd==P) y unlink deja ptr=&ptr-0x18; editando a traves de ptr se
@@ -1364,7 +1383,8 @@ def test_heap_families_as_verified_chains():
              ("samples/bin/largebin", "largebin attack"),
              ("samples/bin/stash", "tcache stashing unlink"),
              ("samples/bin/hoc", "house-of-corrosion"),
-             ("samples/bin/unsafeunlink", "unsafe-unlink")]
+             ("samples/bin/unsafeunlink", "unsafe-unlink"),
+             ("samples/bin/fastbindup", "fastbin-dup")]
     ran = 0
     from binoracle.workflows.chainanalyzer import analyze_chains
     for binp, chain_name in cases:
