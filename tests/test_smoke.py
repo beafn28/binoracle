@@ -1267,6 +1267,35 @@ def test_autostash_verifies_tcache_stashing():
     assert "hobj=" in (r.get("detail") or "")
 
 
+def test_heap_families_as_verified_chains():
+    # The dedicated heap verifiers are exposed as CHAINS in the chain-analyzer graph and, with
+    # verify=True, run in the sandbox. Each sample's own family appears as a chain and verifies.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    cases = [("samples/bin/hos", "house-of-spirit"),
+             ("samples/bin/largebin", "largebin attack"),
+             ("samples/bin/stash", "tcache stashing unlink")]
+    ran = 0
+    from binoracle.workflows.chainanalyzer import analyze_chains
+    for binp, chain_name in cases:
+        if not os.path.exists(binp):
+            continue
+        ok, _why = native_available(binp)
+        if not ok:
+            continue
+        an = analyze_chains(binp, verify=True)
+        match = [c for c in an.chains if c.name == chain_name]
+        assert match, f"{chain_name} no aparece como cadena para {binp}"
+        assert any(c.verified for c in match), f"{chain_name} no verificada en {binp}"
+        # a verified chain carries its proof strategy
+        vc = next(c for c in match if c.verified)
+        assert vc.proof.get("strategy")
+        ran += 1
+    if ran == 0:
+        pytest.skip("sin samples de heap o sandbox no disponible")
+
+
 def test_autocsu_verifies_execve_chain():
     # Verificacion POSITIVA de ret2csu -> execve ENCADENADO por EJECUCION: en csuexec no hay
     # `pop rsi`/`pop rdx`, asi que los gadgets csu fijan rsi=0/rdx=0 (la call forzada de gadget2

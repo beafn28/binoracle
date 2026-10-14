@@ -5,8 +5,10 @@ Todo el analisis es GROUNDED en el binario cargado:
 - primitivas a partir de checksec + sinks (control de RIP por overflow, pivote de RSP);
 - gadgets reales enumerados con radare2 (`/Rj`), clasificados por registros que fijan, registros
   que destruyen (clobber), stack delta y efectos secundarios;
-- cadenas candidatas (ret2win / ret2libc system / execve por syscall) con sus requisitos, y
-  deteccion automatica de cadenas INCOMPATIBLES con la explicacion de por que fallan;
+- cadenas candidatas (ret2win / ret2libc system / execve por syscall; SROP; ret2csu; ret2dlresolve;
+  canary-bypass; format-string; y las familias de heap: tcache-poison/dup, UAF, write-what-where,
+  house-of-force/spirit/einherjar/botcake, largebin attack y tcache-stashing-unlink) con sus
+  requisitos, y deteccion automatica de cadenas INCOMPATIBLES con la explicacion de por que fallan;
 - puntuacion TECNICA (propiedades objetivas: numero de gadgets, requisitos incumplidos,
   mitigaciones que bloquean, conflictos de clobber). No es una recomendacion para atacar.
 
@@ -526,6 +528,8 @@ def _facts(binary: str, reg=None) -> dict:
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
          "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False,
+         "hof_ok": False, "hos_ok": False, "hoe_ok": False, "botcake_ok": False,
+         "largebin_ok": False, "stash_ok": False,
          "static": None, "relro": None}
     try:
         import json
@@ -654,7 +658,44 @@ def _facts(binary: str, reg=None) -> dict:
         f["tcache_dup_ok"] = _tcache_dup_applicable(binary)
     except Exception:
         pass
+    # aplicabilidad de las familias de heap con verificador dedicado (hof/hos/hoe/botcake/largebin/
+    # stash): todas son de forma de practica (ASLR off, simbolos fijos), asi que el pre-chequeo es la
+    # presencia de la forma de simbolos que su driver necesita. El symbol-set se lee una sola vez.
+    try:
+        _syms = _elf_symbol_names(binary)
+        if _syms is not None:
+            _win = "win" in _syms
+            _handler = any(s in _syms for s in ("handler", "fnptr", "hook"))
+            f["hof_ok"] = _win and "heap" in _syms and _handler
+            f["hos_ok"] = _win and _handler                 # house-of-spirit: real tcache, no heap sym
+            f["hoe_ok"] = _win and "heap" in _syms and _handler
+            f["botcake_ok"] = _win and "chunks" in _syms and any(s in _syms for s in ("handler", "fnptr"))
+            f["largebin_ok"] = _win and "heap" in _syms and any(s in _syms for s in ("slot", "target", "fnptr"))
+            f["stash_ok"] = _win and any(s in _syms for s in ("hobj", "fake", "fnptr"))
+    except Exception:
+        pass
     return f
+
+
+def _elf_symbol_names(binary: str):
+    """The set of ELF symbol names (symtab + dynsym), or None if pyelftools is unavailable. Used to
+    cheaply decide which practice-shaped heap families apply before paying for a sandbox run."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except Exception:
+        return None
+    try:
+        names = set()
+        with open(binary, "rb") as fh:
+            elf = ELFFile(fh)
+            for sec in elf.iter_sections():
+                if sec.name in (".symtab", ".dynsym"):
+                    for s in sec.iter_symbols():
+                        if s.name:
+                            names.add(s.name)
+        return names
+    except Exception:
+        return None
 
 
 # bytes prohibidos por sink de entrada (el terminador del sink corta el payload ahi)
@@ -1263,6 +1304,82 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "tcache_dup", f, lang)
         chains.append(c)
 
+    # 10b) familias de heap modernas con verificador dedicado (house-of-force/spirit/einherjar/
+    # botcake, largebin attack y tcache-stashing-unlink). Son de forma de practica: el overflow/
+    # corrupcion aterriza un chunk (o una escritura de puntero) en un objetivo elegido -> se hijackea
+    # un puntero de funcion -> shell. Antes eran verificadores sueltos (autohof/autohos/...); aqui se
+    # exponen como CADENAS del grafo y, con verify=True, se ejecutan en el sandbox (ASLR off, forma
+    # de practica). Cada una resuelve el chequeo de glibc que la mitiga (o lo reproduce en el binario).
+    _HEAP_FAMILIES = [
+        ("hof_ok", "hof", "house-of-force",
+         L("Top-chunk corrompible (overflow en el chunk superior)", "Corruptible top chunk (overflow into the wrap chunk)"),
+         L("se sobrescribe el tamano del top chunk con un valor enorme; una peticion 'huge' (con "
+           "wraparound) mueve `top` a &handler; glibc>=2.29 chequea el tamano del top -> reproducido "
+           "en el asignador del binario", "overwrite the top-chunk size with a huge value; a 'huge' "
+           "request (with wraparound) moves `top` to &handler; glibc>=2.29 checks the top size -> "
+           "reproduced in the binary's allocator")),
+        ("hos_ok", "hos", "house-of-spirit",
+         L("Chunk falso liberado al tcache", "Fake chunk freed into the tcache"),
+         L("se forja un chunk falso en memoria controlada y se libera: entra al tcache de glibc real "
+           "(verificado en 2.39); el siguiente malloc lo devuelve -> escritura sobre &handler",
+           "forge a fake chunk in controlled memory and free it: it enters the real glibc tcache "
+           "(verified on 2.39); the next malloc returns it -> write over &handler")),
+        ("hoe_ok", "hoe", "house-of-einherjar",
+         L("Consolidacion hacia atras (prev_size forjado + PREV_INUSE limpio)", "Backward consolidation (forged prev_size + cleared PREV_INUSE)"),
+         L("al liberar, la consolidacion hacia atras fusiona con un chunk falso en &handler-0x10; el "
+           "siguiente malloc devuelve &handler -> escritura -> hijack",
+           "on free, backward consolidation merges with a fake chunk at &handler-0x10; the next "
+           "malloc returns &handler -> write -> hijack")),
+        ("botcake_ok", "botcake", "house-of-botcake",
+         L("Doble-free enrutado por la unsorted bin", "Double-free routed through the unsorted bin"),
+         L("consolidar dos chunks en la unsorted bin limpia la `key` del tcache, permitiendo un "
+           "doble-free que solapa chunks; se envenena el fd (safe-linked) hacia &handler. glibc real "
+           "2.39", "consolidating two chunks through the unsorted bin clears the tcache `key`, "
+           "enabling a double-free that overlaps chunks; poison the (safe-linked) fd toward "
+           "&handler. real glibc 2.39")),
+        ("largebin_ok", "largebin", "largebin attack",
+         L("bk_nextsize corrupto en una largebin", "Corrupted bk_nextsize in a largebin"),
+         L("una insercion en largebin con bk_nextsize corrupto ejecuta "
+           "`victim->bk_nextsize->fd_nextsize = victim`: escritura de puntero arbitraria -> `slot` "
+           "apunta a un chunk controlado -> hijack. glibc>=2.30 añade un chequeo -> reproducido",
+           "a largebin insertion with a corrupted bk_nextsize runs "
+           "`victim->bk_nextsize->fd_nextsize = victim`: arbitrary pointer write -> `slot` points at "
+           "a controlled chunk -> hijack. glibc>=2.30 adds a check -> reproduced")),
+        ("stash_ok", "stash", "tcache stashing unlink",
+         L("Stash de smallbin->tcache con bk corrupto", "Smallbin->tcache stash with a corrupted bk"),
+         L("al servir de la smallbin con hueco en el tcache, glibc 'stashea' los restantes; con un "
+           "bk corrupto, un chunk FALSO entra al tcache y el siguiente alloc devuelve una direccion "
+           "elegida. Satisface el chequeo >=2.31 `bck->fd==tc_victim` (disparo via calloc)",
+           "when serving from the smallbin with tcache room, glibc stashes the rest; with a "
+           "corrupted bk a FAKE chunk enters the tcache and the next alloc returns a chosen address. "
+           "Satisfies the >=2.31 `bck->fd==tc_victim` check (calloc trigger)")),
+    ]
+    for _flag, _kind, _name, _vuln, _prim in _HEAP_FAMILIES:
+        if not f.get(_flag):
+            continue
+        c = ExploitChain(name=_name, target="win() via hijacked function pointer")
+        c.requirements = [
+            _req(f.get("win") is not None, "funcion objetivo win() en el binario",
+                 "target function win() in the binary", lang),
+            _req(True, "forma de practica del heap (simbolos del asignador + puntero hijackeable)",
+                 "practice heap shape (allocator symbols + a hijackable pointer)", lang),
+            _req(f.get("pie") is not True, "objetivo en direccion fija (no-PIE, ASLR off en sandbox)",
+                 "target at a fixed address (non-PIE, ASLR off in the sandbox)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+        c.steps = [
+            ChainStep("vuln", _vuln, ""),
+            ChainStep("primitive", L("Primitiva de heap moderna", "Modern heap primitive"), _prim),
+            ChainStep("target", "win() via &handler",
+                      L("la asignacion controlada devuelve el puntero de funcion; se escribe win() "
+                        "ahi y el binario lo invoca -> shell",
+                        "the controlled allocation returns the function pointer; win() is written "
+                        "there and the binary invokes it -> shell"),
+                      addr=f.get("win"), regs={"rip": hex(f["win"]) if f.get("win") else "?"})]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, _kind, f, lang)
+        chains.append(c)
+
     # 11) bypass de stack canary: fuga del canary (via %s tras sobrescribir su LSB nulo) ->
     # reescritura del mismo canary -> overflow hasta win(). Solo tiene sentido cuando el canary
     # esta ACTIVO (si no, ret2win directo basta) y existe win(). A diferencia del resto de cadenas
@@ -1653,6 +1770,28 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
             if m:
                 proof["system"] = m.group(1)
             return ((f"{OK} (tcache dup: GOT sobrescrito con system, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash"):
+            _HEAP_VERIFY = {
+                "hof": ("autohof", "autohof", "house-of-force (top-chunk -> alloc arbitraria -> win)"),
+                "hos": ("autohos", "autohos", "house-of-spirit (chunk falso en tcache real -> win)"),
+                "hoe": ("autohoe", "autohoe", "house-of-einherjar (consolidacion hacia atras -> win)"),
+                "botcake": ("autobotcake", "autobotcake", "house-of-botcake (doble-free via unsorted -> overlap -> win)"),
+                "largebin": ("autolargebin", "autolargebin", "largebin attack (escritura de insercion -> win)"),
+                "stash": ("autostash", "autostash", "tcache stashing unlink (stash smallbin->tcache -> win)"),
+            }
+            mod, fn, strat = _HEAP_VERIFY[kind]
+            run = getattr(__import__(f"binoracle.workflows.{mod}", fromlist=[fn]), fn)
+            r = run(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": strat, "marker": f"BINORACLE_{kind.upper()}_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("win", "handler", "slot", "hobj", "a", "heap"):
+                m = _re_cv.search(rf"\b{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            return ((f"{OK} ({strat}, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc

@@ -126,11 +126,15 @@ terminator) and builds, not just lists, exploit chains.
   32-bit path is proven (VERIFIED ret2win at offset 72 and ret2libc `system`
   at offset 76 on the 32-bit corpus).
 
-The standalone heap/pivot verifiers (`autopivot`, `autohof`, `autohos`,
-`autohoe`, `autobotcake`) are *practice-shaped* (they rely on a specific menu
-or symbol layout), so they stay as dedicated execution verifiers rather than
-being forced into the generic gadget graph; the graph owns the ROP/syscall
-families where a generic chain is meaningful.
+The heap families are now first-class **chains in the graph too**: when a
+binary carries the practice shape (allocator symbols + a hijackable pointer),
+`analyze_chains` emits a `house-of-force` / `house-of-spirit` /
+`house-of-einherjar` / `house-of-botcake` / `largebin attack` /
+`tcache stashing unlink` chain (vuln → modern-heap primitive → `win()` via the
+hijacked pointer), and with `verify=True` it runs the dedicated driver in the
+sandbox and marks the chain `verified` with its proof. So the graph owns the
+full arsenal — ROP/syscall, SROP, ret2csu, dlresolve, format-string, canary,
+and every heap family — not just the ROP ones.
 
 ---
 
@@ -235,7 +239,7 @@ authorized targets only; all output is untrusted data.
 
 - **MCP tools:** 98 registered (`binoracle/mcp_server.py`).
 - **CLI:** subcommands for every reader and exploit verifier (`binoracle/cli.py`).
-- **Tests:** `tests/test_smoke.py` — 139 tests. Execution tests for each
+- **Tests:** `tests/test_smoke.py` — 140 tests. Execution tests for each
   exploit technique auto-skip via `native_available()` when no sandbox is
   present, so the suite is green on any box and *actually proves the shells*
   where a sandbox exists.
