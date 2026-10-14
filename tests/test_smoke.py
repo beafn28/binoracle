@@ -628,6 +628,71 @@ def test_flutter_apk_engine_and_assets(tmp_path):
     assert "flutter_assets" in render_flutter(r) and "Impeller" in render_flutter(r)
 
 
+def test_standard_message_codec_decoder():
+    # Decode Flutter's StandardMessageCodec from HAND-ENCODED bytes (independent of any encoder):
+    # buffer-relative Float64 alignment, the varint size (>=254 -> uint16), nested list/map, and the
+    # modern AssetManifest.bin shape Map<String, List<Map<String,Object>>> with {asset,dpr} variants.
+    import struct
+    from binoracle.workflows.flutterinspect import decode_standard_message, _parse_asset_manifest_bin
+
+    # Float64 2.0: type byte at offset 0, 7 pad bytes, then the double at offset 8 (8-aligned).
+    assert decode_standard_message(b"\x06" + b"\x00" * 7 + struct.pack("<d", 2.0)) == 2.0
+
+    def S(x):
+        x = x.encode()
+        return bytes([7, len(x)]) + x
+
+    def L(items):
+        return bytes([12, len(items)]) + b"".join(items)
+
+    def M(pairs):
+        body = b"".join(k + v for k, v in pairs)
+        return bytes([13, len(pairs)]) + body
+
+    # size varint over 253 -> 254 + uint16
+    big = "x" * 300
+    assert decode_standard_message(bytes([7, 254]) + struct.pack("<H", 300) + big.encode()) == big
+
+    # a realistic manifest: {"a.png": [], "img/b.png": [{"asset":"img/2.0x/b.png"}]}
+    manifest = M([
+        (S("a.png"), L([])),
+        (S("img/b.png"), L([M([(S("asset"), S("img/2.0x/b.png"))])])),
+    ])
+    v = decode_standard_message(manifest)
+    assert v["a.png"] == [] and v["img/b.png"][0]["asset"] == "img/2.0x/b.png"
+    summ = _parse_asset_manifest_bin(manifest)
+    assert summ["decoded"] and summ["declared_assets"] == 2 and summ["variant_count"] == 1
+    assert "img/b.png" in summ["assets"]
+
+
+def test_flutter_apk_assetmanifest_bin(tmp_path):
+    # inspect_flutter decodes a real AssetManifest.bin (StandardMessageCodec) inside an APK and
+    # reports the declared assets + variant count, not just "binary; not decoded".
+    import zipfile
+    from binoracle.workflows.flutterinspect import inspect_flutter
+
+    def S(x):
+        x = x.encode()
+        return bytes([7, len(x)]) + x
+
+    def L(items):
+        return bytes([12, len(items)]) + b"".join(items)
+
+    def M(pairs):
+        return bytes([13, len(pairs)]) + b"".join(k + v for k, v in pairs)
+    manifest = M([(S("assets/logo.png"), L([S("assets/logo.png")])),
+                  (S("assets/data.json"), L([S("assets/data.json")]))])
+    apk = tmp_path / "app.apk"
+    with zipfile.ZipFile(apk, "w") as z:
+        z.writestr("assets/flutter_assets/AssetManifest.bin", manifest)
+        z.writestr("assets/flutter_assets/libapp_marker", b"x")
+    r = inspect_flutter(str(apk))
+    a = r["flutter_assets"]
+    assert a["asset_manifest_format"].startswith("bin (StandardMessageCodec)")
+    assert a["declared_assets"] == 2 and a["manifest_variants"] == 2
+    assert "assets/logo.png" in a["manifest_assets"]
+
+
 def test_flutter_apk_debug_kernel_build(tmp_path):
     # A debug/JIT APK ships kernel_blob.bin in flutter_assets and (often) no libapp.so; the reader
     # must label it debug/JIT from that marker, not misreport it as AOT.

@@ -338,6 +338,164 @@ def _analyze_engine(data: bytes) -> dict:
     }
 
 
+# --- Flutter StandardMessageCodec (AssetManifest.bin) ---------------------------------------------
+
+# Type tags from Dart's StandardMessageCodec (package:flutter/services MessageCodecs).
+_SMC_NULL, _SMC_TRUE, _SMC_FALSE = 0, 1, 2
+_SMC_INT32, _SMC_INT64, _SMC_LARGEINT, _SMC_FLOAT64 = 3, 4, 5, 6
+_SMC_STRING, _SMC_UINT8LIST, _SMC_INT32LIST, _SMC_INT64LIST = 7, 8, 9, 10
+_SMC_FLOAT64LIST, _SMC_LIST, _SMC_MAP, _SMC_FLOAT32LIST = 11, 12, 13, 14
+
+
+class _SMCError(Exception):
+    pass
+
+
+class _SMCReader:
+    """Bounded reader for Flutter's StandardMessageCodec. The input is UNTRUSTED (an asset inside an
+    APK), so every read is bounds-checked and recursion/element counts are capped."""
+
+    MAX_DEPTH = 64
+    MAX_ELEMS = 500000
+
+    def __init__(self, data: bytes):
+        self.b = data
+        self.p = 0
+        self.count = 0
+
+    def _need(self, n: int):
+        if self.p + n > len(self.b):
+            raise _SMCError("truncated")
+
+    def _align(self, alignment: int):
+        # Alignment is relative to the START of the buffer (Dart's ReadBuffer semantics).
+        mod = self.p % alignment
+        if mod != 0:
+            self.p += alignment - mod
+
+    def _size(self) -> int:
+        self._need(1)
+        v = self.b[self.p]
+        self.p += 1
+        if v < 254:
+            return v
+        if v == 254:
+            self._need(2)
+            v = struct.unpack_from("<H", self.b, self.p)[0]
+            self.p += 2
+            return v
+        self._need(4)
+        v = struct.unpack_from("<I", self.b, self.p)[0]
+        self.p += 4
+        return v
+
+    def read_value(self, depth: int = 0):
+        if depth > self.MAX_DEPTH:
+            raise _SMCError("too deep")
+        self.count += 1
+        if self.count > self.MAX_ELEMS:
+            raise _SMCError("too many elements")
+        self._need(1)
+        t = self.b[self.p]
+        self.p += 1
+        if t == _SMC_NULL:
+            return None
+        if t == _SMC_TRUE:
+            return True
+        if t == _SMC_FALSE:
+            return False
+        if t == _SMC_INT32:
+            self._need(4)
+            v = struct.unpack_from("<i", self.b, self.p)[0]
+            self.p += 4
+            return v
+        if t == _SMC_INT64:
+            self._need(8)
+            v = struct.unpack_from("<q", self.b, self.p)[0]
+            self.p += 8
+            return v
+        if t == _SMC_LARGEINT:                 # deprecated: hex string
+            n = self._size()
+            self._need(n)
+            s = self.b[self.p:self.p + n].decode("latin1", "replace")
+            self.p += n
+            try:
+                return int(s, 16)
+            except Exception:
+                return s
+        if t == _SMC_FLOAT64:
+            self._align(8)
+            self._need(8)
+            v = struct.unpack_from("<d", self.b, self.p)[0]
+            self.p += 8
+            return v
+        if t == _SMC_STRING:
+            n = self._size()
+            self._need(n)
+            s = self.b[self.p:self.p + n].decode("utf-8", "replace")
+            self.p += n
+            return s
+        if t == _SMC_UINT8LIST:
+            n = self._size()
+            self._need(n)
+            v = self.b[self.p:self.p + n]
+            self.p += n
+            return list(v)
+        if t in (_SMC_INT32LIST, _SMC_FLOAT32LIST):
+            n = self._size()
+            self._align(4)
+            self._need(n * 4)
+            fmt = "<%d%s" % (n, "i" if t == _SMC_INT32LIST else "f")
+            v = list(struct.unpack_from(fmt, self.b, self.p))
+            self.p += n * 4
+            return v
+        if t in (_SMC_INT64LIST, _SMC_FLOAT64LIST):
+            n = self._size()
+            self._align(8)
+            self._need(n * 8)
+            fmt = "<%d%s" % (n, "q" if t == _SMC_INT64LIST else "d")
+            v = list(struct.unpack_from(fmt, self.b, self.p))
+            self.p += n * 8
+            return v
+        if t == _SMC_LIST:
+            n = self._size()
+            return [self.read_value(depth + 1) for _ in range(n)]
+        if t == _SMC_MAP:
+            n = self._size()
+            out = {}
+            for _ in range(n):
+                k = self.read_value(depth + 1)
+                val = self.read_value(depth + 1)
+                out[k if isinstance(k, (str, int, float, bool)) else repr(k)] = val
+            return out
+        raise _SMCError("unknown type byte %d" % t)
+
+
+def decode_standard_message(data: bytes):
+    """Decode a Flutter StandardMessageCodec payload (as used by AssetManifest.bin). Returns the
+    decoded value, or raises _SMCError. Bounded against untrusted input."""
+    r = _SMCReader(data)
+    return r.read_value()
+
+
+def _parse_asset_manifest_bin(raw: bytes) -> dict:
+    """Decode AssetManifest.bin and summarize it: declared assets (map keys) and their variants.
+    Flutter >=3.10 encodes it as a Map<String, List<...>> (each value lists the asset's variants)."""
+    try:
+        val = decode_standard_message(raw)
+    except Exception as e:
+        return {"decoded": False, "error": e.__class__.__name__}
+    if not isinstance(val, dict):
+        return {"decoded": False, "error": "no es un mapa top-level"}
+    keys = [k for k in val.keys() if isinstance(k, str)]
+    variants = 0
+    for v in val.values():
+        if isinstance(v, list):
+            variants += len(v)
+    return {"decoded": True, "declared_assets": len(val), "assets": sorted(keys)[:60],
+            "variant_count": variants}
+
+
 # --- flutter_assets (APK) -------------------------------------------------------------------------
 
 def _assets_from_apk(path: str) -> dict | None:
@@ -406,10 +564,33 @@ def _assets_from_apk(path: str) -> dict | None:
                 out["declared_assets"] = len(doc)
         except Exception:
             pass
-    elif has("AssetManifest.bin.json"):
-        out["asset_manifest_format"] = "bin.json"
     elif has("AssetManifest.bin"):
-        out["asset_manifest_format"] = "bin (binario; no se decodifica)"
+        out["asset_manifest_format"] = "bin (StandardMessageCodec)"
+        raw = _read("AssetManifest.bin")
+        if raw:
+            summary = _parse_asset_manifest_bin(raw)
+            out["asset_manifest"] = summary
+            if summary.get("decoded"):
+                out["declared_assets"] = summary["declared_assets"]
+                out["manifest_assets"] = summary.get("assets", [])
+                out["manifest_variants"] = summary.get("variant_count", 0)
+    elif has("AssetManifest.bin.json"):
+        # web builds wrap the StandardMessageCodec bytes as a base64 string inside JSON
+        out["asset_manifest_format"] = "bin.json (base64 StandardMessageCodec)"
+        raw = _read("AssetManifest.bin.json")
+        try:
+            import base64
+            doc = json.loads(raw.decode("utf-8", "replace"))
+            b = base64.b64decode(doc) if isinstance(doc, str) else None
+            if b:
+                summary = _parse_asset_manifest_bin(b)
+                out["asset_manifest"] = summary
+                if summary.get("decoded"):
+                    out["declared_assets"] = summary["declared_assets"]
+                    out["manifest_assets"] = summary.get("assets", [])
+                    out["manifest_variants"] = summary.get("variant_count", 0)
+        except Exception:
+            pass
 
     # FontManifest.json: [{family, fonts:[{asset}]}]
     if has("FontManifest.json"):
@@ -679,8 +860,16 @@ def render_flutter(r: dict) -> str:
         if bits:
             out.append(f"- presentes: {', '.join(bits)}")
         if a.get("asset_manifest_format"):
-            out.append(f"- AssetManifest: {a['asset_manifest_format']}"
-                       + (f" ({a['declared_assets']} declarados)" if a.get("declared_assets") else ""))
+            line = f"- AssetManifest: {a['asset_manifest_format']}"
+            if a.get("declared_assets"):
+                line += f" ({a['declared_assets']} declarados"
+                if a.get("manifest_variants"):
+                    line += f", {a['manifest_variants']} variantes"
+                line += ")"
+            out.append(line)
+            if a.get("manifest_assets"):
+                out.append(f"  - assets: {', '.join(a['manifest_assets'][:8])}"
+                           + (" …" if len(a["manifest_assets"]) > 8 else ""))
         if a.get("font_families"):
             out.append(f"- fuentes ({len(a['font_families'])}): {', '.join(a['font_families'][:10])}")
         if a.get("version_json"):
