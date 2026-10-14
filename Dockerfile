@@ -7,7 +7,11 @@
 #
 # Construir + levantar:  docker compose up --build   (ver docker-compose.yml)
 # Solo la UI web:        http://127.0.0.1:8080
-FROM python:3.11-slim
+#
+# NOTA: fijamos -slim-bookworm a proposito. El tag "python:3.11-slim" a secas migro a Debian
+# trixie, donde radare2 ya NO tiene candidato de instalacion y tumbaba el apt-get. Bookworm si
+# trae radare2. Aun asi, radare2 se instala como best-effort (ver abajo) para no bloquear el build.
+FROM python:3.11-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -19,11 +23,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - radare2: desensamblado/analisis (chain-analyzer, nativequery, arsenal).
 # - ruby: para instalar one_gadget (magic gadgets de la libc).
 # - strace/ltrace/file/binutils: utilidades de apoyo.
+# Paquetes CRITICOS (si fallan, el build debe fallar):
 RUN dpkg --add-architecture i386 \
     && apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates file binutils make python3-dev \
         gcc gcc-multilib libc6-dev libc6-dev-i386 libc6:i386 \
-        radare2 ruby strace ltrace \
+        ruby strace ltrace \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# radare2: BEST-EFFORT. En bookworm existe; si en una base futura desaparece del repo, el build
+# NO debe morir por ello (chain-analyzer/nativequery/arsenal degradan sin r2). Por eso va aparte
+# con "|| true". Si quieres r2 garantizado aqui y no esta en el repo, instalalo luego con el
+# script oficial dentro del contenedor:  r2pm -U  o  bash <(curl -fsSL https://.../r2_install.sh)
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends radare2 \
+        || echo 'WARN: radare2 no disponible en este repo; binoracle degrada sin r2') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Oraculos de analisis + pwntools (angr se omite a proposito: es enorme y carga perezosamente;
