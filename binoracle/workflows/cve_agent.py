@@ -390,6 +390,43 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                      "dynamic verification not attempted: could not auto-detect "
                                      "the plugin folder inside the .zip (multiple top-level "
                                      "folders, none with a recognizable 'Plugin Name:' header)"))
+            # mismo mecanismo de laboratorio efimero, para path-traversal/LFI: en vez de deducir el
+            # account-takeover por un segundo login, se planta un fichero canario con un secreto
+            # aleatorio FUERA del volumen web y se confirma que el endpoint lo filtra literal.
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_path_traversal, _pick_param, _PATH_HINTS
+                params = notes.get("parameters") or []
+                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
+                     "(WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- random-secret canary file "
+                     "(ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_path_traversal(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    path_param_hint=path_p or "", on_step=step)
+                inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                      "logs": wr.logs}
+                if wr.verified:
+                    inv.verified = True
+                    inv.verified_detail = wr.detail
+                    inv.verified_evidence = wr.evidence
+                elif not wr.available:
+                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                         if wr.limitations else
+                                         "verificacion dinamica no disponible (sin Docker)"))
+                else:
+                    inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: "
+                                         f"{wr.detail}" if es else
+                                         f"dynamic verification attempted but not confirmed: "
+                                         f"{wr.detail}"))
+                    for entry in wr.logs:
+                        if entry.startswith("docker logs"):
+                            head, _, body = entry.partition("\n")
+                            trimmed = "\n".join(body.splitlines()[-15:])
+                            inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")

