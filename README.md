@@ -61,6 +61,7 @@ the agent's hard-won, execution-verified playbook ships with the product. The se
 | heap → shell (tcache poisoning) | NX, glibc ≥ 2.32 safe-linking | leaks the key via an empty bin, `free@GOT = win` (repairs the GOT neighbour the key-clear zeroes) |
 | house-of-force | NX, top-chunk overwrite | overwrites top->size huge → a wrapping malloc moves `top` to an arbitrary address → next alloc writes there → hijack a function pointer (real glibc HoF is mitigated ≥ 2.29; verified against an in-binary pre-2.29 top-chunk carve) |
 | house-of-spirit | NX, free of a fake chunk | frees an attacker-crafted fake chunk into the tcache → next malloc returns it over a function pointer → write hijacks it (real glibc 2.39 tcache; not mitigated) |
+| house-of-einherjar | NX, off-by-one / prev_size control | forged prev_size + cleared PREV_INUSE → backward consolidation lands the freed chunk at an arbitrary address → next malloc returns it → hijack (verified against an in-binary backward-consolidation allocator) |
 | tcache dup (double-free) | NX | makes malloc return an aligned GOT entry, `free@GOT = system` |
 
 A shell is confirmed by having it echo a unique marker. Every run is isolated:

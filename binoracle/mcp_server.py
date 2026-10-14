@@ -597,6 +597,11 @@ _exploit_tool("autohos", "house-of-spirit: libera un chunk FALSO que entra en tc
               "sandbox (tcache de glibc real; no mitigado).",
               lambda: (__import__("binoracle.workflows.autohos", fromlist=["autohos"]).autohos,
                        __import__("binoracle.workflows.autohos", fromlist=["render_hos"]).render_hos))
+_exploit_tool("autohoe", "house-of-einherjar: consolidacion hacia atras (prev_size forjado + "
+              "PREV_INUSE limpio) -> el chunk liberado aterriza en una direccion arbitraria -> "
+              "escritura -> hijack -> shell. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autohoe", fromlist=["autohoe"]).autohoe,
+                       __import__("binoracle.workflows.autohoe", fromlist=["render_hoe"]).render_hoe))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

@@ -650,6 +650,25 @@ def test_autohos_verifies_house_of_spirit():
     assert "size=" in (r.get("detail") or "")
 
 
+def test_autohoe_verifies_house_of_einherjar():
+    # Verificacion POSITIVA de house-of-einherjar por EJECUCION: se forja prev_size y se limpia
+    # PREV_INUSE del chunk B; al liberarlo, la consolidacion hacia atras lo fusiona con un chunk
+    # falso en &handler-0x10; el siguiente malloc devuelve &handler -> escritura -> win -> shell.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/hoe"
+    if not os.path.exists(binp):
+        pytest.skip("sample hoe no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autohoe import autohoe
+    r = autohoe(binp)
+    assert r.get("ok") and r.get("verified"), f"house-of-einherjar no verificado: {r.get('note')}"
+    assert "size_a=" in (r.get("detail") or "")
+
+
 def test_autohof_verifies_house_of_force():
     # Verificacion POSITIVA de house-of-force por EJECUCION: se sobrescribe el tamano del top chunk
     # con un valor enorme; una peticion huge (con wraparound) mueve `top` a &handler; la siguiente
