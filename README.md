@@ -130,17 +130,35 @@ vía recomendada es Docker.
 
 # Arranque rápido
 
-**Docker (recomendado en Mac / Windows)** — trae Linux x86-64 dentro, así funcionan tanto los
-lectores como la verificación de exploits sin instalar nada más que Docker:
+**Docker (recomendado en Mac / Windows)** — un solo comando levanta **todo**: binoracle (lectores +
+verificación de exploits, Linux x86-64 dentro) **y** Ollama con el modelo LLM para la IA. Nada más
+que instalar que Docker:
 
 ```bash
 git clone https://github.com/beafn28/binoracle.git && cd binoracle
-docker compose up --build        # web en http://127.0.0.1:8080  (la 1ª vez tarda)
+docker compose up --build        # web http://127.0.0.1:8080 + IA (Ollama)
 # atajos (con GNU make; en Mac: brew install make && gmake docker):
-#   make docker | make docker-logs | make docker-shell | make docker-down
+#   make docker | make docker-test | make docker-logs | make docker-shell | make docker-down
 ```
 
-Analizar **tus** ficheros: déjalos en `./targets/` y usa la ruta `/targets/<fichero>`:
+- La **primera vez** el servicio `ollama` descarga el modelo (`qwen2.5-coder:7b`, ~4.7 GB) y lo
+  cachea en un volumen; los siguientes arranques son inmediatos. La UI y el análisis estático están
+  disponibles enseguida; la IA (botón **Auditar en vivo**, **CVE→Exploit**, narrativa) en cuanto
+  termina la descarga (sigue el progreso con `docker compose logs -f ollama`).
+- Cambiar de modelo: `BINORACLE_MODEL=llama3.1:8b docker compose up`.
+- Si **no** quieres IA, arranca solo el analizador: `docker compose up binoracle`.
+- En **Mac M1**, binoracle corre como `linux/amd64` por emulación (para ejecutar los exploits x86),
+  y Ollama corre **nativo arm64** (rápido, con Metal) — lo mejor de ambos.
+
+**Probar que todo funciona** (oráculos + lectores + arsenal + verificación de exploits con shell
+real, en un comando):
+
+```bash
+make docker-test
+# equivalente:  docker compose run --rm binoracle bash scripts/docker-smoke.sh
+```
+
+**Analizar tus ficheros**: déjalos en `./targets/` y usa la ruta `/targets/<fichero>`:
 
 ```bash
 cp ~/Downloads/tu-app.apk targets/
@@ -148,10 +166,9 @@ docker compose run --rm binoracle binoracle apk /targets/tu-app.apk    # CLI pun
 docker compose exec binoracle pytest tests/test_smoke.py -v            # verificar exploits
 ```
 
-> En **Mac M1** la imagen corre como `linux/amd64` por emulación (más lento pero funcional para los
-> exploits x86). El bloque `cap_add`/`security_opt` del `docker-compose.yml` es **solo** para la
-> verificación de exploits por ejecución (objetivos AUTORIZADOS / CTF); si solo quieres lectura
-> estática, puedes borrarlo.
+> El bloque `cap_add`/`security_opt` del `docker-compose.yml` es **solo** para la verificación de
+> exploits por ejecución (objetivos AUTORIZADOS / CTF); si solo quieres lectura estática, puedes
+> borrarlo.
 
 **Nativo (Linux x86-64):**
 

@@ -2,7 +2,7 @@
 PY ?= python3
 
 .PHONY: help install install-all install-tools test samples lint clean \
-        docker docker-build docker-down docker-shell docker-logs pwn-image clean-docker
+        docker docker-build docker-down docker-shell docker-logs docker-test pwn-image clean-docker
 
 help:
 	@echo 'make install       - editable install (core, stdlib only)'
@@ -14,6 +14,7 @@ help:
 	@echo 'make clean         - remove build artifacts and local state'
 	@echo 'make docker        - build + run binoracle in Docker (web UI on http://127.0.0.1:8080)'
 	@echo 'make docker-build  - build the image only (no run)'
+	@echo 'make docker-test   - run the full "probar todo" smoke inside the container'
 	@echo 'make docker-shell  - open a shell inside the running container'
 	@echo 'make docker-logs   - follow the container logs'
 	@echo 'make docker-down   - stop and remove the container'
@@ -50,6 +51,9 @@ docker: docker-build
 
 docker-build:
 	$(DC) build
+
+docker-test:
+	$(DC) run --rm binoracle bash scripts/docker-smoke.sh
 
 docker-shell:
 	$(DC) exec binoracle bash || $(DC) run --rm binoracle bash

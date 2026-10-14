@@ -54,6 +54,16 @@ RUN apt-get update \
         || echo 'WARN: apktool/jadx no disponibles; inspect_apk estatico sigue OK') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Extras BEST-EFFORT que mejoran cobertura sin inflar demasiado:
+# - gdb: debug dinamico (oraculo dynamic_dbg, confirmar crashes en vivo).
+# - patchelf: cambiar interprete/RPATH del ELF (usar la libc de un reto).
+# - binwalk: carve de firmware/blobs empotrados (inspect firmware).
+# Si alguno no esta, el build NO muere; esa capacidad simplemente se marca no disponible.
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends gdb patchelf binwalk \
+        || echo 'WARN: gdb/patchelf/binwalk no disponibles; se degradan esas capacidades') \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Oraculos de analisis + pwntools (angr se omite a proposito: es enorme y carga perezosamente;
 # instalalo con `pip install angr` dentro del contenedor si lo necesitas para reachability simbolica).
 RUN pip install pyelftools pefile olefile r2pipe capstone pwntools cvss \
