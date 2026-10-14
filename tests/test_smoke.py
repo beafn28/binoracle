@@ -631,6 +631,25 @@ def test_ghidra_decompile_degrades_and_parses():
     assert "main @ 0x401136" in out and "```c" in out
 
 
+def test_autobotcake_verifies_house_of_botcake():
+    # Verificacion POSITIVA de house-of-botcake por EJECUCION (glibc real 2.39): un doble-free
+    # enrutado por la unsorted bin (esquiva el key del tcache) produce chunks solapados; se
+    # envenena el fd (con safe-linking) para asignar sobre `handler` -> win -> shell.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/botcake"
+    if not os.path.exists(binp):
+        pytest.skip("sample botcake no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autobotcake import autobotcake
+    r = autobotcake(binp)
+    assert r.get("ok") and r.get("verified"), f"house-of-botcake no verificado: {r.get('note')}"
+    assert "a=" in (r.get("detail") or "")
+
+
 def test_autohos_verifies_house_of_spirit():
     # Verificacion POSITIVA de house-of-spirit por EJECUCION (tcache de glibc real, NO mitigado):
     # se planta el tamano de un chunk falso solapando un puntero de funcion, se libera (entra en

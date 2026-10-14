@@ -602,6 +602,11 @@ _exploit_tool("autohoe", "house-of-einherjar: consolidacion hacia atras (prev_si
               "escritura -> hijack -> shell. Verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autohoe", fromlist=["autohoe"]).autohoe,
                        __import__("binoracle.workflows.autohoe", fromlist=["render_hoe"]).render_hoe))
+_exploit_tool("autobotcake", "house-of-botcake: doble-free enrutado por la unsorted bin (esquiva el "
+              "key del tcache) -> chunks solapados -> tcache poison con safe-linking -> alloc sobre "
+              "un puntero de funcion -> shell. Verificado en glibc real 2.39.",
+              lambda: (__import__("binoracle.workflows.autobotcake", fromlist=["autobotcake"]).autobotcake,
+                       __import__("binoracle.workflows.autobotcake", fromlist=["render_botcake"]).render_botcake))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------
