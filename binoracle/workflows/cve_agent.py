@@ -620,6 +620,34 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
     return None
 
 
+_VERSION_PATTERN = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
+# patron Patchstack/NVD casi universal (confirmado en vivo: CVE-2024-27956 trae literal "This
+# issue affects Automatic: from n/a through 3.92.0.") -- "n/a" en el extremo inferior es normal
+# (sin primera version conocida afectada), la version REAL que importa para descargar el zip
+# vulnerable es la del extremo SUPERIOR ("through X").
+_THROUGH_VERSION_RE = re.compile(r"through\s+([0-9]+(?:\.[0-9]+){0,4})")
+
+
+def _clean_affected_version(raw: str) -> str:
+    """Igual que _guess_wp_slug_from_description pero para la version: 'affected_version' en la
+    hipotesis del LLM a veces es la FRASE libre de la descripcion del CVE ('from n/a through
+    3.92.0'), no un numero de version limpio -- confirmado en vivo que, sin limpiar, eso rompe
+    la URL de descarga con un error de bajo nivel confuso (el espacio no es valido en una URL).
+    En vez de descartar el dato (la version SI es util: es la ultima version vulnerable, la que
+    hay que descargar), se extrae con una regex sobre el formato 'through X' casi universal de
+    estas descripciones. Si ya viene limpia, se devuelve tal cual; si no se reconoce nada, se
+    devuelve vacio (mejor pedir la ultima version que mandar una cadena rota)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if _VERSION_PATTERN.match(raw):
+        return raw
+    m = _THROUGH_VERSION_RE.search(raw)
+    if m:
+        return m.group(1)
+    return ""
+
+
 def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
     del LLM contra el (grep de las funciones citadas) y desarrolla el PoC HTTP/HTML. Muta `inv` in
@@ -638,7 +666,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
 
     notes = inv.llm_notes or {}
     source = (notes.get("source_url") or "").strip()
-    version = (notes.get("affected_version") or "").strip()
+    version_raw = (notes.get("affected_version") or "").strip()
+    version = _clean_affected_version(version_raw)
+    if version_raw and not version:
+        step((f"'{version_raw}' no tiene pinta de version real (parece texto libre de la "
+             f"descripcion) y no se pudo extraer ninguna -- se sigue sin version concreta" )
+             if es else
+             (f"'{version_raw}' doesn't look like a real version (looks like free text from "
+             f"the description) and none could be extracted -- continuing without a specific "
+             f"version"))
     fn_names = notes.get("vulnerable_functions") or []
     if isinstance(fn_names, str):
         fn_names = [fn_names]

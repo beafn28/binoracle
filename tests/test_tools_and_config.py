@@ -5810,3 +5810,72 @@ uvicorn.run(HostCheckMiddleware(mcp.sse_app()), host="0.0.0.0", port={mcp_port},
             proc.wait(timeout=5)
         except Exception:
             proc.kill()
+
+
+# --- endurecido tras un cuarto fallo real en vivo: 'affected_version' llego como la frase libre
+# de la descripcion del CVE ('from n/a through 3.92.0') y se colo tal cual en la URL de
+# descarga, rompiendola (espacio -> "URL can't contain control characters") ---
+
+def test_websource_looks_like_version_accepts_real_versions():
+    from binoracle.workflows.websource import _looks_like_version
+    assert _looks_like_version("3.92.0") is True
+    assert _looks_like_version("5.1.8") is True
+    assert _looks_like_version("1.0-beta1") is True
+
+
+def test_websource_looks_like_version_rejects_free_text():
+    from binoracle.workflows.websource import _looks_like_version
+    assert _looks_like_version("from n/a through 3.92.0") is False
+    assert _looks_like_version("n/a") is False
+    assert _looks_like_version("") is False
+
+
+def test_websource_fetch_wordpress_plugin_ignores_garbage_version(monkeypatch):
+    from binoracle.workflows import websource
+
+    called = {}
+    def fake_download(slug, url, resolved_version, dest_dir, step, timeout, res):
+        called["url"] = url
+        called["resolved_version"] = resolved_version
+        res.ok = True
+        return res
+    monkeypatch.setattr(websource, "_download_wp_zip", fake_download)
+
+    def fake_urlopen(url, timeout=60.0):
+        raise OSError("simulated 404")
+    monkeypatch.setattr(websource, "_urlopen", fake_urlopen)
+
+    res = websource.fetch_wordpress_plugin("automatic", version="from n/a through 3.92.0")
+    # la version con pinta de frase libre se ignora ANTES de construir la URL -- nunca debe
+    # contener un espacio (lo que rompia la peticion real).
+    assert "from n/a through" not in called.get("url", "")
+    assert " " not in called.get("url", "")
+
+
+def test_clean_affected_version_extracts_from_patchstack_phrasing():
+    from binoracle.workflows.cve_agent import _clean_affected_version
+    assert _clean_affected_version("from n/a through 3.92.0") == "3.92.0"
+    assert _clean_affected_version("5.1.8") == "5.1.8"
+    assert _clean_affected_version("") == ""
+    assert _clean_affected_version("no version info here") == ""
+
+
+def test_run_web_investigation_cleans_version_before_fetching(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource
+
+    called = {}
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        called["source"] = target
+        called["version"] = version
+        return websource.SourceFetchResult(ok=False, kind="wordpress-plugin", source=target,
+                                           note="404 (prueba)")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    inv = Investigation(cve_id="CVE-2024-27956")
+    inv.vuln_class = "sqli"
+    inv.description = "vulnerability in ValvePress Automatic allows SQLi.This issue affects Automatic: from n/a through 3.92.0."
+    inv.llm_notes = {"vuln_class": "sqli", "source_url": "automatic",
+                     "affected_version": "from n/a through 3.92.0"}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("version") == "3.92.0"

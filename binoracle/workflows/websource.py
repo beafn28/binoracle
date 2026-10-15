@@ -46,6 +46,17 @@ _MAX_DOWNLOAD = 80 * 1024 * 1024     # 80 MB: un plugin/tema no deberia pasar de
 _MAX_SCAN_FILES = 4000
 _MAX_SCAN_BYTES = 1_500_000           # por fichero
 
+_VERSION_RE = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
+
+
+def _looks_like_version(v: str) -> bool:
+    """True solo si `v` tiene pinta de numero de version real (empieza por digito, solo
+    digitos/letras/puntos/guiones) -- rechaza frases libres como 'from n/a through 3.92.0' que
+    a veces llegan como affected_version desde la hipotesis del LLM (texto de la descripcion del
+    CVE, no un campo estructurado), y que romperian la URL de descarga si se usaran tal cual
+    (espacios -> 'URL can't contain control characters', confirmado en vivo)."""
+    return bool(v) and bool(_VERSION_RE.match(v.strip()))
+
 
 @dataclass
 class SourceFetchResult:
@@ -107,6 +118,16 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
     if not slug:
         res.note = "slug de plugin vacio"
         return res
+    # confirmado en vivo: 'affected_version' puede venir de la hipotesis del LLM como una FRASE
+    # libre de la descripcion del CVE ("from n/a through 3.92.0"), no una version limpia -- si se
+    # concatena tal cual en la URL de descarga rompe con un error de bajo nivel confuso ("URL
+    # can't contain control characters", por el espacio). En vez de propagar eso, se valida aqui:
+    # si no tiene pinta de version real, se ignora (se descarga la ultima estable) en vez de
+    # construir una URL rota.
+    if version and not _looks_like_version(version):
+        step(f"'{version}' no tiene pinta de numero de version real (vino como texto libre de "
+             f"la hipotesis) -- se ignora y se prueba con la ultima version estable en su lugar")
+        version = ""
     step(f"resolviendo plugin '{slug}' en WordPress.org...")
     try:
         with _urlopen(_WP_API.format(slug=slug), timeout=timeout) as r:
@@ -209,6 +230,10 @@ def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
     if not slug:
         res.note = "machine name de modulo vacio"
         return res
+    if version and not _looks_like_version(version):
+        step(f"'{version}' no tiene pinta de numero de version real -- se ignora y se prueba "
+             f"con la ultima release estable en su lugar")
+        version = ""
     step(f"resolviendo modulo '{slug}' en Drupal.org...")
     import xml.etree.ElementTree as ET
     try:
