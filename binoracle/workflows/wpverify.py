@@ -609,19 +609,32 @@ def _make_session():
     return requests.Session()
 
 
-def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
+def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0,
+             on_step: Optional[Callable[[str], None]] = None):
     """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session (o
     BurpSession, si se configuro Burp) logueada, o None si no hay cookie de sesion (login
-    fallido)."""
+    fallido).
+
+    `on_step`, si se da, recibe el motivo CONCRETO del fallo (la excepcion real, o que la
+    respuesta no trajo cookie de sesion con su status code) -- confirmado en vivo: antes de
+    esto, un fallo de login (de Burp, de red, o de WordPress rechazando las credenciales) SIEMPRE
+    se veia igual desde fuera ('no se pudo iniciar sesion'), sin forma de saber CUAL de esas tres
+    cosas paso realmente sin instrumentar el codigo a mano cada vez."""
     s = _make_session()
     try:
         r = s.post(f"{base_url}/wp-login.php",
                   data={"log": user, "pwd": password, "wp-submit": "Log In",
                         "redirect_to": f"{base_url}/wp-admin/", "testcookie": "1"},
                   timeout=timeout, allow_redirects=True)
-    except Exception:
+    except Exception as e:
+        if on_step:
+            on_step(f"_wp_login({user!r}): peticion a wp-login.php fallo: {type(e).__name__}: {e}")
         return None
     logged_in = any(c.name.startswith("wordpress_logged_in_") for c in s.cookies)
+    if not logged_in and on_step:
+        on_step(f"_wp_login({user!r}): sin cookie de sesion en la respuesta "
+               f"(status={getattr(r, 'status_code', '?')}, "
+               f"cuerpo[:200]={(getattr(r, 'text', '') or '')[:200]!r})")
     return s if logged_in else None
 
 
@@ -737,7 +750,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         return None
     step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
          "vulnerable, activo)...")
-    admin_sess = _wp_login(base_url, admin_user, admin_pass)
+    admin_sess = _wp_login(base_url, admin_user, admin_pass, on_step=step)
     if admin_sess is not None:
         capture(admin_sess, "/wp-admin/plugins.php",
                f"Paso 2: el plugin '{slug}' instalado y ACTIVO en el laboratorio (vista del "
@@ -767,9 +780,10 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         return None
 
     step(f"iniciando sesion como '{sub_user}' (bajo privilegio)...")
-    sess = _wp_login(base_url, sub_user, sub_pass)
+    sess = _wp_login(base_url, sub_user, sub_pass, on_step=step)
     if sess is None:
-        res.detail = "no se pudo iniciar sesion como el usuario de bajo privilegio"
+        res.detail = ("no se pudo iniciar sesion como el usuario de bajo privilegio "
+                      "(ver el motivo concreto en los pasos de arriba)")
         return None
     res.logs.append(f"login subscriber: OK ({sub_user})")
     step("capturando pantalla: sesion del atacante ANTES del ataque (bajo privilegio)...")

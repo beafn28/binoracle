@@ -6282,6 +6282,44 @@ def test_fetch_source_resolves_wp_trac_changeset_url_to_slug(monkeypatch):
     assert called["version"] == "2.8.2"
 
 
+def test_wp_login_reports_real_exception_via_on_step(monkeypatch):
+    # bug real confirmado en vivo: un fallo de login (red, Burp, WordPress rechazando
+    # credenciales) siempre se veia igual desde fuera ('no se pudo iniciar sesion'), sin forma
+    # de distinguir cual de esas tres cosas paso realmente -- _wp_login ahora reporta el motivo
+    # concreto via on_step cuando se le da uno.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _BoomSession:
+        def post(self, *a, **kw):
+            raise ConnectionError("conexion rechazada (prueba)")
+
+    monkeypatch.setattr(wpverify, "_make_session", lambda: _BoomSession())
+    messages = []
+    sess = wpverify._wp_login("http://lab.invalid", "user", "pass", on_step=messages.append)
+    assert sess is None
+    assert any("ConnectionError" in m and "conexion rechazada" in m for m in messages)
+
+
+def test_wp_login_reports_missing_cookie_via_on_step(monkeypatch):
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeResp:
+        status_code = 200
+        text = "ERROR: incorrect password"
+        cookies = []
+
+    class _NoCookieSession:
+        cookies = []
+        def post(self, *a, **kw):
+            return _FakeResp()
+
+    monkeypatch.setattr(wpverify, "_make_session", lambda: _NoCookieSession())
+    messages = []
+    sess = wpverify._wp_login("http://lab.invalid", "user", "wrongpass", on_step=messages.append)
+    assert sess is None
+    assert any("sin cookie de sesion" in m and "status=200" in m for m in messages)
+
+
 def test_fetch_source_resolves_wp_org_page_url_to_slug(monkeypatch):
     from binoracle.workflows import websource
     called = {}
