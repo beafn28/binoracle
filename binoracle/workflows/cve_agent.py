@@ -1044,6 +1044,25 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # "cualquier entorno": fallback generico de SQLi (ver genericverify.py) para cuando el
+            # codigo descargado no es un CMS reconocido. Solo cubre la variante ciega por tiempo
+            # (SLEEP/pg_sleep) -- sin saber el motor real, error-based/UNION-based (sintaxis de
+            # MySQL en los verificadores CMS-especificos) no generalizan sin arriesgar falsos
+            # positivos/negativos.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
+                from .genericverify import verify_generic_sqli_blind, _pick_param
+                from .wpverify import _SQLI_HINTS
+                params = notes.get("parameters") or []
+                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- ciega por tiempo (SLEEP/"
+                     "pg_sleep), el objetivo se construye desde su propio Dockerfile/compose..."
+                     if es else "attempting GENERIC DYNAMIC verification -- time-based blind "
+                     "(SLEEP/pg_sleep), the target is built from its own Dockerfile/compose..."))
+                wr = verify_generic_sqli_blind(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, sqli_param_hint=sqli_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para SSRF: un listener interno (en la misma red Docker,
             # no expuesto) registra si el SERVIDOR hace de verdad la peticion saliente -- ver
             # verify_wordpress_ssrf. Drupal primero (sexta clase, "poco a poco"), WordPress gated
