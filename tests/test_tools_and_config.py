@@ -5541,6 +5541,248 @@ uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning
         target_server.shutdown()
 
 
+def test_burpmcp_call_tool_uses_connect_timeout_when_no_per_call_timeout_given(monkeypatch):
+    from binoracle.workflows.burpmcp import BurpMCPClient
+
+    client = BurpMCPClient("http://127.0.0.1:1", timeout=20.0)
+    client._loop = object()  # basta para pasar el chequeo de "conectado"
+
+    captured = {}
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()  # evita el warning de "coroutine never awaited"
+        class _Fut:
+            def result(self_, t):
+                captured["timeout"] = t
+                return "ok"
+        return _Fut()
+
+    monkeypatch.setattr("asyncio.run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    client.call_tool("some_tool", {})
+    assert captured["timeout"] == 20.0
+
+
+def test_burpmcp_call_tool_uses_per_call_timeout_over_connect_timeout(monkeypatch):
+    # bug real confirmado en vivo: command-injection/SQLi blind-timing mandan un SLEEP(6) con
+    # timeout=21 esperado -- si call_tool() siempre usara self.timeout (el de CONEXION a Burp,
+    # 20s por defecto), la respuesta se cortaria antes de que el sleep inyectado terminase y la
+    # tecnica de deteccion por temporizacion nunca veria el retraso real.
+    from binoracle.workflows.burpmcp import BurpMCPClient
+
+    client = BurpMCPClient("http://127.0.0.1:1", timeout=20.0)
+    client._loop = object()
+
+    captured = {}
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        class _Fut:
+            def result(self_, t):
+                captured["timeout"] = t
+                return "ok"
+        return _Fut()
+
+    monkeypatch.setattr("asyncio.run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    client.call_tool("some_tool", {}, timeout=31.0)
+    assert captured["timeout"] == 31.0
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("mcp") is None
+    or __import__("importlib").util.find_spec("uvicorn") is None,
+    reason="requiere los paquetes 'mcp' y 'uvicorn' (servidor MCP de mentira para el test en vivo)")
+def test_burpmcp_transport_forwards_request_timeout_past_connect_timeout():
+    # prueba dura de verdad (no mockeada por dentro): una tool MCP real que tarda mas que el
+    # timeout de CONEXION a Burp (self.client.timeout) antes de responder -- si
+    # BurpHttpTransport.request() no reenviara su propio `timeout` a call_tool(), esta
+    # respuesta se cortaria con un TimeoutError exactamente como le paso a la usuaria con el
+    # blind command injection por temporizacion.
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from binoracle.workflows.burpmcp import BurpHttpTransport, BurpMCPClient
+
+    class _SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            time.sleep(6)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"slow-ok")
+
+        def log_message(self, *a):
+            pass
+
+    def free_port():
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    target_port = free_port()
+    target_server = HTTPServer(("127.0.0.1", target_port), _SlowHandler)
+    target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
+    target_thread.start()
+
+    mcp_port = free_port()
+    server_code = f'''
+import socket
+from mcp.server.mcpserver import MCPServer
+mcp = MCPServer("test-mock-burp-slow")
+
+@mcp.tool()
+def send_http1_request(content: str, targetHostname: str, targetPort: int, usesHttps: bool) -> str:
+    sock = socket.create_connection((targetHostname, targetPort), timeout=20)
+    try:
+        sock.sendall(content.encode("utf-8", errors="replace"))
+        chunks = []
+        sock.settimeout(15)
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except socket.timeout:
+            pass
+        return b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        sock.close()
+
+import uvicorn
+uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning")
+'''
+    proc = subprocess.Popen([sys.executable, "-c", server_code],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2)
+        # timeout de CONEXION a Burp deliberadamente corto (5s) -- si request() no reenviara su
+        # propio timeout (20s, de sobra para los 6s que tarda el handler) y usara este en su
+        # lugar, la llamada fallaria con un TimeoutError bastante antes de los 6s reales.
+        client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=5.0)
+        client.connect()
+        try:
+            transport = BurpHttpTransport(client)
+            resp = transport.request("GET", f"http://127.0.0.1:{target_port}/slow", timeout=20.0)
+            assert resp.status_code == 200
+            assert resp.text == "slow-ok"
+        finally:
+            client.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        target_server.shutdown()
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("mcp") is None
+    or __import__("importlib").util.find_spec("uvicorn") is None,
+    reason="requiere los paquetes 'mcp' y 'uvicorn' (servidor MCP de mentira para el test en vivo)")
+def test_burpmcp_transport_translates_host_docker_internal_to_127_for_burps_own_connection():
+    # bug real confirmado en vivo: un laboratorio Docker efimero (wpverify.py/genericverify.py)
+    # construye su base_url con host.docker.internal porque es BINORACLE, corriendo DENTRO de
+    # un contenedor, quien necesita esa direccion para alcanzar el puerto publicado -- pero
+    # quien hace la conexion TCP real cuando Burp esta configurado es BURP, corriendo NATIVO en
+    # el host, y host.docker.internal NO resuelve para un proceso normal del sistema operativo
+    # del host (solo lo inyecta Docker Desktop dentro de los contenedores). Sin la traduccion,
+    # TODA peticion de ataque/login contra un laboratorio efimero fallaba en cuanto Burp estaba
+    # configurado. Esta prueba, igual que test_burpmcp_client_round_trip_against_mock_server,
+    # usa una tool MCP real que hace la conexion TCP de verdad -- si "host.docker.internal" no
+    # se tradujera a 127.0.0.1 antes de pedirle a esa tool que conecte, esta prueba fallaria con
+    # un error de resolucion DNS exactamente como le paso a la usuaria en su Mac.
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from binoracle.workflows.burpmcp import BurpHttpTransport, BurpMCPClient
+
+    class _EchoHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok-from-lab")
+
+        def log_message(self, *a):
+            pass
+
+    def free_port():
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    target_port = free_port()
+    target_server = HTTPServer(("127.0.0.1", target_port), _EchoHandler)
+    target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
+    target_thread.start()
+
+    mcp_port = free_port()
+    server_code = f'''
+import socket
+from mcp.server.mcpserver import MCPServer
+mcp = MCPServer("test-mock-burp-dns")
+
+@mcp.tool()
+def send_http1_request(content: str, targetHostname: str, targetPort: int, usesHttps: bool) -> str:
+    sock = socket.create_connection((targetHostname, targetPort), timeout=10)
+    try:
+        sock.sendall(content.encode("utf-8", errors="replace"))
+        chunks = []
+        sock.settimeout(5)
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except socket.timeout:
+            pass
+        return b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        sock.close()
+
+import uvicorn
+uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning")
+'''
+    proc = subprocess.Popen([sys.executable, "-c", server_code],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2)
+        client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=15.0)
+        client.connect()
+        try:
+            transport = BurpHttpTransport(client)
+            # si "host.docker.internal" no se tradujera, create_connection fallaria con un
+            # error de resolucion DNS (no existe ese nombre fuera de un contenedor) y esta
+            # llamada lanzaria, igual que le fallaba el login a la usuaria con Burp activo.
+            resp = transport.request(
+                "GET", f"http://host.docker.internal:{target_port}/wp-login.php")
+            assert resp.status_code == 200
+            assert resp.text == "ok-from-lab"
+        finally:
+            client.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        target_server.shutdown()
+
+
 def test_genericverify_http_request_falls_back_to_requests_without_burp(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     gv._burp_transport = None

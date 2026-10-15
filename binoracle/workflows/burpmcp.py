@@ -182,11 +182,18 @@ class BurpMCPClient:
                 return name
         return None
 
-    def call_tool(self, name: str, arguments: dict) -> str:
+    def call_tool(self, name: str, arguments: dict, timeout: Optional[float] = None) -> str:
+        # confirmado en vivo: varios verificadores (SQLi/command-injection time-based blind,
+        # ver wpverify.py) mandan deliberadamente peticiones mas lentas que el timeout de
+        # CONEXION a Burp (self.timeout, 20s por defecto) -- un SLEEP(6) inyectado con
+        # timeout=21 esperado por el verificador se cortaba a los 20s si esta funcion siempre
+        # usaba self.timeout, rompiendo la tecnica de deteccion por temporizacion en cuanto Burp
+        # estaba activo. `timeout` (si se da) es el de ESTA llamada en concreto -- self.timeout
+        # sigue siendo el default para operaciones sin uno propio (p.ej. list_tools()).
         if self._loop is None:
             raise BurpMCPError("BurpMCPClient.call_tool() llamado sin connect()")
         fut = asyncio.run_coroutine_threadsafe(self._call_tool_async(name, arguments), self._loop)
-        return fut.result(self.timeout)
+        return fut.result(timeout if timeout is not None else self.timeout)
 
     async def _call_tool_async(self, name: str, arguments: dict) -> str:
         result = await self._session.call_tool(name, arguments)
@@ -273,6 +280,21 @@ class BurpHttpTransport:
                timeout: float = 20.0, allow_redirects: bool = True, **_ignored) -> BurpMCPResponse:
         parsed = urlsplit(url)
         host = parsed.hostname or ""
+        # confirmado en vivo: un laboratorio Docker efimero (wpverify.py/genericverify.py) usa
+        # host.docker.internal en sus URLs porque ES BINORACLE, corriendo DENTRO de un
+        # contenedor, quien necesita alcanzar el puerto publicado del laboratorio -- pero quien
+        # hace la conexion TCP real aqui es BURP, corriendo NATIVO en el host (Mac/Windows/
+        # Linux), y host.docker.internal es un nombre que SOLO resuelve desde dentro de un
+        # contenedor (Docker Desktop lo inyecta ahi, no en el resolver del sistema operativo
+        # del host). Sin esto, el login/toda peticion de ataque contra un laboratorio efimero
+        # fallaba en silencio (o abortaba la verificacion) en cuanto Burp estaba configurado,
+        # aunque el laboratorio estuviera arriba y binoracle pudiera verlo perfectamente.
+        # El puerto publicado SI esta en el 127.0.0.1 del host (asi es como Docker publica
+        # puertos), que es justo donde Burp, corriendo en ese mismo host, SI puede conectar --
+        # se traduce solo el destino TCP, el header Host de la peticion sigue siendo
+        # host.docker.internal (lo que WordPress/la app esperan, configurado al levantar el
+        # laboratorio).
+        connect_host = "127.0.0.1" if host == "host.docker.internal" else host
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         https = parsed.scheme == "https"
         path = parsed.path or "/"
@@ -295,10 +317,14 @@ class BurpHttpTransport:
                 body = str(data)
 
         raw_request = _build_raw_http1_request((method or "GET").upper(), path, host, hdrs, body)
+        # se reenvia el `timeout` de ESTA peticion (no el de conexion a Burp, self.client.timeout)
+        # -- mas un margen para el propio viaje de ida/vuelta por el protocolo MCP encima del
+        # socket que abre Burp, para no cortar la respuesta justo cuando el socket real ya iba a
+        # responder a tiempo.
         raw_response = self.client.call_tool(self._tool_name, {
-            "content": raw_request, "targetHostname": host, "targetPort": port,
+            "content": raw_request, "targetHostname": connect_host, "targetPort": port,
             "usesHttps": https,
-        })
+        }, timeout=timeout + 10.0)
         return _parse_raw_http_response(raw_response)
 
     def get(self, url: str, **kwargs) -> BurpMCPResponse:
