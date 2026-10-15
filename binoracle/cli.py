@@ -919,7 +919,8 @@ def cmd_investigate(args, config):
                  file=sys.stderr)
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
                           config=config, on_step=lambda m: print("  " + m), lang=config.lang,
-                          budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None)
+                          budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None,
+                          use_cache=not getattr(args, "no_cache", False))
     # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
     # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
     # SI usa embed_images=True (el default), esas son las que de verdad se pintan como <img>.
@@ -976,7 +977,7 @@ def cmd_investigate_batch(args, config):
     items = investigate_cves_batch(
         args.cves, config=config, lang=config.lang,
         budget_s=float(getattr(args, "budget", 300) or 300), parallel=parallel,
-        on_event=on_event)
+        on_event=on_event, use_cache=not getattr(args, "no_cache", False))
 
     for it in items:
         if it.investigation is None:
@@ -1418,6 +1419,12 @@ def build_parser() -> argparse.ArgumentParser:
                                          "screenshots from a dynamic verification) as a standalone "
                                          "HTML file at this path -- the terminal output cannot "
                                          "render images, only this file can")
+    ip.add_argument("--no-cache", action="store_true",
+                    help="force a fresh investigation even if this exact CVE id was already "
+                         "investigated before and its result is cached locally (ignored with "
+                         "--binary or any of --source/--endpoint/etc., which never use the "
+                         "cache) -- useful after a binoracle bug fix that should change the "
+                         "outcome, since the cache has no time-based expiry otherwise")
     ip.set_defaults(func=cmd_investigate)
 
     ipb = sub.add_parser("investigate-batch", help="run several 'investigate's IN PARALLEL "
@@ -1443,6 +1450,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "./binoracle_batch_reports, created if missing)")
     ipb.add_argument("--html-dir", help="also export each report as <CVE-ID>.html (with any real "
                                         "screenshots) into this directory")
+    ipb.add_argument("--no-cache", action="store_true",
+                     help="force a fresh investigation for every CVE in the batch even if "
+                          "already cached locally from a previous run (same flag as "
+                          "'investigate', see its help)")
     ipb.set_defaults(func=cmd_investigate_batch)
 
     return p

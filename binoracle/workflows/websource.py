@@ -749,3 +749,54 @@ def grep_vulnerable_functions(root: str, names: List[str]) -> dict:
             break
     not_found = [n for n in names if not found.get(n)]
     return {"found": {n: v for n, v in found.items() if v}, "not_found": not_found}
+
+
+_AJAX_ACTION_HANDLER_RE_TMPL = (
+    r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_{action}['\"]\s*,\s*"
+    r"(?:['\"]([A-Za-z0-9_]+)['\"]"
+    r"|array\s*\(\s*\$this\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*\)"
+    r"|array\s*\(\s*self::class\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*\))"
+)
+
+
+def find_ajax_handler_function(local_path: str, action: str) -> Optional[dict]:
+    """Busca el handler REAL registrado para una accion AJAX ya conocida
+    (add_action('wp_ajax[_nopriv]_<action>', <callback>)) -- al reves que grep_vulnerable_functions
+    (que confirma si un nombre de funcion YA CITADO existe en el codigo), esta funcion encuentra el
+    nombre REAL de la funcion a partir de la accion, para cuando la hipotesis del LLM sobre
+    'vulnerable_functions' no acerto (confirmado en vivo en CVE-2024-50508: el LLM dijo
+    'handle_file_upload', esa funcion no existe en el codigo real -- pero la accion real
+    ('pc_added_uploaded_image') SI se conocia, extraida del PoC real, y buscar POR ELLA en vez de
+    por el nombre adivinado encuentra el callback de verdad).
+    Reconoce el callback como string ('func') y como metodo de objeto/clase
+    (array($this, 'metodo'), array(self::class, 'metodo')).
+    Devuelve {"function": nombre, "location": "fichero:linea"} o None si no se encuentra."""
+    if not action or not local_path or not os.path.isdir(local_path):
+        return None
+    if not re.match(r"^[A-Za-z0-9_]+$", action):
+        return None
+    pattern = re.compile(_AJAX_ACTION_HANDLER_RE_TMPL.format(action=re.escape(action)))
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php"):
+                continue
+            if scanned >= _MAX_SCAN_FILES:
+                break
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            m = pattern.search(text)
+            if m:
+                func_name = m.group(1) or m.group(2) or m.group(3)
+                line_no = text.count("\n", 0, m.start()) + 1
+                return {"function": func_name, "location": f"{os.path.relpath(fp, local_path)}:{line_no}"}
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return None

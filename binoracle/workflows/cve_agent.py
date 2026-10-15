@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Callable, List, Optional
 
 _B64_PNG_PREFIX = "data:image/png;base64,"
@@ -121,6 +121,63 @@ class Investigation:
     source_grounding: dict = field(default_factory=dict)  # {found: {fn: [loc,...]}, not_found: [...]}
     dynamic_verify: dict = field(default_factory=dict)    # {attempted, available, verified, detail}
     poc_source_used: str = ""   # URL del PoC publico (GitHub) realmente leido, "" si ninguno
+
+
+# Historial local de resultados por CVE -- confirmado en vivo esta misma sesion: reinvestigar la
+# MISMA CVE una y otra vez tras cada fix (o, con investigate-batch, relanzar el lote entero por
+# una sola CVE que fallo) repite desde cero pasos que no cambian (consultar la CVE, leer el PoC
+# publico, descargar el codigo...), aunque el RESULTADO siga siendo el mismo. BINORACLE_CACHE_DIR
+# reubica el directorio (comparte el mismo que la cache de plugins/modulos de websource.py);
+# BINORACLE_NO_CACHE=1 la desactiva.
+_INVESTIGATION_CACHE_DIR = os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+    os.path.expanduser("~"), ".cache", "binoracle")
+_INVESTIGATION_CACHE_DISABLED = os.environ.get("BINORACLE_NO_CACHE", "") not in ("", "0")
+
+
+def _investigation_cache_path(cve_id: str) -> str:
+    safe_id = re.sub(r"[^A-Za-z0-9-]", "_", (cve_id or "").upper().strip())
+    return os.path.join(_INVESTIGATION_CACHE_DIR, "investigations", f"{safe_id}.json")
+
+
+def save_investigation_to_cache(inv: "Investigation") -> None:
+    """Guarda el resultado de una investigacion YA TERMINADA para no repetirla desde cero la
+    proxima vez que se pida la misma CVE. Best-effort a proposito: un fallo guardando (permisos,
+    disco lleno...) nunca debe tirar abajo una investigacion que SI termino bien -- solo significa
+    que la proxima vez no habra cache, no es un error real. Escritura atomica (temporal + rename)
+    para que dos investigaciones de la MISMA CVE en un lote en paralelo no se pisen a medias."""
+    if _INVESTIGATION_CACHE_DISABLED:
+        return
+    try:
+        path = _investigation_cache_path(inv.cve_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + f".tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(asdict(inv), f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def load_investigation_from_cache(cve_id: str) -> Optional["Investigation"]:
+    """Devuelve la investigacion YA GUARDADA para esta CVE, o None si no hay cache (desactivada,
+    nunca se guardo, o el fichero esta corrupto/de un esquema distinto). Sin caducidad por
+    tiempo -- la CVE en si no cambia, pero el CODIGO de binoracle si (confirmado en vivo multiples
+    veces esta sesion: el mismo CVE daba resultados distintos tras cada fix) -- por eso
+    investigate_cve() siempre deja forzar una investigacion fresca (use_cache=False / --no-cache)
+    en vez de asumir que la cache sigue siendo valida para siempre."""
+    if _INVESTIGATION_CACHE_DISABLED:
+        return None
+    path = _investigation_cache_path(cve_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        valid_fields = {fl.name for fl in fields(Investigation)}
+        data = {k: v for k, v in data.items() if k in valid_fields}
+        return Investigation(**data)
+    except Exception:
+        return None
 
 
 _RESEARCH_SYS = (
@@ -260,6 +317,22 @@ def _apply_wpverify_result(inv, wr, es: bool) -> None:
                 head, _, body = entry.partition("\n")
                 trimmed = "\n".join(body.splitlines()[-15:])
                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+
+
+def _extract_known_ajax_action(notes: dict) -> Optional[str]:
+    """Extrae el valor REAL de 'action' de admin-ajax.php ya conocido (del PoC crudo o de la
+    hipotesis), si lo hay: de notes['parameters'] (dict con clave 'action') o, si no, de la query
+    string de notes['endpoint'] (?action=...). Devuelve None si no hay ninguno conocido."""
+    params = notes.get("parameters")
+    if isinstance(params, dict):
+        action = params.get("action")
+        if isinstance(action, str) and action.strip():
+            return action.strip()
+    endpoint = notes.get("endpoint") or ""
+    m = re.search(r"[?&]action=([A-Za-z0-9_]+)", endpoint)
+    if m:
+        return m.group(1)
+    return None
 
 
 def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Optional[dict]:
@@ -886,21 +959,24 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
 
 
 _VERSION_PATTERN = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
-_VNUM = r"([0-9]+(?:\.[0-9]+){0,4})"
+_VNUM = r"[vV]?([0-9]+(?:\.[0-9]+){0,4})"
 # casuistica real de frases de rango de NVD/Patchstack (revisado a fondo, no solo el patron
 # 'through X' que confirmo CVE-2024-27956) -- en todas, la version que importa para descargar
 # el zip vulnerable es la del extremo SUPERIOR del rango, la mas reciente aun afectada:
 #   - "from n/a through 3.92.0" / "2.1.3 to 2.8.2" (confirmados en vivo, los dos)
 #   - "before 1.26" / "prior to 1.26" (NVD clasico)
 #   - "up to 1.26" / "up to and including 1.26" (otra fraseologia comun)
-#   - "<= 1.26" / "< 1.26" (notas terse)
+#   - "<= 1.26" / "< 1.26" (notas terse CON espacio) / "<1.26" / "<=1.26" (confirmado en vivo,
+#     CVE-2024-3552: 'affected_version': '<1.7.0' SIN espacio -- antes de este fix, al no hacer
+#     match, se descargaba la version MAS RECIENTE del plugin (ya parcheada) en vez de la
+#     vulnerable, y la verificacion dinamica nunca podia confirmar nada contra codigo arreglado)
 #   - "1.0 - 2.0" / "1.0 – 2.0" / "1.0 — 2.0" (rango con guion/en-dash/em-dash, con o sin
 #     espacios a los lados -- confirmado en vivo un PoC real transcribiendolo SIN espacios,
 #     "2.1.3-2.8.2". No se confunde con un unico token tipo '1.0-beta1' porque ahi 'beta1' no
 #     es un VNUM valido (no son solo digitos/puntos), asi que esa alternativa simplemente no
 #     hace match y cae al chequeo de "ya es una version valida" de mas abajo)
 _THROUGH_VERSION_RE = re.compile(
-    rf"(?:through|to|before|prior\s+to|up\s+to(?:\s+and\s+including)?|<=?)\s+{_VNUM}"
+    rf"(?:(?:through|to|before|prior\s+to|up\s+to(?:\s+and\s+including)?)\s+|<=?\s*){_VNUM}"
     rf"|{_VNUM}\s*[-–—]\s*{_VNUM}")
 
 
@@ -923,8 +999,13 @@ def _clean_affected_version(raw: str) -> str:
     if not raw:
         return ""
     m = _THROUGH_VERSION_RE.search(raw)
-    if not m and _VERSION_PATTERN.match(raw):
-        return raw
+    if not m:
+        # version ya limpia, posiblemente con un prefijo 'v'/'V' suelto ('v1.7.0', comun en
+        # tags de git y en READMEs de PoC aunque NVD no lo use) -- se quita antes de devolverla,
+        # ya que fetch_source/_looks_like_version exigen que empiece por un digito.
+        unprefixed = raw[1:] if raw[:1] in ("v", "V") else raw
+        if _VERSION_PATTERN.match(unprefixed):
+            return unprefixed
     if m:
         # grupo 1: las frases con palabra clave (through/to/before/...). grupo 3: el extremo
         # SUPERIOR del rango con guion (grupo 2 es el inferior, nunca el que interesa aqui).
@@ -1031,6 +1112,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                           f"nombre, o hipotesis del LLM)" if es else
                           f"not found in the fetched source: {nf} (could be a different version/"
                           f"name, or an LLM hypothesis)"))
+                # la hipotesis del LLM sobre vulnerable_functions a veces no acierta con el nombre
+                # (confirmado en vivo, CVE-2024-50508: dijo 'handle_file_upload', esa funcion no
+                # existe en el plugin real) aunque el resto de la hipotesis sea correcto. Si ya
+                # conocemos el valor REAL de 'action' (del PoC crudo o de la hipotesis), no hace
+                # falta depender de la adivinanza del LLM: se busca directamente el callback
+                # registrado para esa accion (add_action('wp_ajax_<action>', ...)) en el codigo.
+                if not inv.source_grounding["found"] and not is_drupal and not is_joomla:
+                    known_action = _extract_known_ajax_action(notes)
+                    if known_action:
+                        step((f"ninguna funcion citada se confirmo -- buscando el handler real "
+                             f"registrado para la accion ya conocida '{known_action}' "
+                             f"(add_action('wp_ajax_{known_action}', ...))..." if es else
+                             (f"no cited function was confirmed -- looking for the real handler "
+                             f"registered for the already-known action '{known_action}' "
+                             f"(add_action('wp_ajax_{known_action}', ...))...")))
+                        from .websource import find_ajax_handler_function
+                        recovered = find_ajax_handler_function(fr.local_path, known_action)
+                        if recovered:
+                            step((f"RECUPERADO: el handler real de '{known_action}' es "
+                                 f"'{recovered['function']}' -> {recovered['location']} "
+                                 f"(no la funcion que adivino el LLM)" if es else
+                                 (f"RECOVERED: the real handler for '{known_action}' is "
+                                 f"'{recovered['function']}' -> {recovered['location']} "
+                                 f"(not the function the LLM guessed)")))
+                            inv.source_grounding["found"] = {recovered["function"]: [recovered["location"]]}
+                        else:
+                            step((f"no se encontro ningun add_action registrado para "
+                                 f"'{known_action}' en el codigo descargado" if es else
+                                 f"no add_action registration for '{known_action}' was found in "
+                                 f"the fetched source"))
                 # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
                 # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
                 # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara
@@ -1880,14 +1991,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
 
 def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     on_step: Optional[Callable[[str], None]] = None, lang: str = "es",
-                    budget_s: float = 300.0, hints: Optional[dict] = None) -> Investigation:
+                    budget_s: float = 300.0, hints: Optional[dict] = None,
+                    use_cache: bool = True) -> Investigation:
     """Investiga una CVE con el LLM y prueba lo que se pueda. No lanza.
 
     `hints` deja al analista aportar lo que YA SABE de la CVE (igual que un exploit developer real:
     la hipotesis del LLM es un punto de partida, no la unica fuente) y pisa lo que proponga el LLM en
     esas claves exactas: source_url (slug de WordPress.org o URL git), affected_version, endpoint,
     http_method, parameters (lista), vulnerable_functions (lista). Util cuando ya tienes el aviso
-    oficial delante y no quieres depender de que el modelo adivine el slug/endpoint correctos."""
+    oficial delante y no quieres depender de que el modelo adivine el slug/endpoint correctos.
+
+    `use_cache` (por defecto True) reusa el resultado YA GUARDADO de una investigacion anterior de
+    la MISMA cve_id, si lo hay (ver load_investigation_from_cache) -- se desactiva solo cuando se
+    da `binary` o `hints`, porque entonces la investigacion depende de datos que la cache no
+    recoge y reusarla seria devolver un resultado de una pregunta distinta. Pasa use_cache=False a
+    mano (--no-cache en la CLI) para forzar una investigacion fresca de todas formas, p.ej. tras
+    arreglar un bug que SI debia cambiar el resultado."""
     import os
     from ..config import load_config
     from ..llm import make_backend
@@ -1896,6 +2015,14 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
 
     step = on_step or (lambda _m: None)
     es = lang == "es"
+    if use_cache and not binary and not hints:
+        cached = load_investigation_from_cache(cve_id)
+        if cached is not None:
+            step((f"{cve_id}: resultado ya en cache local, reusando (pasa --no-cache para forzar "
+                 f"una investigacion nueva)") if es else
+                 (f"{cve_id}: result already cached locally, reusing it (pass --no-cache to "
+                 f"force a fresh investigation)"))
+            return cached
     config = config or load_config()
     if llm is None:
         try:
@@ -2083,6 +2210,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
              "no binary: schema + template developed; real blockers noted.")
 
     inv.steps = []   # el streaming ya emitio los pasos; el informe los reconstruye del render
+    save_investigation_to_cache(inv)
     return inv
 
 
@@ -2270,7 +2398,7 @@ class BatchItem:
 def investigate_cves_batch(
     cve_ids: List[str], config=None, lang: str = "es", budget_s: float = 300.0,
     parallel: int = 2, hints_by_cve: Optional[dict] = None,
-    on_event: Optional[Callable[[dict], None]] = None,
+    on_event: Optional[Callable[[dict], None]] = None, use_cache: bool = True,
 ) -> List[BatchItem]:
     """Lanza investigate_cve() para cada id de `cve_ids` EN PARALELO, con un pool de hilos acotado
     por `parallel`, y aisla los errores por CVE -- uno fallando (red, excepcion inesperada, lo que
@@ -2324,7 +2452,8 @@ def investigate_cves_batch(
 
         try:
             inv = investigate_cve(cve_id, config=config, on_step=step, lang=lang,
-                                  budget_s=budget_s, hints=hints_by_cve.get(cve_id))
+                                  budget_s=budget_s, hints=hints_by_cve.get(cve_id),
+                                  use_cache=use_cache)
             item.investigation = inv
             item.status = "done"
         except Exception as e:

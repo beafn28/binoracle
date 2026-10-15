@@ -3582,6 +3582,71 @@ def test_websource_grep_vulnerable_functions(tmp_path):
     assert m.file.endswith("class-form.php") and m.line > 0
 
 
+def test_find_ajax_handler_function_string_callback(tmp_path):
+    from binoracle.workflows.websource import find_ajax_handler_function
+    php = tmp_path / "plugin.php"
+    php.write_text(
+        "<?php\n"
+        "add_action('wp_ajax_pc_added_uploaded_image', 'pc_handle_uploaded_image');\n"
+        "function pc_handle_uploaded_image() { /* ... */ }\n"
+    )
+    r = find_ajax_handler_function(str(tmp_path), "pc_added_uploaded_image")
+    assert r is not None
+    assert r["function"] == "pc_handle_uploaded_image"
+    assert r["location"].startswith("plugin.php:")
+
+
+def test_find_ajax_handler_function_object_method_callback(tmp_path):
+    from binoracle.workflows.websource import find_ajax_handler_function
+    php = tmp_path / "class-plugin.php"
+    php.write_text(
+        "<?php\n"
+        "class PC_Plugin {\n"
+        "    public function __construct() {\n"
+        "        add_action('wp_ajax_nopriv_pc_added_uploaded_image', array($this, 'handle_upload'));\n"
+        "    }\n"
+        "    public function handle_upload() { /* ... */ }\n"
+        "}\n"
+    )
+    r = find_ajax_handler_function(str(tmp_path), "pc_added_uploaded_image")
+    assert r is not None
+    assert r["function"] == "handle_upload"
+
+
+def test_find_ajax_handler_function_static_class_callback(tmp_path):
+    from binoracle.workflows.websource import find_ajax_handler_function
+    php = tmp_path / "static-plugin.php"
+    php.write_text(
+        "<?php\n"
+        "class PC_Plugin {\n"
+        "    public static function register() {\n"
+        "        add_action('wp_ajax_pc_added_uploaded_image', array(self::class, 'handle_upload_static'));\n"
+        "    }\n"
+        "}\n"
+    )
+    r = find_ajax_handler_function(str(tmp_path), "pc_added_uploaded_image")
+    assert r is not None
+    assert r["function"] == "handle_upload_static"
+
+
+def test_find_ajax_handler_function_action_not_found(tmp_path):
+    from binoracle.workflows.websource import find_ajax_handler_function
+    php = tmp_path / "other-plugin.php"
+    php.write_text(
+        "<?php\n"
+        "add_action('wp_ajax_some_other_action', 'some_other_handler');\n"
+    )
+    assert find_ajax_handler_function(str(tmp_path), "pc_added_uploaded_image") is None
+    assert find_ajax_handler_function(str(tmp_path), "") is None
+    assert find_ajax_handler_function("", "pc_added_uploaded_image") is None
+
+
+def test_find_ajax_handler_function_rejects_unsafe_action_value(tmp_path):
+    from binoracle.workflows.websource import find_ajax_handler_function
+    (tmp_path / "plugin.php").write_text("<?php\n")
+    assert find_ajax_handler_function(str(tmp_path), "foo'); system('rm -rf /'); //") is None
+
+
 def test_websource_fetch_source_dispatch_by_shape():
     from binoracle.workflows.websource import looks_like_git_url, looks_like_wp_slug
     assert looks_like_git_url("https://github.com/org/repo.git") is True
@@ -4589,7 +4654,7 @@ def test_cli_investigate_passes_custom_table_hints(monkeypatch):
     captured = {}
 
     def fake_investigate_cve(cve, binary="", config=None, on_step=None, lang="es",
-                             budget_s=300.0, hints=None):
+                             budget_s=300.0, hints=None, use_cache=True):
         captured["hints"] = hints
         return types.SimpleNamespace(cve_id=cve, vuln_class="deserialization",
                                      developed_script="", poc_kind="", html_export_ok=False)
@@ -6693,6 +6758,22 @@ def test_clean_affected_version_extracts_upper_bound_from_dashless_range():
     assert _clean_affected_version("1.0-beta1") == "1.0-beta1"
 
 
+def test_clean_affected_version_handles_dashless_lt_and_v_prefix():
+    # bug real confirmado en vivo (CVE-2024-3552): 'affected_version': '<1.7.0' SIN espacio
+    # entre '<' y el numero no hacia match con el patron de rango (exigia \s+ tras el simbolo) --
+    # se descargaba la version MAS RECIENTE del plugin en WordPress.org (ya parcheada) en vez de
+    # la vulnerable, y por eso la inyeccion SQL nunca se confirmaba contra codigo arreglado.
+    from binoracle.workflows.cve_agent import _clean_affected_version
+    assert _clean_affected_version("<1.7.0") == "1.7.0"
+    assert _clean_affected_version("<=1.7.0") == "1.7.0"
+    # el prefijo 'v'/'V' (comun en tags de git/PoC aunque NVD no lo use) tambien se limpia, con
+    # o sin frase de rango alrededor
+    assert _clean_affected_version("v1.7.0") == "1.7.0"
+    assert _clean_affected_version("V1.7.0") == "1.7.0"
+    assert _clean_affected_version("before v1.7.0") == "1.7.0"
+    assert _clean_affected_version("<v1.7.0") == "1.7.0"
+
+
 def test_investigate_cves_batch_runs_concurrently_and_isolates_errors(monkeypatch):
     # confirma que investigate_cves_batch de verdad solapa el trabajo (no lo serializa) y que una
     # CVE fallando con una excepcion no tumba el resto del lote -- se queda en su propio
@@ -6705,7 +6786,7 @@ def test_investigate_cves_batch_runs_concurrently_and_isolates_errors(monkeypatc
     lock = threading.Lock()
 
     def fake_investigate_cve(cve_id, binary="", config=None, llm=None, on_step=None, lang="es",
-                             budget_s=300.0, hints=None):
+                             budget_s=300.0, hints=None, use_cache=True):
         with lock:
             concurrent_now["n"] += 1
             concurrent_now["max"] = max(concurrent_now["max"], concurrent_now["n"])
@@ -6796,7 +6877,7 @@ def test_cmd_investigate_batch_writes_reports_and_prints_summary(monkeypatch, tm
     from binoracle.workflows import cve_agent
 
     def fake_batch(cve_ids, config=None, lang="es", budget_s=300.0, parallel=2,
-                  hints_by_cve=None, on_event=None):
+                  hints_by_cve=None, on_event=None, use_cache=True):
         items = []
         for cid in cve_ids:
             if on_event:
@@ -7163,6 +7244,83 @@ def test_investigate_cve_prefers_raw_poc_request_over_llm_extraction(monkeypatch
                                                "file[path]": "/etc/passwd"}
 
 
+def test_extract_known_ajax_action_from_parameters_dict():
+    from binoracle.workflows.cve_agent import _extract_known_ajax_action
+    assert _extract_known_ajax_action(
+        {"parameters": {"action": "pc_added_uploaded_image", "file[path]": "/etc/passwd"}}
+    ) == "pc_added_uploaded_image"
+
+
+def test_extract_known_ajax_action_from_endpoint_query_string():
+    from binoracle.workflows.cve_agent import _extract_known_ajax_action
+    assert _extract_known_ajax_action(
+        {"endpoint": "/wp-admin/admin-ajax.php?action=pc_added_uploaded_image"}
+    ) == "pc_added_uploaded_image"
+
+
+def test_extract_known_ajax_action_returns_none_when_unknown():
+    from binoracle.workflows.cve_agent import _extract_known_ajax_action
+    assert _extract_known_ajax_action({}) is None
+    assert _extract_known_ajax_action({"parameters": ["action", "file[path]"]}) is None
+    assert _extract_known_ajax_action({"endpoint": "/wp-admin/admin-ajax.php"}) is None
+
+
+def test_investigate_cve_recovers_real_handler_when_llm_guess_does_not_ground(monkeypatch, tmp_path):
+    # bug real en vivo, CVE-2024-50508: la hipotesis del LLM citaba 'vulnerable_functions':
+    # ['handle_file_upload'], pero esa funcion no existe en el plugin real -- el grounding fallaba
+    # y _deterministic_web_hints_from_source (que SI sabe leer add_action()) nunca llegaba a
+    # ejecutarse. Ya conociamos el valor REAL de 'action' (del bloque HTTP crudo del PoC); hay que
+    # usarlo para encontrar el callback real en vez de depender del nombre que el LLM adivino.
+    import json as _json
+    from binoracle.workflows import cve_agent, cvelookup, websource
+
+    raw_poc_text = (
+        "POST /wp-admin/admin-ajax.php HTTP/2\n"
+        "Host: wp-dev.ddev.site\n"
+        "Content-Type: application/x-www-form-urlencoded\n\n"
+        "action=pc_added_uploaded_image&file[path]=/etc/passwd\n")
+
+    plugin_dir = tmp_path / "woo-product-design"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.php").write_text(
+        "<?php\n"
+        "add_action('wp_ajax_pc_added_uploaded_image', 'pc_handle_uploaded_image');\n"
+        "function pc_handle_uploaded_image() { /* ... */ }\n"
+    )
+
+    def fake_fetch_cve(cve_id, timeout=20.0, enrich=True):
+        ref = cvelookup.ExploitRef(url="https://github.com/RandomRobbieBF/CVE-2024-50508",
+                                   source="github")
+        return cvelookup.CVEInfo(
+            cve_id=cve_id, ok=True,
+            description="The Woo Product Design WordPress plugin before 1.0.1 ... Directory "
+                        "Traversal.",
+            has_public_exploit=True, exploit_refs=[ref])
+    monkeypatch.setattr(cvelookup, "fetch_cve", fake_fetch_cve)
+    monkeypatch.setattr(cve_agent, "fetch_public_poc_source", lambda refs, on_step=None: raw_poc_text)
+    monkeypatch.setattr(
+        websource, "fetch_source",
+        lambda *a, **kw: websource.SourceFetchResult(
+            ok=True, kind="wordpress-plugin", source="woo-product-design",
+            resolved_version="1.0", local_path=str(plugin_dir), plugin_dir="woo-product-design"))
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "vuln_class": "path-traversal", "endpoint": "/wp-admin/admin-ajax.php",
+                "http_method": "POST", "parameters": ["action", "file[path]"],
+                "vulnerable_functions": ["handle_file_upload"],
+            })
+
+    inv = cve_agent.investigate_cve("CVE-2024-50508", config=object(), llm=_FakeLLM(),
+                                    on_step=lambda m: None, lang="es")
+
+    assert inv.source_grounding.get("found") == {
+        "pc_handle_uploaded_image": ["plugin.php:2"]}
+
+
 def test_cache_path_for_requires_concrete_version():
     from binoracle.workflows.websource import _cache_path_for
     assert _cache_path_for("wordpress-plugin", "foo", "") is None
@@ -7250,3 +7408,101 @@ def test_fetch_wordpress_plugin_skips_zip_download_on_second_call(monkeypatch, t
     assert calls["n"] - calls_after_first <= 1
     assert (tmp_path / "cache" / "wordpress-plugin" / "foo-plugin" / "1.0.0" /
            "foo-plugin.php").exists()
+
+
+def test_save_and_load_investigation_cache_round_trip(monkeypatch, tmp_path):
+    from binoracle.workflows import cve_agent
+
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DISABLED", False)
+
+    inv = cve_agent.Investigation(cve_id="CVE-2099-0001", description="desc", verified=True,
+                                  vuln_class="sqli", llm_notes={"endpoint": "/x"})
+    cve_agent.save_investigation_to_cache(inv)
+    loaded = cve_agent.load_investigation_from_cache("CVE-2099-0001")
+    assert loaded is not None
+    assert loaded.description == "desc"
+    assert loaded.verified is True
+    assert loaded.llm_notes == {"endpoint": "/x"}
+
+    # case-insensible: el id se normaliza igual que investigate_cve ya hace
+    assert cve_agent.load_investigation_from_cache("cve-2099-0001") is not None
+
+
+def test_load_investigation_cache_returns_none_when_disabled_or_missing(monkeypatch, tmp_path):
+    from binoracle.workflows import cve_agent
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DISABLED", False)
+    assert cve_agent.load_investigation_from_cache("CVE-2099-9999") is None   # nunca guardada
+
+    inv = cve_agent.Investigation(cve_id="CVE-2099-0002")
+    cve_agent.save_investigation_to_cache(inv)
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DISABLED", True)
+    assert cve_agent.load_investigation_from_cache("CVE-2099-0002") is None   # cache desactivada
+
+
+def test_investigate_cve_reuses_cached_result_on_second_call(monkeypatch, tmp_path):
+    # bug real a evitar (confirmado por diseno, igual que la cache de plugins): reinvestigar la
+    # MISMA CVE desde cero cada vez repite pasos que no cambian -- sobre todo molesto con
+    # investigate-batch reintentando un lote entero por una sola CVE que fallo.
+    from binoracle.workflows import cve_agent, cvelookup
+
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DISABLED", False)
+
+    calls = {"n": 0}
+    def fake_fetch_cve(cve_id, timeout=20.0, enrich=True):
+        calls["n"] += 1
+        return cvelookup.CVEInfo(cve_id=cve_id, ok=True, description="desc", has_public_exploit=False)
+    monkeypatch.setattr(cvelookup, "fetch_cve", fake_fetch_cve)
+
+    inv1 = cve_agent.investigate_cve("CVE-2099-0003", config=object(), llm=None,
+                                     on_step=lambda m: None, lang="es")
+    assert calls["n"] == 1
+    inv2 = cve_agent.investigate_cve("CVE-2099-0003", config=object(), llm=None,
+                                     on_step=lambda m: None, lang="es")
+    assert calls["n"] == 1   # la segunda vez NO volvio a consultar nada -- vino de la cache
+    assert inv2.description == inv1.description
+
+
+def test_investigate_cve_no_cache_forces_fresh_run(monkeypatch, tmp_path):
+    from binoracle.workflows import cve_agent, cvelookup
+
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DISABLED", False)
+
+    calls = {"n": 0}
+    def fake_fetch_cve(cve_id, timeout=20.0, enrich=True):
+        calls["n"] += 1
+        return cvelookup.CVEInfo(cve_id=cve_id, ok=True, description="desc", has_public_exploit=False)
+    monkeypatch.setattr(cvelookup, "fetch_cve", fake_fetch_cve)
+
+    cve_agent.investigate_cve("CVE-2099-0004", config=object(), llm=None,
+                             on_step=lambda m: None, lang="es")
+    assert calls["n"] == 1
+    cve_agent.investigate_cve("CVE-2099-0004", config=object(), llm=None,
+                             on_step=lambda m: None, lang="es", use_cache=False)
+    assert calls["n"] == 2   # --no-cache fuerza una investigacion fresca de verdad
+
+
+def test_investigate_cve_skips_cache_when_hints_given(monkeypatch, tmp_path):
+    # pasar hints/--source/--endpoint/etc. a mano cambia la pregunta -- reusar un resultado
+    # cacheado de una investigacion SIN esos datos seria devolver la respuesta equivocada.
+    from binoracle.workflows import cve_agent, cvelookup
+
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cve_agent, "_INVESTIGATION_CACHE_DISABLED", False)
+
+    calls = {"n": 0}
+    def fake_fetch_cve(cve_id, timeout=20.0, enrich=True):
+        calls["n"] += 1
+        return cvelookup.CVEInfo(cve_id=cve_id, ok=True, description="desc", has_public_exploit=False)
+    monkeypatch.setattr(cvelookup, "fetch_cve", fake_fetch_cve)
+
+    cve_agent.investigate_cve("CVE-2099-0005", config=object(), llm=None,
+                             on_step=lambda m: None, lang="es")
+    assert calls["n"] == 1
+    cve_agent.investigate_cve("CVE-2099-0005", config=object(), llm=None,
+                             on_step=lambda m: None, lang="es",
+                             hints={"source_url": "some-slug"})
+    assert calls["n"] == 2   # con hints, nunca se mira la cache
