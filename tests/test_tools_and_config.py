@@ -6373,6 +6373,15 @@ def test_wp_login_reports_missing_cookie_via_on_step(monkeypatch):
     assert any("sin cookie de sesion" in m and "status=200" in m for m in messages)
 
 
+def test_wp_login_default_timeout_is_generous():
+    # confirmado en vivo: con los 15s originales, el login fallaba con TimeoutError bajo carga
+    # real (varios laboratorios Docker a la vez, o Apache/PHP lento bajo emulacion amd64).
+    import inspect
+    from binoracle.workflows.wpverify import _wp_login
+    default_timeout = inspect.signature(_wp_login).parameters["timeout"].default
+    assert default_timeout >= 30.0
+
+
 def test_refine_web_hints_from_source_extracts_setup_options(tmp_path):
     # CVE-2024-1071 (Ultimate Member): el codigo SQLi real solo se ejecuta si el plugin tiene
     # activada 'Enable custom table for usermeta' -- con la config de fabrica, ninguna tecnica de

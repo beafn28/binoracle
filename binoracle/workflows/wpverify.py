@@ -609,11 +609,18 @@ def _make_session():
     return requests.Session()
 
 
-def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0,
+def _wp_login(base_url: str, user: str, password: str, timeout: float = 30.0,
              on_step: Optional[Callable[[str], None]] = None):
     """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session (o
     BurpSession, si se configuro Burp) logueada, o None si no hay cookie de sesion (login
     fallido).
+
+    Confirmado en vivo: con los 15s originales, el login fallaba con TimeoutError bajo carga real
+    del Mac (varios laboratorios Docker a la vez, o simplemente Apache/PHP bajo emulacion amd64
+    yendo lento en ese momento) -- el mismo laboratorio, en otra ejecucion, habia logueado bien.
+    Subido con margen generoso por la misma razon que mysql_ready/http_ready ya lo tienen (ver sus
+    comentarios): Docker Desktop en Apple Silicon corriendo imagenes amd64 via emulacion puede
+    tardar bastante mas de lo que un login normal tardaria en nativo.
 
     `on_step`, si se da, recibe el motivo CONCRETO del fallo (la excepcion real, o que la
     respuesta no trajo cookie de sesion con su status code) -- confirmado en vivo: antes de
