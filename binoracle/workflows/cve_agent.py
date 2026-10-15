@@ -198,6 +198,77 @@ def _apply_wpverify_result(inv, wr, es: bool) -> None:
                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
 
 
+def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Optional[dict]:
+    """Complementa (y cuando discrepan, GANA sobre) el refinamiento del LLM con un grep LITERAL
+    del codigo real: el registro EXACTO del hook `add_action('wp_ajax...')` que de verdad engancha
+    la funcion citada, y los nombres de campo EXACTOS que esa funcion lee de $_POST/$_REQUEST/
+    $_GET. Esto es precisamente lo que el analista tuvo que hacer a mano en CVE-2025-3605 (la
+    hipotesis del LLM decia action=flr_blocks_user_settings y parameters=[email,password]; el
+    codigo real registra flrblocksusersettingsupdatehandle y lee flr-blocks-email-update) --
+    convertirlo en un grep deterministico, en vez de depender de que el LLM transcriba bien un
+    fragmento de codigo, hace la correccion automatica y repetible, sin que el analista tenga que
+    inspeccionar el fichero a mano cada vez. Devuelve None si no hay nada que extraer (ni un
+    add_action que mencione la funcion, ni un $_POST/$_REQUEST/$_GET dentro de su cuerpo)."""
+    import os as _os
+    import re as _re
+    action_re = _re.compile(r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['\"]")
+    field_re = _re.compile(r"\$_(?:POST|REQUEST|GET)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]")
+    fn_def_re_tmpl = r"function\s+{0}\s*\("
+    func_decl_re = _re.compile(r"\s*(?:public |private |protected |static )*function\s+\w+\s*\(")
+
+    best_action = None
+    best_fields: List[str] = []
+    for name, locs in (found or {}).items():
+        for loc in locs[:2]:
+            file_part, _, _line_part = loc.rpartition(":")
+            fpath = _os.path.join(local_path, file_part)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            lines = text.splitlines()
+            fn_def_re = _re.compile(fn_def_re_tmpl.format(_re.escape(name)))
+            body_start = next((i for i, l in enumerate(lines) if fn_def_re.search(l)), None)
+            if body_start is not None:
+                indent = len(lines[body_start]) - len(lines[body_start].lstrip())
+                body_end = len(lines)
+                for j in range(body_start + 1, len(lines)):
+                    if func_decl_re.match(lines[j]):
+                        j_indent = len(lines[j]) - len(lines[j].lstrip())
+                        if j_indent <= indent:
+                            body_end = j
+                            break
+                body_text = "\n".join(lines[body_start:body_end])
+                for m in field_re.finditer(body_text):
+                    if m.group(1) not in best_fields:
+                        best_fields.append(m.group(1))
+            # el add_action que registra ESTA funcion puede vivir en otra parte del fichero (o de
+            # la clase) -- se busca por mencion literal del nombre de la funcion dentro de la
+            # propia llamada a add_action (callback directo o `[$this, 'nombre']`), y se queda con
+            # el mas cercano a su definicion si hubiera varios candidatos.
+            candidates = []
+            for m in action_re.finditer(text):
+                call_end = text.find(")", m.end())
+                call_text = text[m.start():call_end if call_end != -1 else m.end() + 200]
+                if name in call_text:
+                    hook_line = text[:m.start()].count("\n")
+                    candidates.append((abs(hook_line - (body_start if body_start is not None else hook_line)),
+                                       m.group(1)))
+            if candidates:
+                candidates.sort(key=lambda c: c[0])
+                best_action = candidates[0][1]
+
+    if not best_action and not best_fields:
+        return None
+    out: dict = {}
+    if best_action:
+        out["endpoint"] = f"/wp-admin/admin-ajax.php?action={best_action}"
+    if best_fields:
+        out["parameters"] = best_fields
+    return out
+
+
 def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lines: int = 50) -> Optional[dict]:
     """Tras el grounding (confirmar que la funcion citada existe de verdad), lee el codigo REAL
     alrededor de cada ubicacion encontrada y le pide al LLM que extraiga el endpoint/parametros
@@ -313,8 +384,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                 if inv.source_grounding["found"]:
                     step("leyendo el codigo real para refinar endpoint/parametros..." if es else
                          "reading the real source to refine endpoint/parameters...")
-                    refined = _refine_web_hints_from_source(llm, fr.local_path,
-                                                            inv.source_grounding["found"])
+                    llm_refined = _refine_web_hints_from_source(llm, fr.local_path,
+                                                                inv.source_grounding["found"])
+                    # grep deterministico del add_action()/$_POST real -- gana sobre la suposicion
+                    # del LLM cuando ambos citan algo (ver _deterministic_web_hints_from_source):
+                    # es exactamente la correccion que el analista tuvo que hacer a mano leyendo
+                    # el codigo en CVE-2025-3605/CVE-2024-43982, ahora automatica.
+                    det_refined = _deterministic_web_hints_from_source(fr.local_path,
+                                                                       inv.source_grounding["found"])
+                    refined = {**(llm_refined or {}), **(det_refined or {})}
+                    if det_refined:
+                        step((f"grep deterministico del codigo real: endpoint="
+                             f"{det_refined.get('endpoint')}, parameters="
+                             f"{det_refined.get('parameters')} (gana sobre la suposicion del "
+                             f"LLM si discrepan)") if es else
+                             (f"deterministic grep of the real source: endpoint="
+                             f"{det_refined.get('endpoint')}, parameters="
+                             f"{det_refined.get('parameters')} (wins over the LLM's guess if "
+                             f"they disagree)"))
                     if refined:
                         notes = {**notes, **refined}
                         inv.llm_notes.update(refined)
