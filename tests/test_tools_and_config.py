@@ -5879,3 +5879,67 @@ def test_run_web_investigation_cleans_version_before_fetching(monkeypatch, tmp_p
                      "affected_version": "from n/a through 3.92.0"}
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("version") == "3.92.0"
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("mcp") is None
+    or __import__("importlib").util.find_spec("uvicorn") is None,
+    reason="requiere los paquetes 'mcp' y 'uvicorn'")
+def test_burpmcp_client_retries_without_sse_suffix_on_404():
+    # reproduce el fallo real que la usuaria siguio pegando: escribe --burp-mcp-url con '/sse'
+    # al final (una convencion de OTROS servidores MCP, no de la extension real de Burp, que
+    # monta en la raiz) -- en vez de obligarla a acordarse de nunca escribirlo, el cliente
+    # reintenta solo sin el sufijo cuando el primer intento da 404.
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    from binoracle.workflows.burpmcp import BurpMCPClient
+
+    def free_port():
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    mcp_port = free_port()
+    server_code = f'''
+from mcp.server.mcpserver import MCPServer
+mcp = MCPServer("test-root-only")
+
+@mcp.tool()
+def send_http1_request(content: str, targetHostname: str, targetPort: int, usesHttps: bool) -> str:
+    return "HTTP/1.1 200 OK\\r\\n\\r\\nok"
+
+import uvicorn
+uvicorn.run(mcp.sse_app(sse_path="/"), host="127.0.0.1", port={mcp_port}, log_level="warning")
+'''
+    proc = subprocess.Popen([sys.executable, "-c", server_code],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2)
+        client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=10.0)
+        client.connect()
+        try:
+            assert client.sse_url == f"http://127.0.0.1:{mcp_port}"
+            assert "send_http1_request" in client.tools
+        finally:
+            client.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+
+def test_burpmcp_client_does_not_strip_sse_suffix_on_non_404_error():
+    from binoracle.workflows.burpmcp import BurpMCPClient, BurpMCPError
+    # un error que NO es 404 (p.ej. conexion rechazada porque Burp no esta corriendo) no debe
+    # disparar el reintento -- solo el 404 especifico de 'la ruta /sse no existe'.
+    client = BurpMCPClient("http://127.0.0.1:1/sse", timeout=2.0)
+    with pytest.raises(BurpMCPError):
+        client.connect()
+    assert client.sse_url == "http://127.0.0.1:1/sse"

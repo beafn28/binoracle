@@ -89,9 +89,8 @@ class BurpMCPClient:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
-        fut = asyncio.run_coroutine_threadsafe(self._connect_async(), self._loop)
         try:
-            fut.result(self.timeout)
+            self._connect_with_retry()
         except Exception as e:
             self.close()
             raise BurpMCPError(
@@ -99,6 +98,29 @@ class BurpMCPClient:
                 f"que la extension 'MCP Server' este instalada Y MARCADA 'Extension loaded' en "
                 f"la tab Extensions de Burp, y que su tab MCP tenga el servidor activado "
                 f"('Enabled') en el host/puerto configurado aqui ({e})") from e
+
+    def _connect_with_retry(self):
+        fut = asyncio.run_coroutine_threadsafe(self._connect_async(), self._loop)
+        try:
+            fut.result(self.timeout)
+            return
+        except Exception as e:
+            # confirmado en vivo mas de una vez: la extension de Burp monta el servidor MCP en
+            # la RAIZ (ver el docstring de la clase), asi que un '/sse' al final de la URL (una
+            # convencion de OTROS servidores MCP, no de este) da 404 -- si eso es justo lo que
+            # paso, se reintenta UNA vez quitandolo, en vez de obligar a quien lo use a acordarse
+            # de nunca escribirlo.
+            if "404" not in str(e):
+                raise
+            stripped = re.sub(r"/sse/?$", "", self.sse_url)
+            if stripped == self.sse_url or not stripped:
+                raise
+            self.sse_url = stripped
+            self._sse_cm = None
+            self._session_cm = None
+            self._session = None
+            fut2 = asyncio.run_coroutine_threadsafe(self._connect_async(), self._loop)
+            fut2.result(self.timeout)
 
     async def _connect_async(self):
         from mcp import ClientSession
