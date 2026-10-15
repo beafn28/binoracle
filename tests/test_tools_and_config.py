@@ -6826,3 +6826,85 @@ def test_cmd_investigate_batch_writes_reports_and_prints_summary(monkeypatch, tm
     assert "paso de prueba" in captured.out
     assert "Resumen del lote" in captured.out
     assert "1/2 verificadas" in captured.out
+
+
+def test_fetch_git_source_disables_interactive_credential_prompt(monkeypatch):
+    # bug real confirmado en vivo (CVE-2025-9501): un source_url que no es un repo real/publico
+    # (una URL de GitHub inventada por el LLM, o un mirror distinto del oficial) hacia que git se
+    # quedara colgado pidiendo usuario/contrasena por el terminal en vez de fallar al momento --
+    # sin GIT_TERMINAL_PROMPT=0, el proceso esperaba hasta agotar el timeout entero (90s) sin
+    # hacer nada util.
+    import binoracle.workflows.websource as websource
+
+    captured = {}
+    class _FakeCompletedProcess:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    def fake_run(cmd, capture_output=True, text=True, timeout=90.0, env=None):
+        captured["env"] = env
+        return _FakeCompletedProcess()
+    monkeypatch.setattr(websource.subprocess, "run", fake_run)
+    monkeypatch.setattr(websource.shutil, "which", lambda name: "/usr/bin/git")
+
+    websource.fetch_git_source("https://github.com/someorg/somerepo")
+    assert captured["env"] is not None
+    assert captured["env"].get("GIT_TERMINAL_PROMPT") == "0"
+
+
+def test_run_web_investigation_falls_back_to_guessed_slug_when_llm_source_url_fails(monkeypatch):
+    # bug real confirmado en vivo (CVE-2025-9501, CVE-2024-3552): el LLM dio un source_url que NO
+    # es un repo/slug real (una URL de GitHub inventada) y fetch_source() fallo descargandolo --
+    # el slug real SOLO se probaba cuando el LLM no daba NINGUN source_url, nunca cuando daba uno
+    # que resultaba inservible, asi que el codigo real se daba por perdido aunque SI se pudiera
+    # haber obtenido por el slug deducido de la propia descripcion del aviso.
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource
+
+    calls = []
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        calls.append(target)
+        if target == "web-directory-free":
+            return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                               local_path="/tmp/fake", plugin_dir="web-directory-free")
+        return websource.SourceFetchResult(ok=False, note="git clone fallo: repository not found")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    inv = Investigation(cve_id="CVE-2024-3552")
+    inv.vuln_class = "sqli"
+    inv.description = ("The Web Directory Free WordPress plugin before 1.7.0 does not sanitise "
+                       "and escape a parameter before using it in a SQL statement via an AJAX "
+                       "action available to unauthenticated users.")
+    inv.llm_notes = {
+        "source_url": "https://github.com/WordPress/plugins/tree/master/web-directory-free",
+        "endpoint": "/wp-admin/admin-ajax.php?action=search_directory", "http_method": "POST",
+        "parameters": ["query"], "vulnerable_functions": [],
+    }
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+
+    assert calls == ["https://github.com/WordPress/plugins/tree/master/web-directory-free",
+                     "web-directory-free"]
+    assert inv.source_fetch["ok"] is True
+    assert inv.source_fetch["source_guessed_from_description"] is True
+
+
+def test_run_web_investigation_does_not_retry_when_guess_matches_given_source(monkeypatch):
+    # si el source_url que dio el LLM YA ES el slug deducido (o no hay nada que deducir), no debe
+    # haber una segunda llamada inutil a fetch_source().
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource
+
+    calls = []
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        calls.append(target)
+        return websource.SourceFetchResult(ok=False, note="404")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    inv = Investigation(cve_id="CVE-2024-9999")
+    inv.vuln_class = "sqli"
+    inv.description = "Generic text with no plugin name pattern."
+    inv.llm_notes = {"source_url": "some-plugin-slug", "endpoint": "/x", "http_method": "POST",
+                     "parameters": ["q"], "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+
+    assert calls == ["some-plugin-slug"]   # sin reintento, no habia nada que deducir

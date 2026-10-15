@@ -911,6 +911,25 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
              f"attempting to fetch the real source ({source})...")
         fr = fetch_source(source, version=version, on_step=step,
                          cms_hint=(notes.get("cms") or "").strip().lower())
+        # confirmado en vivo (CVE-2025-9501, CVE-2024-3552): el LLM a veces da un source_url que
+        # NO es ningun slug real -- una URL de GitHub inventada, o el mirror de otra org que no
+        # es el repo oficial del plugin -- y fetch_source() falla descargandolo. Antes de esto,
+        # el slug deducido de la descripcion SOLO se probaba cuando el LLM no daba source_url EN
+        # ABSOLUTO (ver mas arriba); si dio algo, aunque fuera inservible, nunca se llegaba a
+        # intentar el slug real -- dando por perdido el codigo cuando SI se podia haber obtenido.
+        if not fr.ok and not guessed_source:
+            guess = _guess_wp_slug_from_description(inv.description)
+            if guess and guess != source:
+                step((f"'{source}' no se pudo obtener ({fr.note}) -- probando '{guess}' como "
+                     f"slug de WordPress.org (extraido del propio texto del aviso)...") if es else
+                     (f"'{source}' could not be fetched ({fr.note}) -- trying '{guess}' as a "
+                     f"WordPress.org slug (extracted from the advisory text itself)..."))
+                fr_retry = fetch_source(guess, version=version, on_step=step,
+                                        cms_hint=(notes.get("cms") or "").strip().lower())
+                if fr_retry.ok:
+                    fr = fr_retry
+                    source = guess
+                    guessed_source = True
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note,

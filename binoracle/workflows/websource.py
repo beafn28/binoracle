@@ -380,8 +380,15 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
         cmd += ["--branch", ref]
     cmd += [url, dest_dir]
     step(f"git clone --depth 1 {url} ...")
+    # confirmado en vivo: una URL que no existe/requiere credenciales (un repo privado, una org
+    # mal escrita, source_url una hipotesis del LLM que no es un repo real) hace que git, SIN
+    # esto, se quede colgado pidiendo usuario/contrasena por el terminal en vez de fallar al
+    # momento -- aqui no hay terminal interactivo esperando esa respuesta, asi que el proceso
+    # colgaba hasta agotar el `timeout` entero (90s) sin hacer nada util. GIT_TERMINAL_PROMPT=0
+    # hace que git falle YA (exit code distinto de 0, mensaje de error normal) en vez de esperar.
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except Exception as e:
         res.note = f"fallo git clone: {e}"
         return res
