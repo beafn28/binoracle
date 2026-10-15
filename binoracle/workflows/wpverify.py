@@ -142,17 +142,27 @@ def _token() -> str:
 
 
 def _lab_host() -> str:
-    """Host desde el que ESTE PROCESO (el propio binoracle, haciendo las peticiones HTTP del
-    ataque) debe hablarle al laboratorio. Cuando binoracle corre dentro de un contenedor y usa el
-    socket del HOST para pilotar Docker (Docker-fuera-de-Docker, el patron que docker-compose.yml
-    monta), el puerto que publicamos para WordPress se abre en el 127.0.0.1 del HOST, NO en el
-    127.0.0.1 de nuestro propio contenedor -- son namespaces de red distintos. Sin esto, http_ready
-    y las peticiones del ataque nunca llegaban a WordPress aunque Apache arrancara bien (confirmado
-    en vivo: los logs mostraban 'resuming normal operations' pero 'WordPress no respondio a
-    tiempo' seguia saliendo). host.docker.internal resuelve al HOST de verdad (Docker Desktop en
-    Mac/Windows de forma nativa; en Linux via el extra_hosts que docker-compose.yml anade). Si
-    binoracle NO corre en un contenedor (p.ej. los tests de este repo en el sandbox de desarrollo),
-    127.0.0.1 ya es correcto y host.docker.internal no existira."""
+    """Host desde el que se le habla al laboratorio por HTTP. Cuando binoracle corre dentro de un
+    contenedor y usa el socket del HOST para pilotar Docker (Docker-fuera-de-Docker, el patron que
+    docker-compose.yml monta), el puerto que publicamos para WordPress se abre en el 127.0.0.1 del
+    HOST, NO en el 127.0.0.1 de nuestro propio contenedor -- son namespaces de red distintos. Sin
+    esto, http_ready y las peticiones del ataque nunca llegaban a WordPress aunque Apache arrancara
+    bien (confirmado en vivo: los logs mostraban 'resuming normal operations' pero 'WordPress no
+    respondio a tiempo' seguia saliendo). host.docker.internal resuelve al HOST de verdad (Docker
+    Desktop en Mac/Windows de forma nativa; en Linux via el extra_hosts que docker-compose.yml
+    anade). Si binoracle NO corre en un contenedor (p.ej. los tests de este repo en el sandbox de
+    desarrollo), 127.0.0.1 ya es correcto y host.docker.internal no existira.
+
+    Con Burp configurado (ver configure_burp_mcp) esto cambia: quien envia la peticion real ya NO
+    es este proceso, es la extension de Burp -- que corre NATIVA en la maquina del analista, FUERA
+    de cualquier contenedor. 'host.docker.internal' es un alias de DNS que Docker Desktop solo
+    resuelve PARA CONTENEDORES, nunca para el sistema operativo anfitrion en si (confirmado en
+    vivo: Burp lanzaba java.net.UnknownHostException: host.docker.internal al intentar enviar la
+    peticion de login). El puerto de WordPress se publica con '-p 0.0.0.0::80' (ver
+    start_wordpress()), asi que SI es alcanzable desde el host real via 127.0.0.1 -- que es lo que
+    hay que darle a Burp en vez del alias que solo entienden los contenedores."""
+    if _burp_client is not None:
+        return "127.0.0.1"
     if os.path.exists("/.dockerenv"):
         try:
             socket.gethostbyname("host.docker.internal")
