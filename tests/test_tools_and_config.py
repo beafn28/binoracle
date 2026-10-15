@@ -6537,6 +6537,38 @@ def test_drop_unreliable_poc_version_keeps_dotless_poc_version_without_existing_
     assert dropped is None
 
 
+def test_drop_poc_self_referencing_source_url_rejects_the_poc_repo_itself():
+    # bug real confirmado en vivo (CVE-2024-1071): el LLM, leyendo el PoC, devolvio el propio
+    # repo de GitHub del PoC como source_url (en vez del slug del plugin pedido explicitamente) --
+    # fetch_source() intento clonar ESE repo con --branch puesta a la version afectada, que
+    # logicamente no existe ahi ("Remote branch 2.8.2 not found"), rompiendo la obtencion del
+    # codigo real que SI habia funcionado un paso antes con la hipotesis anterior.
+    from binoracle.workflows.cve_agent import _drop_poc_self_referencing_source_url
+
+    poc_hints = {"source_url": "https://github.com/gbrsh/CVE-2024-1071", "endpoint": "/x"}
+    cleaned, dropped = _drop_poc_self_referencing_source_url(
+        poc_hints, "https://github.com/gbrsh/CVE-2024-1071")
+    assert "source_url" not in cleaned
+    assert cleaned["endpoint"] == "/x"   # el resto de datos se conserva
+    assert dropped == "https://github.com/gbrsh/CVE-2024-1071"
+
+    # con barra o .git final tambien se reconoce como el mismo repo
+    poc_hints2 = {"source_url": "https://github.com/gbrsh/CVE-2024-1071.git/"}
+    cleaned2, dropped2 = _drop_poc_self_referencing_source_url(
+        poc_hints2, "https://github.com/gbrsh/CVE-2024-1071")
+    assert "source_url" not in cleaned2
+    assert dropped2 is not None
+
+
+def test_drop_poc_self_referencing_source_url_keeps_a_real_plugin_slug():
+    from binoracle.workflows.cve_agent import _drop_poc_self_referencing_source_url
+    poc_hints = {"source_url": "ultimate-member"}
+    cleaned, dropped = _drop_poc_self_referencing_source_url(
+        poc_hints, "https://github.com/gbrsh/CVE-2024-1071")
+    assert cleaned["source_url"] == "ultimate-member"
+    assert dropped is None
+
+
 def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_path):
     # confirma que _bootstrap_lab de verdad invoca `wp option update` para cada opcion antes de
     # seguir, en vez de solo guardar el dato sin usarlo.

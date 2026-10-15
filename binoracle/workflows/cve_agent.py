@@ -705,6 +705,25 @@ def _drop_unreliable_poc_version(poc_hints: dict, existing_version: str) -> tupl
     return poc_hints, None
 
 
+def _drop_poc_self_referencing_source_url(poc_hints: dict, poc_repo_url: str) -> tuple:
+    """Confirmado en vivo (CVE-2024-1071): el LLM, leyendo el PoC, devolvio como source_url el
+    propio repositorio de GitHub del PoC que se le acababa de dar a leer (en vez del slug del
+    plugin de WordPress.org, como se le pedia explicitamente) -- fetch_source() intento entonces
+    clonar ESE repo (el del exploit, no el del plugin) y, encima, con --branch puesta a la
+    version afectada (que logicamente no existe como rama ahi), rompiendo la obtencion del codigo
+    real que ya habia funcionado un paso antes con la hipotesis previa. El repo del PoC NUNCA es
+    el codigo fuente del plugin -- si source_url coincide con el (con o sin barra/.git final), se
+    descarta en vez de dejar que pise un source_url mejor que ya tuvieramos. Devuelve (poc_hints
+    posiblemente sin 'source_url', la url descartada o None si no se descarto nada)."""
+    def _norm(u: str) -> str:
+        return (u or "").strip().rstrip("/").removesuffix(".git").lower()
+    poc_source = (poc_hints.get("source_url") or "").strip()
+    if poc_source and poc_repo_url and _norm(poc_source) == _norm(poc_repo_url):
+        cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
+        return cleaned, poc_source
+    return poc_hints, None
+
+
 def _extract_hints_from_real_poc(llm, poc_text: str) -> Optional[dict]:
     """Analogo a _refine_web_hints_from_source, pero a partir del PoC REAL ya publicado (traido por
     fetch_public_poc_source), no del codigo del plugin ni de la descripcion de la CVE -- el autor
@@ -1847,6 +1866,13 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                          f"'{dropped_version[0]}' from the PoC doesn't look like a real version "
                          f"(no dots); keeping '{dropped_version[1]}' from the earlier hypothesis")
                 github_ref = next((r for r in info.exploit_refs if r.source == "github"), None)
+                poc_hints, dropped_source = _drop_poc_self_referencing_source_url(
+                    poc_hints, github_ref.url if github_ref else "")
+                if dropped_source:
+                    step(f"el PoC dio su propio repo ({dropped_source}) como source_url -- eso no "
+                         f"es el codigo del plugin, se descarta" if es else
+                         f"the PoC gave its own repo ({dropped_source}) as source_url -- that's not "
+                         f"the plugin's code, dropping it")
                 inv.poc_source_used = github_ref.url if github_ref else ""
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}
                 step((f"PoC real leido -- endpoint={poc_hints.get('endpoint', '?')}, "
