@@ -901,6 +901,12 @@ def cmd_investigate(args, config):
         hints["parameters"] = [p.strip() for p in args.params.split(",") if p.strip()]
     if getattr(args, "functions", None):
         hints["vulnerable_functions"] = [f.strip() for f in args.functions.split(",") if f.strip()]
+    if getattr(args, "table_name", None):
+        hints["table_name"] = args.table_name
+    if getattr(args, "column_name", None):
+        hints["column_name"] = args.column_name
+    if getattr(args, "id_column", None):
+        hints["id_column"] = args.id_column
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
                           config=config, on_step=lambda m: print("  " + m), lang=config.lang,
                           budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None)
@@ -1320,6 +1326,15 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--params", help="comma-separated request parameter names (e.g. user_id,email,pass)")
     ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
                                         "against the fetched source (e.g. update_user,handle_register_submission)")
+    ip.add_argument("--table-name", help="for WordPress deserialization: the plugin's own DB "
+                                         "table where the attacker-controlled value is stored "
+                                         "via raw SQL ($wpdb->insert/update, not the Options API) "
+                                         "-- when given together with --column-name, triggers the "
+                                         "two-step store+force-unserialize() verifier instead of "
+                                         "the direct one (e.g. wp_myplugin_tokens)")
+    ip.add_argument("--column-name", help="column within --table-name holding the serialized value")
+    ip.add_argument("--id-column", help="primary-key column of --table-name used to pick the "
+                                        "most recently stored row (default: id)")
     ip.add_argument("-o", "--html", help="also export the full report (including any real "
                                          "screenshots from a dynamic verification) as a standalone "
                                          "HTML file at this path -- the terminal output cannot "

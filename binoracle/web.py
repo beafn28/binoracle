@@ -857,6 +857,9 @@ def run_streaming(command, binary, ai, emit, text="", opts=None):
                 hints["parameters"] = [p.strip() for p in str(opts["params"]).split(",") if p.strip()]
             if opts.get("functions"):
                 hints["vulnerable_functions"] = [f.strip() for f in str(opts["functions"]).split(",") if f.strip()]
+            if opts.get("tableName"): hints["table_name"] = opts["tableName"]
+            if opts.get("columnName"): hints["column_name"] = opts["columnName"]
+            if opts.get("idColumn"): hints["id_column"] = opts["idColumn"]
             inv = investigate_cve(cve_or_desc, binary=binp, config=config,
                                   on_step=lambda m: emit("step", m), lang=config.lang,
                                   hints=hints or None)
@@ -1370,6 +1373,9 @@ const CMDS=[
    {k:"method",label:"(opcional) metodo HTTP",t:"text",placeholder:"POST"},
    {k:"params",label:"(opcional) parametros, separados por coma",t:"text",placeholder:"user_id,email,pass"},
    {k:"functions",label:"(opcional) funciones vulnerables citadas, separadas por coma",t:"text",placeholder:"update_user,handle_register_submission"},
+   {k:"tableName",label:"(opcional, WP deserialization en tabla propia) tabla del plugin ($wpdb->insert/update, no la API de Options)",t:"text",placeholder:"wp_myplugin_tokens"},
+   {k:"columnName",label:"(opcional) columna de tableName con el valor serializado",t:"text",placeholder:"token_data"},
+   {k:"idColumn",label:"(opcional) columna clave primaria de tableName (por defecto id)",t:"text",placeholder:"id"},
  ]},
  {c:"fetch",n:"Fetch binario",ic:"FE",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"DS",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},

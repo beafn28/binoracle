@@ -1265,6 +1265,29 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                     serial_param_hint=serial_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "deserialization" and notes.get("endpoint")
+                  and notes.get("table_name") and notes.get("column_name")):
+                # variante EN DOS PASOS (tabla propia del plugin, el mecanismo REAL de object
+                # injection almacenado en WordPress -- la API de Options/Transients esta cerrada
+                # desde WP 3.6.1 por maybe_serialize(), ver verify_wordpress_deserialization_stored
+                # en el historial de commits). Solo se usa cuando el analista (via --params/hints)
+                # ya sabe la tabla/columna reales: no hay deteccion estatica automatica de
+                # $wpdb->insert()/update() todavia.
+                from .wpverify import verify_wordpress_deserialization_custom_table, _pick_param, _SERIAL_HINTS
+                params = notes.get("parameters") or []
+                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                step(("intentando verificacion DINAMICA -- gadget de deserializacion en DOS PASOS "
+                     "via tabla propia del plugin (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- TWO-STEP deserialization gadget via the "
+                     "plugin's own table (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_deserialization_custom_table(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", params,
+                    table_name=notes.get("table_name"), column_name=notes.get("column_name"),
+                    id_column=notes.get("id_column") or "id",
+                    serial_param_hint=serial_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "deserialization" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_deserialization, _pick_param, _SERIAL_HINTS
                 params = notes.get("parameters") or []

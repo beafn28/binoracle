@@ -4580,6 +4580,68 @@ def test_wpverify_deserialization_blocked_without_gadget(monkeypatch, tmp_path):
     assert res.limitations
 
 
+def test_cli_investigate_passes_custom_table_hints(monkeypatch):
+    import types
+    import binoracle.cli as cli
+
+    captured = {}
+
+    def fake_investigate_cve(cve, binary="", config=None, on_step=None, lang="es",
+                             budget_s=300.0, hints=None):
+        captured["hints"] = hints
+        return types.SimpleNamespace(cve_id=cve, vuln_class="deserialization",
+                                     developed_script="", poc_kind="", html_export_ok=False)
+
+    monkeypatch.setattr(
+        "binoracle.workflows.cve_agent.investigate_cve", fake_investigate_cve)
+    monkeypatch.setattr(
+        "binoracle.workflows.cve_agent.render_investigation", lambda inv, lang, **kw: "")
+
+    args = types.SimpleNamespace(
+        cve="CVE-2025-48101", binary="", budget=300, vuln_class=None, source=None, cms=None,
+        version=None, endpoint="/wp-admin/admin-ajax.php?action=ctd_store_token", method="POST",
+        params=None, functions=None, table_name="wp_myplugin_tokens", column_name="token_data",
+        id_column="id", html=None)
+    config = types.SimpleNamespace(lang="es")
+    cli.cmd_investigate(args, config)
+
+    assert captured["hints"]["table_name"] == "wp_myplugin_tokens"
+    assert captured["hints"]["column_name"] == "token_data"
+    assert captured["hints"]["id_column"] == "id"
+
+
+def test_wpverify_deserialization_custom_table_blocked_without_gadget(monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "myplugin.php").write_text("<?php\n/*\nPlugin Name: My Plugin\n*/\n")
+    res = wv.verify_wordpress_deserialization_custom_table(
+        str(tmp_path), "myplugin", "/wp-admin/admin-ajax.php", "POST", {},
+        table_name="wp_myplugin_tokens", column_name="token_data")
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_wpverify_deserialization_custom_table_blocked_without_table_hint(monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "myplugin.php").write_text(
+        "<?php\nclass CacheWriter {\n"
+        "    public $cacheFile;\n    public $cacheData;\n"
+        "    public function __destruct() {\n"
+        "        file_put_contents($this->cacheFile, $this->cacheData);\n"
+        "    }\n}\n")
+    res = wv.verify_wordpress_deserialization_custom_table(
+        str(tmp_path), "myplugin", "/wp-admin/admin-ajax.php", "POST", {},
+        table_name="", column_name="")
+    assert res.verified is False
+    assert res.limitations
+    assert "tabla" in res.detail
+
+
 def test_drupalverify_deserialization_blocked_without_gadget(monkeypatch, tmp_path):
     import binoracle.workflows.drupalverify as dv
     monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)

