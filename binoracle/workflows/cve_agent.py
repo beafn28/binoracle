@@ -117,6 +117,7 @@ class Investigation:
     source_fetch: dict = field(default_factory=dict)  # {ok, kind, resolved_version, local_path}
     source_grounding: dict = field(default_factory=dict)  # {found: {fn: [loc,...]}, not_found: [...]}
     dynamic_verify: dict = field(default_factory=dict)    # {attempted, available, verified, detail}
+    poc_source_used: str = ""   # URL del PoC publico (GitHub) realmente leido, "" si ninguno
 
 
 _RESEARCH_SYS = (
@@ -608,6 +609,134 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
     return out or None
 
 
+_POC_TEXT_EXT = (".py", ".php", ".js", ".sh", ".md", ".txt", ".rb", ".pl", ".json", ".yml", ".yaml")
+_POC_MAX_FILES = 12
+_POC_MAX_BYTES_PER_FILE = 20_000
+_POC_MAX_TOTAL_BYTES = 60_000
+
+
+def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -> Optional[str]:
+    """Clona el PRIMER repo de GitHub de `exploit_refs` (el PoC YA PUBLICADO por su autor, no uno
+    que desarrollemos nosotros -- viene de cvelookup.fetch_cve()/search_github_poc()) y devuelve el
+    contenido concatenado de sus ficheros de texto (scripts/README), acotado en numero de ficheros
+    y bytes. Confirmado en vivo (CVE-2024-1071): cuando "ya tiene exploit publico" solo se usaba
+    para decidir si desarrollar uno desde cero, nunca para leer el que YA EXISTE -- el autor del
+    PoC ya resolvio como dispararlo de verdad (endpoint exacto, payload exacto, precondiciones que
+    documenta), informacion que una hipotesis generada solo desde el resumen de la CVE no tiene.
+    None si no hay ningun ref de GitHub, git no esta disponible, o el clone falla -- best-effort,
+    nunca lanza (exploit-db no se clona por git; su PoC, cuando lo haya, llega via el texto crudo
+    que ya devuelve search_searchsploit si 'searchsploit' esta instalado, no por aqui)."""
+    step = on_step or (lambda _m: None)
+    github_refs = [r for r in (exploit_refs or []) if getattr(r, "source", "") == "github"]
+    if not github_refs:
+        return None
+    from .websource import fetch_git_source
+    for ref in github_refs[:2]:    # como mucho 2 repos, evita tardar mucho si el primero no sirve
+        step(f"clonando el PoC publico real ({ref.url})...")
+        fr = fetch_git_source(ref.url, timeout=timeout)
+        if not fr.ok or not fr.local_path:
+            continue
+        chunks = []
+        total = 0
+        count = 0
+        for dirpath, _dirs, files in os.walk(fr.local_path):
+            if "/.git" in dirpath:
+                continue
+            if count >= _POC_MAX_FILES or total >= _POC_MAX_TOTAL_BYTES:
+                break
+            for fn in sorted(files):
+                if count >= _POC_MAX_FILES or total >= _POC_MAX_TOTAL_BYTES:
+                    break
+                if not fn.lower().endswith(_POC_TEXT_EXT):
+                    continue
+                fp = os.path.join(dirpath, fn)
+                try:
+                    with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read(_POC_MAX_BYTES_PER_FILE)
+                except OSError:
+                    continue
+                if not text.strip():
+                    continue
+                rel = os.path.relpath(fp, fr.local_path)
+                chunks.append(f"# {rel}\n{text}")
+                total += len(text)
+                count += 1
+        if chunks:
+            step(f"PoC publico leido: {count} fichero(s) de {ref.url}")
+            return "\n\n".join(chunks)
+    return None
+
+
+_EXTRACT_POC_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Te doy "
+    "el contenido de un repositorio PUBLICO de GitHub que es el PoC REAL ya publicado para una CVE "
+    "(codigo/scripts/README) -- no una descripcion de terceros, es el exploit real tal cual lo "
+    "publico su autor. Tu trabajo es leerlo y extraer los datos EXACTOS que usa para explotar la "
+    "vulnerabilidad, en vez de adivinar desde el resumen de la CVE. Responde SOLO con JSON valido "
+    "con las claves: source_url (si el PoC dice que plugin/paquete exacto y version usa -- para "
+    "WordPress deja el slug si lo ves), affected_version, http_method (GET o POST), endpoint (ruta "
+    "o accion AJAX exacta que el PoC golpea), parameters (lista de nombres EXACTOS de parametro que "
+    "el PoC manda), payload_example (el valor de payload EXACTO que el PoC usa para el parametro "
+    "vulnerable, tal cual aparece en su codigo -- no lo resumas ni lo traduzcas), setup_options "
+    "(lista de objetos {\"name\":..., \"value\":...} -- SOLO si el PoC/README dice explicitamente "
+    "que hay que activar algun ajuste/opcion del plugin ANTES de que el ataque funcione, p.ej. "
+    "'first enable X in plugin settings'; vacio si no menciona nada de eso), notes (una frase con "
+    "cualquier precondicion o detalle importante que el PoC mencione y no quepa en los campos "
+    "anteriores). Deja vacio lo que el PoC no diga explicitamente -- nunca inventes."
+)
+
+
+def _extract_hints_from_real_poc(llm, poc_text: str) -> Optional[dict]:
+    """Analogo a _refine_web_hints_from_source, pero a partir del PoC REAL ya publicado (traido por
+    fetch_public_poc_source), no del codigo del plugin ni de la descripcion de la CVE -- el autor
+    del PoC ya resolvio como dispararla de verdad, asi que sus datos (endpoint, parametros, el
+    payload EXACTO, y cualquier precondicion que documente) pesan mas que una hipotesis generada
+    solo desde el resumen de la CVE. Devuelve el dict de overrides, o None si no hay LLM disponible
+    o no se pudo extraer nada util."""
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return None
+    if not (poc_text or "").strip():
+        return None
+    from ..llm.base import Message
+    try:
+        raw = llm.chat([Message("system", _EXTRACT_POC_SYS),
+                        Message("user", f"Contenido del PoC publico:\n```\n{poc_text[:8000]}\n```")],
+                       json_mode=True)
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = {}
+    for key in ("source_url", "affected_version", "http_method", "endpoint"):
+        v = str(data.get(key) or "").strip()
+        if v:
+            out[key] = v.upper() if key == "http_method" else v
+    params = data.get("parameters")
+    if isinstance(params, list) and params:
+        out["parameters"] = [str(p) for p in params if p]
+    payload_example = data.get("payload_example")
+    if isinstance(payload_example, str) and payload_example.strip():
+        out["payload_example"] = payload_example.strip()
+    notes_txt = data.get("notes")
+    if isinstance(notes_txt, str) and notes_txt.strip():
+        out["poc_notes"] = notes_txt.strip()
+    setup_options = data.get("setup_options")
+    if isinstance(setup_options, list):
+        cleaned = []
+        for opt in setup_options:
+            if not isinstance(opt, dict):
+                continue
+            name = str(opt.get("name") or "").strip()
+            if not name:
+                continue
+            value = opt.get("value")
+            cleaned.append({"name": name, "value": "1" if value in (None, "") else str(value)})
+        if cleaned:
+            out["setup_options"] = cleaned
+    return out or None
+
+
 _PLUGIN_NAME_PATTERNS = [
     # Patron Patchstack/NVD casi universal para CVEs de plugins de WordPress (confirmado en
     # vivo: CVE-2024-27956 "...vulnerability in ValvePress Automatic allows SQL Injection.This
@@ -618,6 +747,10 @@ _PLUGIN_NAME_PATTERNS = [
     re.compile(r"vulnerability in ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) allows"),
     re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) WordPress plugin"),
     re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin"),
+    # otro fraseo muy comun de WPScan/Patchstack (confirmado en vivo: CVE-2024-3552 "The Web
+    # Directory Free WordPress plugin before 1.7.0 does not sanitise...") -- "The <X> WordPress
+    # plugin before/version <Y> ..." en vez de "vulnerability in X allows"/"This issue affects X:".
+    re.compile(r"[Tt]he ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) WordPress plugin (?:before|versions?)"),
 ]
 
 
@@ -1665,6 +1798,32 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         step("sin modelo LLM disponible: via determinista (arranca ollama para el modo agente)" if es else
              "no LLM available: deterministic path (start ollama for agent mode)")
 
+    # 2a) si ya consta un exploit publico, no te quedes solo con el booleano: descarga el PoC REAL
+    # (GitHub) y pide al LLM que extraiga de EL los datos exactos -- el autor del PoC ya resolvio
+    # como explotarla de verdad (endpoint/parametros/payload exactos, y cualquier precondicion que
+    # documente), asi que pesa mas que la hipotesis generada solo desde el resumen de la CVE (pero
+    # menos que hechos dados a mano por el analista, en 2b mas abajo).
+    if llm_on and info.has_public_exploit and info.exploit_refs:
+        step("el exploit publico existe: descargando y leyendo el PoC real (GitHub)..." if es else
+             "public exploit exists: downloading and reading the real PoC (GitHub)...")
+        poc_text = fetch_public_poc_source(info.exploit_refs, on_step=step)
+        if poc_text:
+            poc_hints = _extract_hints_from_real_poc(llm, poc_text)
+            if poc_hints:
+                github_ref = next((r for r in info.exploit_refs if r.source == "github"), None)
+                inv.poc_source_used = github_ref.url if github_ref else ""
+                inv.llm_notes = {**inv.llm_notes, **poc_hints}
+                step((f"PoC real leido -- endpoint={poc_hints.get('endpoint', '?')}, "
+                     f"parameters={poc_hints.get('parameters', '?')}" if es else
+                     (f"real PoC read -- endpoint={poc_hints.get('endpoint', '?')}, "
+                     f"parameters={poc_hints.get('parameters', '?')}")))
+            else:
+                step("PoC descargado pero no se pudo extraer nada util de el" if es else
+                     "PoC downloaded but nothing useful could be extracted from it")
+        else:
+            step("no se pudo descargar ningun PoC publico de GitHub (o ninguno aplica)" if es else
+                 "could not download any public GitHub PoC (or none applies)")
+
     # 2b) hechos conocidos del analista: PISAN la hipotesis del LLM en esas claves (el analista
     # que tiene el aviso oficial delante sabe el slug/endpoint reales mejor que una adivinanza).
     if hints:
@@ -1775,6 +1934,13 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
         # fallo por red (confirmado: una CVE real con NVD bloqueada por proxy decia "not a CVE id").
         pub = (inv.lookup_note or ("no consultado" if es else "not checked"))
     out.append("\n- " + ("Estado exploit publico: " if es else "Public exploit: ") + pub)
+    if inv.poc_source_used:
+        out.append("- " + ("PoC publico leido: " if es else "Public PoC read: ") +
+                   f"[{inv.poc_source_used}]({inv.poc_source_used}) -- " +
+                   ("los datos de abajo vienen del exploit YA publicado, no solo de una hipotesis "
+                    "del LLM a partir del resumen de la CVE" if es else
+                    "the data below comes from the ALREADY published exploit, not just an LLM "
+                    "hypothesis from the CVE summary"))
     out.append("- " + ("Clase: " if es else "Class: ") + (inv.vuln_class or "?"))
     impact = _IMPACT_BY_CLASS.get(inv.vuln_class)
     if impact:
@@ -1786,10 +1952,12 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
         out.append("\n### " + ("Investigacion del LLM (hipotesis)" if es else "LLM research (hypothesis)"))
         for k in ("primitive", "target_binary", "trigger", "strategy", "source_url",
                   "affected_version", "vulnerable_functions", "http_method", "endpoint",
-                  "parameters", "auth_required"):
+                  "parameters", "auth_required", "payload_example", "poc_notes", "setup_options"):
             v = inv.llm_notes.get(k)
             if v:
-                v = ", ".join(v) if isinstance(v, list) else v
+                v = ", ".join(v) if isinstance(v, list) and v and isinstance(v[0], str) else v
+                v = ", ".join(f"{o.get('name')}={o.get('value')}" for o in v) if (
+                    isinstance(v, list) and v and isinstance(v[0], dict)) else v
                 out.append(f"- **{k}**: {v}")
         steps = inv.llm_notes.get("steps")
         if isinstance(steps, list) and steps:

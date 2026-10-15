@@ -5967,6 +5967,17 @@ def test_guess_wp_slug_from_description_wordpress_plugin_phrasing():
     assert _guess_wp_slug_from_description(desc) == "example-gallery"
 
 
+def test_guess_wp_slug_from_description_the_x_wordpress_plugin_before_phrasing():
+    # bug real confirmado en vivo (CVE-2024-3552): "The Web Directory Free WordPress plugin
+    # before 1.7.0 does not sanitise..." -- sin "in the"/"vulnerability in"/"This issue affects",
+    # un fraseo distinto muy comun en WPScan/Patchstack que los patrones anteriores no cubrian.
+    from binoracle.workflows.cve_agent import _guess_wp_slug_from_description
+    desc = ("The Web Directory Free WordPress plugin before 1.7.0 does not sanitise and escape "
+            "a parameter before using it in a SQL statement via an AJAX action available to "
+            "unauthenticated users.")
+    assert _guess_wp_slug_from_description(desc) == "web-directory-free"
+
+
 def test_guess_wp_slug_from_description_returns_none_without_recognizable_pattern():
     from binoracle.workflows.cve_agent import _guess_wp_slug_from_description
     assert _guess_wp_slug_from_description("Generic text with no plugin name pattern.") is None
@@ -6415,6 +6426,83 @@ def test_refine_web_hints_from_source_ignores_setup_options_without_name(tmp_pat
     found = {"vuln": [f"{plugin_file.name}:2"]}
     out = _refine_web_hints_from_source(_FakeLLM(), str(tmp_path), found)
     assert out is None or "setup_options" not in out
+
+
+def test_fetch_public_poc_source_clones_github_ref_and_reads_text_files(monkeypatch, tmp_path):
+    # antes de este fix "ya tiene exploit publico" solo era un booleano -- nunca se leia el PoC
+    # YA PUBLICADO para sacar de el el endpoint/payload/precondiciones exactas. fetch_git_source
+    # se monkeypatchea porque el clone real necesita red; lo que se prueba aqui es que
+    # fetch_public_poc_source SI recorre el repo "clonado" y concatena sus ficheros de texto.
+    from binoracle.workflows import cve_agent
+    from binoracle.workflows.cvelookup import ExploitRef
+    from binoracle.workflows import websource
+
+    repo_dir = tmp_path / "cloned_repo"
+    repo_dir.mkdir()
+    (repo_dir / "exploit.py").write_text("print('poc payload: sorting=-1 UNION SELECT 1,2--')")
+    (repo_dir / "README.md").write_text("First enable 'custom table' in plugin settings.")
+    (repo_dir / "image.png").write_bytes(b"\x89PNG\r\n")   # binario -- no debe incluirse
+
+    def fake_fetch_git_source(url, ref="", dest_dir="", on_step=None, timeout=90.0):
+        return websource.SourceFetchResult(ok=True, kind="git", source=url, local_path=str(repo_dir))
+    monkeypatch.setattr(websource, "fetch_git_source", fake_fetch_git_source)
+
+    refs = [ExploitRef(url="https://github.com/someone/CVE-2024-1071", source="github")]
+    text = cve_agent.fetch_public_poc_source(refs)
+    assert text is not None
+    assert "sorting=-1 UNION SELECT" in text
+    assert "custom table" in text
+    assert "image.png" not in text
+
+
+def test_fetch_public_poc_source_returns_none_without_github_refs():
+    from binoracle.workflows import cve_agent
+    from binoracle.workflows.cvelookup import ExploitRef
+    refs = [ExploitRef(url="https://www.exploit-db.com/exploits/12345", source="exploit-db")]
+    assert cve_agent.fetch_public_poc_source(refs) is None
+    assert cve_agent.fetch_public_poc_source([]) is None
+
+
+def test_extract_hints_from_real_poc_parses_endpoint_payload_and_setup_options():
+    import json as _json
+    from binoracle.workflows.cve_agent import _extract_hints_from_real_poc
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "source_url": "ultimate-member", "affected_version": "2.8.2",
+                "http_method": "post", "endpoint": "/wp-admin/admin-ajax.php?action=um_get_members",
+                "parameters": ["sorting"], "payload_example": "-1 UNION SELECT user_login,user_pass FROM wp_users--",
+                "setup_options": [{"name": "enable_custom_usermeta_table", "value": "1"}],
+                "notes": "requires the custom usermeta table option enabled",
+            })
+
+    out = _extract_hints_from_real_poc(_FakeLLM(), "# exploit.py\nreal poc code here")
+    assert out["source_url"] == "ultimate-member"
+    assert out["http_method"] == "POST"
+    assert out["parameters"] == ["sorting"]
+    assert "UNION SELECT" in out["payload_example"]
+    assert out["setup_options"] == [{"name": "enable_custom_usermeta_table", "value": "1"}]
+    assert "custom usermeta table" in out["poc_notes"]
+
+
+def test_extract_hints_from_real_poc_returns_none_without_llm_or_text():
+    from binoracle.workflows.cve_agent import _extract_hints_from_real_poc
+    assert _extract_hints_from_real_poc(None, "some poc text") is None
+
+    class _UnavailableLLM:
+        def available(self):
+            return False
+    assert _extract_hints_from_real_poc(_UnavailableLLM(), "some poc text") is None
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return "{}"
+    assert _extract_hints_from_real_poc(_FakeLLM(), "") is None
 
 
 def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_path):
