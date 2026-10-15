@@ -37,6 +37,11 @@ _WP_API = "https://api.wordpress.org/plugins/info/1.0/{slug}.json"
 _WP_DOWNLOAD = "https://downloads.wordpress.org/plugin/{slug}.{version}.zip"
 _WP_DOWNLOAD_LATEST = "https://downloads.wordpress.org/plugin/{slug}.zip"
 
+# API de actualizaciones de Drupal.org -- la MISMA que el propio modulo "Update Manager" de
+# Drupal usa para comprobar nuevas versiones; devuelve XML con cada release y su download_link.
+# No hay un equivalente a la API JSON simple de WordPress.org: hay que parsear XML.
+_DRUPAL_UPDATE_XML = "https://updates.drupal.org/release-history/{project}/current"
+
 _MAX_DOWNLOAD = 80 * 1024 * 1024     # 80 MB: un plugin/tema no deberia pasar de esto
 _MAX_SCAN_FILES = 4000
 _MAX_SCAN_BYTES = 1_500_000           # por fichero
@@ -71,6 +76,24 @@ def looks_like_wp_slug(text: str) -> bool:
     minusculas/digitos/guion (p.ej. 'divi-form-builder')."""
     t = (text or "").strip()
     return bool(t) and bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,80}", t)) and "/" not in t
+
+
+def looks_like_drupal_slug(text: str) -> bool:
+    """Un 'source_url' que en realidad es el machine name de un modulo de Drupal.org (p.ej.
+    'webform', 'views_bulk_operations') -- a diferencia de WordPress, Drupal usa GUION BAJO, no
+    guion, como separador de palabras en el machine name. Esto es solo una pista de ORDEN (ver
+    fetch_source: con guion bajo se prueba Drupal.org primero), no una certeza -- el `cms_hint`
+    explicito manda si se da."""
+    t = (text or "").strip()
+    return bool(t) and bool(re.fullmatch(r"[a-z][a-z0-9_]{1,80}", t)) and "/" not in t and "_" in t
+
+
+def detect_module_folder(local_path: str, hint: str = "") -> str:
+    """Analogo a detect_plugin_folder() pero nombrado para la convencion de Drupal (un modulo se
+    declara con un .info.yml con 'type: module|theme') -- detect_plugin_folder ya reconoce AMBAS
+    convenciones (WordPress y Drupal) en la misma pasada, asi que esto es solo un alias con el
+    nombre que tiene sentido llamar desde el lado de Drupal."""
+    return detect_plugin_folder(local_path, hint=hint)
 
 
 def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
@@ -173,6 +196,109 @@ def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, 
     return res
 
 
+def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
+                        on_step: Optional[Callable[[str], None]] = None,
+                        timeout: float = 60.0) -> SourceFetchResult:
+    """Descarga el .tar.gz OFICIAL de un modulo de Drupal.org, usando la misma API de
+    actualizaciones que el propio 'Update Manager' de Drupal consulta (XML, no JSON como
+    WordPress.org). Sin libreria de terceros: XML con xml.etree.ElementTree, que ya viene con
+    Python. No ejecuta nada del modulo."""
+    step = on_step or (lambda _m: None)
+    res = SourceFetchResult(kind="drupal-module", source=slug)
+    slug = (slug or "").strip().lower()
+    if not slug:
+        res.note = "machine name de modulo vacio"
+        return res
+    step(f"resolviendo modulo '{slug}' en Drupal.org...")
+    import xml.etree.ElementTree as ET
+    try:
+        with _urlopen(_DRUPAL_UPDATE_XML.format(project=slug), timeout=timeout) as r:
+            xml_bytes = r.read(2 * 1024 * 1024)
+        root = ET.fromstring(xml_bytes)
+    except Exception as e:
+        res.note = (f"modulo '{slug}' no resuelto en Drupal.org: {e}. Puede ser que (a) el "
+                    f"machine name este mal escrito (revisa la URL del proyecto, "
+                    f"drupal.org/project/<machine_name>), (b) sea un modulo que ya no se "
+                    f"mantiene/fue retirado, o (c) sea una distribucion/modulo privado que no "
+                    f"esta en Drupal.org -- en ese caso pasa --source con la ruta a tu .tar.gz/"
+                    f".zip ya descargado, o una URL de descarga directa")
+        return res
+    releases = root.findall("./releases/release")
+    if not releases:
+        res.note = f"Drupal.org no listo ninguna release para '{slug}'"
+        return res
+    chosen = None
+    if version:
+        for rel in releases:
+            v = (rel.findtext("version") or "").strip()
+            if v == version or v.endswith(version):
+                chosen = rel
+                break
+        if chosen is None:
+            res.note = (f"version '{version}' no encontrada entre las releases de '{slug}' en "
+                        f"Drupal.org; prueba sin --version (toma la ultima estable) o revisa el "
+                        f"numero exacto en https://www.drupal.org/project/{slug}/releases")
+            return res
+    else:
+        for rel in releases:
+            status = (rel.findtext("status") or "").strip().lower()
+            if status in ("published", "") and not rel.findtext("version_extra"):
+                chosen = rel
+                break
+        chosen = chosen or releases[0]
+    download_url = (chosen.findtext("download_link") or "").strip()
+    resolved_version = (chosen.findtext("version") or "").strip()
+    if not download_url:
+        res.note = f"la release elegida de '{slug}' no trae download_link"
+        return res
+    res.resolved_version = resolved_version
+    step(f"descargando {slug} {resolved_version} ({download_url})...")
+    dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_drupal_")
+    import tarfile
+    tfd, tpath = tempfile.mkstemp(prefix="binoracle_drupal_", suffix=".tar.gz")
+    os.close(tfd)
+    try:
+        with _urlopen(download_url, timeout=timeout) as r:
+            total = 0
+            with open(tpath, "wb") as f:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_DOWNLOAD:
+                        raise ValueError(f"descarga excede {_MAX_DOWNLOAD} bytes (abortada)")
+                    f.write(chunk)
+    except Exception as e:
+        res.note = f"fallo descargando {download_url}: {e}"
+        return res
+    try:
+        if download_url.endswith(".tar.gz") or download_url.endswith(".tgz"):
+            with tarfile.open(tpath, "r:gz") as tf:
+                safe_members = [m for m in tf.getmembers()
+                               if not m.name.startswith("/") and ".." not in m.name.split("/")]
+                tf.extractall(dest_dir, members=safe_members)
+        else:
+            _safe_extract_zip(tpath, dest_dir)
+    except Exception as e:
+        res.note = f"fallo extrayendo {tpath}: {e}"
+        return res
+    finally:
+        try:
+            os.remove(tpath)
+        except Exception:
+            pass
+    res.ok = True
+    res.local_path = dest_dir
+    # convencion de Drupal.org: el tar.gz extrae a una carpeta == machine name; si por lo que sea
+    # no fuera asi (empaquetado distinto), se detecta por el .info.yml real en vez de asumirlo.
+    res.plugin_dir = (slug if os.path.isdir(os.path.join(dest_dir, slug))
+                      else detect_module_folder(dest_dir))
+    step(f"codigo del modulo obtenido en {dest_dir}" +
+        (f" (carpeta del modulo: {res.plugin_dir})" if res.plugin_dir else ""))
+    return res
+
+
 def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
                      on_step: Optional[Callable[[str], None]] = None,
                      timeout: float = 90.0) -> SourceFetchResult:
@@ -215,8 +341,11 @@ def detect_plugin_folder(local_path: str, hint: str = "") -> str:
     'divi-form-builder.zip' puede extraer a 'DiviFormBuilder/' o similar) -- necesario para que
     wpverify.py sepa que copiar dentro del laboratorio Docker. Estrategia: 1) si `hint` ya es una
     carpeta real ahi, usala tal cual; 2) si solo hay UNA carpeta de primer nivel, es esa; 3) si hay
-    varias, busca la que tenga un .php con una cabecera 'Plugin Name:' (la convencion de WordPress).
-    Cadena vacia si no se puede determinar con confianza (ambiguo)."""
+    varias, busca la que tenga un .php con una cabecera 'Plugin Name:' (la convencion de
+    WordPress) o un .info.yml con 'type: module|theme' (la convencion de Drupal -- ver
+    detect_module_folder, mismo chequeo, para que un .zip/URL comercial de CUALQUIER CMS se
+    detecte sin que el analista tenga que decir cual es). Cadena vacia si no se puede determinar
+    con confianza (ambiguo)."""
     try:
         if hint and os.path.isdir(os.path.join(local_path, hint)):
             return hint
@@ -227,15 +356,23 @@ def detect_plugin_folder(local_path: str, hint: str = "") -> str:
         for e in entries:
             sub = os.path.join(local_path, e)
             for fn in os.listdir(sub):
-                if not fn.lower().endswith(".php"):
-                    continue
-                try:
-                    with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
-                        head = f.read(4000)
-                except Exception:
-                    continue
-                if re.search(r"Plugin\s*Name\s*:", head, re.I):
-                    return e
+                low = fn.lower()
+                if low.endswith(".php"):
+                    try:
+                        with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
+                            head = f.read(4000)
+                    except Exception:
+                        continue
+                    if re.search(r"Plugin\s*Name\s*:", head, re.I):
+                        return e
+                elif low.endswith(".info.yml"):
+                    try:
+                        with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
+                            head = f.read(2000)
+                    except Exception:
+                        continue
+                    if re.search(r"^\s*type\s*:\s*['\"]?(module|theme)['\"]?\s*$", head, re.M | re.I):
+                        return e
     except Exception:
         pass
     return ""
@@ -329,13 +466,22 @@ def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str]
 
 
 def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str], None]] = None,
-                 timeout: float = 90.0) -> SourceFetchResult:
+                 timeout: float = 90.0, cms_hint: str = "") -> SourceFetchResult:
     """Despacha por la forma de `target`: .zip ya en disco -> extrae; URL http(s) directa a un .zip
     -> descarga (ANTES que la comprobacion de git: una URL de github.com/.../archive/x.zip es un
     .zip, no un repo a clonar, aunque el host coincida); URL de git -> clone; si no, se trata como
-    slug de WordPress.org (el directorio GRATUITO; un plugin comercial nunca estara ahi, usa las
-    otras tres vias). Punto de entrada unico para cve_agent."""
+    slug/machine-name de un directorio de plugins/modulos (WordPress.org o Drupal.org -- ambos son
+    directorios GRATUITOS; un plugin/modulo comercial nunca estara ahi, usa las otras tres vias).
+
+    `cms_hint` ("wordpress"/"drupal"/"") desambigua cuando el analista YA SABE de que CMS es (el
+    machine name de Drupal y el slug de WordPress pueden coincidir en forma, p.ej. 'webform'
+    podria en teoria ser cualquiera de los dos): si se da, se intenta SOLO ese directorio. Sin
+    hint, se usa una pista de forma (guion bajo -> probablemente Drupal, ver
+    looks_like_drupal_slug) para decidir cual probar PRIMERO, pero si falla se intenta el otro
+    directorio tambien antes de rendirse -- mas lento en el caso ambiguo, pero nunca falla por
+    haber adivinado el CMS equivocado cuando el nombre si existe en el otro."""
     target = (target or "").strip()
+    cms_hint = (cms_hint or "").strip().lower()
     if not target:
         return SourceFetchResult(note="sin source_url/slug para resolver")
     if looks_like_local_zip(target):
@@ -344,11 +490,35 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         return fetch_zip_url(target, on_step=on_step, timeout=timeout)
     if looks_like_git_url(target):
         return fetch_git_source(target, ref=version, on_step=on_step, timeout=timeout)
-    if looks_like_wp_slug(target):
+
+    if cms_hint == "drupal":
+        return fetch_drupal_module(target, version=version, on_step=on_step, timeout=timeout)
+    if cms_hint == "wordpress":
         return fetch_wordpress_plugin(target, version=version, on_step=on_step, timeout=timeout)
-    return SourceFetchResult(source=target,
-                             note=f"'{target}' no parece una URL de git, un .zip (local o URL) ni "
-                                 f"un slug de WordPress.org")
+
+    is_wp_shaped = looks_like_wp_slug(target)
+    is_drupal_shaped = looks_like_drupal_slug(target)
+    if not (is_wp_shaped or is_drupal_shaped):
+        return SourceFetchResult(source=target,
+                                 note=f"'{target}' no parece una URL de git, un .zip (local o "
+                                     f"URL), ni un slug/machine-name de WordPress.org o "
+                                     f"Drupal.org")
+    # orden de intento por forma: guion bajo -> Drupal primero; si no, WordPress primero (es el
+    # caso mas comun en el uso real de binoracle hasta ahora). El perdedor se intenta igual como
+    # segunda pasada si el primero no resuelve -- un nombre de una sola palabra sin separadores
+    # (p.ej. 'webform') tiene forma valida en ambos y no hay como saberlo sin probar.
+    first, second = ((fetch_drupal_module, fetch_wordpress_plugin) if is_drupal_shaped
+                    else (fetch_wordpress_plugin, fetch_drupal_module))
+    r1 = first(target, version=version, on_step=on_step, timeout=timeout)
+    if r1.ok:
+        return r1
+    r2 = second(target, version=version, on_step=on_step, timeout=timeout)
+    if r2.ok:
+        return r2
+    # ninguno resolvio: se devuelve el primer intento (mismo 'note' que antes de este cambio para
+    # el caso WordPress-only), pero con ambos fallos anotados para no esconder el segundo intento.
+    r1.note = (r1.note or "") + f" | tambien se probo como modulo/plugin del otro CMS: {r2.note}"
+    return r1
 
 
 # --- confirmacion fundamentada: ¿existen de verdad las funciones citadas por el LLM? ---

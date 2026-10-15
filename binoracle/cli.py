@@ -878,17 +878,19 @@ def cmd_fetch(args, config):
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
-    verificado y lo bloqueado. Para una CVE WEB, --source/--version/--endpoint/--method/--params
+    verificado y lo bloqueado. Para una CVE WEB, --source/--cms/--version/--endpoint/--method/--params
     dejan aportar lo que YA sabes del aviso oficial (el slug/endpoint reales) en vez de depender de
-    que el LLM los adivine; con --source + --endpoint apuntando a un plugin de WordPress vulnerable
-    a missing-authorization/IDOR, intenta ademas la VERIFICACION DINAMICA (WordPress+MySQL efimero
-    en Docker, ver wpverify.py)."""
+    que el LLM los adivine; con --source + --endpoint apuntando a un plugin de WordPress o un modulo
+    de Drupal vulnerable a missing-authorization/IDOR, intenta ademas la VERIFICACION DINAMICA
+    (WordPress+MySQL o Drupal+MySQL efimeros en Docker, ver wpverify.py/drupalverify.py)."""
     from .workflows.cve_agent import investigate_cve, render_investigation
     hints = {}
     if getattr(args, "vuln_class", None):
         hints["vuln_class"] = args.vuln_class
     if getattr(args, "source", None):
         hints["source_url"] = args.source
+    if getattr(args, "cms", None):
+        hints["cms"] = args.cms
     if getattr(args, "version", None):
         hints["affected_version"] = args.version
     if getattr(args, "endpoint", None):
@@ -1301,7 +1303,14 @@ def build_parser() -> argparse.ArgumentParser:
                                          "already states it; lets the web/HTTP-PoC path trigger even "
                                          "without NVD access or a local LLM to classify the text")
     ip.add_argument("--source", help="known source for a web CVE: a WordPress.org plugin slug "
-                                     "(e.g. divi-form-builder) or a git URL; overrides the LLM's guess")
+                                     "(e.g. divi-form-builder), a Drupal.org module machine name "
+                                     "(e.g. webform), a git URL, or a local/remote .zip/.tar.gz; "
+                                     "overrides the LLM's guess")
+    ip.add_argument("--cms", choices=["wordpress", "drupal"],
+                    help="disambiguates --source when it could be either a WordPress.org slug "
+                         "or a Drupal.org module machine name (e.g. a single word with no "
+                         "hyphen/underscore); without it, binoracle guesses from the slug's "
+                         "shape and tries the other one too if the first guess fails")
     ip.add_argument("--version", help="affected version for --source (e.g. 5.1.8)")
     ip.add_argument("--endpoint", help="exact vulnerable endpoint/route for a web CVE")
     ip.add_argument("--method", help="HTTP method for --endpoint (default POST)")

@@ -3945,7 +3945,7 @@ def test_investigate_cve_vuln_class_hint_triggers_web_path_without_nvd_or_llm(mo
     from binoracle.workflows.cve_agent import investigate_cve
     from binoracle.workflows import websource
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
         return websource.SourceFetchResult(note="red no disponible en el test")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
 
@@ -4117,7 +4117,7 @@ def test_cve_agent_dynamic_verify_gate_accepts_local_zip_not_only_wordpress_plug
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, wpverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
         return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
                                            local_path="/tmp/fake", plugin_dir="DiviFormBuilder")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -4148,7 +4148,7 @@ def test_cve_agent_dynamic_verify_gate_picks_login_as_when_only_id_param(monkeyp
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, wpverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
         return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
                                            local_path="/tmp/fake", plugin_dir="LoginAsUsers")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -4198,7 +4198,7 @@ def test_cve_agent_refines_endpoint_from_real_source_when_hypothesis_wrong(monke
         "\t}\n"
     )
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
         return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
                                            local_path=str(tmp_path),
                                            plugin_dir="frontend-login-and-registration-blocks")
@@ -4272,3 +4272,111 @@ def test_wpverify_lab_host_picks_docker_internal_only_inside_a_container(monkeyp
 
     monkeypatch.setattr(wv.os.path, "exists", lambda p: False)
     assert wv._lab_host() == "127.0.0.1"
+
+
+# --- Drupal ("poco a poco": primer verificador, missing-authorization/account-takeover) ---
+
+def test_websource_looks_like_drupal_slug():
+    from binoracle.workflows.websource import looks_like_drupal_slug, looks_like_wp_slug
+    assert looks_like_drupal_slug("views_bulk_operations") is True
+    assert looks_like_drupal_slug("webform") is False      # sin guion bajo: ambiguo, no "shaped"
+    assert looks_like_drupal_slug("divi-form-builder") is False
+    assert looks_like_drupal_slug("not a slug with spaces") is False
+    # 'webform' tiene forma valida de slug de WordPress tambien (sin guion ni espacios)
+    assert looks_like_wp_slug("webform") is True
+
+
+def test_websource_detect_plugin_folder_recognizes_drupal_module(tmp_path):
+    from binoracle.workflows.websource import detect_plugin_folder, detect_module_folder
+    mod_dir = tmp_path / "mymodule"
+    mod_dir.mkdir()
+    (mod_dir / "mymodule.info.yml").write_text(
+        "name: My Module\ntype: module\ncore_version_requirement: ^10\n")
+    (mod_dir / "mymodule.routing.yml").write_text("mymodule.update:\n  path: '/mymodule/update'\n")
+    assert detect_plugin_folder(str(tmp_path)) == "mymodule"
+    assert detect_module_folder(str(tmp_path)) == "mymodule"
+
+
+def test_websource_detect_plugin_folder_still_recognizes_wordpress_plugin(tmp_path):
+    # Regresion: anadir el reconocimiento de Drupal a detect_plugin_folder() no debe romper el
+    # caso de WordPress que ya funcionaba.
+    from binoracle.workflows.websource import detect_plugin_folder
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "myplugin.php").write_text("<?php\n/*\nPlugin Name: My Plugin\n*/\n")
+    assert detect_plugin_folder(str(tmp_path)) == "myplugin"
+
+
+def test_websource_fetch_source_tries_both_cms_when_ambiguous(monkeypatch):
+    # Un slug de una sola palabra (sin guion ni guion bajo) es valido en ambos ecosistemas; sin
+    # --cms explicito, si el primero (WordPress) falla, debe probar Drupal antes de rendirse.
+    from binoracle.workflows import websource as ws
+    calls = []
+
+    def fake_wp(target, version="", on_step=None, timeout=60.0):
+        calls.append(("wp", target))
+        return ws.SourceFetchResult(kind="wordpress-plugin", source=target, ok=False,
+                                    note="no encontrado en WordPress.org")
+
+    def fake_drupal(target, version="", on_step=None, timeout=60.0):
+        calls.append(("drupal", target))
+        return ws.SourceFetchResult(kind="drupal-module", source=target, ok=True,
+                                    local_path="/tmp/fake", plugin_dir=target)
+
+    monkeypatch.setattr(ws, "fetch_wordpress_plugin", fake_wp)
+    monkeypatch.setattr(ws, "fetch_drupal_module", fake_drupal)
+    res = ws.fetch_source("webform")
+    assert res.ok is True
+    assert res.kind == "drupal-module"
+    assert calls == [("wp", "webform"), ("drupal", "webform")]
+
+
+def test_websource_fetch_source_respects_explicit_cms_hint(monkeypatch):
+    from binoracle.workflows import websource as ws
+    calls = []
+    monkeypatch.setattr(ws, "fetch_wordpress_plugin",
+                        lambda *a, **k: calls.append("wp") or ws.SourceFetchResult(ok=True))
+    monkeypatch.setattr(ws, "fetch_drupal_module",
+                        lambda *a, **k: calls.append("drupal") or ws.SourceFetchResult(ok=True))
+    ws.fetch_source("webform", cms_hint="drupal")
+    assert calls == ["drupal"]
+    calls.clear()
+    ws.fetch_source("webform", cms_hint="wordpress")
+    assert calls == ["wp"]
+
+
+def test_drupalverify_check_prereqs_degrades_without_docker(monkeypatch):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = dv._check_prereqs("/tmp", "mymodule")
+    assert res is not None
+    assert res.available is False
+
+
+def test_drupalverify_check_prereqs_missing_module_dir(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = dv._check_prereqs(str(tmp_path), "nope")
+    assert res is not None
+    assert "no se encuentra" in res.detail
+
+
+def test_drupalverify_account_takeover_requires_email_or_pass_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    mod_dir = tmp_path / "mymodule"
+    mod_dir.mkdir()
+    res = dv.verify_drupal_account_takeover(str(tmp_path), "mymodule", "/mymodule/update",
+                                            "POST", ["foo", "bar"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_cve_agent_looks_like_drupal_module(tmp_path):
+    from binoracle.workflows.cve_agent import _looks_like_drupal_module
+    mod_dir = tmp_path / "mymodule"
+    mod_dir.mkdir()
+    (mod_dir / "mymodule.info.yml").write_text("name: My Module\ntype: module\n")
+    assert _looks_like_drupal_module(str(tmp_path), "mymodule") is True
+    assert _looks_like_drupal_module(str(tmp_path), "doesnotexist") is False
+    assert _looks_like_drupal_module(str(tmp_path), "") is False

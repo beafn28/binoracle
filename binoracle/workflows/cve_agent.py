@@ -16,6 +16,8 @@ nunca afirma un exploit funcional que el sandbox no haya confirmado. Solo objeti
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -169,6 +171,27 @@ _REFINE_SYS = (
     "y el ataque se centra solo en el email). Se exacto: un nombre de parametro mal copiado hace que "
     "la peticion real falle."
 )
+
+
+def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
+    """True si `plugin_dir` dentro de `local_path` tiene pinta de modulo/tema de Drupal (un
+    .info.yml con 'type: module|theme') en vez de un plugin de WordPress -- desambigua el caso
+    local-zip/zip-url/git, donde `fr.kind` no dice de que CMS es (a diferencia de
+    'wordpress-plugin' o 'drupal-module', que ya lo dicen sin tener que mirar el contenido)."""
+    if not plugin_dir:
+        return False
+    sub = os.path.join(local_path, plugin_dir)
+    try:
+        for fn in os.listdir(sub):
+            if not fn.lower().endswith(".info.yml"):
+                continue
+            with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
+                head = f.read(2000)
+            if re.search(r"^\s*type\s*:\s*['\"]?(module|theme)['\"]?\s*$", head, re.M | re.I):
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _apply_wpverify_result(inv, wr, es: bool) -> None:
@@ -353,7 +376,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
              f"attempting to fetch the real source ({source})...")
-        fr = fetch_source(source, version=version, on_step=step)
+        fr = fetch_source(source, version=version, on_step=step,
+                         cms_hint=(notes.get("cms") or "").strip().lower())
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note}
@@ -421,8 +445,41 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
             # gratuito). `plugin_dir` es la carpeta DENTRO de local_path que de verdad contiene el
             # plugin (== slug para WordPress.org; auto-detectada para zip local/URL -- ver
             # websource.detect_plugin_folder).
-            plugin_dir = fr.plugin_dir or (fr.source if fr.kind == "wordpress-plugin" else "")
-            if (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            plugin_dir = fr.plugin_dir or (fr.source if fr.kind in ("wordpress-plugin", "drupal-module") else "")
+            is_drupal = fr.kind == "drupal-module" or (
+                fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))
+            if (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                    and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
+                # primer verificador de Drupal ("poco a poco" -- ver drupalverify.py): mismo caso
+                # de account-takeover que abrio el soporte de WordPress, con Drush+un Drupal+
+                # MySQL efimeros en vez de wp-cli+WordPress. Las demas clases (path-traversal,
+                # sqli...) siguen siendo WordPress-only por ahora.
+                from .drupalverify import verify_drupal_account_takeover, _pick_param
+                from .wpverify import _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
+                params = notes.get("parameters") or []
+                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
+                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
+                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                if not (email_p or pass_p):
+                    inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no "
+                                         "trae un parametro de email/password reconocible; afina "
+                                         "'parameters' en la hipotesis del LLM o pasalos a mano"
+                                         if es else
+                                         "dynamic verification not attempted: the hypothesis has "
+                                         "no recognizable email/password parameter; refine "
+                                         "'parameters' in the LLM hypothesis or pass them by hand"))
+                else:
+                    step(("intentando verificacion DINAMICA -- Drupal+MySQL efimero en Docker "
+                         "(Drush)..." if es else
+                         "attempting DYNAMIC verification -- ephemeral Drupal+MySQL in Docker "
+                         "(Drush)..."))
+                    wr = verify_drupal_account_takeover(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", params,
+                        id_param_hint=id_p or "", email_param_hint=email_p or "",
+                        pass_param_hint=pass_p or "", on_step=step)
+                    _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                     and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
                 # el mecanismo exacto de account-takeover no es siempre el mismo (ver wpverify.py):
                 # unos plugins te dejan CAMBIAR la password/email de otro usuario (confirmable con

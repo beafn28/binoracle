@@ -849,6 +849,7 @@ def run_streaming(command, binary, ai, emit, text="", opts=None):
             hints = {}
             if opts.get("vulnClass"): hints["vuln_class"] = opts["vulnClass"]
             if opts.get("source"): hints["source_url"] = opts["source"]
+            if opts.get("cms"): hints["cms"] = opts["cms"]
             if opts.get("version"): hints["affected_version"] = opts["version"]
             if opts.get("endpoint"): hints["endpoint"] = opts["endpoint"]
             if opts.get("method"): hints["http_method"] = opts["method"]
@@ -1362,7 +1363,8 @@ const CMDS=[
  {c:"exploit",n:"CVE → Exploit",ic:"CV",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Para una CVE web, los campos opcionales de abajo (slug/version/endpoint/parametros) dejan aportar lo que YA sabes del aviso oficial en vez de depender de que el LLM lo adivine, y permiten la VERIFICACION DINAMICA (WordPress real en Docker) cuando aplica. Informe honesto.",opts:[
    {k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"},
    {k:"vulnClass",label:"(opcional) clase de vulnerabilidad conocida, si el aviso ya la indica",t:"text",placeholder:"p.ej. missing-authorization, idor, sqli, rce..."},
-   {k:"source",label:"(opcional, CVE web) slug de WordPress.org o URL git del codigo vulnerable",t:"text",placeholder:"p.ej. divi-form-builder"},
+   {k:"source",label:"(opcional, CVE web) slug de WordPress.org, machine name de Drupal.org, URL git o .zip/.tar.gz",t:"text",placeholder:"p.ej. divi-form-builder (WP) o webform (Drupal)"},
+   {k:"cms",label:"(opcional) CMS si 'source' es ambiguo (una sola palabra sin guion/guion_bajo)",t:"sel",vals:["","wordpress","drupal"]},
    {k:"version",label:"(opcional) version afectada",t:"text",placeholder:"p.ej. 5.1.8"},
    {k:"endpoint",label:"(opcional) endpoint/ruta exacto",t:"text",placeholder:"p.ej. /wp-admin/admin-ajax.php?action=..."},
    {k:"method",label:"(opcional) metodo HTTP",t:"text",placeholder:"POST"},
