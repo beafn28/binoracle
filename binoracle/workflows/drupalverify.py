@@ -33,7 +33,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param, _token,
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
+                       _redirect_location_is_external, _token,
                        _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS, _CMD_HINTS, _SQLI_HINTS,
                        _URL_HINTS, _XSS_HINTS, _XML_HINTS, _REDIRECT_HINTS, _FILE_UPLOAD_HINTS,
                        _xss_render)
@@ -1462,6 +1463,8 @@ def verify_drupal_open_redirect(
             f" https://{evil_host}/pwned", f"\thttps://{evil_host}/pwned",
             f"https://{evil_host}#@trusted.example.com/",
             f"https://trusted.example.com.{evil_host}/pwned",
+            f"///{evil_host}/pwned", f"////{evil_host}/pwned",
+            f"/https://{evil_host}/pwned",
         ]
         m = (http_method or "GET").upper()
         tried = []
@@ -1480,7 +1483,7 @@ def verify_drupal_open_redirect(
                 continue
             location = resp.headers.get("Location", "")
             is_redirect = resp.status_code in (301, 302, 303, 307, 308)
-            confirmed = is_redirect and evil_host in location
+            confirmed = is_redirect and _redirect_location_is_external(location, evil_host)
             tried.append({"target": target, "status": resp.status_code, "location": location,
                          "confirmado": confirmed})
             if confirmed:

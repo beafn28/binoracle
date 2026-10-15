@@ -5193,3 +5193,68 @@ def test_genericverify_discover_http_rejects_5xx_status(monkeypatch):
 
     result = lab.discover_http(tries=1, delay=0)
     assert result is None
+
+
+# --- integracion real de PayloadsAllTheThings: casuistica ampliada + fix de falso positivo en
+# open redirect que esa misma ampliacion saco a la luz en vivo ---
+
+def test_redirect_location_is_external_rejects_leading_slash_bypass_attempt():
+    # el falso positivo real encontrado en vivo: '/https://evil.invalid/pwned' como Location es
+    # una ruta RELATIVA al mismo origen para cualquier navegador (el '/' inicial la ancla ahi),
+    # nunca una redireccion externa -- aunque el texto 'evil.invalid' aparezca en la cadena.
+    from binoracle.workflows.wpverify import _redirect_location_is_external
+    assert _redirect_location_is_external("/https://evil.invalid/pwned", "evil.invalid") is False
+
+
+def test_redirect_location_is_external_accepts_real_external_redirect():
+    from binoracle.workflows.wpverify import _redirect_location_is_external
+    assert _redirect_location_is_external("https://evil.invalid/pwned", "evil.invalid") is True
+
+
+def test_redirect_location_is_external_accepts_protocol_relative():
+    from binoracle.workflows.wpverify import _redirect_location_is_external
+    assert _redirect_location_is_external("//evil.invalid/pwned", "evil.invalid") is True
+
+
+def test_redirect_location_is_external_resolves_userinfo_trick():
+    from binoracle.workflows.wpverify import _redirect_location_is_external
+    assert _redirect_location_is_external(
+        "https://trusted.example.com@evil.invalid/pwned", "evil.invalid") is True
+
+
+def test_redirect_location_is_external_normalizes_backslash():
+    from binoracle.workflows.wpverify import _redirect_location_is_external
+    assert _redirect_location_is_external(
+        "https://evil.invalid\\@trusted.example.com/pwned", "evil.invalid") is True
+
+
+def test_redirect_location_is_external_rejects_same_origin_path():
+    from binoracle.workflows.wpverify import _redirect_location_is_external
+    assert _redirect_location_is_external("/dashboard", "evil.invalid") is False
+    assert _redirect_location_is_external("", "evil.invalid") is False
+
+
+def test_genericverify_command_injection_separators_include_patt_casuistry():
+    # confirma que la casuistica real de PayloadsAllTheThings (Command Injection/Intruder/
+    # command_exec.txt) esta de verdad en el codigo, no solo mencionada -- ||, IFS, %09.
+    import inspect
+    from binoracle.workflows import genericverify
+    src = inspect.getsource(genericverify.verify_generic_command_injection)
+    assert "||" in src
+    assert "${IFS}" in src
+    assert "%09" in src
+
+
+def test_genericverify_open_redirect_targets_include_patt_casuistry():
+    import inspect
+    from binoracle.workflows import genericverify
+    src = inspect.getsource(genericverify.verify_generic_open_redirect)
+    assert "///{evil_host}" in src
+    assert "/https://{evil_host}" in src
+
+
+def test_genericverify_sqli_blind_includes_mssql_waitfor_dialect():
+    import inspect
+    from binoracle.workflows import genericverify
+    src = inspect.getsource(genericverify.verify_generic_sqli_blind)
+    assert "WAITFOR DELAY" in src
