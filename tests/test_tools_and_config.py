@@ -4889,3 +4889,110 @@ def test_cve_agent_dispatches_generic_command_injection_for_unrecognized_source(
     assert called.get("endpoint") == "/ping"
     assert called.get("local_path") == str(tmp_path)
     assert inv.verified is True
+
+
+def test_genericverify_path_traversal_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_path_traversal(str(tmp_path), "/view", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "parametro" in res.limitations[0]
+
+
+def test_genericverify_path_traversal_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_path_traversal(str(tmp_path), "/view", "GET", {"page": "x"},
+                                           path_param_hint="page")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_ssrf_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_ssrf(str(tmp_path), "/fetch", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "URL" in res.limitations[0]
+
+
+def test_genericverify_ssrf_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_ssrf(str(tmp_path), "/fetch", "GET", {"url": "x"},
+                                 url_param_hint="url")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_command_injection_blocked_without_docker_reuses_daemon_check(monkeypatch, tmp_path):
+    # mismo chequeo _docker_daemon_ok compartido por las 3 clases genericas -- confirma que
+    # path-traversal y ssrf tambien degradan limpio sin daemon, no solo command-injection.
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res_pt = gv.verify_generic_path_traversal(str(tmp_path), "/view", "GET", {"page": "x"})
+    res_ssrf = gv.verify_generic_ssrf(str(tmp_path), "/fetch", "GET", {"url": "x"})
+    assert res_pt.available is False
+    assert res_ssrf.available is False
+
+
+def test_cve_agent_dispatches_generic_path_traversal_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_pt(local_path, endpoint, method, params, path_param_hint="", on_step=None,
+                        budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="PATH TRAVERSAL confirmado (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_path_traversal", fake_generic_pt)
+
+    inv = Investigation(cve_id="CVE-2099-00002")
+    inv.vuln_class = "path-traversal"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/view", "http_method": "GET", "parameters": {"page": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/view"
+    assert inv.verified is True
+
+
+def test_cve_agent_dispatches_generic_ssrf_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_ssrf(local_path, endpoint, method, params, url_param_hint="", on_step=None,
+                          budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="SSRF confirmado (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_ssrf", fake_generic_ssrf)
+
+    inv = Investigation(cve_id="CVE-2099-00003")
+    inv.vuln_class = "ssrf"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/fetch", "http_method": "GET", "parameters": {"url": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/fetch"
+    assert inv.verified is True

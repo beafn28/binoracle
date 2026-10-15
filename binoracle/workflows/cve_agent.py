@@ -897,6 +897,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # "cualquier entorno": fallback generico de path-traversal (ver genericverify.py) para
+            # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
+            # docker-compose.yml.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "path-traversal" and notes.get("endpoint")):
+                from .genericverify import verify_generic_path_traversal, _pick_param
+                from .wpverify import _PATH_HINTS
+                params = notes.get("parameters") or []
+                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
+                     "se construye desde su propio Dockerfile/compose..." if es else
+                     "attempting GENERIC DYNAMIC verification -- canary file, the target is "
+                     "built from its own Dockerfile/compose..."))
+                wr = verify_generic_path_traversal(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, path_param_hint=path_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
@@ -1079,6 +1096,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # "cualquier entorno": fallback generico de SSRF (ver genericverify.py) para cuando el
+            # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
+            # docker-compose.yml.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "ssrf" and notes.get("endpoint")):
+                from .genericverify import verify_generic_ssrf, _pick_param
+                from .wpverify import _URL_HINTS
+                params = notes.get("parameters") or []
+                url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- listener interno con token "
+                     "aleatorio, el objetivo se construye desde su propio Dockerfile/compose..."
+                     if es else "attempting GENERIC DYNAMIC verification -- internal listener "
+                     "with a random token, the target is built from its own Dockerfile/"
+                     "compose..."))
+                wr = verify_generic_ssrf(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, url_param_hint=url_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que
             # los bloques anteriores (evita repetir el mismo volcado 6 veces mas). Cada clase trae
