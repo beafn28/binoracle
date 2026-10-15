@@ -7513,6 +7513,52 @@ def test_investigate_cve_recovers_real_handler_when_llm_guess_does_not_ground(mo
         "pc_handle_uploaded_image": ["plugin.php:2"]}
 
 
+def test_investigate_cve_forwards_cli_budget_to_web_dynamic_verifier(monkeypatch, tmp_path):
+    # bug real confirmado en vivo: --budget solo llegaba al camino --binary (plan_with_budget) --
+    # cada verify_wordpress_*/verify_drupal_*/verify_joomla_* en _run_web_investigation ignoraba
+    # por completo lo pedido por el analista y usaba siempre su propio default interno (1200s),
+    # asi que el '--budget 300' de la CLI no tenia ningun efecto en una investigacion web real.
+    import json as _json
+    from binoracle.workflows import cve_agent, cvelookup, websource, wpverify
+
+    plugin_dir = tmp_path / "some-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.php").write_text("<?php\n// nada relevante\n")
+
+    def fake_fetch_cve(cve_id, timeout=20.0, enrich=True):
+        return cvelookup.CVEInfo(cve_id=cve_id, ok=True,
+                                 description="Some plugin path traversal.", has_public_exploit=False)
+    monkeypatch.setattr(cvelookup, "fetch_cve", fake_fetch_cve)
+    monkeypatch.setattr(
+        websource, "fetch_source",
+        lambda *a, **kw: websource.SourceFetchResult(
+            ok=True, kind="wordpress-plugin", source="some-plugin", resolved_version="1.0",
+            local_path=str(plugin_dir), plugin_dir="some-plugin"))
+
+    captured = {}
+
+    def fake_verify_path_traversal(*args, **kwargs):
+        captured["budget_s"] = kwargs.get("budget_s")
+        return wpverify.WpVerifyResult(available=True, ok=True, verified=False,
+                                       detail="no se confirmo")
+    monkeypatch.setattr(wpverify, "verify_wordpress_path_traversal", fake_verify_path_traversal)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "vuln_class": "path-traversal", "source_url": "some-plugin",
+                "endpoint": "/wp-admin/admin-ajax.php",
+                "http_method": "POST", "parameters": {"file": "/etc/passwd"},
+            })
+
+    cve_agent.investigate_cve("CVE-2099-0099", config=object(), llm=_FakeLLM(),
+                              on_step=lambda m: None, lang="es", budget_s=123.0)
+
+    assert captured["budget_s"] == 123.0
+
+
 def test_cache_path_for_requires_concrete_version():
     from binoracle.workflows.websource import _cache_path_for
     assert _cache_path_for("wordpress-plugin", "foo", "") is None
