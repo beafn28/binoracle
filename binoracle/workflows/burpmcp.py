@@ -48,9 +48,18 @@ class BurpMCPClient:
     o como context manager (`with BurpMCPClient(url) as client:`)."""
 
     def __init__(self, sse_url: str = "http://127.0.0.1:9876", timeout: float = 20.0,
-                host_header: Optional[str] = None):
+                host_header: Optional[str] = None, sse_read_timeout: float = 3600.0):
         self.sse_url = sse_url
         self.timeout = timeout
+        # confirmado en vivo: sse_client() por defecto usa sse_read_timeout=300s para TODO el
+        # stream SSE persistente (no solo el handshake) -- y por ese mismo stream vuelven las
+        # respuestas a las tool calls (send_http1_request), asi que tiene que seguir vivo durante
+        # TODA la investigacion, no solo mientras hay trafico pasando por Burp. Una investigacion
+        # real pasa minutos sin mandar ni una peticion a Burp mientras levanta el laboratorio
+        # Docker efimero (build de imagenes WP+MySQL, etc.) -- con el default de 300s eso tumbaba
+        # la conexion SSE entera a mitad de investigacion con un ReadTimeout. Se sube bastante
+        # para cubrir una investigacion completa realista.
+        self.sse_read_timeout = sse_read_timeout
         # confirmado en vivo: la extension de Burp bloquea la conexion con "Blocked DNS
         # rebinding attack from host: ..." cuando la cabecera Host de la peticion entrante no es
         # 127.0.0.1/localhost -- justo el caso real cuando binoracle corre DENTRO de un
@@ -126,7 +135,7 @@ class BurpMCPClient:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
         headers = {"Host": self.host_header} if self.host_header else None
-        self._sse_cm = sse_client(self.sse_url, headers=headers)
+        self._sse_cm = sse_client(self.sse_url, headers=headers, sse_read_timeout=self.sse_read_timeout)
         read, write = await self._sse_cm.__aenter__()
         self._session_cm = ClientSession(read, write)
         self._session = await self._session_cm.__aenter__()

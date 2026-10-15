@@ -5740,6 +5740,46 @@ def test_burpmcp_client_default_port_in_host_header_without_explicit_port():
     assert client.host_header == "127.0.0.1:9876"
 
 
+def test_burpmcp_client_default_sse_read_timeout_is_generous():
+    # confirmado en vivo: con el default de sse_client() (300s) una investigacion real tumbaba
+    # el stream SSE a mitad de camino (ReadTimeout) mientras binoracle construia el laboratorio
+    # Docker efimero sin mandar nada por Burp durante ese rato -- el default de BurpMCPClient
+    # tiene que ser muchisimo mas generoso que eso.
+    from binoracle.workflows.burpmcp import BurpMCPClient
+    client = BurpMCPClient("http://127.0.0.1:9876")
+    assert client.sse_read_timeout >= 3600.0
+
+
+@pytest.mark.skipif(__import__("importlib").util.find_spec("mcp") is None,
+    reason="requiere el paquete 'mcp'")
+def test_burpmcp_client_forwards_sse_read_timeout_to_sse_client(monkeypatch):
+    import mcp.client.sse as sse_mod
+    from binoracle.workflows.burpmcp import BurpMCPClient
+
+    captured = {}
+
+    class _FakeCM:
+        async def __aenter__(self):
+            raise RuntimeError("stop-before-real-connect")
+
+        async def __aexit__(self, *a):
+            return False
+
+    def fake_sse_client(url, headers=None, sse_read_timeout=None, **kw):
+        captured["sse_read_timeout"] = sse_read_timeout
+        return _FakeCM()
+
+    monkeypatch.setattr(sse_mod, "sse_client", fake_sse_client)
+
+    client = BurpMCPClient("http://127.0.0.1:1", timeout=2.0, sse_read_timeout=1234.0)
+    try:
+        client.connect()
+    except Exception:
+        pass
+    client.close()
+    assert captured.get("sse_read_timeout") == 1234.0
+
+
 
 @pytest.mark.skipif(
     __import__("importlib").util.find_spec("mcp") is None
