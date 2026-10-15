@@ -4380,3 +4380,14 @@ def test_cve_agent_looks_like_drupal_module(tmp_path):
     assert _looks_like_drupal_module(str(tmp_path), "mymodule") is True
     assert _looks_like_drupal_module(str(tmp_path), "doesnotexist") is False
     assert _looks_like_drupal_module(str(tmp_path), "") is False
+
+
+def test_drupalverify_path_traversal_requires_path_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    mod_dir = tmp_path / "mymodule"
+    mod_dir.mkdir()
+    res = dv.verify_drupal_path_traversal(str(tmp_path), "mymodule", "/mymodule/view", "GET",
+                                          ["foo", "bar"])
+    assert res.verified is False
+    assert res.limitations
