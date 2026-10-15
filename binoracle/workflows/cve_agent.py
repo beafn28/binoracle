@@ -194,6 +194,28 @@ def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
     return False
 
 
+def _looks_like_joomla_extension(local_path: str, plugin_dir: str) -> bool:
+    """True si `plugin_dir` dentro de `local_path` tiene pinta de extension de Joomla (un .xml de
+    manifiesto con `<extension type="component|module|plugin|template|library|package">`) --
+    mismo desambiguador que _looks_like_drupal_module pero para el caso local-zip/zip-url/git de
+    Joomla."""
+    if not plugin_dir:
+        return False
+    sub = os.path.join(local_path, plugin_dir)
+    try:
+        for fn in os.listdir(sub):
+            if not fn.lower().endswith(".xml"):
+                continue
+            with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
+                head = f.read(2000)
+            if re.search(r"<extension\b[^>]*\btype\s*=\s*['\"]"
+                        r"(component|module|plugin|template|library|package)['\"]", head, re.I):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _apply_wpverify_result(inv, wr, es: bool) -> None:
     """Vuelca un WpVerifyResult (ver workflows/wpverify.py) en la investigacion -- mismo volcado
     que los bloques de missing-authorization/idor/path-traversal/command-injection/sqli/ssrf
@@ -448,7 +470,41 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
             plugin_dir = fr.plugin_dir or (fr.source if fr.kind in ("wordpress-plugin", "drupal-module") else "")
             is_drupal = fr.kind == "drupal-module" or (
                 fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))
-            if (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+            is_joomla = (not is_drupal) and fr.kind in ("local-zip", "zip-url") and _looks_like_joomla_extension(
+                fr.local_path, plugin_dir)
+            if (is_joomla and fr.kind in ("local-zip", "zip-url") and plugin_dir
+                    and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
+                # primer verificador de Joomla ("poco a poco" -- ver joomlaverify.py): mismo caso
+                # de account-takeover que abrio el soporte de WordPress y Drupal, con el CLI
+                # oficial de Joomla + un Joomla+MySQL efimeros en Docker. No hay resolucion de
+                # catalogo todavia (Joomla no tiene un API publico simple como WordPress.org/
+                # Drupal.org) -- --source debe ser un .zip local/URL o un repo git por ahora.
+                from .joomlaverify import verify_joomla_account_takeover, _pick_param
+                from .wpverify import _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS
+                params = notes.get("parameters") or []
+                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
+                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
+                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                if not (email_p or pass_p):
+                    inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no "
+                                         "trae un parametro de email/password reconocible; afina "
+                                         "'parameters' en la hipotesis del LLM o pasalos a mano"
+                                         if es else
+                                         "dynamic verification not attempted: the hypothesis has "
+                                         "no recognizable email/password parameter; refine "
+                                         "'parameters' in the LLM hypothesis or pass them by hand"))
+                else:
+                    step(("intentando verificacion DINAMICA -- Joomla+MySQL efimero en Docker "
+                         "(CLI oficial de Joomla)..." if es else
+                         "attempting DYNAMIC verification -- ephemeral Joomla+MySQL in Docker "
+                         "(official Joomla CLI)..."))
+                    wr = verify_joomla_account_takeover(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", params,
+                        id_param_hint=id_p or "", email_param_hint=email_p or "",
+                        pass_param_hint=pass_p or "", on_step=step)
+                    _apply_wpverify_result(inv, wr, es)
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                     and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
                 # primer verificador de Drupal ("poco a poco" -- ver drupalverify.py): mismo caso
                 # de account-takeover que abrio el soporte de WordPress, con Drush+un Drupal+
@@ -479,7 +535,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                         id_param_hint=id_p or "", email_param_hint=email_p or "",
                         pass_param_hint=pass_p or "", on_step=step)
                     _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                     and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
                 # el mecanismo exacto de account-takeover no es siempre el mismo (ver wpverify.py):
                 # unos plugins te dejan CAMBIAR la password/email de otro usuario (confirmable con
@@ -581,7 +637,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
             # mismo mecanismo de laboratorio efimero, para path-traversal/LFI: en vez de deducir el
             # account-takeover por un segundo login, se planta un fichero canario con un secreto
             # aleatorio FUERA del volumen web y se confirma que el endpoint lo filtra literal.
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "path-traversal" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_path_traversal, _pick_param, _PATH_HINTS
                 params = notes.get("parameters") or []
@@ -636,7 +692,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
             # mismo laboratorio efimero, para command injection: en vez de leer un fichero, el
             # payload hace que el shell remoto CALCULE una suma (ver verify_wordpress_command_injection)
             # y confirma que ese numero -- que no esta en el payload -- aparece en la respuesta.
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("command-injection", "os-command-injection")
                   and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_command_injection, _pick_param, _CMD_HINTS
@@ -690,7 +746,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                 _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
             # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
                 params = notes.get("parameters") or []
@@ -742,7 +798,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                         notes.get("http_method") or "GET", params,
                                         url_param_hint=url_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssrf" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_ssrf, _pick_param, _URL_HINTS
                 params = notes.get("parameters") or []
@@ -794,7 +850,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                        notes.get("http_method") or "GET", params,
                                        xss_param_hint=xss_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xss, _pick_param, _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -821,7 +877,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                         notes.get("http_method") or "GET", params,
                                         ssti_param_hint=ssti_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_ssti, _pick_param, _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -848,7 +904,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                        notes.get("http_method") or "GET", params,
                                        xml_param_hint=xml_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xxe, _pick_param, _XML_HINTS
                 params = notes.get("parameters") or []
@@ -875,7 +931,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                                  notes.get("http_method") or "GET", params,
                                                  redirect_param_hint=redir_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_open_redirect, _pick_param, _REDIRECT_HINTS
                 params = notes.get("parameters") or []
@@ -902,7 +958,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                                notes.get("http_method") or "POST", params,
                                                file_param_hint=file_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_file_upload, _pick_param, _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
@@ -931,7 +987,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                         email_param_hint=email_p or "",
                                         pass_param_hint=pass_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):
                 from .wpverify import (verify_wordpress_csrf, _pick_param, _EMAIL_HINTS,
                                        _PASS_HINTS)

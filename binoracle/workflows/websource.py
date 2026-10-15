@@ -342,10 +342,11 @@ def detect_plugin_folder(local_path: str, hint: str = "") -> str:
     wpverify.py sepa que copiar dentro del laboratorio Docker. Estrategia: 1) si `hint` ya es una
     carpeta real ahi, usala tal cual; 2) si solo hay UNA carpeta de primer nivel, es esa; 3) si hay
     varias, busca la que tenga un .php con una cabecera 'Plugin Name:' (la convencion de
-    WordPress) o un .info.yml con 'type: module|theme' (la convencion de Drupal -- ver
-    detect_module_folder, mismo chequeo, para que un .zip/URL comercial de CUALQUIER CMS se
-    detecte sin que el analista tenga que decir cual es). Cadena vacia si no se puede determinar
-    con confianza (ambiguo)."""
+    WordPress), un .info.yml con 'type: module|theme' (la convencion de Drupal -- ver
+    detect_module_folder, mismo chequeo), o un .xml de manifiesto con `<extension type="...">`
+    (la convencion de Joomla -- component/module/plugin/template/library/package), para que un
+    .zip/URL comercial de CUALQUIER CMS se detecte sin que el analista tenga que decir cual es.
+    Cadena vacia si no se puede determinar con confianza (ambiguo)."""
     try:
         if hint and os.path.isdir(os.path.join(local_path, hint)):
             return hint
@@ -372,6 +373,16 @@ def detect_plugin_folder(local_path: str, hint: str = "") -> str:
                     except Exception:
                         continue
                     if re.search(r"^\s*type\s*:\s*['\"]?(module|theme)['\"]?\s*$", head, re.M | re.I):
+                        return e
+                elif low.endswith(".xml"):
+                    try:
+                        with open(os.path.join(sub, fn), "r", encoding="utf-8", errors="replace") as f:
+                            head = f.read(2000)
+                    except Exception:
+                        continue
+                    if re.search(r"<extension\b[^>]*\btype\s*=\s*['\"]"
+                                r"(component|module|plugin|template|library|package)['\"]",
+                                head, re.I):
                         return e
     except Exception:
         pass

@@ -4463,3 +4463,53 @@ def test_drupalverify_csrf_requires_email_or_pass_param(monkeypatch, tmp_path):
     res = dv.verify_drupal_csrf(str(tmp_path), "mymodule", "/mymodule/update", "POST", ["foo"])
     assert res.verified is False
     assert res.limitations
+
+
+# --- Joomla ("poco a poco": tercer CMS, primer verificador missing-authorization) ---
+
+def test_websource_detect_plugin_folder_recognizes_joomla_extension(tmp_path):
+    from binoracle.workflows.websource import detect_plugin_folder
+    ext_dir = tmp_path / "myext"
+    ext_dir.mkdir()
+    (ext_dir / "myext.xml").write_text(
+        '<?xml version="1.0"?><extension type="plugin" group="system">'
+        '<name>plg_system_myext</name></extension>')
+    assert detect_plugin_folder(str(tmp_path)) == "myext"
+
+
+def test_cve_agent_looks_like_joomla_extension(tmp_path):
+    from binoracle.workflows.cve_agent import _looks_like_joomla_extension
+    ext_dir = tmp_path / "myext"
+    ext_dir.mkdir()
+    (ext_dir / "myext.xml").write_text(
+        '<?xml version="1.0"?><extension type="component">'
+        '<name>com_myext</name></extension>')
+    assert _looks_like_joomla_extension(str(tmp_path), "myext") is True
+    assert _looks_like_joomla_extension(str(tmp_path), "doesnotexist") is False
+    assert _looks_like_joomla_extension(str(tmp_path), "") is False
+
+
+def test_joomlaverify_check_prereqs_degrades_without_docker(monkeypatch):
+    import binoracle.workflows.joomlaverify as jv
+    monkeypatch.setattr(jv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = jv._check_prereqs("/tmp", "myext")
+    assert res is not None
+    assert res.available is False
+
+
+def test_joomlaverify_check_prereqs_missing_ext_dir(monkeypatch, tmp_path):
+    import binoracle.workflows.joomlaverify as jv
+    monkeypatch.setattr(jv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = jv._check_prereqs(str(tmp_path), "nope")
+    assert res is not None
+    assert "no se encuentra" in res.detail
+
+
+def test_joomlaverify_account_takeover_requires_email_or_pass_param(monkeypatch, tmp_path):
+    import binoracle.workflows.joomlaverify as jv
+    monkeypatch.setattr(jv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "myext").mkdir()
+    res = jv.verify_joomla_account_takeover(str(tmp_path), "myext", "/index.php?option=com_myext",
+                                            "POST", ["foo", "bar"])
+    assert res.verified is False
+    assert res.limitations
