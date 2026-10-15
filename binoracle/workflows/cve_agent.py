@@ -18,6 +18,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -2140,3 +2143,131 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
                         "The LLM proposes and investigates; the sandbox decides what is VERIFIED. "
                         "Authorized / CTF / research only.") + "_")
     return "\n".join(out)
+
+
+_BATCH_MAX_PARALLEL = 6   # tope duro -- cada investigacion puede levantar su propio laboratorio
+# WordPress+MySQL en Docker; mas que esto en una maquina normal (Apple Silicon, Docker Desktop)
+# es mas probable que la reviente de RAM/CPU que acelerar nada.
+
+
+@dataclass
+class BatchItem:
+    """Resultado de UNA investigacion dentro de un lote (ver investigate_cves_batch) -- aislado a
+    proposito: que esta CVE falle (red, parseo, lo que sea) no debe tumbar las demas del lote, asi
+    que el error (si lo hay) se queda aqui, nunca se propaga fuera del lote."""
+    cve_id: str
+    status: str = "pending"      # pending | running | done | error
+    investigation: Optional[Investigation] = None
+    error: str = ""
+    elapsed_s: float = 0.0
+
+
+def investigate_cves_batch(
+    cve_ids: List[str], config=None, lang: str = "es", budget_s: float = 300.0,
+    parallel: int = 2, hints_by_cve: Optional[dict] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> List[BatchItem]:
+    """Lanza investigate_cve() para cada id de `cve_ids` EN PARALELO, con un pool de hilos acotado
+    por `parallel`, y aisla los errores por CVE -- uno fallando (red, excepcion inesperada, lo que
+    sea) no tumba el resto del lote, se queda registrado en su propio BatchItem.error.
+
+    Seguro de correr varias investigaciones de verdad a la vez, no solo en teoria:
+    - cada laboratorio Docker efimero (wpverify.py/drupalverify.py/joomlaverify.py/genericverify.py)
+      usa nombres de red/volumen/contenedor ALEATORIOS (_token(), 8 caracteres hex) y publica el
+      puerto de WordPress/Drupal/Joomla en uno aleatorio del host -- dos laboratorios en paralelo
+      nunca chocan de recursos.
+    - BurpMCPClient (burpmcp.py) ya soporta llamadas concurrentes desde varios hilos: su bucle de
+      eventos asyncio corre en un hilo de fondo propio y call_tool()/connect() usan
+      asyncio.run_coroutine_threadsafe(), pensado justo para que varios hilos Python puedan
+      llamarlo a la vez sin pisarse -- si configuraste --burp-mcp-url, lo comparten todas las
+      investigaciones del lote sin problema.
+    - cada investigate_cve() crea su PROPIO backend de LLM (make_backend(config), nunca
+      compartido entre hilos) para no asumir que el cliente HTTP subyacente sea thread-safe.
+
+    Lo unico que SI comparten varias investigaciones de verdad a la vez es la CPU/RAM real de la
+    maquina (cada laboratorio WordPress+MySQL bajo emulacion en Apple Silicon pesa) y, si lo usas,
+    el propio Burp Suite (una sola app recibiendo el trafico de todas) -- por eso `parallel` tiene
+    un tope prudente por defecto y un maximo duro (_BATCH_MAX_PARALLEL), no es ilimitado.
+
+    `on_event(event)` opcional recibe, en tiempo real y desde CUALQUIER hilo del lote, un dict
+    {"cve_id", "type": "start"|"step"|"finish", ...} -- "step" trae "message" (el mismo texto que
+    on_step recibiria en una investigacion suelta), "finish" trae "status"/"elapsed_s"/"error".
+    Pensado para pintar progreso en vivo sin esperar a que termine el lote entero; si no se da, la
+    funcion sigue funcionando en silencio y solo devuelve la lista de BatchItem al final."""
+    from ..config import load_config
+
+    config = config or load_config()
+    parallel = max(1, min(int(parallel or 1), _BATCH_MAX_PARALLEL))
+    hints_by_cve = hints_by_cve or {}
+    items = {cid: BatchItem(cve_id=cid) for cid in cve_ids}
+
+    def _emit(event: dict):
+        if on_event:
+            try:
+                on_event(event)
+            except Exception:
+                pass   # un fallo pintando progreso no debe tumbar la investigacion de verdad
+
+    def _run_one(cve_id: str):
+        item = items[cve_id]
+        item.status = "running"
+        _emit({"cve_id": cve_id, "type": "start"})
+        t0 = time.time()
+
+        def step(message: str):
+            _emit({"cve_id": cve_id, "type": "step", "message": message})
+
+        try:
+            inv = investigate_cve(cve_id, config=config, on_step=step, lang=lang,
+                                  budget_s=budget_s, hints=hints_by_cve.get(cve_id))
+            item.investigation = inv
+            item.status = "done"
+        except Exception as e:
+            item.error = f"{type(e).__name__}: {e}"
+            item.status = "error"
+        item.elapsed_s = time.time() - t0
+        _emit({"cve_id": cve_id, "type": "finish", "status": item.status,
+              "elapsed_s": item.elapsed_s, "error": item.error})
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = [pool.submit(_run_one, cid) for cid in cve_ids]
+        for f in futures:
+            f.result()   # _run_one ya atrapa todo -- esto solo re-lanzaria un fallo de verdad
+                         # inesperado en la propia orquestacion, nunca el de una investigacion
+
+    return [items[cid] for cid in cve_ids]
+
+
+def render_batch_summary(items: List["BatchItem"], lang: str = "es") -> str:
+    """Tabla resumen en markdown de un lote (ver investigate_cves_batch) -- CVE, clase, estado del
+    exploit publico, si quedo VERIFICADO, tiempo, y el error si lo hubo. Pensada para ver de un
+    vistazo cual de varias CVEs merece la pena mirar en detalle, sin leer cada informe completo."""
+    es = lang == "es"
+    headers = (["CVE", "Clase", "Exploit publico", "Verificado", "Tiempo", "Error"] if es else
+              ["CVE", "Class", "Public exploit", "Verified", "Time", "Error"])
+    rows = [headers, ["---"] * len(headers)]
+    verified_n = 0
+    error_n = 0
+    for it in items:
+        elapsed = f"{it.elapsed_s:.0f}s"
+        if it.status == "error":
+            error_n += 1
+            rows.append([it.cve_id, "?", "?", "?", elapsed, it.error[:80].replace("|", "/")])
+            continue
+        inv = it.investigation
+        if inv is None:
+            rows.append([it.cve_id, "?", "?", "?", elapsed, ""])
+            continue
+        pub = ("existe" if es else "exists") if (inv.lookup_ok and not inv.is_gap) else (
+              ("HUECO" if es else "GAP") if (inv.lookup_ok and inv.is_gap) else "?")
+        verified = ("SI" if es else "YES") if inv.verified else "no"
+        if inv.verified:
+            verified_n += 1
+        rows.append([it.cve_id, (inv.vuln_class or "?").replace("|", "/"), pub, verified,
+                    elapsed, ""])
+    table = "\n".join("| " + " | ".join(r) + " |" for r in rows)
+    summary = (f"**{verified_n}/{len(items)} verificadas**" if es else
+              f"**{verified_n}/{len(items)} verified**")
+    if error_n:
+        summary += (f", {error_n} con error" if es else f", {error_n} errored")
+    return "## " + ("Resumen del lote" if es else "Batch summary") + f"\n\n{table}\n\n{summary}"

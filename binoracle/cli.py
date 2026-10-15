@@ -933,6 +933,69 @@ def cmd_investigate(args, config):
         _eprint(f"(HTML written to {args.html})")
 
 
+def cmd_investigate_batch(args, config):
+    """Lanza varias investigaciones de CVE EN PARALELO (ver investigate_cves_batch en
+    cve_agent.py), con un tope de concurrencia (--parallel) -- pensado para explorar varias CVEs
+    sin tener que abrir una terminal por cada una. Cada CVE es independiente: una fallando no
+    tumba el lote. Cada informe se escribe a --out-dir/<CVE-ID>.md (y .html en --html-dir si se
+    da), y al final se imprime una tabla resumen de todo el lote."""
+    from .workflows.cve_agent import (investigate_cves_batch, render_batch_summary,
+                                      render_investigation)
+    if getattr(args, "burp_mcp_url", None):
+        from .workflows.burpmcp import BurpMCPError
+        from .workflows.genericverify import configure_burp_mcp
+        try:
+            configure_burp_mcp(args.burp_mcp_url)
+            print(f"  conectado al servidor MCP de Burp en {args.burp_mcp_url} -- compartido por "
+                 f"todas las investigaciones del lote")
+        except BurpMCPError as e:
+            print(f"  no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones directas",
+                 file=sys.stderr)
+
+    out_dir = Path(getattr(args, "out_dir", None) or "./binoracle_batch_reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_dir = Path(args.html_dir) if getattr(args, "html_dir", None) else None
+    if html_dir:
+        html_dir.mkdir(parents=True, exist_ok=True)
+
+    parallel = int(getattr(args, "parallel", 2) or 2)
+    print(f"  lanzando {len(args.cves)} investigaciones con paralelismo {parallel}...")
+
+    def on_event(ev):
+        cve_id = ev["cve_id"]
+        if ev["type"] == "start":
+            print(f"[{cve_id}] iniciando...")
+        elif ev["type"] == "step":
+            print(f"[{cve_id}] {ev['message']}")
+        elif ev["type"] == "finish":
+            if ev["status"] == "error":
+                print(f"[{cve_id}] ERROR ({ev['elapsed_s']:.0f}s): {ev['error']}")
+            else:
+                print(f"[{cve_id}] terminado ({ev['elapsed_s']:.0f}s)")
+
+    items = investigate_cves_batch(
+        args.cves, config=config, lang=config.lang,
+        budget_s=float(getattr(args, "budget", 300) or 300), parallel=parallel,
+        on_event=on_event)
+
+    for it in items:
+        if it.investigation is None:
+            continue
+        md = render_investigation(it.investigation, config.lang, embed_images=False)
+        (out_dir / f"{it.cve_id}.md").write_text(md)
+        if html_dir:
+            from .report.html import render_investigation_page
+            md_full = render_investigation(it.investigation, config.lang)
+            (html_dir / f"{it.cve_id}.html").write_text(
+                render_investigation_page(md_full, script=it.investigation.developed_script,
+                                          cve=it.cve_id, lang=config.lang,
+                                          poc_kind=it.investigation.poc_kind))
+
+    print("\n" + render_batch_summary(items, config.lang))
+    print(f"\n(informes individuales en {out_dir}/)" +
+         (f" y HTML en {html_dir}/" if html_dir else ""))
+
+
 def cmd_dataset(args, config):
     """Genera el dataset SFT (JSONL de chat) para fine-tunear un LLM que desarrolle exploits:
     pares (vulnerabilidad + mitigaciones) -> exploit pwntools VERIFICADO. Con --include-templates
@@ -1356,6 +1419,31 @@ def build_parser() -> argparse.ArgumentParser:
                                          "HTML file at this path -- the terminal output cannot "
                                          "render images, only this file can")
     ip.set_defaults(func=cmd_investigate)
+
+    ipb = sub.add_parser("investigate-batch", help="run several 'investigate's IN PARALLEL "
+                                                    "(bounded concurrency) -- same pipeline as a "
+                                                    "single investigate (real source, Docker lab, "
+                                                    "dynamic verification, screenshots), just "
+                                                    "several CVEs at once instead of one terminal "
+                                                    "per CVE")
+    ipb.add_argument("cves", nargs="+", help="CVE ids to investigate (e.g. CVE-2024-1071 "
+                                             "CVE-2024-3552 CVE-2025-9501)")
+    ipb.add_argument("--parallel", type=int, default=2,
+                     help="how many investigations run at the same time (default 2, hard cap 6 "
+                          "-- each one can spin up its own WordPress+MySQL Docker lab, so more "
+                          "than a few at once is more likely to exhaust your machine's RAM/CPU "
+                          "than to finish faster)")
+    ipb.add_argument("--budget", type=float, default=300,
+                     help="sandbox verification budget in seconds, per CVE (default 300)")
+    ipb.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
+                                            "once, shared by every investigation in the batch "
+                                            "(same flag as 'investigate', see its help)")
+    ipb.add_argument("--out-dir", default="./binoracle_batch_reports",
+                     help="directory to write one <CVE-ID>.md report per CVE into (default "
+                          "./binoracle_batch_reports, created if missing)")
+    ipb.add_argument("--html-dir", help="also export each report as <CVE-ID>.html (with any real "
+                                        "screenshots) into this directory")
+    ipb.set_defaults(func=cmd_investigate_batch)
 
     return p
 

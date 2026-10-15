@@ -6691,3 +6691,138 @@ def test_clean_affected_version_extracts_upper_bound_from_dashless_range():
     assert _clean_affected_version("1.0-2.0") == "2.0"
     # un unico token con sufijo no numerico tras el guion sigue sin tocarse (no es un rango)
     assert _clean_affected_version("1.0-beta1") == "1.0-beta1"
+
+
+def test_investigate_cves_batch_runs_concurrently_and_isolates_errors(monkeypatch):
+    # confirma que investigate_cves_batch de verdad solapa el trabajo (no lo serializa) y que una
+    # CVE fallando con una excepcion no tumba el resto del lote -- se queda en su propio
+    # BatchItem.error.
+    import threading
+    import time as _time
+    from binoracle.workflows import cve_agent
+
+    concurrent_now = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_investigate_cve(cve_id, binary="", config=None, llm=None, on_step=None, lang="es",
+                             budget_s=300.0, hints=None):
+        with lock:
+            concurrent_now["n"] += 1
+            concurrent_now["max"] = max(concurrent_now["max"], concurrent_now["n"])
+        if on_step:
+            on_step(f"trabajando en {cve_id}")
+        _time.sleep(0.1)
+        with lock:
+            concurrent_now["n"] -= 1
+        if cve_id == "CVE-2099-0002":
+            raise RuntimeError("fallo simulado de red")
+        inv = cve_agent.Investigation(cve_id=cve_id)
+        inv.verified = (cve_id == "CVE-2099-0001")
+        inv.vuln_class = "sqli"
+        inv.lookup_ok = True
+        return inv
+
+    monkeypatch.setattr(cve_agent, "investigate_cve", fake_investigate_cve)
+
+    events = []
+    items = cve_agent.investigate_cves_batch(
+        ["CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003"], parallel=3,
+        on_event=events.append)
+
+    assert concurrent_now["max"] >= 2   # de verdad se solaparon, no una tras otra
+
+    by_id = {it.cve_id: it for it in items}
+    assert by_id["CVE-2099-0001"].status == "done"
+    assert by_id["CVE-2099-0001"].investigation.verified is True
+    assert by_id["CVE-2099-0002"].status == "error"
+    assert "fallo simulado de red" in by_id["CVE-2099-0002"].error
+    assert by_id["CVE-2099-0003"].status == "done"
+    assert by_id["CVE-2099-0003"].investigation.verified is False
+
+    step_events = [e for e in events if e["type"] == "step"]
+    assert any("trabajando en CVE-2099-0001" in e["message"] for e in step_events)
+    finish_events = {e["cve_id"]: e for e in events if e["type"] == "finish"}
+    assert finish_events["CVE-2099-0002"]["status"] == "error"
+    assert finish_events["CVE-2099-0001"]["status"] == "done"
+
+
+def test_investigate_cves_batch_clamps_parallel_to_hard_cap(monkeypatch):
+    # cada investigacion puede levantar su propio laboratorio Docker -- parallel no debe poder
+    # dispararse sin limite aunque se pida uno absurdo.
+    import threading
+    import time as _time
+    from binoracle.workflows import cve_agent
+
+    concurrent_now = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_investigate_cve(cve_id, binary="", config=None, llm=None, on_step=None, lang="es",
+                             budget_s=300.0, hints=None):
+        with lock:
+            concurrent_now["n"] += 1
+            concurrent_now["max"] = max(concurrent_now["max"], concurrent_now["n"])
+        _time.sleep(0.05)
+        with lock:
+            concurrent_now["n"] -= 1
+        return cve_agent.Investigation(cve_id=cve_id, lookup_ok=True)
+
+    monkeypatch.setattr(cve_agent, "investigate_cve", fake_investigate_cve)
+    cve_ids = [f"CVE-2099-{i:04d}" for i in range(10)]
+    cve_agent.investigate_cves_batch(cve_ids, parallel=100)
+    assert concurrent_now["max"] <= cve_agent._BATCH_MAX_PARALLEL
+
+
+def test_render_batch_summary_counts_verified_and_errors_and_escapes_pipes():
+    from binoracle.workflows.cve_agent import BatchItem, Investigation, render_batch_summary
+
+    verified_inv = Investigation(cve_id="CVE-2099-0001", verified=True, vuln_class="sqli",
+                                 lookup_ok=True, is_gap=False)
+    not_verified_inv = Investigation(cve_id="CVE-2099-0002", verified=False, vuln_class="xss",
+                                     lookup_ok=True, is_gap=True)
+    items = [
+        BatchItem(cve_id="CVE-2099-0001", status="done", investigation=verified_inv, elapsed_s=12.3),
+        BatchItem(cve_id="CVE-2099-0002", status="done", investigation=not_verified_inv, elapsed_s=5.0),
+        BatchItem(cve_id="CVE-2099-0003", status="error", error="Boom | with a pipe char", elapsed_s=1.0),
+    ]
+    out = render_batch_summary(items, lang="es")
+    assert "1/3 verificadas" in out
+    assert "1 con error" in out
+    assert "CVE-2099-0001" in out and "CVE-2099-0002" in out and "CVE-2099-0003" in out
+    assert "Boom / with a pipe char" in out   # el '|' se escapo, si no rompe la tabla markdown
+
+
+def test_cmd_investigate_batch_writes_reports_and_prints_summary(monkeypatch, tmp_path, capsys):
+    import binoracle.cli as cli
+    from binoracle.workflows import cve_agent
+
+    def fake_batch(cve_ids, config=None, lang="es", budget_s=300.0, parallel=2,
+                  hints_by_cve=None, on_event=None):
+        items = []
+        for cid in cve_ids:
+            if on_event:
+                on_event({"cve_id": cid, "type": "start"})
+                on_event({"cve_id": cid, "type": "step", "message": "paso de prueba"})
+            inv = cve_agent.Investigation(cve_id=cid, lookup_ok=True, vuln_class="sqli",
+                                          verified=(cid == "CVE-2099-0001"))
+            item = cve_agent.BatchItem(cve_id=cid, status="done", investigation=inv, elapsed_s=1.0)
+            if on_event:
+                on_event({"cve_id": cid, "type": "finish", "status": "done", "elapsed_s": 1.0,
+                         "error": ""})
+            items.append(item)
+        return items
+
+    monkeypatch.setattr(cve_agent, "investigate_cves_batch", fake_batch)
+
+    parser = cli.build_parser()
+    out_dir = tmp_path / "reports"
+    args = parser.parse_args(["investigate-batch", "CVE-2099-0001", "CVE-2099-0002",
+                              "--out-dir", str(out_dir), "--parallel", "2"])
+    config = cli.load_config()
+    args.func(args, config)
+
+    assert (out_dir / "CVE-2099-0001.md").exists()
+    assert (out_dir / "CVE-2099-0002.md").exists()
+    captured = capsys.readouterr()
+    assert "paso de prueba" in captured.out
+    assert "Resumen del lote" in captured.out
+    assert "1/2 verificadas" in captured.out
