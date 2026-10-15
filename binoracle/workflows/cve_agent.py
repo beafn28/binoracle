@@ -171,6 +171,33 @@ _REFINE_SYS = (
 )
 
 
+def _apply_wpverify_result(inv, wr, es: bool) -> None:
+    """Vuelca un WpVerifyResult (ver workflows/wpverify.py) en la investigacion -- mismo volcado
+    que los bloques de missing-authorization/idor/path-traversal/command-injection/sqli/ssrf
+    repetian literal; centralizado aqui para las clases que se fueron anadiendo despues (xss,
+    ssti, xxe, open-redirect, file-upload, csrf) sin repetir el mismo bloque de 15 lineas otra vez
+    por cada una."""
+    inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
+                          "verified": wr.verified, "detail": wr.detail, "logs": wr.logs}
+    if wr.verified:
+        inv.verified = True
+        inv.verified_detail = wr.detail
+        inv.verified_evidence = wr.evidence
+    elif not wr.available:
+        inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                             if wr.limitations else
+                             "verificacion dinamica no disponible (sin Docker)"))
+    else:
+        inv.blockers.append((f"verificacion dinamica intentada pero no confirmada: {wr.detail}"
+                             if es else
+                             f"dynamic verification attempted but not confirmed: {wr.detail}"))
+        for entry in wr.logs:
+            if entry.startswith("docker logs"):
+                head, _, body = entry.partition("\n")
+                trimmed = "\n".join(body.splitlines()[-15:])
+                inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+
+
 def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lines: int = 50) -> Optional[dict]:
     """Tras el grounding (confirmar que la funcion citada existe de verdad), lee el codigo REAL
     alrededor de cada ubicacion encontrada y le pide al LLM que extraiga el endpoint/parametros
@@ -538,6 +565,90 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
+            # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que
+            # los bloques anteriores (evita repetir el mismo volcado 6 veces mas).
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "xss" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_xss, _pick_param, _XSS_HINTS
+                params = notes.get("parameters") or []
+                xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                step(("intentando verificacion DINAMICA -- ejecucion real en navegador headless "
+                     "(WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- real headless-browser execution "
+                     "(ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                          notes.get("http_method") or "GET", params,
+                                          xss_param_hint=xss_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "ssti" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_ssti, _pick_param, _XSS_HINTS
+                params = notes.get("parameters") or []
+                ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                step(("intentando verificacion DINAMICA -- aritmetica calculada por el motor de "
+                     "plantillas (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- arithmetic computed by the template "
+                     "engine (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                           notes.get("http_method") or "GET", params,
+                                           ssti_param_hint=ssti_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "xxe" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_xxe, _pick_param, _XML_HINTS
+                params = notes.get("parameters") or []
+                xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
+                     "via entidad externa (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- random-secret canary file via external "
+                     "entity (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                          notes.get("http_method") or "GET", params,
+                                          xml_param_hint=xml_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_open_redirect, _pick_param, _REDIRECT_HINTS
+                params = notes.get("parameters") or []
+                redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                step(("intentando verificacion DINAMICA -- cabecera Location real sin seguir "
+                     "redirects (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- real Location header without following "
+                     "redirects (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                                    notes.get("http_method") or "GET", params,
+                                                    redirect_param_hint=redir_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_file_upload, _pick_param, _FILE_UPLOAD_HINTS
+                params = notes.get("parameters") or []
+                file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                step(("intentando verificacion DINAMICA -- webshell subido que calcula una suma "
+                     "(WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- uploaded webshell computing a sum "
+                     "(ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                                  notes.get("http_method") or "POST", params,
+                                                  file_param_hint=file_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "csrf" and notes.get("endpoint")):
+                from .wpverify import (verify_wordpress_csrf, _pick_param, _EMAIL_HINTS,
+                                       _PASS_HINTS)
+                params = notes.get("parameters") or []
+                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
+                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                step(("intentando verificacion DINAMICA -- self-CSRF sin nonce, origen externo "
+                     "ficticio (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- self-CSRF without a nonce, fake external "
+                     "origin (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_csrf(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                           notes.get("http_method") or "POST", params,
+                                           email_param_hint=email_p or "",
+                                           pass_param_hint=pass_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")

