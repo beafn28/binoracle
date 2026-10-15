@@ -674,7 +674,9 @@ _EXTRACT_POC_SYS = (
     "publico su autor. Tu trabajo es leerlo y extraer los datos EXACTOS que usa para explotar la "
     "vulnerabilidad, en vez de adivinar desde el resumen de la CVE. Responde SOLO con JSON valido "
     "con las claves: source_url (si el PoC dice que plugin/paquete exacto y version usa -- para "
-    "WordPress deja el slug si lo ves), affected_version, http_method (GET o POST), endpoint (ruta "
+    "WordPress deja el slug si lo ves), affected_version (copia los numeros de version TAL CUAL "
+    "aparecen en el texto, con todos sus puntos -- '2.1.3' nunca '213', '2.8.2' nunca '282'; si el "
+    "PoC da un rango copia el limite SUPERIOR con sus puntos), http_method (GET o POST), endpoint (ruta "
     "o accion AJAX exacta que el PoC golpea), parameters (lista de nombres EXACTOS de parametro que "
     "el PoC manda), payload_example (el valor de payload EXACTO que el PoC usa para el parametro "
     "vulnerable, tal cual aparece en su codigo -- no lo resumas ni lo traduzcas), setup_options "
@@ -684,6 +686,23 @@ _EXTRACT_POC_SYS = (
     "cualquier precondicion o detalle importante que el PoC mencione y no quepa en los campos "
     "anteriores). Deja vacio lo que el PoC no diga explicitamente -- nunca inventes."
 )
+
+
+def _drop_unreliable_poc_version(poc_hints: dict, existing_version: str) -> tuple:
+    """Confirmado en vivo (CVE-2024-1071): el LLM, leyendo el PoC, transcribio el rango de
+    versiones SIN los puntos ("213-282" en vez de "2.1.3-2.8.2") -- eso piso la version YA bien
+    formada que veniamos de la hipotesis desde la descripcion de la CVE (paso 2 de
+    investigate_cve), y acabo generando una URL de descarga rota. No se deja que un
+    affected_version SIN NINGUN PUNTO pise uno que SI lo tenia -- casi ninguna version real de un
+    plugin de WordPress carece de puntos, asi que es senal de transcripcion mala del LLM, no de un
+    dato mejor que el que ya teniamos. Devuelve (poc_hints posiblemente sin 'affected_version',
+    (version_descartada, version_mantenida) o None si no se descarto nada)."""
+    poc_version = (poc_hints.get("affected_version") or "").strip()
+    existing_version = (existing_version or "").strip()
+    if poc_version and "." not in poc_version and "." in existing_version:
+        cleaned = {k: v for k, v in poc_hints.items() if k != "affected_version"}
+        return cleaned, (poc_version, existing_version)
+    return poc_hints, None
 
 
 def _extract_hints_from_real_poc(llm, poc_text: str) -> Optional[dict]:
@@ -1810,6 +1829,14 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         if poc_text:
             poc_hints = _extract_hints_from_real_poc(llm, poc_text)
             if poc_hints:
+                poc_hints, dropped_version = _drop_unreliable_poc_version(
+                    poc_hints, inv.llm_notes.get("affected_version") or "")
+                if dropped_version:
+                    step(f"'{dropped_version[0]}' del PoC no tiene pinta de version real (sin "
+                         f"puntos); se mantiene '{dropped_version[1]}' de la hipotesis anterior"
+                         if es else
+                         f"'{dropped_version[0]}' from the PoC doesn't look like a real version "
+                         f"(no dots); keeping '{dropped_version[1]}' from the earlier hypothesis")
                 github_ref = next((r for r in info.exploit_refs if r.source == "github"), None)
                 inv.poc_source_used = github_ref.url if github_ref else ""
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}

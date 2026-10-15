@@ -6505,6 +6505,38 @@ def test_extract_hints_from_real_poc_returns_none_without_llm_or_text():
     assert _extract_hints_from_real_poc(_FakeLLM(), "") is None
 
 
+def test_drop_unreliable_poc_version_rejects_dotless_version_over_dotted_one():
+    # bug real confirmado en vivo (CVE-2024-1071): el LLM, leyendo el PoC, transcribio el rango de
+    # versiones sin los puntos ("213-282" en vez de "2.1.3-2.8.2") -- eso piso la version YA bien
+    # formada que veniamos de la hipotesis desde la descripcion de la CVE, generando una URL de
+    # descarga rota (ultimate-member.213-282.zip, 404).
+    from binoracle.workflows.cve_agent import _drop_unreliable_poc_version
+
+    poc_hints = {"affected_version": "213-282", "endpoint": "/wp-admin/admin-ajax.php"}
+    cleaned, dropped = _drop_unreliable_poc_version(poc_hints, "2.1.3 to 2.8.2")
+    assert "affected_version" not in cleaned
+    assert cleaned["endpoint"] == "/wp-admin/admin-ajax.php"   # el resto de datos se conserva
+    assert dropped == ("213-282", "2.1.3 to 2.8.2")
+
+
+def test_drop_unreliable_poc_version_keeps_dotted_poc_version():
+    from binoracle.workflows.cve_agent import _drop_unreliable_poc_version
+    poc_hints = {"affected_version": "2.8.2"}
+    cleaned, dropped = _drop_unreliable_poc_version(poc_hints, "2.1.3 to 2.8.2")
+    assert cleaned["affected_version"] == "2.8.2"
+    assert dropped is None
+
+
+def test_drop_unreliable_poc_version_keeps_dotless_poc_version_without_existing_one():
+    # sin una version previa bien formada que proteger, no hay nada que descartar -- es lo unico
+    # que tenemos, mejor eso que nada.
+    from binoracle.workflows.cve_agent import _drop_unreliable_poc_version
+    poc_hints = {"affected_version": "213-282"}
+    cleaned, dropped = _drop_unreliable_poc_version(poc_hints, "")
+    assert cleaned["affected_version"] == "213-282"
+    assert dropped is None
+
+
 def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_path):
     # confirma que _bootstrap_lab de verdad invoca `wp option update` para cada opcion antes de
     # seguir, en vez de solo guardar el dato sin usarlo.
