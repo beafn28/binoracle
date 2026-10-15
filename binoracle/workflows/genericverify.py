@@ -20,39 +20,17 @@ from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _REDIRECT_HINTS, _SQLI_HINTS,
                        _URL_HINTS, _XML_HINTS, _XSS_HINTS, _XssBrowserSession, _docker_daemon_ok,
-                       _lab_host, _pick_param, _redirect_location_is_external, _run, _token)
+                       _http_request, _lab_host, _pick_param, _redirect_location_is_external,
+                       _run, _token, configure_burp_mcp)
 from .payload_kb import load_ssti_arithmetic_payloads, load_xss_payloads
 import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
-# si se configura (ver configure_burp_mcp), TODAS las peticiones de los verificadores genericos
-# pasan por Burp (via su extension MCP oficial -- ver burpmcp.py) en vez de mandarse directo con
-# `requests` -- asi aparecen en el Proxy/Repeater/historial de Burp mientras corre una
-# verificacion. Sin configurar, el comportamiento es EXACTAMENTE el de antes (requests directo).
-_burp_client = None
-_burp_transport = None
-
-
-def configure_burp_mcp(sse_url: str, timeout: float = 20.0):
-    """Conecta al servidor MCP de la extension de Burp (github.com/PortSwigger/mcp-server) y, a
-    partir de aqui, todas las peticiones de verify_generic_* pasan por el. Lanza BurpMCPError si
-    no puede conectar (p.ej. la extension no esta cargada/activada en Burp) -- se llama una vez,
-    antes de arrancar las investigaciones (ver cli.py/web.py --burp-mcp-url)."""
-    global _burp_client, _burp_transport
-    from .burpmcp import BurpHttpTransport, BurpMCPClient
-    if _burp_client is not None:
-        _burp_client.close()
-    _burp_client = BurpMCPClient(sse_url, timeout=timeout)
-    _burp_client.connect()
-    _burp_transport = BurpHttpTransport(_burp_client)
-
-
-def _http_request(method: str, url: str, **kwargs):
-    if _burp_transport is not None:
-        return _burp_transport.request(method, url, **kwargs)
-    import requests
-    return requests.request(method, url, **kwargs)
+# configure_burp_mcp/_http_request viven en wpverify.py (ver ahi) -- UN SOLO estado compartido
+# por TODOS los verificadores (genericos y CMS-especificos), no una copia por modulo. Se
+# reexportan aqui (import de arriba) para no romper el `from .genericverify import
+# configure_burp_mcp` que cli.py/web.py ya usaban.
 
 _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target", "ping",
              "domain", "url", "path", "file", "name", "query", "search", "input")

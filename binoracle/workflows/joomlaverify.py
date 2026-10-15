@@ -44,8 +44,8 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param, _token,
-                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _make_session, _pick_param,
+                       _token, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
 
 _MYSQL_IMAGE = "mysql:8.0"           # Joomla 5 exige >=8.0.13 -- confirmado en vivo, 5.7 no vale
 _JOOMLA_IMAGE = "joomla:5-apache"
@@ -209,8 +209,7 @@ def _joomla_login(base_url: str, user: str, password: str, timeout: float = 15.0
     CLI): Joomla exige un campo anti-CSRF cuyo NOMBRE (no valor, siempre '1') es un hash de 32
     caracteres hex unico por sesion -- confirmado en vivo. La cookie 'joomla_user_state=logged_in'
     es la señal de exito (mas limpia que buscar texto en la pagina)."""
-    import requests
-    s = requests.Session()
+    s = _make_session()
     try:
         r0 = s.get(f"{base_url}/index.php?option=com_users&view=login", timeout=timeout,
                   allow_redirects=True)

@@ -157,6 +157,7 @@ class BurpMCPResponse:
     status_code: int = 0
     reason: str = ""
     headers: Dict[str, str] = field(default_factory=dict)
+    set_cookie_headers: list = field(default_factory=list)
     text: str = ""
     raw_response: str = ""
 
@@ -176,9 +177,17 @@ def _parse_raw_http_response(raw: str) -> BurpMCPResponse:
     status_code = int(m.group(1)) if m else 0
     reason = m.group(2).strip() if m else ""
     header_text = "\n".join(lines[1:])
-    headers = dict(Parser().parsestr(header_text).items())
-    return BurpMCPResponse(status_code=status_code, reason=reason, headers=headers, text=body,
-                           raw_response=raw)
+    msg = Parser().parsestr(header_text)
+    # dict(msg.items()) colapsaria cabeceras repetidas a la ULTIMA (confirmado: un Message de
+    # email.parser SI guarda todas las ocurrencias, pero dict() se queda solo con la ultima clave
+    # repetida) -- Set-Cookie casi siempre viene repetida (una por cada cookie), asi que se
+    # extrae aparte con get_all() para no perder ninguna; el resto de cabeceras (donde un
+    # duplicado es raro y el uso real de binoracle es .get() de una sola, p.ej. Location) se
+    # queda como dict simple.
+    headers = dict(msg.items())
+    set_cookie_headers = msg.get_all("Set-Cookie") or []
+    return BurpMCPResponse(status_code=status_code, reason=reason, headers=headers,
+                           set_cookie_headers=set_cookie_headers, text=body, raw_response=raw)
 
 
 def _build_raw_http1_request(method: str, path_with_query: str, host: str, headers: dict,
@@ -241,6 +250,74 @@ class BurpHttpTransport:
             "usesHttps": https,
         })
         return _parse_raw_http_response(raw_response)
+
+    def get(self, url: str, **kwargs) -> BurpMCPResponse:
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs) -> BurpMCPResponse:
+        return self.request("POST", url, **kwargs)
+
+
+@dataclass
+class _SimpleCookie:
+    """Lo minimo que los verificadores de verdad leen de requests.Session().cookies (confirmado
+    por grep: .name/.value, nunca dominio/expiracion/flags)."""
+    name: str
+    value: str
+
+
+class _CookieJarAdapter:
+    """requests.Session().cookies soporta DOS formas de acceso a la vez -- iterar (da objetos
+    Cookie con .name/.value) Y lookup tipo dict (.get(nombre) -> valor) -- confirmado en vivo
+    contra requests de verdad. joomlaverify.py usa la segunda (`s.cookies.get(...)`), el resto
+    la primera; esta clase imita ambas sobre el dict interno de BurpSession."""
+
+    def __init__(self, values: Dict[str, str]):
+        self._values = values
+
+    def __iter__(self):
+        return iter(_SimpleCookie(k, v) for k, v in self._values.items())
+
+    def get(self, name: str, default=None):
+        return self._values.get(name, default)
+
+
+class BurpSession:
+    """Analogo de requests.Session() -- incluido su cookie jar persistente entre peticiones --
+    pero mandando cada peticion REAL a traves de Burp. Los verificadores CMS-especificos
+    (WordPress/Drupal/Joomla) necesitan esto, a diferencia de los genericos (BurpHttpTransport a
+    secas vale ahi: no hay login de por medio): un login real manda un Set-Cookie que hay que
+    reenviar en TODAS las peticiones siguientes de la misma sesion, o el 'segundo login' que
+    prueba account-takeover (y todo lo demas que depende de estar autenticado) nunca veria la
+    sesion activa.
+
+    Simplificado a proposito frente a un CookieJar completo (RFC 6265, dominio/path/expiracion):
+    cada verificador opera contra UN SOLO host (el laboratorio efimero propio), nunca sigue
+    redirects entre dominios con esta sesion, asi que un dict nombre->valor basta -- un CookieJar
+    completo seria complejidad sin beneficio real aqui."""
+
+    def __init__(self, client: "BurpMCPClient"):
+        self.client = client
+        self._transport = BurpHttpTransport(client)
+        self._cookie_values: Dict[str, str] = {}
+
+    @property
+    def cookies(self):
+        return _CookieJarAdapter(self._cookie_values)
+
+    def request(self, method: str, url: str, params=None, data=None, headers=None,
+               timeout: float = 20.0, allow_redirects: bool = True, **kwargs) -> BurpMCPResponse:
+        hdrs = dict(headers or {})
+        if self._cookie_values:
+            hdrs.setdefault("Cookie", "; ".join(f"{k}={v}" for k, v in self._cookie_values.items()))
+        resp = self._transport.request(method, url, params=params, data=data, headers=hdrs,
+                                       timeout=timeout, allow_redirects=allow_redirects, **kwargs)
+        for raw_cookie in resp.set_cookie_headers:
+            name_value = raw_cookie.split(";", 1)[0]
+            name, sep, value = name_value.partition("=")
+            if sep:
+                self._cookie_values[name.strip()] = value.strip()
+        return resp
 
     def get(self, url: str, **kwargs) -> BurpMCPResponse:
         return self.request("GET", url, **kwargs)

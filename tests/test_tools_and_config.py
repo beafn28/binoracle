@@ -5545,3 +5545,88 @@ def test_genericverify_http_request_falls_back_to_requests_without_burp(monkeypa
     import binoracle.workflows.genericverify as gv
     gv._burp_transport = None
     assert gv._http_request is not None  # el indirect existe y no rompe sin Burp configurado
+
+
+def test_burpmcp_parse_raw_http_response_preserves_multiple_set_cookie_headers():
+    # el bug real que se encontro: dict(msg.items()) colapsa cabeceras repetidas a la ULTIMA --
+    # una respuesta de login tipica manda VARIAS Set-Cookie, y antes del fix se perdian todas
+    # menos una.
+    from binoracle.workflows.burpmcp import _parse_raw_http_response
+    raw = ("HTTP/1.1 302 Found\r\nSet-Cookie: sessionid=abc; Path=/\r\n"
+          "Set-Cookie: other=extra; Path=/\r\nLocation: /whoami\r\n\r\n")
+    res = _parse_raw_http_response(raw)
+    assert res.set_cookie_headers == ["sessionid=abc; Path=/", "other=extra; Path=/"]
+    assert res.headers.get("Location") == "/whoami"
+
+
+def test_burpmcp_session_persists_cookies_across_requests(monkeypatch):
+    from binoracle.workflows.burpmcp import BurpMCPResponse, BurpSession
+
+    class _FakeTransport:
+        def __init__(self):
+            self.sent_headers = []
+
+        def request(self, method, url, params=None, data=None, headers=None, timeout=20.0,
+                   allow_redirects=True, **kw):
+            self.sent_headers.append(dict(headers or {}))
+            if url.endswith("/login"):
+                return BurpMCPResponse(status_code=302,
+                                       set_cookie_headers=["sessionid=tok123; Path=/",
+                                                           "other=extra; Path=/"])
+            return BurpMCPResponse(status_code=200, text="ok")
+
+    session = BurpSession.__new__(BurpSession)
+    session.client = None
+    session._transport = _FakeTransport()
+    session._cookie_values = {}
+
+    session.post("http://x/login", data={"user": "a"})
+    assert {c.name: c.value for c in session.cookies} == {"sessionid": "tok123", "other": "extra"}
+
+    session.get("http://x/whoami")
+    sent = session._transport.sent_headers[-1]
+    assert sent.get("Cookie") in ("sessionid=tok123; other=extra", "other=extra; sessionid=tok123")
+
+
+def test_burpmcp_session_cookies_adapter_supports_get_and_iteration():
+    from binoracle.workflows.burpmcp import _CookieJarAdapter
+    adapter = _CookieJarAdapter({"a": "1", "b": "2"})
+    assert adapter.get("a") == "1"
+    assert adapter.get("missing") is None
+    assert {c.name: c.value for c in adapter} == {"a": "1", "b": "2"}
+
+
+def test_wpverify_make_session_returns_requests_session_without_burp(monkeypatch):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_burp_client", None)
+    s = wv._make_session()
+    import requests
+    assert isinstance(s, requests.Session)
+
+
+def test_wpverify_make_session_returns_burp_session_when_configured(monkeypatch):
+    import binoracle.workflows.wpverify as wv
+    fake_client = object()
+    monkeypatch.setattr(wv, "_burp_client", fake_client)
+
+    class _FakeBurpSession:
+        def __init__(self, client):
+            self.client = client
+
+    import binoracle.workflows.burpmcp as burpmcp
+    monkeypatch.setattr(burpmcp, "BurpSession", _FakeBurpSession)
+    s = wv._make_session()
+    assert isinstance(s, _FakeBurpSession)
+    assert s.client is fake_client
+
+
+def test_drupalverify_and_joomlaverify_login_use_shared_make_session():
+    # confirma que drupalverify.py/joomlaverify.py de verdad usan el _make_session compartido de
+    # wpverify.py en vez de su propio requests.Session() -- cerraba el hueco que dejaba el login
+    # de Drupal/Joomla SIN pasar por Burp aunque el generico y WordPress si lo hicieran.
+    import inspect
+    from binoracle.workflows import drupalverify, joomlaverify
+    assert "_make_session()" in inspect.getsource(drupalverify._drupal_login)
+    assert "_make_session()" in inspect.getsource(joomlaverify._joomla_login)
+    assert "requests.Session()" not in inspect.getsource(drupalverify._drupal_login)
+    assert "requests.Session()" not in inspect.getsource(joomlaverify._joomla_login)

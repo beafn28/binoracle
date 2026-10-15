@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _make_session, _pick_param,
                        _redirect_location_is_external, _token, _XssBrowserSession,
                        _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS, _CMD_HINTS, _SQLI_HINTS,
                        _URL_HINTS, _XSS_HINTS, _XML_HINTS, _REDIRECT_HINTS, _FILE_UPLOAD_HINTS)
@@ -217,10 +217,10 @@ class _Lab:
 def _drupal_login(base_url: str, user: str, password: str, timeout: float = 15.0):
     """Login real por el FORMULARIO de /user/login (no un shortcut de Drush): Drupal exige un
     `form_build_id` valido, obtenido de un GET previo a la misma pagina -- sin el, el POST se
-    rechaza silenciosamente. Devuelve una requests.Session logueada (cookie SESS*/SSESS* presente)
-    o None si el login fallo."""
-    import requests
-    s = requests.Session()
+    rechaza silenciosamente. Devuelve una sesion logueada (requests.Session, o BurpSession si se
+    configuro Burp -- ver _make_session en wpverify.py) con la cookie SESS*/SSESS* presente, o
+    None si el login fallo."""
+    s = _make_session()
     try:
         r0 = s.get(f"{base_url}/user/login", timeout=timeout)
         m = re.search(r'name="form_build_id"\s+value="([^"]+)"', r0.text or "")

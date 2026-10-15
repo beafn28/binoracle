@@ -567,12 +567,53 @@ class _XssBrowserSession:
             return None, None
 
 
-def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
-    """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session logueada,
-    o None si no hay cookie de sesion (login fallido). Requiere la libreria `requests` (pwntools ya
-    la arrastra como dependencia, asi que esta presente donde el resto del motor de exploits lo esta)."""
+# si se configura (ver configure_burp_mcp), TODAS las peticiones de TODOS los verificadores --
+# genericos (genericverify.py, que importa esto de aqui en vez de tener su propia copia) y los
+# CMS-especificos (via _make_session(), usada por _wp_login/el login de Drupal/Joomla) -- pasan
+# por Burp (su extension MCP oficial, ver burpmcp.py) en vez de mandarse directo con `requests`.
+# Vive aqui (el modulo "comun" del que ya importan _docker_daemon_ok/_token/etc. el resto de
+# verificadores) para que haya un UNICO estado compartido, no una copia por modulo que alguien
+# pueda olvidar configurar.
+_burp_client = None
+
+
+def configure_burp_mcp(sse_url: str, timeout: float = 20.0):
+    """Conecta al servidor MCP de la extension de Burp (github.com/PortSwigger/mcp-server). Lanza
+    BurpMCPError si no puede conectar (p.ej. la extension no esta cargada/activada en Burp) --
+    se llama una vez, antes de arrancar las investigaciones (ver cli.py/web.py --burp-mcp-url)."""
+    global _burp_client
+    from .burpmcp import BurpMCPClient
+    if _burp_client is not None:
+        _burp_client.close()
+    _burp_client = BurpMCPClient(sse_url, timeout=timeout)
+    _burp_client.connect()
+
+
+def _http_request(method: str, url: str, **kwargs):
+    if _burp_client is not None:
+        from .burpmcp import BurpHttpTransport
+        return BurpHttpTransport(_burp_client).request(method, url, **kwargs)
     import requests
-    s = requests.Session()
+    return requests.request(method, url, **kwargs)
+
+
+def _make_session():
+    """Sesion con cookies persistentes entre peticiones -- requests.Session() normal, o (si se
+    configuro Burp) BurpSession, que manda cada peticion real a traves de Burp y mantiene las
+    mismas cookies que un requests.Session() mantendria, para que el login/flujo de sesion de
+    los verificadores CMS-especificos funcione exactamente igual por dentro."""
+    if _burp_client is not None:
+        from .burpmcp import BurpSession
+        return BurpSession(_burp_client)
+    import requests
+    return requests.Session()
+
+
+def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
+    """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session (o
+    BurpSession, si se configuro Burp) logueada, o None si no hay cookie de sesion (login
+    fallido)."""
+    s = _make_session()
     try:
         r = s.post(f"{base_url}/wp-login.php",
                   data={"log": user, "pwd": password, "wp-submit": "Log In",
