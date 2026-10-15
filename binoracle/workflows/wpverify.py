@@ -684,9 +684,21 @@ class _LabSession:
 
 
 def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
-                   t0: float, budget_s: float) -> Optional[_LabSession]:
+                   t0: float, budget_s: float,
+                   setup_wp_options: Optional[list] = None) -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
-    (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica."""
+    (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
+
+    `setup_wp_options`, si se da, es una lista de {"name": ..., "value": ...} -- opciones de
+    WordPress/del plugin que hay que activar ANTES de probar el ataque para que el codigo
+    vulnerable se llegue siquiera a ejecutar (confirmado en vivo con CVE-2024-1071: el SQLi real
+    esta en la clase que solo se usa cuando el plugin tiene activada la opcion 'tabla personalizada
+    para usermeta' -- con la configuracion de fabrica, el codigo vulnerable nunca se alcanzaba, asi
+    que ninguna tecnica de deteccion podia encontrar nada por mucho que probara. Viene de que el
+    LLM lea el codigo real alrededor de la funcion vulnerable confirmada (ver
+    _refine_web_hints_from_source en cve_agent.py) -- no es un fallback generico, es la misma idea
+    de 'leer el codigo real en vez de adivinar' ya aplicada a endpoint/parametros, extendida a
+    los REQUISITOS para llegar a ese codigo."""
     root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
     admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
     sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
@@ -748,6 +760,21 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
                                "la activacion puede fallar por requisitos del propio plugin")
         return None
+    if setup_wp_options:
+        for opt in setup_wp_options:
+            name = (opt or {}).get("name") if isinstance(opt, dict) else None
+            if not name:
+                continue
+            value = (opt or {}).get("value", "1")
+            step(f"activando opcion requerida '{name}'={value!r} (el codigo vulnerable solo se "
+                 f"usa con esta activada)...")
+            r_opt = lab.wp_cli("option", "update", name, str(value), timeout=30)
+            if r_opt.returncode != 0:
+                res.limitations.append(
+                    f"no se pudo activar la opcion requerida '{name}': "
+                    f"{(r_opt.stderr or r_opt.stdout or '')[:200]} -- el ataque puede no "
+                    f"alcanzar el codigo vulnerable")
+
     step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
          "vulnerable, activo)...")
     admin_sess = _wp_login(base_url, admin_user, admin_pass, on_step=step)
@@ -1391,6 +1418,7 @@ def verify_wordpress_sqli(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, sqli_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    setup_wp_options: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -1433,7 +1461,8 @@ def verify_wordpress_sqli(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              setup_wp_options=setup_wp_options)
         if boot is None:
             return res
 

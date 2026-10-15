@@ -6362,6 +6362,115 @@ def test_wp_login_reports_missing_cookie_via_on_step(monkeypatch):
     assert any("sin cookie de sesion" in m and "status=200" in m for m in messages)
 
 
+def test_refine_web_hints_from_source_extracts_setup_options(tmp_path):
+    # CVE-2024-1071 (Ultimate Member): el codigo SQLi real solo se ejecuta si el plugin tiene
+    # activada 'Enable custom table for usermeta' -- con la config de fabrica, ninguna tecnica de
+    # deteccion encuentra nada porque el codigo vulnerable nunca se alcanza. En vez de que el
+    # analista tenga que leer el codigo a mano y activar la opcion por fuera, el LLM que YA lee
+    # el codigo real para afinar endpoint/parametros debe poder proponer esto solo.
+    import json as _json
+    from binoracle.workflows.cve_agent import _refine_web_hints_from_source
+
+    plugin_file = tmp_path / "class-member-directory-meta.php"
+    plugin_file.write_text(
+        "<?php\n"
+        "function um_prepare_user_results_array_meta() {\n"
+        "    if ( UM()->options()->get('enable_custom_usermeta_table') ) {\n"
+        "        global $wpdb;\n"
+        "        $sortby = sanitize_text_field( $_POST['sorting'] );\n"
+        "        $wpdb->get_col(\"SELECT u.ID FROM {$wpdb->users} AS u {$this->sql_order}\");\n"
+        "    }\n"
+        "}\n")
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "ajax_action": "um_get_members", "http_method": "POST",
+                "parameters": ["sorting"], "id_param": "", "email_param": "", "pass_param": "",
+                "setup_options": [{"name": "enable_custom_usermeta_table", "value": "1"}],
+            })
+
+    found = {"um_prepare_user_results_array_meta": [f"{plugin_file.name}:2"]}
+    out = _refine_web_hints_from_source(_FakeLLM(), str(tmp_path), found)
+    assert out is not None
+    assert out["setup_options"] == [{"name": "enable_custom_usermeta_table", "value": "1"}]
+    assert out["endpoint"] == "/wp-admin/admin-ajax.php?action=um_get_members"
+
+
+def test_refine_web_hints_from_source_ignores_setup_options_without_name(tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import _refine_web_hints_from_source
+
+    plugin_file = tmp_path / "foo.php"
+    plugin_file.write_text("<?php\nfunction vuln() {}\n")
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({"setup_options": [{"value": "1"}, {"name": ""}, "not-a-dict"]})
+
+    found = {"vuln": [f"{plugin_file.name}:2"]}
+    out = _refine_web_hints_from_source(_FakeLLM(), str(tmp_path), found)
+    assert out is None or "setup_options" not in out
+
+
+def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_path):
+    # confirma que _bootstrap_lab de verdad invoca `wp option update` para cada opcion antes de
+    # seguir, en vez de solo guardar el dato sin usarlo.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            calls.append(args)
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: None)
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    boot = wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "ultimate-member", lambda _m: None, res, _time.time(), 1200.0,
+        setup_wp_options=[{"name": "enable_custom_usermeta_table", "value": "1"}])
+
+    option_update_calls = [c for c in calls if c[:2] == ("option", "update")]
+    assert option_update_calls == [("option", "update", "enable_custom_usermeta_table", "1")]
+    # la opcion se activa ANTES de intentar el login del subscriber (que aqui falla a proposito)
+    assert boot is None
+    assert "no se pudo iniciar sesion" in (res.detail or "")
+
+
 def test_fetch_source_resolves_wp_org_page_url_to_slug(monkeypatch):
     from binoracle.workflows import websource
     called = {}

@@ -168,8 +168,18 @@ _REFINE_SYS = (
     "objetivo, vacio si ninguno), email_param (cual es el nuevo email, vacio si ninguno), pass_param "
     "(cual es la nueva password, vacio si ninguno O si el codigo exige la password ACTUAL antes de "
     "aceptar una password nueva -- en ese caso no sirve para un ataque sin credenciales, dejalo vacio "
-    "y el ataque se centra solo en el email). Se exacto: un nombre de parametro mal copiado hace que "
-    "la peticion real falle."
+    "y el ataque se centra solo en el email), setup_options (lista de objetos {\"name\":..., "
+    "\"value\":...} -- SOLO si el fragmento muestra el codigo vulnerable DENTRO de un condicional "
+    "que depende de una opcion de WordPress/del plugin, p.ej. "
+    "'if ( get_option(\"X\") ) { ...codigo vulnerable... }' o "
+    "'if ( UM()->options()->get(\"X\") ) { ... }' -- en ese caso el ataque NO llega a ese codigo "
+    "con la configuracion de fabrica del plugin, y hay que activar esa opcion ANTES de probarlo; "
+    "'name' es el string EXACTO del nombre de la opcion tal cual aparece en el codigo, 'value' el "
+    "valor que activa esa rama (normalmente '1' para un booleano, pero usa lo que el codigo "
+    "compare de verdad si lo ves, p.ej. comparar contra 'yes' en vez de 1). Lista vacia si no ves "
+    "ningun condicional de este tipo -- no inventes una opcion que no este literalmente en el "
+    "codigo que te doy). Se exacto: un nombre de parametro mal copiado hace que la peticion real "
+    "falle."
 )
 
 
@@ -582,6 +592,19 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
         v = (data.get(key) or "").strip()
         if v:
             out[key] = v
+    setup_options = data.get("setup_options")
+    if isinstance(setup_options, list):
+        cleaned = []
+        for opt in setup_options:
+            if not isinstance(opt, dict):
+                continue
+            name = str(opt.get("name") or "").strip()
+            if not name:
+                continue
+            value = opt.get("value")
+            cleaned.append({"name": name, "value": "1" if value in (None, "") else str(value)})
+        if cleaned:
+            out["setup_options"] = cleaned
     return out or None
 
 
@@ -1115,7 +1138,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
-                    sqli_param_hint=sqli_p or "", on_step=step)
+                    sqli_param_hint=sqli_p or "", on_step=step,
+                    setup_wp_options=notes.get("setup_options") or [])
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
