@@ -6909,6 +6909,180 @@ def test_cmd_investigate_batch_writes_reports_and_prints_summary(monkeypatch, tm
     assert "1/2 verificadas" in captured.out
 
 
+def test_cvefeed_parses_telegram_preview_html_and_decodes_entities(monkeypatch):
+    from binoracle.workflows import cvefeed
+
+    fake_html = (
+        '<div class="tgme_widget_message_wrap">'
+        '<div class="tgme_widget_message" data-post="CVENotify/100">'
+        '<div class="tgme_widget_message_text js-message_text" dir="auto">'
+        'CVE-2024-1111 published, no PoC yet.<br/>Check it out</div></div></div>'
+        '<div class="tgme_widget_message_wrap">'
+        '<div class="tgme_widget_message" data-post="CVENotify/101">'
+        '<div class="tgme_widget_message_text js-message_text" dir="auto">'
+        'New WordPress plugin flaw CVE-2024-2222 &amp; CVE-2024-2223 &mdash; SQLi</div></div></div>')
+    monkeypatch.setattr(cvefeed, "_fetch_preview_html", lambda channel, timeout=20.0: fake_html)
+
+    msgs = cvefeed.fetch_channel_messages("CVENotify")
+    assert [m.post_id for m in msgs] == [100, 101]
+    assert msgs[0].text == "CVE-2024-1111 published, no PoC yet.\nCheck it out"
+    assert "&amp;" not in msgs[1].text and "&" in msgs[1].text
+
+
+def test_cvefeed_fetch_channel_messages_never_raises_on_network_failure(monkeypatch):
+    from binoracle.workflows import cvefeed
+
+    def boom(channel, timeout=20.0):
+        raise OSError("name resolution failed")
+    monkeypatch.setattr(cvefeed, "_fetch_preview_html", boom)
+    assert cvefeed.fetch_channel_messages("CVENotify") == []
+
+
+def test_cvefeed_looks_cms_related():
+    from binoracle.workflows.cvefeed import looks_cms_related
+    assert looks_cms_related("The Foo WordPress plugin before 1.0 is vulnerable") is True
+    assert looks_cms_related("A Drupal module has an IDOR") is True
+    assert looks_cms_related("Buffer overflow in some embedded router firmware") is False
+
+
+def test_cvefeed_poll_new_cve_mentions_only_returns_new_ones_and_dedupes(monkeypatch, tmp_path):
+    from binoracle.workflows import cvefeed
+
+    monkeypatch.setattr(cvefeed, "_STATE_DIR", str(tmp_path))
+
+    first_batch = [
+        cvefeed.TelegramMessage(post_id=1, text="CVE-2024-0001 WordPress plugin SQLi"),
+        cvefeed.TelegramMessage(post_id=2, text="CVE-2024-0002 and also CVE-2024-0002 again"),
+    ]
+    monkeypatch.setattr(cvefeed, "fetch_channel_messages", lambda channel, timeout=20.0: first_batch)
+
+    mentions = cvefeed.poll_new_cve_mentions("CVENotify")
+    assert sorted(m.cve_id for m in mentions) == ["CVE-2024-0001", "CVE-2024-0002"]
+    assert next(m for m in mentions if m.cve_id == "CVE-2024-0001").cms_related is True
+
+    # segundo sondeo sin mensajes nuevos: no debe repetir nada ya visto
+    assert cvefeed.poll_new_cve_mentions("CVENotify") == []
+
+    # un tercer mensaje de verdad nuevo SI debe aparecer
+    second_batch = first_batch + [
+        cvefeed.TelegramMessage(post_id=3, text="CVE-2024-0003 unrelated router firmware bug")]
+    monkeypatch.setattr(cvefeed, "fetch_channel_messages", lambda channel, timeout=20.0: second_batch)
+    mentions2 = cvefeed.poll_new_cve_mentions("CVENotify")
+    assert [m.cve_id for m in mentions2] == ["CVE-2024-0003"]
+    assert mentions2[0].cms_related is False
+
+
+def test_colorlog_classify_prioritizes_error_then_warn_then_ok():
+    from binoracle import colorlog
+    assert colorlog.classify("fallo al conectar con Burp") == "error"
+    assert colorlog.classify("verificacion dinamica intentada pero no confirmada") == "warn"
+    assert colorlog.classify("cuenta objetivo VERIFICADA con un segundo login") == "ok"
+    assert colorlog.classify("descargando el plugin...") == "info"
+
+
+def test_colorlog_disables_color_when_not_a_tty(capsys):
+    from binoracle import colorlog
+    colorlog.info("hola")
+    out = capsys.readouterr().out
+    assert "\033[" not in out
+    assert "[INFO] hola" in out
+
+
+def test_cmd_investigate_watch_is_generic_by_default_and_processes_non_cms_too(
+        monkeypatch, tmp_path):
+    # por defecto investigate-watch es GENERICO: una CVE sin pinta de CMS tambien se investiga
+    # (hipotesis + PoC desarrollado), aunque no pueda llegar a VERIFICADO automaticamente -- ese
+    # desarrollo de exploit es el objetivo del comando, no solo los casos con lab Docker.
+    import binoracle.cli as cli
+    from binoracle.workflows import cve_agent, cvefeed
+
+    mentions = [
+        cvefeed.CVEMention(cve_id="CVE-2099-0001", post_id=1, text="WordPress plugin",
+                           cms_related=True),
+        cvefeed.CVEMention(cve_id="CVE-2099-0002", post_id=2, text="router firmware",
+                           cms_related=False),
+    ]
+    monkeypatch.setattr(cvefeed, "poll_new_cve_mentions", lambda channel: mentions)
+
+    captured_cve_ids = {}
+
+    def fake_batch(cve_ids, config=None, lang="es", budget_s=300.0, parallel=2,
+                  hints_by_cve=None, on_event=None, use_cache=True):
+        captured_cve_ids["ids"] = list(cve_ids)
+        items = []
+        for cid in cve_ids:
+            inv = cve_agent.Investigation(cve_id=cid, lookup_ok=True, vuln_class="sqli")
+            items.append(cve_agent.BatchItem(cve_id=cid, status="done", investigation=inv,
+                                             elapsed_s=1.0))
+        return items
+    monkeypatch.setattr(cve_agent, "investigate_cves_batch", fake_batch)
+
+    parser = cli.build_parser()
+    out_dir = tmp_path / "watch_reports"
+    args = parser.parse_args(["investigate-watch", "--out-dir", str(out_dir), "--once"])
+    config = cli.load_config()
+    args.func(args, config)
+
+    assert sorted(captured_cve_ids["ids"]) == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert (out_dir / "CVE-2099-0001.md").exists()
+    assert (out_dir / "CVE-2099-0002.md").exists()
+
+
+def test_cmd_investigate_watch_cms_only_flag_filters_the_rest(monkeypatch, tmp_path, capsys):
+    import binoracle.cli as cli
+    from binoracle.workflows import cve_agent, cvefeed
+
+    mentions = [
+        cvefeed.CVEMention(cve_id="CVE-2099-0003", post_id=1, text="router firmware",
+                           cms_related=False),
+        cvefeed.CVEMention(cve_id="CVE-2099-0004", post_id=2, text="WordPress plugin",
+                           cms_related=True),
+    ]
+    monkeypatch.setattr(cvefeed, "poll_new_cve_mentions", lambda channel: mentions)
+
+    captured_cve_ids = {}
+
+    def fake_batch(cve_ids, config=None, lang="es", budget_s=300.0, parallel=2,
+                  hints_by_cve=None, on_event=None, use_cache=True):
+        captured_cve_ids["ids"] = list(cve_ids)
+        items = []
+        for cid in cve_ids:
+            inv = cve_agent.Investigation(cve_id=cid, lookup_ok=True, vuln_class="other")
+            items.append(cve_agent.BatchItem(cve_id=cid, status="done", investigation=inv,
+                                             elapsed_s=1.0))
+        return items
+    monkeypatch.setattr(cve_agent, "investigate_cves_batch", fake_batch)
+
+    parser = cli.build_parser()
+    out_dir = tmp_path / "watch_reports_cms_only"
+    args = parser.parse_args(["investigate-watch", "--out-dir", str(out_dir), "--once",
+                              "--cms-only"])
+    config = cli.load_config()
+    args.func(args, config)
+
+    assert captured_cve_ids["ids"] == ["CVE-2099-0004"]
+    out = capsys.readouterr().out
+    assert "CVE-2099-0003" in out   # se menciona como ignorada, aunque no se investigue
+
+
+def test_cmd_investigate_watch_no_mentions_does_not_call_batch(monkeypatch, tmp_path):
+    import binoracle.cli as cli
+    from binoracle.workflows import cve_agent, cvefeed
+
+    monkeypatch.setattr(cvefeed, "poll_new_cve_mentions", lambda channel: [])
+    called = {"n": 0}
+    monkeypatch.setattr(cve_agent, "investigate_cves_batch",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    parser = cli.build_parser()
+    out_dir = tmp_path / "watch_reports_empty"
+    args = parser.parse_args(["investigate-watch", "--out-dir", str(out_dir), "--once"])
+    config = cli.load_config()
+    args.func(args, config)
+
+    assert called["n"] == 0
+
+
 def test_fetch_git_source_disables_interactive_credential_prompt(monkeypatch):
     # bug real confirmado en vivo (CVE-2025-9501): un source_url que no es un repo real/publico
     # (una URL de GitHub inventada por el LLM, o un mirror distinto del oficial) hacia que git se

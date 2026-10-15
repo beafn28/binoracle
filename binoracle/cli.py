@@ -15,6 +15,7 @@ from pathlib import Path
 # en vez de releer sys.argv. Protege tanto el entry point instalado como `python -m binoracle`.
 _ARGV = sys.argv[1:]
 
+from . import colorlog
 from .config import load_config
 from .llm import make_backend
 from .oracles import build_registry
@@ -912,13 +913,13 @@ def cmd_investigate(args, config):
         from .workflows.genericverify import configure_burp_mcp
         try:
             configure_burp_mcp(args.burp_mcp_url)
-            print(f"  conectado al servidor MCP de Burp en {args.burp_mcp_url} -- las "
-                 f"peticiones de los verificadores genericos pasaran por Burp")
+            colorlog.ok(f"conectado al servidor MCP de Burp en {args.burp_mcp_url} -- las "
+                       f"peticiones de los verificadores genericos pasaran por Burp")
         except BurpMCPError as e:
-            print(f"  no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones directas",
-                 file=sys.stderr)
+            colorlog.warn(f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones "
+                         f"directas", file=sys.stderr)
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
-                          config=config, on_step=lambda m: print("  " + m), lang=config.lang,
+                          config=config, on_step=lambda m: colorlog.line(m), lang=config.lang,
                           budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None,
                           use_cache=not getattr(args, "no_cache", False))
     # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
@@ -934,50 +935,49 @@ def cmd_investigate(args, config):
         _eprint(f"(HTML written to {args.html})")
 
 
-def cmd_investigate_batch(args, config):
-    """Lanza varias investigaciones de CVE EN PARALELO (ver investigate_cves_batch en
-    cve_agent.py), con un tope de concurrencia (--parallel) -- pensado para explorar varias CVEs
-    sin tener que abrir una terminal por cada una. Cada CVE es independiente: una fallando no
-    tumba el lote. Cada informe se escribe a --out-dir/<CVE-ID>.md (y .html en --html-dir si se
-    da), y al final se imprime una tabla resumen de todo el lote."""
+def _connect_shared_burp_mcp(args, context_note: str) -> None:
+    """Conecta una vez al MCP de Burp (si --burp-mcp-url se dio), compartido por TODAS las
+    investigaciones que vengan despues en el mismo proceso -- usado tanto por investigate-batch
+    (un lote fijo) como por investigate-watch (lotes sucesivos a medida que llegan CVEs nuevas
+    del canal vigilado)."""
+    if not getattr(args, "burp_mcp_url", None):
+        return
+    from .workflows.burpmcp import BurpMCPError
+    from .workflows.genericverify import configure_burp_mcp
+    try:
+        configure_burp_mcp(args.burp_mcp_url)
+        colorlog.ok(f"conectado al servidor MCP de Burp en {args.burp_mcp_url} -- compartido "
+                   f"por {context_note}")
+    except BurpMCPError as e:
+        colorlog.warn(f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones "
+                     f"directas", file=sys.stderr)
+
+
+def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: float,
+                                      out_dir: Path, html_dir, use_cache: bool):
+    """Nucleo compartido de investigate-batch e investigate-watch: lanza investigate_cves_batch
+    sobre `cve_ids`, escribe un informe por CVE en `out_dir` (y en `html_dir` si se da), imprime
+    el progreso en vivo y la tabla resumen al final. Devuelve los BatchItem resultantes."""
     from .workflows.cve_agent import (investigate_cves_batch, render_batch_summary,
                                       render_investigation)
-    if getattr(args, "burp_mcp_url", None):
-        from .workflows.burpmcp import BurpMCPError
-        from .workflows.genericverify import configure_burp_mcp
-        try:
-            configure_burp_mcp(args.burp_mcp_url)
-            print(f"  conectado al servidor MCP de Burp en {args.burp_mcp_url} -- compartido por "
-                 f"todas las investigaciones del lote")
-        except BurpMCPError as e:
-            print(f"  no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones directas",
-                 file=sys.stderr)
 
-    out_dir = Path(getattr(args, "out_dir", None) or "./binoracle_batch_reports")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    html_dir = Path(args.html_dir) if getattr(args, "html_dir", None) else None
-    if html_dir:
-        html_dir.mkdir(parents=True, exist_ok=True)
-
-    parallel = int(getattr(args, "parallel", 2) or 2)
-    print(f"  lanzando {len(args.cves)} investigaciones con paralelismo {parallel}...")
+    colorlog.info(f"lanzando {len(cve_ids)} investigaciones con paralelismo {parallel}...")
 
     def on_event(ev):
         cve_id = ev["cve_id"]
         if ev["type"] == "start":
-            print(f"[{cve_id}] iniciando...")
+            colorlog.info(f"[{cve_id}] iniciando...")
         elif ev["type"] == "step":
-            print(f"[{cve_id}] {ev['message']}")
+            colorlog.line(f"[{cve_id}] {ev['message']}")
         elif ev["type"] == "finish":
             if ev["status"] == "error":
-                print(f"[{cve_id}] ERROR ({ev['elapsed_s']:.0f}s): {ev['error']}")
+                colorlog.error(f"[{cve_id}] ERROR ({ev['elapsed_s']:.0f}s): {ev['error']}")
             else:
-                print(f"[{cve_id}] terminado ({ev['elapsed_s']:.0f}s)")
+                colorlog.ok(f"[{cve_id}] terminado ({ev['elapsed_s']:.0f}s)")
 
     items = investigate_cves_batch(
-        args.cves, config=config, lang=config.lang,
-        budget_s=float(getattr(args, "budget", 300) or 300), parallel=parallel,
-        on_event=on_event, use_cache=not getattr(args, "no_cache", False))
+        cve_ids, config=config, lang=config.lang, budget_s=budget_s, parallel=parallel,
+        on_event=on_event, use_cache=use_cache)
 
     for it in items:
         if it.investigation is None:
@@ -993,8 +993,93 @@ def cmd_investigate_batch(args, config):
                                           poc_kind=it.investigation.poc_kind))
 
     print("\n" + render_batch_summary(items, config.lang))
-    print(f"\n(informes individuales en {out_dir}/)" +
-         (f" y HTML en {html_dir}/" if html_dir else ""))
+    colorlog.info(f"informes individuales en {out_dir}/" +
+                 (f" y HTML en {html_dir}/" if html_dir else ""))
+    return items
+
+
+def cmd_investigate_batch(args, config):
+    """Lanza varias investigaciones de CVE EN PARALELO (ver investigate_cves_batch en
+    cve_agent.py), con un tope de concurrencia (--parallel) -- pensado para explorar varias CVEs
+    sin tener que abrir una terminal por cada una. Cada CVE es independiente: una fallando no
+    tumba el lote. Cada informe se escribe a --out-dir/<CVE-ID>.md (y .html en --html-dir si se
+    da), y al final se imprime una tabla resumen de todo el lote."""
+    _connect_shared_burp_mcp(args, "todas las investigaciones del lote")
+    out_dir = Path(getattr(args, "out_dir", None) or "./binoracle_batch_reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_dir = Path(args.html_dir) if getattr(args, "html_dir", None) else None
+    if html_dir:
+        html_dir.mkdir(parents=True, exist_ok=True)
+    parallel = int(getattr(args, "parallel", 2) or 2)
+    _run_investigate_batch_and_report(
+        args.cves, config, parallel, float(getattr(args, "budget", 300) or 300), out_dir,
+        html_dir, not getattr(args, "no_cache", False))
+
+
+def cmd_investigate_watch(args, config):
+    """Vigila un canal publico de Telegram que notifica CVEs nuevas en cuanto se publican (por
+    defecto @CVENotify, ver cvefeed.py) y, cada vez que aparece una mencion nueva, lanza
+    automaticamente el MISMO pipeline completo que investigate-batch sobre ella: codigo real
+    descargado, laboratorio Docker efimero, verificacion dinamica, capturas -- pensado para que
+    el desarrollo/verificacion de exploits arranque solo en cuanto se publica una CVE nueva, sin
+    tener que estar mirando el canal a mano.
+
+    Por defecto es GENERICO: procesa cualquier CVE que el canal mencione, de cualquier
+    tecnologia, no solo CMS -- investigate_cve() siempre desarrolla una hipotesis + PoC aunque
+    la clase no tenga verificacion dinamica automatica hoy (eso solo existe hoy para
+    missing-authorization/IDOR, SQLi, XXE, path-traversal y deserializacion en WordPress/
+    Drupal/Joomla, ver wpverify.py/drupalverify.py/joomlaverify.py), y ese desarrollo de exploit
+    es exactamente el objetivo de este comando. --cms-only activa el filtro inverso (solo
+    procesar las que tengan pinta de CMS), para cuando se quiere priorizar las que SI pueden
+    llegar a VERIFICADO de principio a fin y no gastar tiempo/Docker en el resto."""
+    import time
+    from .workflows.cvefeed import poll_new_cve_mentions
+
+    _connect_shared_burp_mcp(args, "todas las investigaciones que lance este watch")
+    out_dir = Path(getattr(args, "out_dir", None) or "./binoracle_batch_reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_dir = Path(args.html_dir) if getattr(args, "html_dir", None) else None
+    if html_dir:
+        html_dir.mkdir(parents=True, exist_ok=True)
+    parallel = int(getattr(args, "parallel", 2) or 2)
+    budget_s = float(getattr(args, "budget", 300) or 300)
+    use_cache = not getattr(args, "no_cache", False)
+    channel = getattr(args, "channel", None) or "CVENotify"
+    interval = float(getattr(args, "interval", 300) or 300)
+    cms_only = bool(getattr(args, "cms_only", False))
+
+    colorlog.info(f"vigilando el canal de Telegram @{channel} (sondeo cada {interval:.0f}s" +
+                 (", solo las de pinta CMS" if cms_only else ", TODAS las CVEs (generico)") +
+                 ", Ctrl+C para parar)...")
+    first_cycle = True
+    while True:
+        try:
+            mentions = poll_new_cve_mentions(channel)
+        except Exception as e:
+            colorlog.error(f"fallo sondeando @{channel} ({e}) -- se reintenta en el siguiente "
+                          f"ciclo", file=sys.stderr)
+            mentions = []
+
+        if cms_only and mentions:
+            skipped = [m for m in mentions if not m.cms_related]
+            mentions = [m for m in mentions if m.cms_related]
+            if skipped:
+                colorlog.warn(f"{len(skipped)} CVE(s) nueva(s) ignorada(s) (--cms-only activo, "
+                             f"sin pinta de CMS): " + ", ".join(m.cve_id for m in skipped))
+
+        if mentions:
+            colorlog.ok(f"{len(mentions)} CVE(s) nueva(s) en @{channel}: " +
+                       ", ".join(m.cve_id for m in mentions))
+            _run_investigate_batch_and_report(
+                [m.cve_id for m in mentions], config, parallel, budget_s, out_dir, html_dir,
+                use_cache)
+        elif not first_cycle:
+            colorlog.info(f"sin novedades relevantes en @{channel}")
+        first_cycle = False
+
+        if getattr(args, "once", False):
+            return
+        time.sleep(interval)
 
 
 def cmd_dataset(args, config):
@@ -1455,6 +1540,47 @@ def build_parser() -> argparse.ArgumentParser:
                           "already cached locally from a previous run (same flag as "
                           "'investigate', see its help)")
     ipb.set_defaults(func=cmd_investigate_batch)
+
+    ipw = sub.add_parser("investigate-watch", help="watch a public Telegram CVE feed (default "
+                                                   "@CVENotify) and automatically run the same "
+                                                   "full pipeline as investigate-batch on every "
+                                                   "new CVE it posts -- so exploit development "
+                                                   "starts on its own as soon as a CVE drops")
+    ipw.add_argument("--channel", default="CVENotify",
+                     help="Telegram channel to watch, without the @ (default CVENotify) -- read "
+                          "via its public web preview (t.me/s/<channel>), no bot token needed")
+    ipw.add_argument("--interval", type=float, default=300,
+                     help="seconds between polls of the channel (default 300 = 5 min)")
+    ipw.add_argument("--once", action="store_true",
+                     help="poll exactly once and exit instead of looping forever -- useful to "
+                          "test the feed or to run this from your own cron/systemd timer instead "
+                          "of leaving it running")
+    ipw.add_argument("--cms-only", action="store_true",
+                     help="only auto-investigate CVEs that look CMS-related (WordPress/Drupal/"
+                          "Joomla) -- by default this watch is generic and processes EVERY CVE "
+                          "the channel mentions, developing a hypothesis + PoC for any class; "
+                          "CMS-related ones are simply the only ones that can additionally "
+                          "reach a dynamically VERIFIED result today (see wpverify.py/"
+                          "drupalverify.py/joomlaverify.py). Pass this to skip the rest and save "
+                          "time/Docker on CVEs that won't reach that automatic verification")
+    ipw.add_argument("--parallel", type=int, default=2,
+                     help="how many investigations run at the same time per batch of new CVEs "
+                          "(default 2, hard cap 6 -- same caveat as investigate-batch, see its "
+                          "help)")
+    ipw.add_argument("--budget", type=float, default=300,
+                     help="sandbox verification budget in seconds, per CVE (default 300)")
+    ipw.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
+                                            "once, shared by every investigation this watch "
+                                            "launches (same flag as 'investigate', see its help)")
+    ipw.add_argument("--out-dir", default="./binoracle_batch_reports",
+                     help="directory to write one <CVE-ID>.md report per CVE into (default "
+                          "./binoracle_batch_reports, created if missing)")
+    ipw.add_argument("--html-dir", help="also export each report as <CVE-ID>.html (with any real "
+                                        "screenshots) into this directory")
+    ipw.add_argument("--no-cache", action="store_true",
+                     help="force a fresh investigation even for a CVE already cached locally "
+                          "(same flag as 'investigate', see its help)")
+    ipw.set_defaults(func=cmd_investigate_watch)
 
     return p
 
