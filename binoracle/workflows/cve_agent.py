@@ -1164,6 +1164,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
+            # "cualquier entorno": fallback generico de XSS (ver genericverify.py).
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "xss" and notes.get("endpoint")):
+                from .genericverify import verify_generic_xss, _pick_param
+                from .wpverify import _XSS_HINTS
+                params = notes.get("parameters") or []
+                xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- ejecucion real en navegador "
+                     "headless, el objetivo se construye desde su propio Dockerfile/compose..."
+                     if es else "attempting GENERIC DYNAMIC verification -- real headless-"
+                     "browser execution, the target is built from its own Dockerfile/compose..."))
+                wr = verify_generic_xss(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, xss_param_hint=xss_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_ssti, _pick_param
@@ -1190,6 +1205,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                 wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "GET", params,
                                            ssti_param_hint=ssti_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            # "cualquier entorno": fallback generico de SSTI (ver genericverify.py).
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "ssti" and notes.get("endpoint")):
+                from .genericverify import verify_generic_ssti, _pick_param
+                from .wpverify import _XSS_HINTS
+                params = notes.get("parameters") or []
+                ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- aritmetica calculada por el "
+                     "motor de plantillas, el objetivo se construye desde su propio Dockerfile/"
+                     "compose..." if es else "attempting GENERIC DYNAMIC verification -- "
+                     "arithmetic computed by the template engine, the target is built from its "
+                     "own Dockerfile/compose..."))
+                wr = verify_generic_ssti(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, ssti_param_hint=ssti_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):

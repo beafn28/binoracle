@@ -19,8 +19,9 @@ import time
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _REDIRECT_HINTS, _SQLI_HINTS,
-                       _URL_HINTS, _XML_HINTS, _docker_daemon_ok, _lab_host, _pick_param,
-                       _redirect_location_is_external, _run, _token)
+                       _URL_HINTS, _XML_HINTS, _XSS_HINTS, _XssBrowserSession, _docker_daemon_ok,
+                       _lab_host, _pick_param, _redirect_location_is_external, _run, _token)
+from .payload_kb import load_ssti_arithmetic_payloads, load_xss_payloads
 import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
@@ -1004,6 +1005,214 @@ def verify_generic_open_redirect(
                           f"protocol-relative, backslash, userinfo, espacios/tabs, subdominio) "
                           f"para {redirect_param} y ninguna produjo un redirect con "
                           f"'{evil_host}' en Location -- el open redirect no se confirmo")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_xss(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    xss_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Analogo generico de verify_wordpress_xss: carga la respuesta en un Chromium headless REAL
+    (ver _xss_render) y prueba la misma bateria de variantes elegidas a mano (rotura de HTML/
+    atributo/contexto JS-string/URI) MAS las ~500 variantes generalizables de
+    xss_alert_identifiable.txt en PayloadsAllTheThings -- solo se marca verificado si
+    document.title cambia EXACTO al marcador, prueba de ejecucion real de JS, no de que el
+    payload simplemente aparezca en el HTML crudo de la respuesta."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    xss_param = xss_param_hint or _pick_param(parameters, _XSS_HINTS)
+    if not xss_param:
+        res.detail = "no se identifico el parametro donde se refleja el payload"
+        res.limitations.append("la verificacion de XSS necesita saber que parametro se refleja; "
+                               "afina 'parameters' o pasalo a mano (xss_param_hint)")
+        return res
+
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+    except Exception:
+        res.available = False
+        res.detail = ("Playwright no esta instalado: la verificacion de XSS necesita un "
+                     "navegador real para confirmar EJECUCION, no basta ver el payload "
+                     "reflejado en el HTML crudo")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        token = _token()
+        marker = f"binoracle-xss-{token}"
+        js = f"document.title='{marker}'"
+        attempts = [
+            f"<script>{js}</script>",
+            f"<img src=x onerror=\"{js}\">",
+            f"<svg onload=\"{js}\">",
+            f"<body onload=\"{js}\">",
+            f"<iframe src=\"javascript:{js}\"></iframe>",
+            f"<details open ontoggle=\"{js}\">x</details>",
+            f"\"><script>{js}</script>",
+            f"'><script>{js}</script>",
+            f"\" onmouseover=\"{js}\" x=\"",
+            f"' onmouseover='{js}' x='",
+            f"';{js};//", f'";{js};//',
+            f"</script><script>{js}</script>",
+            f"javascript:{js}",
+            f"<ScRiPt>{js}</sCrIpT>",
+            f"<svg/onload=\"{js}\">",
+        ]
+        attempts += load_xss_payloads(js)
+
+        m = (http_method or "GET").upper()
+        found = False
+        tried = []
+        # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
+        # Chromium por payload, confirmado en vivo, tarda minutos -- el coste real es el
+        # arranque del propio navegador, no la navegacion entre paginas.
+        step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
+        with _XssBrowserSession() as xb:
+            for payload_value in attempts:
+                params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                params[xss_param] = payload_value
+                title, _ = xb.render(base_url, endpoint, m, params, [])
+                tried.append({"payload": payload_value, "title_resultante": title})
+                if title == marker:
+                    found = True
+                    res.evidence["payload_ganador"] = payload_value
+                    step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
+                         f"cambio exactamente a '{marker}'.")
+                    break
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "xss_param": xss_param, "token": token, "metodo": m,
+                             "intentos_count": len(tried)})
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"XSS confirmado: el navegador real EJECUTO el script inyectado en "
+                          f"{xss_param} -- document.title cambio exactamente a '{marker}', algo "
+                          f"que solo el motor JS del navegador pudo hacer, no una coincidencia de "
+                          f"texto reflejado")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
+                          f"ninguna el navegador ejecuto el script -- el XSS no se confirmo "
+                          f"(puede que el contexto de reflexion sea distinto, que haya "
+                          f"sanitizacion real, o que el efecto solo se vea en otra pagina)")
+        res.evidence["intentos"] = tried[:50]
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_ssti(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    ssti_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Analogo generico de verify_wordpress_ssti: el payload pide al motor de plantillas que
+    CALCULE una operacion aritmetica con dos numeros aleatorios; si el resultado (que no aparece
+    en ningun punto del payload enviado) sale en la respuesta, es prueba de que el motor EVALUO
+    codigo, no que lo reflejo como texto. Incluye las plantillas elegidas a mano MAS todas las
+    generalizables de ssti.fuzz en PayloadsAllTheThings."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    ssti_param = ssti_param_hint or _pick_param(parameters, _XSS_HINTS)
+    if not ssti_param:
+        res.detail = "no se identifico el parametro que llega al motor de plantillas"
+        res.limitations.append("la verificacion de SSTI necesita saber que parametro llega a la "
+                               "plantilla; afina 'parameters' o pasalo a mano (ssti_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import requests
+        a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
+        expected = a * b
+        mul = f"{a}*{b}"
+        hand_made = [
+            f"{{{{{mul}}}}}", f"${{{mul}}}", f"#{{{mul}}}", f"<%= {mul} %>",
+            f"{{{mul}}}", f"${{{{{mul}}}}}", f"<#if true>${{{mul}}}</#if>",
+            f"}}{{{mul}}}{{", f"'}}{{{mul}}}{{'", f'"}}{{{mul}}}{{"',
+            f"-}}{{{mul}}}{{-", f"\">{{{{{mul}}}}}<\"",
+        ]
+        attempt_pairs = [(p, expected) for p in hand_made] + load_ssti_arithmetic_payloads(a, b)
+
+        m = (http_method or "GET").upper()
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "metodo": m, "ssti_param": ssti_param, "a": a, "b": b,
+                             "producto_esperado": expected})
+
+        found = False
+        tried = []
+        for payload_value, payload_expected in attempt_pairs:
+            pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[ssti_param] = payload_value
+            try:
+                resp = requests.request(m, base_url + endpoint, timeout=15,
+                                        data=payload if m != "GET" else None,
+                                        params=payload if m == "GET" else None)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            matched = bool(pattern.search(resp.text or ""))
+            tried.append({"payload": payload_value, "status": resp.status_code,
+                         "resultado_presente": matched})
+            if matched:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["resultado_esperado_ganador"] = payload_expected
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
+                     f"motor de plantillas -- ese numero no aparece en el payload enviado.")
+                break
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"SSTI confirmada: la peticion con {ssti_param}="
+                          f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
+                          f"EVALUARA la expresion y devolviera "
+                          f"{res.evidence['resultado_esperado_ganador']} en la respuesta -- "
+                          f"prueba inequivoca de evaluacion de codigo en servidor")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} "
+                          f"(producto esperado {a}*{b}={expected}, mas las plantillas aditivas) y "
+                          f"ninguna produjo el resultado esperado -- el SSTI no se confirmo")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

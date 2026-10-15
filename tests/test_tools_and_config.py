@@ -5258,3 +5258,142 @@ def test_genericverify_sqli_blind_includes_mssql_waitfor_dialect():
     from binoracle.workflows import genericverify
     src = inspect.getsource(genericverify.verify_generic_sqli_blind)
     assert "WAITFOR DELAY" in src
+
+
+# --- payload_kb.py: carga en tiempo de ejecucion de las wordlists reales de
+# PayloadsAllTheThings committeadas en payload_kb/ ---
+
+def test_payload_kb_load_xss_payloads_substitutes_marker():
+    from binoracle.workflows import payload_kb
+    payloads = payload_kb.load_xss_payloads("document.title='MARK'")
+    assert len(payloads) > 100
+    assert all("alert(" not in p for p in payloads)
+    assert all("MARK" in p for p in payloads)
+
+
+def test_payload_kb_load_xss_payloads_excludes_third_party_domains():
+    from binoracle.workflows import payload_kb
+    payloads = payload_kb.load_xss_payloads("document.title='MARK'")
+    assert all("crowdshield.com" not in p and "xerosecurity.com" not in p for p in payloads)
+
+
+def test_payload_kb_load_ssti_arithmetic_payloads_substitutes_operands():
+    from binoracle.workflows import payload_kb
+    pairs = payload_kb.load_ssti_arithmetic_payloads(37, 41)
+    assert len(pairs) >= 6
+    muls = [p for p, exp in pairs if exp == 37 * 41]
+    adds = [p for p, exp in pairs if exp == 37 + 41]
+    assert any("37*41" in p or "37*'41'" in p for p in muls)
+    assert any("37+41" in p for p in adds)
+
+
+def test_genericverify_xss_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_xss(str(tmp_path), "/greet", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "parametro" in res.limitations[0]
+
+
+def test_genericverify_xss_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_xss(str(tmp_path), "/greet", "GET", {"name": "x"},
+                                xss_param_hint="name")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_xss_blocked_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = gv.verify_generic_xss(str(tmp_path), "/greet", "GET", {"name": "x"})
+    assert res.available is False
+    assert res.verified is False
+
+
+def test_genericverify_ssti_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_ssti(str(tmp_path), "/render", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "parametro" in res.limitations[0]
+
+
+def test_genericverify_ssti_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_ssti(str(tmp_path), "/render", "GET", {"msg": "x"},
+                                 ssti_param_hint="msg")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_ssti_blocked_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = gv.verify_generic_ssti(str(tmp_path), "/render", "GET", {"msg": "x"})
+    assert res.available is False
+    assert res.verified is False
+
+
+def test_cve_agent_dispatches_generic_xss_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_xss(local_path, endpoint, method, params, xss_param_hint="", on_step=None,
+                         budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="XSS confirmado (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_xss", fake_generic_xss)
+
+    inv = Investigation(cve_id="CVE-2099-00007")
+    inv.vuln_class = "xss"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/greet", "http_method": "GET", "parameters": {"name": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/greet"
+    assert inv.verified is True
+
+
+def test_cve_agent_dispatches_generic_ssti_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_ssti(local_path, endpoint, method, params, ssti_param_hint="", on_step=None,
+                          budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="SSTI confirmada (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_ssti", fake_generic_ssti)
+
+    inv = Investigation(cve_id="CVE-2099-00008")
+    inv.vuln_class = "ssti"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/render", "http_method": "GET", "parameters": {"msg": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/render"
+    assert inv.verified is True

