@@ -225,6 +225,20 @@ def _parse_raw_http_response(raw: str) -> BurpMCPResponse:
     para las cabeceras, igual que hace internamente http.client."""
     if not raw:
         return BurpMCPResponse(status_code=0, reason="(sin respuesta)", raw_response=raw)
+    original_raw = raw
+    # bug real confirmado en vivo: la tool REAL de Burp (a diferencia de los servidores MCP de
+    # mentira usados en los tests, que SI devuelven solo la respuesta cruda) no devuelve SOLO la
+    # respuesta -- devuelve un texto que primero trae de vuelta (eco de) la peticion que
+    # mandamos, y la respuesta real viene detras de un marcador 'httpResponse='. Sin esto, el
+    # primer '\r\n\r\n' que encontraba partition() caia DENTRO de nuestra propia peticion (entre
+    # sus cabeceras y su cuerpo, p.ej. el POST de un login), nunca en el de la respuesta real --
+    # la "status line" resultante era la primera linea de NUESTRA peticion ("POST /... HTTP/1.1",
+    # que no hace match con el regex de respuesta "HTTP/x.x NNN ..."), asi que status_code salia
+    # SIEMPRE 0 y las cabeceras (incluido Set-Cookie) se perdian, aunque el servidor respondiera
+    # perfectamente -- de ahi que TODO login/peticion con Burp activo pareciera fallar.
+    m_wrapped = re.search(r"httpResponse=(HTTP/\d\.\d.*)", raw, re.DOTALL)
+    if m_wrapped:
+        raw = m_wrapped.group(1)
     head, _, body = raw.partition("\r\n\r\n")
     if "\r\n\r\n" not in raw:
         head, _, body = raw.partition("\n\n")
@@ -244,7 +258,8 @@ def _parse_raw_http_response(raw: str) -> BurpMCPResponse:
     headers = dict(msg.items())
     set_cookie_headers = msg.get_all("Set-Cookie") or []
     return BurpMCPResponse(status_code=status_code, reason=reason, headers=headers,
-                           set_cookie_headers=set_cookie_headers, text=body, raw_response=raw)
+                           set_cookie_headers=set_cookie_headers, text=body,
+                           raw_response=original_raw)
 
 
 def _build_raw_http1_request(method: str, path_with_query: str, host: str, headers: dict,

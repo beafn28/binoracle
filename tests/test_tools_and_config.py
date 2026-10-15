@@ -5426,6 +5426,48 @@ def test_burpmcp_parse_raw_http_response_empty():
     assert res.status_code == 0
 
 
+def test_burpmcp_parse_raw_http_response_unwraps_real_burp_echo_format():
+    # bug real confirmado en vivo (CVE-2024-1071, login via Burp): la tool REAL de Burp no
+    # devuelve solo la respuesta cruda -- devuelve un texto que trae de vuelta (eco de) la
+    # peticion que mandamos, seguido de la respuesta real tras un marcador 'httpResponse='.
+    # Antes de este fix, partition("\r\n\r\n") caia en el primer '\r\n\r\n' que encontraba, que
+    # estaba DENTRO de nuestra propia peticion (entre sus cabeceras y su cuerpo POST) -- la
+    # "status line" resultante era la primera linea de NUESTRA peticion ("POST /wp-login.php
+    # HTTP/1.1"), que no hace match con el regex de respuesta, asi que status_code salia SIEMPRE
+    # 0 y el Set-Cookie real (con la cookie de sesion de WordPress) se perdia -- aunque el login
+    # funcionara perfectamente del otro lado. Texto reconstruido a partir del real que vio la
+    # usuaria en su propia Burp.
+    from binoracle.workflows.burpmcp import _parse_raw_http_response
+    our_request = (
+        "POST /wp-login.php HTTP/1.1\r\nHost: host.docker.internal:56133\r\n"
+        "Connection: close\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: 123\r\n\r\n"
+        "log=binoracle_admin&pwd=h_UFsNk4AkWc-3EW&wp-submit=Log+In&"
+        "redirect_to=http%3A%2F%2Fhost.docker.internal%3A56133%2Fwp-admin%2F&testcookie=1")
+    real_response = (
+        "HTTP/1.1 302 Found\r\nDate: Thu, 15 Oct 2026 13:44:05 GMT\r\n"
+        "Set-Cookie: wordpress_logged_in_abc123=binoracle_admin%7C...; path=/\r\n"
+        "Location: http://host.docker.internal:56133/wp-admin/\r\n\r\n")
+    combined = our_request + ", httpResponse=" + real_response
+
+    res = _parse_raw_http_response(combined)
+    assert res.status_code == 302
+    assert res.headers["Location"] == "http://host.docker.internal:56133/wp-admin/"
+    assert res.set_cookie_headers == ["wordpress_logged_in_abc123=binoracle_admin%7C...; path=/"]
+    # raw_response conserva el texto COMPLETO tal cual llego (util para depurar), no el recortado
+    assert res.raw_response == combined
+
+
+def test_burpmcp_parse_raw_http_response_without_echo_wrapper_still_works():
+    # los servidores MCP de mentira usados en otros tests de este archivo SI devuelven solo la
+    # respuesta cruda (sin el eco de la peticion) -- el fix no debe romper ese caso.
+    from binoracle.workflows.burpmcp import _parse_raw_http_response
+    raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello world"
+    res = _parse_raw_http_response(raw)
+    assert res.status_code == 200
+    assert res.text == "hello world"
+
+
 def test_burpmcp_build_raw_http1_request_sets_content_length():
     from binoracle.workflows.burpmcp import _build_raw_http1_request
     raw = _build_raw_http1_request("POST", "/x", "example.com", {}, "a=1")
