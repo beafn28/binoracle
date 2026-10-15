@@ -4716,3 +4716,30 @@ def test_drupalverify_substitute_path_param():
     assert _substitute_path_param("/mymodule/update", "uid", "1") == (
         "/mymodule/update", False)
     assert _substitute_path_param("/mymodule/update", "", "1") == ("/mymodule/update", False)
+
+
+# --- manejo de Ctrl+C y errores en el CLI (nunca un traceback crudo) ---
+
+def test_cli_main_handles_keyboard_interrupt_cleanly(monkeypatch, capsys):
+    from binoracle import cli
+    monkeypatch.setattr(cli, "cmd_doctor", lambda args, config: (_ for _ in ()).throw(KeyboardInterrupt()))
+    rc = cli.main(["doctor"])
+    assert rc == 130
+    assert "abortado por el usuario" in capsys.readouterr().err
+
+
+def test_cli_main_handles_unexpected_error_without_traceback(monkeypatch, capsys):
+    from binoracle import cli
+    monkeypatch.setattr(cli, "cmd_doctor", lambda args, config: (_ for _ in ()).throw(ValueError("boom")))
+    rc = cli.main(["doctor"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "error inesperado: boom" in err
+    assert "Traceback" not in err
+
+
+def test_cli_main_debug_flag_reraises_full_traceback(monkeypatch):
+    from binoracle import cli
+    monkeypatch.setattr(cli, "cmd_doctor", lambda args, config: (_ for _ in ()).throw(ValueError("boom")))
+    with __import__("pytest").raises(ValueError):
+        cli.main(["--debug", "doctor"])

@@ -956,6 +956,9 @@ def cmd_kb(args, config):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
+    p.add_argument("--debug", action="store_true",
+                  help="on an unexpected error, show the full Python traceback instead of a "
+                       "one-line summary (useful for reporting a bug)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("doctor", help="show oracle + LLM availability")
@@ -1335,7 +1338,31 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     config = load_config()
-    return args.func(args, config)
+    try:
+        return args.func(args, config)
+    except KeyboardInterrupt:
+        # Ctrl+C a medio comando: nunca un traceback crudo. Los laboratorios Docker efimeros
+        # (wpverify.py/drupalverify.py/joomlaverify.py) ya envuelven TODO su trabajo en
+        # try/finally con lab.teardown() -- un KeyboardInterrupt, igual que cualquier otra
+        # excepcion, dispara ese finally (Python no distingue BaseException de Exception para
+        # efectos de un bloque finally), asi que el laboratorio se limpia solo salvo que el
+        # propio proceso muera de golpe (dos Ctrl+C muy rapidos, kill -9...). Si algo quedara
+        # suelto de todas formas, 'docker ps -a' lo mostraria -- limpiar a mano con
+        # 'docker rm -f <nombre>' y 'docker network rm <nombre>'.
+        print("\nabortado por el usuario (Ctrl+C). Si habia un laboratorio Docker efimero en "
+             "marcha, se desmonta solo; si 'docker ps -a' muestra algo con el prefijo "
+             "'binoracle-' despues de esto, limpialo a mano con 'docker rm -f' / "
+             "'docker network rm'.", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        # p.ej. 'binoracle ... | head': el otro extremo del pipe se cerro, no es un error real.
+        return 0
+    except Exception as e:
+        if args.debug:
+            raise
+        print(f"\nerror inesperado: {e} (pasa --debug para ver el traceback completo)",
+             file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
