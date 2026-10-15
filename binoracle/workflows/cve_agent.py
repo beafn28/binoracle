@@ -671,9 +671,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
+            # poco" -- ver drupalverify.py).
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_sqli, _pick_param
+                from .wpverify import _SQLI_HINTS
+                params = notes.get("parameters") or []
+                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                step(("intentando verificacion DINAMICA -- UNION-based/boolean-blind "
+                     "(Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- UNION-based/boolean-blind "
+                     "(ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_sqli(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    sqli_param_hint=sqli_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
             # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
                 params = notes.get("parameters") or []
@@ -709,8 +726,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
             # mismo laboratorio efimero, para SSRF: un listener interno (en la misma red Docker,
             # no expuesto) registra si el SERVIDOR hace de verdad la peticion saliente -- ver
-            # verify_wordpress_ssrf.
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            # verify_wordpress_ssrf. Drupal primero (sexta clase, "poco a poco"), WordPress gated
+            # por 'not is_drupal' justo despues, mismo patron que el resto del dispatch.
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "ssrf" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_ssrf, _pick_param
+                from .wpverify import _URL_HINTS
+                params = notes.get("parameters") or []
+                url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                step(("intentando verificacion DINAMICA -- listener interno con token aleatorio "
+                     "(Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- internal listener with a random token "
+                     "(ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_ssrf(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                        notes.get("http_method") or "GET", params,
+                                        url_param_hint=url_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssrf" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_ssrf, _pick_param, _URL_HINTS
                 params = notes.get("parameters") or []
@@ -746,8 +778,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que
-            # los bloques anteriores (evita repetir el mismo volcado 6 veces mas).
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            # los bloques anteriores (evita repetir el mismo volcado 6 veces mas). Cada clase trae
+            # su propio par Drupal/WordPress, mismo patron 'is_drupal'/'not is_drupal'.
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "xss" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_xss, _pick_param
+                from .wpverify import _XSS_HINTS
+                params = notes.get("parameters") or []
+                xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                step(("intentando verificacion DINAMICA -- ejecucion real en navegador headless "
+                     "(Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- real headless-browser execution "
+                     "(ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                       notes.get("http_method") or "GET", params,
+                                       xss_param_hint=xss_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xss, _pick_param, _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -760,7 +807,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "ssti" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_ssti, _pick_param
+                from .wpverify import _XSS_HINTS
+                params = notes.get("parameters") or []
+                ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                step(("intentando verificacion DINAMICA -- aritmetica calculada por el motor de "
+                     "plantillas (Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- arithmetic computed by the template "
+                     "engine (ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                        notes.get("http_method") or "GET", params,
+                                        ssti_param_hint=ssti_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_ssti, _pick_param, _XSS_HINTS
                 params = notes.get("parameters") or []
@@ -773,7 +834,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                            notes.get("http_method") or "GET", params,
                                            ssti_param_hint=ssti_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "xxe" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_xxe, _pick_param
+                from .wpverify import _XML_HINTS
+                params = notes.get("parameters") or []
+                xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                step(("intentando verificacion DINAMICA -- fichero canario con secreto aleatorio "
+                     "via entidad externa (Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- random-secret canary file via external "
+                     "entity (ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                       notes.get("http_method") or "GET", params,
+                                       xml_param_hint=xml_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xxe, _pick_param, _XML_HINTS
                 params = notes.get("parameters") or []
@@ -786,7 +861,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                           notes.get("http_method") or "GET", params,
                                           xml_param_hint=xml_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_open_redirect, _pick_param
+                from .wpverify import _REDIRECT_HINTS
+                params = notes.get("parameters") or []
+                redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                step(("intentando verificacion DINAMICA -- cabecera Location real sin seguir "
+                     "redirects (Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- real Location header without following "
+                     "redirects (ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                                 notes.get("http_method") or "GET", params,
+                                                 redirect_param_hint=redir_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_open_redirect, _pick_param, _REDIRECT_HINTS
                 params = notes.get("parameters") or []
@@ -799,7 +888,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                                     notes.get("http_method") or "GET", params,
                                                     redirect_param_hint=redir_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_file_upload, _pick_param
+                from .wpverify import _FILE_UPLOAD_HINTS
+                params = notes.get("parameters") or []
+                file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                step(("intentando verificacion DINAMICA -- webshell subido que calcula una suma "
+                     "(Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- uploaded webshell computing a sum "
+                     "(ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                               notes.get("http_method") or "POST", params,
+                                               file_param_hint=file_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_file_upload, _pick_param, _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
@@ -812,7 +915,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                                   notes.get("http_method") or "POST", params,
                                                   file_param_hint=file_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "csrf" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_csrf, _pick_param
+                from .wpverify import _EMAIL_HINTS, _PASS_HINTS
+                params = notes.get("parameters") or []
+                email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
+                pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                step(("intentando verificacion DINAMICA -- self-CSRF sin token, origen externo "
+                     "ficticio (Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- self-CSRF without a token, fake external "
+                     "origin (ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_csrf(fr.local_path, plugin_dir, notes.get("endpoint"),
+                                        notes.get("http_method") or "POST", params,
+                                        email_param_hint=email_p or "",
+                                        pass_param_hint=pass_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):
                 from .wpverify import (verify_wordpress_csrf, _pick_param, _EMAIL_HINTS,
                                        _PASS_HINTS)

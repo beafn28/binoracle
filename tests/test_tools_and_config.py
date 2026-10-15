@@ -4402,3 +4402,64 @@ def test_drupalverify_command_injection_requires_cmd_param(monkeypatch, tmp_path
                                              ["foo", "bar"])
     assert res.verified is False
     assert res.limitations
+
+
+def test_drupalverify_ssrf_requires_url_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_ssrf(str(tmp_path), "mymodule", "/mymodule/fetch", "GET", ["foo"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_drupalverify_xss_requires_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_xss(str(tmp_path), "mymodule", "/mymodule/view", "GET", ["foo"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_drupalverify_ssti_requires_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_ssti(str(tmp_path), "mymodule", "/mymodule/render", "GET", ["foo"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_drupalverify_xxe_degrades_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = dv.verify_drupal_xxe(str(tmp_path), "mymodule", "/mymodule/import", "POST", ["xml"])
+    assert res.available is False
+
+
+def test_drupalverify_open_redirect_requires_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_open_redirect(str(tmp_path), "mymodule", "/mymodule/go", "GET", ["foo"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_drupalverify_file_upload_requires_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_file_upload(str(tmp_path), "mymodule", "/mymodule/upload", "POST", ["foo"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_drupalverify_csrf_requires_email_or_pass_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_csrf(str(tmp_path), "mymodule", "/mymodule/update", "POST", ["foo"])
+    assert res.verified is False
+    assert res.limitations
