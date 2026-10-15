@@ -99,6 +99,31 @@ def looks_like_drupal_slug(text: str) -> bool:
     return bool(t) and bool(re.fullmatch(r"[a-z][a-z0-9_]{1,80}", t)) and "/" not in t and "_" in t
 
 
+def _extract_wp_org_plugin_slug(text: str) -> Optional[str]:
+    """Si `text` es la URL de la PAGINA del directorio (https://wordpress.org/plugins/<slug>/...,
+    con o sin 'www.', con o sin ruta/query/fragmento detras) -- no el slug desnudo -- devuelve el
+    slug; None si no tiene esa forma. Confirmado en vivo: la hipotesis del LLM a veces trae esto
+    en vez del slug que el resto del despacho espera. Casuistica cubierta (revisado a fondo, no
+    solo el caso que fallo): esquema opcional (el LLM a veces omite 'https://'), subdominios de
+    idioma (es./de./fr./pt-br.wordpress.org -- WordPress.org los tiene para CADA idioma, no solo
+    'www'), y cualquier terminador real de URL detras del slug (/, ?, #, o fin de cadena -- no
+    solo los tres que el primer intento cubria)."""
+    m = re.match(
+        r"^(?:https?://)?(?:(?:www|[a-z]{2}(?:-[a-z]{2})?)\.)?wordpress\.org/plugins/"
+        r"([a-z0-9][a-z0-9-]{1,80})(?:[/?#]|$)",
+        (text or "").strip(), re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
+def _extract_drupal_org_module_slug(text: str) -> Optional[str]:
+    """Analogo de _extract_wp_org_plugin_slug para la pagina de un proyecto de Drupal.org
+    (https://www.drupal.org/project/<machine_name>...) -- misma casuistica (esquema opcional,
+    cualquier terminador real de URL)."""
+    m = re.match(r"^(?:https?://)?(?:www\.)?drupal\.org/project/([a-z][a-z0-9_]{1,80})(?:[/?#]|$)",
+                (text or "").strip(), re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
 def detect_module_folder(local_path: str, hint: str = "") -> str:
     """Analogo a detect_plugin_folder() pero nombrado para la convencion de Drupal (un modulo se
     declara con un .info.yml con 'type: module|theme') -- detect_plugin_folder ya reconoce AMBAS
@@ -526,6 +551,16 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         return fetch_zip_url(target, on_step=on_step, timeout=timeout)
     if looks_like_git_url(target):
         return fetch_git_source(target, ref=version, on_step=on_step, timeout=timeout)
+    # confirmado en vivo: la hipotesis del LLM a veces trae la URL de la PAGINA del directorio
+    # (https://wordpress.org/plugins/ultimate-member/), no el slug desnudo que el resto de este
+    # despacho espera -- se reconoce aparte y se extrae el slug, en vez de rechazarla entera.
+    wp_page_slug = _extract_wp_org_plugin_slug(target)
+    if wp_page_slug:
+        target, cms_hint = wp_page_slug, "wordpress"
+    else:
+        drupal_page_slug = _extract_drupal_org_module_slug(target)
+        if drupal_page_slug:
+            target, cms_hint = drupal_page_slug, "drupal"
 
     if cms_hint == "drupal":
         return fetch_drupal_module(target, version=version, on_step=on_step, timeout=timeout)

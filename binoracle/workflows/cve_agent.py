@@ -621,11 +621,19 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
 
 
 _VERSION_PATTERN = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
-# patron Patchstack/NVD casi universal (confirmado en vivo: CVE-2024-27956 trae literal "This
-# issue affects Automatic: from n/a through 3.92.0.") -- "n/a" en el extremo inferior es normal
-# (sin primera version conocida afectada), la version REAL que importa para descargar el zip
-# vulnerable es la del extremo SUPERIOR ("through X").
-_THROUGH_VERSION_RE = re.compile(r"through\s+([0-9]+(?:\.[0-9]+){0,4})")
+_VNUM = r"([0-9]+(?:\.[0-9]+){0,4})"
+# casuistica real de frases de rango de NVD/Patchstack (revisado a fondo, no solo el patron
+# 'through X' que confirmo CVE-2024-27956) -- en todas, la version que importa para descargar
+# el zip vulnerable es la del extremo SUPERIOR del rango, la mas reciente aun afectada:
+#   - "from n/a through 3.92.0" / "2.1.3 to 2.8.2" (confirmados en vivo, los dos)
+#   - "before 1.26" / "prior to 1.26" (NVD clasico)
+#   - "up to 1.26" / "up to and including 1.26" (otra fraseologia comun)
+#   - "<= 1.26" / "< 1.26" (notas terse)
+#   - "1.0 - 2.0" / "1.0 – 2.0" / "1.0 — 2.0" (rango con guion/en-dash/em-dash, ESPACIOS
+#     obligatorios a los lados para no confundirlo con un unico token tipo '1.0-beta1')
+_THROUGH_VERSION_RE = re.compile(
+    rf"(?:through|to|before|prior\s+to|up\s+to(?:\s+and\s+including)?|<=?)\s+{_VNUM}"
+    rf"|{_VNUM}\s+[-–—]\s+{_VNUM}")
 
 
 def _clean_affected_version(raw: str) -> str:
@@ -634,7 +642,7 @@ def _clean_affected_version(raw: str) -> str:
     3.92.0'), no un numero de version limpio -- confirmado en vivo que, sin limpiar, eso rompe
     la URL de descarga con un error de bajo nivel confuso (el espacio no es valido en una URL).
     En vez de descartar el dato (la version SI es util: es la ultima version vulnerable, la que
-    hay que descargar), se extrae con una regex sobre el formato 'through X' casi universal de
+    hay que descargar), se extrae con una regex sobre las frases de rango casi universales de
     estas descripciones. Si ya viene limpia, se devuelve tal cual; si no se reconoce nada, se
     devuelve vacio (mejor pedir la ultima version que mandar una cadena rota)."""
     raw = (raw or "").strip()
@@ -644,7 +652,9 @@ def _clean_affected_version(raw: str) -> str:
         return raw
     m = _THROUGH_VERSION_RE.search(raw)
     if m:
-        return m.group(1)
+        # grupo 1: las frases con palabra clave (through/to/before/...). grupo 3: el extremo
+        # SUPERIOR del rango con guion (grupo 2 es el inferior, nunca el que interesa aqui).
+        return m.group(1) or m.group(3)
     return ""
 
 

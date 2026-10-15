@@ -5943,3 +5943,71 @@ def test_burpmcp_client_does_not_strip_sse_suffix_on_non_404_error():
     with pytest.raises(BurpMCPError):
         client.connect()
     assert client.sse_url == "http://127.0.0.1:1/sse"
+
+
+# --- endurecido tras un sexto fallo real en vivo: el LLM dio source_url como la URL de la
+# PAGINA del plugin (https://wordpress.org/plugins/ultimate-member/), no el slug desnudo, y
+# fetch_source() la rechazo entera en vez de extraer el slug ---
+
+def test_extract_wp_org_plugin_slug_from_page_url():
+    from binoracle.workflows.websource import _extract_wp_org_plugin_slug
+    assert _extract_wp_org_plugin_slug("https://wordpress.org/plugins/ultimate-member/") == "ultimate-member"
+    assert _extract_wp_org_plugin_slug("https://wordpress.org/plugins/ultimate-member") == "ultimate-member"
+    assert _extract_wp_org_plugin_slug("https://www.wordpress.org/plugins/foo-bar/?x=1") == "foo-bar"
+    assert _extract_wp_org_plugin_slug("automatic") is None
+    assert _extract_wp_org_plugin_slug("https://example.com/plugins/foo/") is None
+
+
+def test_extract_drupal_org_module_slug_from_page_url():
+    from binoracle.workflows.websource import _extract_drupal_org_module_slug
+    assert _extract_drupal_org_module_slug("https://www.drupal.org/project/webform") == "webform"
+    assert _extract_drupal_org_module_slug("https://drupal.org/project/webform/releases") == "webform"
+    assert _extract_drupal_org_module_slug("webform") is None
+
+
+def test_fetch_source_resolves_wp_org_page_url_to_slug(monkeypatch):
+    from binoracle.workflows import websource
+    called = {}
+    def fake_wp(slug, version="", dest_dir="", on_step=None, timeout=60.0):
+        called["slug"] = slug
+        called["version"] = version
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=slug)
+    monkeypatch.setattr(websource, "fetch_wordpress_plugin", fake_wp)
+
+    res = websource.fetch_source("https://wordpress.org/plugins/ultimate-member/", version="2.8.2")
+    assert res.ok is True
+    assert called["slug"] == "ultimate-member"
+    assert called["version"] == "2.8.2"
+
+
+def test_clean_affected_version_extracts_to_phrasing():
+    from binoracle.workflows.cve_agent import _clean_affected_version
+    assert _clean_affected_version("2.1.3 to 2.8.2") == "2.8.2"
+    assert _clean_affected_version("versions 1.0 to 2.0") == "2.0"
+
+
+def test_extract_wp_org_plugin_slug_handles_locale_subdomains_and_terminators():
+    from binoracle.workflows.websource import _extract_wp_org_plugin_slug
+    assert _extract_wp_org_plugin_slug("https://es.wordpress.org/plugins/foo-bar/") == "foo-bar"
+    assert _extract_wp_org_plugin_slug("https://de.wordpress.org/plugins/foo-bar") == "foo-bar"
+    assert _extract_wp_org_plugin_slug("https://pt-br.wordpress.org/plugins/foo-bar/") == "foo-bar"
+    assert _extract_wp_org_plugin_slug("wordpress.org/plugins/ultimate-member/") == "ultimate-member"
+    assert _extract_wp_org_plugin_slug("https://WordPress.org/Plugins/Foo-Bar/".lower()) == "foo-bar"
+    assert _extract_wp_org_plugin_slug("https://wordpress.org/plugins/foo-bar#reviews") == "foo-bar"
+    assert _extract_wp_org_plugin_slug("https://wordpress.org/plugins/foo-bar?tab=description") == "foo-bar"
+
+
+def test_clean_affected_version_handles_before_prior_upto_and_dash_ranges():
+    from binoracle.workflows.cve_agent import _clean_affected_version
+    assert _clean_affected_version("versions up to 1.26") == "1.26"
+    assert _clean_affected_version("versions up to and including 1.26") == "1.26"
+    assert _clean_affected_version("affects versions before 1.26") == "1.26"
+    assert _clean_affected_version("affects versions prior to 1.26") == "1.26"
+    assert _clean_affected_version("affected: <= 1.26") == "1.26"
+    assert _clean_affected_version("affected: < 1.26") == "1.26"
+    assert _clean_affected_version("1.0 - 2.0") == "2.0"
+    assert _clean_affected_version("1.0 – 2.0") == "2.0"
+    assert _clean_affected_version("1.0 — 2.0") == "2.0"
+    assert _clean_affected_version("5.1.8") == "5.1.8"
+    assert _clean_affected_version("") == ""
+    assert _clean_affected_version("no version info at all") == ""
