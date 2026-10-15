@@ -5711,3 +5711,102 @@ def test_run_web_investigation_falls_back_to_guessed_slug_when_llm_gives_none(mo
     assert called.get("source") == "automatic"
     assert inv.source_fetch["source_guessed_from_description"] is True
     assert any("automatic" in b for b in inv.blockers)
+
+
+# --- endurecido tras un segundo fallo real en vivo: Burp bloquea la conexion con "Blocked DNS
+# rebinding attack from host: host.docker.internal:9876" cuando binoracle corre en Docker ---
+
+def test_burpmcp_client_overrides_host_header_for_non_localhost_url():
+    from binoracle.workflows.burpmcp import BurpMCPClient
+    client = BurpMCPClient("http://host.docker.internal:9876/sse")
+    assert client.host_header == "127.0.0.1:9876"
+
+
+def test_burpmcp_client_no_override_for_localhost_url():
+    from binoracle.workflows.burpmcp import BurpMCPClient
+    assert BurpMCPClient("http://127.0.0.1:9876/sse").host_header is None
+    assert BurpMCPClient("http://localhost:9876/sse").host_header is None
+
+
+def test_burpmcp_client_custom_host_header_override():
+    from binoracle.workflows.burpmcp import BurpMCPClient
+    client = BurpMCPClient("http://host.docker.internal:1234/sse", host_header="127.0.0.1:9999")
+    assert client.host_header == "127.0.0.1:9999"
+
+
+def test_burpmcp_client_default_port_in_host_header_without_explicit_port():
+    from binoracle.workflows.burpmcp import BurpMCPClient
+    client = BurpMCPClient("http://host.docker.internal/sse")
+    assert client.host_header == "127.0.0.1:9876"
+
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("mcp") is None
+    or __import__("importlib").util.find_spec("uvicorn") is None,
+    reason="requiere los paquetes 'mcp' y 'uvicorn'")
+def test_burpmcp_client_host_header_override_defeats_dns_rebinding_check():
+    # reproduce EXACTAMENTE el fallo real: Burp rechazo la conexion con 403 "Blocked DNS
+    # rebinding attack from host: host.docker.internal:9876" (mensaje real, visto en vivo) --
+    # aqui un servidor de mentira implementa la MISMA proteccion (rechaza cualquier Host header
+    # que no sea 127.0.0.1/localhost), y se conecta via '2130706433' (127.0.0.1 en decimal: una
+    # forma de IP que el resolver del SO resuelve a loopback sin DNS externo ni tocar /etc/hosts,
+    # pero cuyo string NO es literalmente '127.0.0.1' -- dispara el mismo override que
+    # host.docker.internal). BurpMCPClient tiene que seguir conectando.
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    from binoracle.workflows.burpmcp import BurpMCPClient
+
+    def free_port():
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    mcp_port = free_port()
+    server_code = f'''
+from mcp.server.mcpserver import MCPServer
+mcp = MCPServer("test-hostcheck")
+
+@mcp.tool()
+def send_http1_request(content: str, targetHostname: str, targetPort: int, usesHttps: bool) -> str:
+    return "HTTP/1.1 200 OK\\r\\n\\r\\nok"
+
+class HostCheckMiddleware:
+    def __init__(self, app):
+        self.app = app
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            host = headers.get(b"host", b"").decode()
+            if not (host.startswith("127.0.0.1") or host.startswith("localhost")):
+                await send({{"type": "http.response.start", "status": 403, "headers": []}})
+                await send({{"type": "http.response.body",
+                           "body": f"Blocked DNS rebinding attack from host: {{host}}".encode()}})
+                return
+        await self.app(scope, receive, send)
+
+import uvicorn
+uvicorn.run(HostCheckMiddleware(mcp.sse_app()), host="0.0.0.0", port={mcp_port}, log_level="warning")
+'''
+    proc = subprocess.Popen([sys.executable, "-c", server_code],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2)
+        client = BurpMCPClient(f"http://2130706433:{mcp_port}/sse", timeout=10.0)
+        assert client.host_header == f"127.0.0.1:{mcp_port}"
+        client.connect()
+        try:
+            assert "send_http1_request" in client.tools
+        finally:
+            client.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()

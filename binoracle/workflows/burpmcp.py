@@ -47,9 +47,27 @@ class BurpMCPClient:
 
     o como context manager (`with BurpMCPClient(url) as client:`)."""
 
-    def __init__(self, sse_url: str = "http://127.0.0.1:9876/sse", timeout: float = 20.0):
+    def __init__(self, sse_url: str = "http://127.0.0.1:9876/sse", timeout: float = 20.0,
+                host_header: Optional[str] = None):
         self.sse_url = sse_url
         self.timeout = timeout
+        # confirmado en vivo: la extension de Burp bloquea la conexion con "Blocked DNS
+        # rebinding attack from host: ..." cuando la cabecera Host de la peticion entrante no es
+        # 127.0.0.1/localhost -- justo el caso real cuando binoracle corre DENTRO de un
+        # contenedor Docker y usa host.docker.internal para llegar a Burp en el Mac. La conexion
+        # TCP sigue yendo a sse_url tal cual (asi se alcanza Burp desde dentro del contenedor);
+        # solo la cabecera Host que ve el check de Burp se fuerza al valor que SI espera.
+        # host_header deja override-arlo a mano si Burp esta configurado en otro host/puerto.
+        if host_header:
+            self.host_header = host_header
+        else:
+            parsed = urlsplit(sse_url)
+            hostname = (parsed.hostname or "").lower()
+            if hostname in ("127.0.0.1", "localhost", "::1"):
+                self.host_header = None
+            else:
+                port = parsed.port or 9876
+                self.host_header = f"127.0.0.1:{port}"
         self.tools: Dict[str, object] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -85,7 +103,8 @@ class BurpMCPClient:
     async def _connect_async(self):
         from mcp import ClientSession
         from mcp.client.sse import sse_client
-        self._sse_cm = sse_client(self.sse_url)
+        headers = {"Host": self.host_header} if self.host_header else None
+        self._sse_cm = sse_client(self.sse_url, headers=headers)
         read, write = await self._sse_cm.__aenter__()
         self._session_cm = ClientSession(read, write)
         self._session = await self._session_cm.__aenter__()
