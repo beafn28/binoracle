@@ -860,6 +860,16 @@ def run_streaming(command, binary, ai, emit, text="", opts=None):
             if opts.get("tableName"): hints["table_name"] = opts["tableName"]
             if opts.get("columnName"): hints["column_name"] = opts["columnName"]
             if opts.get("idColumn"): hints["id_column"] = opts["idColumn"]
+            if opts.get("burpMcpUrl"):
+                from .workflows.burpmcp import BurpMCPError
+                from .workflows.genericverify import configure_burp_mcp
+                try:
+                    configure_burp_mcp(opts["burpMcpUrl"])
+                    emit("step", f"conectado al servidor MCP de Burp en "
+                                f"{opts['burpMcpUrl']} -- las peticiones de los verificadores "
+                                f"genericos pasaran por Burp")
+                except BurpMCPError as e:
+                    emit("step", f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp")
             inv = investigate_cve(cve_or_desc, binary=binp, config=config,
                                   on_step=lambda m: emit("step", m), lang=config.lang,
                                   hints=hints or None)
@@ -1376,6 +1386,7 @@ const CMDS=[
    {k:"tableName",label:"(opcional, WP deserialization en tabla propia) tabla del plugin ($wpdb->insert/update, no la API de Options)",t:"text",placeholder:"wp_myplugin_tokens"},
    {k:"columnName",label:"(opcional) columna de tableName con el valor serializado",t:"text",placeholder:"token_data"},
    {k:"idColumn",label:"(opcional) columna clave primaria de tableName (por defecto id)",t:"text",placeholder:"id"},
+   {k:"burpMcpUrl",label:"(opcional) URL SSE del servidor MCP de la extension oficial de Burp -- las peticiones de los verificadores genericos pasaran por Burp",t:"text",placeholder:"http://127.0.0.1:9876/sse"},
  ]},
  {c:"fetch",n:"Fetch binario",ic:"FE",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"DS",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},

@@ -907,6 +907,16 @@ def cmd_investigate(args, config):
         hints["column_name"] = args.column_name
     if getattr(args, "id_column", None):
         hints["id_column"] = args.id_column
+    if getattr(args, "burp_mcp_url", None):
+        from .workflows.burpmcp import BurpMCPError
+        from .workflows.genericverify import configure_burp_mcp
+        try:
+            configure_burp_mcp(args.burp_mcp_url)
+            print(f"  conectado al servidor MCP de Burp en {args.burp_mcp_url} -- las "
+                 f"peticiones de los verificadores genericos pasaran por Burp")
+        except BurpMCPError as e:
+            print(f"  no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones directas",
+                 file=sys.stderr)
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
                           config=config, on_step=lambda m: print("  " + m), lang=config.lang,
                           budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None)
@@ -1335,6 +1345,12 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--column-name", help="column within --table-name holding the serialized value")
     ip.add_argument("--id-column", help="primary-key column of --table-name used to pick the "
                                         "most recently stored row (default: id)")
+    ip.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
+                                           "(github.com/PortSwigger/mcp-server, SSE URL from its "
+                                           "MCP tab, e.g. http://127.0.0.1:9876/sse) so every "
+                                           "request the generic (CMS-agnostic) verifiers send "
+                                           "shows up in Burp's Proxy/Repeater -- requires the "
+                                           "extension loaded and enabled in Burp first")
     ip.add_argument("-o", "--html", help="also export the full report (including any real "
                                          "screenshots from a dynamic verification) as a standalone "
                                          "HTML file at this path -- the terminal output cannot "

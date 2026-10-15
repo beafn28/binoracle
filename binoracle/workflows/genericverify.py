@@ -26,6 +26,34 @@ import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
+# si se configura (ver configure_burp_mcp), TODAS las peticiones de los verificadores genericos
+# pasan por Burp (via su extension MCP oficial -- ver burpmcp.py) en vez de mandarse directo con
+# `requests` -- asi aparecen en el Proxy/Repeater/historial de Burp mientras corre una
+# verificacion. Sin configurar, el comportamiento es EXACTAMENTE el de antes (requests directo).
+_burp_client = None
+_burp_transport = None
+
+
+def configure_burp_mcp(sse_url: str, timeout: float = 20.0):
+    """Conecta al servidor MCP de la extension de Burp (github.com/PortSwigger/mcp-server) y, a
+    partir de aqui, todas las peticiones de verify_generic_* pasan por el. Lanza BurpMCPError si
+    no puede conectar (p.ej. la extension no esta cargada/activada en Burp) -- se llama una vez,
+    antes de arrancar las investigaciones (ver cli.py/web.py --burp-mcp-url)."""
+    global _burp_client, _burp_transport
+    from .burpmcp import BurpHttpTransport, BurpMCPClient
+    if _burp_client is not None:
+        _burp_client.close()
+    _burp_client = BurpMCPClient(sse_url, timeout=timeout)
+    _burp_client.connect()
+    _burp_transport = BurpHttpTransport(_burp_client)
+
+
+def _http_request(method: str, url: str, **kwargs):
+    if _burp_transport is not None:
+        return _burp_transport.request(method, url, **kwargs)
+    import requests
+    return requests.request(method, url, **kwargs)
+
 _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target", "ping",
              "domain", "url", "path", "file", "name", "query", "search", "input")
 
@@ -297,7 +325,6 @@ def verify_generic_command_injection(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_ci_{_token()}.txt"
         m = (http_method or "POST").upper()
@@ -337,7 +364,7 @@ def verify_generic_command_injection(
                 payload = dict(parameters) if isinstance(parameters, dict) else {}
                 payload[pname] = form
                 try:
-                    requests.request(m, base_url + endpoint, timeout=15,
+                    _http_request(m, base_url + endpoint, timeout=15,
                                      data=payload if m != "GET" else None,
                                      params=payload if m == "GET" else None)
                 except Exception as e:
@@ -412,7 +439,6 @@ def verify_generic_path_traversal(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
         step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
@@ -443,7 +469,7 @@ def verify_generic_path_traversal(
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[path_param] = payload_value
             try:
-                resp = requests.request(m, base_url + endpoint, timeout=15,
+                resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None)
             except Exception as e:
@@ -515,7 +541,6 @@ def verify_generic_ssrf(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         step("levantando el contenedor 'callback' (listener) en la red interna del laboratorio...")
         listener = lab.start_listener()
         if not listener:
@@ -552,7 +577,7 @@ def verify_generic_ssrf(
             payload[url_param] = attempt_url
             entry = {"url": attempt_url, "token": token}
             try:
-                resp = requests.request(m, base_url + endpoint, timeout=15,
+                resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None)
                 entry["status"] = resp.status_code
@@ -649,7 +674,6 @@ def verify_generic_sqli_blind(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
         orig_value = str(base_params.get(sqli_param) or "1")
@@ -659,7 +683,7 @@ def verify_generic_sqli_blind(
             payload[sqli_param] = val
             t0 = time.time()
             try:
-                requests.request(m, base_url + endpoint, timeout=_SQLI_SLEEP_SECONDS + 15,
+                _http_request(m, base_url + endpoint, timeout=_SQLI_SLEEP_SECONDS + 15,
                                  data=payload if m != "GET" else None,
                                  params=payload if m == "GET" else None)
             except Exception:
@@ -785,7 +809,6 @@ def verify_generic_xxe(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         secret = secrets.token_hex(16)
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
         step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
@@ -817,7 +840,7 @@ def verify_generic_xxe(
         def try_send(label, **kwargs):
             nonlocal found
             try:
-                resp = requests.request(m, base_url + endpoint, timeout=20, **kwargs)
+                resp = _http_request(m, base_url + endpoint, timeout=20, **kwargs)
             except Exception as e:
                 tried.append({"modo": label, "error": str(e)})
                 return
@@ -861,11 +884,11 @@ def verify_generic_xxe(
                 try:
                     if xml_param:
                         payload[xml_param] = oob_xml
-                        requests.request(m, base_url + endpoint, timeout=20,
+                        _http_request(m, base_url + endpoint, timeout=20,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None)
                     else:
-                        requests.request(m, base_url + endpoint, data=oob_xml.encode(),
+                        _http_request(m, base_url + endpoint, data=oob_xml.encode(),
                                         headers={"Content-Type": "application/xml"}, timeout=20)
                 except Exception:
                     pass
@@ -942,7 +965,6 @@ def verify_generic_open_redirect(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         token = _token()
         evil_host = f"binoracle-lab-redirect-{token}.invalid"
         targets = [
@@ -968,7 +990,7 @@ def verify_generic_open_redirect(
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[redirect_param] = target
             try:
-                resp = requests.request(m, base_url + endpoint, timeout=15,
+                resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None,
                                         allow_redirects=False)
@@ -1157,7 +1179,6 @@ def verify_generic_ssti(
         return res
     lab, base_url, container = boot
     try:
-        import requests
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10
         expected = a * b
         mul = f"{a}*{b}"
@@ -1181,7 +1202,7 @@ def verify_generic_ssti(
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[ssti_param] = payload_value
             try:
-                resp = requests.request(m, base_url + endpoint, timeout=15,
+                resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None)
             except Exception as e:

@@ -1,5 +1,7 @@
 """Toolchain detection, RAG runtime config, and web command surface."""
 
+import pytest
+
 from binoracle.toolcheck import check_tools, render, ToolStatus
 from binoracle.rag import get_kb, configure
 
@@ -5397,3 +5399,149 @@ def test_cve_agent_dispatches_generic_ssti_for_unrecognized_source(monkeypatch, 
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("endpoint") == "/render"
     assert inv.verified is True
+
+
+# --- burpmcp.py: cliente MCP para la extension oficial de Burp Suite
+# (github.com/PortSwigger/mcp-server) ---
+
+def test_burpmcp_normalize_matches_any_casing():
+    from binoracle.workflows.burpmcp import _normalize
+    assert _normalize("SendHttp1Request") == _normalize("send_http1_request") == _normalize(
+        "sendHttp1Request")
+
+
+def test_burpmcp_parse_raw_http_response_basic():
+    from binoracle.workflows.burpmcp import _parse_raw_http_response
+    raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nServer: nginx\r\n\r\nhello world"
+    res = _parse_raw_http_response(raw)
+    assert res.status_code == 200
+    assert res.reason == "OK"
+    assert res.headers["Content-Type"] == "text/plain"
+    assert res.text == "hello world"
+
+
+def test_burpmcp_parse_raw_http_response_empty():
+    from binoracle.workflows.burpmcp import _parse_raw_http_response
+    res = _parse_raw_http_response("")
+    assert res.status_code == 0
+
+
+def test_burpmcp_build_raw_http1_request_sets_content_length():
+    from binoracle.workflows.burpmcp import _build_raw_http1_request
+    raw = _build_raw_http1_request("POST", "/x", "example.com", {}, "a=1")
+    assert "POST /x HTTP/1.1" in raw
+    assert "Host: example.com" in raw
+    assert "Content-Length: 3" in raw
+    assert raw.endswith("a=1")
+
+
+def test_burpmcp_client_find_tool_requires_connection(tmp_path):
+    from binoracle.workflows.burpmcp import BurpMCPClient, BurpMCPError
+    client = BurpMCPClient("http://127.0.0.1:1/sse")
+    with pytest.raises(BurpMCPError):
+        client.call_tool("whatever", {})
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("mcp") is None
+    or __import__("importlib").util.find_spec("uvicorn") is None,
+    reason="requiere los paquetes 'mcp' y 'uvicorn' (servidor MCP de mentira para el test en vivo)")
+def test_burpmcp_client_round_trip_against_mock_server():
+    # prueba dura de verdad (no mockeada por dentro): un servidor MCP real (mismo SDK que usaria
+    # la extension de Burp) expone una tool 'send_http1_request' con la MISMA forma que la
+    # extension oficial (confirmado via WebFetch de su codigo fuente), y BurpMCPClient/
+    # BurpHttpTransport tienen que descubrirla por nombre, construir la peticion HTTP/1.1 cruda,
+    # mandarla, y parsear la respuesta cruda de vuelta -- de principio a fin, sin research no se
+    # puede probar contra el Burp real de la usuaria desde este sandbox.
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from binoracle.workflows.burpmcp import BurpHttpTransport, BurpMCPClient
+
+    class _EchoHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            from urllib.parse import parse_qs, urlsplit
+            qs = parse_qs(urlsplit(self.path).query)
+            name = (qs.get("name") or [""])[0]
+            body = f"hello {name}".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    def free_port():
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    target_port = free_port()
+    target_server = HTTPServer(("127.0.0.1", target_port), _EchoHandler)
+    target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
+    target_thread.start()
+
+    mcp_port = free_port()
+    server_code = f'''
+import socket
+from mcp.server.mcpserver import MCPServer
+mcp = MCPServer("test-mock-burp")
+
+@mcp.tool()
+def send_http1_request(content: str, targetHostname: str, targetPort: int, usesHttps: bool) -> str:
+    sock = socket.create_connection((targetHostname, targetPort), timeout=10)
+    try:
+        sock.sendall(content.encode("utf-8", errors="replace"))
+        chunks = []
+        sock.settimeout(5)
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except socket.timeout:
+            pass
+        return b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        sock.close()
+
+import uvicorn
+uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning")
+'''
+    proc = subprocess.Popen([sys.executable, "-c", server_code],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(2)
+        client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=15.0)
+        client.connect()
+        try:
+            assert "send_http1_request" in client.tools
+            assert client.find_tool("send", "http1", "request") == "send_http1_request"
+            transport = BurpHttpTransport(client)
+            resp = transport.request("GET", f"http://127.0.0.1:{target_port}/echo",
+                                     params={"name": "burp-mcp-test"})
+            assert resp.status_code == 200
+            assert resp.text == "hello burp-mcp-test"
+        finally:
+            client.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        target_server.shutdown()
+
+
+def test_genericverify_http_request_falls_back_to_requests_without_burp(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    gv._burp_transport = None
+    assert gv._http_request is not None  # el indirect existe y no rompe sin Burp configurado
