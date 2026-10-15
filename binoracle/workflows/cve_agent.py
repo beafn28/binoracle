@@ -675,6 +675,64 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
     return None
 
 
+_RAW_HTTP_REQUEST_RE = re.compile(
+    r"^([A-Za-z]{3,10})[ \t]+(\S+)[ \t]+HTTP/[12](?:\.[01])?[ \t]*\r?\n"
+    r"((?:[^\r\n]+\r?\n)*)"
+    r"\r?\n"
+    r"(.*)",
+    re.MULTILINE | re.DOTALL)
+_RAW_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+
+def parse_raw_http_poc_request(text: str) -> Optional[dict]:
+    """Busca un bloque de peticion HTTP/1.x CRUDA dentro del texto de un PoC (el formato que la
+    mayoria de los write-ups/README de GitHub usan: 'METODO /ruta HTTP/1.1', cabeceras, linea en
+    blanco, cuerpo) y lo parsea DETERMINISTICAMENTE -- sin LLM de por medio, cero riesgo de que
+    alucine un valor. Devuelve {"method", "path", "headers", "body_params"} (body_params es un
+    dict name->VALOR REAL si el cuerpo es application/x-www-form-urlencoded, None si no se pudo
+    interpretar como tal) o None si no se encontro ningun bloque reconocible.
+
+    Confirmado en vivo (CVE-2024-50508): el PoC real traia justo este bloque -- 'action='
+    'pc_added_uploaded_image&file[path]=/etc/passwd' -- con los valores REALES de TODOS los
+    parametros, 'action' incluido (el critico para que WordPress enrute la peticion a algun
+    manejador). La extraccion vía LLM (_extract_hints_from_real_poc) reduce 'parameters' a una
+    lista de NOMBRES sin valores, perdiendo justo el dato que hace que la peticion real funcione
+    -- cuando el PoC trae un bloque como este, gana sobre esa extraccion y sobre la hipotesis del
+    LLM: es, literalmente, la peticion que su autor confirmo que dispara la vulnerabilidad."""
+    if not text:
+        return None
+    m = _RAW_HTTP_REQUEST_RE.search(text)
+    if not m:
+        return None
+    method, path, header_block, rest = m.groups()
+    method = method.upper()
+    if method not in _RAW_HTTP_METHODS:
+        return None
+    headers = {}
+    for line in header_block.splitlines():
+        if ":" in line:
+            k, _, v = line.partition(":")
+            headers[k.strip()] = v.strip()
+    # el cuerpo es solo la PRIMERA linea no vacia tras la cabecera en blanco -- lo que venga
+    # despues en un README (la respuesta del servidor, el siguiente bloque de texto...) no es
+    # parte del cuerpo de ESTA peticion.
+    body_line = ""
+    for line in rest.splitlines():
+        if line.strip():
+            body_line = line.strip()
+            break
+    content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
+    body_params = None
+    if body_line and ("application/x-www-form-urlencoded" in content_type or
+                      (not content_type and "=" in body_line and not body_line.startswith("{"))):
+        from urllib.parse import parse_qsl
+        pairs = parse_qsl(body_line, keep_blank_values=True)
+        if pairs:
+            body_params = dict(pairs)
+    return {"method": method, "path": path, "headers": headers, "body_params": body_params,
+           "raw_body": body_line}
+
+
 _EXTRACT_POC_SYS = (
     "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Te doy "
     "el contenido de un repositorio PUBLICO de GitHub que es el PoC REAL ya publicado para una CVE "
@@ -1917,6 +1975,24 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         else:
             step("no se pudo descargar ningun PoC publico de GitHub (o ninguno aplica)" if es else
                  "could not download any public GitHub PoC (or none applies)")
+
+        # intenta un parseo DETERMINISTICO de un bloque de peticion HTTP cruda en el propio texto
+        # del PoC -- gana sobre TODO lo anterior (hipotesis inicial y extraccion via LLM): es
+        # literalmente la peticion que el autor del PoC confirmo que funciona, con los valores
+        # REALES de cada parametro (no solo sus nombres, como da la extraccion via LLM).
+        if poc_text:
+            raw_req = parse_raw_http_poc_request(poc_text)
+            if raw_req:
+                inv.llm_notes["endpoint"] = raw_req["path"]
+                inv.llm_notes["http_method"] = raw_req["method"]
+                if raw_req["body_params"]:
+                    inv.llm_notes["parameters"] = raw_req["body_params"]
+                step((f"bloque de peticion HTTP cruda encontrado en el PoC -- usando "
+                     f"{raw_req['method']} {raw_req['path']} con los parametros y valores REALES "
+                     f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)") if es else
+                     (f"raw HTTP request block found in the PoC -- using {raw_req['method']} "
+                     f"{raw_req['path']} with the REAL parameters and values as-is (no LLM "
+                     f"involved, zero hallucination risk)"))
 
     # 2b) hechos conocidos del analista: PISAN la hipotesis del LLM en esas claves (el analista
     # que tiene el aviso oficial delante sabe el slug/endpoint reales mejor que una adivinanza).

