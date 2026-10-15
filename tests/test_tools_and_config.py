@@ -6247,6 +6247,41 @@ def test_extract_drupal_org_module_slug_from_page_url():
     assert _extract_drupal_org_module_slug("webform") is None
 
 
+def test_extract_wp_trac_plugin_slug_from_changeset_browser_and_log_urls():
+    # bug real confirmado en vivo (CVE-2024-1071): NVD referencia a menudo el changeset Trac
+    # que parcheo la CVE (es literalmente el parche), y el LLM a veces trae esa URL como
+    # source_url en vez de la pagina del directorio o el slug desnudo.
+    from binoracle.workflows.websource import _extract_wp_trac_plugin_slug
+    assert _extract_wp_trac_plugin_slug(
+        "https://plugins.trac.wordpress.org/changeset/5678901/ultimate-member/trunk/") == "ultimate-member"
+    assert _extract_wp_trac_plugin_slug(
+        "https://plugins.trac.wordpress.org/browser/ultimate-member/trunk/ultimate-member.php"
+    ) == "ultimate-member"
+    assert _extract_wp_trac_plugin_slug("https://plugins.trac.wordpress.org/log/ultimate-member/") == "ultimate-member"
+    assert _extract_wp_trac_plugin_slug("plugins.trac.wordpress.org/changeset/123/foo-bar") == "foo-bar"
+    assert _extract_wp_trac_plugin_slug(
+        "https://plugins.trac.wordpress.org/changeset/123/foo-bar?old=456") == "foo-bar"
+    assert _extract_wp_trac_plugin_slug("https://wordpress.org/plugins/foo-bar/") is None
+    assert _extract_wp_trac_plugin_slug("automatic") is None
+
+
+def test_fetch_source_resolves_wp_trac_changeset_url_to_slug(monkeypatch):
+    from binoracle.workflows import websource
+    called = {}
+    def fake_wp(slug, version="", dest_dir="", on_step=None, timeout=60.0):
+        called["slug"] = slug
+        called["version"] = version
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=slug)
+    monkeypatch.setattr(websource, "fetch_wordpress_plugin", fake_wp)
+
+    res = websource.fetch_source(
+        "https://plugins.trac.wordpress.org/changeset/5678901/ultimate-member/trunk/",
+        version="2.8.2")
+    assert res.ok is True
+    assert called["slug"] == "ultimate-member"
+    assert called["version"] == "2.8.2"
+
+
 def test_fetch_source_resolves_wp_org_page_url_to_slug(monkeypatch):
     from binoracle.workflows import websource
     called = {}

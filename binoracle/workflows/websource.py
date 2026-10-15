@@ -115,6 +115,21 @@ def _extract_wp_org_plugin_slug(text: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+def _extract_wp_trac_plugin_slug(text: str) -> Optional[str]:
+    """Si `text` es una URL del repositorio Trac de plugins de WordPress.org
+    (https://plugins.trac.wordpress.org/changeset/<rev>/<slug>/..., .../browser/<slug>/...,
+    .../log/<slug>/...) devuelve el slug; None si no tiene esa forma. Confirmado en vivo: NVD
+    referencia muy a menudo el changeset Trac que arreglo una CVE (es literalmente el parche),
+    asi que el LLM a veces trae esa URL como source_url en vez de la pagina del directorio o el
+    slug desnudo que el resto del despacho espera -- igual de inservible para fetch_source() sin
+    este extractor."""
+    m = re.match(
+        r"^(?:https?://)?plugins\.trac\.wordpress\.org/"
+        r"(?:changeset/\d+|browser|log)/([a-z0-9][a-z0-9_-]{1,80})(?:[/?#]|$)",
+        (text or "").strip(), re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
 def _extract_drupal_org_module_slug(text: str) -> Optional[str]:
     """Analogo de _extract_wp_org_plugin_slug para la pagina de un proyecto de Drupal.org
     (https://www.drupal.org/project/<machine_name>...) -- misma casuistica (esquema opcional,
@@ -558,9 +573,15 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     if wp_page_slug:
         target, cms_hint = wp_page_slug, "wordpress"
     else:
-        drupal_page_slug = _extract_drupal_org_module_slug(target)
-        if drupal_page_slug:
-            target, cms_hint = drupal_page_slug, "drupal"
+        # confirmado en vivo: NVD referencia a menudo el changeset Trac del parche en vez de la
+        # pagina del directorio -- el LLM a veces trae esa URL de source_url tal cual.
+        wp_trac_slug = _extract_wp_trac_plugin_slug(target)
+        if wp_trac_slug:
+            target, cms_hint = wp_trac_slug, "wordpress"
+        else:
+            drupal_page_slug = _extract_drupal_org_module_slug(target)
+            if drupal_page_slug:
+                target, cms_hint = drupal_page_slug, "drupal"
 
     if cms_hint == "drupal":
         return fetch_drupal_module(target, version=version, on_step=on_step, timeout=timeout)
