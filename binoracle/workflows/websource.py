@@ -46,6 +46,58 @@ _MAX_DOWNLOAD = 80 * 1024 * 1024     # 80 MB: un plugin/tema no deberia pasar de
 _MAX_SCAN_FILES = 4000
 _MAX_SCAN_BYTES = 1_500_000           # por fichero
 
+# Cache local de plugins/modulos YA descargados, por (kind, slug, version) -- confirmado en vivo:
+# un investigate-batch relanzando varias CVEs (o reintentando la misma CVE tras arreglar un bug)
+# volvia a bajar EL MISMO .zip de WordPress.org/Drupal.org cada vez, aunque no hubiera cambiado
+# nada -- tiempo y ancho de banda tirados sin necesidad. BINORACLE_CACHE_DIR la reubica;
+# BINORACLE_NO_CACHE=1 la desactiva (p.ej. para forzar una descarga fresca).
+_CACHE_DIR = os.environ.get("BINORACLE_CACHE_DIR") or os.path.join(
+    os.path.expanduser("~"), ".cache", "binoracle", "sources")
+_CACHE_DISABLED = os.environ.get("BINORACLE_NO_CACHE", "") not in ("", "0")
+
+
+def _cache_path_for(kind: str, slug: str, version: str) -> Optional[str]:
+    """Directorio de cache para (kind, slug, version), o None si no se puede/debe cachear (sin
+    version concreta resuelta -- 'latest' envejece, cachearla serviria pan viejo en la siguiente
+    ejecucion -- o la cache esta desactivada)."""
+    if _CACHE_DISABLED or not version:
+        return None
+    safe_slug = re.sub(r"[^a-zA-Z0-9_.-]", "_", slug)[:100] or "_"
+    safe_version = re.sub(r"[^a-zA-Z0-9_.-]", "_", version)[:50] or "_"
+    return os.path.join(_CACHE_DIR, kind, safe_slug, safe_version)
+
+
+def _copy_from_cache(cache_path: str, dest_dir: str, plugin_dir_name: str) -> bool:
+    """Copia el contenido cacheado a dest_dir/plugin_dir_name -- cada llamada necesita su PROPIA
+    copia independiente (nunca compartir el directorio de cache directamente): el laboratorio
+    Docker monta esta carpeta como volumen y puede escribir en ella, y dos investigaciones del
+    mismo lote en paralelo podrian pedir el mismo plugin a la vez."""
+    try:
+        target = os.path.join(dest_dir, plugin_dir_name)
+        shutil.copytree(cache_path, target, dirs_exist_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _save_to_cache(source_dir: str, cache_path: str) -> None:
+    """Guarda una copia de `source_dir` (el contenido YA extraido del plugin/modulo) en la cache,
+    de forma atomica (copia a un temporal + rename) para que dos investigaciones guardando el
+    MISMO plugin a la vez (un lote en paralelo) nunca dejen la cache a medio escribir -- si pierde
+    la carrera, simplemente descarta su copia: la que gano ya sirve igual de bien. Cachear es un
+    plus best-effort: un fallo aqui nunca debe tirar abajo la descarga real, que ya tuvo exito."""
+    try:
+        tmp = tempfile.mkdtemp(prefix="binoracle_cache_tmp_")
+        shutil.rmtree(tmp)   # copytree exige que el destino NO exista
+        shutil.copytree(source_dir, tmp)
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        try:
+            os.replace(tmp, cache_path)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+    except Exception:
+        pass
+
 _VERSION_RE = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
 
 
@@ -221,8 +273,18 @@ def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, 
     por el camino normal (API de info resuelta) y el de respaldo (API caida pero se pidio una
     version concreta, ver fetch_wordpress_plugin)."""
     res.resolved_version = resolved_version
-    step(f"descargando {slug} {resolved_version or '(ultima)'} ({url})...")
     dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_wp_")
+    cache_path = _cache_path_for("wordpress-plugin", slug, resolved_version)
+    if cache_path and os.path.isdir(cache_path) and os.listdir(cache_path):
+        step(f"'{slug}' {resolved_version} ya estaba en cache local ({cache_path}) -- copiando "
+             f"en vez de volver a descargar...")
+        if _copy_from_cache(cache_path, dest_dir, slug):
+            res.ok = True
+            res.local_path = dest_dir
+            res.plugin_dir = slug
+            return res
+        step("la copia desde cache fallo -- descargando de nuevo igualmente...")
+    step(f"descargando {slug} {resolved_version or '(ultima)'} ({url})...")
     zfd, zpath = tempfile.mkstemp(prefix="binoracle_wp_", suffix=".zip")
     os.close(zfd)
     try:
@@ -254,6 +316,8 @@ def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, 
     res.local_path = dest_dir
     res.plugin_dir = slug          # convencion de WordPress.org: la carpeta del zip es el slug
     step(f"codigo del plugin obtenido en {dest_dir}")
+    if cache_path:
+        _save_to_cache(os.path.join(dest_dir, slug), cache_path)
     return res
 
 
@@ -317,8 +381,18 @@ def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
         res.note = f"la release elegida de '{slug}' no trae download_link"
         return res
     res.resolved_version = resolved_version
-    step(f"descargando {slug} {resolved_version} ({download_url})...")
     dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_drupal_")
+    cache_path = _cache_path_for("drupal-module", slug, resolved_version)
+    if cache_path and os.path.isdir(cache_path) and os.listdir(cache_path):
+        step(f"'{slug}' {resolved_version} ya estaba en cache local ({cache_path}) -- copiando "
+             f"en vez de volver a descargar...")
+        if _copy_from_cache(cache_path, dest_dir, slug):
+            res.ok = True
+            res.local_path = dest_dir
+            res.plugin_dir = slug
+            return res
+        step("la copia desde cache fallo -- descargando de nuevo igualmente...")
+    step(f"descargando {slug} {resolved_version} ({download_url})...")
     import tarfile
     tfd, tpath = tempfile.mkstemp(prefix="binoracle_drupal_", suffix=".tar.gz")
     os.close(tfd)
@@ -361,6 +435,8 @@ def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
                       else detect_module_folder(dest_dir))
     step(f"codigo del modulo obtenido en {dest_dir}" +
         (f" (carpeta del modulo: {res.plugin_dir})" if res.plugin_dir else ""))
+    if cache_path and res.plugin_dir == slug:
+        _save_to_cache(os.path.join(dest_dir, slug), cache_path)
     return res
 
 

@@ -6910,29 +6910,50 @@ def test_run_web_investigation_does_not_retry_when_guess_matches_given_source(mo
     assert calls == ["some-plugin-slug"]   # sin reintento, no habia nada que deducir
 
 
-def test_extract_followable_url_parses_copy_then_serve_json():
+def test_extract_followable_urls_parses_copy_then_serve_json():
     # bug real confirmado en vivo (CVE-2024-50508, Woocommerce Product Design): el endpoint
     # vulnerable no refleja el contenido en la MISMA respuesta -- copia el fichero objetivo a una
     # ruta publica nueva y devuelve {"url": "...", "path": "...", "status": "success"} en vez del
     # contenido. Sin seguir esa URL, el secreto plantado nunca aparece aunque el traversal sea
     # real.
-    from binoracle.workflows.wpverify import _extract_followable_url
+    from binoracle.workflows.wpverify import _extract_followable_urls
     text = ('{"path": "/var/www/html/wp-content/uploads/wcpc/images/uploaded_images/x.txt", '
            '"message": "Image Uploaded Successfully", '
            '"url": "http://lab.invalid/wp-content/uploads/wcpc/images/uploaded_images/x.txt", '
            '"status": "success"}')
-    assert (_extract_followable_url(text) ==
-           "http://lab.invalid/wp-content/uploads/wcpc/images/uploaded_images/x.txt")
+    assert (_extract_followable_urls(text) ==
+           ["http://lab.invalid/wp-content/uploads/wcpc/images/uploaded_images/x.txt"])
 
 
-def test_extract_followable_url_returns_none_for_non_json_or_no_url():
-    from binoracle.workflows.wpverify import _extract_followable_url
-    assert _extract_followable_url("not json") is None
-    assert _extract_followable_url('{"status": "ok"}') is None
-    assert _extract_followable_url('{"url": "not-a-url"}') is None
-    assert _extract_followable_url("") is None
-    assert _extract_followable_url(None) is None
-    assert _extract_followable_url("[1, 2, 3]") is None   # JSON valido, pero no un dict
+def test_extract_followable_urls_returns_empty_for_non_json_or_no_url():
+    from binoracle.workflows.wpverify import _extract_followable_urls
+    assert _extract_followable_urls("not json") == []
+    assert _extract_followable_urls('{"status": "ok"}') == []
+    assert _extract_followable_urls('{"url": "not-a-url"}') == []
+    assert _extract_followable_urls("") == []
+    assert _extract_followable_urls(None) == []
+    assert _extract_followable_urls("[1, 2, 3]") == []   # JSON valido, pero no un dict
+
+
+def test_extract_followable_urls_parses_html_img_and_a_tags():
+    # generalizacion (mejora #4): algunos manejadores devuelven una pagina de confirmacion HTML
+    # en vez de JSON -- un <img src=...>/<a href=...> apuntando a donde quedo la copia.
+    from binoracle.workflows.wpverify import _extract_followable_urls
+    html = ('<html><body><p>Uploaded!</p>'
+           '<img src="http://lab.invalid/wp-content/uploads/leaked.txt">'
+           '<a href="/wp-content/uploads/other-leaked.txt">download</a>'
+           '</body></html>')
+    urls = _extract_followable_urls(html, base_url="http://lab.invalid")
+    assert "http://lab.invalid/wp-content/uploads/leaked.txt" in urls
+    assert "http://lab.invalid/wp-content/uploads/other-leaked.txt" in urls
+
+
+def test_extract_followable_urls_caps_html_candidates():
+    # una pagina HTML normal trae decenas de src/href de CSS/JS/iconos -- no debe intentar
+    # seguir todas y cada una (dispararia muchisimas peticiones extra por cada intento de payload).
+    from binoracle.workflows.wpverify import _extract_followable_urls
+    html = "".join(f'<img src="http://lab.invalid/img{i}.png">' for i in range(30))
+    assert len(_extract_followable_urls(html, base_url="http://lab.invalid")) <= 10
 
 
 def test_verify_wordpress_path_traversal_follows_copy_then_serve_url(monkeypatch):
@@ -7140,3 +7161,92 @@ def test_investigate_cve_prefers_raw_poc_request_over_llm_extraction(monkeypatch
     assert inv.llm_notes.get("http_method") == "POST"
     assert inv.llm_notes.get("parameters") == {"action": "pc_added_uploaded_image",
                                                "file[path]": "/etc/passwd"}
+
+
+def test_cache_path_for_requires_concrete_version():
+    from binoracle.workflows.websource import _cache_path_for
+    assert _cache_path_for("wordpress-plugin", "foo", "") is None
+    assert _cache_path_for("wordpress-plugin", "foo", "1.2.3") is not None
+
+
+def test_cache_path_for_disabled_via_flag(monkeypatch):
+    import binoracle.workflows.websource as ws
+    monkeypatch.setattr(ws, "_CACHE_DISABLED", True)
+    assert ws._cache_path_for("wordpress-plugin", "foo", "1.2.3") is None
+
+
+def test_save_and_copy_from_cache_round_trip(tmp_path):
+    from binoracle.workflows.websource import _save_to_cache, _copy_from_cache
+    source = tmp_path / "source_plugin"
+    source.mkdir()
+    (source / "plugin.php").write_text("<?php echo 1;")
+    cache_path = tmp_path / "cache" / "foo" / "1.2.3"
+    _save_to_cache(str(source), str(cache_path))
+    assert cache_path.is_dir()
+    assert (cache_path / "plugin.php").exists()
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    ok = _copy_from_cache(str(cache_path), str(dest), "foo")
+    assert ok is True
+    assert (dest / "foo" / "plugin.php").read_text() == "<?php echo 1;"
+
+
+def test_fetch_wordpress_plugin_skips_zip_download_on_second_call(monkeypatch, tmp_path):
+    # bug real a evitar (no uno ya visto en vivo, pero confirmado por diseno): un
+    # investigate-batch corriendo varias CVEs del mismo plugin, o reintentando la misma CVE tras
+    # arreglar un bug, volvia a bajar EL MISMO .zip de WordPress.org cada vez -- tiempo y ancho de
+    # banda tirados sin necesidad.
+    import io
+    import json as _json
+    import zipfile
+    import binoracle.workflows.websource as ws
+
+    monkeypatch.setattr(ws, "_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(ws, "_CACHE_DISABLED", False)
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as z:
+        z.writestr("foo-plugin/foo-plugin.php", "<?php /* Plugin Name: Foo */")
+    zip_data = zip_buf.getvalue()
+
+    class _FakeHTTPResponse:
+        def __init__(self, data):
+            self._data = data
+            self._pos = 0
+        def read(self, n=-1):
+            if n is None or n < 0:
+                chunk = self._data[self._pos:]
+                self._pos = len(self._data)
+            else:
+                chunk = self._data[self._pos:self._pos + n]
+                self._pos += len(chunk)
+            return chunk
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    calls = {"n": 0}
+    def fake_urlopen(url, timeout=30.0):
+        calls["n"] += 1
+        if "api.wordpress.org" in url:
+            info = {"versions": {"1.0.0": "https://downloads.wordpress.org/plugin/foo-plugin.1.0.0.zip"},
+                    "download_link": "https://downloads.wordpress.org/plugin/foo-plugin.zip",
+                    "version": "1.0.0"}
+            return _FakeHTTPResponse(_json.dumps(info).encode())
+        return _FakeHTTPResponse(zip_data)
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+
+    r1 = ws.fetch_wordpress_plugin("foo-plugin", version="1.0.0")
+    assert r1.ok is True
+    calls_after_first = calls["n"]
+    assert calls_after_first >= 2   # consulta de info + descarga del zip
+
+    r2 = ws.fetch_wordpress_plugin("foo-plugin", version="1.0.0")
+    assert r2.ok is True
+    # la segunda vez, como mucho vuelve a consultar la API de info (hace falta para saber si
+    # '1.0.0' sigue siendo una version real) -- nunca vuelve a bajar el .zip en si
+    assert calls["n"] - calls_after_first <= 1
+    assert (tmp_path / "cache" / "wordpress-plugin" / "foo-plugin" / "1.0.0" /
+           "foo-plugin.php").exists()

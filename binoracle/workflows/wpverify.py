@@ -1106,25 +1106,47 @@ def verify_wordpress_direct_login_as(
         lab.teardown()
 
 
-def _extract_followable_url(text: str) -> Optional[str]:
-    """Si `text` es JSON con una clave 'url'/'file_url'/'link' que apunta a http(s), la devuelve.
-    Confirmado en vivo (CVE-2024-50508, Woocommerce Product Design): algunos endpoints de
-    path-traversal NO reflejan el contenido leido en la MISMA respuesta -- copian el fichero
-    objetivo a una ruta publica nueva (un manejador de subida de imagenes que en realidad acepta
-    cualquier ruta) y devuelven DONDE quedo copiado ({"url": "...", "path": "...",
-    "status": "success"}) en vez del contenido -- hay que pedir esa URL aparte para ver el
-    secreto plantado de verdad."""
+_HTML_FOLLOWABLE_RE = re.compile(r'(?:src|href)\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _extract_followable_urls(text: str, base_url: str = "") -> List[str]:
+    """Candidatas a URL donde un endpoint pudo haber COPIADO el fichero objetivo en vez de
+    reflejar su contenido en esta misma respuesta. Confirmado en vivo (CVE-2024-50508,
+    Woocommerce Product Design): el manejador vulnerable no devuelve el contenido leido -- copia
+    el fichero objetivo a una ruta publica nueva y devuelve DONDE quedo ({"url": "...",
+    "path": "...", "status": "success"}) -- hay que pedir esa URL aparte para ver el secreto
+    plantado de verdad.
+
+    Dos formas reconocidas: JSON con una clave 'url'/'file_url'/'link' (el caso confirmado en
+    vivo), o HTML con un <img src=...>/<a href=...> apuntando a donde quedo la copia (una pagina
+    de confirmacion en vez de JSON). Devuelve una LISTA (puede tener varias candidatas en el caso
+    HTML, una pagina normal trae muchos src/href de CSS/JS/iconos que no tienen nada que ver) --
+    se prueban EN ORDEN hasta encontrar el secreto, igual que ya se prueban en orden las distintas
+    profundidades de '../', en vez de asumir que la primera coincidencia es la correcta."""
     try:
         data = json.loads(text or "")
     except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    for key in ("url", "file_url", "link"):
-        v = data.get(key)
-        if isinstance(v, str) and v.startswith(("http://", "https://")):
-            return v
-    return None
+        data = None
+    if isinstance(data, dict):
+        urls = []
+        for key in ("url", "file_url", "link"):
+            v = data.get(key)
+            if isinstance(v, str) and v.startswith(("http://", "https://")):
+                urls.append(v)
+        return urls
+    if not text:
+        return []
+    from urllib.parse import urljoin
+    candidates = []
+    for m in _HTML_FOLLOWABLE_RE.finditer(text):
+        href = m.group(1)
+        if href.startswith(("http://", "https://")):
+            candidates.append(href)
+        elif base_url and href.startswith("/"):
+            candidates.append(urljoin(base_url, href))
+    # tope prudente: una pagina HTML normal trae decenas de src/href -- sin esto, seguir cada
+    # enlace de la pagina por cada intento de payload dispararia cientos de peticiones extra.
+    return candidates[:10]
 
 
 def verify_wordpress_path_traversal(
@@ -1210,20 +1232,26 @@ def verify_wordpress_path_traversal(
                 continue
             tried.append({"payload": payload_value, "status": resp.status_code,
                           "secret_presente": secret in (resp.text or "")})
-            # patron "copia-y-sirve" (ver _extract_followable_url): algunos endpoints no
+            # patron "copia-y-sirve" (ver _extract_followable_urls): algunos endpoints no
             # reflejan el contenido en ESTA respuesta, copian el fichero a una ruta publica
             # nueva y devuelven DONDE quedo -- hay que pedirla aparte para ver el secreto real.
+            # Se prueban todas las candidatas EN ORDEN hasta encontrar el secreto (una pagina
+            # HTML normal puede traer varios src/href que no tienen nada que ver).
             followed_resp, follow_url = resp, None
             if secret not in (resp.text or ""):
-                follow_url = _extract_followable_url(resp.text)
-                if follow_url:
+                for candidate in _extract_followable_urls(resp.text, boot.base_url):
                     try:
-                        followed_resp = boot.sub_sess.request("GET", follow_url, timeout=20)
-                        tried[-1]["followed_url"] = follow_url
-                        tried[-1]["followed_secret_presente"] = secret in (followed_resp.text or "")
+                        candidate_resp = boot.sub_sess.request("GET", candidate, timeout=20)
                     except Exception as e:
-                        followed_resp = resp
-                        tried[-1]["followed_url_error"] = str(e)
+                        tried[-1].setdefault("followed_url_errors", []).append(
+                            {"url": candidate, "error": str(e)})
+                        continue
+                    if secret in (candidate_resp.text or ""):
+                        followed_resp, follow_url = candidate_resp, candidate
+                        break
+                if follow_url:
+                    tried[-1]["followed_url"] = follow_url
+                tried[-1]["followed_secret_presente"] = secret in (followed_resp.text or "")
             if secret in (followed_resp.text or ""):
                 found = True
                 res.evidence["payload_ganador"] = payload_value
@@ -2224,13 +2252,14 @@ def verify_wordpress_xxe(
             present = secret in (resp.text or "")
             followed_resp, follow_url = resp, None
             if not present:
-                follow_url = _extract_followable_url(resp.text)
-                if follow_url:
+                for candidate in _extract_followable_urls(resp.text, boot.base_url):
                     try:
-                        followed_resp = boot.sub_sess.request("GET", follow_url, timeout=20)
-                        present = secret in (followed_resp.text or "")
+                        candidate_resp = boot.sub_sess.request("GET", candidate, timeout=20)
                     except Exception:
-                        followed_resp = resp
+                        continue
+                    if secret in (candidate_resp.text or ""):
+                        followed_resp, follow_url, present = candidate_resp, candidate, True
+                        break
             tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present,
                          **({"followed_url": follow_url} if follow_url else {})})
             if present and not found:
