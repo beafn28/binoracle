@@ -5052,3 +5052,144 @@ def test_cve_agent_dispatches_generic_sqli_for_unrecognized_source(monkeypatch, 
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("endpoint") == "/item"
     assert inv.verified is True
+
+
+def test_genericverify_xxe_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_xxe(str(tmp_path), "/import", "POST", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_xxe_blocked_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = gv.verify_generic_xxe(str(tmp_path), "/import", "POST", {})
+    assert res.available is False
+    assert res.verified is False
+
+
+def test_genericverify_open_redirect_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_open_redirect(str(tmp_path), "/go", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "parametro" in res.limitations[0]
+
+
+def test_genericverify_open_redirect_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_open_redirect(str(tmp_path), "/go", "GET", {"next": "/"},
+                                          redirect_param_hint="next")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_open_redirect_blocked_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = gv.verify_generic_open_redirect(str(tmp_path), "/go", "GET", {"next": "/"})
+    assert res.available is False
+    assert res.verified is False
+
+
+def test_cve_agent_dispatches_generic_xxe_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_xxe(local_path, endpoint, method, params, xml_param_hint="", on_step=None,
+                         budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="XXE confirmada (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_xxe", fake_generic_xxe)
+
+    inv = Investigation(cve_id="CVE-2099-00005")
+    inv.vuln_class = "xxe"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/import", "http_method": "POST", "parameters": {},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/import"
+    assert inv.verified is True
+
+
+def test_cve_agent_dispatches_generic_open_redirect_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_redir(local_path, endpoint, method, params, redirect_param_hint="",
+                           on_step=None, budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="OPEN REDIRECT confirmado (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_open_redirect", fake_generic_redir)
+
+    inv = Investigation(cve_id="CVE-2099-00006")
+    inv.vuln_class = "open-redirect"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/go", "http_method": "GET", "parameters": {"next": "/"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/go"
+    assert inv.verified is True
+
+
+def test_genericverify_discover_http_accepts_4xx_status(monkeypatch):
+    # confirmado en vivo: urlopen() LANZA HTTPError para 4xx/5xx en vez de devolverla -- un
+    # objetivo que solo expone rutas POST (su raiz responde 404) tiene que seguir detectandose
+    # como 'listo', no tratarse como si no hubiera arrancado.
+    import urllib.error
+    import binoracle.workflows.genericverify as gv
+
+    lab = gv._GenericLab("test")
+    lab.kind = "dockerfile"
+    monkeypatch.setattr(lab, "running_containers", lambda: ["c1"])
+    monkeypatch.setattr(lab, "published_ports", lambda c: ["1234"])
+
+    def fake_urlopen(url, timeout=4):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = lab.discover_http(tries=1, delay=0)
+    assert result == ("c1", "1234")
+
+
+def test_genericverify_discover_http_rejects_5xx_status(monkeypatch):
+    # un 5xx (a diferencia de un 4xx) puede significar que la app esta arriba pero rota de
+    # verdad -- sigue contando como 'aun no listo', no como exito.
+    import urllib.error
+    import binoracle.workflows.genericverify as gv
+
+    lab = gv._GenericLab("test")
+    lab.kind = "dockerfile"
+    monkeypatch.setattr(lab, "running_containers", lambda: ["c1"])
+    monkeypatch.setattr(lab, "published_ports", lambda c: ["1234"])
+
+    def fake_urlopen(url, timeout=4):
+        raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, None)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = lab.discover_http(tries=1, delay=0)
+    assert result is None

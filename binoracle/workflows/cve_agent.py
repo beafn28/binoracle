@@ -1218,6 +1218,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                           notes.get("http_method") or "GET", params,
                                           xml_param_hint=xml_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
+            # "cualquier entorno": fallback generico de XXE (ver genericverify.py) para cuando el
+            # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/compose.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "xxe" and notes.get("endpoint")):
+                from .genericverify import verify_generic_xxe, _pick_param
+                from .wpverify import _XML_HINTS
+                params = notes.get("parameters") or []
+                xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- fichero canario via entidad "
+                     "externa, el objetivo se construye desde su propio Dockerfile/compose..."
+                     if es else "attempting GENERIC DYNAMIC verification -- canary file via "
+                     "external entity, the target is built from its own Dockerfile/compose..."))
+                wr = verify_generic_xxe(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, xml_param_hint=xml_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_open_redirect, _pick_param
@@ -1244,6 +1260,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                 wr = verify_wordpress_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                     notes.get("http_method") or "GET", params,
                                                     redirect_param_hint=redir_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            # "cualquier entorno": fallback generico de open-redirect (ver genericverify.py).
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "open-redirect" and notes.get("endpoint")):
+                from .genericverify import verify_generic_open_redirect, _pick_param
+                from .wpverify import _REDIRECT_HINTS
+                params = notes.get("parameters") or []
+                redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- cabecera Location real sin "
+                     "seguir redirects, el objetivo se construye desde su propio Dockerfile/"
+                     "compose..." if es else "attempting GENERIC DYNAMIC verification -- real "
+                     "Location header without following redirects, the target is built from its "
+                     "own Dockerfile/compose..."))
+                wr = verify_generic_open_redirect(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, redirect_param_hint=redir_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):
