@@ -90,3 +90,72 @@ def load_ssti_arithmetic_payloads(a: int, b: int) -> List[tuple]:
                 expected = a * b if op == "mul" else a + b
                 out.append((template.format(a=a, b=b), expected))
     return out
+
+
+# command_exec.txt/command-execution-unix.txt mezclan separadores puros (listos para usar tal
+# cual) con payloads de comando completo ('dir C:\Users', peticiones a dominios de terceros,
+# webshells PHP que escriben fichero) -- solo los primeros se pueden generalizar sin riesgo:
+# un separador puro, al no tener NINGUNA letra fuera del alfabeto hex/escape tipico de un
+# separador de shell, no puede ser por accidente un nombre de comando real. Limite de longitud
+# para no colar frases largas que coincidieran por casualidad con el alfabeto permitido.
+_CMD_SEP_RE = re.compile(r"[;|&`'\"%0-9a-dA-D\(\)\$\{\}\\]+")
+
+
+def load_command_injection_separators() -> List[str]:
+    """Parsea command_exec.txt + command-execution-unix.txt y devuelve SOLO las lineas que son
+    separadores de shell puros (sin ningun comando incrustado) -- listas para anteponer al propio
+    comando del verificador (`echo <secreto> > <canario>`)."""
+    out = []
+    seen = set()
+    for fname in ("command_exec.txt", "command-execution-unix.txt"):
+        for line in _read_lines(fname):
+            s = line.strip()
+            if not s or not _no_third_party(s):
+                continue
+            compact = s.replace(" ", "")
+            if len(compact) > 12 or not compact:
+                continue
+            if _CMD_SEP_RE.fullmatch(compact) is None:
+                continue
+            if compact in seen:
+                continue
+            seen.add(compact)
+            out.append(s)
+    return out
+
+
+# Open-Redirect-payloads.txt/openredirects.txt/open_redirect_wordlist.txt usan un host de
+# relleno fijo (google.com/whitelisteddomain.tld/example.com, con o sin 'www.') -- se sustituye
+# por evil_host (el dominio unico de ESTA ejecucion, ver verify_*_open_redirect). Se descartan
+# las lineas con '?'/'&' (son plantillas de VARIOS parametros de redireccion a la vez -- un
+# formato de ataque distinto, el endpoint probaria varios nombres de parametro en la misma
+# peticion, no encaja con el modelo de "un valor para un parametro" que usan los verificadores).
+_REDIRECT_PLACEHOLDER_HOSTS = ("www.whitelisteddomain.tld", "whitelisteddomain.tld",
+                               "www.google.com", "google.com", "www.example.com", "example.com")
+
+
+def load_open_redirect_templates(evil_host: str) -> List[str]:
+    """Parsea las 3 wordlists de Open Redirect y devuelve TODAS las variantes generalizables
+    (sustituyendo el host de relleno de los autores por `evil_host`) -- listas para usar como
+    valor del parametro de redireccion."""
+    out = []
+    seen = set()
+    for fname in ("Open-Redirect-payloads.txt", "openredirects.txt", "open_redirect_wordlist.txt"):
+        for line in _read_lines(fname):
+            s = line.strip()
+            if not s or not _no_third_party(s) or "?" in s or "&" in s:
+                continue
+            # algunas lineas traen MAS DE UN host de relleno a la vez (p.ej. el truco de
+            # userinfo "www.whitelisteddomain.tld@google.com/..."): hay que sustituir TODAS las
+            # ocurrencias de TODOS los placeholders, no solo el primero que aparezca, o el otro
+            # se cuela literal en el payload final.
+            matched = False
+            replaced = s
+            for host in _REDIRECT_PLACEHOLDER_HOSTS:
+                if host in replaced:
+                    replaced = replaced.replace(host, evil_host)
+                    matched = True
+            if matched and replaced not in seen:
+                seen.add(replaced)
+                out.append(replaced)
+    return out

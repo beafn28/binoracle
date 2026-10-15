@@ -5630,3 +5630,29 @@ def test_drupalverify_and_joomlaverify_login_use_shared_make_session():
     assert "_make_session()" in inspect.getsource(joomlaverify._joomla_login)
     assert "requests.Session()" not in inspect.getsource(drupalverify._drupal_login)
     assert "requests.Session()" not in inspect.getsource(joomlaverify._joomla_login)
+
+
+def test_payload_kb_load_command_injection_separators_pure_only():
+    from binoracle.workflows import payload_kb
+    seps = payload_kb.load_command_injection_separators()
+    assert len(seps) >= 10
+    assert "&" in seps
+    assert ";" in seps
+    # ninguna linea con un comando real incrustado (dir/id/cat/curl...) debe colarse
+    assert not any("id" in s or "dir" in s or "cat" in s or "curl" in s for s in seps)
+
+
+def test_payload_kb_load_open_redirect_templates_substitutes_host_and_dedupes():
+    from binoracle.workflows import payload_kb
+    templates = payload_kb.load_open_redirect_templates("evilhost.invalid")
+    assert len(templates) > 100
+    assert all("evilhost.invalid" in t for t in templates)
+    assert all("google.com" not in t and "example.com" not in t and "whitelisteddomain.tld" not in t
+              for t in templates)
+    assert len(templates) == len(set(templates))
+
+
+def test_payload_kb_load_open_redirect_templates_skips_multi_param_queries():
+    from binoracle.workflows import payload_kb
+    templates = payload_kb.load_open_redirect_templates("evilhost.invalid")
+    assert not any("?" in t or "&" in t for t in templates)

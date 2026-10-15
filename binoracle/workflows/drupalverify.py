@@ -1471,6 +1471,8 @@ def verify_drupal_open_redirect(
             f"///{evil_host}/pwned", f"////{evil_host}/pwned",
             f"/https://{evil_host}/pwned",
         ]
+        from .payload_kb import load_open_redirect_templates
+        targets += load_open_redirect_templates(evil_host)
         m = (http_method or "GET").upper()
         tried = []
         confirmed_entry = None

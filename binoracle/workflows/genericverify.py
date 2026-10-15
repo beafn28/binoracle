@@ -22,7 +22,8 @@ from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _REDIRECT_HIN
                        _URL_HINTS, _XML_HINTS, _XSS_HINTS, _XssBrowserSession, _docker_daemon_ok,
                        _http_request, _lab_host, _pick_param, _redirect_location_is_external,
                        _run, _token, configure_burp_mcp)
-from .payload_kb import load_ssti_arithmetic_payloads, load_xss_payloads
+from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
+                         load_ssti_arithmetic_payloads, load_xss_payloads)
 import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
@@ -328,6 +329,12 @@ def verify_generic_command_injection(
             f";echo${{IFS}}{secret}>{canary_path}",
             f";echo%09{secret}>{canary_path}",
         ]
+        # ademas de las anteriores, los separadores PUROS (sin comando incrustado, ver
+        # payload_kb.load_command_injection_separators) de command_exec.txt que todavia no estan
+        # arriba -- & solo y %0a%0d (CRLF).
+        for sep in load_command_injection_separators():
+            if sep in ("&", "%0a%0d"):
+                payload_forms.append(f"{sep} echo {secret} > {canary_path}")
         candidate_params = [cmd_param_hint] if cmd_param_hint else (
             list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or []))
         if not candidate_params:
@@ -961,6 +968,9 @@ def verify_generic_open_redirect(
             f"///{evil_host}/pwned", f"////{evil_host}/pwned",
             f"/https://{evil_host}/pwned",
         ]
+        # ademas de las anteriores, las ~155 variantes generalizables de las 3 wordlists de Open
+        # Redirect en PayloadsAllTheThings (ver payload_kb.load_open_redirect_templates).
+        targets += load_open_redirect_templates(evil_host)
         m = (http_method or "GET").upper()
         tried = []
         confirmed_entry = None

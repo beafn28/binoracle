@@ -1225,6 +1225,7 @@ def verify_wordpress_command_injection(
         attempts = [
             # separadores de comando estandar (sh/bash/dash/ash)
             f"; echo {calc}", f"| echo {calc}", f"&& echo {calc}", f"|| echo {calc}",
+            f"& echo {calc}",
             f"\necho {calc}\n", f"\r\necho {calc}\r\n",
             # sustitucion de comandos (funciona aunque el valor ya este entre comillas/concatenado)
             f"`echo {calc}`", f"$(echo {calc})",
@@ -2299,6 +2300,8 @@ def verify_wordpress_open_redirect(
             f"////{evil_host}/pwned",                                  # cuadruple slash
             f"/https://{evil_host}/pwned",                             # slash inicial delante de URL absoluta (burla un check 'startswith(/)')
         ]
+        from .payload_kb import load_open_redirect_templates
+        targets += load_open_redirect_templates(evil_host)
         m = (http_method or "GET").upper()
         tried = []
         confirmed_entry = None
