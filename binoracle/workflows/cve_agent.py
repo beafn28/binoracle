@@ -252,16 +252,24 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
     codigo real registra flrblocksusersettingsupdatehandle y lee flr-blocks-email-update) --
     convertirlo en un grep deterministico, en vez de depender de que el LLM transcriba bien un
     fragmento de codigo, hace la correccion automatica y repetible, sin que el analista tenga que
-    inspeccionar el fichero a mano cada vez. Devuelve None si no hay nada que extraer (ni un
-    add_action que mencione la funcion, ni un $_POST/$_REQUEST/$_GET dentro de su cuerpo)."""
+    inspeccionar el fichero a mano cada vez. Tambien reconoce la REST API de WordPress
+    (register_rest_route()/$request->get_param()), cada vez mas comun en plugins modernos que no
+    usan admin-ajax.php en absoluto. Devuelve None si no hay nada que extraer."""
     import os as _os
     import re as _re
     action_re = _re.compile(r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['\"]")
+    rest_route_re = _re.compile(
+        r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*,")
+    rest_methods_re = _re.compile(r"['\"]methods['\"]\s*=>\s*(?:['\"]([A-Za-z,\s]+)['\"]|"
+                                  r"(WP_REST_Server::[A-Z]+))")
     field_re = _re.compile(r"\$_(?:POST|REQUEST|GET)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]")
+    rest_param_re = _re.compile(r"->get_param\s*\(\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\)")
+    rest_json_body_re = _re.compile(r"->get_json_params\s*\(\s*\)|->get_body_params\s*\(\s*\)")
     fn_def_re_tmpl = r"function\s+{0}\s*\("
     func_decl_re = _re.compile(r"\s*(?:public |private |protected |static )*function\s+\w+\s*\(")
 
     best_action = None
+    best_endpoint = None
     best_fields: List[str] = []
     for name, locs in (found or {}).items():
         for loc in locs[:2]:
@@ -288,10 +296,16 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
                 for m in field_re.finditer(body_text):
                     if m.group(1) not in best_fields:
                         best_fields.append(m.group(1))
-            # el add_action que registra ESTA funcion puede vivir en otra parte del fichero (o de
-            # la clase) -- se busca por mencion literal del nombre de la funcion dentro de la
-            # propia llamada a add_action (callback directo o `[$this, 'nombre']`), y se queda con
-            # el mas cercano a su definicion si hubiera varios candidatos.
+                for m in rest_param_re.finditer(body_text):
+                    if m.group(1) not in best_fields:
+                        best_fields.append(m.group(1))
+                if rest_json_body_re.search(body_text) and "<json_body>" not in best_fields:
+                    best_fields.append("<json_body>")
+            # el add_action/register_rest_route que registra ESTA funcion puede vivir en otra
+            # parte del fichero (o de la clase) -- se busca por mencion literal del nombre de la
+            # funcion dentro de la propia llamada de registro (callback directo o
+            # `[$this, 'nombre']`), y se queda con el mas cercano a su definicion si hubiera
+            # varios candidatos.
             candidates = []
             for m in action_re.finditer(text):
                 call_end = text.find(")", m.end())
@@ -304,11 +318,195 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
                 candidates.sort(key=lambda c: c[0])
                 best_action = candidates[0][1]
 
-    if not best_action and not best_fields:
+            rest_candidates = []
+            for m in rest_route_re.finditer(text):
+                # el bloque de opciones (methods/callback/permission_callback) viene justo
+                # despues de la coma final del match, hasta el siguiente ');' razonable --
+                # heuristica por tamano fijo, igual de laxa que el resto de este extractor.
+                call_text = text[m.end():m.end() + 500]
+                if name not in call_text:
+                    continue
+                namespace, route = m.group(1), m.group(2)
+                mm = rest_methods_re.search(call_text)
+                method = ""
+                if mm:
+                    raw = (mm.group(1) or mm.group(2) or "").strip()
+                    method = {"WP_REST_Server::READABLE": "GET",
+                             "WP_REST_Server::CREATABLE": "POST",
+                             "WP_REST_Server::EDITABLE": "POST",
+                             "WP_REST_Server::DELETABLE": "DELETE",
+                             "WP_REST_Server::ALLMETHODS": "POST"}.get(raw, raw.split(",")[0].strip().upper())
+                hook_line = text[:m.start()].count("\n")
+                rest_candidates.append((abs(hook_line - (body_start if body_start is not None else hook_line)),
+                                        namespace.strip("/"), route.strip("/"), method or "POST"))
+            if rest_candidates:
+                rest_candidates.sort(key=lambda c: c[0])
+                _dist, namespace, route, method = rest_candidates[0]
+                best_endpoint = (f"/wp-json/{namespace}/{route}", method)
+
+    if not best_action and not best_endpoint and not best_fields:
         return None
     out: dict = {}
-    if best_action:
+    if best_endpoint:
+        out["endpoint"], out["http_method"] = best_endpoint
+    elif best_action:
         out["endpoint"] = f"/wp-admin/admin-ajax.php?action={best_action}"
+    if best_fields:
+        out["parameters"] = best_fields
+    return out
+
+
+def _php_function_body(text: str, name: str) -> Optional[str]:
+    """Texto del CUERPO de la funcion/metodo `name` dentro de `text` -- heuristica por
+    indentacion (busca la siguiente declaracion de funcion al mismo nivel o menor como el final),
+    compartida por los tres extractores deterministas de CMS (WordPress/Drupal/Joomla) para no
+    repetir la misma logica de limites de funcion tres veces."""
+    import re as _re
+    lines = text.splitlines()
+    fn_def_re = _re.compile(rf"function\s+{_re.escape(name)}\s*\(")
+    func_decl_re = _re.compile(r"\s*(?:public |private |protected |static )*function\s+\w+\s*\(")
+    body_start = next((i for i, l in enumerate(lines) if fn_def_re.search(l)), None)
+    if body_start is None:
+        return None
+    indent = len(lines[body_start]) - len(lines[body_start].lstrip())
+    body_end = len(lines)
+    for j in range(body_start + 1, len(lines)):
+        if func_decl_re.match(lines[j]):
+            j_indent = len(lines[j]) - len(lines[j].lstrip())
+            if j_indent <= indent:
+                body_end = j
+                break
+    return "\n".join(lines[body_start:body_end])
+
+
+def _deterministic_drupal_hints_from_source(local_path: str, found: dict) -> Optional[dict]:
+    """Analogo Drupal de _deterministic_web_hints_from_source: busca en los *.routing.yml del
+    modulo la ruta REAL cuyo `_controller` apunte al metodo citado (en vez de confiar en que el
+    LLM transcriba bien el path), y dentro del cuerpo de ese metodo busca los nombres de campo
+    REALES que lee del Request de Symfony (`$request->query/request->get('x')`,
+    `Drupal::request()->get('x')`) o del Form API (`$form_state->getValue('x')`)."""
+    import os as _os
+    import re as _re
+    controller_re = _re.compile(r"_controller\s*:\s*['\"]?([\w\\]+)::(\w+)['\"]?")
+    path_re = _re.compile(r"^\s*path\s*:\s*['\"]([^'\"]+)['\"]", _re.M)
+    methods_re = _re.compile(r"^\s*methods\s*:\s*\[?\s*([A-Za-z,\s]+)\]?", _re.M)
+    request_field_re = _re.compile(
+        r"(?:\$request(?:->query|->request)?|Drupal::request\(\))->get\(\s*['\"]([\w\-]+)['\"]")
+    form_value_re = _re.compile(r"->getValue\(\s*['\"]([\w\-]+)['\"]")
+
+    best_endpoint = None
+    best_fields: List[str] = []
+    for name, locs in (found or {}).items():
+        # 1) la ruta: se busca en TODOS los *.routing.yml del modulo (puede haber varios ficheros,
+        # p.ej. uno del core del modulo y otro de un submodulo).
+        for dirpath, _dirs, files in _os.walk(local_path):
+            for fn in files:
+                if not fn.endswith(".routing.yml"):
+                    continue
+                try:
+                    with open(_os.path.join(dirpath, fn), "r", encoding="utf-8", errors="replace") as f:
+                        yml_text = f.read()
+                except OSError:
+                    continue
+                for cm in controller_re.finditer(yml_text):
+                    if cm.group(2) != name:
+                        continue
+                    # el 'path:' de ESTA ruta es el mas cercano HACIA ATRAS (misma convencion de
+                    # indentacion YAML que el resto de este extractor -- heuristica, no un parser
+                    # YAML real, igual que grep_vulnerable_functions en websource.py).
+                    before = yml_text[:cm.start()]
+                    pm = list(path_re.finditer(before))
+                    if not pm:
+                        continue
+                    path = pm[-1].group(1)
+                    after = yml_text[cm.end():cm.end() + 300]
+                    mm = methods_re.search(after) or methods_re.search(before[-300:])
+                    method = (mm.group(1).split(",")[0].strip().upper() if mm else "GET")
+                    best_endpoint = (path, method)
+        # 2) los campos: dentro del cuerpo REAL del metodo/funcion citado.
+        for loc in locs[:2]:
+            file_part, _, _line_part = loc.rpartition(":")
+            fpath = _os.path.join(local_path, file_part)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            body = _php_function_body(text, name)
+            if not body:
+                continue
+            for m in request_field_re.finditer(body):
+                if m.group(1) not in best_fields:
+                    best_fields.append(m.group(1))
+            for m in form_value_re.finditer(body):
+                if m.group(1) not in best_fields:
+                    best_fields.append(m.group(1))
+
+    if not best_endpoint and not best_fields:
+        return None
+    out: dict = {}
+    if best_endpoint:
+        out["endpoint"], out["http_method"] = best_endpoint
+    if best_fields:
+        out["parameters"] = best_fields
+    return out
+
+
+def _deterministic_joomla_hints_from_source(local_path: str, found: dict, slug: str) -> Optional[dict]:
+    """Analogo Joomla de _deterministic_web_hints_from_source: dentro del cuerpo del metodo/
+    funcion citado busca los campos REALES leidos de Joomla\\CMS\\Input\\Input
+    ($input->getInt/getString/getCmd/getWord/getAlnum('x')), y el valor literal de 'task' si el
+    propio codigo lo compara (p.ej. `if ($input->getCmd('task') === 'update')`) para construir el
+    endpoint real `index.php?option=com_<slug>[&task=<valor>]` -- Joomla no tiene una convencion
+    de ruta tan explicita como el *.routing.yml de Drupal o add_action() de WordPress, asi que
+    esto es mas una inferencia que una lectura directa (documentado: menos fiable que los otros
+    dos extractores, el analista deberia confirmar el 'task' real si lo hay)."""
+    import os as _os
+    import re as _re
+    field_re = _re.compile(r"->get(?:Int|String|Cmd|Word|Alnum|)\(\s*['\"]([\w\-]+)['\"]")
+    # el valor de 'task' casi siempre se compara en DOS pasos (se asigna a una variable, y la
+    # variable se compara despues), no en una sola expresion -- se buscan ambos pasos por
+    # separado y se encadenan, en vez de solo el caso (mas raro) de comparacion inline.
+    task_assign_re = _re.compile(r"\$(\w+)\s*=[^=][^;]*getCmd\(\s*['\"]task['\"]")
+    task_literal_inline_re = _re.compile(
+        r"getCmd\(\s*['\"]task['\"][^)]*\)\s*(?:===?|==)\s*['\"](\w+)['\"]")
+
+    best_fields: List[str] = []
+    best_task = None
+    for name, locs in (found or {}).items():
+        for loc in locs[:2]:
+            file_part, _, _line_part = loc.rpartition(":")
+            fpath = _os.path.join(local_path, file_part)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            body = _php_function_body(text, name)
+            if not body:
+                continue
+            for m in field_re.finditer(body):
+                if m.group(1) not in best_fields and m.group(1) != "task":
+                    best_fields.append(m.group(1))
+            tm = task_literal_inline_re.search(body)
+            if tm:
+                best_task = tm.group(1)
+            else:
+                am = task_assign_re.search(body)
+                if am:
+                    var = am.group(1)
+                    cmp_re = _re.compile(rf"\${_re.escape(var)}\s*(?:===?|==)\s*['\"](\w+)['\"]")
+                    cm = cmp_re.search(body)
+                    if cm:
+                        best_task = cm.group(1)
+
+    if not best_fields and not best_task:
+        return None
+    out: dict = {}
+    endpoint = f"/index.php?option=com_{slug}"
+    if best_task:
+        endpoint += f"&task={best_task}"
+    out["endpoint"] = endpoint
     if best_fields:
         out["parameters"] = best_fields
     return out
@@ -406,6 +604,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
         if fr.ok:
             step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
                  f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
+            # calculado AQUI (no solo mas abajo, donde lo usa el despacho de verificacion
+            # dinamica) porque el refinamiento determinista de endpoint/parametros TAMBIEN
+            # necesita saber de que CMS es: Drupal (routing.yml) y Joomla ($input->getXxx()) se
+            # leen distinto que WordPress (add_action/register_rest_route).
+            plugin_dir = fr.plugin_dir or (fr.source if fr.kind in ("wordpress-plugin", "drupal-module") else "")
+            is_drupal = fr.kind == "drupal-module" or (
+                fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))
+            is_joomla = (not is_drupal) and fr.kind in ("local-zip", "zip-url") and _looks_like_joomla_extension(
+                fr.local_path, plugin_dir)
             if fn_names:
                 step("confirmando en el codigo real las funciones citadas por el LLM..." if es else
                      "confirming the LLM-cited functions in the real source...")
@@ -432,12 +639,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                          "reading the real source to refine endpoint/parameters...")
                     llm_refined = _refine_web_hints_from_source(llm, fr.local_path,
                                                                 inv.source_grounding["found"])
-                    # grep deterministico del add_action()/$_POST real -- gana sobre la suposicion
-                    # del LLM cuando ambos citan algo (ver _deterministic_web_hints_from_source):
-                    # es exactamente la correccion que el analista tuvo que hacer a mano leyendo
-                    # el codigo en CVE-2025-3605/CVE-2024-43982, ahora automatica.
-                    det_refined = _deterministic_web_hints_from_source(fr.local_path,
-                                                                       inv.source_grounding["found"])
+                    # grep deterministico del registro real del endpoint y de los parametros
+                    # reales -- gana sobre la suposicion del LLM cuando ambos citan algo. Es
+                    # exactamente la correccion que el analista tuvo que hacer a mano leyendo el
+                    # codigo en CVE-2025-3605/CVE-2024-43982, ahora automatica -- y, desde aqui,
+                    # para los tres CMS (cada uno se registra de forma distinta: add_action()/
+                    # register_rest_route() en WordPress, *.routing.yml en Drupal, $input->getXxx()
+                    # en Joomla).
+                    if is_drupal:
+                        det_refined = _deterministic_drupal_hints_from_source(
+                            fr.local_path, inv.source_grounding["found"])
+                    elif is_joomla:
+                        det_refined = _deterministic_joomla_hints_from_source(
+                            fr.local_path, inv.source_grounding["found"], plugin_dir)
+                    else:
+                        det_refined = _deterministic_web_hints_from_source(
+                            fr.local_path, inv.source_grounding["found"])
                     refined = {**(llm_refined or {}), **(det_refined or {})}
                     if det_refined:
                         step((f"grep deterministico del codigo real: endpoint="
@@ -464,14 +681,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
             # WordPress.org: un .zip comercial (local o por URL) es el caso REAL mas comun (la
             # mayoria de plugins con CVEs de este tipo son de pago, nunca estaran en el directorio
-            # gratuito). `plugin_dir` es la carpeta DENTRO de local_path que de verdad contiene el
-            # plugin (== slug para WordPress.org; auto-detectada para zip local/URL -- ver
-            # websource.detect_plugin_folder).
-            plugin_dir = fr.plugin_dir or (fr.source if fr.kind in ("wordpress-plugin", "drupal-module") else "")
-            is_drupal = fr.kind == "drupal-module" or (
-                fr.kind in ("local-zip", "zip-url") and _looks_like_drupal_module(fr.local_path, plugin_dir))
-            is_joomla = (not is_drupal) and fr.kind in ("local-zip", "zip-url") and _looks_like_joomla_extension(
-                fr.local_path, plugin_dir)
+            # gratuito). `plugin_dir`/`is_drupal`/`is_joomla` ya se calcularon mas arriba (los
+            # necesitaba tambien el refinamiento determinista de endpoint/parametros).
             if (is_joomla and fr.kind in ("local-zip", "zip-url") and plugin_dir
                     and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
                 # primer verificador de Joomla ("poco a poco" -- ver joomlaverify.py): mismo caso

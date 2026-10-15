@@ -4598,3 +4598,85 @@ def test_joomlaverify_deserialization_blocked_without_gadget(monkeypatch, tmp_pa
                                            "POST", ["data"])
     assert res.verified is False
     assert res.limitations
+
+
+def test_cve_agent_deterministic_hints_recognizes_wp_rest_route(tmp_path):
+    from binoracle.workflows.cve_agent import _deterministic_web_hints_from_source
+    (tmp_path / "rest-plugin.php").write_text(
+        "<?php\nclass MyRestController {\n"
+        "    public function register_routes() {\n"
+        "        register_rest_route('myplugin/v1', '/import-settings', array(\n"
+        "            'methods' => 'POST',\n"
+        "            'callback' => array($this, 'import_settings'),\n"
+        "        ));\n"
+        "    }\n\n"
+        "    public function import_settings($request) {\n"
+        "        $data = $request->get_param('data');\n"
+        "        $obj = unserialize($data);\n"
+        "    }\n"
+        "}\n")
+    found = {"import_settings": ["rest-plugin.php:10"]}
+    r = _deterministic_web_hints_from_source(str(tmp_path), found)
+    assert r is not None
+    assert r["endpoint"] == "/wp-json/myplugin/v1/import-settings"
+    assert r["http_method"] == "POST"
+    assert "data" in r["parameters"]
+
+
+def test_cve_agent_deterministic_hints_still_recognizes_ajax_action(tmp_path):
+    # regresion: la nueva deteccion de REST no debe romper el camino de admin-ajax.php existente.
+    from binoracle.workflows.cve_agent import _deterministic_web_hints_from_source
+    (tmp_path / "ajax-plugin.php").write_text(
+        "<?php\nadd_action('wp_ajax_myaction', 'handle_it');\n"
+        "function handle_it() {\n"
+        "    $email = $_POST['email'];\n"
+        "}\n")
+    found = {"handle_it": ["ajax-plugin.php:3"]}
+    r = _deterministic_web_hints_from_source(str(tmp_path), found)
+    assert r is not None
+    assert r["endpoint"] == "/wp-admin/admin-ajax.php?action=myaction"
+    assert "email" in r["parameters"]
+
+
+def test_cve_agent_deterministic_hints_drupal_routing_yml(tmp_path):
+    from binoracle.workflows.cve_agent import _deterministic_drupal_hints_from_source
+    mod = tmp_path / "mymodule"
+    (mod / "src" / "Controller").mkdir(parents=True)
+    (mod / "mymodule.routing.yml").write_text(
+        "mymodule.update_profile:\n"
+        "  path: '/mymodule/update-profile/{uid}'\n"
+        "  defaults:\n"
+        "    _controller: '\\Drupal\\mymodule\\Controller\\ProfileController::updateProfile'\n"
+        "  methods: [POST]\n")
+    (mod / "src" / "Controller" / "ProfileController.php").write_text(
+        "<?php\nnamespace Drupal\\mymodule\\Controller;\n"
+        "class ProfileController {\n"
+        "    public function updateProfile($request) {\n"
+        "        $uid = $request->request->get('user_id');\n"
+        "        $email = $request->request->get('new_email');\n"
+        "    }\n}\n")
+    found = {"updateProfile": ["src/Controller/ProfileController.php:4"]}
+    r = _deterministic_drupal_hints_from_source(str(mod), found)
+    assert r is not None
+    assert r["endpoint"] == "/mymodule/update-profile/{uid}"
+    assert r["http_method"] == "POST"
+    assert "user_id" in r["parameters"] and "new_email" in r["parameters"]
+
+
+def test_cve_agent_deterministic_hints_joomla_input_and_task(tmp_path):
+    from binoracle.workflows.cve_agent import _deterministic_joomla_hints_from_source
+    ext = tmp_path / "myext"
+    ext.mkdir()
+    (ext / "myext.php").write_text(
+        "<?php\nclass MyExtController {\n"
+        "    public function handle() {\n"
+        "        $task = $this->input->getCmd('task');\n"
+        "        if ($task === 'updateuser') {\n"
+        "            $userId = $this->input->getInt('user_id');\n"
+        "            $email = $this->input->getString('email');\n"
+        "        }\n    }\n}\n")
+    found = {"handle": ["myext.php:3"]}
+    r = _deterministic_joomla_hints_from_source(str(ext), found, "myext")
+    assert r is not None
+    assert r["endpoint"] == "/index.php?option=com_myext&task=updateuser"
+    assert "user_id" in r["parameters"] and "email" in r["parameters"]
