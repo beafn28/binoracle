@@ -93,6 +93,13 @@ RUN apt-get update \
     && (apt-get install -y --no-install-recommends docker.io \
         || echo 'WARN: docker CLI no instalado; wpverify.py y los sandboxes basados en Docker degradan') \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# requests: CRITICO, instalacion propia (NUNCA solo transitiva via pwntools mas abajo, que
+# instala en un `|| true` que se traga el fallo en silencio) -- todo el motor de investigacion
+# de CVEs web (wpverify/drupalverify/joomlaverify/genericverify/websource/webexploit/burpmcp)
+# depende de requests; si esta instalacion falla, el build entero debe fallar, no degradar
+# en silencio a "sin verificacion dinamica" sin que nadie se entere por que.
+RUN pip install requests
+
 # Oraculos/tools Python extra. Cada uno por separado para que un fallo NO bloquee al resto.
 # angr = ejecucion simbolica (sube verdicts a 'verified'); es el mas pesado, va el ultimo.
 RUN pip install keystone-engine || echo 'WARN: keystone-engine no instalado'
@@ -108,6 +115,10 @@ RUN gem install seccomp-tools --no-document || echo 'WARN: seccomp-tools no inst
 # Chromium headless necesita (fuentes, libnss3, etc.) en Debian/Ubuntu.
 RUN (pip install playwright && playwright install --with-deps chromium) \
     || echo 'WARN: Playwright/Chromium no instalado; las capturas de pantalla degradan (texto igual)'
+# SDK de MCP: cliente para la extension oficial de Burp Suite (burpmcp.py, --burp-mcp-url) --
+# sin esto instalado, --burp-mcp-url falla con "No module named 'mcp'" y los verificadores
+# siguen funcionando igual pero con peticiones directas (sin pasar por Burp).
+RUN pip install mcp || echo 'WARN: mcp no instalado; --burp-mcp-url no funcionara'
 
 # Oraculos de analisis + pwntools (angr se omite a proposito: es enorme y carga perezosamente;
 # instalalo con `pip install angr` dentro del contenedor si lo necesitas para reachability simbolica).

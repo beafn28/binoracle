@@ -5656,3 +5656,58 @@ def test_payload_kb_load_open_redirect_templates_skips_multi_param_queries():
     from binoracle.workflows import payload_kb
     templates = payload_kb.load_open_redirect_templates("evilhost.invalid")
     assert not any("?" in t or "&" in t for t in templates)
+
+
+# --- endurecido tras un fallo real en vivo: Dockerfile sin 'mcp' instalado, y el LLM sin dar
+# source_url para un CVE de WordPress cuyo nombre de plugin SI estaba en la descripcion ---
+
+def test_guess_wp_slug_from_description_patchstack_format():
+    from binoracle.workflows.cve_agent import _guess_wp_slug_from_description
+    desc = ("Improper Neutralization of Special Elements used in an SQL Command ('SQL "
+           "Injection') vulnerability in ValvePress Automatic allows SQL Injection.This issue "
+           "affects Automatic: from n/a through 3.92.0.")
+    assert _guess_wp_slug_from_description(desc) == "automatic"
+
+
+def test_guess_wp_slug_from_description_multiword_plugin_name():
+    from binoracle.workflows.cve_agent import _guess_wp_slug_from_description
+    desc = ("Cross-Site Request Forgery (CSRF) vulnerability in John Doe Contact Form 7 "
+           "Extended allows Stored XSS.This issue affects Contact Form 7 Extended: from n/a "
+           "through 1.2.3.")
+    assert _guess_wp_slug_from_description(desc) == "contact-form-7-extended"
+
+
+def test_guess_wp_slug_from_description_wordpress_plugin_phrasing():
+    from binoracle.workflows.cve_agent import _guess_wp_slug_from_description
+    desc = "A vulnerability was found in the Example Gallery WordPress plugin before 3.1."
+    assert _guess_wp_slug_from_description(desc) == "example-gallery"
+
+
+def test_guess_wp_slug_from_description_returns_none_without_recognizable_pattern():
+    from binoracle.workflows.cve_agent import _guess_wp_slug_from_description
+    assert _guess_wp_slug_from_description("Generic text with no plugin name pattern.") is None
+    assert _guess_wp_slug_from_description("") is None
+    assert _guess_wp_slug_from_description(None) is None
+
+
+def test_run_web_investigation_falls_back_to_guessed_slug_when_llm_gives_none(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource
+
+    called = {}
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        called["source"] = target
+        return websource.SourceFetchResult(ok=False, kind="wordpress-plugin", source=target,
+                                           note="404 (slug de prueba, no existe de verdad)")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    inv = Investigation(cve_id="CVE-2024-27956")
+    inv.vuln_class = "sqli"
+    inv.description = ("Improper Neutralization... vulnerability in ValvePress Automatic "
+                       "allows SQL Injection.This issue affects Automatic: from n/a through "
+                       "3.92.0.")
+    inv.llm_notes = {"vuln_class": "sqli"}  # SIN source_url -- el caso real que fallo
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("source") == "automatic"
+    assert inv.source_fetch["source_guessed_from_description"] is True
+    assert any("automatic" in b for b in inv.blockers)

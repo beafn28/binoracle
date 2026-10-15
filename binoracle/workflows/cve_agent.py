@@ -585,6 +585,41 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
     return out or None
 
 
+_PLUGIN_NAME_PATTERNS = [
+    # Patron Patchstack/NVD casi universal para CVEs de plugins de WordPress (confirmado en
+    # vivo: CVE-2024-27956 "...vulnerability in ValvePress Automatic allows SQL Injection.This
+    # issue affects Automatic: from n/a through 3.92.0." -- el nombre REAL del plugin es el que
+    # va despues de "This issue affects", no el "Vendor Producto" completo de antes de "allows"
+    # (ahi se cuela el vendor, que NO es parte del slug de WordPress.org)).
+    re.compile(r"[Tt]his issue affects ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?):"),
+    re.compile(r"vulnerability in ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) allows"),
+    re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) WordPress plugin"),
+    re.compile(r"in the ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin"),
+]
+
+
+def _guess_wp_slug_from_description(description: str) -> Optional[str]:
+    """Fallback DETERMINISTA para cuando el LLM no propuso source_url (confirmado en vivo que
+    pasa: el texto libre del LLM no siempre extrae/adivina el slug de WordPress.org aunque el
+    nombre del plugin este literal en la descripcion del CVE) -- el formato de descripcion que
+    NVD/Patchstack generan para plugins de WordPress es casi siempre "vulnerability in <nombre>
+    allows ...This issue affects <nombre>: from X through Y", asi que se puede extraer el nombre
+    del plugin con una regex sin depender del LLM en absoluto. Devuelve el slug candidato
+    (minusculas, espacios->guiones) o None si la descripcion no trae ese patron -- es solo una
+    PRIMERA HIPOTESIS a probar contra WordPress.org, no una garantia (fetch_source() ya falla
+    con honestidad si el slug no existe de verdad)."""
+    if not description:
+        return None
+    for pattern in _PLUGIN_NAME_PATTERNS:
+        m = pattern.search(description)
+        if m:
+            name = m.group(1).strip().rstrip(".")
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+            if slug and len(slug) >= 3:
+                return slug
+    return None
+
+
 def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
     del LLM contra el (grep de las funciones citadas) y desarrolla el PoC HTTP/HTML. Muta `inv` in
@@ -608,6 +643,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
     if isinstance(fn_names, str):
         fn_names = [fn_names]
 
+    guessed_source = False
+    if not source:
+        guess = _guess_wp_slug_from_description(inv.description)
+        if guess:
+            source = guess
+            guessed_source = True
+            step((f"el LLM no dio source_url; probando '{guess}' como slug de WordPress.org "
+                 f"(extraido del propio texto del aviso, no una garantia)...") if es else
+                 (f"the LLM gave no source_url; trying '{guess}' as a WordPress.org slug "
+                 f"(extracted from the advisory text itself, not a guarantee)..."))
+
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
              f"attempting to fetch the real source ({source})...")
@@ -615,7 +661,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                          cms_hint=(notes.get("cms") or "").strip().lower())
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
-                            "local_path": fr.local_path, "note": fr.note}
+                            "local_path": fr.local_path, "note": fr.note,
+                            "source_guessed_from_description": guessed_source}
         if fr.ok:
             step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
                  f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
@@ -1442,13 +1489,29 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
-            inv.blockers.append((f"no se pudo descargar el codigo ({fr.note})" if es else
-                                 f"could not download the source ({fr.note})"))
+            if guessed_source:
+                inv.blockers.append((f"el LLM no indico source_url; se probo '{source}' como "
+                                     f"slug de WordPress.org (adivinado del propio texto del "
+                                     f"aviso, 'This issue affects {source}:') pero no se pudo "
+                                     f"descargar ({fr.note}) -- pasa --source a mano con el slug "
+                                     f"real/un .zip si lo conoces" if es else
+                                     f"the LLM gave no source_url; tried '{source}' as a "
+                                     f"WordPress.org slug (guessed from the advisory's own "
+                                     f"'This issue affects {source}:' text) but it could not be "
+                                     f"downloaded ({fr.note}) -- pass --source by hand with the "
+                                     f"real slug/a .zip if you know it"))
+            else:
+                inv.blockers.append((f"no se pudo descargar el codigo ({fr.note})" if es else
+                                     f"could not download the source ({fr.note})"))
     else:
-        inv.blockers.append(("el LLM no indico un source_url/slug del plugin: sin codigo real que "
-                             "confirmar (la clase/hipotesis siguen siendo validas)" if es else
-                             "the LLM did not provide a source_url/plugin slug: no real source to "
-                             "confirm against (the class/hypothesis are still valid)"))
+        inv.blockers.append(("el LLM no indico un source_url/slug del plugin, y no se pudo "
+                             "adivinar uno del texto del aviso: sin codigo real que confirmar "
+                             "(la clase/hipotesis siguen siendo validas) -- pasa --source a mano "
+                             "si conoces el slug/paquete real" if es else
+                             "the LLM did not provide a source_url/plugin slug, and none could "
+                             "be guessed from the advisory text: no real source to confirm "
+                             "against (the class/hypothesis are still valid) -- pass --source by "
+                             "hand if you know the real slug/package"))
 
     step("desarrollando el PoC HTTP a partir de la hipotesis..." if es else
          "developing the HTTP PoC from the hypothesis...")
