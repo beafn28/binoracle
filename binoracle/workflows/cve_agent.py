@@ -1003,6 +1003,55 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                                            email_param_hint=email_p or "",
                                            pass_param_hint=pass_p or "", on_step=step)
                 _apply_wpverify_result(inv, wr, es)
+            # deserializacion insegura (PHP Object Injection) -- ver deserialize_gadgets.py: a
+            # diferencia de las demas clases, el gadget se busca PRIMERO en el codigo real (sin
+            # eso no hay nada que verificar, no se inventa una cadena de terceros), y solo si se
+            # encuentra se levanta el laboratorio. Tercera clase comun a los tres CMS que llega
+            # a este punto ("poco a poco").
+            elif (is_joomla and fr.kind in ("local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "deserialization" and notes.get("endpoint")):
+                from .joomlaverify import verify_joomla_deserialization, _pick_param
+                from .wpverify import _SERIAL_HINTS
+                params = notes.get("parameters") or []
+                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                step(("intentando verificacion DINAMICA -- gadget de deserializacion del propio "
+                     "codigo (Joomla+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- deserialization gadget from the "
+                     "extension's own code (ephemeral Joomla+MySQL in Docker)..."))
+                wr = verify_joomla_deserialization(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", params,
+                    serial_param_hint=serial_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "deserialization" and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_deserialization, _pick_param
+                from .wpverify import _SERIAL_HINTS
+                params = notes.get("parameters") or []
+                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                step(("intentando verificacion DINAMICA -- gadget de deserializacion del propio "
+                     "codigo (Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- deserialization gadget from the "
+                     "module's own code (ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_deserialization(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", params,
+                    serial_param_hint=serial_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "deserialization" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_deserialization, _pick_param, _SERIAL_HINTS
+                params = notes.get("parameters") or []
+                serial_p = notes.get("serial_param") or _pick_param(params, _SERIAL_HINTS)
+                step(("intentando verificacion DINAMICA -- gadget de deserializacion del propio "
+                     "codigo (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- deserialization gadget from the "
+                     "plugin's own code (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_deserialization(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", params,
+                    serial_param_hint=serial_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")

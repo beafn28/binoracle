@@ -4513,3 +4513,88 @@ def test_joomlaverify_account_takeover_requires_email_or_pass_param(monkeypatch,
                                             "POST", ["foo", "bar"])
     assert res.verified is False
     assert res.limitations
+
+
+# --- Deserializacion insegura (PHP Object Injection) -- comun a los tres CMS ---
+
+def test_deserialize_gadgets_finds_file_write_gadget(tmp_path):
+    from binoracle.workflows.deserialize_gadgets import find_file_write_gadget
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "cache.php").write_text(
+        "<?php\nnamespace MyPlugin;\nclass CacheWriter {\n"
+        "    public $cacheFile;\n    public $cacheData;\n"
+        "    public function __destruct() {\n"
+        "        file_put_contents($this->cacheFile, $this->cacheData);\n"
+        "    }\n}\n")
+    g = find_file_write_gadget(str(plugin_dir))
+    assert g is not None
+    assert g.class_name == "CacheWriter"
+    assert g.namespace == "MyPlugin"
+    assert g.magic_method == "__destruct"
+    assert g.path_prop == "cacheFile"
+    assert g.content_prop == "cacheData"
+    assert g.full_class_name == "MyPlugin\\CacheWriter"
+
+
+def test_deserialize_gadgets_ignores_non_public_properties(tmp_path):
+    from binoracle.workflows.deserialize_gadgets import find_file_write_gadget
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "cache.php").write_text(
+        "<?php\nclass CacheWriter {\n"
+        "    private $cacheFile;\n    private $cacheData;\n"
+        "    public function __destruct() {\n"
+        "        file_put_contents($this->cacheFile, $this->cacheData);\n"
+        "    }\n}\n")
+    assert find_file_write_gadget(str(plugin_dir)) is None
+
+
+def test_deserialize_gadgets_returns_none_without_gadget(tmp_path):
+    from binoracle.workflows.deserialize_gadgets import find_file_write_gadget
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "safe.php").write_text("<?php\nfunction safe() { return 1; }\n")
+    assert find_file_write_gadget(str(plugin_dir)) is None
+
+
+def test_deserialize_gadgets_build_serialized_object_matches_php_format():
+    from binoracle.workflows.deserialize_gadgets import (DeserializationGadget,
+                                                          build_php_serialized_object)
+    g = DeserializationGadget(class_name="CacheWriter", namespace="", magic_method="__destruct",
+                              path_prop="cacheFile", content_prop="cacheData", file="x", line=1)
+    s = build_php_serialized_object(g, "/tmp/x.txt", "SECRET")
+    assert s == ('O:11:"CacheWriter":2:{s:9:"cacheFile";s:10:"/tmp/x.txt";'
+                 's:9:"cacheData";s:6:"SECRET";}')
+
+
+def test_wpverify_deserialization_blocked_without_gadget(monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "myplugin.php").write_text("<?php\n/*\nPlugin Name: My Plugin\n*/\n")
+    res = wv.verify_wordpress_deserialization(str(tmp_path), "myplugin", "/wp-admin/admin-ajax.php",
+                                               "POST", ["data"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_drupalverify_deserialization_blocked_without_gadget(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_deserialization(str(tmp_path), "mymodule", "/mymodule/import", "POST",
+                                            ["data"])
+    assert res.verified is False
+    assert res.limitations
+
+
+def test_joomlaverify_deserialization_blocked_without_gadget(monkeypatch, tmp_path):
+    import binoracle.workflows.joomlaverify as jv
+    monkeypatch.setattr(jv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "myext").mkdir()
+    res = jv.verify_joomla_deserialization(str(tmp_path), "myext", "/index.php?option=com_myext",
+                                           "POST", ["data"])
+    assert res.verified is False
+    assert res.limitations

