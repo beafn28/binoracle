@@ -1386,7 +1386,7 @@ const CMDS=[
    {k:"tableName",label:"(opcional, WP deserialization en tabla propia) tabla del plugin ($wpdb->insert/update, no la API de Options)",t:"text",placeholder:"wp_myplugin_tokens"},
    {k:"columnName",label:"(opcional) columna de tableName con el valor serializado",t:"text",placeholder:"token_data"},
    {k:"idColumn",label:"(opcional) columna clave primaria de tableName (por defecto id)",t:"text",placeholder:"id"},
-   {k:"burpMcpUrl",label:"(opcional) URL SSE del servidor MCP de la extension oficial de Burp -- las peticiones de los verificadores genericos pasaran por Burp",t:"text",placeholder:"http://127.0.0.1:9876/sse"},
+   {k:"burpMcpUrl",label:"(opcional) URL SSE del servidor MCP de la extension oficial de Burp -- las peticiones de los verificadores genericos pasaran por Burp",t:"text",placeholder:"http://127.0.0.1:9876"},
  ]},
  {c:"fetch",n:"Fetch binario",ic:"FE",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
  {c:"dataset",n:"Dataset LLM",ic:"DS",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},

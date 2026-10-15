@@ -12,7 +12,7 @@ Si la extension cambia el nombre exacto en una version futura, esto sigue encont
 nombre hardcodeado se habria roto en silencio.
 
 Transporte: SSE (Server-Sent Events) contra la URL que la extension publica en su tab MCP de
-Burp (por defecto http://127.0.0.1:9876/sse). El SDK oficial de MCP es asincrono (asyncio); el
+Burp (por defecto http://127.0.0.1:9876). El SDK oficial de MCP es asincrono (asyncio); el
 resto de binoracle es sincrono (requests), asi que BurpMCPClient corre su propio event loop en
 un hilo de fondo y expone una API sincrona normal -- ningun verificador necesita saber que por
 debajo hay asyncio."""
@@ -38,7 +38,7 @@ def _normalize(s: str) -> str:
 class BurpMCPClient:
     """Conexion sincrona al servidor MCP de la extension de Burp. Uso:
 
-        client = BurpMCPClient("http://127.0.0.1:9876/sse")
+        client = BurpMCPClient("http://127.0.0.1:9876")
         client.connect()
         try:
             ...
@@ -47,7 +47,7 @@ class BurpMCPClient:
 
     o como context manager (`with BurpMCPClient(url) as client:`)."""
 
-    def __init__(self, sse_url: str = "http://127.0.0.1:9876/sse", timeout: float = 20.0,
+    def __init__(self, sse_url: str = "http://127.0.0.1:9876", timeout: float = 20.0,
                 host_header: Optional[str] = None):
         self.sse_url = sse_url
         self.timeout = timeout

@@ -1347,7 +1347,7 @@ def build_parser() -> argparse.ArgumentParser:
                                         "most recently stored row (default: id)")
     ip.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
                                            "(github.com/PortSwigger/mcp-server, SSE URL from its "
-                                           "MCP tab, e.g. http://127.0.0.1:9876/sse) so every "
+                                           "MCP tab, e.g. http://127.0.0.1:9876) so every "
                                            "request the generic (CMS-agnostic) verifiers send "
                                            "shows up in Burp's Proxy/Repeater -- requires the "
                                            "extension loaded and enabled in Burp first")

@@ -5718,14 +5718,14 @@ def test_run_web_investigation_falls_back_to_guessed_slug_when_llm_gives_none(mo
 
 def test_burpmcp_client_overrides_host_header_for_non_localhost_url():
     from binoracle.workflows.burpmcp import BurpMCPClient
-    client = BurpMCPClient("http://host.docker.internal:9876/sse")
+    client = BurpMCPClient("http://host.docker.internal:9876")
     assert client.host_header == "127.0.0.1:9876"
 
 
 def test_burpmcp_client_no_override_for_localhost_url():
     from binoracle.workflows.burpmcp import BurpMCPClient
-    assert BurpMCPClient("http://127.0.0.1:9876/sse").host_header is None
-    assert BurpMCPClient("http://localhost:9876/sse").host_header is None
+    assert BurpMCPClient("http://127.0.0.1:9876").host_header is None
+    assert BurpMCPClient("http://localhost:9876").host_header is None
 
 
 def test_burpmcp_client_custom_host_header_override():
