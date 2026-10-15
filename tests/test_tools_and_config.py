@@ -4391,3 +4391,14 @@ def test_drupalverify_path_traversal_requires_path_param(monkeypatch, tmp_path):
                                           ["foo", "bar"])
     assert res.verified is False
     assert res.limitations
+
+
+def test_drupalverify_command_injection_requires_cmd_param(monkeypatch, tmp_path):
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    mod_dir = tmp_path / "mymodule"
+    mod_dir.mkdir()
+    res = dv.verify_drupal_command_injection(str(tmp_path), "mymodule", "/mymodule/run", "GET",
+                                             ["foo", "bar"])
+    assert res.verified is False
+    assert res.limitations

