@@ -953,6 +953,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None) -> N
                             head, _, body = entry.partition("\n")
                             trimmed = "\n".join(body.splitlines()[-15:])
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+            # "cualquier entorno", no solo CMS conocidos: si el codigo descargado no es un
+            # plugin/modulo/extension reconocido (no hay plugin_dir), pero trae su PROPIO
+            # Dockerfile/docker-compose.yml, binoracle lo construye y lo arranca TAL CUAL y
+            # verifica contra ese contenedor real -- ver genericverify.py. Mas limitado que los
+            # verificadores CMS-especificos (sin login generico), asi que de momento solo cubre
+            # las clases que no lo necesitan.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("command-injection", "os-command-injection")
+                  and notes.get("endpoint")):
+                from .genericverify import verify_generic_command_injection, _pick_param
+                from .wpverify import _CMD_HINTS
+                params = notes.get("parameters") or []
+                cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- fichero canario via docker "
+                     "exec, el objetivo se construye desde su propio Dockerfile/compose..." if es
+                     else "attempting GENERIC DYNAMIC verification -- canary file via docker "
+                     "exec, the target is built from its own Dockerfile/compose..."))
+                wr = verify_generic_command_injection(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, cmd_param_hint=cmd_p or "", on_step=step)
+                _apply_wpverify_result(inv, wr, es)
             # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
             # poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir

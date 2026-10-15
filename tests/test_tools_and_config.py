@@ -4805,3 +4805,87 @@ def test_cli_main_debug_flag_reraises_full_traceback(monkeypatch):
     monkeypatch.setattr(cli, "cmd_doctor", lambda args, config: (_ for _ in ()).throw(ValueError("boom")))
     with __import__("pytest").raises(ValueError):
         cli.main(["--debug", "doctor"])
+
+
+# --- genericverify.py: verificacion dinamica CMS-agnostica (cualquier entorno con su propio
+# Dockerfile/docker-compose.yml) ---
+
+def test_genericverify_find_build_target_prefers_compose(tmp_path):
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    target = _find_build_target(str(tmp_path))
+    assert target["kind"] == "compose"
+
+
+def test_genericverify_find_build_target_falls_back_to_dockerfile(tmp_path):
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "Dockerfile").write_text("FROM scratch\nEXPOSE 5000\n")
+    target = _find_build_target(str(tmp_path))
+    assert target["kind"] == "dockerfile"
+    assert target["path"].endswith("Dockerfile")
+
+
+def test_genericverify_find_build_target_none_without_either(tmp_path):
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "README.md").write_text("no docker here\n")
+    assert _find_build_target(str(tmp_path)) is None
+
+
+def test_genericverify_exposed_ports_from_dockerfile(tmp_path):
+    from binoracle.workflows.genericverify import _exposed_ports_from_dockerfile
+    df = tmp_path / "Dockerfile"
+    df.write_text("FROM python:3.11-slim\nEXPOSE 5000\nEXPOSE 8080 8081\n")
+    assert _exposed_ports_from_dockerfile(str(df)) == [5000, 8080, 8081]
+
+
+def test_genericverify_command_injection_blocked_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = gv.verify_generic_command_injection(str(tmp_path), "/ping", "POST", {"host": "x"})
+    assert res.available is False
+    assert res.verified is False
+
+
+def test_genericverify_command_injection_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_command_injection(str(tmp_path), "/ping", "POST", {"host": "x"})
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_cve_agent_dispatches_generic_command_injection_for_unrecognized_source(monkeypatch, tmp_path):
+    # "cualquier entorno": cuando el codigo descargado no es un plugin/modulo/extension
+    # reconocido (sin plugin_dir), pero vuln_class es command-injection con un endpoint, el
+    # pipeline tiene que caer en el verificador generico (genericverify.py) en vez de bloquearse
+    # solo porque no es WordPress/Drupal/Joomla.
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_ci(local_path, endpoint, method, params, cmd_param_hint="", on_step=None,
+                        budget_s=900.0):
+        called["endpoint"] = endpoint
+        called["local_path"] = local_path
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="COMMAND INJECTION confirmada (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_command_injection", fake_generic_ci)
+
+    inv = Investigation(cve_id="CVE-2099-00001")
+    inv.vuln_class = "command-injection"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/ping", "http_method": "POST", "parameters": {"host": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/ping"
+    assert called.get("local_path") == str(tmp_path)
+    assert inv.verified is True
