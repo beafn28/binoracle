@@ -804,11 +804,14 @@ _VNUM = r"([0-9]+(?:\.[0-9]+){0,4})"
 #   - "before 1.26" / "prior to 1.26" (NVD clasico)
 #   - "up to 1.26" / "up to and including 1.26" (otra fraseologia comun)
 #   - "<= 1.26" / "< 1.26" (notas terse)
-#   - "1.0 - 2.0" / "1.0 – 2.0" / "1.0 — 2.0" (rango con guion/en-dash/em-dash, ESPACIOS
-#     obligatorios a los lados para no confundirlo con un unico token tipo '1.0-beta1')
+#   - "1.0 - 2.0" / "1.0 – 2.0" / "1.0 — 2.0" (rango con guion/en-dash/em-dash, con o sin
+#     espacios a los lados -- confirmado en vivo un PoC real transcribiendolo SIN espacios,
+#     "2.1.3-2.8.2". No se confunde con un unico token tipo '1.0-beta1' porque ahi 'beta1' no
+#     es un VNUM valido (no son solo digitos/puntos), asi que esa alternativa simplemente no
+#     hace match y cae al chequeo de "ya es una version valida" de mas abajo)
 _THROUGH_VERSION_RE = re.compile(
     rf"(?:through|to|before|prior\s+to|up\s+to(?:\s+and\s+including)?|<=?)\s+{_VNUM}"
-    rf"|{_VNUM}\s+[-–—]\s+{_VNUM}")
+    rf"|{_VNUM}\s*[-–—]\s*{_VNUM}")
 
 
 def _clean_affected_version(raw: str) -> str:
@@ -819,13 +822,19 @@ def _clean_affected_version(raw: str) -> str:
     En vez de descartar el dato (la version SI es util: es la ultima version vulnerable, la que
     hay que descargar), se extrae con una regex sobre las frases de rango casi universales de
     estas descripciones. Si ya viene limpia, se devuelve tal cual; si no se reconoce nada, se
-    devuelve vacio (mejor pedir la ultima version que mandar una cadena rota)."""
+    devuelve vacio (mejor pedir la ultima version que mandar una cadena rota).
+
+    El patron de RANGO se prueba ANTES del chequeo de "ya es una version valida" (confirmado en
+    vivo: "2.1.3-2.8.2", un PoC transcribiendo un rango SIN espacios alrededor del guion, hacia
+    match completo con _VERSION_PATTERN -- que solo exige digitos separados por puntos/guiones,
+    sin distinguir un rango de dos versiones de una sola version con sufijo -- y se devolvia TAL
+    CUAL, rompiendo la URL de descarga porque esa cadena no es ninguna version real que exista)."""
     raw = (raw or "").strip()
     if not raw:
         return ""
-    if _VERSION_PATTERN.match(raw):
-        return raw
     m = _THROUGH_VERSION_RE.search(raw)
+    if not m and _VERSION_PATTERN.match(raw):
+        return raw
     if m:
         # grupo 1: las frases con palabra clave (through/to/before/...). grupo 3: el extremo
         # SUPERIOR del rango con guion (grupo 2 es el inferior, nunca el que interesa aqui).

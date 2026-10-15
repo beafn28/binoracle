@@ -6637,3 +6637,16 @@ def test_clean_affected_version_handles_before_prior_upto_and_dash_ranges():
     assert _clean_affected_version("5.1.8") == "5.1.8"
     assert _clean_affected_version("") == ""
     assert _clean_affected_version("no version info at all") == ""
+
+
+def test_clean_affected_version_extracts_upper_bound_from_dashless_range():
+    # bug real confirmado en vivo (CVE-2024-1071): un PoC real transcribio el rango de versiones
+    # SIN espacios alrededor del guion ("2.1.3-2.8.2"). _VERSION_PATTERN hacia match completo con
+    # eso igualmente (solo exige digitos separados por puntos/guiones) y lo devolvia TAL CUAL --
+    # pero "2.1.3-2.8.2" no es ninguna version real que exista, asi que la URL de descarga del
+    # plugin (.../ultimate-member.2.1.3-2.8.2.zip) daba 404.
+    from binoracle.workflows.cve_agent import _clean_affected_version
+    assert _clean_affected_version("2.1.3-2.8.2") == "2.8.2"
+    assert _clean_affected_version("1.0-2.0") == "2.0"
+    # un unico token con sufijo no numerico tras el guion sigue sin tocarse (no es un rango)
+    assert _clean_affected_version("1.0-beta1") == "1.0-beta1"
