@@ -4909,6 +4909,45 @@ def test_cli_investigate_passes_custom_table_hints(monkeypatch):
     assert captured["hints"]["id_column"] == "id"
 
 
+def test_cli_investigate_json_flag_dumps_full_investigation(monkeypatch, tmp_path):
+    # pedido explicitamente: el markdown/HTML SIEMPRE recorta los cuerpos de respuesta reales a
+    # unos cientos de caracteres -- --json debe volcar el objeto Investigation COMPLETO, sin que
+    # render_investigation decida que omitir. Usa un objeto Investigation real (no un
+    # types.SimpleNamespace): dataclasses.asdict() exige un dataclass real.
+    import json as _json
+    import types
+    import binoracle.cli as cli
+    from binoracle.workflows.cve_agent import Investigation
+
+    fake_inv = Investigation(cve_id="CVE-2024-3552", vuln_class="sqli")
+    fake_inv.verified_evidence = {
+        "respuesta_control_recorte": "x" * 5000,   # mas largo que cualquier recorte del markdown
+        "error_based_intentos": [{"payload": "p1", "respuesta_cuerpo_recorte": "y" * 500}],
+    }
+
+    def fake_investigate_cve(cve, binary="", config=None, on_step=None, lang="es",
+                             budget_s=300.0, hints=None, use_cache=True):
+        return fake_inv
+
+    monkeypatch.setattr("binoracle.workflows.cve_agent.investigate_cve", fake_investigate_cve)
+    monkeypatch.setattr("binoracle.workflows.cve_agent.render_investigation",
+                        lambda inv, lang, **kw: "# informe recortado")
+
+    out_path = str(tmp_path / "full.json")
+    args = types.SimpleNamespace(
+        cve="CVE-2024-3552", binary="", budget=300, vuln_class=None, source=None, cms=None,
+        version=None, endpoint=None, method=None, params=None, functions=None, table_name=None,
+        column_name=None, id_column=None, burp_mcp_url=None, html=None, json=out_path,
+        no_cache=False)
+    config = types.SimpleNamespace(lang="es")
+    cli.cmd_investigate(args, config)
+
+    dumped = _json.loads(open(out_path).read())
+    assert dumped["cve_id"] == "CVE-2024-3552"
+    assert len(dumped["verified_evidence"]["respuesta_control_recorte"]) == 5000
+    assert dumped["verified_evidence"]["error_based_intentos"][0]["respuesta_cuerpo_recorte"] == "y" * 500
+
+
 def test_lab_host_never_changes_for_burp_and_lab_logins_never_use_burp(monkeypatch):
     # el laboratorio efimero (WordPress/Drupal/Joomla) tuvo dos bugs reales confirmados en vivo
     # intentando hacerlo compatible con Burp: primero Burp lanzaba
@@ -8190,6 +8229,12 @@ def test_cmd_investigate_batch_writes_reports_and_prints_summary(monkeypatch, tm
 
     assert (out_dir / "CVE-2099-0001.md").exists()
     assert (out_dir / "CVE-2099-0002.md").exists()
+    # evidencia completa sin recortar junto al markdown -- mismo motivo que --json en
+    # 'investigate' (el renderizado siempre trunca los cuerpos de respuesta reales).
+    import json as _json
+    dumped = _json.loads((out_dir / "CVE-2099-0001.json").read_text())
+    assert dumped["cve_id"] == "CVE-2099-0001"
+    assert dumped["verified"] is True
     captured = capsys.readouterr()
     assert "paso de prueba" in captured.out
     assert "Resumen del lote" in captured.out

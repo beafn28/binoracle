@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -933,6 +934,16 @@ def cmd_investigate(args, config):
             render_investigation_page(md_full, script=inv.developed_script, cve=args.cve,
                                       lang=config.lang, poc_kind=inv.poc_kind))
         _eprint(f"(HTML written to {args.html})")
+    if getattr(args, "json", None):
+        # el markdown/HTML SIEMPRE recorta los cuerpos de respuesta reales a unos cientos de
+        # caracteres (para que el informe sea legible) -- confirmado en vivo multiples veces hoy
+        # mismo: diagnosticar un negativo (CVE-2024-3552) exigio pedir comandos `grep` a mano
+        # dentro del contenedor porque la evidencia COMPLETA (listas enteras de intentos, cuerpos
+        # de respuesta sin recortar) nunca llegaba a salir del objeto Investigation. asdict()
+        # vuelca TODO tal cual esta, sin que render_investigation decida que mostrar y que omitir.
+        from dataclasses import asdict as _asdict
+        Path(args.json).write_text(json.dumps(_asdict(inv), indent=2, ensure_ascii=False))
+        _eprint(f"(full evidence JSON written to {args.json})")
 
 
 def _connect_shared_burp_mcp(args, context_note: str) -> None:
@@ -984,6 +995,12 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
             continue
         md = render_investigation(it.investigation, config.lang, embed_images=False)
         (out_dir / f"{it.cve_id}.md").write_text(md)
+        # evidencia COMPLETA (sin recortar) junto al markdown -- mismo motivo que --json en
+        # 'investigate': el informe renderizado siempre trunca los cuerpos de respuesta reales,
+        # y en un lote no hay forma de pedir --json por CVE individualmente.
+        from dataclasses import asdict as _asdict
+        (out_dir / f"{it.cve_id}.json").write_text(
+            json.dumps(_asdict(it.investigation), indent=2, ensure_ascii=False))
         if html_dir:
             from .report.html import render_investigation_page
             md_full = render_investigation(it.investigation, config.lang)
@@ -1504,6 +1521,11 @@ def build_parser() -> argparse.ArgumentParser:
                                          "screenshots from a dynamic verification) as a standalone "
                                          "HTML file at this path -- the terminal output cannot "
                                          "render images, only this file can")
+    ip.add_argument("--json", help="also dump the COMPLETE Investigation object as JSON at this "
+                                   "path -- unlike the markdown/HTML report (which truncates every "
+                                   "response body to a few hundred chars for readability), this has "
+                                   "every captured attempt/response in full; useful to diagnose a "
+                                   "dynamic-verification negative without re-running anything")
     ip.add_argument("--no-cache", action="store_true",
                     help="force a fresh investigation even if this exact CVE id was already "
                          "investigated before and its result is cached locally (ignored with "
