@@ -2050,6 +2050,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_xss_wp(ep, pr):
+                    return verify_wordpress_xss(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        xss_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_xss_wp, wr, notes.get("endpoint"), xss_p,
+                    technique_label="XSS WordPress")
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XSS (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2065,6 +2074,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_xss(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_xss_generic(ep, pr):
+                    return verify_generic_xss(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        xss_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_xss_generic, wr, notes.get("endpoint"), xss_p,
+                    technique_label="XSS generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
@@ -2212,6 +2229,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                     notes.get("http_method") or "GET", params,
                                                     redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_or_wp(ep, pr):
+                    return verify_wordpress_open_redirect(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_or_wp, wr, notes.get("endpoint"), redir_p,
+                    technique_label="open redirect WordPress")
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de open-redirect (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2228,6 +2254,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_open_redirect(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_or_generic(ep, pr):
+                    return verify_generic_open_redirect(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        redirect_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_or_generic, wr, notes.get("endpoint"), redir_p,
+                    technique_label="open redirect generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):

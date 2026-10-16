@@ -2339,6 +2339,17 @@ def verify_wordpress_xss(
                           f"'{marker}') -- el XSS no se confirmo (puede que el contexto de "
                           f"reflexion sea distinto, que haya sanitizacion real, o que el efecto "
                           f"solo se vea en OTRA pagina que esta version no visita)")
+            try:
+                sample_params = dict(parameters) if isinstance(parameters, dict) else {
+                    p: "" for p in (parameters or [])}
+                sample_params[xss_param] = attempts[0] if attempts else ""
+                sample_resp = boot.sub_sess.request(
+                    m, boot.base_url + endpoint,
+                    data=sample_params if m != "GET" else None,
+                    params=sample_params if m == "GET" else None, timeout=15)
+                res.evidence["respuesta_cuerpo_recorte"] = (sample_resp.text or "")[:500]
+            except Exception:
+                pass
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
@@ -2773,6 +2784,10 @@ def verify_wordpress_open_redirect(
                           f"protocol-relative, backslash, userinfo, espacios/tabs, subdominio) "
                           f"para {redirect_param} y ninguna produjo un redirect con "
                           f"'{evil_host}' en Location -- el open redirect no se confirmo")
+            if tried:
+                first = tried[0]
+                res.evidence["respuesta_cuerpo_recorte"] = (
+                    f"status={first.get('status')} location={first.get('location')!r}")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

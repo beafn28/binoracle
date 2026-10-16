@@ -5522,6 +5522,98 @@ def test_cve_agent_generic_command_injection_retries_with_llm_suggestion(monkeyp
     assert "sugerido por el LLM" in inv.verified_detail
 
 
+def test_cve_agent_open_redirect_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="some-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "status=200, nunca hubo un redirect -- el endpoint probablemente no es el correcto",
+                "endpoint_alternativo": "/wp-admin/admin-ajax.php?action=go",
+            })
+
+    calls = []
+    def fake_or(plugin_source_dir, slug, endpoint, http_method, parameters,
+               redirect_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None):
+        calls.append(endpoint)
+        if "action=go" not in (endpoint or ""):
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"respuesta_cuerpo_recorte": "status=200 location=''"}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="OPEN REDIRECT confirmado tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_open_redirect", fake_or)
+
+    inv = Investigation(cve_id="CVE-2099-00019")
+    inv.vuln_class = "open-redirect"
+    inv.llm_notes = {"source_url": "some-plugin", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+                     "http_method": "GET", "parameters": {"url": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/wp-admin/admin-ajax.php?action=x", "/wp-admin/admin-ajax.php?action=go"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
+def test_cve_agent_xss_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el cuerpo muestra un error 500 de la app",
+                "endpoint_alternativo": "/search",
+            })
+
+    calls = []
+    def fake_xss(source_dir, endpoint, http_method, parameters, xss_param_hint="",
+                on_step=None, budget_s=900.0):
+        calls.append(endpoint)
+        if endpoint == "/comment":
+            wr = WpVerifyResult(ok=True, available=True, verified=False, detail="no se confirmo")
+            wr.evidence = {"respuesta_cuerpo_recorte": "<html>500 internal error</html>"}
+            return wr
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="XSS confirmado tras el reintento (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_xss", fake_xss)
+
+    inv = Investigation(cve_id="CVE-2099-00020")
+    inv.vuln_class = "xss"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/comment", "http_method": "POST", "parameters": {"body": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/comment", "/search"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
 def test_genericverify_command_injection_surfaces_real_response_body_on_negative(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
 

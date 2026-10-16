@@ -1459,6 +1459,10 @@ def verify_generic_open_redirect(
                           f"protocol-relative, backslash, userinfo, espacios/tabs, subdominio) "
                           f"para {redirect_param} y ninguna produjo un redirect con "
                           f"'{evil_host}' en Location -- el open redirect no se confirmo")
+            if tried:
+                first = tried[0]
+                res.evidence["respuesta_cuerpo_recorte"] = (
+                    f"status={first.get('status')} location={first.get('location')!r}")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1568,6 +1572,16 @@ def verify_generic_xss(
                           f"ninguna el navegador ejecuto el script -- el XSS no se confirmo "
                           f"(puede que el contexto de reflexion sea distinto, que haya "
                           f"sanitizacion real, o que el efecto solo se vea en otra pagina)")
+            try:
+                sample_params = dict(parameters) if isinstance(parameters, dict) else {
+                    p: "" for p in (parameters or [])}
+                sample_params[xss_param] = attempts[0] if attempts else ""
+                sample_resp = _http_request(m, base_url + endpoint,
+                                            data=sample_params if m != "GET" else None,
+                                            params=sample_params if m == "GET" else None, timeout=15)
+                res.evidence["respuesta_cuerpo_recorte"] = (getattr(sample_resp, "text", "") or "")[:500]
+            except Exception:
+                pass
         res.evidence["intentos"] = tried[:50]
         return res
     except subprocess.TimeoutExpired as e:
