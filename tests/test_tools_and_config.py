@@ -3647,6 +3647,7 @@ def test_detect_required_companion_plugins_finds_woocommerce_dependency(tmp_path
     plugin_dir.mkdir()
     (plugin_dir / "main.php").write_text(
         "<?php\n"
+        "/**\n * Plugin Name: Woocommerce Product Design\n */\n"
         "function check_dependencies(){\n"
         "    $active_plugins = (array) get_option('active_plugins', array());\n"
         "    $is_woocommerce_active = in_array('woocommerce/woocommerce.php', $active_plugins)\n"
@@ -3658,12 +3659,39 @@ def test_detect_required_companion_plugins_finds_woocommerce_dependency(tmp_path
     assert slugs == ["woocommerce"]
 
 
-def test_detect_required_companion_plugins_empty_when_no_dependency_check(tmp_path):
+def test_detect_required_companion_plugins_ignores_optional_integration_checks(tmp_path):
+    # falso positivo real confirmado en vivo, CVE-2024-3552 (Web Directory Free): el plugin
+    # comprueba is_plugin_active()/in_array() para Yoast SEO/WooCommerce Search solo para anadir
+    # campos EXTRA si estan activos -- nunca bloquea nada si no lo estan. Sin exigir que la
+    # comprobacion corte la ejecucion (return/exit/die cerca), se instalaban 3 plugins de sobra
+    # sin necesidad real.
+    from binoracle.workflows.websource import detect_required_companion_plugins
+    plugin_dir = tmp_path / "web-directory-free"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.php").write_text(
+        "<?php\n"
+        "/**\n * Plugin Name: Web Directory Free\n */\n"
+        "function maybe_add_seo_fields(){\n"
+        "    if (is_plugin_active('wordpress-seo/wp-seo.php')) {\n"
+        "        add_filter('wpseo_metabox_fields', 'wdf_add_extra_field');\n"
+        "    }\n"
+        "    return;\n"
+        "}\n")
+    assert detect_required_companion_plugins(str(tmp_path), "web-directory-free") == []
+
+
+def test_detect_required_companion_plugins_empty_when_no_main_file_or_dependency_check(tmp_path):
     from binoracle.workflows.websource import detect_required_companion_plugins
     plugin_dir = tmp_path / "standalone-plugin"
     plugin_dir.mkdir()
-    (plugin_dir / "main.php").write_text("<?php\nfunction do_thing(){ return true; }\n")
+    (plugin_dir / "helpers.php").write_text("<?php\nfunction do_thing(){ return true; }\n")
     assert detect_required_companion_plugins(str(tmp_path), "standalone-plugin") == []
+
+    plugin_dir2 = tmp_path / "another-plugin"
+    plugin_dir2.mkdir()
+    (plugin_dir2 / "main.php").write_text(
+        "<?php\n/**\n * Plugin Name: Another Plugin\n */\nfunction do_thing(){ return true; }\n")
+    assert detect_required_companion_plugins(str(tmp_path), "another-plugin") == []
 
 
 def test_find_ajax_handler_function_string_callback(tmp_path):

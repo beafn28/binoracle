@@ -834,40 +834,44 @@ def find_plugin_main_file(local_path: str, plugin_dir: str, max_head_bytes: int 
 _COMPANION_PLUGIN_RE = re.compile(
     r"(?:is_plugin_active|in_array|array_key_exists)\s*\(\s*(?:[^,]+,\s*)?"
     r"['\"]([a-z0-9][a-z0-9_-]*)/[a-z0-9][a-z0-9_.-]*\.php['\"]", re.IGNORECASE)
+# confirma que la comprobacion de verdad CORTA la ejecucion (return false/exit/die cerca), no es
+# una integracion OPCIONAL -- confirmado en vivo, falso positivo real: CVE-2024-3552 (Web
+# Directory Free) tiene comprobaciones de is_plugin_active()/in_array() para Yoast SEO/
+# WooCommerce Search que solo anaden campos EXTRA si estan activos, nunca bloquean nada si no lo
+# estan. Un 'return;'/'return $x;' simple NO cuenta (es el final normal de cualquier funcion
+# void, no una senal de bloqueo) -- se exige especificamente 'return false' (el patron real que
+# usan los constructores de WordPress para decir 'no sigas inicializando') o exit()/die()/
+# wp_die(), que SI paran la ejecucion de verdad.
+_BLOCKING_NEARBY_RE = re.compile(r"\breturn\s+false\b|\bexit\s*\(|\bdie\s*\(|\bwp_die\s*\(")
 
 
 def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[str]:
-    """Busca, en los ficheros PHP de primer nivel e includes/ del plugin, una comprobacion de
-    que OTRO plugin este activo (in_array/array_key_exists contra 'active_plugins', o
-    is_plugin_active()) antes de registrar su propia funcionalidad -- el patron estandar de
-    WordPress.org para 'este plugin necesita este otro para funcionar'. Devuelve los slugs
-    (deduplicados, orden de aparicion) encontrados, o [] si no se detecta ninguno. Heuristico
-    (regex, no ejecuta el PHP): puede dar falsos negativos (una comprobacion rara) pero no debe
-    dar falsos positivos razonables, ya que solo mira el patron exacto de '<slug>/<algo>.php'."""
-    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    """Busca, SOLO en el fichero bootstrap del plugin (el de la cabecera 'Plugin Name:', ver
+    find_plugin_main_file -- el patron de bloqueo real que confirmo CVE-2024-50508 esta siempre
+    ahi, en el constructor/inicio), una comprobacion de que OTRO plugin este activo que ADEMAS
+    corte la ejecucion (return false/exit/die a pocas lineas) si no lo esta -- no basta con que
+    la comprobacion exista: una integracion OPCIONAL (p.ej. 'si Yoast SEO esta activo, anade
+    estos campos extra') usa el mismo in_array()/is_plugin_active() sin bloquear nada, y
+    contarla como companero REQUERIDO instala plugins de sobra sin necesidad (confirmado en
+    vivo, CVE-2024-3552). Devuelve los slugs (deduplicados, orden de aparicion), o [] si no se
+    encuentra el fichero bootstrap o ninguna comprobacion bloqueante en el."""
+    main = find_plugin_main_file(local_path, plugin_dir, max_head_bytes=20_000,
+                                  content_lines=400)
+    if not main:
+        return []
+    text = main["content"]
+    lines = text.splitlines()
     slugs: List[str] = []
     seen = set()
-    scanned = 0
-    for dirpath, dirs, files in os.walk(base):
-        depth = os.path.relpath(dirpath, base).count(os.sep)
-        if depth > 2 or "node_modules" in dirpath or "/.git" in dirpath:
-            dirs[:] = []
+    for m in _COMPANION_PLUGIN_RE.finditer(text):
+        slug = m.group(1).lower()
+        if slug in seen or slug == (plugin_dir or "").lower():
             continue
-        for fn in files:
-            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
-                continue
-            scanned += 1
-            try:
-                with open(os.path.join(dirpath, fn), "r", encoding="utf-8",
-                         errors="replace") as f:
-                    text = f.read(_MAX_SCAN_BYTES)
-            except OSError:
-                continue
-            for m in _COMPANION_PLUGIN_RE.finditer(text):
-                slug = m.group(1).lower()
-                if slug not in seen and slug != plugin_dir.lower():
-                    seen.add(slug)
-                    slugs.append(slug)
+        line_no = text.count("\n", 0, m.start())
+        nearby = "\n".join(lines[line_no:line_no + 8])
+        if _BLOCKING_NEARBY_RE.search(nearby):
+            seen.add(slug)
+            slugs.append(slug)
     return slugs
 
 
