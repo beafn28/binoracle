@@ -3663,6 +3663,30 @@ def test_find_unsafe_sql_concat_sinks_empty_when_all_sanitized(tmp_path):
     assert find_unsafe_sql_concat_sinks(str(tmp_path), "clean-plugin") == []
 
 
+def test_find_shortcode_name_finds_real_registration_confirmed_live(tmp_path):
+    # bug real confirmado en vivo, CVE-2024-3552: atacar '/' (la portada por defecto de
+    # WordPress, vacia) no puede reflejar ninguna diferencia visible aunque la inyeccion sea
+    # real, porque esa pagina no invoca NADA del plugin -- hace falta el nombre real de su
+    # shortcode para poder crear una pagina de verdad que lo use.
+    from binoracle.workflows.websource import find_shortcode_name
+    plugin_dir = tmp_path / "web-directory-free"
+    sub = plugin_dir / "classes"
+    sub.mkdir(parents=True)
+    (sub / "shortcodes.php").write_text(
+        "<?php\n"
+        "add_shortcode('w2dc_search', 'w2dc_render_search');\n"
+        "add_shortcode('w2dc_listing', 'w2dc_render_listing');\n")
+    assert find_shortcode_name(str(tmp_path), "web-directory-free") == "w2dc_search"
+
+
+def test_find_shortcode_name_none_when_plugin_registers_none(tmp_path):
+    from binoracle.workflows.websource import find_shortcode_name
+    plugin_dir = tmp_path / "no-shortcode-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.php").write_text("<?php\nfunction helper(){}\n")
+    assert find_shortcode_name(str(tmp_path), "no-shortcode-plugin") is None
+
+
 def test_find_plugin_main_file_locates_by_header_not_slug_name(tmp_path):
     # bug real confirmado en vivo, CVE-2024-50508: la carpeta del plugin es 'woo-product-design'
     # pero el fichero bootstrap real se llama 'woocommerce-product-design.php' -- no coinciden,
@@ -6962,6 +6986,124 @@ def test_bootstrap_lab_enables_wp_debug_display_before_attacking(monkeypatch, tm
     assert debug_idxs and all(i < install_idx for i in debug_idxs)
 
 
+def test_bootstrap_lab_creates_shortcode_page_when_requested(monkeypatch, tmp_path):
+    # bug real confirmado en vivo, CVE-2024-3552: atacar '/' (portada vacia) no puede reflejar
+    # ninguna diferencia visible aunque la inyeccion sea real -- _bootstrap_lab debe crear una
+    # pagina de verdad con el shortcode del plugin ANTES de devolver el _LabSession, y exponer
+    # su ruta relativa para que el verificador ataque esa pagina en vez de la portada.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeSession:
+        pass
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            calls.append(args)
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            if args[:2] == ("post", "create"):
+                return _FakeCompletedProcess(stdout="42\n")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            calls.append(("install_plugin",) + a)
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: _FakeSession())
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    boot = wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "web-directory-free", lambda _m: None, res, _time.time(),
+        1200.0, shortcode_name="w2dc_search")
+
+    assert boot is not None
+    assert boot.shortcode_page_path == "/?page_id=42"
+    post_create_calls = [c for c in calls if c[:2] == ("post", "create")]
+    assert len(post_create_calls) == 1
+    assert "--post_content=[w2dc_search]" in post_create_calls[0]
+    install_idx = next(i for i, c in enumerate(calls) if c and c[0] == "install_plugin")
+    page_idx = calls.index(post_create_calls[0])
+    assert install_idx < page_idx    # la pagina se crea DESPUES de activar el plugin
+
+
+def test_bootstrap_lab_shortcode_page_creation_failure_is_a_limitation_not_a_hard_stop(
+        monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeSession:
+        pass
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            if args[:2] == ("post", "create"):
+                return _FakeCompletedProcess(returncode=1, stderr="wp-cli: fallo simulado")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: _FakeSession())
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    boot = wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "web-directory-free", lambda _m: None, res, _time.time(),
+        1200.0, shortcode_name="w2dc_search")
+
+    assert boot is not None    # no aborta el resto del laboratorio por esto
+    assert boot.shortcode_page_path is None
+    assert any("shortcode" in lim for lim in res.limitations)
+
+
 def test_bootstrap_lab_installs_companion_plugins_before_target_plugin(monkeypatch, tmp_path):
     # bug real confirmado en vivo, CVE-2024-50508: el plugin objetivo no registra NINGUN hook si
     # WooCommerce no esta activo (su constructor corta en seco antes) -- _bootstrap_lab debe
@@ -7749,6 +7891,81 @@ def test_verify_wordpress_sqli_surfaces_real_response_body_on_negative(monkeypat
     assert res.evidence.get("respuesta_control_recorte") == '{"status":"ok","listings":[]}'
     assert "Respuesta real de la peticion de control" in res.detail
     assert all("respuesta_cuerpo_recorte" in t for t in res.evidence["error_based_intentos"])
+
+
+def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
+    # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando
+    # _bootstrap_lab devuelve una pagina real creada con el shortcode (shortcode_page_path),
+    # verify_wordpress_sqli debe atacar ESA ruta, no el endpoint original.
+    import binoracle.workflows.wpverify as wpverify
+
+    requested_urls = []
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            requested_urls.append(url)
+            class _R:
+                status_code = 200
+                text = '{"status":"ok"}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None, shortcode_page_path="/?page_id=42")
+
+    bootstrap_calls = []
+
+    def fake_bootstrap(*a, **kw):
+        bootstrap_calls.append(kw)
+        return fake_boot
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", fake_bootstrap)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/", "GET", {"w2dc_level_filter": "1"},
+        sqli_param_hint="w2dc_level_filter", shortcode_name="w2dc_search")
+
+    assert bootstrap_calls[0]["shortcode_name"] == "w2dc_search"
+    assert res.evidence.get("endpoint_shortcode_page") == "/?page_id=42"
+    assert all(u.startswith("http://lab.invalid/?page_id=42") for u in requested_urls)
+
+
+def test_verify_wordpress_sqli_does_not_request_shortcode_page_for_non_root_endpoint(monkeypatch):
+    # si el analista ya dio un endpoint concreto (no la raiz), no hay que crear ni usar ninguna
+    # pagina de shortcode -- shortcode_name solo tiene sentido cuando el endpoint es '/'.
+    import binoracle.workflows.wpverify as wpverify
+
+    bootstrap_calls = []
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"status":"ok"}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None, shortcode_page_path=None)
+
+    def fake_bootstrap(*a, **kw):
+        bootstrap_calls.append(kw)
+        return fake_boot
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", fake_bootstrap)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=foo", "GET",
+        {"w2dc_level_filter": "1"}, sqli_param_hint="w2dc_level_filter",
+        shortcode_name="w2dc_search")
+
+    assert bootstrap_calls[0]["shortcode_name"] is None
+    assert "endpoint_shortcode_page" not in res.evidence
     assert all("respuesta_true_recorte" in t for t in res.evidence["boolean_intentos"])
 
 

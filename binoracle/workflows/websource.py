@@ -881,6 +881,44 @@ def find_unsafe_sql_concat_sinks(local_path: str, plugin_dir: str) -> List[SqlSi
     return sinks
 
 
+_ADD_SHORTCODE_RE = re.compile(r"add_shortcode\s*\(\s*['\"]([A-Za-z0-9_-]+)['\"]")
+
+
+def find_shortcode_name(local_path: str, plugin_dir: str) -> Optional[str]:
+    """Busca el PRIMER shortcode que el propio plugin registra (add_shortcode('nombre', ...)) --
+    confirmado en vivo, CVE-2024-3552: atacar '/' (la portada por defecto de WordPress, sin
+    posts ni contenido) nunca puede mostrar una diferencia booleana ni una fila UNION reflejada,
+    aunque la inyeccion sea real, porque esa pagina no renderiza NADA del plugin -- hace falta
+    una pagina de verdad que invoque su funcionalidad (su shortcode) para que el resultado del
+    query inyectado tenga alguna superficie visible donde reflejarse. Con el nombre real del
+    shortcode, _bootstrap_lab puede crear una pagina de verdad con el (via wp-cli) ANTES de
+    atacar, en vez de adivinar una URL o depender de que el analista la conozca de antemano.
+    Deliberadamente simple (regex, no parser real de PHP): si el plugin registra varios
+    shortcodes, se devuelve el primero que aparece (en orden de recorrido de ficheros) -- no hay
+    forma generica de saber cual es 'el principal' sin leer la documentacion del plugin."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(base):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in sorted(files):
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            m = _ADD_SHORTCODE_RE.search(text)
+            if m:
+                return m.group(1)
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return None
+
+
 def extract_function_body(local_path: str, relative_file: str, start_line: int,
                           max_lines: int = 40) -> Optional[str]:
     """Extrae el cuerpo real de una funcion ya localizada (fichero/linea exactos, p.ej. de

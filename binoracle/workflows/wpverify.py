@@ -722,12 +722,16 @@ class _LabSession:
     admin_sess: object         # requests.Session, autenticada como el admin CON SU PASSWORD ORIGINAL
     shots: list
     capture: Callable
+    shortcode_page_path: Optional[str] = None  # "/?page_id=N" de la pagina creada con el
+    # shortcode real del plugin (si se pidio via shortcode_name) -- None si no se pidio o si
+    # la creacion fallo.
 
 
 def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
                    t0: float, budget_s: float,
                    setup_wp_options: Optional[list] = None,
-                   companion_plugins: Optional[list] = None) -> Optional[_LabSession]:
+                   companion_plugins: Optional[list] = None,
+                   shortcode_name: Optional[str] = None) -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
     (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
 
@@ -749,7 +753,18 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     payload, porque el codigo vulnerable nunca llegaba a cargarse. Viene de
     detect_required_companion_plugins() en websource.py, que detecta este patron (in_array()/
     is_plugin_active() contra 'active_plugins') leyendo el codigo real -- misma idea que
-    setup_wp_options, pero para 'que otro plugin tiene que estar activo', no 'que opcion'."""
+    setup_wp_options, pero para 'que otro plugin tiene que estar activo', no 'que opcion'.
+
+    `shortcode_name`, si se da, crea una pagina de WordPress real con `[shortcode_name]` como
+    contenido (via wp-cli) justo despues de activar el plugin -- confirmado en vivo con
+    CVE-2024-3552: atacar la portada por defecto ('/'), que no muestra NADA del plugin, no puede
+    reflejar ninguna diferencia booleana ni fila UNION aunque la inyeccion sea real, porque no
+    hay ninguna superficie visible donde el resultado del query pueda aparecer. Con una pagina
+    de verdad que invoca el shortcode del plugin (ver find_shortcode_name() en websource.py), el
+    verificador puede atacar ESA pagina en vez de adivinar. La URL resultante (relativa, tipo
+    '/?page_id=N' -- funciona independientemente de la estructura de permalinks activa) queda en
+    `shortcode_page_path` de la _LabSession devuelta; None si no se pidio o si la creacion
+    fallo (se registra como limitacion, nunca aborta el resto del laboratorio)."""
     root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
     admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
     sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
@@ -848,6 +863,23 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     f"{(r_opt.stderr or r_opt.stdout or '')[:200]} -- el ataque puede no "
                     f"alcanzar el codigo vulnerable")
 
+    shortcode_page_path = None
+    if shortcode_name:
+        step(f"creando una pagina real con el shortcode del plugin ([{shortcode_name}]) -- "
+             f"atacar la portada vacia no puede reflejar ninguna diferencia, con o sin "
+             f"inyeccion real...")
+        r_page = lab.wp_cli("post", "create", "--post_type=page", "--post_status=publish",
+                            "--post_title=binoracle-lab-listing",
+                            f"--post_content=[{shortcode_name}]", "--porcelain", timeout=30)
+        page_id = (r_page.stdout or "").strip()
+        if r_page.returncode == 0 and page_id.isdigit():
+            shortcode_page_path = f"/?page_id={page_id}"
+        else:
+            res.limitations.append(
+                f"no se pudo crear una pagina real con el shortcode '{shortcode_name}' "
+                f"({(r_page.stderr or r_page.stdout or '')[:200]}) -- se sigue atacando el "
+                f"endpoint dado, que puede no mostrar ninguna superficie visible del plugin")
+
     step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
          "vulnerable, activo)...")
     admin_sess = _wp_login(base_url, admin_user, admin_pass, on_step=step)
@@ -895,7 +927,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
 
     return _LabSession(lab=lab, base_url=base_url, admin_id=admin_id, admin_user=admin_user,
                        admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
-                       sub_sess=sess, admin_sess=admin_sess, shots=shots, capture=capture)
+                       sub_sess=sess, admin_sess=admin_sess, shots=shots, capture=capture,
+                       shortcode_page_path=shortcode_page_path)
 
 
 def verify_wordpress_account_takeover(
@@ -1650,6 +1683,7 @@ def verify_wordpress_sqli(
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     setup_wp_options: Optional[list] = None,
     companion_plugins: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -1673,7 +1707,13 @@ def verify_wordpress_sqli(
        es indicio de inyeccion ciega sin ninguna diferencia visible en el contenido.
 
     `detail` deja explicito con cual de las tecnicas se confirmo, para que el analista sepa que
-    tan dura es la prueba."""
+    tan dura es la prueba.
+
+    `shortcode_name`, si se da y `endpoint` es la raiz ('/' o vacio -- la portada por defecto,
+    sin contenido del plugin), ataca en su lugar una pagina real creada con `[shortcode_name]`
+    (ver _bootstrap_lab) -- confirmado en vivo, CVE-2024-3552: sin una pagina que de verdad
+    invoque el plugin, ninguna tecnica puede mostrar una diferencia visible aunque la inyeccion
+    sea real, porque no hay ninguna superficie donde el resultado del query pueda reflejarse."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1692,11 +1732,19 @@ def verify_wordpress_sqli(
 
     lab = _Lab(_token())
     try:
+        attack_endpoint_is_bare_root = (endpoint or "/").strip() in ("", "/")
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               setup_wp_options=setup_wp_options,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None)
         if boot is None:
             return res
+
+        if boot.shortcode_page_path:
+            step(f"endpoint='/' no muestra nada del plugin -- atacando en su lugar la pagina "
+                 f"real creada con el shortcode ({boot.shortcode_page_path})...")
+            endpoint = boot.shortcode_page_path
+            res.evidence["endpoint_shortcode_page"] = endpoint
 
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
