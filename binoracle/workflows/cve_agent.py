@@ -252,8 +252,14 @@ _REFINE_SYS = (
 # tope del bucle de aprendizaje-y-reintento (1 intento inicial + como mucho esto-1 reintentos
 # sugeridos por el LLM) -- acotado a proposito: cada intento levanta un laboratorio Docker real
 # entero (varios minutos), y un bucle sin limite podria no terminar nunca si el LLM sigue viendo
-# "una pista mas" indefinidamente sin confirmar nada de verdad.
+# "una pista mas" indefinidamente sin confirmar nada de verdad. Compartido por CUALQUIER
+# verificador que use el bucle de reintento (no solo SQLi, el nombre se queda por compatibilidad
+# con el primero que lo uso).
 _SQLI_RETRY_MAX_ATTEMPTS = 3
+_RETRY_MAX_ATTEMPTS = _SQLI_RETRY_MAX_ATTEMPTS
+
+_SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
+                            "respuesta_control_recorte": "respuesta_control_recorte"}
 
 _SQLI_RETRY_SYS = (
     "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Una "
@@ -273,7 +279,54 @@ _SQLI_RETRY_SYS = (
 )
 
 
-def _llm_suggest_retry_from_evidence(llm, wr: "WpVerifyResult") -> Optional[dict]:
+_PATH_TRAVERSAL_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Un "
+    "path-traversal/LFI contra un laboratorio WordPress REAL (plugin instalado, fichero canario "
+    "con secreto aleatorio plantado fuera del volumen web) no se confirmo -- ni el canario propio "
+    "ni /etc/passwd literal aparecieron en ninguna de las ~90 variantes de ruta/codificacion "
+    "probadas. Te doy la evidencia REAL observada: el endpoint/parametro probados, y un recorte "
+    "del cuerpo REAL de la respuesta del primer intento (la ruta absoluta sin ninguna "
+    "codificacion especial, la mas simple de todas). Lee esa evidencia como lo haria un analista "
+    "humano revisando un negativo: si el cuerpo muestra una pista CONCRETA de que el endpoint o "
+    "el parametro probados no son los correctos (p.ej. un error de la propia app como 'File is "
+    "not moved', 'Page not found', una redireccion a login, contenido que no tiene nada que ver "
+    "con el plugin...), sugiere UN cambio concreto de endpoint y/o parametro que valga la pena "
+    "reintentar. Si la evidencia NO da ninguna pista util, dilo honestamente -- no inventes un "
+    "cambio sin base real. Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": "
+    "\"una frase, citando la pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" "
+    "(opcional, solo si tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional)}"
+)
+_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint",
+                                       "parametro_probado": "path_param",
+                                       "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento"}
+
+# version GENERICA (no WordPress) del mismo mecanismo -- pedido explicitamente: no quedarse solo
+# en WordPress, el objetivo aqui puede ser CUALQUIER tecnologia (Node/Python/PHP/Go/Java...) que
+# el propio CVE/PoC traiga empaquetada en su Dockerfile/docker-compose (ver genericverify.py).
+_GENERIC_PATH_TRAVERSAL_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Un "
+    "path-traversal contra un contenedor Docker REAL (construido desde el propio Dockerfile/"
+    "docker-compose del codigo descargado -- puede ser cualquier tecnologia: Node, Python, PHP, "
+    "Go, Java...) no se confirmo: se planto un fichero canario con un secreto aleatorio DENTRO "
+    "del contenedor y ninguna de las variantes de ruta/codificacion probadas lo filtro. Te doy "
+    "la evidencia REAL observada: el endpoint/parametro probados, y un recorte del cuerpo REAL "
+    "de la respuesta del primer intento. Lee esa evidencia como lo haria un analista humano "
+    "revisando un negativo: si el cuerpo muestra una pista CONCRETA de que el endpoint o el "
+    "parametro probados no son los correctos (un error de la app, un 404, una ruta de API "
+    "distinta, contenido que no tiene nada que ver con el endpoint esperado...), sugiere UN "
+    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
+    "da ninguna pista util, dilo honestamente -- no inventes un cambio sin base real. Responde "
+    "SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista "
+    "concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
+    "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional)}"
+)
+_GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {
+    "endpoint_probado": "endpoint", "parametro_probado": "path_param",
+    "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento"}
+
+
+def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResult",
+                                     evidence_keys: dict) -> Optional[dict]:
     """Automatiza, con el LLM, el mismo paso que un analista humano hace a mano tras un negativo:
     leer el cuerpo REAL de la respuesta y la evidencia observada, y decidir si hay una pista
     concreta que apunte a un endpoint/parametro distinto que valga la pena reintentar -- en vez de
@@ -281,19 +334,21 @@ def _llm_suggest_retry_from_evidence(llm, wr: "WpVerifyResult") -> Optional[dict
     pistas, el propio prompt le pide decirlo (`tiene_sugerencia: false`), y aqui se respeta eso
     devolviendo None en vez de forzar un reintento a ciegas. Devuelve None tambien si no hay LLM
     disponible, o si la respuesta no es JSON valido -- nunca lanza, un fallo aqui solo significa
-    'sin sugerencia', no debe tirar abajo la investigacion."""
+    'sin sugerencia', no debe tirar abajo la investigacion.
+
+    `system_prompt` es especifico de la tecnica (ver _SQLI_RETRY_SYS/_PATH_TRAVERSAL_RETRY_SYS --
+    cada tecnica tiene su propia evidencia relevante y no conviene reutilizar el mismo prompt tal
+    cual). `evidence_keys` mapea {etiqueta_para_el_LLM: clave_real_en_wr.evidence}, asi esta misma
+    funcion sirve para cualquier verificador sin saber de antemano que evidencia concreta captura
+    cada uno."""
     if llm is None or not getattr(llm, "available", lambda: False)():
         return None
-    evidence = {
-        "endpoint_probado": wr.evidence.get("endpoint"),
-        "parametro_probado": wr.evidence.get("sqli_param"),
-        "detalle": wr.detail,
-        "respuesta_control_recorte": wr.evidence.get("respuesta_control_recorte"),
-    }
+    evidence = {label: wr.evidence.get(key) for label, key in evidence_keys.items()}
+    evidence["detalle"] = wr.detail
     from ..llm.base import Message
     prompt = f"Evidencia real observada:\n{json.dumps(evidence, ensure_ascii=False)[:3000]}"
     try:
-        raw = llm.chat([Message("system", _SQLI_RETRY_SYS), Message("user", prompt)], json_mode=True)
+        raw = llm.chat([Message("system", system_prompt), Message("user", prompt)], json_mode=True)
         data = json.loads(raw)
     except Exception:
         return None
@@ -1525,6 +1580,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     path_param_hint=path_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                # aprendizaje y reintento: mismo bucle acotado que el SQLi -- el LLM lee el
+                # cuerpo real del primer intento y solo sugiere un reintento con una pista
+                # concreta en ESA evidencia, nunca a ciegas.
+                retry_endpoint_wppt, retry_param_wppt = notes.get("endpoint"), path_p
+                for attempt_n in range(1, _RETRY_MAX_ATTEMPTS):
+                    if wr.verified or not wr.available:
+                        break
+                    suggestion = _llm_suggest_retry_from_evidence(
+                        llm, _PATH_TRAVERSAL_RETRY_SYS, wr, _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS)
+                    if not suggestion:
+                        break
+                    retry_endpoint_wppt = suggestion.get("endpoint_alternativo") or retry_endpoint_wppt
+                    retry_param_wppt = suggestion.get("parametro_alternativo") or retry_param_wppt
+                    step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/"
+                         f"{_RETRY_MAX_ATTEMPTS}) y sugiere reintentar con endpoint="
+                         f"{retry_endpoint_wppt!r} parametro={retry_param_wppt!r} -- razon: "
+                         f"{suggestion.get('razon')}") if es else
+                         (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/"
+                         f"{_RETRY_MAX_ATTEMPTS}) and suggests retrying with endpoint="
+                         f"{retry_endpoint_wppt!r} parameter={retry_param_wppt!r} -- reason: "
+                         f"{suggestion.get('razon')}"))
+                    wr_retry = verify_wordpress_path_traversal(
+                        fr.local_path, plugin_dir, retry_endpoint_wppt,
+                        notes.get("http_method") or "GET", params,
+                        path_param_hint=retry_param_wppt or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                    wr_retry.detail = (f"[reintento {attempt_n + 1}/{_RETRY_MAX_ATTEMPTS} "
+                                      f"sugerido por el LLM tras leer la evidencia real: "
+                                      f"{suggestion.get('razon')}] " + wr_retry.detail)
+                    wr = wr_retry
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -1562,6 +1647,37 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_path_traversal(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
+                # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
+                # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
+                # cuerpo real del primer intento y solo sugiere un reintento con una pista
+                # concreta en ESA evidencia, nunca a ciegas.
+                retry_endpoint_pt, retry_param_pt = notes.get("endpoint"), path_p
+                for attempt_n in range(1, _RETRY_MAX_ATTEMPTS):
+                    if wr.verified or not wr.available:
+                        break
+                    suggestion = _llm_suggest_retry_from_evidence(
+                        llm, _GENERIC_PATH_TRAVERSAL_RETRY_SYS, wr,
+                        _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS)
+                    if not suggestion:
+                        break
+                    retry_endpoint_pt = suggestion.get("endpoint_alternativo") or retry_endpoint_pt
+                    retry_param_pt = suggestion.get("parametro_alternativo") or retry_param_pt
+                    step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/"
+                         f"{_RETRY_MAX_ATTEMPTS}) y sugiere reintentar con endpoint="
+                         f"{retry_endpoint_pt!r} parametro={retry_param_pt!r} -- razon: "
+                         f"{suggestion.get('razon')}") if es else
+                         (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/"
+                         f"{_RETRY_MAX_ATTEMPTS}) and suggests retrying with endpoint="
+                         f"{retry_endpoint_pt!r} parameter={retry_param_pt!r} -- reason: "
+                         f"{suggestion.get('razon')}"))
+                    wr_retry = verify_generic_path_traversal(
+                        fr.local_path, retry_endpoint_pt, notes.get("http_method") or "GET",
+                        params, path_param_hint=retry_param_pt or "", on_step=step,
+                        budget_s=budget_s)
+                    wr_retry.detail = (f"[reintento {attempt_n + 1}/{_RETRY_MAX_ATTEMPTS} "
+                                      f"sugerido por el LLM tras leer la evidencia real: "
+                                      f"{suggestion.get('razon')}] " + wr_retry.detail)
+                    wr = wr_retry
                 _apply_wpverify_result(inv, wr, es, llm)
                 # escalada: path-traversal (clase de la hipotesis) puede en realidad ser LFI-a-
                 # RCE si el parametro INCLUYE el fichero como codigo en vez de solo servirlo --
@@ -1737,7 +1853,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 for attempt_n in range(1, _SQLI_RETRY_MAX_ATTEMPTS):
                     if wr.verified or not wr.available:
                         break
-                    suggestion = _llm_suggest_retry_from_evidence(llm, wr)
+                    suggestion = _llm_suggest_retry_from_evidence(
+                        llm, _SQLI_RETRY_SYS, wr, _SQLI_RETRY_EVIDENCE_KEYS)
                     if not suggestion:
                         break
                     retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint

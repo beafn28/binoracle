@@ -549,8 +549,12 @@ def verify_generic_path_traversal(
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
             present = secret in (resp.text or "")
+            # recorte real del cuerpo en CADA intento (no solo si/no esta el secreto) -- mismo
+            # motivo que en verify_wordpress_path_traversal: sin esto, un negativo es
+            # indiagnosticable sin relanzar el ataque a mano.
             tried.append({"payload": payload_value, "status": resp.status_code,
-                         "secreto_presente": present})
+                         "secreto_presente": present,
+                         "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
             if present:
                 found = True
                 res.evidence["payload_ganador"] = payload_value
@@ -569,6 +573,9 @@ def verify_generic_path_traversal(
                           f"plantado en {canary_path} (dentro del contenedor del objetivo)")
         else:
             res.ok = True
+            sample = next((t.get("respuesta_cuerpo_recorte") for t in tried
+                          if t.get("respuesta_cuerpo_recorte")), "")
+            res.evidence["respuesta_muestra_primer_intento"] = sample
             res.detail = (f"se probaron {len(tried)} variantes de ruta para {path_param} y "
                           f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
                           f"(puede necesitar otra profundidad/codificacion, o el "

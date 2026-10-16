@@ -1517,6 +1517,7 @@ def verify_wordpress_path_traversal(
             # equivocado.
             sample = next((t.get("respuesta_cuerpo_recorte") for t in tried
                           if t.get("respuesta_cuerpo_recorte")), "")
+            res.evidence["respuesta_muestra_primer_intento"] = sample
             res.detail = (f"se probaron {len(tried)} variantes de ruta para {path_param} y "
                           f"ninguna devolvio el secreto plantado, ni /etc/passwd literal -- el "
                           f"traversal no se confirmo (puede necesitar otra profundidad de "

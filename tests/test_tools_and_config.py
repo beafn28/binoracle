@@ -5395,6 +5395,136 @@ def test_genericverify_path_traversal_blocked_without_build_target(monkeypatch, 
     assert "Dockerfile" in res.limitations[0]
 
 
+def test_genericverify_path_traversal_surfaces_real_response_body_on_negative(monkeypatch, tmp_path):
+    # mismo gap que ya se cerro en verify_wordpress_path_traversal: sin el cuerpo real de cada
+    # intento, un negativo generico (cualquier tecnologia, no solo WordPress) es indiagnosticable
+    # sin relanzar el ataque a mano.
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+        def write_canary(self, container, path, secret):
+            return True
+
+    def fake_http_request(method, url, **kw):
+        class _R:
+            status_code = 404
+            text = '{"error":"not found"}'
+        return _R()
+
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    monkeypatch.setattr(gv, "_http_request", fake_http_request)
+
+    res = gv.verify_generic_path_traversal(str(tmp_path), "/view", "GET", {"page": "x"},
+                                           path_param_hint="page")
+
+    assert res.verified is False
+    assert all("respuesta_cuerpo_recorte" in t for t in res.evidence["intentos"])
+    assert res.evidence.get("respuesta_muestra_primer_intento") == '{"error":"not found"}'
+
+
+def test_cve_agent_generic_path_traversal_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    # pedido explicitamente: el bucle de aprendizaje-y-reintento no se queda en WordPress -- debe
+    # funcionar igual para el verificador GENERICO (cualquier tecnologia con su propio Dockerfile).
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el primer intento devolvio 404 not found",
+                "endpoint_alternativo": "/api/v2/files",
+            })
+
+    calls = []
+    def fake_pt(local_path, endpoint, method, params, path_param_hint="", on_step=None,
+               budget_s=900.0):
+        calls.append(endpoint)
+        if endpoint == "/view":
+            wr = WpVerifyResult(ok=True, available=True, verified=False, detail="no se confirmo")
+            wr.evidence = {"endpoint": "/view", "path_param": path_param_hint,
+                          "respuesta_muestra_primer_intento": '{"error":"not found"}'}
+            return wr
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="PATH TRAVERSAL confirmado tras el reintento (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_path_traversal", fake_pt)
+    monkeypatch.setattr(genericverify, "verify_generic_lfi_rce",
+                        lambda *a, **kw: WpVerifyResult(ok=True, available=True, verified=False,
+                                                        detail="no aplica (fake)"))
+
+    inv = Investigation(cve_id="CVE-2099-00014")
+    inv.vuln_class = "path-traversal"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/view", "http_method": "GET", "parameters": {"page": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/view", "/api/v2/files"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
+def test_cve_agent_wordpress_path_traversal_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="some-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "File is not moved en la respuesta de control",
+                "endpoint_alternativo": "/wp-admin/admin-ajax.php?action=otra_accion",
+            })
+
+    calls = []
+    def fake_pt(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(endpoint)
+        if "otra_accion" not in (endpoint or ""):
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"endpoint": endpoint, "path_param": kw.get("path_param_hint"),
+                          "respuesta_muestra_primer_intento": '{"status":"error","message":"File is not moved"}'}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="PATH TRAVERSAL confirmado tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_path_traversal", fake_pt)
+
+    inv = Investigation(cve_id="CVE-2099-00015")
+    inv.vuln_class = "path-traversal"
+    inv.llm_notes = {"source_url": "some-plugin", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+                     "http_method": "GET", "parameters": {"file": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/wp-admin/admin-ajax.php?action=x",
+                     "/wp-admin/admin-ajax.php?action=otra_accion"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
 def test_genericverify_lfi_rce_blocked_without_param(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
@@ -5524,10 +5654,12 @@ def test_cve_agent_escalates_path_traversal_to_lfi_rce_when_available(monkeypatc
 
 
 def test_llm_suggest_retry_from_evidence_returns_none_without_llm():
-    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.cve_agent import (_llm_suggest_retry_from_evidence, _SQLI_RETRY_SYS,
+                                                _SQLI_RETRY_EVIDENCE_KEYS)
     from binoracle.workflows.wpverify import WpVerifyResult
     wr = WpVerifyResult(detail="no se confirmo")
-    assert _llm_suggest_retry_from_evidence(None, wr) is None
+    assert _llm_suggest_retry_from_evidence(
+        None, _SQLI_RETRY_SYS, wr, _SQLI_RETRY_EVIDENCE_KEYS) is None
 
 
 def test_llm_suggest_retry_from_evidence_respects_no_suggestion():
@@ -5535,7 +5667,8 @@ def test_llm_suggest_retry_from_evidence_respects_no_suggestion():
     # evidencia real -- _llm_suggest_retry_from_evidence debe respetar eso devolviendo None, no
     # forzar un reintento a ciegas.
     import json as _json
-    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.cve_agent import (_llm_suggest_retry_from_evidence, _SQLI_RETRY_SYS,
+                                                _SQLI_RETRY_EVIDENCE_KEYS)
     from binoracle.workflows.wpverify import WpVerifyResult
 
     class _FakeLLM:
@@ -5548,12 +5681,14 @@ def test_llm_suggest_retry_from_evidence_respects_no_suggestion():
     wr = WpVerifyResult(detail="no se confirmo")
     wr.evidence = {"endpoint": "/", "sqli_param": "id",
                   "respuesta_control_recorte": "<html>pagina normal</html>"}
-    assert _llm_suggest_retry_from_evidence(_FakeLLM(), wr) is None
+    assert _llm_suggest_retry_from_evidence(
+        _FakeLLM(), _SQLI_RETRY_SYS, wr, _SQLI_RETRY_EVIDENCE_KEYS) is None
 
 
 def test_llm_suggest_retry_from_evidence_returns_concrete_suggestion():
     import json as _json
-    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.cve_agent import (_llm_suggest_retry_from_evidence, _SQLI_RETRY_SYS,
+                                                _SQLI_RETRY_EVIDENCE_KEYS)
     from binoracle.workflows.wpverify import WpVerifyResult
 
     class _FakeLLM:
@@ -5569,13 +5704,15 @@ def test_llm_suggest_retry_from_evidence_returns_concrete_suggestion():
     wr = WpVerifyResult(detail="no se confirmo")
     wr.evidence = {"endpoint": "/", "sqli_param": "id",
                   "respuesta_control_recorte": "<title>Page not found</title>"}
-    suggestion = _llm_suggest_retry_from_evidence(_FakeLLM(), wr)
+    suggestion = _llm_suggest_retry_from_evidence(
+        _FakeLLM(), _SQLI_RETRY_SYS, wr, _SQLI_RETRY_EVIDENCE_KEYS)
     assert suggestion["endpoint_alternativo"] == "/?page_id=6"
     assert suggestion["parametro_alternativo"] == "w2dc_level_filter"
 
 
 def test_llm_suggest_retry_from_evidence_ignores_malformed_json():
-    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.cve_agent import (_llm_suggest_retry_from_evidence, _SQLI_RETRY_SYS,
+                                                _SQLI_RETRY_EVIDENCE_KEYS)
     from binoracle.workflows.wpverify import WpVerifyResult
 
     class _FakeLLM:
@@ -5586,7 +5723,36 @@ def test_llm_suggest_retry_from_evidence_ignores_malformed_json():
 
     wr = WpVerifyResult(detail="no se confirmo")
     wr.evidence = {}
-    assert _llm_suggest_retry_from_evidence(_FakeLLM(), wr) is None
+    assert _llm_suggest_retry_from_evidence(
+        _FakeLLM(), _SQLI_RETRY_SYS, wr, _SQLI_RETRY_EVIDENCE_KEYS) is None
+
+
+def test_llm_suggest_retry_from_evidence_is_generic_across_techniques():
+    # pedido explicitamente: no quedarse en WordPress/SQLi -- el helper debe servir para
+    # CUALQUIER verificador (distinto system prompt, distinta evidencia) sin duplicar codigo.
+    import json as _json
+    from binoracle.workflows.cve_agent import (_llm_suggest_retry_from_evidence,
+                                                _PATH_TRAVERSAL_RETRY_SYS)
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el primer intento devolvio 'File is not moved'",
+                "endpoint_alternativo": "/wp-admin/admin-ajax.php?action=otra_accion",
+            })
+
+    wr = WpVerifyResult(detail="no se confirmo")
+    wr.evidence = {"endpoint": "/wp-admin/admin-ajax.php?action=x", "path_param": "file",
+                  "respuesta_muestra_para_llm": '{"status":"error","message":"File is not moved"}'}
+    suggestion = _llm_suggest_retry_from_evidence(
+        _FakeLLM(), _PATH_TRAVERSAL_RETRY_SYS, wr,
+        {"endpoint_probado": "endpoint", "parametro_probado": "path_param",
+         "respuesta_cuerpo_recorte": "respuesta_muestra_para_llm"})
+    assert suggestion["endpoint_alternativo"] == "/wp-admin/admin-ajax.php?action=otra_accion"
 
 
 def test_cve_agent_sqli_retries_once_with_llm_suggestion_from_real_evidence(monkeypatch, tmp_path):
