@@ -31,11 +31,25 @@ All notable changes to this project are documented here. The format is based on
   `Investigation` object, untouched by the markdown/HTML report's truncation of every
   response body to a few hundred chars — closes a real gap hit repeatedly diagnosing the
   CVE-2024-3552 SQLi, where the full evidence never left the process.
-- **LLM-driven evidence-based retry loop** (`cve_agent.py`): on a WordPress SQLi negative,
-  the LLM is handed the same real evidence a human analyst would read (the control request's
-  actual response body) and asked to name a concrete alternative endpoint/parameter grounded
-  in something visible there, or say honestly there's no lead — bounded to
-  `_SQLI_RETRY_MAX_ATTEMPTS` (3) total attempts, never a blind or unbounded retry.
+- **LLM-driven evidence-based retry loop** (`cve_agent.py`), now wired across 26 dispatch
+  sites (WordPress, Drupal, and the CMS-agnostic generic verifier, up from the 3 it started
+  with this session): on a negative, the LLM is handed the same real evidence a human analyst
+  would read (a real response-body snippet from the first/control attempt) and asked to name
+  a concrete alternative endpoint/parameter grounded in something visible there, or say
+  honestly there's no lead — bounded to `_RETRY_MAX_ATTEMPTS` (3) total attempts per
+  technique, never a blind or unbounded retry. Built on a shared, technique-agnostic
+  `_run_evidence_retry_loop()` helper plus a generic `_GENERIC_RETRY_SYS` prompt (the
+  technique name is injected into the evidence payload, not baked into a bespoke prompt per
+  site) so new sites cost one dispatch-site edit, not a new prompt. Covers SQLi,
+  path-traversal, command-injection, SSTI, XXE, file-upload, open-redirect, XSS, SSRF, and
+  blind (time-based) SQLi. Two real evidence-capture bugs were found and fixed along the way:
+  several Drupal verifiers only wrote their response-body snippet on the *winning* branch
+  (useless to a retry loop, which only runs on a negative), and three verifiers (SSRF, blind
+  SQLi, both WP/generic XSS) were silently discarding a usable HTTP response body entirely.
+  Deliberately NOT wired: CSRF/account-takeover/deserialization across all three CMS — their
+  failure mode doesn't reduce to a single endpoint+parameter retry (3+ params exchanged at
+  once, or no endpoint/param axis at all), so forcing them in would mean an ungrounded retry,
+  which defeats the whole point of reading real evidence first.
 - **bash/curl PoC templates** (`webexploit.py`): all 13 web-vuln-class PoC builders now
   generate copy-pasteable `bash`+`curl` scripts instead of Python/requests.
 - **pytest-xdist** for parallel test runs (`pip install -e .[dev]`): the fast suite (~584
