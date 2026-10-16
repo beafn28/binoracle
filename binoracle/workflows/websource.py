@@ -784,6 +784,93 @@ def extract_function_body(local_path: str, relative_file: str, start_line: int,
     return "\n".join(out) if out else None
 
 
+_PLUGIN_HEADER_RE = re.compile(r"^\s*(?:\*|//)?\s*Plugin Name\s*:", re.IGNORECASE | re.MULTILINE)
+
+
+def find_plugin_main_file(local_path: str, plugin_dir: str, max_head_bytes: int = 4000,
+                          content_lines: int = 200) -> Optional[dict]:
+    """Localiza el fichero BOOTSTRAP del plugin (el que lleva la cabecera WordPress estandar
+    'Plugin Name: ...') dentro de `plugin_dir` -- NO siempre coincide con el slug/nombre de la
+    carpeta (confirmado en vivo, CVE-2024-50508: carpeta 'woo-product-design', fichero real
+    'woocommerce-product-design.php'), asi que hay que buscarlo por contenido, no adivinar el
+    nombre. Solo mira los .php de primer nivel (la cabecera siempre va ahi por convencion de
+    WordPress.org, nunca en un subdirectorio) -- deliberadamente simple, igual que el resto de
+    heuristicas de este modulo. Devuelve {"relative_path": ..., "content": (primeras
+    content_lines lineas)} o None si no se encuentra ninguno."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for fn in entries:
+        if not fn.lower().endswith(".php"):
+            continue
+        fp = os.path.join(base, fn)
+        if not os.path.isfile(fp):
+            continue
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                head = f.read(max_head_bytes)
+        except OSError:
+            continue
+        if _PLUGIN_HEADER_RE.search(head):
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()[:content_lines]
+            except OSError:
+                continue
+            rel = os.path.join(plugin_dir, fn) if plugin_dir else fn
+            return {"relative_path": rel, "content": "".join(lines)}
+    return None
+
+
+# WordPress.org exige que una dependencia de OTRO plugin se comprueba via 'active_plugins'
+# (la opcion que wp-cli tambien usa) contra la ruta '<slug>/<slug-principal>.php' -- asi la
+# comprueban in_array()/array_key_exists() (patron clasico, 'active_plugins') y la funcion de
+# core is_plugin_active() (que hace exactamente lo mismo por dentro). Confirmado en vivo,
+# CVE-2024-50508: el constructor del plugin corta en seco ANTES de registrar ningun hook AJAX
+# si WooCommerce no esta activo -- sin esto, cualquier verificacion dinamica contra un plugin
+# asi falla siempre, sea cual sea el payload, porque el codigo vulnerable nunca llega a cargarse.
+_COMPANION_PLUGIN_RE = re.compile(
+    r"(?:is_plugin_active|in_array|array_key_exists)\s*\(\s*(?:[^,]+,\s*)?"
+    r"['\"]([a-z0-9][a-z0-9_-]*)/[a-z0-9][a-z0-9_.-]*\.php['\"]", re.IGNORECASE)
+
+
+def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[str]:
+    """Busca, en los ficheros PHP de primer nivel e includes/ del plugin, una comprobacion de
+    que OTRO plugin este activo (in_array/array_key_exists contra 'active_plugins', o
+    is_plugin_active()) antes de registrar su propia funcionalidad -- el patron estandar de
+    WordPress.org para 'este plugin necesita este otro para funcionar'. Devuelve los slugs
+    (deduplicados, orden de aparicion) encontrados, o [] si no se detecta ninguno. Heuristico
+    (regex, no ejecuta el PHP): puede dar falsos negativos (una comprobacion rara) pero no debe
+    dar falsos positivos razonables, ya que solo mira el patron exacto de '<slug>/<algo>.php'."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    slugs: List[str] = []
+    seen = set()
+    scanned = 0
+    for dirpath, dirs, files in os.walk(base):
+        depth = os.path.relpath(dirpath, base).count(os.sep)
+        if depth > 2 or "node_modules" in dirpath or "/.git" in dirpath:
+            dirs[:] = []
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            try:
+                with open(os.path.join(dirpath, fn), "r", encoding="utf-8",
+                         errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            for m in _COMPANION_PLUGIN_RE.finditer(text):
+                slug = m.group(1).lower()
+                if slug not in seen and slug != plugin_dir.lower():
+                    seen.add(slug)
+                    slugs.append(slug)
+    return slugs
+
+
 _AJAX_ACTION_HANDLER_RE_TMPL = (
     r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_{action}['\"]\s*,\s*"
     r"(?:['\"]([A-Za-z0-9_]+)['\"]"

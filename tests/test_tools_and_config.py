@@ -3611,6 +3611,61 @@ def test_extract_function_body_returns_none_for_missing_file_or_bad_line(tmp_pat
     assert extract_function_body(str(tmp_path), "f.php", 999) is None
 
 
+def test_find_plugin_main_file_locates_by_header_not_slug_name(tmp_path):
+    # bug real confirmado en vivo, CVE-2024-50508: la carpeta del plugin es 'woo-product-design'
+    # pero el fichero bootstrap real se llama 'woocommerce-product-design.php' -- no coinciden,
+    # asi que hay que buscar por la cabecera 'Plugin Name:', no adivinar el nombre del fichero.
+    from binoracle.workflows.websource import find_plugin_main_file
+    plugin_dir = tmp_path / "woo-product-design"
+    plugin_dir.mkdir()
+    (plugin_dir / "README.txt").write_text("not php")
+    (plugin_dir / "helpers.php").write_text("<?php\nfunction helper(){}\n")
+    (plugin_dir / "woocommerce-product-design.php").write_text(
+        "<?php\n/**\n * Plugin Name: Woocommerce Product Design\n * Version: 1.0.0\n */\n"
+        "class ProductDesign {}\n")
+    result = find_plugin_main_file(str(tmp_path), "woo-product-design")
+    assert result is not None
+    assert result["relative_path"].endswith("woocommerce-product-design.php")
+    assert "Plugin Name" in result["content"]
+
+
+def test_find_plugin_main_file_returns_none_without_header(tmp_path):
+    from binoracle.workflows.websource import find_plugin_main_file
+    plugin_dir = tmp_path / "some-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "helpers.php").write_text("<?php\nfunction helper(){}\n")
+    assert find_plugin_main_file(str(tmp_path), "some-plugin") is None
+
+
+def test_detect_required_companion_plugins_finds_woocommerce_dependency(tmp_path):
+    # bug real confirmado en vivo, CVE-2024-50508: el constructor del plugin corta en seco
+    # ('return false') ANTES de registrar ningun hook si WooCommerce no esta activo -- sin
+    # detectar esto, el laboratorio nunca llega a cargar el codigo vulnerable, con cualquier
+    # payload.
+    from binoracle.workflows.websource import detect_required_companion_plugins
+    plugin_dir = tmp_path / "woo-product-design"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.php").write_text(
+        "<?php\n"
+        "function check_dependencies(){\n"
+        "    $active_plugins = (array) get_option('active_plugins', array());\n"
+        "    $is_woocommerce_active = in_array('woocommerce/woocommerce.php', $active_plugins)\n"
+        "        || array_key_exists('woocommerce/woocommerce.php', $active_plugins);\n"
+        "    if (!$is_woocommerce_active) { return false; }\n"
+        "    return true;\n"
+        "}\n")
+    slugs = detect_required_companion_plugins(str(tmp_path), "woo-product-design")
+    assert slugs == ["woocommerce"]
+
+
+def test_detect_required_companion_plugins_empty_when_no_dependency_check(tmp_path):
+    from binoracle.workflows.websource import detect_required_companion_plugins
+    plugin_dir = tmp_path / "standalone-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.php").write_text("<?php\nfunction do_thing(){ return true; }\n")
+    assert detect_required_companion_plugins(str(tmp_path), "standalone-plugin") == []
+
+
 def test_find_ajax_handler_function_string_callback(tmp_path):
     from binoracle.workflows.websource import find_ajax_handler_function
     php = tmp_path / "plugin.php"
@@ -6742,6 +6797,61 @@ def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_pa
     # la opcion se activa ANTES de intentar el login del subscriber (que aqui falla a proposito)
     assert boot is None
     assert "no se pudo iniciar sesion" in (res.detail or "")
+
+
+def test_bootstrap_lab_installs_companion_plugins_before_target_plugin(monkeypatch, tmp_path):
+    # bug real confirmado en vivo, CVE-2024-50508: el plugin objetivo no registra NINGUN hook si
+    # WooCommerce no esta activo (su constructor corta en seco antes) -- _bootstrap_lab debe
+    # instalar y activar el companero ANTES de copiar/activar el plugin objetivo, para que su
+    # codigo llegue siquiera a cargarse.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            calls.append(args)
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            calls.append(("install_plugin",) + a)
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: None)
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "woo-product-design", lambda _m: None, res, _time.time(),
+        1200.0, companion_plugins=["woocommerce"])
+
+    install_idx = calls.index(("plugin", "install", "woocommerce", "--activate"))
+    target_idx = next(i for i, c in enumerate(calls) if c and c[0] == "install_plugin")
+    assert install_idx < target_idx   # el companero se instala ANTES del plugin objetivo
 
 
 def test_fetch_source_resolves_wp_org_page_url_to_slug(monkeypatch):

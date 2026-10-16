@@ -709,7 +709,8 @@ class _LabSession:
 
 def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
                    t0: float, budget_s: float,
-                   setup_wp_options: Optional[list] = None) -> Optional[_LabSession]:
+                   setup_wp_options: Optional[list] = None,
+                   companion_plugins: Optional[list] = None) -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
     (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
 
@@ -722,7 +723,16 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     LLM lea el codigo real alrededor de la funcion vulnerable confirmada (ver
     _refine_web_hints_from_source en cve_agent.py) -- no es un fallback generico, es la misma idea
     de 'leer el codigo real en vez de adivinar' ya aplicada a endpoint/parametros, extendida a
-    los REQUISITOS para llegar a ese codigo."""
+    los REQUISITOS para llegar a ese codigo.
+
+    `companion_plugins`, si se da, es una lista de slugs de WordPress.org (p.ej. ['woocommerce'])
+    que se instalan y activan ANTES del plugin objetivo -- confirmado en vivo con CVE-2024-50508:
+    el constructor del plugin corta en seco (`return false`) antes de registrar NINGUN hook si
+    WooCommerce no esta activo, asi que la verificacion dinamica fallaba siempre sin importar el
+    payload, porque el codigo vulnerable nunca llegaba a cargarse. Viene de
+    detect_required_companion_plugins() en websource.py, que detecta este patron (in_array()/
+    is_plugin_active() contra 'active_plugins') leyendo el codigo real -- misma idea que
+    setup_wp_options, pero para 'que otro plugin tiene que estar activo', no 'que opcion'."""
     root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
     admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
     sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
@@ -773,6 +783,18 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
            "tocar nada).",
            "Step 1: WordPress freshly installed and reachable (live lab, before anything "
            "is touched).")
+
+    if companion_plugins:
+        for comp_slug in companion_plugins:
+            step(f"instalando y activando '{comp_slug}' (WordPress.org) -- el plugin objetivo "
+                 f"lo necesita activo para registrar siquiera su propia funcionalidad...")
+            r_comp = lab.wp_cli("plugin", "install", comp_slug, "--activate", timeout=120)
+            if r_comp.returncode != 0:
+                res.limitations.append(
+                    f"no se pudo instalar/activar el plugin companero requerido "
+                    f"'{comp_slug}': {(r_comp.stderr or r_comp.stdout or '')[:200]} -- sin el, "
+                    f"el plugin objetivo puede no registrar ningun hook y el ataque fallar "
+                    f"siempre independientemente del payload")
 
     step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
     if not lab.install_plugin(plugin_source_dir, slug):
@@ -857,6 +879,7 @@ def verify_wordpress_account_takeover(
     # corren emulados (linux/amd64) via Docker Desktop -- el arranque de MySQL en la PRIMERA
     # ejecucion puede tardar varios minutos por si solo (ver mysql_ready). 600s se quedaba corto
     # y el laboratorio se desmontaba con MySQL aun inicializando, no realmente colgado.
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Levanta WordPress+MySQL en Docker, instala el plugin ya descargado en `plugin_source_dir`
     (debe contener `<slug>/...`), crea un usuario subscriber y un admin, inicia sesion como el
@@ -882,7 +905,8 @@ def verify_wordpress_account_takeover(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -989,6 +1013,7 @@ def verify_wordpress_direct_login_as(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, id_param_hint: str = "", confirm_path: str = "/wp-admin/users.php",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica la OTRA forma de account-takeover por missing-authorization: un plugin cuya accion
     deja a un usuario de bajo privilegio CONVERTIRSE directamente en la sesion de otro usuario
@@ -1027,7 +1052,8 @@ def verify_wordpress_direct_login_as(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -1170,6 +1196,7 @@ def verify_wordpress_path_traversal(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, path_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
     del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
@@ -1199,7 +1226,8 @@ def verify_wordpress_path_traversal(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -1406,6 +1434,7 @@ def verify_wordpress_command_injection(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, cmd_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica command/OS injection probando que el servidor remoto EVALUA aritmetica que nunca
     se le mando literal: el payload pide `$(( a + b ))` para dos numeros aleatorios y, si la
@@ -1429,7 +1458,8 @@ def verify_wordpress_command_injection(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -1592,6 +1622,7 @@ def verify_wordpress_sqli(
     parameters, sqli_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     setup_wp_options: Optional[list] = None,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -1635,7 +1666,8 @@ def verify_wordpress_sqli(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              setup_wp_options=setup_wp_options)
+                              setup_wp_options=setup_wp_options,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -1894,6 +1926,7 @@ def verify_wordpress_ssrf(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, url_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SSRF levantando un contenedor 'callback' en la MISMA red Docker del laboratorio
     (no expuesto a internet, solo alcanzable desde dentro) y apuntando el parametro de URL/fichero
@@ -1918,7 +1951,8 @@ def verify_wordpress_ssrf(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -2016,6 +2050,7 @@ def verify_wordpress_xss(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, xss_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica XSS (reflejado, o almacenado cuando la propia respuesta lo renderiza de vuelta)
     cargando la respuesta del endpoint en un Chromium headless REAL (ver _xss_render): el payload
@@ -2053,7 +2088,8 @@ def verify_wordpress_xss(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -2170,6 +2206,7 @@ def verify_wordpress_ssti(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, ssti_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica server-side template injection con la misma idea que command injection: el payload
     pide al motor de plantillas que CALCULE un producto de dos numeros aleatorios (sintaxis de
@@ -2193,7 +2230,8 @@ def verify_wordpress_ssti(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -2297,6 +2335,7 @@ def verify_wordpress_xxe(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, xml_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica XML External Entity con el mismo patron de fichero canario que path-traversal/LFI
     (ver verify_wordpress_path_traversal): planta un secreto aleatorio en una ruta del sistema de
@@ -2316,7 +2355,8 @@ def verify_wordpress_xxe(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -2484,6 +2524,7 @@ def verify_wordpress_open_redirect(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, redirect_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica open redirect mandando como valor del parametro una URL EXTERNA completa, con
     redirects deshabilitados en el cliente (allow_redirects=False) para inspeccionar la cabecera
@@ -2507,7 +2548,8 @@ def verify_wordpress_open_redirect(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -2598,6 +2640,7 @@ def verify_wordpress_file_upload(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, file_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica unrestricted file upload (webshell) en dos pasos, ambos con prueba dura:
 
@@ -2627,7 +2670,8 @@ def verify_wordpress_file_upload(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -2812,6 +2856,7 @@ def verify_wordpress_csrf(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, email_param_hint: str = "", pass_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica CSRF reproduciendo la peticion de cambio de email/password que la hipotesis
     describe, pero con el escenario classico de self-CSRF: el ADMIN se ataca a si mismo via una
@@ -2843,7 +2888,8 @@ def verify_wordpress_csrf(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
         if boot.admin_sess is None:
@@ -2960,6 +3006,7 @@ def verify_wordpress_deserialization(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, serial_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica insecure deserialization (PHP Object Injection) en DOS pasos, ambos con prueba
     dura (ver deserialize_gadgets.py para el porque de este diseño):
@@ -3004,7 +3051,8 @@ def verify_wordpress_deserialization(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
@@ -3085,6 +3133,7 @@ def verify_wordpress_deserialization_custom_table(
     store_parameters, table_name: str, column_name: str, id_column: str = "id",
     serial_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
 ) -> WpVerifyResult:
     """Variante EN DOS PASOS de verify_wordpress_deserialization, apuntando al mecanismo REAL de
     object injection almacenado en WordPress -- NO la API de Options/Transients (ver
@@ -3144,7 +3193,8 @@ def verify_wordpress_deserialization_custom_table(
 
     lab = _Lab(_token())
     try:
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s)
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
         if boot is None:
             return res
 
