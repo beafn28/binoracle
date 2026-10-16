@@ -7,6 +7,51 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Generic (CMS-agnostic) dynamic verifiers for 10 web vuln classes** (`genericverify.py`):
+  for any CVE whose downloaded source isn't a recognized WordPress/Drupal/Joomla plugin,
+  binoracle builds and runs the target's own Dockerfile/docker-compose.yml (or, if it has
+  neither, auto-detects Node/Python/PHP by its own manifest files and writes a minimal
+  Dockerfile itself) and attacks the real resulting container — never `verified=True` by a
+  status code, always by an independent check (a canary written to disk, inside the
+  container, a listener on its own network, a real browser executing JS, a real timing
+  delay...). Covers command-injection, path-traversal, SSRF, blind SQLi, XXE, XSS, SSTI,
+  open-redirect (pre-existing), plus three added this session: an unauthenticated,
+  deliberately WEAKER IDOR check (two IDs, no session — never marks `verified`, only a real
+  observed difference), a file-upload check (confirms real on-disk storage of a dangerous
+  file via `docker exec grep`, not execution), and an LFI-to-RCE escalation via access-log
+  poisoning (confirms real code execution, never a raw-reflection false positive).
+- **WordPress SQLi verifier, three real fixes chained from one CVE (CVE-2024-3552)**: the
+  ephemeral lab now enables `WP_DEBUG`/`WP_DEBUG_DISPLAY` (error-based SQLi was structurally
+  blind without it), auto-creates a real page using the plugin's own shortcode when the given
+  endpoint is the bare homepage (which shows nothing to inject into), and inserts a real,
+  schema-aware row (via a `DESCRIBE`-driven `wp eval`) into whatever relationship table a
+  `LEFT JOIN`-based sink joins by post ID — closing a real class of "sink is real but the
+  test target has no matching row" false negative.
+- **`investigate --json path.json`** (and always in `investigate-batch`): dumps the complete
+  `Investigation` object, untouched by the markdown/HTML report's truncation of every
+  response body to a few hundred chars — closes a real gap hit repeatedly diagnosing the
+  CVE-2024-3552 SQLi, where the full evidence never left the process.
+- **LLM-driven evidence-based retry loop** (`cve_agent.py`): on a WordPress SQLi negative,
+  the LLM is handed the same real evidence a human analyst would read (the control request's
+  actual response body) and asked to name a concrete alternative endpoint/parameter grounded
+  in something visible there, or say honestly there's no lead — bounded to
+  `_SQLI_RETRY_MAX_ATTEMPTS` (3) total attempts, never a blind or unbounded retry.
+- **bash/curl PoC templates** (`webexploit.py`): all 13 web-vuln-class PoC builders now
+  generate copy-pasteable `bash`+`curl` scripts instead of Python/requests.
+- **pytest-xdist** for parallel test runs (`pip install -e .[dev]`): the fast suite (~584
+  tests, excluding angr/chainanalyzer/rop) drops from ~13-15 min serial to ~4.5 min with
+  `-n 4` on a 4-core machine, same pass/fail result.
+
+### Removed
+- **Burp Suite routing from the ephemeral CMS lab** (WordPress/Drupal/Joomla): `_wp_login`/
+  `_drupal_login`/`_joomla_login` now always use a direct `requests.Session()`, even when
+  `--burp-mcp-url` is configured. Routing the lab's own login through Burp was the root cause
+  of two distinct real bugs this session (an `UnknownHostException` on `host.docker.internal`,
+  then a regression in `http_ready()` when `_lab_host()` was made Burp-aware to fix that) for
+  a fully-automated lab that never needed an external proxy in the first place. Burp MCP stays
+  available for `genericverify.py`'s analyst-directed verifiers.
+
+### Added (prior)
 - **Heap-to-shell (tcache-UAF) exploit**: `autoheap.autoheap_shell` drives a menu-style
   use-after-free (new/free/edit/show, e.g. the `heapexp` sample) to a verified shell — it
   defeats glibc safe-linking without needing exact heap offsets (freeing one chunk into an
