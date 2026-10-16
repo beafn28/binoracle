@@ -33,7 +33,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _make_session, _pick_param,
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _attack_lab_host,
+                       _make_session, _pick_param,
                        _redirect_location_is_external, _token, _XssBrowserSession,
                        _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS, _CMD_HINTS, _SQLI_HINTS,
                        _URL_HINTS, _XSS_HINTS, _XML_HINTS, _REDIRECT_HINTS, _FILE_UPLOAD_HINTS)
@@ -310,7 +311,7 @@ def _bootstrap_drupal_lab(lab: "_Lab", module_source_dir: str, slug: str, step,
         res.detail = "Drupal no respondio a tiempo"
         res.logs.append("docker logs (drupal):\n" + lab.logs_tail(lab.drupal))
         return None
-    base_url = f"http://{_lab_host()}:{port}"
+    base_url = f"http://{_attack_lab_host()}:{port}"
     step(f"Drupal listo en {base_url}; instalando el sitio via Drush (site:install)...")
 
     r = lab.drush("site:install", "standard",

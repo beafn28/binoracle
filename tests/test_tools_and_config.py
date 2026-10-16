@@ -4845,22 +4845,30 @@ def test_cli_investigate_passes_custom_table_hints(monkeypatch):
     assert captured["hints"]["id_column"] == "id"
 
 
-def test_lab_host_prefers_127_when_burp_is_configured(monkeypatch):
-    # bug real confirmado en vivo: con --burp-mcp-url, las peticiones de login/ataque las manda
-    # la extension de Burp -- que corre NATIVA en la maquina del analista, fuera de cualquier
-    # contenedor. 'host.docker.internal' solo lo resuelve Docker Desktop PARA CONTENEDORES, nunca
-    # para el sistema operativo anfitrion, asi que Burp lanzaba
-    # java.net.UnknownHostException: host.docker.internal al intentar enviarla. El puerto de
-    # WordPress se publica en 0.0.0.0, asi que 127.0.0.1 si es alcanzable desde el host real.
+def test_lab_host_never_changes_for_burp_only_attack_lab_host_does(monkeypatch):
+    # bug real confirmado en vivo, DOS VECES: primero Burp lanzaba
+    # java.net.UnknownHostException: host.docker.internal al mandar la peticion de login (porque
+    # corre NATIVO en la maquina del analista, fuera de cualquier contenedor, y
+    # 'host.docker.internal' solo lo resuelve Docker Desktop PARA CONTENEDORES) -- eso lo arregla
+    # _attack_lab_host(), que da 127.0.0.1 cuando hay Burp (el puerto de WordPress se publica en
+    # 0.0.0.0, asi que es alcanzable desde el host real). PERO hacer que _lab_host() tambien
+    # devolviera 127.0.0.1 con Burp configurado fue un bug NUEVO: http_ready() (y los chequeos
+    # equivalentes de drupalverify.py/joomlaverify.py) los hace SIEMPRE este mismo proceso, nunca
+    # Burp -- con Burp conectado de verdad (sin ningun crash) 'WordPress no respondio a tiempo'
+    # volvia a salir porque http_ready() probaba 127.0.0.1 DENTRO del propio contenedor, que no
+    # es el host. _lab_host() no debe cambiar nunca por Burp; solo _attack_lab_host() debe.
     import binoracle.workflows.wpverify as wv
 
-    monkeypatch.setattr(wv, "_burp_client", None)
     monkeypatch.setattr("os.path.exists", lambda p: p == "/.dockerenv")
     monkeypatch.setattr(wv.socket, "gethostbyname", lambda h: "127.0.0.1")
-    assert wv._lab_host() == "host.docker.internal"   # sin Burp, el comportamiento de siempre
+
+    monkeypatch.setattr(wv, "_burp_client", None)
+    assert wv._lab_host() == "host.docker.internal"
+    assert wv._attack_lab_host() == "host.docker.internal"
 
     monkeypatch.setattr(wv, "_burp_client", object())
-    assert wv._lab_host() == "127.0.0.1"              # con Burp, SIEMPRE 127.0.0.1
+    assert wv._lab_host() == "host.docker.internal"   # _lab_host() NUNCA cambia por Burp
+    assert wv._attack_lab_host() == "127.0.0.1"       # solo el host de ATAQUE lo hace
 
 
 def test_wpverify_deserialization_custom_table_blocked_without_gadget(monkeypatch, tmp_path):

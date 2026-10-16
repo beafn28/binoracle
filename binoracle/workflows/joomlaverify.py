@@ -44,7 +44,8 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _make_session, _pick_param,
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _attack_lab_host,
+                       _make_session, _pick_param,
                        _token, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
 
 _MYSQL_IMAGE = "mysql:8.0"           # Joomla 5 exige >=8.0.13 -- confirmado en vivo, 5.7 no vale
@@ -291,7 +292,7 @@ def _bootstrap_joomla_lab(lab: "_Lab", ext_source_dir: str, slug: str, step,
         res.detail = "Joomla no respondio a tiempo"
         res.logs.append("docker logs (joomla):\n" + lab.logs_tail(lab.joomla))
         return None
-    base_url = f"http://{_lab_host()}:{port}"
+    base_url = f"http://{_attack_lab_host()}:{port}"
     step(f"Joomla listo en {base_url}; leyendo el ID real del admin (no es fijo en Joomla, a "
          f"diferencia de WordPress/Drupal)...")
     admin_id = lab.mysql_query(f"SELECT id FROM joom_users WHERE username='{admin_user}';")
