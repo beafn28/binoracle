@@ -163,13 +163,17 @@ def _lab_host() -> str:
     tests de este repo en el sandbox de desarrollo), 127.0.0.1 ya es correcto y
     host.docker.internal no existira.
 
-    IMPORTANTE: esta funcion NUNCA debe tener en cuenta si Burp esta configurado -- eso es
-    _attack_lab_host(), usada solo para construir el base_url de las peticiones de login/ataque
-    (que SI pueden ir por Burp). Mezclar ambos casos aqui fue un bug real confirmado en vivo:
-    con Burp conectado, http_ready() heredaba el '127.0.0.1' de _attack_lab_host() aunque la
-    comprobacion la sigue haciendo este mismo proceso dentro del contenedor (nunca Burp), y
-    127.0.0.1 ahi es el propio contenedor, no el host -- 'WordPress no respondio a tiempo' volvia
-    a salir, con Burp conectado de verdad y sin ningun crash."""
+    Por lo mismo, el laboratorio efimero (WordPress/Drupal/Joomla) NUNCA envia sus propias
+    peticiones de login/ataque a traves de Burp, aunque --burp-mcp-url este configurado (ver
+    _wp_login/_drupal_login/_joomla_login, que usan requests.Session() directamente en vez de
+    _make_session()) -- Burp corre NATIVO en la maquina del analista, fuera de cualquier
+    contenedor, y 'host.docker.internal' es un alias que Docker Desktop solo resuelve PARA
+    CONTENEDORES, nunca para el sistema operativo anfitrion en si (confirmado en vivo: con un
+    intento anterior de enrutar estas peticiones por Burp, lanzaba java.net.UnknownHostException:
+    host.docker.internal). Mantener el laboratorio efimero SIEMPRE directo, sin Burp de por
+    medio, evita esa clase entera de problema -- Burp (via configure_burp_mcp) sigue disponible
+    para los verificadores GENERICOS dirigidos por el analista (genericverify.py), donde no hay
+    ningun contenedor Docker-fuera-de-Docker de por medio."""
     if os.path.exists("/.dockerenv"):
         try:
             socket.gethostbyname("host.docker.internal")
@@ -177,23 +181,6 @@ def _lab_host() -> str:
         except OSError:
             pass
     return "127.0.0.1"
-
-
-def _attack_lab_host() -> str:
-    """Host para el base_url de las peticiones de LOGIN/ATAQUE (nunca para los chequeos de
-    arranque como http_ready(), que siempre usan _lab_host() -- ver ahi por que mezclarlos fue
-    un bug real). Con Burp configurado (ver configure_burp_mcp), quien envia la peticion real ya
-    NO es este proceso, es la extension de Burp -- que corre NATIVA en la maquina del analista,
-    FUERA de cualquier contenedor. 'host.docker.internal' es un alias de DNS que Docker Desktop
-    solo resuelve PARA CONTENEDORES, nunca para el sistema operativo anfitrion en si (confirmado
-    en vivo: Burp lanzaba java.net.UnknownHostException: host.docker.internal al intentar enviar
-    la peticion de login). El puerto de WordPress se publica con '-p 0.0.0.0::80' (ver
-    start_wordpress()), asi que SI es alcanzable desde el host real via 127.0.0.1 -- que es lo
-    que hay que darle a Burp en vez del alias que solo entienden los contenedores. Sin Burp
-    configurado, es exactamente _lab_host()."""
-    if _burp_client is not None:
-        return "127.0.0.1"
-    return _lab_host()
 
 
 class _Lab:
@@ -660,8 +647,12 @@ def _wp_login(base_url: str, user: str, password: str, timeout: float = 30.0,
     respuesta no trajo cookie de sesion con su status code) -- confirmado en vivo: antes de
     esto, un fallo de login (de Burp, de red, o de WordPress rechazando las credenciales) SIEMPRE
     se veia igual desde fuera ('no se pudo iniciar sesion'), sin forma de saber CUAL de esas tres
-    cosas paso realmente sin instrumentar el codigo a mano cada vez."""
-    s = _make_session()
+    cosas paso realmente sin instrumentar el codigo a mano cada vez.
+
+    Usa requests.Session() DIRECTAMENTE, nunca _make_session() -- este login es parte del
+    laboratorio efimero, que nunca debe ir por Burp aunque este configurado (ver _lab_host())."""
+    import requests
+    s = requests.Session()
     try:
         r = s.post(f"{base_url}/wp-login.php",
                   data={"log": user, "pwd": password, "wp-submit": "Log In",
@@ -796,7 +787,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         res.detail = "WordPress no respondio a tiempo"
         res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
         return None
-    base_url = f"http://{_attack_lab_host()}:{port}"
+    base_url = f"http://{_lab_host()}:{port}"
     ctx["base_url"] = base_url
     step(f"WordPress listo en {base_url}; instalando core via wp-cli...")
 

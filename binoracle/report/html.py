@@ -2310,7 +2310,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                               lang: str = "es", poc_kind: str = "pwntools") -> str:
     """Pagina del agente de investigacion: informe (markdown) + descarga del exploit/PoC desarrollado.
     `poc_kind` ajusta etiqueta/extension/mimetype del boton: 'pwntools' (memoria, .py), 'http' (PoC
-    web con requests, .py), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python). Autocontenida
+    web en bash/curl, .sh), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python). Autocontenida
     (CSS y capturas de pantalla embebidas en base64): un solo fichero que se abre, se comparte o se
     imprime como PDF desde el propio navegador sin depender de nada mas."""
     import base64
@@ -2345,8 +2345,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             label = "Descargar PoC (HTML, CSRF)" if es else "Download PoC (HTML, CSRF)"
             fname, mime = f"poc_{safe}.html", "text/html"
         elif poc_kind == "http":
-            label = "Descargar PoC (HTTP/requests)" if es else "Download PoC (HTTP/requests)"
-            fname, mime = f"poc_{safe}.py", "text/x-python"
+            label = "Descargar PoC (HTTP/curl)" if es else "Download PoC (HTTP/curl)"
+            fname, mime = f"poc_{safe}.sh", "text/x-shellscript"
         else:
             label = "Descargar exploit (pwntools)" if es else "Download exploit (pwntools)"
             fname, mime = f"exploit_{safe}.py", "text/x-python"

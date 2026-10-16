@@ -3529,7 +3529,11 @@ def test_cveplan_plan_skips_pwntools_for_web_class():
 
 
 def test_webexploit_builds_valid_poc_for_every_web_class():
-    import ast
+    # los PoC web se generan como bash/curl (no Python/requests) -- copiables directo en cualquier
+    # terminal con curl, sin depender de python+requests instalados. `bash -n` valida la sintaxis
+    # realmente, igual que ast.parse() validaba la version anterior en Python.
+    import shutil
+    import subprocess
     from binoracle.workflows.webexploit import build_http_poc, WEB_CLASSES
     notes = {"endpoint": "/api/x", "http_method": "POST", "parameters": ["id", "value"],
             "strategy": "test"}
@@ -3539,18 +3543,23 @@ def test_webexploit_builds_valid_poc_for_every_web_class():
         if cls == "csrf":
             assert "<html" in out and "<form" in out
             continue
-        ast.parse(out)   # el PoC generado debe ser Python valido
+        assert out.startswith("#!/usr/bin/env bash")
         assert "TU-OBJETIVO-AUTORIZADO" in out    # nunca apunta a un host real por defecto
+        if shutil.which("bash"):
+            r = subprocess.run(["bash", "-n"], input=out, capture_output=True, text=True)
+            assert r.returncode == 0, f"{cls}: bash -n fallo: {r.stderr}"
 
 
-def test_webexploit_missing_authorization_poc_param_logic():
-    # Regresion: la condicion que elige el parametro del ID objetivo estaba invertida
-    # ("user_id" if "user_id" not in PARAMS else list(PARAMS)[0]), asi que si 'user_id' YA estaba
-    # en PARAMS usaba el PRIMER parametro (posiblemente otro) en vez de 'user_id'.
+def test_webexploit_missing_authorization_poc_mentions_user_id_param():
+    # Regresion (version Python anterior): la condicion que elegia el parametro del ID objetivo
+    # estaba invertida. En la version bash/curl actual no hay una expresion equivalente que
+    # "elija" -- el analista sustituye el valor a mano en DATA -- pero el PoC debe seguir
+    # orientando hacia 'user_id' cuando ese parametro esta presente en la hipotesis.
     from binoracle.workflows.webexploit import build_http_poc
     notes = {"endpoint": "/x", "http_method": "POST", "parameters": ["user_id", "email"]}
     out = build_http_poc("missing-authorization", "CVE-X", notes, lang="es")
-    assert 'ID_PARAM = "user_id" if "user_id" in PARAMS else' in out
+    assert 'user_id' in out
+    assert 'TARGET_ID' in out
 
 
 def test_build_http_poc_unknown_class_returns_empty():
@@ -3852,8 +3861,8 @@ def test_render_investigation_page_poc_kind_sets_filename_and_mime():
     from binoracle.report.html import render_investigation_page
     html_pwn = render_investigation_page("# informe", "print(1)", "CVE-1", "es", poc_kind="pwntools")
     assert "pwntools" in html_pwn and 'download="exploit_CVE-1.py"' in html_pwn
-    html_http = render_investigation_page("# informe", "import requests", "CVE-2", "es", poc_kind="http")
-    assert "HTTP" in html_http and 'download="poc_CVE-2.py"' in html_http
+    html_http = render_investigation_page("# informe", "#!/usr/bin/env bash", "CVE-2", "es", poc_kind="http")
+    assert "HTTP" in html_http and 'download="poc_CVE-2.sh"' in html_http
     html_csrf = render_investigation_page("# informe", "<html></html>", "CVE-3", "es", poc_kind="html")
     assert 'download="poc_CVE-3.html"' in html_csrf and "text/html" in html_csrf
     assert ".py" not in html_csrf.split('download="')[1].split('"')[0]
@@ -3878,7 +3887,7 @@ def test_cve_agent_web_investigation_never_claims_verified(monkeypatch):
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert inv.verified is False
     assert inv.poc_kind == "http"
-    assert "import requests" in inv.developed_script
+    assert "#!/usr/bin/env bash" in inv.developed_script
     assert any("source_url" in b or "autorizado" in b for b in inv.blockers)
 
 
@@ -4212,7 +4221,7 @@ def test_investigate_cve_vuln_class_hint_triggers_web_path_without_nvd_or_llm(mo
               "parameters": ["user_id", "email", "pass"]})
     assert inv.vuln_class == "missing-authorization"
     assert inv.poc_kind == "http"
-    assert "import requests" in inv.developed_script
+    assert "#!/usr/bin/env bash" in inv.developed_script
     assert not any("falta el binario vulnerable concreto" in b for b in inv.blockers)
 
 
@@ -4869,18 +4878,17 @@ def test_cli_investigate_passes_custom_table_hints(monkeypatch):
     assert captured["hints"]["id_column"] == "id"
 
 
-def test_lab_host_never_changes_for_burp_only_attack_lab_host_does(monkeypatch):
-    # bug real confirmado en vivo, DOS VECES: primero Burp lanzaba
-    # java.net.UnknownHostException: host.docker.internal al mandar la peticion de login (porque
-    # corre NATIVO en la maquina del analista, fuera de cualquier contenedor, y
-    # 'host.docker.internal' solo lo resuelve Docker Desktop PARA CONTENEDORES) -- eso lo arregla
-    # _attack_lab_host(), que da 127.0.0.1 cuando hay Burp (el puerto de WordPress se publica en
-    # 0.0.0.0, asi que es alcanzable desde el host real). PERO hacer que _lab_host() tambien
-    # devolviera 127.0.0.1 con Burp configurado fue un bug NUEVO: http_ready() (y los chequeos
-    # equivalentes de drupalverify.py/joomlaverify.py) los hace SIEMPRE este mismo proceso, nunca
-    # Burp -- con Burp conectado de verdad (sin ningun crash) 'WordPress no respondio a tiempo'
-    # volvia a salir porque http_ready() probaba 127.0.0.1 DENTRO del propio contenedor, que no
-    # es el host. _lab_host() no debe cambiar nunca por Burp; solo _attack_lab_host() debe.
+def test_lab_host_never_changes_for_burp_and_lab_logins_never_use_burp(monkeypatch):
+    # el laboratorio efimero (WordPress/Drupal/Joomla) tuvo dos bugs reales confirmados en vivo
+    # intentando hacerlo compatible con Burp: primero Burp lanzaba
+    # java.net.UnknownHostException: host.docker.internal al mandar la peticion de login (corre
+    # NATIVO en la maquina del analista, fuera de cualquier contenedor, y Docker Desktop solo
+    # resuelve ese alias PARA CONTENEDORES) -- y arreglar ESE problema con un _attack_lab_host()
+    # aparte rompio http_ready() con Burp configurado ('WordPress no respondio a tiempo' volvia a
+    # salir, con Burp conectado de verdad y sin ningun crash). En vez de seguir malabares con dos
+    # funciones de host distintas, el laboratorio efimero ahora NUNCA enruta sus propias
+    # peticiones de login/ataque por Burp (ver _wp_login): _lab_host() es la UNICA funcion de
+    # host, y no debe cambiar nunca por Burp.
     import binoracle.workflows.wpverify as wv
 
     monkeypatch.setattr("os.path.exists", lambda p: p == "/.dockerenv")
@@ -4888,11 +4896,34 @@ def test_lab_host_never_changes_for_burp_only_attack_lab_host_does(monkeypatch):
 
     monkeypatch.setattr(wv, "_burp_client", None)
     assert wv._lab_host() == "host.docker.internal"
-    assert wv._attack_lab_host() == "host.docker.internal"
 
     monkeypatch.setattr(wv, "_burp_client", object())
     assert wv._lab_host() == "host.docker.internal"   # _lab_host() NUNCA cambia por Burp
-    assert wv._attack_lab_host() == "127.0.0.1"       # solo el host de ATAQUE lo hace
+    assert not hasattr(wv, "_attack_lab_host")          # eliminada -- ya no hace falta
+
+
+def test_wp_login_never_routes_through_burp(monkeypatch):
+    # confirmado en vivo: enrutar el login del laboratorio efimero por Burp fue la causa raiz de
+    # dos bugs reales distintos (ver test de arriba) -- _wp_login debe usar siempre una
+    # requests.Session de verdad, incluso con Burp configurado.
+    import binoracle.workflows.wpverify as wv
+
+    monkeypatch.setattr(wv, "_burp_client", object())
+
+    def _boom(*a, **kw):
+        raise AssertionError("_make_session() no deberia llamarse desde _wp_login")
+    monkeypatch.setattr(wv, "_make_session", _boom)
+
+    class _FakeResp:
+        status_code = 200
+        text = ""
+        cookies = []
+
+    import requests
+    monkeypatch.setattr(requests.Session, "post", lambda self, *a, **k: _FakeResp())
+
+    result = wv._wp_login("http://lab.invalid", "user", "pass")
+    assert result is None or isinstance(result, requests.Session)
 
 
 def test_wpverify_deserialization_custom_table_blocked_without_gadget(monkeypatch, tmp_path):
@@ -6195,16 +6226,18 @@ def test_wpverify_make_session_returns_burp_session_when_configured(monkeypatch)
     assert s.client is fake_client
 
 
-def test_drupalverify_and_joomlaverify_login_use_shared_make_session():
-    # confirma que drupalverify.py/joomlaverify.py de verdad usan el _make_session compartido de
-    # wpverify.py en vez de su propio requests.Session() -- cerraba el hueco que dejaba el login
-    # de Drupal/Joomla SIN pasar por Burp aunque el generico y WordPress si lo hicieran.
+def test_drupalverify_and_joomlaverify_login_never_use_burp():
+    # el laboratorio efimero (WordPress/Drupal/Joomla) NUNCA debe enrutar su propio login por
+    # Burp, aunque --burp-mcp-url este configurado -- enrutarlo causo dos bugs reales distintos
+    # confirmados en vivo (ver test_lab_host_never_changes_for_burp_and_lab_logins_never_use_burp
+    # en wpverify.py). _drupal_login/_joomla_login deben usar requests.Session() DIRECTAMENTE, no
+    # el _make_session() compartido (que SI puede ir por Burp, para los verificadores genericos).
     import inspect
     from binoracle.workflows import drupalverify, joomlaverify
-    assert "_make_session()" in inspect.getsource(drupalverify._drupal_login)
-    assert "_make_session()" in inspect.getsource(joomlaverify._joomla_login)
-    assert "requests.Session()" not in inspect.getsource(drupalverify._drupal_login)
-    assert "requests.Session()" not in inspect.getsource(joomlaverify._joomla_login)
+    assert "s = requests.Session()" in inspect.getsource(drupalverify._drupal_login)
+    assert "s = requests.Session()" in inspect.getsource(joomlaverify._joomla_login)
+    assert "s = _make_session()" not in inspect.getsource(drupalverify._drupal_login)
+    assert "s = _make_session()" not in inspect.getsource(joomlaverify._joomla_login)
 
 
 def test_payload_kb_load_command_injection_separators_pure_only():
@@ -6636,10 +6669,12 @@ def test_wp_login_reports_real_exception_via_on_step(monkeypatch):
     import binoracle.workflows.wpverify as wpverify
 
     class _BoomSession:
+        cookies = []
         def post(self, *a, **kw):
             raise ConnectionError("conexion rechazada (prueba)")
 
-    monkeypatch.setattr(wpverify, "_make_session", lambda: _BoomSession())
+    import requests as _requests_mod
+    monkeypatch.setattr(_requests_mod, "Session", lambda: _BoomSession())
     messages = []
     sess = wpverify._wp_login("http://lab.invalid", "user", "pass", on_step=messages.append)
     assert sess is None
@@ -6659,7 +6694,8 @@ def test_wp_login_reports_missing_cookie_via_on_step(monkeypatch):
         def post(self, *a, **kw):
             return _FakeResp()
 
-    monkeypatch.setattr(wpverify, "_make_session", lambda: _NoCookieSession())
+    import requests as _requests_mod
+    monkeypatch.setattr(_requests_mod, "Session", lambda: _NoCookieSession())
     messages = []
     sess = wpverify._wp_login("http://lab.invalid", "user", "wrongpass", on_step=messages.append)
     assert sess is None

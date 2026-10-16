@@ -2468,8 +2468,8 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
         out += [f"- {b}" for b in inv.blockers]
     if inv.developed_script:
         if inv.poc_kind == "http":
-            title = "PoC desarrollado (HTTP / requests)" if es else "Developed PoC (HTTP / requests)"
-            fence = "python"
+            title = "PoC desarrollado (HTTP / curl)" if es else "Developed PoC (HTTP / curl)"
+            fence = "bash"
         elif inv.poc_kind == "html":
             title = "PoC desarrollado (CSRF, pagina HTML)" if es else "Developed PoC (CSRF, HTML page)"
             fence = "html"

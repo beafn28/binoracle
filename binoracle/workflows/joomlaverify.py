@@ -44,8 +44,7 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _attack_lab_host,
-                       _make_session, _pick_param,
+from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
                        _token, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
 
 _MYSQL_IMAGE = "mysql:8.0"           # Joomla 5 exige >=8.0.13 -- confirmado en vivo, 5.7 no vale
@@ -209,8 +208,13 @@ def _joomla_login(base_url: str, user: str, password: str, timeout: float = 15.0
     """Login real por el formulario de /index.php?option=com_users&view=login (no un shortcut de
     CLI): Joomla exige un campo anti-CSRF cuyo NOMBRE (no valor, siempre '1') es un hash de 32
     caracteres hex unico por sesion -- confirmado en vivo. La cookie 'joomla_user_state=logged_in'
-    es la señal de exito (mas limpia que buscar texto en la pagina)."""
-    s = _make_session()
+    es la señal de exito (mas limpia que buscar texto en la pagina).
+
+    requests.Session() DIRECTAMENTE, nunca _make_session() -- este login es parte del
+    laboratorio efimero, que nunca debe ir por Burp aunque este configurado (ver _lab_host() en
+    wpverify.py)."""
+    import requests
+    s = requests.Session()
     try:
         r0 = s.get(f"{base_url}/index.php?option=com_users&view=login", timeout=timeout,
                   allow_redirects=True)
@@ -292,7 +296,7 @@ def _bootstrap_joomla_lab(lab: "_Lab", ext_source_dir: str, slug: str, step,
         res.detail = "Joomla no respondio a tiempo"
         res.logs.append("docker logs (joomla):\n" + lab.logs_tail(lab.joomla))
         return None
-    base_url = f"http://{_attack_lab_host()}:{port}"
+    base_url = f"http://{_lab_host()}:{port}"
     step(f"Joomla listo en {base_url}; leyendo el ID real del admin (no es fijo en Joomla, a "
          f"diferencia de WordPress/Drupal)...")
     admin_id = lab.mysql_query(f"SELECT id FROM joom_users WHERE username='{admin_user}';")
