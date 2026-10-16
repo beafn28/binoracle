@@ -4124,7 +4124,8 @@ def test_investigate_cve_vuln_class_hint_triggers_web_path_without_nvd_or_llm(mo
     from binoracle.workflows.cve_agent import investigate_cve
     from binoracle.workflows import websource
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(note="red no disponible en el test")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
 
@@ -4296,7 +4297,8 @@ def test_cve_agent_dynamic_verify_gate_accepts_local_zip_not_only_wordpress_plug
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, wpverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
                                            local_path="/tmp/fake", plugin_dir="DiviFormBuilder")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -4327,7 +4329,8 @@ def test_cve_agent_dynamic_verify_gate_picks_login_as_when_only_id_param(monkeyp
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, wpverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
                                            local_path="/tmp/fake", plugin_dir="LoginAsUsers")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -4377,7 +4380,8 @@ def test_cve_agent_refines_endpoint_from_real_source_when_hypothesis_wrong(monke
         "\t}\n"
     )
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="local-zip", source=target,
                                            local_path=str(tmp_path),
                                            plugin_dir="frontend-login-and-registration-blocks")
@@ -4492,12 +4496,12 @@ def test_websource_fetch_source_tries_both_cms_when_ambiguous(monkeypatch):
     from binoracle.workflows import websource as ws
     calls = []
 
-    def fake_wp(target, version="", on_step=None, timeout=60.0):
+    def fake_wp(target, version="", on_step=None, timeout=60.0, exclusive_upper_bound=False):
         calls.append(("wp", target))
         return ws.SourceFetchResult(kind="wordpress-plugin", source=target, ok=False,
                                     note="no encontrado en WordPress.org")
 
-    def fake_drupal(target, version="", on_step=None, timeout=60.0):
+    def fake_drupal(target, version="", on_step=None, timeout=60.0, exclusive_upper_bound=False):
         calls.append(("drupal", target))
         return ws.SourceFetchResult(kind="drupal-module", source=target, ok=True,
                                     local_path="/tmp/fake", plugin_dir=target)
@@ -5062,7 +5066,8 @@ def test_cve_agent_dispatches_generic_command_injection_for_unrecognized_source(
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5143,7 +5148,8 @@ def test_cve_agent_dispatches_generic_path_traversal_for_unrecognized_source(mon
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5171,7 +5177,8 @@ def test_cve_agent_dispatches_generic_ssrf_for_unrecognized_source(monkeypatch, 
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5227,7 +5234,8 @@ def test_cve_agent_dispatches_generic_sqli_for_unrecognized_source(monkeypatch, 
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5301,7 +5309,8 @@ def test_cve_agent_dispatches_generic_xxe_for_unrecognized_source(monkeypatch, t
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5329,7 +5338,8 @@ def test_cve_agent_dispatches_generic_open_redirect_for_unrecognized_source(monk
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5544,7 +5554,8 @@ def test_cve_agent_dispatches_generic_xss_for_unrecognized_source(monkeypatch, t
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -5572,7 +5583,8 @@ def test_cve_agent_dispatches_generic_ssti_for_unrecognized_source(monkeypatch, 
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
 
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         return websource.SourceFetchResult(ok=True, kind="git", source=target,
                                            local_path=str(tmp_path), plugin_dir="")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
@@ -6185,7 +6197,8 @@ def test_run_web_investigation_falls_back_to_guessed_slug_when_llm_gives_none(mo
     from binoracle.workflows import websource
 
     called = {}
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         called["source"] = target
         return websource.SourceFetchResult(ok=False, kind="wordpress-plugin", source=target,
                                            note="404 (slug de prueba, no existe de verdad)")
@@ -6395,7 +6408,8 @@ def test_run_web_investigation_cleans_version_before_fetching(monkeypatch, tmp_p
     from binoracle.workflows import websource
 
     called = {}
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         called["source"] = target
         called["version"] = version
         return websource.SourceFetchResult(ok=False, kind="wordpress-plugin", source=target,
@@ -6516,7 +6530,7 @@ def test_extract_wp_trac_plugin_slug_from_changeset_browser_and_log_urls():
 def test_fetch_source_resolves_wp_trac_changeset_url_to_slug(monkeypatch):
     from binoracle.workflows import websource
     called = {}
-    def fake_wp(slug, version="", dest_dir="", on_step=None, timeout=60.0):
+    def fake_wp(slug, version="", dest_dir="", on_step=None, timeout=60.0, exclusive_upper_bound=False):
         called["slug"] = slug
         called["version"] = version
         return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=slug)
@@ -6885,7 +6899,7 @@ def test_bootstrap_lab_installs_companion_plugins_before_target_plugin(monkeypat
 def test_fetch_source_resolves_wp_org_page_url_to_slug(monkeypatch):
     from binoracle.workflows import websource
     called = {}
-    def fake_wp(slug, version="", dest_dir="", on_step=None, timeout=60.0):
+    def fake_wp(slug, version="", dest_dir="", on_step=None, timeout=60.0, exclusive_upper_bound=False):
         called["slug"] = slug
         called["version"] = version
         return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=slug)
@@ -6957,6 +6971,94 @@ def test_clean_affected_version_handles_dashless_lt_and_v_prefix():
     assert _clean_affected_version("V1.7.0") == "1.7.0"
     assert _clean_affected_version("before v1.7.0") == "1.7.0"
     assert _clean_affected_version("<v1.7.0") == "1.7.0"
+
+
+def test_affected_version_is_exclusive_distinguishes_before_from_through():
+    # bug real confirmado en vivo, CVE-2024-3552: 'affected_version': '<1.7.0' es un limite
+    # EXCLUSIVO (1.7.0 ya esta parcheada, la vulnerable es la ultima publicada ANTES de esa) --
+    # pero _clean_affected_version solo devuelve el numero limpio, sin decir si el limite
+    # original era exclusivo o inclusivo. Sin saberlo, se descargaba 1.7.0 tal cual (el fix) en
+    # vez de la version realmente vulnerable, y la verificacion dinamica nunca podia confirmar
+    # nada contra codigo ya arreglado.
+    from binoracle.workflows.cve_agent import _affected_version_is_exclusive
+    assert _affected_version_is_exclusive("<1.7.0") is True
+    assert _affected_version_is_exclusive("before 1.7.0") is True
+    assert _affected_version_is_exclusive("prior to 1.7.0") is True
+    # inclusivos: la version citada SI es la vulnerable, se descarga tal cual
+    assert _affected_version_is_exclusive("<=1.7.0") is False
+    assert _affected_version_is_exclusive("through 1.7.0") is False
+    assert _affected_version_is_exclusive("up to and including 1.7.0") is False
+    assert _affected_version_is_exclusive("1.0.0") is False
+    assert _affected_version_is_exclusive("") is False
+
+
+def test_version_sort_key_orders_numerically_not_lexicographically():
+    from binoracle.workflows.websource import _version_sort_key
+    versions = ["1.6.9", "1.7.0", "1.10.0", "1.9.0", "1.6.8"]
+    assert sorted(versions, key=_version_sort_key) == [
+        "1.6.8", "1.6.9", "1.7.0", "1.9.0", "1.10.0"]
+
+
+def test_fetch_wordpress_plugin_picks_prior_version_for_exclusive_bound(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-3552: con exclusive_upper_bound=True y version
+    # '1.7.0' (el limite citado, YA parcheado), se debe descargar la ultima version REAL
+    # publicada antes de esa ('1.6.9' aqui), no 1.7.0 tal cual.
+    import json as _json
+    import binoracle.workflows.websource as ws
+
+    class _FakeResp:
+        def __init__(self, data):
+            self._data = data
+        def read(self, n):
+            return _json.dumps(self._data).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(ws, "_urlopen", lambda url, timeout=60.0: _FakeResp({
+        "versions": {"1.6.8": "http://x/1.6.8.zip", "1.6.9": "http://x/1.6.9.zip",
+                    "1.7.0": "http://x/1.7.0.zip", "trunk": "http://x/trunk.zip"},
+        "download_link": "http://x/latest.zip", "version": "1.7.0"}))
+
+    captured = {}
+    def fake_download(slug, url, resolved_version, dest_dir, step, timeout, res):
+        captured["url"] = url
+        res.ok = True
+        res.resolved_version = resolved_version
+        return res
+    monkeypatch.setattr(ws, "_download_wp_zip", fake_download)
+
+    r = ws.fetch_wordpress_plugin("web-directory-free", version="1.7.0",
+                                  exclusive_upper_bound=True)
+    assert r.resolved_version == "1.6.9"
+    assert captured["url"] == "http://x/1.6.9.zip"
+
+
+def test_fetch_wordpress_plugin_uses_bound_itself_when_no_prior_version_exists(monkeypatch):
+    import json as _json
+    import binoracle.workflows.websource as ws
+
+    class _FakeResp:
+        def __init__(self, data):
+            self._data = data
+        def read(self, n):
+            return _json.dumps(self._data).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(ws, "_urlopen", lambda url, timeout=60.0: _FakeResp({
+        "versions": {"1.0.0": "http://x/1.0.0.zip"},
+        "download_link": "http://x/latest.zip", "version": "1.0.0"}))
+    monkeypatch.setattr(ws, "_download_wp_zip", lambda slug, url, resolved_version, dest_dir,
+                        step, timeout, res: (res.__setattr__("ok", True),
+                                             res.__setattr__("resolved_version", resolved_version),
+                                             res)[-1])
+
+    r = ws.fetch_wordpress_plugin("some-plugin", version="1.0.0", exclusive_upper_bound=True)
+    assert r.resolved_version == "1.0.0"   # no hay version anterior -- se usa el limite igual
 
 
 def test_investigate_cves_batch_runs_concurrently_and_isolates_errors(monkeypatch):
@@ -7302,7 +7404,8 @@ def test_run_web_investigation_falls_back_to_guessed_slug_when_llm_source_url_fa
     from binoracle.workflows import websource
 
     calls = []
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         calls.append(target)
         if target == "web-directory-free":
             return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
@@ -7335,7 +7438,8 @@ def test_run_web_investigation_does_not_retry_when_guess_matches_given_source(mo
     from binoracle.workflows import websource
 
     calls = []
-    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint=""):
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
         calls.append(target)
         return websource.SourceFetchResult(ok=False, note="404")
     monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)

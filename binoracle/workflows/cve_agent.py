@@ -1046,6 +1046,20 @@ def _clean_affected_version(raw: str) -> str:
     return ""
 
 
+_EXCLUSIVE_BOUND_RE = re.compile(r"\bbefore\b|\bprior\s+to\b|<(?!=)", re.IGNORECASE)
+
+
+def _affected_version_is_exclusive(raw: str) -> bool:
+    """True si la frase ORIGINAL de version (antes de limpiar) usa un limite EXCLUSIVO -- 'before
+    X'/'prior to X'/'<X' (NVD: versionEndExcluding, X ya esta PARCHEADA) -- en vez de uno
+    INCLUSIVO -- 'through X'/'up to (and including) X'/'<=X'/un rango 'X - Y' (NVD:
+    versionEndIncluding, X SI es la version vulnerable). Confirmado en vivo, CVE-2024-3552:
+    'affected_version': '<1.7.0' es EXCLUSIVO -- descargar 1.7.0 tal cual trae la version YA
+    ARREGLADA, no la vulnerable; hay que pedir la ultima version PUBLICADA antes de esa (ver
+    exclusive_upper_bound en fetch_source/fetch_wordpress_plugin)."""
+    return bool(raw) and bool(_EXCLUSIVE_BOUND_RE.search(raw))
+
+
 def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                            budget_s: float = 300.0) -> None:
     """Rama WEB/APP de investigate_cve: descarga el codigo real si se puede, fundamenta la hipotesis
@@ -1073,6 +1087,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     source = (notes.get("source_url") or "").strip()
     version_raw = (notes.get("affected_version") or "").strip()
     version = _clean_affected_version(version_raw)
+    version_exclusive = _affected_version_is_exclusive(version_raw)
     if version_raw and not version:
         step((f"'{version_raw}' no tiene pinta de version real (parece texto libre de la "
              f"descripcion) y no se pudo extraer ninguna -- se sigue sin version concreta" )
@@ -1099,7 +1114,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         step(f"intentando obtener el codigo real ({source})..." if es else
              f"attempting to fetch the real source ({source})...")
         fr = fetch_source(source, version=version, on_step=step,
-                         cms_hint=(notes.get("cms") or "").strip().lower())
+                         cms_hint=(notes.get("cms") or "").strip().lower(),
+                         exclusive_upper_bound=version_exclusive)
         # confirmado en vivo (CVE-2025-9501, CVE-2024-3552): el LLM a veces da un source_url que
         # NO es ningun slug real -- una URL de GitHub inventada, o el mirror de otra org que no
         # es el repo oficial del plugin -- y fetch_source() falla descargandolo. Antes de esto,
@@ -1114,7 +1130,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      (f"'{source}' could not be fetched ({fr.note}) -- trying '{guess}' as a "
                      f"WordPress.org slug (extracted from the advisory text itself)..."))
                 fr_retry = fetch_source(guess, version=version, on_step=step,
-                                        cms_hint=(notes.get("cms") or "").strip().lower())
+                                        cms_hint=(notes.get("cms") or "").strip().lower(),
+                                        exclusive_upper_bound=version_exclusive)
                 if fr_retry.ok:
                     fr = fr_retry
                     source = guess

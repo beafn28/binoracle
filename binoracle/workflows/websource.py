@@ -110,6 +110,18 @@ def _looks_like_version(v: str) -> bool:
     return bool(v) and bool(_VERSION_RE.match(v.strip()))
 
 
+def _version_sort_key(v: str):
+    """Clave de orden para comparar versiones '1.6.9' < '1.7.0' numericamente (no lexicografico:
+    '1.10.0' lexicografico queda ANTES de '1.9.0', que es al reves de lo real) -- usada para
+    encontrar la ultima version publicada ANTES de un limite exclusivo (ver
+    fetch_wordpress_plugin). Deliberadamente simple: cada segmento numerico se compara como int,
+    cualquier sufijo no numerico ('beta1') se compara como texto detras de todos los numeros."""
+    key = []
+    for part in re.split(r"[.\-]", v or ""):
+        key.append((0, int(part)) if part.isdigit() else (1, part))
+    return tuple(key)
+
+
 @dataclass
 class SourceFetchResult:
     ok: bool = False
@@ -201,9 +213,17 @@ def detect_module_folder(local_path: str, hint: str = "") -> str:
 
 def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
                            on_step: Optional[Callable[[str], None]] = None,
-                           timeout: float = 60.0) -> SourceFetchResult:
+                           timeout: float = 60.0,
+                           exclusive_upper_bound: bool = False) -> SourceFetchResult:
     """Descarga el .zip OFICIAL de un plugin de WordPress.org (el mismo artefacto que `wp plugin
-    install` traeria), a una version concreta si se da, o a la ultima estable si no. No lo ejecuta."""
+    install` traeria), a una version concreta si se da, o a la ultima estable si no. No lo ejecuta.
+
+    `exclusive_upper_bound`: True si `version` es un limite EXCLUSIVO ('antes de X', X ya
+    parcheada -- ver _affected_version_is_exclusive en cve_agent.py). En ese caso, en vez de
+    descargar `version` tal cual (que seria la version YA ARREGLADA, inservible para verificar
+    nada), se busca -- en la lista REAL de versiones publicadas que ya devuelve la API de
+    WordPress.org -- la mas reciente publicada ANTES de ese limite, y se descarga esa. Confirmado
+    en vivo, CVE-2024-3552: 'before 1.7.0' descargaba 1.7.0 (el fix) hasta este cambio."""
     step = on_step or (lambda _m: None)
     res = SourceFetchResult(kind="wordpress-plugin", source=slug)
     slug = (slug or "").strip().lower()
@@ -253,6 +273,20 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
         res.note = f"plugin '{slug}' no encontrado en WordPress.org (sin detalle adicional)"
         return res
     versions = info.get("versions") or {}
+    if version and exclusive_upper_bound and version in versions:
+        older = [v for v in versions if v.lower() != "trunk" and _looks_like_version(v)
+                and _version_sort_key(v) < _version_sort_key(version)]
+        if older:
+            older.sort(key=_version_sort_key)
+            picked = older[-1]
+            step(f"'{version}' es un limite EXCLUSIVO ('antes de', no la incluye) -- esa version "
+                 f"ya esta parcheada; descargando la ultima version REALMENTE publicada antes de "
+                 f"esa, '{picked}', en vez de la version del fix...")
+            version = picked
+        else:
+            step(f"'{version}' es un limite exclusivo pero no se encontro ninguna version "
+                 f"publicada anterior en WordPress.org -- se prueba con esa igualmente (puede "
+                 f"estar ya parcheada)")
     if version and version in versions:
         url = versions[version]
         res.resolved_version = version
@@ -323,11 +357,17 @@ def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, 
 
 def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
                         on_step: Optional[Callable[[str], None]] = None,
-                        timeout: float = 60.0) -> SourceFetchResult:
+                        timeout: float = 60.0, exclusive_upper_bound: bool = False
+                        ) -> SourceFetchResult:
     """Descarga el .tar.gz OFICIAL de un modulo de Drupal.org, usando la misma API de
     actualizaciones que el propio 'Update Manager' de Drupal consulta (XML, no JSON como
     WordPress.org). Sin libreria de terceros: XML con xml.etree.ElementTree, que ya viene con
-    Python. No ejecuta nada del modulo."""
+    Python. No ejecuta nada del modulo.
+
+    `exclusive_upper_bound` se acepta por compatibilidad con fetch_source()/
+    fetch_wordpress_plugin() (que SI lo usa, ver ahi) pero todavia no esta implementado aqui --
+    no se ha confirmado en vivo el mismo problema (version '<X' descargando la parcheada) con
+    un modulo de Drupal, asi que no se adivina el comportamiento sin evidencia real."""
     step = on_step or (lambda _m: None)
     res = SourceFetchResult(kind="drupal-module", source=slug)
     slug = (slug or "").strip().lower()
@@ -625,7 +665,8 @@ def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str]
 
 
 def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str], None]] = None,
-                 timeout: float = 90.0, cms_hint: str = "") -> SourceFetchResult:
+                 timeout: float = 90.0, cms_hint: str = "",
+                 exclusive_upper_bound: bool = False) -> SourceFetchResult:
     """Despacha por la forma de `target`: .zip ya en disco -> extrae; URL http(s) directa a un .zip
     -> descarga (ANTES que la comprobacion de git: una URL de github.com/.../archive/x.zip es un
     .zip, no un repo a clonar, aunque el host coincida); URL de git -> clone; si no, se trata como
@@ -638,7 +679,14 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     hint, se usa una pista de forma (guion bajo -> probablemente Drupal, ver
     looks_like_drupal_slug) para decidir cual probar PRIMERO, pero si falla se intenta el otro
     directorio tambien antes de rendirse -- mas lento en el caso ambiguo, pero nunca falla por
-    haber adivinado el CMS equivocado cuando el nombre si existe en el otro."""
+    haber adivinado el CMS equivocado cuando el nombre si existe en el otro.
+
+    `exclusive_upper_bound`: True cuando `version` viene de una frase de rango EXCLUSIVA ('before
+    X'/'prior to X'/'<X', ver _affected_version_is_exclusive en cve_agent.py) -- esa version YA
+    esta parcheada, asi que fetch_wordpress_plugin() busca la ultima version PUBLICADA antes de
+    esa en vez de descargar la propia version (que no es la vulnerable). Confirmado en vivo,
+    CVE-2024-3552: '<1.7.0' descargaba 1.7.0 tal cual -- la version del FIX, no la vulnerable --
+    y por eso la inyeccion SQL nunca se podia confirmar contra ese codigo."""
     target = (target or "").strip()
     cms_hint = (cms_hint or "").strip().lower()
     if not target:
@@ -667,9 +715,11 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
                 target, cms_hint = drupal_page_slug, "drupal"
 
     if cms_hint == "drupal":
-        return fetch_drupal_module(target, version=version, on_step=on_step, timeout=timeout)
+        return fetch_drupal_module(target, version=version, on_step=on_step, timeout=timeout,
+                                   exclusive_upper_bound=exclusive_upper_bound)
     if cms_hint == "wordpress":
-        return fetch_wordpress_plugin(target, version=version, on_step=on_step, timeout=timeout)
+        return fetch_wordpress_plugin(target, version=version, on_step=on_step, timeout=timeout,
+                                      exclusive_upper_bound=exclusive_upper_bound)
 
     is_wp_shaped = looks_like_wp_slug(target)
     is_drupal_shaped = looks_like_drupal_slug(target)
@@ -684,10 +734,12 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     # (p.ej. 'webform') tiene forma valida en ambos y no hay como saberlo sin probar.
     first, second = ((fetch_drupal_module, fetch_wordpress_plugin) if is_drupal_shaped
                     else (fetch_wordpress_plugin, fetch_drupal_module))
-    r1 = first(target, version=version, on_step=on_step, timeout=timeout)
+    r1 = first(target, version=version, on_step=on_step, timeout=timeout,
+              exclusive_upper_bound=exclusive_upper_bound)
     if r1.ok:
         return r1
-    r2 = second(target, version=version, on_step=on_step, timeout=timeout)
+    r2 = second(target, version=version, on_step=on_step, timeout=timeout,
+               exclusive_upper_bound=exclusive_upper_bound)
     if r2.ok:
         return r2
     # ninguno resolvio: se devuelve el primer intento (mismo 'note' que antes de este cambio para
