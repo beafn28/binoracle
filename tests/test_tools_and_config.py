@@ -5476,6 +5476,80 @@ def test_cve_agent_command_injection_retries_with_llm_suggestion(monkeypatch, tm
     assert "sugerido por el LLM" in inv.verified_detail
 
 
+def test_cve_agent_generic_command_injection_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el cuerpo muestra un 405 method not allowed",
+                "endpoint_alternativo": "/api/run",
+            })
+
+    calls = []
+    def fake_cmdi(source_dir, endpoint, http_method, parameters, cmd_param_hint="",
+                 on_step=None, budget_s=900.0):
+        calls.append(endpoint)
+        if endpoint == "/exec":
+            wr = WpVerifyResult(ok=True, available=True, verified=False, detail="no se confirmo")
+            wr.evidence = {"respuesta_cuerpo_recorte": "<html>405 method not allowed</html>"}
+            return wr
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="COMMAND INJECTION confirmado tras el reintento (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_command_injection", fake_cmdi)
+
+    inv = Investigation(cve_id="CVE-2099-00018")
+    inv.vuln_class = "command-injection"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/exec", "http_method": "POST", "parameters": {"cmd": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/exec", "/api/run"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
+def test_genericverify_command_injection_surfaces_real_response_body_on_negative(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+        def read_file(self, container, path):
+            return ""
+
+    def fake_http_request(method, url, **kw):
+        class _R:
+            status_code = 404
+            text = "<html>not found</html>"
+        return _R()
+
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    import time as _time_mod
+    monkeypatch.setattr(_time_mod, "sleep", lambda *a: None)
+    monkeypatch.setattr(gv, "_http_request", fake_http_request)
+
+    res = gv.verify_generic_command_injection(str(tmp_path), "/run", "GET", {"cmd": "x"},
+                                               cmd_param_hint="cmd")
+    assert res.verified is False
+    assert "not found" in res.evidence.get("respuesta_cuerpo_recorte", "")
+
+
 def test_cve_agent_generic_xxe_retries_with_llm_suggestion(monkeypatch, tmp_path):
     import json as _json
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation

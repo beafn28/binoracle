@@ -1833,6 +1833,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_command_injection(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_cmdi_generic(ep, pr):
+                    return verify_generic_command_injection(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        cmd_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_cmdi_generic, wr, notes.get("endpoint"), cmd_p,
+                    technique_label="command injection generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi en Drupal (quinta clase de Drupal, "poco a
             # poco" -- ver drupalverify.py).

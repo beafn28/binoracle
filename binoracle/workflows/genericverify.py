@@ -430,6 +430,7 @@ def verify_generic_command_injection(
 
         tried = []
         found = False
+        first_resp_captured = False
         for pname in candidate_params:
             if found:
                 break
@@ -437,12 +438,18 @@ def verify_generic_command_injection(
                 payload = dict(parameters) if isinstance(parameters, dict) else {}
                 payload[pname] = form
                 try:
-                    _http_request(m, base_url + endpoint, timeout=15,
+                    resp = _http_request(m, base_url + endpoint, timeout=15,
                                      data=payload if m != "GET" else None,
                                      params=payload if m == "GET" else None)
                 except Exception as e:
                     tried.append({"parametro": pname, "error": str(e)})
                     continue
+                if not first_resp_captured:
+                    # recorte del primer intento -- la evidencia que lee el bucle de aprendizaje-
+                    # y-reintento del LLM para decidir si el endpoint/parametro probados son
+                    # correctos (p.ej. un 404 de la propia app apuntaria a lo contrario).
+                    res.evidence["respuesta_cuerpo_recorte"] = (getattr(resp, "text", "") or "")[:500]
+                    first_resp_captured = True
                 time.sleep(1)
                 content = lab.read_file(container, canary_path)
                 present = secret in content
