@@ -5484,6 +5484,124 @@ def test_cve_agent_escalates_path_traversal_to_lfi_rce_when_available(monkeypatc
     assert "LFI-A-RCE" in inv.verified_detail
 
 
+def test_llm_suggest_retry_from_evidence_returns_none_without_llm():
+    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.wpverify import WpVerifyResult
+    wr = WpVerifyResult(detail="no se confirmo")
+    assert _llm_suggest_retry_from_evidence(None, wr) is None
+
+
+def test_llm_suggest_retry_from_evidence_respects_no_suggestion():
+    # el propio prompt le pide al LLM decir honestamente cuando NO hay ninguna pista util en la
+    # evidencia real -- _llm_suggest_retry_from_evidence debe respetar eso devolviendo None, no
+    # forzar un reintento a ciegas.
+    import json as _json
+    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({"tiene_sugerencia": False,
+                                "razon": "la respuesta de control parece normal, sin pistas"})
+
+    wr = WpVerifyResult(detail="no se confirmo")
+    wr.evidence = {"endpoint": "/", "sqli_param": "id",
+                  "respuesta_control_recorte": "<html>pagina normal</html>"}
+    assert _llm_suggest_retry_from_evidence(_FakeLLM(), wr) is None
+
+
+def test_llm_suggest_retry_from_evidence_returns_concrete_suggestion():
+    import json as _json
+    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "la respuesta de control es 'Page not found', el endpoint no existe",
+                "endpoint_alternativo": "/?page_id=6", "parametro_alternativo": "w2dc_level_filter",
+            })
+
+    wr = WpVerifyResult(detail="no se confirmo")
+    wr.evidence = {"endpoint": "/", "sqli_param": "id",
+                  "respuesta_control_recorte": "<title>Page not found</title>"}
+    suggestion = _llm_suggest_retry_from_evidence(_FakeLLM(), wr)
+    assert suggestion["endpoint_alternativo"] == "/?page_id=6"
+    assert suggestion["parametro_alternativo"] == "w2dc_level_filter"
+
+
+def test_llm_suggest_retry_from_evidence_ignores_malformed_json():
+    from binoracle.workflows.cve_agent import _llm_suggest_retry_from_evidence
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return "no es json valido"
+
+    wr = WpVerifyResult(detail="no se confirmo")
+    wr.evidence = {}
+    assert _llm_suggest_retry_from_evidence(_FakeLLM(), wr) is None
+
+
+def test_cve_agent_sqli_retries_once_with_llm_suggestion_from_real_evidence(monkeypatch, tmp_path):
+    # el punto central pedido explicitamente: que el LLM razone sobre la evidencia REAL (el
+    # cuerpo de la respuesta de control) y, si ve una pista concreta, se reintente una vez con un
+    # endpoint/parametro distinto -- automatizando el mismo paso de aprendizaje-y-error que se
+    # hizo a mano en vivo con CVE-2024-3552.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="web-directory-free")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "Page not found en la respuesta de control",
+                "endpoint_alternativo": "/?page_id=6",
+                "parametro_alternativo": "w2dc_level_filter",
+            })
+
+    calls = []
+    def fake_sqli(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(endpoint)
+        if endpoint == "/":
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"endpoint": "/", "sqli_param": kw.get("sqli_param_hint"),
+                          "respuesta_control_recorte": "<title>Page not found</title>"}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="SQLI confirmada tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_sqli", fake_sqli)
+
+    inv = Investigation(cve_id="CVE-2099-00012")
+    inv.vuln_class = "sqli"
+    inv.llm_notes = {"source_url": "web-directory-free", "endpoint": "/", "http_method": "GET",
+                     "parameters": {"w2dc_level_filter": "1"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/", "/?page_id=6"]    # el primer intento, y el reintento sugerido
+    assert inv.verified is True
+    assert "reintento sugerido por el LLM" in inv.verified_detail
+    assert "SQLI confirmada tras el reintento" in inv.verified_detail
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)

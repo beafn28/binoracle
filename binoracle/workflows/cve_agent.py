@@ -249,6 +249,55 @@ _REFINE_SYS = (
 )
 
 
+_SQLI_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Una "
+    "inyeccion SQL contra un laboratorio WordPress REAL (plugin instalado, MySQL real) no se "
+    "confirmo (ni error-based, ni UNION, ni boolean-blind, ni time-based). Te doy la evidencia REAL "
+    "observada: el endpoint/parametro probados, y un recorte del cuerpo REAL de la respuesta de "
+    "control (sin inyeccion). Lee esa evidencia como lo haria un analista humano revisando un "
+    "negativo: si el cuerpo de la respuesta muestra una pista CONCRETA de que el endpoint o el "
+    "parametro probados no son los correctos (p.ej. 'Page not found', un error PHP especifico, "
+    "contenido que no tiene nada que ver con el plugin, una redireccion a login...), sugiere UN "
+    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
+    "da ninguna pista util (la respuesta parece normal/esperada y aun asi no se confirma), dilo "
+    "honestamente -- no inventes un cambio sin base en la evidencia real que te doy. Responde SOLO "
+    "con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista concreta "
+    "de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si tiene_sugerencia), "
+    "\"parametro_alternativo\": \"...\" (opcional)}"
+)
+
+
+def _llm_suggest_retry_from_evidence(llm, wr: "WpVerifyResult") -> Optional[dict]:
+    """Automatiza, con el LLM, el mismo paso que un analista humano hace a mano tras un negativo:
+    leer el cuerpo REAL de la respuesta y la evidencia observada, y decidir si hay una pista
+    concreta que apunte a un endpoint/parametro distinto que valga la pena reintentar -- en vez de
+    rendirse en el primer intento. Nunca inventa una sugerencia sin base: si la evidencia no da
+    pistas, el propio prompt le pide decirlo (`tiene_sugerencia: false`), y aqui se respeta eso
+    devolviendo None en vez de forzar un reintento a ciegas. Devuelve None tambien si no hay LLM
+    disponible, o si la respuesta no es JSON valido -- nunca lanza, un fallo aqui solo significa
+    'sin sugerencia', no debe tirar abajo la investigacion."""
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return None
+    evidence = {
+        "endpoint_probado": wr.evidence.get("endpoint"),
+        "parametro_probado": wr.evidence.get("sqli_param"),
+        "detalle": wr.detail,
+        "respuesta_control_recorte": wr.evidence.get("respuesta_control_recorte"),
+    }
+    from ..llm.base import Message
+    prompt = f"Evidencia real observada:\n{json.dumps(evidence, ensure_ascii=False)[:3000]}"
+    try:
+        raw = llm.chat([Message("system", _SQLI_RETRY_SYS), Message("user", prompt)], json_mode=True)
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("tiene_sugerencia"):
+        return None
+    if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")):
+        return None
+    return data
+
+
 def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
     """True si `plugin_dir` dentro de `local_path` tiene pinta de modulo/tema de Drupal (un
     .info.yml con 'type: module|theme') en vez de un plugin de WordPress -- desambigua el caso
@@ -1670,6 +1719,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     setup_wp_options=notes.get("setup_options") or [],
                     companion_plugins=companion_plugins, shortcode_name=shortcode_name,
                     relationship_table=relationship_table)
+                # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
+                # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
+                # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
+                # igual que se hizo en vivo con CVE-2024-3552 -- y, solo si ve una pista concreta,
+                # se reintenta UNA vez con el endpoint/parametro que sugiera. Nunca un reintento a
+                # ciegas: _llm_suggest_retry_from_evidence ya exige una pista real o devuelve None.
+                if not wr.verified and wr.available:
+                    suggestion = _llm_suggest_retry_from_evidence(llm, wr)
+                    if suggestion:
+                        retry_endpoint = suggestion.get("endpoint_alternativo") or notes.get("endpoint")
+                        retry_param = suggestion.get("parametro_alternativo") or sqli_p
+                        step((f"el LLM reviso la evidencia real y sugiere reintentar con "
+                             f"endpoint={retry_endpoint!r} parametro={retry_param!r} -- razon: "
+                             f"{suggestion.get('razon')}") if es else
+                             (f"the LLM reviewed the real evidence and suggests retrying with "
+                             f"endpoint={retry_endpoint!r} parameter={retry_param!r} -- reason: "
+                             f"{suggestion.get('razon')}"))
+                        wr_retry = verify_wordpress_sqli(
+                            fr.local_path, plugin_dir, retry_endpoint,
+                            notes.get("http_method") or "GET", params,
+                            sqli_param_hint=retry_param or "", on_step=step, budget_s=budget_s,
+                            setup_wp_options=notes.get("setup_options") or [],
+                            companion_plugins=companion_plugins, shortcode_name=shortcode_name,
+                            relationship_table=relationship_table)
+                        wr_retry.detail = (f"[reintento sugerido por el LLM tras leer la "
+                                          f"evidencia real: {suggestion.get('razon')}] "
+                                          + wr_retry.detail)
+                        wr = wr_retry
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
