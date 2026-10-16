@@ -7281,6 +7281,82 @@ def test_verify_wordpress_path_traversal_follows_copy_then_serve_url(monkeypatch
     assert fake_sess.secret in res.evidence.get("respuesta_cuerpo_recorte", "")
 
 
+def test_verify_wordpress_path_traversal_surfaces_real_response_body_on_negative(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-50508: cuando ninguna de las 40 variantes confirma
+    # el secreto, el informe solo decia "no se confirmo", sin mas pistas -- forzando a bajar el
+    # codigo del plugin a mano para diagnosticar (resulto ser que el handler no valida NADA, asi
+    # que el negativo era casi con toda seguridad un problema de permisos del fichero canario,
+    # no del payload). Ahora el cuerpo real de la respuesta del servidor va en la evidencia de
+    # CADA intento, y un recorte del primero se cuela en el propio mensaje de bloqueo.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeLab:
+        def write_canary(self, path, secret):
+            return True
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"status":"error","message":"File is not moved. Please try again."}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=_FakeLab(), base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_path_traversal(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=pc_added_uploaded_image",
+        "POST", {"file[path]": "/etc/passwd"}, path_param_hint="file[path]")
+
+    assert res.verified is False
+    assert "File is not moved" in res.detail
+    assert all("respuesta_cuerpo_recorte" in t for t in res.evidence["intentos"])
+
+
+def test_verify_wordpress_path_traversal_falls_back_to_etc_passwd(monkeypatch):
+    # cuando el canario propio (en /tmp) no se confirma, se prueba tambien /etc/passwd literal --
+    # el objetivo EXACTO del PoC publico ya divulgado. Si ESO si se confirma, el traversal es
+    # real de todas formas; algo especifico del canario (no del endpoint) era el problema.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeLab:
+        def write_canary(self, path, secret):
+            return True
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = ""
+            r = _R()
+            payload = kw.get("data") or kw.get("params") or {}
+            if payload.get("file[path]") == "/etc/passwd":
+                r.text = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1::/usr/sbin:/usr/sbin/nologin\n"
+            return r
+
+    fake_boot = wpverify._LabSession(
+        lab=_FakeLab(), base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_path_traversal(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=pc_added_uploaded_image",
+        "POST", {"file[path]": "/etc/passwd"}, path_param_hint="file[path]")
+
+    assert res.verified is True
+    assert res.evidence.get("objetivo_ganador") == "/etc/passwd"
+    assert res.evidence.get("payload_ganador") == "/etc/passwd"
+    assert "root:x:0:0" in res.evidence.get("respuesta_cuerpo_recorte", "")
+    assert "etc/passwd" in res.detail
+    assert len(res.evidence.get("intentos_etc_passwd", [])) > 0
+
+
 def test_verify_wordpress_xxe_follows_copy_then_serve_url(monkeypatch):
     # mismo patron "copia-y-sirve" aplicado a XXE: si la respuesta no trae el secreto directo
     # pero es JSON con una 'url' que apunta a donde quedo copiado/servido el fichero, se sigue esa
