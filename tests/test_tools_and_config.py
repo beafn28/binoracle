@@ -5426,6 +5426,102 @@ def test_genericverify_path_traversal_surfaces_real_response_body_on_negative(mo
     assert res.evidence.get("respuesta_muestra_primer_intento") == '{"error":"not found"}'
 
 
+def test_cve_agent_command_injection_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    # pedido explicitamente: el bucle de aprendizaje-y-reintento tiene que llegar a TODOS los
+    # ataques y casos, no solo a los 3 primeros (SQLi, path-traversal WP, path-traversal
+    # generico) -- esto comprueba que ya cubre tambien command injection de WordPress.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="some-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el cuerpo muestra un 404 de la propia app",
+                "endpoint_alternativo": "/wp-admin/admin-ajax.php?action=run_tool",
+            })
+
+    calls = []
+    def fake_cmdi(plugin_source_dir, slug, endpoint, http_method, parameters,
+                  cmd_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None):
+        calls.append(endpoint)
+        if "run_tool" not in (endpoint or ""):
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"respuesta_cuerpo_recorte": "<html>404 not found</html>"}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="COMMAND INJECTION confirmado tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_command_injection", fake_cmdi)
+
+    inv = Investigation(cve_id="CVE-2099-00016")
+    inv.vuln_class = "command-injection"
+    inv.llm_notes = {"source_url": "some-plugin", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+                     "http_method": "GET", "parameters": {"cmd": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/wp-admin/admin-ajax.php?action=x",
+                     "/wp-admin/admin-ajax.php?action=run_tool"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
+def test_cve_agent_generic_xxe_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el cuerpo muestra un error de parseo XML distinto del esperado",
+                "endpoint_alternativo": "/api/v2/import",
+            })
+
+    calls = []
+    def fake_xxe(source_dir, endpoint, http_method, parameters, xml_param_hint="",
+                on_step=None, budget_s=900.0):
+        calls.append(endpoint)
+        if endpoint == "/import":
+            wr = WpVerifyResult(ok=True, available=True, verified=False, detail="no se confirmo")
+            wr.evidence = {"respuesta_cuerpo_recorte": "<error>bad xml</error>"}
+            return wr
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="XXE confirmado tras el reintento (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_xxe", fake_xxe)
+
+    inv = Investigation(cve_id="CVE-2099-00017")
+    inv.vuln_class = "xxe"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/import", "http_method": "POST", "parameters": {"xml": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/import", "/api/v2/import"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
 def test_cve_agent_generic_path_traversal_retries_with_llm_suggestion(monkeypatch, tmp_path):
     # pedido explicitamente: el bucle de aprendizaje-y-reintento no se queda en WordPress -- debe
     # funcionar igual para el verificador GENERICO (cualquier tecnologia con su propio Dockerfile).

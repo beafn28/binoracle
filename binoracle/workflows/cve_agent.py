@@ -324,9 +324,41 @@ _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {
     "endpoint_probado": "endpoint", "parametro_probado": "path_param",
     "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento"}
 
+# mapeo de evidencia compartido por cualquier verify_* que ya capture un recorte REAL del cuerpo
+# de la respuesta bajo la clave "respuesta_cuerpo_recorte" (command injection, SSTI, XXE, file
+# upload... -- ver wpverify.py/genericverify.py) pero que todavia no tiene su propio prompt a
+# medida -- se usa junto con _GENERIC_RETRY_SYS.
+_RESPUESTA_CUERPO_EVIDENCE_KEYS = {"respuesta_cuerpo_recorte": "respuesta_cuerpo_recorte"}
+
+
+# prompt generico (no ligado a una tecnica concreta) para tecnicas que todavia no tienen su
+# propio _X_RETRY_SYS a medida -- cubre cualquier verificador que ya capture un recorte REAL del
+# cuerpo de la respuesta en wr.evidence. Pedido explicitamente: el bucle de aprendizaje-y-reintento
+# tiene que llegar a TODOS los ataques y casos, no solo a los 3 primeros (SQLi, path-traversal
+# WordPress, path-traversal generico) -- escribir un prompt a medida por cada una de las ~36
+# funciones verify_* no escala, asi que este generico (parametrizado con el nombre de la tecnica
+# en el propio mensaje, no en el prompt de sistema) cubre el resto.
+_GENERIC_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Un "
+    "intento de explotar una vulnerabilidad real -- contra un laboratorio real (CMS instalado de "
+    "verdad con base de datos real, o un contenedor Docker construido desde el propio codigo del "
+    "CVE) -- no se confirmo. Te doy el nombre de la tecnica, el endpoint/parametro probados, y un "
+    "recorte del cuerpo REAL de la respuesta observada. Lee esa evidencia como lo haria un "
+    "analista humano revisando un negativo: si el cuerpo muestra una pista CONCRETA de que el "
+    "endpoint o el parametro probados no son los correctos (p.ej. un error de la propia app, un "
+    "404/'Page not found', una redireccion a login, contenido que no tiene nada que ver con el "
+    "objetivo esperado...), sugiere UN cambio concreto de endpoint y/o parametro que valga la "
+    "pena reintentar. Si la evidencia NO da ninguna pista util (la respuesta parece normal/"
+    "esperada y aun asi no se confirma), dilo honestamente -- NUNCA inventes un cambio sin base "
+    "en la evidencia real que te doy. Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, "
+    "\"razon\": \"una frase, citando la pista concreta de la evidencia\", "
+    "\"endpoint_alternativo\": \"...\" (opcional, solo si tiene_sugerencia), "
+    "\"parametro_alternativo\": \"...\" (opcional)}"
+)
+
 
 def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResult",
-                                     evidence_keys: dict) -> Optional[dict]:
+                                     evidence_keys: dict, technique_label: str = "") -> Optional[dict]:
     """Automatiza, con el LLM, el mismo paso que un analista humano hace a mano tras un negativo:
     leer el cuerpo REAL de la respuesta y la evidencia observada, y decidir si hay una pista
     concreta que apunte a un endpoint/parametro distinto que valga la pena reintentar -- en vez de
@@ -345,6 +377,8 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResul
         return None
     evidence = {label: wr.evidence.get(key) for label, key in evidence_keys.items()}
     evidence["detalle"] = wr.detail
+    if technique_label:
+        evidence["tecnica"] = technique_label
     from ..llm.base import Message
     prompt = f"Evidencia real observada:\n{json.dumps(evidence, ensure_ascii=False)[:3000]}"
     try:
@@ -357,6 +391,42 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResul
     if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")):
         return None
     return data
+
+
+def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_keys: dict,
+                             attempt_fn, wr: "WpVerifyResult", endpoint, param,
+                             technique_label: str = "", max_attempts: int = _RETRY_MAX_ATTEMPTS
+                             ) -> "WpVerifyResult":
+    """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
+    SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
+    que lea la evidencia real y, solo si ve una pista concreta, reintenta con el endpoint/
+    parametro sugerido. Acotado a `max_attempts` intentos en total (nunca infinito -- cada
+    intento levanta un laboratorio Docker real entero); para en cuanto se confirma o en cuanto
+    el LLM deja de ver ninguna pista nueva. `attempt_fn(endpoint, param) -> WpVerifyResult` es un
+    closure que el sitio de llamada define localmente, porque cada verify_* tiene su propia firma
+    (distintos nombres de kwargs, distinto numero de argumentos posicionales) -- aqui no se sabe
+    ni se necesita saber como es esa firma."""
+    retry_endpoint, retry_param = endpoint, param
+    for attempt_n in range(1, max_attempts):
+        if wr.verified or not wr.available:
+            break
+        suggestion = _llm_suggest_retry_from_evidence(llm, system_prompt, wr, evidence_keys,
+                                                      technique_label=technique_label)
+        if not suggestion:
+            break
+        retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
+        retry_param = suggestion.get("parametro_alternativo") or retry_param
+        step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/{max_attempts}) y "
+             f"sugiere reintentar con endpoint={retry_endpoint!r} parametro={retry_param!r} -- "
+             f"razon: {suggestion.get('razon')}") if es else
+             (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/{max_attempts}) "
+             f"and suggests retrying with endpoint={retry_endpoint!r} "
+             f"parameter={retry_param!r} -- reason: {suggestion.get('razon')}"))
+        wr_retry = attempt_fn(retry_endpoint, retry_param)
+        wr_retry.detail = (f"[reintento {attempt_n + 1}/{max_attempts} sugerido por el LLM tras "
+                          f"leer la evidencia real: {suggestion.get('razon')}] " + wr_retry.detail)
+        wr = wr_retry
+    return wr
 
 
 def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
@@ -1583,33 +1653,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # aprendizaje y reintento: mismo bucle acotado que el SQLi -- el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
                 # concreta en ESA evidencia, nunca a ciegas.
-                retry_endpoint_wppt, retry_param_wppt = notes.get("endpoint"), path_p
-                for attempt_n in range(1, _RETRY_MAX_ATTEMPTS):
-                    if wr.verified or not wr.available:
-                        break
-                    suggestion = _llm_suggest_retry_from_evidence(
-                        llm, _PATH_TRAVERSAL_RETRY_SYS, wr, _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS)
-                    if not suggestion:
-                        break
-                    retry_endpoint_wppt = suggestion.get("endpoint_alternativo") or retry_endpoint_wppt
-                    retry_param_wppt = suggestion.get("parametro_alternativo") or retry_param_wppt
-                    step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/"
-                         f"{_RETRY_MAX_ATTEMPTS}) y sugiere reintentar con endpoint="
-                         f"{retry_endpoint_wppt!r} parametro={retry_param_wppt!r} -- razon: "
-                         f"{suggestion.get('razon')}") if es else
-                         (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/"
-                         f"{_RETRY_MAX_ATTEMPTS}) and suggests retrying with endpoint="
-                         f"{retry_endpoint_wppt!r} parameter={retry_param_wppt!r} -- reason: "
-                         f"{suggestion.get('razon')}"))
-                    wr_retry = verify_wordpress_path_traversal(
-                        fr.local_path, plugin_dir, retry_endpoint_wppt,
-                        notes.get("http_method") or "GET", params,
-                        path_param_hint=retry_param_wppt or "", on_step=step, budget_s=budget_s,
+                def _attempt_wppt(ep, pr):
+                    return verify_wordpress_path_traversal(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        path_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins)
-                    wr_retry.detail = (f"[reintento {attempt_n + 1}/{_RETRY_MAX_ATTEMPTS} "
-                                      f"sugerido por el LLM tras leer la evidencia real: "
-                                      f"{suggestion.get('razon')}] " + wr_retry.detail)
-                    wr = wr_retry
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _PATH_TRAVERSAL_RETRY_SYS, _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS,
+                    _attempt_wppt, wr, notes.get("endpoint"), path_p,
+                    technique_label="path-traversal WordPress")
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -1651,33 +1703,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
                 # concreta en ESA evidencia, nunca a ciegas.
-                retry_endpoint_pt, retry_param_pt = notes.get("endpoint"), path_p
-                for attempt_n in range(1, _RETRY_MAX_ATTEMPTS):
-                    if wr.verified or not wr.available:
-                        break
-                    suggestion = _llm_suggest_retry_from_evidence(
-                        llm, _GENERIC_PATH_TRAVERSAL_RETRY_SYS, wr,
-                        _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS)
-                    if not suggestion:
-                        break
-                    retry_endpoint_pt = suggestion.get("endpoint_alternativo") or retry_endpoint_pt
-                    retry_param_pt = suggestion.get("parametro_alternativo") or retry_param_pt
-                    step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/"
-                         f"{_RETRY_MAX_ATTEMPTS}) y sugiere reintentar con endpoint="
-                         f"{retry_endpoint_pt!r} parametro={retry_param_pt!r} -- razon: "
-                         f"{suggestion.get('razon')}") if es else
-                         (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/"
-                         f"{_RETRY_MAX_ATTEMPTS}) and suggests retrying with endpoint="
-                         f"{retry_endpoint_pt!r} parameter={retry_param_pt!r} -- reason: "
-                         f"{suggestion.get('razon')}"))
-                    wr_retry = verify_generic_path_traversal(
-                        fr.local_path, retry_endpoint_pt, notes.get("http_method") or "GET",
-                        params, path_param_hint=retry_param_pt or "", on_step=step,
-                        budget_s=budget_s)
-                    wr_retry.detail = (f"[reintento {attempt_n + 1}/{_RETRY_MAX_ATTEMPTS} "
-                                      f"sugerido por el LLM tras leer la evidencia real: "
-                                      f"{suggestion.get('razon')}] " + wr_retry.detail)
-                    wr = wr_retry
+                def _attempt_pt(ep, pr):
+                    return verify_generic_path_traversal(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        path_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
+                    _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
+                    notes.get("endpoint"), path_p, technique_label="path-traversal generico")
                 _apply_wpverify_result(inv, wr, es, llm)
                 # escalada: path-traversal (clase de la hipotesis) puede en realidad ser LFI-a-
                 # RCE si el parametro INCLUYE el fichero como codigo en vez de solo servirlo --
@@ -1750,6 +1783,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_cmdi(ep, pr):
+                    return verify_wordpress_command_injection(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_cmdi, wr, notes.get("endpoint"), cmd_p,
+                    technique_label="command injection WordPress")
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -1849,35 +1891,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # _SQLI_RETRY_MAX_ATTEMPTS intentos en total, no infinito): cada iteracion para en
                 # cuanto se confirma, o en cuanto el LLM deja de ver ninguna pista nueva en la
                 # evidencia del ultimo intento -- nunca un reintento a ciegas sin base real.
-                retry_endpoint, retry_param = notes.get("endpoint"), sqli_p
-                for attempt_n in range(1, _SQLI_RETRY_MAX_ATTEMPTS):
-                    if wr.verified or not wr.available:
-                        break
-                    suggestion = _llm_suggest_retry_from_evidence(
-                        llm, _SQLI_RETRY_SYS, wr, _SQLI_RETRY_EVIDENCE_KEYS)
-                    if not suggestion:
-                        break
-                    retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
-                    retry_param = suggestion.get("parametro_alternativo") or retry_param
-                    step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/"
-                         f"{_SQLI_RETRY_MAX_ATTEMPTS}) y sugiere reintentar con "
-                         f"endpoint={retry_endpoint!r} parametro={retry_param!r} -- razon: "
-                         f"{suggestion.get('razon')}") if es else
-                         (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/"
-                         f"{_SQLI_RETRY_MAX_ATTEMPTS}) and suggests retrying with "
-                         f"endpoint={retry_endpoint!r} parameter={retry_param!r} -- reason: "
-                         f"{suggestion.get('razon')}"))
-                    wr_retry = verify_wordpress_sqli(
-                        fr.local_path, plugin_dir, retry_endpoint,
-                        notes.get("http_method") or "GET", params,
-                        sqli_param_hint=retry_param or "", on_step=step, budget_s=budget_s,
+                def _attempt_sqli(ep, pr):
+                    return verify_wordpress_sqli(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         setup_wp_options=notes.get("setup_options") or [],
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name,
                         relationship_table=relationship_table)
-                    wr_retry.detail = (f"[reintento {attempt_n + 1}/{_SQLI_RETRY_MAX_ATTEMPTS} "
-                                      f"sugerido por el LLM tras leer la evidencia real: "
-                                      f"{suggestion.get('razon')}] " + wr_retry.detail)
-                    wr = wr_retry
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
+                    wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
+                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -2060,6 +2084,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "GET", params,
                                            ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_ssti_wp(ep, pr):
+                    return verify_wordpress_ssti(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_ssti_wp, wr, notes.get("endpoint"), ssti_p,
+                    technique_label="SSTI WordPress")
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de SSTI (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2076,6 +2109,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_ssti(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_ssti_generic(ep, pr):
+                    return verify_generic_ssti(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        ssti_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_ssti_generic, wr, notes.get("endpoint"), ssti_p,
+                    technique_label="SSTI generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
@@ -2103,6 +2144,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_xxe_wp(ep, pr):
+                    return verify_wordpress_xxe(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        xml_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_xxe_wp, wr, notes.get("endpoint"), xml_p,
+                    technique_label="XXE WordPress")
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XXE (ver genericverify.py) para cuando el
             # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/compose.
@@ -2119,6 +2169,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_xxe(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_xxe_generic(ep, pr):
+                    return verify_generic_xxe(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        xml_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_xxe_generic, wr, notes.get("endpoint"), xml_p,
+                    technique_label="XXE generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
@@ -2189,6 +2247,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                   notes.get("http_method") or "POST", params,
                                                   file_param_hint=file_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_file_upload_wp(ep, pr):
+                    return verify_wordpress_file_upload(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
+                        file_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
+                    technique_label="file upload WordPress")
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
