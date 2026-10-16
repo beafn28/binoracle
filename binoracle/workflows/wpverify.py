@@ -883,16 +883,40 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 step(f"insertando una fila real en la tabla de relacion del plugin "
                      f"('{relationship_table['wpdb_property']}') para que el JOIN de verdad "
                      f"encuentre algo al atacar esta pagina...")
-                prefix_r = lab.wp_cli("eval", "echo $GLOBALS['wpdb']->prefix;", timeout=15)
-                prefix = (prefix_r.stdout or "").strip() or "wp_"
-                table = prefix + relationship_table["wpdb_property"]
                 col = relationship_table["join_column"]
-                r_ins = lab.wp_cli("db", "query",
-                                   f"INSERT INTO {table} ({col}) VALUES ({page_id})", timeout=15)
-                if r_ins.returncode != 0:
+                # construido y ejecutado ENTERO dentro de un unico `wp eval` -- $wpdb ya conoce
+                # el esquema real de la tabla (DESCRIBE) desde PHP, asi que rellenar cualquier
+                # columna NOT NULL sin valor por defecto que no conocemos de antemano (p.ej.
+                # 'level_id') se resuelve ahi mismo, sin tener que parsear la salida tabular de
+                # `wp db query` a mano desde el lado de Python -- mucho mas fragil y menos
+                # fiable que dejar que PHP lo haga con su propio tipo de datos real.
+                php = (
+                    "global $wpdb; $table = $wpdb->prefix . " + repr(relationship_table["wpdb_property"]) + "; "
+                    "$cols = $wpdb->get_results(\"DESCRIBE `$table`\"); "
+                    "$fields = array(); $values = array(); "
+                    f"$fields[] = '{col}'; $values[] = '{page_id}'; "
+                    "foreach ($cols as $c) { "
+                    f"  if ($c->Field === '{col}') continue; "
+                    "  if ($c->Null === 'NO' && $c->Default === null "
+                    "      && stripos($c->Extra, 'auto_increment') === false) { "
+                    "    $fields[] = $c->Field; "
+                    "    $values[] = preg_match('/int|decimal|float|double/i', $c->Type) ? '0' "
+                    "              : (preg_match('/date|time/i', $c->Type) "
+                    "                 ? \"'\" . current_time('mysql') . \"'\" : \"''\"); "
+                    "  } "
+                    "} "
+                    "$sql = \"INSERT INTO `$table` (\" . implode(',', $fields) . \") VALUES (\" "
+                    ". implode(',', $values) . \")\"; "
+                    "$ok = $wpdb->query($sql); "
+                    "echo $ok !== false ? 'OK' : $wpdb->last_error;"
+                )
+                r_ins = lab.wp_cli("eval", php, timeout=15)
+                ins_out = (r_ins.stdout or "").strip()
+                if r_ins.returncode != 0 or ins_out != "OK":
                     res.limitations.append(
-                        f"no se pudo insertar una fila de relacion real en '{table}' "
-                        f"({(r_ins.stderr or r_ins.stdout or '')[:200]}) -- puede exigir mas "
+                        f"no se pudo insertar una fila de relacion real en "
+                        f"'{relationship_table['wpdb_property']}' "
+                        f"({(ins_out or r_ins.stderr or r_ins.stdout or '')[:200]}) -- puede exigir mas "
                         f"columnas NOT NULL de las que se conocen; el JOIN del sumidero puede "
                         f"seguir sin encontrar nada para la pagina atacada")
         else:

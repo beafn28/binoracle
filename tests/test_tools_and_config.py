@@ -7210,8 +7210,13 @@ def test_bootstrap_lab_inserts_relationship_row_for_shortcode_page(monkeypatch, 
                 return _FakeCompletedProcess(stdout="1")
             if args[:2] == ("post", "create"):
                 return _FakeCompletedProcess(stdout="6\n")
-            if args[:2] == ("eval",) or (args and args[0] == "eval"):
-                return _FakeCompletedProcess(stdout="wp_")
+            if args and args[0] == "eval":
+                # construido/ejecutado ENTERO dentro de un unico `wp eval` (DESCRIBE + INSERT via
+                # $wpdb) -- no hay forma de simular la base de datos real aqui, asi que el fake
+                # solo confirma que SE LE PIDIO insertar la fila de relacion correcta (tabla,
+                # columna de join y valor del post), devolviendo 'OK' como si $wpdb->query()
+                # hubiera tenido exito.
+                return _FakeCompletedProcess(stdout="OK")
             return _FakeCompletedProcess(returncode=0)
         def install_plugin(self, *a):
             return True
@@ -7232,9 +7237,12 @@ def test_bootstrap_lab_inserts_relationship_row_for_shortcode_page(monkeypatch, 
 
     assert boot is not None
     assert boot.shortcode_page_path == "/?page_id=6"
-    db_query_calls = [c for c in calls if c[:2] == ("db", "query")]
-    assert len(db_query_calls) == 1
-    assert "INSERT INTO wp_w2dc_levels_relationships (post_id) VALUES (6)" in db_query_calls[0]
+    insert_calls = [c for c in calls if c and c[0] == "eval" and "INSERT INTO" in c[1]]
+    assert len(insert_calls) == 1
+    php = insert_calls[0][1]
+    assert "w2dc_levels_relationships" in php
+    assert "'post_id'" in php and "'6'" in php
+    assert "DESCRIBE" in php    # consulta el esquema real en vez de adivinar columnas NOT NULL
 
 
 def test_bootstrap_lab_relationship_row_insert_failure_is_a_limitation(monkeypatch, tmp_path):
@@ -7268,10 +7276,9 @@ def test_bootstrap_lab_relationship_row_insert_failure_is_a_limitation(monkeypat
                 return _FakeCompletedProcess(stdout="1")
             if args[:2] == ("post", "create"):
                 return _FakeCompletedProcess(stdout="6\n")
-            if args and args[0] == "eval":
-                return _FakeCompletedProcess(stdout="wp_")
-            if args[:2] == ("db", "query"):
-                return _FakeCompletedProcess(returncode=1, stderr="Column 'level_id' cannot be null")
+            if args and args[0] == "eval" and "INSERT INTO" in args[1]:
+                # $wpdb->last_error real, tal cual lo devolveria el eco de PHP (no 'OK')
+                return _FakeCompletedProcess(stdout="Column 'level_id' cannot be null")
             return _FakeCompletedProcess(returncode=0)
         def install_plugin(self, *a):
             return True
