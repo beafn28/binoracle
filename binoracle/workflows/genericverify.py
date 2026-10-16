@@ -18,10 +18,11 @@ import subprocess
 import time
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _ID_HINTS, _PATH_HINTS, _REDIRECT_HINTS,
-                       _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS, _XssBrowserSession,
-                       _docker_daemon_ok, _http_request, _lab_host, _pick_param,
-                       _redirect_location_is_external, _run, _token, configure_burp_mcp)
+from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
+                       _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
+                       _XssBrowserSession, _docker_daemon_ok, _http_request, _lab_host,
+                       _pick_param, _redirect_location_is_external, _run, _token,
+                       configure_burp_mcp)
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
                          load_ssti_arithmetic_payloads, load_xss_payloads)
 import secrets
@@ -588,6 +589,110 @@ def verify_generic_idor(
                           f"mostraron una diferencia real -- el IDOR no se confirmo (puede "
                           f"necesitar otro endpoint/parametro, o ambos IDs estan igualmente "
                           f"bloqueados/permitidos)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_file_upload(
+    source_dir: str, endpoint: str, file_param_hint: str = "", other_parameters=None,
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Sube un fichero BENIGNO con doble extension (p.ej. 'poc.php.jpg') y contenido PHP real
+    que solo imprime un secreto aleatorio -- misma idea que verify_generic_command_injection:
+    la confirmacion no depende de adivinar la URL publica donde queda servido (no hay forma
+    generica de saberlo sin conocer el stack), sino de buscar DENTRO del contenedor real (via
+    `docker exec grep`) un fichero que contenga el secreto exacto que se subio. Si aparece, el
+    servidor acepto y guardo de verdad un fichero con una extension peligrosa y contenido
+    ejecutable -- la vulnerabilidad real (subida sin restriccion), confirmada por su efecto en
+    disco, no por un codigo de estado 200. No intenta confirmar EJECUCION del fichero (eso exige
+    saber la URL publica real, que SI depende del stack) -- `res.verified` se basa solo en el
+    almacenamiento confirmado, y el informe lo deja explicito para no sobre-interpretarlo como
+    RCE."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        secret = _token() * 4
+        file_param = file_param_hint or _pick_param(other_parameters, _FILE_UPLOAD_HINTS) or "file"
+        base_params = dict(other_parameters) if isinstance(other_parameters, dict) else {}
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "file_param": file_param, "canary_secret": secret})
+
+        # dobles extensiones comunes (el servidor puede mirar solo la ULTIMA extension y
+        # confundirla con un tipo inocuo, o solo la PRIMERA y servir el fichero igual por su
+        # extension real) -- casuistica de Upload Insecure Files/Extension PHP en
+        # PayloadsAllTheThings, sin intentar nada destructivo (el PHP solo imprime el secreto).
+        php_payload = f"<?php echo '{secret}'; ?>"
+        candidates = [
+            ("poc.php.jpg", "image/jpeg"), ("poc.jpg.php", "application/octet-stream"),
+            ("poc.php5.jpg", "image/jpeg"), ("poc.phtml", "image/jpeg"),
+            ("poc.php", "image/jpeg"),
+        ]
+
+        tried = []
+        found = False
+        for fname, ctype in candidates:
+            payload = dict(base_params)
+            files = {file_param: (fname, php_payload, ctype)}
+            try:
+                _http_request("POST", base_url + endpoint, timeout=15, data=payload, files=files)
+            except Exception as e:
+                tried.append({"fichero": fname, "error": str(e)})
+                continue
+            time.sleep(1)
+            r = lab.sh("exec", container, "sh", "-c",
+                      f"grep -rl {secret} / 2>/dev/null | grep -v '^/proc' | head -3",
+                      timeout=20)
+            matches = [p for p in (r.stdout or "").splitlines() if p.strip()]
+            tried.append({"fichero": fname, "content_type": ctype, "rutas_encontradas": matches})
+            if matches:
+                found = True
+                res.evidence["fichero_ganador"] = fname
+                res.evidence["ruta_real_en_el_contenedor"] = matches[0]
+                step(f"VERIFICADO: el fichero subido ('{fname}') aparecio de verdad dentro del "
+                     f"contenedor en {matches[0]}, con el secreto exacto -- el servidor acepto y "
+                     f"guardo un fichero con extension/contenido peligroso.")
+                break
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"SUBIDA SIN RESTRICCION confirmada: el fichero '{res.evidence['fichero_ganador']}' "
+                          f"quedo guardado de verdad en {res.evidence['ruta_real_en_el_contenedor']} "
+                          f"dentro del contenedor, con el secreto exacto que se subio -- prueba "
+                          f"real del almacenamiento, no una deduccion por status code. Esto NO "
+                          f"confirma ejecucion remota de codigo (eso exige conocer la URL publica "
+                          f"real del fichero, que depende del stack); solo que la subida con "
+                          f"extension/contenido peligroso fue aceptada y persistida")
+            res.limitations.append(
+                "verificado el ALMACENAMIENTO del fichero peligroso, no su EJECUCION -- para "
+                "confirmar RCE real hace falta encontrar la URL publica donde el servidor lo "
+                "sirve (especifico del stack) y comprobar que el secreto aparece al pedirla")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} nombres/extensiones de fichero contra "
+                          f"{endpoint} ('{file_param}') y ninguno aparecio dentro del contenedor "
+                          f"-- no se confirmo subida sin restriccion (puede que el endpoint/"
+                          f"parametro no sean los reales, o que el servidor rechace de verdad "
+                          f"estas extensiones)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

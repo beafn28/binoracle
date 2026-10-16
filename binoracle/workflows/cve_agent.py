@@ -1967,6 +1967,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                                   notes.get("http_method") or "POST", params,
                                                   file_param_hint=file_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
                 _apply_wpverify_result(inv, wr, es, llm)
+            # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
+            # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
+            # docker-compose.yml -- confirma el ALMACENAMIENTO real (grep dentro del contenedor),
+            # nunca la ejecucion (eso exigiria conocer la URL publica real, especifica del stack).
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                from .genericverify import verify_generic_file_upload, _pick_param
+                from .wpverify import _FILE_UPLOAD_HINTS
+                params = notes.get("parameters") or []
+                file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- fichero subido con un "
+                     "secreto real, confirmado dentro del contenedor (grep), el objetivo se "
+                     "construye desde su propio Dockerfile/compose..." if es else
+                     "attempting GENERIC DYNAMIC verification -- uploaded file with a real "
+                     "secret, confirmed inside the container (grep), the target is built from "
+                     "its own Dockerfile/compose..."))
+                wr = verify_generic_file_upload(
+                    fr.local_path, notes.get("endpoint"), file_param_hint=file_p or "",
+                    other_parameters=params, on_step=step, budget_s=budget_s)
+                _apply_wpverify_result(inv, wr, es, llm)
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "csrf" and notes.get("endpoint")):
                 from .drupalverify import verify_drupal_csrf, _pick_param

@@ -5259,6 +5259,112 @@ def test_genericverify_path_traversal_blocked_without_build_target(monkeypatch, 
     assert "Dockerfile" in res.limitations[0]
 
 
+def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_file_upload(str(tmp_path), "/upload")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_file_upload_blocked_without_docker(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: False)
+    res = gv.verify_generic_file_upload(str(tmp_path), "/upload")
+    assert res.available is False
+
+
+def test_genericverify_file_upload_confirms_via_grep_inside_container(monkeypatch, tmp_path):
+    # el punto central: la confirmacion viene de ENCONTRAR el fichero subido con el secreto
+    # real DENTRO del contenedor (via `docker exec grep`), no de adivinar la URL publica donde
+    # el servidor lo sirve (eso depende del stack y no se puede generalizar) -- y deja explicito
+    # que esto NO confirma ejecucion, solo almacenamiento.
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def __init__(self):
+            self.sh_calls = []
+        def teardown(self):
+            pass
+        def sh(self, *args, **kw):
+            self.sh_calls.append(args)
+            class _R:
+                stdout = "/var/www/html/uploads/poc.php.jpg\n"
+                returncode = 0
+            return _R()
+
+    import time as _time_mod
+    fake_lab = _FakeLab()
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (fake_lab, "http://lab.invalid", "app"))
+    monkeypatch.setattr(gv, "_http_request", lambda *a, **kw: None)
+    monkeypatch.setattr(_time_mod, "sleep", lambda *a: None)
+
+    res = gv.verify_generic_file_upload(str(tmp_path), "/upload", file_param_hint="file")
+
+    assert res.verified is True
+    assert res.evidence.get("ruta_real_en_el_contenedor") == "/var/www/html/uploads/poc.php.jpg"
+    assert "SUBIDA SIN RESTRICCION confirmada" in res.detail
+    assert "NO" in res.detail and "ejecucion" in res.detail
+    assert any("EJECUCION" in lim for lim in res.limitations)
+
+
+def test_genericverify_file_upload_not_confirmed_when_grep_finds_nothing(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+        def sh(self, *args, **kw):
+            class _R:
+                stdout = ""
+                returncode = 0
+            return _R()
+
+    import time as _time_mod
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    monkeypatch.setattr(gv, "_http_request", lambda *a, **kw: None)
+    monkeypatch.setattr(_time_mod, "sleep", lambda *a: None)
+
+    res = gv.verify_generic_file_upload(str(tmp_path), "/upload")
+    assert res.verified is False
+    assert "no se confirmo subida sin restriccion" in res.detail
+
+
+def test_cve_agent_dispatches_generic_file_upload_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_upload(local_path, endpoint, file_param_hint="", other_parameters=None,
+                            on_step=None, budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="SUBIDA SIN RESTRICCION confirmada (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_file_upload", fake_generic_upload)
+
+    inv = Investigation(cve_id="CVE-2099-00010")
+    inv.vuln_class = "file-upload"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/upload", "http_method": "POST", "parameters": {"file": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/upload"
+    assert inv.verified is True
+
+
 def test_genericverify_idor_blocked_without_param(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
