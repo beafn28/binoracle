@@ -330,6 +330,11 @@ _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {
 # medida -- se usa junto con _GENERIC_RETRY_SYS.
 _RESPUESTA_CUERPO_EVIDENCE_KEYS = {"respuesta_cuerpo_recorte": "respuesta_cuerpo_recorte"}
 
+# igual que arriba, pero para los verificadores de Drupal a los que se le anadio captura del
+# PRIMER intento (no del ganador, que no existe en un negativo) bajo la clave
+# "respuesta_muestra_primer_intento" -- mismo patron que _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS.
+_RESPUESTA_MUESTRA_EVIDENCE_KEYS = {"respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento"}
+
 
 # prompt generico (no ligado a una tecnica concreta) para tecnicas que todavia no tienen su
 # propio _X_RETRY_SYS a medida -- cubre cualquier verificador que ya capture un recorte REAL del
@@ -1633,6 +1638,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_pt_drupal(ep, pr):
+                    return verify_drupal_path_traversal(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        path_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
+                    _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt_drupal, wr,
+                    notes.get("endpoint"), path_p, technique_label="path-traversal Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo mecanismo de laboratorio efimero, para path-traversal/LFI: en vez de deducir el
             # account-takeover por un segundo login, se planta un fichero canario con un secreto
@@ -1765,6 +1778,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_cmdi_drupal(ep, pr):
+                    return verify_drupal_command_injection(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        cmd_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
+                    _attempt_cmdi_drupal, wr, notes.get("endpoint"), cmd_p,
+                    technique_label="command injection Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection: en vez de leer un fichero, el
             # payload hace que el shell remoto CALCULE una suma (ver verify_wordpress_command_injection)
@@ -1858,6 +1879,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_sqli_drupal(ep, pr):
+                    return verify_drupal_sqli(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
+                    _attempt_sqli_drupal, wr, notes.get("endpoint"), sqli_p,
+                    technique_label="SQLi Drupal", max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
             # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
@@ -2037,6 +2066,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_drupal_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                        notes.get("http_method") or "GET", params,
                                        xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_xss_drupal(ep, pr):
+                    return verify_drupal_xss(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        xss_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_xss_drupal, wr, notes.get("endpoint"), xss_p,
+                    technique_label="XSS Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):
@@ -2096,6 +2133,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_drupal_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                         notes.get("http_method") or "GET", params,
                                         ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_ssti_drupal(ep, pr):
+                    return verify_drupal_ssti(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        ssti_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
+                    _attempt_ssti_drupal, wr, notes.get("endpoint"), ssti_p,
+                    technique_label="SSTI Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssti" and notes.get("endpoint")):
@@ -2156,6 +2201,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_drupal_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
                                        notes.get("http_method") or "GET", params,
                                        xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_xxe_drupal(ep, pr):
+                    return verify_drupal_xxe(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        xml_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
+                    _attempt_xxe_drupal, wr, notes.get("endpoint"), xml_p,
+                    technique_label="XXE Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xxe" and notes.get("endpoint")):
@@ -2216,6 +2269,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_drupal_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                  notes.get("http_method") or "GET", params,
                                                  redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_or_drupal(ep, pr):
+                    return verify_drupal_open_redirect(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        redirect_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_or_drupal, wr, notes.get("endpoint"), redir_p,
+                    technique_label="open redirect Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "open-redirect" and notes.get("endpoint")):
@@ -2276,6 +2337,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_drupal_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                notes.get("http_method") or "POST", params,
                                                file_param_hint=file_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_file_upload_drupal(ep, pr):
+                    return verify_drupal_file_upload(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
+                        file_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
+                    _attempt_file_upload_drupal, wr, notes.get("endpoint"), file_p,
+                    technique_label="file upload Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "file-upload" and notes.get("endpoint")):

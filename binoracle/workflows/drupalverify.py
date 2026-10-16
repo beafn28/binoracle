@@ -543,6 +543,7 @@ def verify_drupal_path_traversal(
 
         found = False
         tried = []
+        first_resp_captured = False
         for payload_value in attempts:
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[path_param] = payload_value
@@ -554,6 +555,12 @@ def verify_drupal_path_traversal(
             except Exception as e:
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
+            if not first_resp_captured:
+                # recorte del primer intento -- evidencia que lee el bucle de aprendizaje-y-
+                # reintento del LLM cuando nada se confirma (ver verify_generic_path_traversal,
+                # mismo fix aplicado aqui).
+                res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
+                first_resp_captured = True
             tried.append({"payload": payload_value, "status": resp.status_code,
                           "secret_presente": secret in (resp.text or "")})
             if secret in (resp.text or ""):
@@ -644,6 +651,7 @@ def verify_drupal_command_injection(
         pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
         found = False
         tried = []
+        first_resp_captured = False
         for payload_value in attempts:
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[cmd_param] = payload_value
@@ -655,6 +663,9 @@ def verify_drupal_command_injection(
             except Exception as e:
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
+            if not first_resp_captured:
+                res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
+                first_resp_captured = True
             matched = bool(pattern.search(resp.text or ""))
             tried.append({"payload": payload_value, "status": resp.status_code, "suma_presente": matched})
             if matched:
@@ -797,6 +808,10 @@ def verify_drupal_sqli(
             res.detail = f"la peticion de control fallo: {e}"
             return res
         base_len = len(base_resp.text or "")
+        # recorte de la respuesta de CONTROL (sin inyeccion) -- evidencia que lee el bucle de
+        # aprendizaje-y-reintento del LLM cuando ninguna tecnica confirma nada (mismo patron que
+        # verify_wordpress_sqli).
+        res.evidence["respuesta_control_recorte"] = (base_resp.text or "")[:500]
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
         contexts = ["'", '"', "", "')", '")']
         comments = ["-- -", "#"]
@@ -1178,6 +1193,17 @@ def verify_drupal_xss(
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
                           f"ninguna el navegador ejecuto el script -- el XSS no se confirmo")
+            try:
+                sample_params = dict(parameters) if isinstance(parameters, dict) else {
+                    p: "" for p in (parameters or [])}
+                sample_params[xss_param] = attempts[0] if attempts else ""
+                sample_resp = boot.sub_sess.request(
+                    m, boot.base_url + endpoint,
+                    data=sample_params if m != "GET" else None,
+                    params=sample_params if m == "GET" else None, timeout=15)
+                res.evidence["respuesta_cuerpo_recorte"] = (sample_resp.text or "")[:500]
+            except Exception:
+                pass
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1242,6 +1268,7 @@ def verify_drupal_ssti(
         pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
         found = False
         tried = []
+        first_resp_captured = False
         for payload_value in attempts:
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
             payload[ssti_param] = payload_value
@@ -1253,6 +1280,9 @@ def verify_drupal_ssti(
             except Exception as e:
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
+            if not first_resp_captured:
+                res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
+                first_resp_captured = True
             matched = bool(pattern.search(resp.text or ""))
             tried.append({"payload": payload_value, "status": resp.status_code,
                          "producto_presente": matched})
@@ -1337,15 +1367,19 @@ def verify_drupal_xxe(
 
         tried = []
         found = False
+        first_resp_captured = False
 
         def try_send(label, **kwargs):
-            nonlocal found
+            nonlocal found, first_resp_captured
             step(f"probando {m} {endpoint} ({label})...")
             try:
                 resp = boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
             except Exception as e:
                 tried.append({"modo": label, "error": str(e)})
                 return
+            if not first_resp_captured:
+                res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
+                first_resp_captured = True
             present = secret in (resp.text or "")
             tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present})
             if present and not found:
@@ -1520,6 +1554,10 @@ def verify_drupal_open_redirect(
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de bypass para {redirect_param} y "
                           f"ninguna produjo un redirect con '{evil_host}' en Location")
+            if tried:
+                first = tried[0]
+                res.evidence["respuesta_cuerpo_recorte"] = (
+                    f"status={first.get('status')} location={first.get('location')!r}")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1589,6 +1627,7 @@ def verify_drupal_file_upload(
 
         found = False
         tried = []
+        first_resp_captured = False
         for tmpl, magic, content_type in variants:
             token = _token()
             fname = tmpl.format(t=token)
@@ -1603,6 +1642,9 @@ def verify_drupal_file_upload(
             except Exception as e:
                 tried.append({"filename": fname, "error_subida": str(e)})
                 continue
+            if not first_resp_captured:
+                res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
+                first_resp_captured = True
             found_path = lab.find_in_webroot(token)
             entry = {"filename": fname, "status_subida": resp.status_code,
                     "encontrado_en_contenedor": found_path}
