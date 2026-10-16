@@ -751,6 +751,39 @@ def grep_vulnerable_functions(root: str, names: List[str]) -> dict:
     return {"found": {n: v for n, v in found.items() if v}, "not_found": not_found}
 
 
+def extract_function_body(local_path: str, relative_file: str, start_line: int,
+                          max_lines: int = 40) -> Optional[str]:
+    """Extrae el cuerpo real de una funcion ya localizada (fichero/linea exactos, p.ej. de
+    grep_vulnerable_functions o inv.source_grounding) -- cuenta llaves '{'/'}' desde la primera
+    que aparece en start_line hasta que todas cierran, con un tope de max_lines por si el conteo
+    se descuadra (una llave dentro de un string o comentario, un fichero enorme) para nunca
+    devolver medio fichero. Heuristico y deliberadamente simple (igual que grep_vulnerable_functions:
+    no es un parser real de PHP/JS, es 'esto es lo que hay ahi, con bastante fiabilidad' -- pensado
+    para que el pipeline pueda ensenar el codigo real de un handler sin depender de que el analista
+    lo baje y lo grep-ee a mano cada vez que una verificacion dinamica no se confirma)."""
+    fp = os.path.join(local_path, relative_file)
+    try:
+        with open(fp, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    if start_line < 1 or start_line > len(lines):
+        return None
+    out = []
+    depth = 0
+    started = False
+    end = min(len(lines), start_line - 1 + max_lines)
+    for i in range(start_line - 1, end):
+        line = lines[i]
+        out.append(line.rstrip("\n"))
+        depth += line.count("{") - line.count("}")
+        if line.count("{"):
+            started = True
+        if started and depth <= 0:
+            break
+    return "\n".join(out) if out else None
+
+
 _AJAX_ACTION_HANDLER_RE_TMPL = (
     r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_{action}['\"]\s*,\s*"
     r"(?:['\"]([A-Za-z0-9_]+)['\"]"

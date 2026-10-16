@@ -3582,6 +3582,35 @@ def test_websource_grep_vulnerable_functions(tmp_path):
     assert m.file.endswith("class-form.php") and m.line > 0
 
 
+def test_extract_function_body_balances_braces_and_stops_at_close(tmp_path):
+    from binoracle.workflows.websource import extract_function_body
+    php = tmp_path / "functions.php"
+    php.write_text(
+        "<?php\n"
+        "function pc_added_uploaded_image(){\n"
+        "    $post = $_POST;\n"
+        "    if(isset($post['action'])){\n"
+        "        echo 'nested';\n"
+        "    }\n"
+        "    exit();\n"
+        "}\n"
+        "function another_function(){ /* never included */ }\n"
+    )
+    body = extract_function_body(str(tmp_path), "functions.php", 2)
+    assert body is not None
+    assert "pc_added_uploaded_image" in body
+    assert "nested" in body
+    assert "another_function" not in body
+
+
+def test_extract_function_body_returns_none_for_missing_file_or_bad_line(tmp_path):
+    from binoracle.workflows.websource import extract_function_body
+    (tmp_path / "f.php").write_text("<?php\nfunction a(){}\n")
+    assert extract_function_body(str(tmp_path), "nope.php", 1) is None
+    assert extract_function_body(str(tmp_path), "f.php", 0) is None
+    assert extract_function_body(str(tmp_path), "f.php", 999) is None
+
+
 def test_find_ajax_handler_function_string_callback(tmp_path):
     from binoracle.workflows.websource import find_ajax_handler_function
     php = tmp_path / "plugin.php"
@@ -7587,6 +7616,34 @@ def test_investigate_cve_recovers_real_handler_when_llm_guess_does_not_ground(mo
 
     assert inv.source_grounding.get("found") == {
         "pc_handle_uploaded_image": ["plugin.php:2"]}
+
+
+def test_attach_grounded_source_snippets_adds_real_code_as_blocker():
+    # autonomia: cuando una verificacion dinamica se intenta pero no se confirma, el propio
+    # informe debe traer el codigo REAL de la funcion ya grounded, sin que el analista tenga que
+    # pedirmelo/bajarlo/grep-earlo a mano -- confirmado en vivo, CVE-2024-50508 (eso fue
+    # exactamente lo que hizo falta hacer a mano para diagnosticar el negativo).
+    from binoracle.workflows.cve_agent import Investigation, _attach_grounded_source_snippets
+    import tempfile, os
+
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "functions.php"), "w") as f:
+        f.write("<?php\nfunction pc_added_uploaded_image(){\n    exit();\n}\n")
+
+    inv = Investigation(cve_id="CVE-2099-0001")
+    inv.source_fetch = {"local_path": tmp}
+    inv.source_grounding = {"found": {"pc_added_uploaded_image": ["functions.php:2"]}}
+
+    _attach_grounded_source_snippets(inv, es=True)
+
+    assert any("pc_added_uploaded_image" in b and "```php" in b for b in inv.blockers)
+
+
+def test_attach_grounded_source_snippets_noop_without_grounding_or_source():
+    from binoracle.workflows.cve_agent import Investigation, _attach_grounded_source_snippets
+    inv = Investigation(cve_id="CVE-2099-0002")
+    _attach_grounded_source_snippets(inv, es=True)
+    assert inv.blockers == []
 
 
 def test_investigate_cve_forwards_cli_budget_to_web_dynamic_verifier(monkeypatch, tmp_path):

@@ -317,6 +317,37 @@ def _apply_wpverify_result(inv, wr, es: bool) -> None:
                 head, _, body = entry.partition("\n")
                 trimmed = "\n".join(body.splitlines()[-15:])
                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
+        _attach_grounded_source_snippets(inv, es)
+
+
+def _attach_grounded_source_snippets(inv: "Investigation", es: bool) -> None:
+    """Cuando una verificacion dinamica se intento pero NO se confirmo, adjunta el codigo REAL de
+    cada funcion ya confirmada por grounding (inv.source_grounding['found'], fichero:linea exactos
+    -- ver grep_vulnerable_functions) como blocker, en vez de dejar que el analista tenga que
+    bajarse el plugin y grep-earlo a mano para diagnosticar un negativo (confirmado en vivo,
+    CVE-2024-50508: eso fue exactamente lo que hubo que hacer, con una funcion asi encontrada
+    manualmente revelando que el handler no valida nada -- este paso lo automatiza).
+    No es una garantia de diagnostico (sigue siendo un negativo honesto hasta que alguien lo lea),
+    pero deja el codigo real delante en el propio informe, no solo la hipotesis."""
+    from .websource import extract_function_body
+    local_path = (inv.source_fetch or {}).get("local_path") or ""
+    found = (inv.source_grounding or {}).get("found") or {}
+    if not local_path or not found:
+        return
+    for name, locations in found.items():
+        if not locations:
+            continue
+        loc = locations[0]
+        rel_file, _, line_str = loc.rpartition(":")
+        if not rel_file or not line_str.isdigit():
+            continue
+        body = extract_function_body(local_path, rel_file, int(line_str))
+        if body:
+            inv.blockers.append(
+                (f"codigo real de '{name}' ({loc}), para diagnosticar el negativo sin tener que "
+                 f"descargar el plugin a mano:\n```php\n{body}\n```" if es else
+                 (f"real code of '{name}' ({loc}), to diagnose the negative without having to "
+                 f"download the plugin by hand:\n```php\n{body}\n```")))
 
 
 def _extract_known_ajax_action(notes: dict) -> Optional[str]:
