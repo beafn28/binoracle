@@ -5708,6 +5708,56 @@ def test_cve_agent_drupal_path_traversal_retries_with_llm_suggestion(monkeypatch
     assert "sugerido por el LLM" in inv.verified_detail
 
 
+def test_cve_agent_ssrf_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    # SSRF se habia dejado fuera porque la unica evidencia capturada era el log del listener
+    # (que no da pistas de endpoint equivocado) -- tras anadir captura del cuerpo de la
+    # respuesta PROPIA del endpoint (independiente del listener), ya tiene sentido conectarlo.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="some-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el cuerpo muestra un error de la propia app, no un comportamiento SSRF normal",
+                "endpoint_alternativo": "/wp-admin/admin-ajax.php?action=fetch_remote",
+            })
+
+    calls = []
+    def fake_ssrf(plugin_source_dir, slug, endpoint, http_method, parameters,
+                 url_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None):
+        calls.append(endpoint)
+        if "fetch_remote" not in (endpoint or ""):
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"respuesta_cuerpo_recorte": "<html>400 bad request</html>"}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="SSRF confirmado tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_ssrf", fake_ssrf)
+
+    inv = Investigation(cve_id="CVE-2099-00023")
+    inv.vuln_class = "ssrf"
+    inv.llm_notes = {"source_url": "some-plugin", "endpoint": "/wp-admin/admin-ajax.php?action=x",
+                     "http_method": "GET", "parameters": {"url": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/wp-admin/admin-ajax.php?action=x",
+                     "/wp-admin/admin-ajax.php?action=fetch_remote"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
 def test_genericverify_command_injection_surfaces_real_response_body_on_negative(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
 

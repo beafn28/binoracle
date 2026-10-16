@@ -2136,6 +2136,7 @@ def verify_wordpress_ssrf(
                 ]
             return urls
 
+        first_resp_captured = False
         for attempt_url in build_urls(_token()):
             token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
@@ -2147,6 +2148,13 @@ def verify_wordpress_ssrf(
                                    data=payload if m != "GET" else None,
                                    params=payload if m == "GET" else None, timeout=20)
                 entry["status"] = resp.status_code
+                if not first_resp_captured:
+                    # recorte de la respuesta PROPIA del endpoint atacado (no el log del
+                    # listener) -- evidencia independiente de si el callback llego o no: un 404/
+                    # error de la propia app en esta respuesta SI apunta a un endpoint/parametro
+                    # equivocado, aunque el listener nunca confirme nada.
+                    res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                    first_resp_captured = True
             except Exception as e:
                 entry["peticion_error"] = str(e)
             time.sleep(2)

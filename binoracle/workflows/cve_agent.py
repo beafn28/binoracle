@@ -1996,6 +1996,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_drupal_ssrf(fr.local_path, plugin_dir, notes.get("endpoint"),
                                         notes.get("http_method") or "GET", params,
                                         url_param_hint=url_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_ssrf_drupal(ep, pr):
+                    return verify_drupal_ssrf(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        url_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_MUESTRA_EVIDENCE_KEYS,
+                    _attempt_ssrf_drupal, wr, notes.get("endpoint"), url_p,
+                    technique_label="SSRF Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssrf" and notes.get("endpoint")):
@@ -2010,6 +2018,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     url_param_hint=url_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                def _attempt_ssrf_wp(ep, pr):
+                    return verify_wordpress_ssrf(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        url_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_ssrf_wp, wr, notes.get("endpoint"), url_p,
+                    technique_label="SSRF WordPress")
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -2048,6 +2065,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_ssrf(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_ssrf_generic(ep, pr):
+                    return verify_generic_ssrf(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        url_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    _attempt_ssrf_generic, wr, notes.get("endpoint"), url_p,
+                    technique_label="SSRF generico")
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para XSS/SSTI/XXE/open-redirect/file-upload/CSRF -- ver
             # _apply_wpverify_result() mas abajo, que vuelca el resultado en inv/blockers igual que

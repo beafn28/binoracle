@@ -1050,6 +1050,7 @@ def verify_drupal_ssrf(
                 ]
             return urls
 
+        first_resp_captured = False
         for attempt_url in build_urls(_token()):
             token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
             payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
@@ -1061,6 +1062,9 @@ def verify_drupal_ssrf(
                                    data=payload if m != "GET" else None,
                                    params=payload if m == "GET" else None, timeout=20)
                 entry["status"] = resp.status_code
+                if not first_resp_captured:
+                    res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
+                    first_resp_captured = True
             except Exception as e:
                 entry["peticion_error"] = str(e)
             time.sleep(2)
