@@ -722,7 +722,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    t0: float, budget_s: float,
                    setup_wp_options: Optional[list] = None,
                    companion_plugins: Optional[list] = None,
-                   shortcode_name: Optional[str] = None) -> Optional[_LabSession]:
+                   shortcode_name: Optional[str] = None,
+                   relationship_table: Optional[dict] = None) -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
     (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
 
@@ -755,7 +756,14 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     verificador puede atacar ESA pagina en vez de adivinar. La URL resultante (relativa, tipo
     '/?page_id=N' -- funciona independientemente de la estructura de permalinks activa) queda en
     `shortcode_page_path` de la _LabSession devuelta; None si no se pidio o si la creacion
-    fallo (se registra como limitacion, nunca aborta el resto del laboratorio)."""
+    fallo (se registra como limitacion, nunca aborta el resto del laboratorio).
+
+    `relationship_table`, si se da (ver find_join_relationship_table() en websource.py: un
+    LEFT JOIN propio del plugin que enlaza por post ID), inserta una fila real para la pagina
+    del shortcode en esa tabla ANTES del ataque -- confirmado en vivo con CVE-2024-3552: sin
+    ella, el JOIN deja esa columna NULL para cualquier pagina generica (incluida la del
+    shortcode) y el WHERE del sumidero nunca es verdadero, inyeccion real o no. Solo tiene
+    efecto si `shortcode_name` tambien se dio (no hay pagina a la que enlazar la fila sin eso)."""
     root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
     admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
     sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
@@ -865,6 +873,28 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         page_id = (r_page.stdout or "").strip()
         if r_page.returncode == 0 and page_id.isdigit():
             shortcode_page_path = f"/?page_id={page_id}"
+            if relationship_table:
+                # confirmado en vivo, CVE-2024-3552: el sumidero real (level_filter_where) solo
+                # devuelve algo si el post atacado tiene una fila en la tabla de relacion propia
+                # del plugin (el LEFT JOIN la enlaza por post ID) -- sin ella, esa columna sale
+                # NULL y el WHERE nunca es verdadero, con o sin inyeccion de verdad. Best-effort:
+                # si la tabla exige mas columnas NOT NULL de las que conocemos, el INSERT falla
+                # y se registra como limitacion, nunca aborta el resto del laboratorio.
+                step(f"insertando una fila real en la tabla de relacion del plugin "
+                     f"('{relationship_table['wpdb_property']}') para que el JOIN de verdad "
+                     f"encuentre algo al atacar esta pagina...")
+                prefix_r = lab.wp_cli("eval", "echo $GLOBALS['wpdb']->prefix;", timeout=15)
+                prefix = (prefix_r.stdout or "").strip() or "wp_"
+                table = prefix + relationship_table["wpdb_property"]
+                col = relationship_table["join_column"]
+                r_ins = lab.wp_cli("db", "query",
+                                   f"INSERT INTO {table} ({col}) VALUES ({page_id})", timeout=15)
+                if r_ins.returncode != 0:
+                    res.limitations.append(
+                        f"no se pudo insertar una fila de relacion real en '{table}' "
+                        f"({(r_ins.stderr or r_ins.stdout or '')[:200]}) -- puede exigir mas "
+                        f"columnas NOT NULL de las que se conocen; el JOIN del sumidero puede "
+                        f"seguir sin encontrar nada para la pagina atacada")
         else:
             res.limitations.append(
                 f"no se pudo crear una pagina real con el shortcode '{shortcode_name}' "
@@ -1675,6 +1705,7 @@ def verify_wordpress_sqli(
     setup_wp_options: Optional[list] = None,
     companion_plugins: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    relationship_table: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -1704,7 +1735,14 @@ def verify_wordpress_sqli(
     sin contenido del plugin), ataca en su lugar una pagina real creada con `[shortcode_name]`
     (ver _bootstrap_lab) -- confirmado en vivo, CVE-2024-3552: sin una pagina que de verdad
     invoque el plugin, ninguna tecnica puede mostrar una diferencia visible aunque la inyeccion
-    sea real, porque no hay ninguna superficie donde el resultado del query pueda reflejarse."""
+    sea real, porque no hay ninguna superficie donde el resultado del query pueda reflejarse.
+
+    `relationship_table`, si se da junto a `shortcode_name`, inserta una fila real para la
+    pagina del shortcode en la tabla de relacion propia del plugin ANTES del ataque (ver
+    find_join_relationship_table() en websource.py y _bootstrap_lab) -- confirmado en vivo,
+    CVE-2024-3552: el sumidero real estaba detras de un LEFT JOIN por post ID contra una tabla
+    de relacion, y una pagina SIN fila ahi sale siempre NULL en esa columna -- el WHERE nunca es
+    verdadero, inyeccion real o no."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1727,7 +1765,8 @@ def verify_wordpress_sqli(
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               setup_wp_options=setup_wp_options,
                               companion_plugins=companion_plugins,
-                              shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None)
+                              shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None,
+                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None)
         if boot is None:
             return res
 

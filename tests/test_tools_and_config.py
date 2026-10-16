@@ -3696,6 +3696,37 @@ def test_find_shortcode_name_none_when_plugin_registers_none(tmp_path):
     assert find_shortcode_name(str(tmp_path), "no-shortcode-plugin") is None
 
 
+def test_find_join_relationship_table_finds_real_left_join_confirmed_live(tmp_path):
+    # bug real confirmado en vivo, CVE-2024-3552: el sumidero SQLi real (level_filter_where)
+    # solo devuelve algo si el post atacado tiene una fila en la tabla de relacion propia del
+    # plugin ('w2dc_levels_relationships', enlazada por post ID via LEFT JOIN) -- sin ella, esa
+    # columna sale NULL y el WHERE nunca es verdadero, inyeccion real o no.
+    from binoracle.workflows.websource import find_join_relationship_table
+    plugin_dir = tmp_path / "web-directory-free"
+    sub = plugin_dir / "classes" / "listings"
+    sub.mkdir(parents=True)
+    (sub / "listings_manager.php").write_text(
+        "<?php\n"
+        "function level_filter_join($join = '') {\n"
+        "    global $wpdb;\n"
+        "    if (isset($_GET['w2dc_level_filter']) && $_GET['w2dc_level_filter'])\n"
+        "        $join .= \" LEFT JOIN {$wpdb->w2dc_levels_relationships} AS w2dc_lr ON "
+        "w2dc_lr.post_id = {$wpdb->posts}.ID \";\n"
+        "    return $join;\n"
+        "}\n")
+    result = find_join_relationship_table(str(tmp_path), "web-directory-free")
+    assert result == {"wpdb_property": "w2dc_levels_relationships", "alias": "w2dc_lr",
+                      "join_column": "post_id"}
+
+
+def test_find_join_relationship_table_none_without_left_join(tmp_path):
+    from binoracle.workflows.websource import find_join_relationship_table
+    plugin_dir = tmp_path / "no-join-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.php").write_text("<?php\nfunction helper(){}\n")
+    assert find_join_relationship_table(str(tmp_path), "no-join-plugin") is None
+
+
 def test_find_plugin_main_file_locates_by_header_not_slug_name(tmp_path):
     # bug real confirmado en vivo, CVE-2024-50508: la carpeta del plugin es 'woo-product-design'
     # pero el fichero bootstrap real se llama 'woocommerce-product-design.php' -- no coinciden,
@@ -7140,6 +7171,130 @@ def test_bootstrap_lab_shortcode_page_creation_failure_is_a_limitation_not_a_har
     assert any("shortcode" in lim for lim in res.limitations)
 
 
+def test_bootstrap_lab_inserts_relationship_row_for_shortcode_page(monkeypatch, tmp_path):
+    # bug real confirmado en vivo, CVE-2024-3552: el sumidero real esta detras de un LEFT JOIN
+    # propio del plugin enlazado por post ID -- una pagina de shortcode SIN fila en esa tabla
+    # sale siempre NULL en esa columna, asi que el WHERE del sumidero nunca es verdadero. Con
+    # `relationship_table`, _bootstrap_lab debe insertar esa fila DESPUES de crear la pagina y
+    # ANTES de devolver el _LabSession.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeSession:
+        pass
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            calls.append(args)
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            if args[:2] == ("post", "create"):
+                return _FakeCompletedProcess(stdout="6\n")
+            if args[:2] == ("eval",) or (args and args[0] == "eval"):
+                return _FakeCompletedProcess(stdout="wp_")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: _FakeSession())
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    boot = wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "web-directory-free", lambda _m: None, res, _time.time(),
+        1200.0, shortcode_name="w2dc_search",
+        relationship_table={"wpdb_property": "w2dc_levels_relationships",
+                            "alias": "w2dc_lr", "join_column": "post_id"})
+
+    assert boot is not None
+    assert boot.shortcode_page_path == "/?page_id=6"
+    db_query_calls = [c for c in calls if c[:2] == ("db", "query")]
+    assert len(db_query_calls) == 1
+    assert "INSERT INTO wp_w2dc_levels_relationships (post_id) VALUES (6)" in db_query_calls[0]
+
+
+def test_bootstrap_lab_relationship_row_insert_failure_is_a_limitation(monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeSession:
+        pass
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            if args[:2] == ("post", "create"):
+                return _FakeCompletedProcess(stdout="6\n")
+            if args and args[0] == "eval":
+                return _FakeCompletedProcess(stdout="wp_")
+            if args[:2] == ("db", "query"):
+                return _FakeCompletedProcess(returncode=1, stderr="Column 'level_id' cannot be null")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: _FakeSession())
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    boot = wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "web-directory-free", lambda _m: None, res, _time.time(),
+        1200.0, shortcode_name="w2dc_search",
+        relationship_table={"wpdb_property": "w2dc_levels_relationships",
+                            "alias": "w2dc_lr", "join_column": "post_id"})
+
+    assert boot is not None    # no aborta el resto del laboratorio por esto
+    assert boot.shortcode_page_path == "/?page_id=6"    # la pagina SI se creo
+    assert any("fila de relacion" in lim for lim in res.limitations)
+
+
 def test_bootstrap_lab_installs_companion_plugins_before_target_plugin(monkeypatch, tmp_path):
     # bug real confirmado en vivo, CVE-2024-50508: el plugin objetivo no registra NINGUN hook si
     # WooCommerce no esta activo (su constructor corta en seco antes) -- _bootstrap_lab debe
@@ -8003,6 +8158,50 @@ def test_verify_wordpress_sqli_does_not_request_shortcode_page_for_non_root_endp
     assert bootstrap_calls[0]["shortcode_name"] is None
     assert "endpoint_shortcode_page" not in res.evidence
     assert all("respuesta_true_recorte" in t for t in res.evidence["boolean_intentos"])
+
+
+def test_verify_wordpress_sqli_threads_relationship_table_only_for_bare_root(monkeypatch):
+    # relationship_table solo tiene sentido junto con shortcode_name (no hay pagina a la que
+    # enlazar la fila sin ella) -- debe pasarse a _bootstrap_lab cuando el endpoint es la raiz,
+    # y nunca cuando el analista ya dio un endpoint concreto.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"status":"ok"}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None, shortcode_page_path="/?page_id=6")
+
+    bootstrap_calls = []
+
+    def fake_bootstrap(*a, **kw):
+        bootstrap_calls.append(kw)
+        return fake_boot
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", fake_bootstrap)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    rel = {"wpdb_property": "w2dc_levels_relationships", "alias": "w2dc_lr",
+          "join_column": "post_id"}
+
+    wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/", "GET", {"w2dc_level_filter": "1"},
+        sqli_param_hint="w2dc_level_filter", shortcode_name="w2dc_search",
+        relationship_table=rel)
+    assert bootstrap_calls[0]["relationship_table"] == rel
+
+    bootstrap_calls.clear()
+    wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=foo", "GET",
+        {"w2dc_level_filter": "1"}, sqli_param_hint="w2dc_level_filter",
+        shortcode_name="w2dc_search", relationship_table=rel)
+    assert bootstrap_calls[0]["relationship_table"] is None
 
 
 def test_verify_wordpress_path_traversal_falls_back_to_etc_passwd(monkeypatch):

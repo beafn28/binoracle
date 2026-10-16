@@ -1607,15 +1607,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("sqli", "sql-injection") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
-                from .websource import find_shortcode_name
+                from .websource import find_shortcode_name, find_join_relationship_table
                 params = notes.get("parameters") or []
                 sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
                 # si el endpoint es la raiz ('/'), atacarla directamente no puede reflejar
                 # ninguna diferencia (es la portada vacia por defecto, sin contenido del plugin)
                 # -- confirmado en vivo, CVE-2024-3552: con el shortcode real del plugin,
                 # verify_wordpress_sqli crea una pagina de verdad y ataca ESA en su lugar.
+                endpoint_is_bare_root = (notes.get("endpoint") or "/").strip() in ("", "/")
                 shortcode_name = (find_shortcode_name(fr.local_path, plugin_dir)
-                                 if (notes.get("endpoint") or "/").strip() in ("", "/") else None)
+                                 if endpoint_is_bare_root else None)
+                # si el sumidero real esta detras de un LEFT JOIN propio del plugin enlazado por
+                # post ID (patron comun en plugins de listados/directorios), una pagina SIN fila
+                # ahi sale siempre NULL en esa columna -- el WHERE nunca es verdadero, inyeccion
+                # real o no -- confirmado en vivo, CVE-2024-3552 (tabla w2dc_levels_relationships).
+                relationship_table = (find_join_relationship_table(fr.local_path, plugin_dir)
+                                      if endpoint_is_bare_root else None)
                 step(("intentando verificacion DINAMICA -- UNION-based/boolean-blind "
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- UNION-based/boolean-blind "
@@ -1625,7 +1632,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     notes.get("http_method") or "GET", params,
                     sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
                     setup_wp_options=notes.get("setup_options") or [],
-                    companion_plugins=companion_plugins, shortcode_name=shortcode_name)
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name,
+                    relationship_table=relationship_table)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

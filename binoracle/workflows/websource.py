@@ -881,6 +881,47 @@ def find_unsafe_sql_concat_sinks(local_path: str, plugin_dir: str) -> List[SqlSi
     return sinks
 
 
+_JOIN_RELATIONSHIP_RE = re.compile(
+    r"LEFT JOIN\s+\{?\$wpdb->(\w+)\}?\s+AS\s+(\w+)\s+ON\s+\2\.(\w+)\s*=\s*\{?\$wpdb->posts\}?\.ID",
+    re.IGNORECASE)
+
+
+def find_join_relationship_table(local_path: str, plugin_dir: str) -> Optional[dict]:
+    """Busca un LEFT JOIN de WordPress contra una tabla de relacion PROPIA del plugin, enlazada
+    por post ID (`LEFT JOIN {$wpdb->tabla} AS alias ON alias.columna = {$wpdb->posts}.ID`) --
+    confirmado en vivo, CVE-2024-3552: el sumidero SQLi real (level_filter_where) solo devuelve
+    algo si el post atacado tiene una fila en ESTA tabla (si no, la columna del JOIN sale NULL y
+    el WHERE nunca es verdadero, con o sin inyeccion) -- asi que atacar una pagina generica
+    (ver find_shortcode_name) no basta para ESTA clase de sumidero: hace falta una fila de
+    verdad en la tabla de relacion para el post atacado, insertada por _bootstrap_lab via
+    wp-cli ANTES del ataque (ver `relationship_table` en verify_wordpress_sqli).
+    Patron (LEFT JOIN propio + relacion por post ID) comun en plugins de listados/directorios de
+    WordPress -- no especifico de este plugin en concreto. Deliberadamente simple (regex, no
+    parser real de PHP): si el plugin tiene varios JOIN de este tipo, se devuelve el primero."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(base):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in sorted(files):
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            m = _JOIN_RELATIONSHIP_RE.search(text)
+            if m:
+                return {"wpdb_property": m.group(1), "alias": m.group(2),
+                       "join_column": m.group(3)}
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return None
+
+
 _ADD_SHORTCODE_RE = re.compile(r"add_shortcode\s*\(\s*['\"]([A-Za-z0-9_-]+)['\"]")
 
 
