@@ -5179,6 +5179,103 @@ def test_genericverify_find_build_target_none_without_either(tmp_path):
     assert _find_build_target(str(tmp_path)) is None
 
 
+def test_genericverify_auto_detects_node_stack_without_dockerfile(tmp_path):
+    # pedido explicitamente: no limitarse a repos que YA traen su propio Dockerfile/compose --
+    # si el repo trae package.json (Node) pero nada mas, se genera un Dockerfile minimo propio.
+    from binoracle.workflows.genericverify import _find_build_target, _AUTO_DOCKERFILE_NAME
+    (tmp_path / "package.json").write_text('{"name": "poc", "scripts": {"start": "node x.js"}}')
+    target = _find_build_target(str(tmp_path))
+    assert target is not None
+    assert target["kind"] == "dockerfile"
+    assert target["auto_generado"] is True
+    assert target["stack_detectado"] == "package.json"
+    assert target["path"] == str(tmp_path / _AUTO_DOCKERFILE_NAME)
+    content = (tmp_path / _AUTO_DOCKERFILE_NAME).read_text()
+    assert "FROM node:" in content
+    assert "npm install" in content
+
+
+def test_genericverify_auto_detects_python_stack_without_dockerfile(tmp_path):
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "requirements.txt").write_text("flask\n")
+    target = _find_build_target(str(tmp_path))
+    assert target["auto_generado"] is True
+    assert target["stack_detectado"] == "requirements.txt"
+    content = open(target["path"]).read()
+    assert "FROM python:" in content
+    assert "pip install" in content
+
+
+def test_genericverify_auto_detects_composer_php_stack_without_dockerfile(tmp_path):
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "composer.json").write_text('{"require": {}}')
+    target = _find_build_target(str(tmp_path))
+    assert target["auto_generado"] is True
+    assert target["stack_detectado"] == "composer.json"
+    content = open(target["path"]).read()
+    assert "FROM php:" in content
+    assert "composer install" in content
+
+
+def test_genericverify_auto_detects_bare_php_without_any_manifest(tmp_path):
+    # el caso mas comun en un PoC publico de un solo plugin/script vulnerable: unos cuantos
+    # ficheros .php sueltos, sin composer.json ni ningun Dockerfile/compose -- el servidor de
+    # desarrollo embebido de PHP sirve cualquiera de ellos tal cual, sin entender el proyecto.
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "vuln.php").write_text("<?php echo 'hi'; ?>")
+    target = _find_build_target(str(tmp_path))
+    assert target["auto_generado"] is True
+    assert "php" in target["stack_detectado"]
+    content = open(target["path"]).read()
+    assert "FROM php:" in content
+    assert '-S", "0.0.0.0:8000"' in content
+
+
+def test_genericverify_prefers_dockerfile_compose_over_auto_detection(tmp_path):
+    # si el repo SI trae su propio Dockerfile/compose, nunca se genera uno propio por encima --
+    # el del autor del PoC siempre gana.
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "package.json").write_text('{"name": "poc"}')
+    (tmp_path / "Dockerfile").write_text("FROM node:18\nEXPOSE 3000\n")
+    target = _find_build_target(str(tmp_path))
+    assert not target.get("auto_generado")
+    assert target["path"].endswith("Dockerfile") and "auto" not in target["path"].lower()
+
+
+def test_bootstrap_generic_lab_flags_auto_generated_dockerfile_as_a_limitation(monkeypatch, tmp_path):
+    # cuando el Dockerfile es nuestro (no del autor del PoC), el informe debe dejarlo EXPLICITO
+    # -- nunca presentar un entorno que montamos nosotros a ciegas como si fuera el real del PoC.
+    import binoracle.workflows.genericverify as gv
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    (tmp_path / "requirements.txt").write_text("flask\n")
+
+    class _FakeCompletedProcess:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    class _FakeLab:
+        def __init__(self, tag):
+            pass
+        def build_and_run(self, target, **kw):
+            return _FakeCompletedProcess()
+        def discover_http(self, **kw):
+            return ("fake-container", "8080")
+        def teardown(self):
+            pass
+
+    monkeypatch.setattr(gv, "_GenericLab", _FakeLab)
+
+    res = WpVerifyResult()
+    boot = gv._bootstrap_generic_lab(str(tmp_path), lambda _m: None, res, 900.0)
+
+    assert boot is not None
+    assert res.evidence.get("dockerfile_auto_generado") is True
+    assert res.evidence.get("stack_detectado") == "requirements.txt"
+    assert any("Dockerfile/docker-compose.yml" in lim for lim in res.limitations)
+
+
 def test_genericverify_exposed_ports_from_dockerfile(tmp_path):
     from binoracle.workflows.genericverify import _exposed_ports_from_dockerfile
     df = tmp_path / "Dockerfile"

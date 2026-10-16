@@ -1,9 +1,12 @@
 """Verificacion dinamica CMS-AGNOSTICA: cuando el objetivo no es WordPress/Drupal/Joomla (un
-repo cualquiera que trae su PROPIO Dockerfile o docker-compose.yml), binoracle no se rinde --
-construye y arranca ESE Dockerfile/compose tal cual, en una red/entorno aislado propio, y
-verifica contra el contenedor real resultante, con la misma disciplina de prueba dura (nunca
-`verified=True` por un codigo de estado, siempre por una confirmacion independiente) que
-wpverify.py/drupalverify.py/joomlaverify.py.
+repo cualquiera), binoracle no se rinde -- si trae su PROPIO Dockerfile/docker-compose.yml, lo
+construye y arranca tal cual; si NO trae ninguno, intenta reconocer el stack por sus propios
+ficheros (package.json/requirements.txt/composer.json/*.php, ver _detect_and_write_auto_dockerfile)
+y genera un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a un numero
+pequeno de stacks comunes, nunca una garantia de arrancar CUALQUIER repo. En ambos casos, en una
+red/entorno aislado propio, y verifica contra el contenedor real resultante, con la misma
+disciplina de prueba dura (nunca `verified=True` por un codigo de estado, siempre por una
+confirmacion independiente) que wpverify.py/drupalverify.py/joomlaverify.py.
 
 Esto es deliberadamente mas limitado que los verificadores CMS-especificos: no hay login/sesion
 de por medio (no hay un flujo de autenticacion generico que valga para cualquier stack), asi que
@@ -38,11 +41,79 @@ _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target",
              "domain", "url", "path", "file", "name", "query", "search", "input")
 
 
+_AUTO_DOCKERFILE_NAME = ".binoracle_auto_Dockerfile"
+
+# deteccion de stack cuando el repo NO trae su propio Dockerfile/compose -- deliberadamente
+# acotada a los 3 casos mas comunes en PoCs publicos de CVEs web (Node/Python/PHP puro, sin
+# framework que exija su propio arranque especial como Django/Rails). Cada entrada: (fichero que
+# delata el stack, lineas del Dockerfile generado, puerto por defecto que se expone). Generalizar
+# a CUALQUIER stack sin acotar la lista seria adivinar a ciegas -- mejor una lista corta y
+# honesta que crece con casos reales confirmados, que una que finja cubrirlo todo.
+_STACK_SIGNALS = (
+    ("package.json", "node:20-alpine", 3000,
+     ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
+      'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
+    ("requirements.txt", "python:3.11-slim", 5000,
+     ["WORKDIR /app", "COPY . .",
+      "RUN pip install --no-cache-dir -r requirements.txt || true",
+      'CMD ["sh", "-c", "python app.py || python main.py || python manage.py runserver 0.0.0.0:5000"]']),
+    ("composer.json", "php:8.2-cli", 8000,
+     ["WORKDIR /app", "COPY . .",
+      "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
+      'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
+)
+# PHP sin composer.json (scripts sueltos, el caso mas comun en un PoC de un solo plugin/script
+# vulnerable): activa el servidor de desarrollo embebido de PHP, sirve cualquier .php del repo
+# tal cual, sin necesitar entender el proyecto.
+_PHP_BARE_DOCKERFILE = ["WORKDIR /app", "COPY . .",
+                       'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']
+
+
+def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
+    """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
+    ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
+    un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a Node/Python/PHP sin
+    framework (los 3 casos mas comunes en PoCs publicos), no un intento de adivinar cualquier
+    stack posible. El Dockerfile generado queda guardado en el propio directorio del codigo
+    (_AUTO_DOCKERFILE_NAME) para que quede constancia de que NO es el del autor del PoC -- el
+    `step()` del caller debe dejarlo igual de explicito en el informe."""
+    for signal_file, base_image, port, run_lines in _STACK_SIGNALS:
+        if os.path.isfile(os.path.join(source_dir, signal_file)):
+            lines = [f"FROM {base_image}"] + run_lines + [f"EXPOSE {port}"]
+            path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
+            with open(path, "w") as f:
+                f.write("\n".join(lines) + "\n")
+            return {"kind": "dockerfile", "path": path, "context": source_dir,
+                   "auto_generado": True, "stack_detectado": signal_file}
+    has_bare_php = any(fn.lower().endswith(".php")
+                      for fn in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, fn)))
+    if not has_bare_php:
+        for root, dirs, files in os.walk(source_dir):
+            depth = root[len(source_dir):].count(os.sep)
+            if depth > 2:
+                dirs[:] = []
+                continue
+            if any(fn.lower().endswith(".php") for fn in files):
+                has_bare_php = True
+                break
+    if has_bare_php:
+        lines = ["FROM php:8.2-cli"] + _PHP_BARE_DOCKERFILE + ["EXPOSE 8000"]
+        path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return {"kind": "dockerfile", "path": path, "context": source_dir,
+               "auto_generado": True, "stack_detectado": "*.php (sin composer.json)"}
+    return None
+
+
 def _find_build_target(source_dir: str) -> Optional[dict]:
     """Busca, en el codigo YA descargado, como arrancar el objetivo -- un docker-compose.yml/
     compose.yml (en la raiz o un nivel por debajo, el sitio donde casi todo el mundo lo pone), o
-    si no hay, un Dockerfile suelto. Devuelve None si no hay ninguna de las dos formas: sin eso,
-    no hay nada que montar sin adivinar el stack a ciegas."""
+    si no hay, un Dockerfile suelto. Si NINGUNO de los dos existe, intenta detectar el stack por
+    sus propios ficheros (package.json/requirements.txt/composer.json/*.php) y generar un
+    Dockerfile minimo propio (ver _detect_and_write_auto_dockerfile) -- deliberadamente acotado a
+    un numero pequeno de stacks comunes, nunca una garantia de arrancar CUALQUIER repo. Devuelve
+    None solo si nada de esto aplica."""
     for root, dirs, files in os.walk(source_dir):
         depth = root[len(source_dir):].count(os.sep)
         if depth > 2:
@@ -58,7 +129,7 @@ def _find_build_target(source_dir: str) -> Optional[dict]:
             continue
         if "Dockerfile" in files:
             return {"kind": "dockerfile", "path": os.path.join(root, "Dockerfile"), "context": root}
-    return None
+    return _detect_and_write_auto_dockerfile(source_dir)
 
 
 def _exposed_ports_from_dockerfile(path: str) -> List[int]:
@@ -253,12 +324,28 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`."""
     target = _find_build_target(source_dir)
     if target is None:
-        res.detail = "no se encontro Dockerfile ni docker-compose.yml en el codigo descargado"
+        res.detail = ("no se encontro Dockerfile ni docker-compose.yml en el codigo descargado, "
+                      "y el stack tampoco se reconocio por sus ficheros propios (package.json/"
+                      "requirements.txt/composer.json/*.php)")
         res.limitations.append("la verificacion generica SOLO puede montar un objetivo que "
-                               "traiga su propio Dockerfile/docker-compose.yml -- sin eso no "
-                               "hay forma de arrancarlo sin adivinar el stack")
+                               "traiga su propio Dockerfile/docker-compose.yml, o cuyo stack se "
+                               "reconozca por sus ficheros propios (Node/Python/PHP) -- fuera de "
+                               "eso no hay forma de arrancarlo sin adivinar a ciegas")
         return None
-    step(f"objetivo generico detectado: {target['kind']} en {target['path']}")
+    if target.get("auto_generado"):
+        step(f"objetivo generico SIN Dockerfile/compose propio -- stack detectado por "
+             f"'{target['stack_detectado']}', generando un Dockerfile minimo propio para "
+             f"arrancarlo (NO es el del autor del PoC)...")
+        res.evidence["dockerfile_auto_generado"] = True
+        res.evidence["stack_detectado"] = target["stack_detectado"]
+        res.limitations.append(
+            f"el objetivo no traia su propio Dockerfile/docker-compose.yml -- se genero uno "
+            f"MINIMO propio a partir del stack detectado ('{target['stack_detectado']}'), "
+            f"acotado a Node/Python/PHP sin framework; si el proyecto real necesita variables de "
+            f"entorno, servicios auxiliares (base de datos, cache) o un arranque distinto, puede "
+            f"no levantar correctamente -- revisa los logs si el objetivo no responde")
+    else:
+        step(f"objetivo generico detectado: {target['kind']} en {target['path']}")
 
     lab = _GenericLab(_token())
     step("construyendo y arrancando el objetivo (docker build/compose, puede tardar)...")
