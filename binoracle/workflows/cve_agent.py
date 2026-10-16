@@ -1508,6 +1508,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
                 _apply_wpverify_result(inv, wr, es, llm)
+            # "cualquier entorno": fallback generico de IDOR (ver genericverify.py) para cuando
+            # el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
+            # docker-compose.yml -- DELIBERADAMENTE mas debil que el IDOR de WordPress/Drupal/
+            # Joomla (no hay sesion autenticada generica posible sin conocer el stack): nunca
+            # marca `verified`, solo deja constancia de una diferencia real observada sin login.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class == "idor" and notes.get("endpoint")):
+                from .genericverify import verify_generic_idor, _pick_param
+                from .wpverify import _ID_HINTS
+                params = notes.get("parameters") or []
+                id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
+                step(("intentando verificacion DINAMICA GENERICA -- diferencia SIN sesion "
+                     "(mas debil que con cuentas reales), el objetivo se construye desde su "
+                     "propio Dockerfile/compose..." if es else
+                     "attempting GENERIC DYNAMIC verification -- no-session difference "
+                     "(weaker than with real accounts), the target is built from its own "
+                     "Dockerfile/compose..."))
+                wr = verify_generic_idor(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    params, id_param_hint=id_p or "", on_step=step, budget_s=budget_s)
+                _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir

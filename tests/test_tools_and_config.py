@@ -5259,6 +5259,66 @@ def test_genericverify_path_traversal_blocked_without_build_target(monkeypatch, 
     assert "Dockerfile" in res.limitations[0]
 
 
+def test_genericverify_idor_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_idor(str(tmp_path), "/view", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "ID" in res.limitations[0]
+
+
+def test_genericverify_idor_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_idor(str(tmp_path), "/view", "GET", {"id": "1"},
+                                 id_param_hint="id")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_idor_never_verified_even_on_real_difference(monkeypatch, tmp_path):
+    # el punto central de esta version generica: aunque las dos respuestas difieran de verdad
+    # (sin ningun error), NUNCA debe marcar `verified` -- no hay sesion autenticada de por medio,
+    # asi que esto no confirma un IDOR real (acceso sin permiso al recurso de OTRO usuario),
+    # solo que el ID resuelve contenido distinto. Mezclarlo con el nivel de prueba de WordPress/
+    # Drupal/Joomla (dos cuentas reales) seria enganoso.
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+
+    class _R:
+        def __init__(self, status_code, text):
+            self.status_code = status_code
+            self.text = text
+
+    responses = {"1": _R(200, "<html>tu propio recurso, perfil A</html>"),
+                "2": _R(200, "<html>recurso de otro usuario, perfil B, datos privados</html>")}
+
+    def fake_http_request(method, url, **kw):
+        params = kw.get("params") or kw.get("data") or {}
+        return responses[params["id"]]
+
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    monkeypatch.setattr(gv, "_http_request", fake_http_request)
+
+    res = gv.verify_generic_idor(str(tmp_path), "/view", "GET", {"id": "1"},
+                                 id_param_hint="id", own_id="1", victim_id="2")
+
+    assert res.verified is False    # NUNCA, sea cual sea la diferencia observada
+    assert res.ok is True
+    assert res.evidence.get("diferencia_observada") is True
+    assert "DIFERENCIA REAL observada" in res.detail
+    assert "NO confirma" in res.detail
+    assert any("NUNCA" in lim or "nunca" in lim for lim in res.limitations)
+
+
 def test_genericverify_ssrf_blocked_without_param(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
@@ -5346,6 +5406,36 @@ def test_cve_agent_dispatches_generic_ssrf_for_unrecognized_source(monkeypatch, 
     _run_web_investigation(inv, lang="es", step=lambda m: None)
     assert called.get("endpoint") == "/fetch"
     assert inv.verified is True
+
+
+def test_cve_agent_dispatches_generic_idor_for_unrecognized_source(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    called = {}
+    def fake_generic_idor(local_path, endpoint, method, params, id_param_hint="", own_id="1",
+                          victim_id="2", on_step=None, budget_s=900.0):
+        called["endpoint"] = endpoint
+        from binoracle.workflows.wpverify import WpVerifyResult
+        res = WpVerifyResult(ok=True, available=True, verified=False,
+                             detail="DIFERENCIA REAL observada (fake, nunca verificado)")
+        return res
+    monkeypatch.setattr(genericverify, "verify_generic_idor", fake_generic_idor)
+
+    inv = Investigation(cve_id="CVE-2099-00009")
+    inv.vuln_class = "idor"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/profile", "http_method": "GET", "parameters": {"id": "1"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("endpoint") == "/profile"
+    assert inv.verified is False    # esta version nunca marca verified=True
 
 
 def test_genericverify_sqli_blind_blocked_without_param(monkeypatch, tmp_path):

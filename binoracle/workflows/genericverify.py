@@ -18,10 +18,10 @@ import subprocess
 import time
 from typing import Callable, List, Optional
 
-from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _PATH_HINTS, _REDIRECT_HINTS, _SQLI_HINTS,
-                       _URL_HINTS, _XML_HINTS, _XSS_HINTS, _XssBrowserSession, _docker_daemon_ok,
-                       _http_request, _lab_host, _pick_param, _redirect_location_is_external,
-                       _run, _token, configure_burp_mcp)
+from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _ID_HINTS, _PATH_HINTS, _REDIRECT_HINTS,
+                       _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS, _XssBrowserSession,
+                       _docker_daemon_ok, _http_request, _lab_host, _pick_param,
+                       _redirect_location_is_external, _run, _token, configure_burp_mcp)
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
                          load_ssti_arithmetic_payloads, load_xss_payloads)
 import secrets
@@ -485,6 +485,109 @@ def verify_generic_path_traversal(
                           f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
                           f"(puede necesitar otra profundidad/codificacion, o el "
                           f"endpoint/parametro no son los reales)")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
+def verify_generic_idor(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    id_param_hint: str = "", own_id: str = "1", victim_id: str = "2",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Version DELIBERADAMENTE MAS DEBIL del IDOR que verify_wordpress_account_takeover y
+    similares confirman en WordPress/Drupal/Joomla: aqui NO hay ningun flujo de login generico
+    (no hay forma de autenticar contra un stack arbitrario sin conocerlo), asi que esto no puede
+    demostrar "un usuario sin permiso accede al recurso de otro" -- solo "pedir el mismo
+    endpoint con dos IDs distintos, SIN SESION, devuelve contenido realmente distinto para cada
+    uno (no solo un generico 403/404 igual para ambos)". Eso es una senal real de que el ID se
+    usa para resolver un recurso concreto sin mas comprobacion visible desde fuera, pero es
+    MUCHO mas floja que una confirmacion con dos cuentas reales -- `res.verified` nunca se pone
+    a True aqui, solo `res.ok`, precisamente para no igualar ambos niveles de prueba en el
+    informe. Pensado para CVEs IDOR en codigo que no es WordPress/Drupal/Joomla pero trae su
+    propio Dockerfile/docker-compose.yml (ver _bootstrap_generic_lab)."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    id_param = id_param_hint or _pick_param(parameters, _ID_HINTS)
+    if not id_param:
+        res.detail = "no se identifico el parametro que lleva el ID del recurso"
+        res.limitations.append("la verificacion de IDOR necesita saber que parametro lleva el "
+                               "ID del recurso; afina 'parameters' o pasalo a mano "
+                               "(id_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "metodo": m, "id_param": id_param, "own_id": own_id,
+                             "victim_id": victim_id})
+        res.limitations.append(
+            "esta verificacion generica NO usa ninguna sesion autenticada (no hay forma de "
+            "iniciar sesion contra un stack arbitrario sin conocerlo de antemano) -- solo "
+            "compara dos respuestas SIN login, nunca confirma que un usuario sin permiso "
+            "accede al recurso de OTRO usuario concreto. Es una prueba REAL pero deliberadamente "
+            "mas debil que la de WordPress/Drupal/Joomla (que SI usa dos cuentas reales); nunca "
+            "se marca 'verificado' con esto, solo se deja constancia de la diferencia observada")
+
+        def req(id_value):
+            payload = dict(base_params)
+            payload[id_param] = id_value
+            return _http_request(m, base_url + endpoint, timeout=15,
+                                 data=payload if m != "GET" else None,
+                                 params=payload if m == "GET" else None)
+
+        try:
+            resp_own = req(own_id)
+            resp_victim = req(victim_id)
+        except Exception as e:
+            res.detail = f"la peticion de comparacion fallo: {e}"
+            return res
+
+        own_text, victim_text = (resp_own.text or ""), (resp_victim.text or "")
+        res.evidence["status_propio"] = resp_own.status_code
+        res.evidence["status_victima"] = resp_victim.status_code
+        res.evidence["respuesta_propia_recorte"] = own_text[:300]
+        res.evidence["respuesta_victima_recorte"] = victim_text[:300]
+
+        both_ok = resp_own.status_code < 400 and resp_victim.status_code < 400
+        differs = own_text != victim_text and len(victim_text) > 20
+        res.ok = True
+        if both_ok and differs:
+            res.evidence["diferencia_observada"] = True
+            res.detail = (f"DIFERENCIA REAL observada (prueba mas debil, SIN sesion): "
+                          f"{id_param}={own_id!r} y {id_param}={victim_id!r} devolvieron "
+                          f"contenido DISTINTO, ambos con status < 400 -- indicio de que el ID "
+                          f"resuelve un recurso concreto sin mas comprobacion visible desde "
+                          f"fuera. Esto NO confirma el impacto real de un IDOR (eso exige dos "
+                          f"cuentas reales con y sin permiso); solo que el servidor distingue "
+                          f"entre IDs sin rechazar ninguno")
+            step(f"diferencia real observada entre {id_param}={own_id!r} y {id_param}="
+                 f"{victim_id!r} (prueba mas debil, sin sesion)")
+        else:
+            res.evidence["diferencia_observada"] = False
+            res.detail = (f"{id_param}={own_id!r} (status {resp_own.status_code}) y "
+                          f"{id_param}={victim_id!r} (status {resp_victim.status_code}) no "
+                          f"mostraron una diferencia real -- el IDOR no se confirmo (puede "
+                          f"necesitar otro endpoint/parametro, o ambos IDs estan igualmente "
+                          f"bloqueados/permitidos)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
