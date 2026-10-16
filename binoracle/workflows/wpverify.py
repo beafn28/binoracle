@@ -791,6 +791,16 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     if r.returncode != 0:
         res.detail = f"wp core install fallo: {(r.stderr or r.stdout or '')[:300]}"
         return None
+    # WP_DEBUG + WP_DEBUG_DISPLAY activados en el laboratorio efimero -- confirmado en vivo,
+    # CVE-2024-3552: sin esto, wpdb oculta cualquier error real de MySQL (p.ej. el que provocan
+    # a proposito extractvalue()/updatexml() en el error-based) y, desde WP 5.2, un fatal error
+    # de PHP se sustituye por la pantalla generica "ha ocurrido un error critico" -- asi que la
+    # tecnica error-based no puede funcionar NUNCA contra un WordPress con la configuracion de
+    # fabrica, independientemente de si la inyeccion es real o no. Un laboratorio de pruebas
+    # propio, efimero, no es el objetivo final del analista: no hay nada que proteger activando
+    # esto solo aqui.
+    for dbg_const in ("WP_DEBUG", "WP_DEBUG_DISPLAY"):
+        lab.wp_cli("config", "set", dbg_const, "true", "--raw", "--type=constant", timeout=30)
     admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
     step(f"WordPress instalado; admin id={admin_id}")
     step("capturando pantalla: WordPress recien instalado y en pie (laboratorio en vivo)...")

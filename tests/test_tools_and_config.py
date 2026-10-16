@@ -6901,6 +6901,67 @@ def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_pa
     assert "no se pudo iniciar sesion" in (res.detail or "")
 
 
+def test_bootstrap_lab_enables_wp_debug_display_before_attacking(monkeypatch, tmp_path):
+    # bug real confirmado en vivo, CVE-2024-3552: con la configuracion de fabrica, wpdb oculta
+    # cualquier error real de MySQL (p.ej. el que provocan a proposito extractvalue()/
+    # updatexml() en la tecnica error-based) y, desde WP 5.2, un fatal error de PHP se sustituye
+    # por la pantalla generica "ha ocurrido un error critico" -- asi que error-based no puede
+    # funcionar NUNCA contra un laboratorio de pruebas con la configuracion de fabrica,
+    # independientemente de si la inyeccion es real. _bootstrap_lab debe activar WP_DEBUG y
+    # WP_DEBUG_DISPLAY nada mas instalar el core, antes de copiar el plugin objetivo.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            calls.append(args)
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            calls.append(("install_plugin",) + a)
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: None)
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "web-directory-free", lambda _m: None, res, _time.time(),
+        1200.0)
+
+    debug_calls = [c for c in calls if c[:2] == ("config", "set")]
+    assert ("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant") in debug_calls
+    assert ("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant") in debug_calls
+    install_idx = next(i for i, c in enumerate(calls) if c and c[0] == "install_plugin")
+    debug_idxs = [i for i, c in enumerate(calls) if c[:2] == ("config", "set")]
+    assert debug_idxs and all(i < install_idx for i in debug_idxs)
+
+
 def test_bootstrap_lab_installs_companion_plugins_before_target_plugin(monkeypatch, tmp_path):
     # bug real confirmado en vivo, CVE-2024-50508: el plugin objetivo no registra NINGUN hook si
     # WooCommerce no esta activo (su constructor corta en seco antes) -- _bootstrap_lab debe
