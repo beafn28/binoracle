@@ -1508,6 +1508,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
                 _apply_wpverify_result(inv, wr, es, llm)
+                # escalada: path-traversal (clase de la hipotesis) puede en realidad ser LFI-a-
+                # RCE si el parametro INCLUYE el fichero como codigo en vez de solo servirlo --
+                # envenenamiento del log de acceso propio, prueba independiente y mas fuerte (ver
+                # verify_generic_lfi_rce). Se intenta SIEMPRE que haya Docker, confirmado o no el
+                # traversal de solo-lectura -- si confirma, pisa el resultado con el hallazgo mas
+                # fuerte (RCE, no solo lectura); si no, anade el intento como blocker extra.
+                if wr.available:
+                    from .genericverify import verify_generic_lfi_rce
+                    step(("probando escalada LFI-a-RCE -- envenenamiento del log de acceso "
+                         "propio..." if es else
+                         "attempting LFI-to-RCE escalation -- own access-log poisoning..."))
+                    wr_rce = verify_generic_lfi_rce(
+                        fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                        params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
+                    _apply_wpverify_result(inv, wr_rce, es, llm)
             # "cualquier entorno": fallback generico de IDOR (ver genericverify.py) para cuando
             # el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
             # docker-compose.yml -- DELIBERADAMENTE mas debil que el IDOR de WordPress/Drupal/

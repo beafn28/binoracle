@@ -5356,6 +5356,134 @@ def test_genericverify_path_traversal_blocked_without_build_target(monkeypatch, 
     assert "Dockerfile" in res.limitations[0]
 
 
+def test_genericverify_lfi_rce_blocked_without_param(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    res = gv.verify_generic_lfi_rce(str(tmp_path), "/view", "GET", {})
+    assert res.verified is False
+    assert res.limitations
+    assert "parametro" in res.limitations[0]
+
+
+def test_genericverify_lfi_rce_blocked_without_build_target(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "README.md").write_text("no docker here\n")
+    res = gv.verify_generic_lfi_rce(str(tmp_path), "/view", "GET", {"page": "x"},
+                                    path_param_hint="page")
+    assert res.verified is False
+    assert res.limitations
+    assert "Dockerfile" in res.limitations[0]
+
+
+def test_genericverify_lfi_rce_confirms_only_on_real_execution(monkeypatch, tmp_path):
+    # el punto central: solo se marca verificado si el marcador aparece EJECUTADO (resultado de
+    # system(), sin las etiquetas '<?php' alrededor) -- el payload crudo reflejado (con '<?php'
+    # literal en la respuesta) demuestra LECTURA, nunca ejecucion, y no debe confundirse con RCE.
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+
+    marker = "binoracle_lfi_rce_fixedtoken1234"
+
+    def fake_http_request(method, url, **kw):
+        class _R:
+            def __init__(self, status_code, text):
+                self.status_code = status_code
+                self.text = text
+        if "headers" in kw:
+            return _R(200, "")   # peticion de envenenamiento del log
+        params = kw.get("params") or kw.get("data") or {}
+        path_value = params.get("page", "")
+        # la ruta de log "buena" (la primera, sin traversal) ejecuta de verdad
+        if path_value == "/var/log/apache2/access.log":
+            return _R(200, f"some output {marker} more output")
+        return _R(200, "<html>not found</html>")
+
+    import time as _time_mod
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    monkeypatch.setattr(_time_mod, "sleep", lambda *a: None)
+    monkeypatch.setattr(gv, "_token", lambda: "fixedtoken1234")
+    monkeypatch.setattr(gv, "_http_request", fake_http_request)
+
+    res = gv.verify_generic_lfi_rce(str(tmp_path), "/view", "GET", {"page": "x"},
+                                    path_param_hint="page")
+
+    assert res.verified is True
+    assert "LFI-A-RCE confirmado" in res.detail
+    assert res.evidence.get("payload_ganador") == "/var/log/apache2/access.log"
+
+
+def test_genericverify_lfi_rce_raw_reflection_is_not_confirmed(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+
+    def fake_http_request(method, url, **kw):
+        class _R:
+            status_code = 200
+            text = "<?php system('echo binoracle_lfi_rce_x'); ?> binoracle_lfi_rce_x"
+        return _R()
+
+    import time as _time_mod
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    monkeypatch.setattr(_time_mod, "sleep", lambda *a: None)
+    monkeypatch.setattr(gv, "_token", lambda: "x")
+    monkeypatch.setattr(gv, "_http_request", fake_http_request)
+
+    res = gv.verify_generic_lfi_rce(str(tmp_path), "/view", "GET", {"page": "x"},
+                                    path_param_hint="page")
+
+    assert res.verified is False   # reflejado crudo, NUNCA se confunde con ejecucion
+    assert "no se confirmo" in res.detail
+    assert "LECTURA" in res.detail
+
+
+def test_cve_agent_escalates_path_traversal_to_lfi_rce_when_available(monkeypatch, tmp_path):
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    def fake_pt(local_path, endpoint, method, params, path_param_hint="", on_step=None,
+               budget_s=900.0):
+        return WpVerifyResult(ok=True, available=True, verified=False,
+                              detail="no se confirmo el traversal de solo lectura (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_path_traversal", fake_pt)
+
+    called = {}
+    def fake_lfi_rce(local_path, endpoint, method, params, path_param_hint="", on_step=None,
+                     budget_s=900.0):
+        called["ran"] = True
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="LFI-A-RCE confirmado (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_lfi_rce", fake_lfi_rce)
+
+    inv = Investigation(cve_id="CVE-2099-00011")
+    inv.vuln_class = "path-traversal"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/view", "http_method": "GET", "parameters": {"page": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert called.get("ran") is True
+    assert inv.verified is True   # la escalada pisa el resultado con el hallazgo mas fuerte
+    assert "LFI-A-RCE" in inv.verified_detail
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)

