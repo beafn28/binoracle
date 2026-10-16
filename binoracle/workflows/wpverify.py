@@ -1710,6 +1710,12 @@ def verify_wordpress_sqli(
             res.detail = f"la peticion de control fallo: {e}"
             return res
         base_len = len(base_resp.text or "")
+        # recorte del cuerpo real de la peticion de CONTROL (sin inyeccion) -- confirmado en
+        # vivo, CVE-2024-3552: un negativo sin esto no se puede diagnosticar sin relanzar el
+        # ataque a mano; con el cuerpo real delante se ve al momento si el servidor esta
+        # devolviendo lo esperado (p.ej. no un error fatal de PHP, no un redirect inesperado...)
+        # para la peticion mas simple de todas, ANTES de intentar nada mas complicado.
+        res.evidence["respuesta_control_recorte"] = (base_resp.text or "")[:300]
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
         # contextos de inyeccion: el query real puede envolver el valor en comillas simples,
         # dobles, un parentesis, o nada (contexto numerico) -- probar los cuatro en vez de asumir
@@ -1731,7 +1737,8 @@ def verify_wordpress_sqli(
                         continue
                     new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
                     error_tried.append({"payload": payload_val, "status": r.status_code,
-                                        "version_nueva": sorted(new_versions)})
+                                        "version_nueva": sorted(new_versions),
+                                        "respuesta_cuerpo_recorte": (r.text or "")[:300]})
                     if new_versions:
                         error_found = (payload_val, sorted(new_versions)[0], r)
                         break
@@ -1766,6 +1773,10 @@ def verify_wordpress_sqli(
                        f"contains the database engine's real version ({mysql_version}).")
             res.evidence["screenshots"] = boot.shots
             return res
+        # se guarda la lista COMPLETA de intentos (con el cuerpo real de cada respuesta), no solo
+        # un resumen -- confirmado en vivo, CVE-2024-3552: sin esto, un negativo era indiagnosticable
+        # sin relanzar el ataque a mano para ver que contestaba el servidor de verdad.
+        res.evidence["error_based_intentos"] = error_tried
         res.evidence["error_based_intentos_resumen"] = (f"{len(error_tried)} combinaciones "
                                                          f"probadas, ninguna filtro version()")
 
@@ -1827,6 +1838,7 @@ def verify_wordpress_sqli(
             res.evidence["screenshots"] = boot.shots
             return res
 
+        res.evidence["union_intentos"] = union_tried
         res.evidence["union_intentos_resumen"] = (f"{len(union_tried)} combinaciones probadas, "
                                                    f"ninguna filtro version()")
         step("UNION no filtro nada; probando boolean-based (diferencial TRUE/FALSE)...")
@@ -1852,7 +1864,8 @@ def verify_wordpress_sqli(
             matches_base = abs(lt - base_len) <= threshold
             bool_tried.append({"true": true_p, "false": false_p, "status_true": rt.status_code,
                                "status_false": rf.status_code, "len_true": lt, "len_false": lf,
-                               "difiere": differs, "true_coincide_con_base": matches_base})
+                               "difiere": differs, "true_coincide_con_base": matches_base,
+                               "respuesta_true_recorte": (rt.text or "")[:300]})
             if differs and matches_base:
                 consistent_diffs += 1
         res.evidence["boolean_intentos"] = bool_tried
@@ -1921,11 +1934,18 @@ def verify_wordpress_sqli(
                  f"mostraron retraso consistente")
         else:
             res.ok = True
+            # el cuerpo real de la peticion de CONTROL (la mas simple de todas) es la pista mas
+            # util para diagnosticar un negativo sin relanzar el ataque a mano: un error fatal
+            # de PHP, un redirect inesperado, o un cuerpo vacio apuntan a algo del servidor/la
+            # ruta del ataque, no a que el payload sea el equivocado.
+            control_sample = res.evidence.get("respuesta_control_recorte") or ""
             res.detail = (f"error-based ({len(error_tried)}) y UNION-based ({len(union_tried)}) "
                           f"no filtraron version(), boolean-blind no mostro diferencia consistente "
                           f"({consistent_diffs}/{len(pairs)}) y time-based blind tampoco "
                           f"({timing_consistent}/{len(timing_pairs)}) -- la inyeccion SQL no se "
-                          f"confirmo")
+                          f"confirmo" +
+                          (f". Respuesta real de la peticion de control: {control_sample!r}"
+                           if control_sample else ""))
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

@@ -7648,6 +7648,49 @@ def test_verify_wordpress_path_traversal_surfaces_real_response_body_on_negative
     assert all("respuesta_cuerpo_recorte" in t for t in res.evidence["intentos"])
 
 
+def test_verify_wordpress_sqli_surfaces_real_response_body_on_negative(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-3552: ninguna de las ~390 peticiones (error-based,
+    # UNION, boolean-blind, time-based) contra el sink real y confirmado (level_filter_where /
+    # w2dc_level_filter) confirmo la inyeccion, y el informe final no daba ninguna pista de que
+    # estaba devolviendo el servidor de verdad -- exactamente el mismo problema que ya se habia
+    # arreglado para path-traversal. Ahora el cuerpo real de la respuesta de CONTROL (sin
+    # inyeccion) va en la evidencia, y cada intento error-based/boolean-blind lleva su propio
+    # recorte, para poder diagnosticar un negativo sin tener que relanzar el ataque a mano.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeLab:
+        def write_canary(self, path, secret):
+            return True
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"status":"ok","listings":[]}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=_FakeLab(), base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    # el time-based blind mide retrasos reales con time.time(); como el fake nunca tarda, no hay
+    # necesidad de mockear time.sleep -- solo evitamos que el bucle real de 7 pares se demore de
+    # verdad frenando el test (el fake responde al instante, asi que no hace falta nada mas).
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/", "GET", {"w2dc_level_filter": "1"},
+        sqli_param_hint="w2dc_level_filter")
+
+    assert res.verified is False
+    assert "la inyeccion SQL no se confirmo" in res.detail
+    assert res.evidence.get("respuesta_control_recorte") == '{"status":"ok","listings":[]}'
+    assert "Respuesta real de la peticion de control" in res.detail
+    assert all("respuesta_cuerpo_recorte" in t for t in res.evidence["error_based_intentos"])
+    assert all("respuesta_true_recorte" in t for t in res.evidence["boolean_intentos"])
+
+
 def test_verify_wordpress_path_traversal_falls_back_to_etc_passwd(monkeypatch):
     # cuando el canario propio (en /tmp) no se confirma, se prueba tambien /etc/passwd literal --
     # el objetivo EXACTO del PoC publico ya divulgado. Si ESO si se confirma, el traversal es
