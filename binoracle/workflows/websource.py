@@ -803,6 +803,84 @@ def grep_vulnerable_functions(root: str, names: List[str]) -> dict:
     return {"found": {n: v for n, v in found.items() if v}, "not_found": not_found}
 
 
+@dataclass
+class SqlSink:
+    param: str          # nombre del superglobal leido ($_GET['x'] -> 'x')
+    function: str       # funcion que contiene la linea, si se reconoce ('' si no)
+    file: str
+    line: int
+    snippet: str
+
+
+_SUPERGLOBAL_READ_RE = re.compile(r"\$_(?:GET|POST|REQUEST)\s*\[\s*['\"]([A-Za-z0-9_\[\]]+)['\"]\s*\]")
+# confirmado en vivo, CVE-2024-3552: la hipotesis del LLM citaba 'w2dc_get_map_marker_info' (una
+# consulta YA parametrizada con %d, segura de verdad) como la funcion vulnerable, pero el
+# verdadero sumidero sin saneo ('$where .= "...". $_GET['w2dc_level_filter'] . "..."') estaba en
+# OTRA funcion por completo (level_filter_where), nunca citada por el LLM ni por el PoC publico
+# -- grep_vulnerable_functions() solo confirma nombres YA CITADOS, nunca iba a encontrar esto.
+# Heuristica: una linea que lee un superglobal ($_GET/$_POST/$_REQUEST) y, en esa MISMA linea,
+# tambien usa el operador de concatenacion '.' junto a una variable con pinta de SQL ($where/
+# $query/$sql/$join/$order/$having) o una llamada directa a $wpdb->query/get_results/get_var/
+# get_row con una cadena construida con '.' -- la MISMA forma que el bug real, no una suposicion
+# generica. Deliberadamente simple (regex, no parser real de PHP): cubre el patron universal de
+# WordPress ("querystring => WHERE/JOIN de un WP_Query sin wpdb->prepare()"), no garantiza que
+# CADA resultado sea explotable (un falso positivo posible es %d/intval() en la MISMA linea, que
+# si saneara) -- pensado para ENSENAR al analista/LLM donde mirar, no para marcar verificado.
+_SQL_VAR_HINT_RE = re.compile(
+    r"\$(?:where|query|sql|join|order|having|order_by)\b.*\.(?!\s*=\s*['\"])|"
+    r"\$wpdb\s*->\s*(?:query|get_results|get_var|get_row)\s*\(", re.IGNORECASE)
+_SANITIZER_NEARBY_RE = re.compile(
+    r"\bintval\s*\(|\babsint\s*\(|%d\b|%s\b|->\s*prepare\s*\(|\(int\)|\besc_sql\s*\(",
+    re.IGNORECASE)
+
+
+def find_unsafe_sql_concat_sinks(local_path: str, plugin_dir: str) -> List[SqlSink]:
+    """Busca, en TODO el codigo del plugin (no solo la funcion que cito el LLM), lineas que leen
+    un parametro de la peticion ($_GET/$_POST/$_REQUEST) y lo concatenan directo en una variable/
+    llamada con pinta de SQL, SIN ningun saneo visible en la misma linea (intval()/%d/%s/
+    prepare()/esc_sql()) -- el patron real de SQL injection por concatenacion, al contrario que
+    grep_vulnerable_functions() (que solo confirma si un nombre YA CITADO existe). Pensado para
+    cuando la hipotesis del LLM/el PoC publico cita una funcion que resulta estar bien
+    parametrizada: en vez de rendirse, esto busca en el resto del plugin un sumidero real que la
+    hipotesis nunca menciono. Heuristico (regex, no AST): puede dar falsos positivos (saneo en
+    otra linea, no en la misma) y falsos negativos (concatenacion repartida en varias lineas) --
+    pensado para ENSENAR donde mirar, nunca para marcar nada como verificado por si solo."""
+    base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    sinks: List[SqlSink] = []
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(base):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            current_function = ""
+            for i, line in enumerate(lines):
+                fn_m = re.search(r"\bfunction\s+([A-Za-z0-9_]+)\s*\(", line)
+                if fn_m:
+                    current_function = fn_m.group(1)
+                sg_m = _SUPERGLOBAL_READ_RE.search(line)
+                if not sg_m:
+                    continue
+                if not _SQL_VAR_HINT_RE.search(line):
+                    continue
+                if _SANITIZER_NEARBY_RE.search(line):
+                    continue
+                sinks.append(SqlSink(param=sg_m.group(1), function=current_function,
+                                     file=os.path.relpath(fp, base), line=i + 1,
+                                     snippet=line.strip()[:300]))
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return sinks
+
+
 def extract_function_body(local_path: str, relative_file: str, start_line: int,
                           max_lines: int = 40) -> Optional[str]:
     """Extrae el cuerpo real de una funcion ya localizada (fichero/linea exactos, p.ej. de

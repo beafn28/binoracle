@@ -3611,6 +3611,58 @@ def test_extract_function_body_returns_none_for_missing_file_or_bad_line(tmp_pat
     assert extract_function_body(str(tmp_path), "f.php", 999) is None
 
 
+def test_find_unsafe_sql_concat_sinks_finds_real_bug_confirmed_live(tmp_path):
+    # bug real confirmado en vivo, CVE-2024-3552: la hipotesis del LLM citaba
+    # 'w2dc_get_map_marker_info' (una consulta YA parametrizada con %d, segura de verdad) --
+    # pero el sumidero sin saneo real estaba en OTRA funcion, 'level_filter_where', que ni el
+    # LLM ni el PoC publico mencionaban. grep_vulnerable_functions nunca lo iba a encontrar
+    # porque no esta buscando ese nombre -- esto busca el PATRON de la inyeccion en todo el
+    # plugin, no un nombre ya citado.
+    from binoracle.workflows.websource import find_unsafe_sql_concat_sinks
+    plugin_dir = tmp_path / "web-directory-free"
+    sub = plugin_dir / "classes" / "listings"
+    sub.mkdir(parents=True)
+    (sub / "listings_manager.php").write_text(
+        "<?php\n"
+        "function level_filter_join($join = '') {\n"
+        "    global $wpdb;\n"
+        "    if (isset($_GET['w2dc_level_filter']) && $_GET['w2dc_level_filter'])\n"
+        "        $join .= \" LEFT JOIN {$wpdb->w2dc_levels_relationships} AS w2dc_lr\";\n"
+        "    return $join;\n"
+        "}\n"
+        "\n"
+        "public function level_filter_where($where = '') {\n"
+        "    if (isset($_GET['w2dc_level_filter']) && $_GET['w2dc_level_filter'])\n"
+        "        $where .= \" AND (w2dc_lr.level_id=\" . $_GET['w2dc_level_filter'] . \")\";\n"
+        "    return $where;\n"
+        "}\n"
+        "\n"
+        "function safe_one($where = '') {\n"
+        "    $id = intval($_GET['id']);\n"
+        "    $where .= \" AND id=\" . $id;\n"
+        "    return $where;\n"
+        "}\n")
+
+    sinks = find_unsafe_sql_concat_sinks(str(tmp_path), "web-directory-free")
+    assert len(sinks) == 1
+    assert sinks[0].function == "level_filter_where"
+    assert sinks[0].param == "w2dc_level_filter"
+    assert sinks[0].file.endswith("listings_manager.php")
+
+
+def test_find_unsafe_sql_concat_sinks_empty_when_all_sanitized(tmp_path):
+    from binoracle.workflows.websource import find_unsafe_sql_concat_sinks
+    plugin_dir = tmp_path / "clean-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "main.php").write_text(
+        "<?php\n"
+        "function get_row($wpdb) {\n"
+        "    $id = intval($_GET['id']);\n"
+        "    return $wpdb->get_row($wpdb->prepare(\"SELECT * FROM t WHERE id=%d\", $id));\n"
+        "}\n")
+    assert find_unsafe_sql_concat_sinks(str(tmp_path), "clean-plugin") == []
+
+
 def test_find_plugin_main_file_locates_by_header_not_slug_name(tmp_path):
     # bug real confirmado en vivo, CVE-2024-50508: la carpeta del plugin es 'woo-product-design'
     # pero el fichero bootstrap real se llama 'woocommerce-product-design.php' -- no coinciden,
@@ -7886,6 +7938,40 @@ def test_attach_grounded_source_snippets_noop_without_grounding_or_source():
     inv = Investigation(cve_id="CVE-2099-0002")
     _attach_grounded_source_snippets(inv, es=True)
     assert inv.blockers == []
+
+
+def test_attach_grounded_source_snippets_surfaces_unrelated_sqli_sink(tmp_path):
+    # autonomia real, confirmado en vivo CVE-2024-3552: la hipotesis citaba
+    # 'w2dc_get_map_marker_info' (una consulta ya parametrizada con %d, segura) -- el sumidero
+    # real sin saneo ('level_filter_where', un $_GET concatenado directo) estaba en OTRA parte
+    # del codigo, nunca citada por el LLM ni el PoC. Esto debe encontrarlo solo y ponerlo
+    # delante del analista, sin que haga falta pedirmelo a mano.
+    from binoracle.workflows.cve_agent import Investigation, _attach_grounded_source_snippets
+
+    sub = tmp_path / "classes" / "listings"
+    sub.mkdir(parents=True)
+    (sub / "listings_manager.php").write_text(
+        "<?php\n"
+        "public function level_filter_where($where = '') {\n"
+        "    if (isset($_GET['w2dc_level_filter']) && $_GET['w2dc_level_filter'])\n"
+        "        $where .= \" AND (w2dc_lr.level_id=\" . $_GET['w2dc_level_filter'] . \")\";\n"
+        "    return $where;\n"
+        "}\n")
+    (tmp_path / "ajax_controller.php").write_text(
+        "<?php\n"
+        "function w2dc_get_map_marker_info() {\n"
+        "    global $wpdb;\n"
+        "    $row = $wpdb->get_row($wpdb->prepare(\"SELECT * FROM t WHERE id=%d\", 1));\n"
+        "}\n")
+
+    inv = Investigation(cve_id="CVE-2024-3552", vuln_class="sqli")
+    inv.source_fetch = {"local_path": str(tmp_path), "plugin_dir": ""}
+    inv.source_grounding = {"found": {"w2dc_get_map_marker_info": ["ajax_controller.php:2"]}}
+
+    _attach_grounded_source_snippets(inv, es=True)
+
+    assert any("level_filter_where" in b and "w2dc_level_filter" in b and "CANDIDATO MAS" in b
+              for b in inv.blockers)
 
 
 def test_investigate_cve_forwards_cli_budget_to_web_dynamic_verifier(monkeypatch, tmp_path):

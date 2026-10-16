@@ -351,6 +351,34 @@ def _attach_grounded_source_snippets(inv: "Investigation", es: bool) -> None:
                  (f"real code of '{name}' ({loc}), to diagnose the negative without having to "
                  f"download the plugin by hand:\n```php\n{body}\n```")))
 
+    # para SQLi en concreto: la funcion que el LLM/el PoC publico citan puede estar bien
+    # parametrizada (ej. $wpdb->prepare(..., '%d', ...)) aunque la CVE sea real -- confirmado en
+    # vivo, CVE-2024-3552: la hipotesis citaba 'w2dc_get_map_marker_info' (una consulta YA
+    # parametrizada, segura de verdad), pero el sumidero real sin saneo ('$where .= "..." .
+    # $_GET[...] . "..."') estaba en OTRA funcion por completo (level_filter_where), que ni el
+    # LLM ni el PoC mencionaban nunca. En vez de rendirse en ese negativo, se busca en TODO el
+    # plugin (no solo lo ya citado) un patron real de concatenacion sin saneo -- igual que un
+    # analista humano habria hecho al ver que la funcion citada resultaba segura.
+    if inv.vuln_class in ("sqli", "sql-injection") and local_path:
+        from .websource import find_unsafe_sql_concat_sinks
+        plugin_dir = (inv.source_fetch or {}).get("plugin_dir") or ""
+        sinks = find_unsafe_sql_concat_sinks(local_path, plugin_dir)
+        already_cited = set(found.keys())
+        new_sinks = [s for s in sinks if s.function not in already_cited][:3]
+        if new_sinks:
+            for s in new_sinks:
+                inv.blockers.append(
+                    (f"CANDIDATO MAS PROMETEDOR encontrado en el resto del codigo (no citado "
+                     f"por la hipotesis): '{s.function}' en {s.file}:{s.line} lee "
+                     f"'{s.param}' y lo concatena en SQL SIN saneo visible -- "
+                     f"`{s.snippet}`. Prueba con --endpoint/--params/--functions apuntando "
+                     f"a este parametro en vez de la hipotesis original." if es else
+                     (f"MORE PROMISING CANDIDATE found in the rest of the source (not cited "
+                     f"by the hypothesis): '{s.function}' at {s.file}:{s.line} reads "
+                     f"'{s.param}' and concatenates it into SQL with no visible sanitization "
+                     f"-- `{s.snippet}`. Try --endpoint/--params/--functions pointing at this "
+                     f"parameter instead of the original hypothesis.")))
+
 
 def _extract_known_ajax_action(notes: dict) -> Optional[str]:
     """Extrae el valor REAL de 'action' de admin-ajax.php ya conocido (del PoC crudo o de la
