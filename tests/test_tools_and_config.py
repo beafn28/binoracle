@@ -5758,6 +5758,79 @@ def test_cve_agent_ssrf_retries_with_llm_suggestion(monkeypatch, tmp_path):
     assert "sugerido por el LLM" in inv.verified_detail
 
 
+def test_cve_agent_sqli_blind_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    # sqli_blind se habia dejado fuera porque el oraculo es puramente temporal y timed_send
+    # descartaba la respuesta entera -- tras capturar el cuerpo de la peticion de CONTROL
+    # (independiente de los tiempos), ya tiene sentido conectarlo.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, genericverify
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="git", source=target,
+                                           local_path=str(tmp_path), plugin_dir="")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "la respuesta de control muestra un 403 forbidden",
+                "endpoint_alternativo": "/api/search",
+            })
+
+    calls = []
+    def fake_sqli_blind(source_dir, endpoint, http_method, parameters, sqli_param_hint="",
+                        on_step=None, budget_s=900.0):
+        calls.append(endpoint)
+        if endpoint == "/query":
+            wr = WpVerifyResult(ok=True, available=True, verified=False, detail="no se confirmo")
+            wr.evidence = {"respuesta_control_recorte": "<html>403 forbidden</html>"}
+            return wr
+        return WpVerifyResult(ok=True, available=True, verified=True,
+                              detail="SQLI CIEGA POR TIEMPO confirmada tras el reintento (fake)")
+    monkeypatch.setattr(genericverify, "verify_generic_sqli_blind", fake_sqli_blind)
+
+    inv = Investigation(cve_id="CVE-2099-00024")
+    inv.vuln_class = "sqli"
+    inv.llm_notes = {"source_url": "https://example.com/some-generic-app.git",
+                     "endpoint": "/query", "http_method": "GET", "parameters": {"q": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/query", "/api/search"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
+def test_genericverify_sqli_blind_captures_control_response_body(monkeypatch, tmp_path):
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def teardown(self):
+            pass
+
+    def fake_http_request(method, url, **kw):
+        class _R:
+            status_code = 404
+            text = "<html>not found</html>"
+        return _R()
+
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_bootstrap_generic_lab",
+                        lambda *a, **kw: (_FakeLab(), "http://lab.invalid", "app"))
+    monkeypatch.setattr(gv, "_http_request", fake_http_request)
+
+    res = gv.verify_generic_sqli_blind(str(tmp_path), "/query", "GET", {"q": "1"},
+                                       sqli_param_hint="q")
+    assert res.verified is False
+    assert "not found" in res.evidence.get("respuesta_control_recorte", "")
+
+
 def test_genericverify_command_injection_surfaces_real_response_body_on_negative(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
 

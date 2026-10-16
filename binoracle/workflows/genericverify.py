@@ -1111,23 +1111,30 @@ def verify_generic_sqli_blind(
         base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
         orig_value = str(base_params.get(sqli_param) or "1")
 
-        def timed_send(val) -> Optional[float]:
+        def timed_send(val, capture_body: bool = False) -> Optional[float]:
             payload = dict(base_params)
             payload[sqli_param] = val
             t0 = time.time()
             try:
-                _http_request(m, base_url + endpoint, timeout=_SQLI_SLEEP_SECONDS + 15,
+                resp = _http_request(m, base_url + endpoint, timeout=_SQLI_SLEEP_SECONDS + 15,
                                  data=payload if m != "GET" else None,
                                  params=payload if m == "GET" else None)
             except Exception:
                 return None
+            if capture_body and "respuesta_control_recorte" not in res.evidence:
+                # recorte de la respuesta de CONTROL (sin inyeccion) -- la unica evidencia real
+                # (ademas de los tiempos) que esta tecnica puede capturar, ya que el oraculo es
+                # puramente temporal; sirve igual para que el bucle de aprendizaje-y-reintento
+                # del LLM detecte un endpoint/parametro equivocado (p.ej. un 404 propio).
+                res.evidence["respuesta_control_recorte"] = (getattr(resp, "text", "") or "")[:500]
             return time.time() - t0
 
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "sqli_param": sqli_param})
 
         step("midiendo tiempos de respuesta de control (sin inyeccion)...")
-        base_times = [t for t in (timed_send(orig_value), timed_send(orig_value)) if t is not None]
+        base_times = [t for t in (timed_send(orig_value, capture_body=True),
+                                  timed_send(orig_value)) if t is not None]
         if not base_times:
             res.detail = "las peticiones de control fallaron (sin tiempo base con el que comparar)"
             return res

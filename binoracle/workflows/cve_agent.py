@@ -1978,6 +1978,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_generic_sqli_blind(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s)
+                def _attempt_sqli_blind_generic(ep, pr):
+                    return verify_generic_sqli_blind(
+                        fr.local_path, ep, notes.get("http_method") or "GET", params,
+                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
+                    _attempt_sqli_blind_generic, wr, notes.get("endpoint"), sqli_p,
+                    technique_label="SQLi ciega por tiempo (generico)",
+                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SSRF: un listener interno (en la misma red Docker,
             # no expuesto) registra si el SERVIDOR hace de verdad la peticion saliente -- ver
