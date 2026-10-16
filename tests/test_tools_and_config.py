@@ -5831,6 +5831,52 @@ def test_genericverify_sqli_blind_captures_control_response_body(monkeypatch, tm
     assert "not found" in res.evidence.get("respuesta_control_recorte", "")
 
 
+def test_cve_agent_drupal_ssrf_retries_with_llm_suggestion(monkeypatch, tmp_path):
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, drupalverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="drupal-module", source=target,
+                                           local_path=str(tmp_path), plugin_dir="some_module")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "la respuesta del propio endpoint muestra un error de acceso denegado",
+                "endpoint_alternativo": "/node/1/fetch-remote",
+            })
+
+    calls = []
+    def fake_ssrf(module_source_dir, slug, endpoint, http_method, parameters,
+                 url_param_hint="", on_step=None, budget_s=1200.0):
+        calls.append(endpoint)
+        if "fetch-remote" not in (endpoint or ""):
+            wr = drupalverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                             detail="no se confirmo")
+            wr.evidence = {"respuesta_muestra_primer_intento": "<html>access denied</html>"}
+            return wr
+        return drupalverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                           detail="SSRF confirmado tras el reintento (fake)")
+    monkeypatch.setattr(drupalverify, "verify_drupal_ssrf", fake_ssrf)
+
+    inv = Investigation(cve_id="CVE-2099-00025")
+    inv.vuln_class = "ssrf"
+    inv.llm_notes = {"source_url": "some_module", "endpoint": "/node/1",
+                     "http_method": "GET", "parameters": {"url": "x"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls == ["/node/1", "/node/1/fetch-remote"]
+    assert inv.verified is True
+    assert "sugerido por el LLM" in inv.verified_detail
+
+
 def test_genericverify_command_injection_surfaces_real_response_body_on_negative(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
 
