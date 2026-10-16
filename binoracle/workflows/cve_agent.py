@@ -249,6 +249,12 @@ _REFINE_SYS = (
 )
 
 
+# tope del bucle de aprendizaje-y-reintento (1 intento inicial + como mucho esto-1 reintentos
+# sugeridos por el LLM) -- acotado a proposito: cada intento levanta un laboratorio Docker real
+# entero (varios minutos), y un bucle sin limite podria no terminar nunca si el LLM sigue viendo
+# "una pista mas" indefinidamente sin confirmar nada de verdad.
+_SQLI_RETRY_MAX_ATTEMPTS = 3
+
 _SQLI_RETRY_SYS = (
     "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Una "
     "inyeccion SQL contra un laboratorio WordPress REAL (plugin instalado, MySQL real) no se "
@@ -1723,30 +1729,38 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
                 # igual que se hizo en vivo con CVE-2024-3552 -- y, solo si ve una pista concreta,
-                # se reintenta UNA vez con el endpoint/parametro que sugiera. Nunca un reintento a
-                # ciegas: _llm_suggest_retry_from_evidence ya exige una pista real o devuelve None.
-                if not wr.verified and wr.available:
+                # se reintenta con el endpoint/parametro que sugiera. Bucle ACOTADO (como mucho
+                # _SQLI_RETRY_MAX_ATTEMPTS intentos en total, no infinito): cada iteracion para en
+                # cuanto se confirma, o en cuanto el LLM deja de ver ninguna pista nueva en la
+                # evidencia del ultimo intento -- nunca un reintento a ciegas sin base real.
+                retry_endpoint, retry_param = notes.get("endpoint"), sqli_p
+                for attempt_n in range(1, _SQLI_RETRY_MAX_ATTEMPTS):
+                    if wr.verified or not wr.available:
+                        break
                     suggestion = _llm_suggest_retry_from_evidence(llm, wr)
-                    if suggestion:
-                        retry_endpoint = suggestion.get("endpoint_alternativo") or notes.get("endpoint")
-                        retry_param = suggestion.get("parametro_alternativo") or sqli_p
-                        step((f"el LLM reviso la evidencia real y sugiere reintentar con "
-                             f"endpoint={retry_endpoint!r} parametro={retry_param!r} -- razon: "
-                             f"{suggestion.get('razon')}") if es else
-                             (f"the LLM reviewed the real evidence and suggests retrying with "
-                             f"endpoint={retry_endpoint!r} parameter={retry_param!r} -- reason: "
-                             f"{suggestion.get('razon')}"))
-                        wr_retry = verify_wordpress_sqli(
-                            fr.local_path, plugin_dir, retry_endpoint,
-                            notes.get("http_method") or "GET", params,
-                            sqli_param_hint=retry_param or "", on_step=step, budget_s=budget_s,
-                            setup_wp_options=notes.get("setup_options") or [],
-                            companion_plugins=companion_plugins, shortcode_name=shortcode_name,
-                            relationship_table=relationship_table)
-                        wr_retry.detail = (f"[reintento sugerido por el LLM tras leer la "
-                                          f"evidencia real: {suggestion.get('razon')}] "
-                                          + wr_retry.detail)
-                        wr = wr_retry
+                    if not suggestion:
+                        break
+                    retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
+                    retry_param = suggestion.get("parametro_alternativo") or retry_param
+                    step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/"
+                         f"{_SQLI_RETRY_MAX_ATTEMPTS}) y sugiere reintentar con "
+                         f"endpoint={retry_endpoint!r} parametro={retry_param!r} -- razon: "
+                         f"{suggestion.get('razon')}") if es else
+                         (f"the LLM reviewed the real evidence (attempt {attempt_n + 1}/"
+                         f"{_SQLI_RETRY_MAX_ATTEMPTS}) and suggests retrying with "
+                         f"endpoint={retry_endpoint!r} parameter={retry_param!r} -- reason: "
+                         f"{suggestion.get('razon')}"))
+                    wr_retry = verify_wordpress_sqli(
+                        fr.local_path, plugin_dir, retry_endpoint,
+                        notes.get("http_method") or "GET", params,
+                        sqli_param_hint=retry_param or "", on_step=step, budget_s=budget_s,
+                        setup_wp_options=notes.get("setup_options") or [],
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name,
+                        relationship_table=relationship_table)
+                    wr_retry.detail = (f"[reintento {attempt_n + 1}/{_SQLI_RETRY_MAX_ATTEMPTS} "
+                                      f"sugerido por el LLM tras leer la evidencia real: "
+                                      f"{suggestion.get('razon')}] " + wr_retry.detail)
+                    wr = wr_retry
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

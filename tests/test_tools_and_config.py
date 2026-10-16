@@ -5637,8 +5637,57 @@ def test_cve_agent_sqli_retries_once_with_llm_suggestion_from_real_evidence(monk
 
     assert calls == ["/", "/?page_id=6"]    # el primer intento, y el reintento sugerido
     assert inv.verified is True
-    assert "reintento sugerido por el LLM" in inv.verified_detail
+    assert "sugerido por el LLM" in inv.verified_detail
     assert "SQLI confirmada tras el reintento" in inv.verified_detail
+
+
+def test_cve_agent_sqli_retry_loop_is_bounded_not_infinite(monkeypatch, tmp_path):
+    # bucle ACOTADO: si el LLM sigue sugiriendo algo "nuevo" sin que nada se confirme nunca, el
+    # numero de intentos totales (inicial + reintentos) no debe superar _SQLI_RETRY_MAX_ATTEMPTS
+    # -- cada intento levanta un laboratorio Docker real entero, un bucle sin limite podria no
+    # terminar nunca.
+    import json as _json
+    from binoracle.workflows.cve_agent import (Investigation, _run_web_investigation,
+                                                _SQLI_RETRY_MAX_ATTEMPTS)
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="web-directory-free")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    suggestion_n = {"n": 0}
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            suggestion_n["n"] += 1
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": f"pista {suggestion_n['n']} (fake, nunca confirma de verdad)",
+                "endpoint_alternativo": f"/intento-{suggestion_n['n']}",
+            })
+
+    calls = []
+    def fake_sqli(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(endpoint)
+        wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                     detail="no se confirmo")
+        wr.evidence = {"endpoint": endpoint, "sqli_param": kw.get("sqli_param_hint"),
+                      "respuesta_control_recorte": "<title>Page not found</title>"}
+        return wr
+    monkeypatch.setattr(wpverify, "verify_wordpress_sqli", fake_sqli)
+
+    inv = Investigation(cve_id="CVE-2099-00013")
+    inv.vuln_class = "sqli"
+    inv.llm_notes = {"source_url": "web-directory-free", "endpoint": "/", "http_method": "GET",
+                     "parameters": {"w2dc_level_filter": "1"}, "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert len(calls) == _SQLI_RETRY_MAX_ATTEMPTS   # nunca mas de este tope
+    assert inv.verified is False
 
 
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
