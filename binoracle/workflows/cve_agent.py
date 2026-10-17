@@ -532,6 +532,37 @@ _GENERIC_RETRY_SYS = (
     "\"parametro_alternativo\": \"...\" (opcional)}"
 )
 
+# version de _GENERIC_RETRY_SYS CONSCIENTE de que el objetivo es WordPress -- para las tecnicas
+# WordPress que todavia usan el prompt generico (sin mencion de nonce/wp-admin, que no tendria
+# sentido para Drupal/Node/un contenedor Docker cualquiera, los otros objetivos que ese mismo
+# prompt generico cubre). Mismo mecanismo que _SQLI_RETRY_SYS/_PATH_TRAVERSAL_RETRY_SYS
+# (_WP_NONCE_SETUP_RETRY_HINT), parametrizado por el nombre de la tecnica en el propio mensaje,
+# no en el prompt -- para no escribir un _X_RETRY_SYS a medida por cada una de las ~12 tecnicas
+# WordPress restantes.
+_WP_GENERIC_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Un "
+    "intento de explotar una vulnerabilidad real contra un laboratorio WordPress REAL (plugin "
+    "instalado, MySQL real) no se confirmo. Te doy el nombre de la tecnica, el endpoint/"
+    "parametro probados, y un recorte del cuerpo REAL de la respuesta observada. Lee esa "
+    "evidencia como lo haria un analista humano revisando un negativo: si el cuerpo muestra una "
+    "pista CONCRETA de que el endpoint o el parametro probados no son los correctos (p.ej. un "
+    "error de la propia app, un 404/'Page not found', una redireccion a login, contenido que no "
+    "tiene nada que ver con el objetivo esperado...), sugiere UN cambio concreto de endpoint y/o "
+    "parametro que valga la pena reintentar. Si la evidencia NO da ninguna pista util, dilo "
+    "honestamente -- NUNCA inventes un cambio sin base en la evidencia real que te doy. "
+    + _WP_NONCE_SETUP_RETRY_HINT +
+    "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando "
+    "la pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
+    "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional), "
+    + _WP_NONCE_SETUP_RETRY_JSON_FIELDS + "}"
+)
+_WP_GENERIC_RETRY_EVIDENCE_KEYS = {
+    "respuesta_cuerpo_recorte": "respuesta_cuerpo_recorte",
+    "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
+_WP_GENERIC_MUESTRA_EVIDENCE_KEYS = {
+    "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento",
+    "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
+
 
 def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResult",
                                      evidence_keys: dict, technique_label: str = "") -> Optional[dict]:
@@ -2007,15 +2038,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                cmdi_extra_nonce_pages: List[str] = []
+                cmdi_extra_setup_trigger_paths: List[str] = []
+                def _on_cmdi_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in cmdi_extra_nonce_pages:
+                        cmdi_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in cmdi_extra_setup_trigger_paths:
+                        cmdi_extra_setup_trigger_paths.append(sp)
                 def _attempt_cmdi(ep, pr):
                     return verify_wordpress_command_injection(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(cmdi_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(cmdi_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_cmdi, wr, notes.get("endpoint"), cmd_p,
-                    technique_label="command injection WordPress")
+                    technique_label="command injection WordPress",
+                    on_suggestion=_on_cmdi_suggestion)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

@@ -1813,6 +1813,8 @@ def verify_wordpress_command_injection(
     parameters, cmd_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica command/OS injection probando que el servidor remoto EVALUA aritmetica que nunca
     se le mando literal: el payload pide `$(( a + b ))` para dos numeros aleatorios y, si la
@@ -1837,7 +1839,8 @@ def verify_wordpress_command_injection(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -1865,18 +1868,23 @@ def verify_wordpress_command_injection(
             # argumento que se concatena a otro)
             f"echo {calc}", calc,
         ]
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, cmd_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "cmd_param": cmd_param, "a": a, "b": b, "suma_esperada": expected,
-            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+            "metodo": m, "endpoint": endpoint,
         })
 
-        m = (http_method or "GET").upper()
         pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
         found = False
         tried = []
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(base_params)
             payload[cmd_param] = payload_value
             step(f"probando {m} {endpoint} con {cmd_param}={payload_value!r}...")
             try:
