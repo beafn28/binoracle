@@ -2100,10 +2100,19 @@ def verify_wordpress_sqli(
     lab = _Lab(_token())
     try:
         attack_endpoint_is_bare_root = (endpoint or "/").strip() in ("", "/")
+        # shortcode_name se crea SIEMPRE que se dio (no solo cuando se ataca la raiz): aunque el
+        # ataque real vaya contra un endpoint AJAX propio (p.ej. admin-ajax.php?action=...), la
+        # pagina con el shortcode del plugin es de donde _auto_resolve_wp_blockers rasca el nonce
+        # REAL de esa accion -- confirmado en vivo, CVE-2024-1071 (Ultimate Member): sin una
+        # pagina real que invoque [ultimatemember_directory], ninguna pagina del sitio (login,
+        # portada) tiene el nonce especifico de 'um_get_members', y el ataque falla siempre con
+        # "Wrong Nonce" aunque el parametro/payload sean correctos. relationship_table, en
+        # cambio, solo tiene sentido cuando se ataca la propia pagina del shortcode (ver mas
+        # abajo), asi que sigue atado a ese caso.
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               setup_wp_options=setup_wp_options,
                               companion_plugins=companion_plugins,
-                              shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None,
+                              shortcode_name=shortcode_name,
                               relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
                               extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
@@ -2122,7 +2131,12 @@ def verify_wordpress_sqli(
         lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant",
                   timeout=30)
 
-        if boot.shortcode_page_path:
+        if boot.shortcode_page_path and attack_endpoint_is_bare_root:
+            # solo se REDIRIGE el ataque a la pagina del shortcode cuando el endpoint dado era la
+            # raiz (no hay otro sitio al que atacar). Si ya se dio un endpoint real y concreto
+            # (p.ej. una accion AJAX propia del plugin), la pagina del shortcode existe solo para
+            # que _auto_resolve_wp_blockers rasque de ahi el nonce real -- el ataque sigue yendo
+            # contra el endpoint original, nunca contra la pagina.
             step(f"endpoint='/' no muestra nada del plugin -- atacando en su lugar la pagina "
                  f"real creada con el shortcode ({boot.shortcode_page_path})...")
             endpoint = boot.shortcode_page_path

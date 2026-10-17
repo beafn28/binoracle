@@ -2205,9 +2205,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _first_locs = next(iter(_found.values()), []) if _found else []
                 if _first_locs:
                     vuln_file_hint = _first_locs[0].rsplit(":", 1)[0]
-                shortcode_name = (find_shortcode_name(fr.local_path, plugin_dir,
-                                                      vulnerable_file=vuln_file_hint)
-                                 if endpoint_is_bare_root else None)
+                # se busca el shortcode SIEMPRE, no solo cuando se ataca la raiz: incluso contra
+                # un endpoint AJAX propio, verify_wordpress_sqli crea la pagina del shortcode
+                # (sin redirigir el ataque ahi -- ver attack_endpoint_is_bare_root en wpverify.py)
+                # solo para que el nonce real de esa accion se pueda rascar de una pagina que de
+                # verdad invoca el plugin -- confirmado en vivo, CVE-2024-1071 (Ultimate Member):
+                # sin esto, el nonce rascado de paginas genericas (login/portada) nunca es el de
+                # la accion AJAX real, y el ataque falla siempre con "Wrong Nonce".
+                shortcode_name = find_shortcode_name(fr.local_path, plugin_dir,
+                                                     vulnerable_file=vuln_file_hint)
                 # si el sumidero real esta detras de un LEFT JOIN propio del plugin enlazado por
                 # post ID (patron comun en plugins de listados/directorios), una pagina SIN fila
                 # ahi sale siempre NULL en esa columna -- el WHERE nunca es verdadero, inyeccion

@@ -10619,9 +10619,12 @@ def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monke
     assert all(u.startswith("http://lab.invalid/?page_id=42") for u in requested_urls)
 
 
-def test_verify_wordpress_sqli_does_not_request_shortcode_page_for_non_root_endpoint(monkeypatch):
-    # si el analista ya dio un endpoint concreto (no la raiz), no hay que crear ni usar ninguna
-    # pagina de shortcode -- shortcode_name solo tiene sentido cuando el endpoint es '/'.
+def test_verify_wordpress_sqli_still_attacks_given_endpoint_with_shortcode_page_for_nonce(monkeypatch):
+    # si el analista ya dio un endpoint concreto (no la raiz), el ataque sigue yendo contra ESE
+    # endpoint, nunca contra la pagina del shortcode -- pero la pagina SI se pide igual (ver
+    # shortcode_name en bootstrap_calls), porque _auto_resolve_wp_blockers la necesita para
+    # rascar el nonce real de la accion AJAX atacada (confirmado en vivo, CVE-2024-1071:
+    # ninguna pagina generica tiene el nonce de una accion AJAX propia del plugin).
     import binoracle.workflows.wpverify as wpverify
 
     bootstrap_calls = []
@@ -10650,7 +10653,7 @@ def test_verify_wordpress_sqli_does_not_request_shortcode_page_for_non_root_endp
         {"w2dc_level_filter": "1"}, sqli_param_hint="w2dc_level_filter",
         shortcode_name="w2dc_search")
 
-    assert bootstrap_calls[0]["shortcode_name"] is None
+    assert bootstrap_calls[0]["shortcode_name"] == "w2dc_search"
     assert "endpoint_shortcode_page" not in res.evidence
     assert all("respuesta_true_recorte" in t for t in res.evidence["boolean_intentos"])
 
