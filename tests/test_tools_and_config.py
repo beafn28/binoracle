@@ -6495,6 +6495,48 @@ def test_render_investigation_shows_screenshots_from_a_blocked_attempt():
     assert "ZmFrZXBuZw==" in md and "ZmFrZXBuZzI=" in md   # ambas imagenes embebidas, no solo una
 
 
+def test_render_investigation_includes_executive_summary_and_recommendations():
+    # el informe debe poder entregarse a un cliente sin retocarlo: resumen ejecutivo con la
+    # severidad REAL (CVSS de NVD si consta, no solo nuestra tabla por clase) arriba de todo, y
+    # una seccion de recomendaciones concreta y accionable al final -- no solo el detalle tecnico
+    # de la investigacion.
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+
+    inv = Investigation(cve_id="CVE-2024-1071")
+    inv.vuln_class = "sqli"
+    inv.cvss_score = 9.8
+    inv.cvss_severity = "CRITICAL"
+    inv.cvss_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    inv.published = "2024-03-01T00:00:00.000"
+    inv.llm_notes = {"target_binary": "Ultimate Member", "affected_version": "2.1.3-2.8.2"}
+    inv.verified = False
+    inv.dynamic_verify = {"attempted": True}
+
+    md = render_investigation(inv, lang="es", embed_images=True)
+    assert "Resumen ejecutivo" in md
+    assert "CVSS 9.8 (CRITICAL)" in md
+    assert "2024-03-01T00:00:00.000" in md
+    assert "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" in md
+    assert "intentado, no confirmado" in md
+    assert "Recomendaciones" in md
+    assert "Ultimate Member" in md and "2.1.3-2.8.2" in md
+    assert "prepared statements" in md or "parametrizadas" in md
+
+
+def test_render_investigation_falls_back_to_class_severity_without_cvss():
+    # sin CVSS de NVD (offline, o la CVE no lo trae) la severidad debe seguir mostrandose, usando
+    # nuestra tabla por clase -- nunca dejar el resumen ejecutivo vacio de severidad.
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+
+    inv = Investigation(cve_id="CVE-2024-9999")
+    inv.vuln_class = "sqli"
+    inv.cvss_score = None
+    md = render_investigation(inv, lang="es", embed_images=True)
+    assert "Resumen ejecutivo" in md
+    assert "CRITICO" in md
+    assert "estimado por tipo de vulnerabilidad" in md
+
+
 def test_cve_agent_escalates_path_traversal_to_lfi_rce_when_available(monkeypatch, tmp_path):
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify

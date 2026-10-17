@@ -95,6 +95,122 @@ _IMPACT_BY_CLASS = {
                       "legitimate domain that redirects to an attacker-controlled site)."),
 }
 
+# recomendaciones de mitigacion por clase -- concretas y accionables, no un generico "aplica
+# buenas practicas". Cada entrada es (es, en); el bullet de "actualiza a una version parcheada"
+# se antepone SIEMPRE por separado (ver render_investigation) porque aplica a toda vulnerabilidad
+# de un componente de terceros, independientemente de la clase.
+_REMEDIATION_BY_CLASS = {
+    "missing-authorization": (
+        "Anadir una comprobacion explicita de capacidad/propiedad (p.ej. `current_user_can()` en "
+        "WordPress) ANTES de modificar cualquier recurso, verificando que el usuario autenticado "
+        "es el propietario del recurso o tiene el rol requerido -- nunca confiar en que el ID del "
+        "recurso venga del cliente sin validar la relacion usuario-recurso en servidor.",
+        "Add an explicit capability/ownership check (e.g. `current_user_can()` in WordPress) "
+        "BEFORE modifying any resource, verifying the authenticated user owns the resource or "
+        "has the required role -- never trust a client-supplied resource ID without validating "
+        "the user-resource relationship server-side."),
+    "idor": (
+        "Validar en servidor que el recurso solicitado pertenece al usuario autenticado "
+        "(comprobacion de propiedad por consulta, no solo de autenticacion) antes de devolver o "
+        "modificar cualquier dato referenciado por ID.",
+        "Validate server-side that the requested resource belongs to the authenticated user "
+        "(an ownership check per query, not just an authentication check) before returning or "
+        "modifying any ID-referenced data."),
+    "auth-bypass": (
+        "Revisar la logica de autenticacion/sesion en busca de rutas que omitan la comprobacion "
+        "(cabeceras confiadas sin validar, comparaciones de tipo inseguras, condiciones de "
+        "carrera); anadir pruebas de regresion que cubran especificamente el bypass encontrado.",
+        "Review the authentication/session logic for paths that skip the check (trusted headers "
+        "without validation, unsafe type comparisons, race conditions); add regression tests "
+        "that specifically cover the bypass found."),
+    "sqli": (
+        "Sustituir la concatenacion de SQL por consultas PARAMETRIZADAS/prepared statements "
+        "(p.ej. `$wpdb->prepare()` en WordPress) en el sumidero afectado; aplicar el principio "
+        "de minimo privilegio a la cuenta de base de datos de la aplicacion; un WAF puede mitigar "
+        "en caliente mientras se despliega el parche, pero NO sustituye el fix en el codigo.",
+        "Replace SQL string concatenation with PARAMETERIZED queries/prepared statements (e.g. "
+        "`$wpdb->prepare()` in WordPress) at the affected sink; apply least privilege to the "
+        "application's database account; a WAF can mitigate in the short term while the patch "
+        "is deployed, but does NOT replace the code fix."),
+    "rce": (
+        "Eliminar o aislar la ruta de ejecucion de codigo controlada por el atacante (deshabilitar "
+        "funciones peligrosas si no son imprescindibles, sandboxing/contenedores con privilegios "
+        "minimos); auditar el resto de la base de codigo por el mismo patron de entrada no "
+        "confiable llegando a ejecucion.",
+        "Remove or isolate the attacker-controlled code execution path (disable dangerous "
+        "functions if not essential, sandboxing/least-privilege containers); audit the rest of "
+        "the codebase for the same pattern of untrusted input reaching execution."),
+    "command-injection": (
+        "Evitar invocar el shell con entrada del usuario; si es imprescindible, usar APIs que "
+        "pasen argumentos como lista (sin interpretacion de shell, p.ej. `subprocess` con "
+        "`shell=False`) y una lista blanca estricta de valores permitidos.",
+        "Avoid invoking the shell with user input; if unavoidable, use APIs that pass arguments "
+        "as a list (no shell interpretation, e.g. `subprocess` with `shell=False`) and a strict "
+        "allow-list of permitted values."),
+    "file-upload": (
+        "Validar el tipo real del fichero por contenido (no por extension/Content-Type, que el "
+        "atacante controla), almacenar fuera del webroot o con ejecucion de scripts deshabilitada "
+        "en ese directorio, y renombrar con un nombre generado por el servidor.",
+        "Validate the file's real type by content (not by extension/Content-Type, which the "
+        "attacker controls), store outside the webroot or with script execution disabled in "
+        "that directory, and rename with a server-generated name."),
+    "deserialization": (
+        "Evitar deserializar datos no confiables; si es imprescindible, usar un formato sin "
+        "ejecucion de codigo (JSON) o una lista blanca estricta de clases permitidas en la "
+        "deserializacion.",
+        "Avoid deserializing untrusted data; if unavoidable, use a format with no code execution "
+        "(JSON) or a strict allow-list of classes permitted during deserialization."),
+    "xxe": (
+        "Deshabilitar la resolucion de entidades externas y DTDs en el parser XML "
+        "(`libxml_disable_entity_loader`/equivalente del lenguaje); nunca confiar en la "
+        "configuracion por defecto del parser.",
+        "Disable external entity and DTD resolution in the XML parser "
+        "(`libxml_disable_entity_loader`/language equivalent); never rely on the parser's "
+        "default configuration."),
+    "ssrf": (
+        "Validar el destino de cualquier peticion saliente iniciada por el servidor contra una "
+        "lista blanca de hosts/IPs permitidos, bloqueando explicitamente rangos internos/de "
+        "metadatos de nube (169.254.169.254, RFC1918).",
+        "Validate the destination of any server-initiated outbound request against an allow-list "
+        "of permitted hosts/IPs, explicitly blocking internal/cloud-metadata ranges "
+        "(169.254.169.254, RFC1918)."),
+    "ssti": (
+        "Nunca pasar entrada del usuario directamente como plantilla; usar el motor en modo "
+        "'logic-less' o con sandboxing estricto, y tratar la entrada del usuario solo como "
+        "VALOR de variable, nunca como la plantilla en si.",
+        "Never pass user input directly as a template; use the engine in 'logic-less' mode or "
+        "with strict sandboxing, and treat user input only as a variable VALUE, never as the "
+        "template itself."),
+    "path-traversal": (
+        "Resolver la ruta final y verificar que sigue dentro del directorio base permitido "
+        "(comparacion de ruta canonica, no solo filtrar '../'); usar un identificador indirecto "
+        "(ID de base de datos) en vez del nombre de fichero real cuando sea posible.",
+        "Resolve the final path and verify it stays within the allowed base directory (canonical "
+        "path comparison, not just filtering '../'); use an indirect identifier (database ID) "
+        "instead of the real filename where possible."),
+    "xss": (
+        "Escapar la salida segun el contexto (HTML/atributo/JS) en el punto donde se imprime, "
+        "nunca solo al guardar; usar las funciones de escape del framework "
+        "(`esc_html()`/`esc_attr()` en WordPress) y una Content-Security-Policy restrictiva.",
+        "Escape output according to context (HTML/attribute/JS) at the point it is printed, "
+        "never only on save; use the framework's escaping functions "
+        "(`esc_html()`/`esc_attr()` in WordPress) and a restrictive Content-Security-Policy."),
+    "csrf": (
+        "Verificar un token CSRF por sesion/accion (`wp_verify_nonce()` en WordPress) en toda "
+        "accion que cambie estado, y comprobar tambien la cabecera Origin/Referer como defensa "
+        "adicional.",
+        "Verify a per-session/per-action CSRF token (`wp_verify_nonce()` in WordPress) on every "
+        "state-changing action, and also check the Origin/Referer header as an additional "
+        "defense."),
+    "open-redirect": (
+        "Validar el destino de cualquier redireccion contra una lista blanca de rutas/dominios "
+        "permitidos; si se necesita una URL externa, mostrar una pagina intermedia de aviso en "
+        "vez de redirigir automaticamente.",
+        "Validate the destination of any redirect against an allow-list of permitted paths/"
+        "domains; if an external URL is needed, show an intermediate warning page instead of "
+        "redirecting automatically."),
+}
+
 
 @dataclass
 class Investigation:
@@ -103,6 +219,10 @@ class Investigation:
     lookup_ok: bool = False
     lookup_note: str = ""     # por que lookup_ok es False: formato invalido, red/rate-limit...
     is_gap: bool = False
+    cvss_score: Optional[float] = None    # de NVD (fetch_cve) -- None si no consta/sin red
+    cvss_severity: str = ""
+    cvss_vector: str = ""
+    published: str = ""        # fecha de publicacion en NVD (ISO), "" si no consta
     vuln_class: str = ""
     llm_notes: dict = field(default_factory=dict)     # hipotesis del modelo (target, trigger, plan)
     developed_script: str = ""
@@ -2655,6 +2775,10 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     inv.lookup_ok = info.ok
     inv.lookup_note = info.note
     inv.is_gap = info.is_gap
+    inv.cvss_score = info.cvss_score
+    inv.cvss_severity = info.cvss_severity
+    inv.cvss_vector = info.cvss_vector
+    inv.published = info.published
     if info.ok:
         step((f"{inv.cve_id}: {'HUECO (sin exploit publico)' if info.is_gap else 'ya tiene exploit publico'}"
               if es else
@@ -2839,6 +2963,39 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
     es = lang == "es"
     out = ["## " + ("Investigacion de explotacion" if es else "Exploitation investigation")
            + f": {inv.cve_id}"]
+
+    # resumen ejecutivo: lo primero que lee alguien que no va a leer el informe entero --
+    # severidad real (CVSS de NVD si consta, si no la de nuestra tabla por clase), estado
+    # (verificado de verdad en sandbox o no), fecha de publicacion, y el impacto en una frase.
+    # pensado para que sea legible fuera de contexto (p.ej. pegado en un ticket o un email).
+    fallback_impact = _IMPACT_BY_CLASS.get(inv.vuln_class)
+    if inv.cvss_score is not None:
+        sev_label = f"CVSS {inv.cvss_score:.1f} ({inv.cvss_severity or '?'})"
+    elif fallback_impact:
+        sev_label = (fallback_impact[0] if es else fallback_impact[2]) + (
+            " (" + ("estimado por tipo de vulnerabilidad, sin CVSS de NVD" if es else
+                    "estimated from vulnerability type, no NVD CVSS") + ")")
+    else:
+        sev_label = "?"
+    estado_label = (("VERIFICADO en sandbox" if es else "VERIFIED in sandbox") if inv.verified
+                    else (("intentado, no confirmado" if es else "attempted, not confirmed")
+                          if inv.dynamic_verify.get("attempted")
+                          else ("no verificado dinamicamente" if es else "not dynamically verified")))
+    out.append("\n### " + ("Resumen ejecutivo" if es else "Executive summary"))
+    out.append("| " + ("Campo" if es else "Field") + " | " + ("Valor" if es else "Value") + " |")
+    out.append("|---|---|")
+    out.append("| " + ("Severidad" if es else "Severity") + f" | {sev_label} |")
+    out.append("| " + ("Clase de vulnerabilidad" if es else "Vulnerability class")
+               + f" | {inv.vuln_class or '?'} |")
+    out.append("| " + ("Estado" if es else "Status") + f" | {estado_label} |")
+    if inv.published:
+        out.append("| " + ("Publicada (NVD)" if es else "Published (NVD)") + f" | {inv.published} |")
+    if inv.cvss_vector:
+        out.append("| " + ("Vector CVSS" if es else "CVSS vector") + f" | `{inv.cvss_vector}` |")
+    if fallback_impact:
+        out.append("| " + ("Impacto" if es else "Impact")
+                   + f" | {fallback_impact[1] if es else fallback_impact[3]} |")
+
     if inv.description:
         out.append("\n" + inv.description.strip())
     if inv.lookup_ok:
@@ -3021,6 +3178,36 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
             title = "Exploit desarrollado (pwntools)" if es else "Developed exploit (pwntools)"
             fence = "python"
         out.append(f"\n### {title}\n```{fence}\n" + inv.developed_script + "\n```")
+
+    # recomendaciones: lo que un cliente/equipo de desarrollo necesita para CERRAR el hallazgo,
+    # no solo para entenderlo -- siempre que haya una clase de vulnerabilidad identificada,
+    # independientemente de si llego a VERIFICARSE o se quedo en bloqueo (el riesgo del hallazgo
+    # no depende de que binoracle haya podido confirmarlo end-to-end en este sandbox concreto).
+    remediation = _REMEDIATION_BY_CLASS.get(inv.vuln_class)
+    target = (inv.llm_notes or {}).get("target_binary") or (inv.llm_notes or {}).get("source_url")
+    affected = (inv.llm_notes or {}).get("affected_version")
+    if remediation or target:
+        out.append("\n### " + ("Recomendaciones" if es else "Recommendations"))
+        out.append("1. " + (
+            f"Actualizar {target} a la version mas reciente disponible"
+            + (f" (version afectada identificada: {affected})" if affected else "")
+            + ", comprobando en el changelog/advisory del proveedor que corrige esta CVE "
+              "concreta -- es la mitigacion mas directa cuando la vulnerabilidad esta en un "
+              "componente de terceros." if es else
+            f"Update {target} to the latest available version"
+            + (f" (identified affected version: {affected})" if affected else "")
+            + ", confirming in the vendor's changelog/advisory that it fixes this specific "
+              "CVE -- the most direct mitigation when the vulnerability is in a third-party "
+              "component."))
+        if remediation:
+            out.append("2. " + (remediation[0] if es else remediation[1]))
+        out.append(("3. Si actualizar no es viable de inmediato, valorar una regla de WAF/"
+                    "mitigacion temporal especifica para el patron de ataque mientras se "
+                    "despliega el parche, y restringir el acceso al endpoint afectado a quien "
+                    "realmente lo necesite." if es else
+                    "3. If updating is not immediately viable, consider a specific temporary "
+                    "WAF rule/mitigation for the attack pattern while the patch is deployed, "
+                    "and restrict access to the affected endpoint to those who actually need it."))
     out.append("\n_" + ("El LLM propone e investiga; el sandbox decide lo VERIFICADO. Solo objetivos "
                         "autorizados / CTF / research." if es else
                         "The LLM proposes and investigates; the sandbox decides what is VERIFIED. "
