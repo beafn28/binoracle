@@ -364,10 +364,16 @@ def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
     WordPress.org). Sin libreria de terceros: XML con xml.etree.ElementTree, que ya viene con
     Python. No ejecuta nada del modulo.
 
-    `exclusive_upper_bound` se acepta por compatibilidad con fetch_source()/
-    fetch_wordpress_plugin() (que SI lo usa, ver ahi) pero todavia no esta implementado aqui --
-    no se ha confirmado en vivo el mismo problema (version '<X' descargando la parcheada) con
-    un modulo de Drupal, asi que no se adivina el comportamiento sin evidencia real."""
+    `exclusive_upper_bound`: True si `version` es un limite EXCLUSIVO ('antes de X', X ya
+    parcheada -- ver _affected_version_is_exclusive en cve_agent.py), igual que en
+    fetch_wordpress_plugin(). Mismo mecanismo: entre las releases REALES que Drupal.org lista
+    para el proyecto, se busca la mas reciente publicada ANTES de ese limite (por
+    _version_sort_key, que ya entiende el formato 'NUCLEO.x-MAYOR.MENOR' de Drupal: el prefijo
+    de compatibilidad de core se compara como segmento de texto, los numeros de version real
+    numericamente) y se descarga esa en vez de la version X tal cual -- misma logica, no
+    adivinada: el problema (un rango de version EXCLUSIVO del CVE apuntando a la version YA
+    ARREGLADA si se toma literal) es una propiedad de como se describen los CVEs, no del
+    mecanismo de descarga de WordPress.org en concreto."""
     step = on_step or (lambda _m: None)
     res = SourceFetchResult(kind="drupal-module", source=slug)
     slug = (slug or "").strip().lower()
@@ -397,6 +403,22 @@ def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
         res.note = f"Drupal.org no listo ninguna release para '{slug}'"
         return res
     chosen = None
+    if version and exclusive_upper_bound:
+        real_versions = [(rel.findtext("version") or "").strip() for rel in releases]
+        if any(v == version or v.endswith(version) for v in real_versions):
+            older = [v for v in real_versions if _looks_like_version(v)
+                    and _version_sort_key(v) < _version_sort_key(version)]
+            if older:
+                older.sort(key=_version_sort_key)
+                picked = older[-1]
+                step(f"'{version}' es un limite EXCLUSIVO ('antes de', no la incluye) -- esa "
+                     f"version ya esta parcheada; descargando la ultima release REALMENTE "
+                     f"publicada antes de esa, '{picked}', en vez de la version del fix...")
+                version = picked
+            else:
+                step(f"'{version}' es un limite exclusivo pero no se encontro ninguna release "
+                     f"publicada anterior en Drupal.org -- se prueba con esa igualmente (puede "
+                     f"estar ya parcheada)")
     if version:
         for rel in releases:
             v = (rel.findtext("version") or "").strip()

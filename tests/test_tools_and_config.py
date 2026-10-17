@@ -9110,6 +9110,113 @@ def test_fetch_wordpress_plugin_uses_bound_itself_when_no_prior_version_exists(m
     assert r.resolved_version == "1.0.0"   # no hay version anterior -- se usa el limite igual
 
 
+def test_fetch_drupal_module_picks_prior_release_for_exclusive_bound(monkeypatch):
+    # mismo mecanismo que fetch_wordpress_plugin (ver test_fetch_wordpress_plugin_picks_
+    # prior_version_for_exclusive_bound), ahora implementado tambien para Drupal.org: con
+    # exclusive_upper_bound=True y version '8.x-1.7' (el limite citado, YA parcheado), debe
+    # descargar la ultima release REAL publicada antes de esa ('8.x-1.6' aqui), no 8.x-1.7 tal cual.
+    import binoracle.workflows.websource as ws
+
+    xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <releases>
+    <release>
+      <version>8.x-1.7</version>
+      <status>published</status>
+      <download_link>http://x/8.x-1.7.tar.gz</download_link>
+    </release>
+    <release>
+      <version>8.x-1.6</version>
+      <status>published</status>
+      <download_link>http://x/8.x-1.6.tar.gz</download_link>
+    </release>
+    <release>
+      <version>8.x-1.5</version>
+      <status>published</status>
+      <download_link>http://x/8.x-1.5.tar.gz</download_link>
+    </release>
+  </releases>
+</project>"""
+
+    class _FakeResp:
+        def read(self, n):
+            return xml
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(ws, "_urlopen", lambda url, timeout=60.0: _FakeResp())
+    monkeypatch.setattr(ws, "_cache_path_for", lambda *a, **kw: None)
+
+    captured = {}
+    def fake_urlopen_download(url, timeout=60.0):
+        captured["download_url"] = url
+        class _R:
+            def read(self, n):
+                return b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+        return _R()
+    # la propia descarga del tar.gz reusa _urlopen -- segunda llamada, distinta URL
+    calls = []
+    def fake_urlopen(url, timeout=60.0):
+        calls.append(url)
+        if url == ws._DRUPAL_UPDATE_XML.format(project="some_module"):
+            return _FakeResp()
+        return fake_urlopen_download(url, timeout)
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+    monkeypatch.setattr("tarfile.is_tarfile", lambda p: False)
+
+    r = ws.fetch_drupal_module("some_module", version="8.x-1.7", exclusive_upper_bound=True)
+    assert r.resolved_version == "8.x-1.6"
+    assert captured.get("download_url") == "http://x/8.x-1.6.tar.gz"
+
+
+def test_fetch_drupal_module_uses_bound_itself_when_no_prior_release_exists(monkeypatch):
+    import binoracle.workflows.websource as ws
+
+    xml = b"""<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <releases>
+    <release>
+      <version>8.x-1.0</version>
+      <status>published</status>
+      <download_link>http://x/8.x-1.0.tar.gz</download_link>
+    </release>
+  </releases>
+</project>"""
+
+    class _FakeResp:
+        def read(self, n):
+            return xml
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    captured = {}
+    def fake_urlopen(url, timeout=60.0):
+        if url == ws._DRUPAL_UPDATE_XML.format(project="some_module"):
+            return _FakeResp()
+        captured["download_url"] = url
+        class _R:
+            def read(self, n):
+                return b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+        return _R()
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+    monkeypatch.setattr(ws, "_cache_path_for", lambda *a, **kw: None)
+    monkeypatch.setattr("tarfile.is_tarfile", lambda p: False)
+
+    r = ws.fetch_drupal_module("some_module", version="8.x-1.0", exclusive_upper_bound=True)
+    assert r.resolved_version == "8.x-1.0"   # no hay release anterior -- se usa el limite igual
+    assert captured.get("download_url") == "http://x/8.x-1.0.tar.gz"
+
+
 def test_investigate_cves_batch_runs_concurrently_and_isolates_errors(monkeypatch):
     # confirma que investigate_cves_batch de verdad solapa el trabajo (no lo serializa) y que una
     # CVE fallando con una excepcion no tumba el resto del lote -- se queda en su propio
