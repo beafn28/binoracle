@@ -723,7 +723,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    setup_wp_options: Optional[list] = None,
                    companion_plugins: Optional[list] = None,
                    shortcode_name: Optional[str] = None,
-                   relationship_table: Optional[dict] = None) -> Optional[_LabSession]:
+                   relationship_table: Optional[dict] = None,
+                   wp_debug_display: bool = False) -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
     (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
 
@@ -784,16 +785,19 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     if not lab.mysql_ready(db_pw):
         res.detail = "MySQL no respondio a tiempo"
         res.logs.append("docker logs (mysql):\n" + lab.logs_tail(lab.mysql))
+        res.evidence["screenshots"] = shots
         return None
     step("MySQL listo; arrancando WordPress...")
     port = lab.start_wordpress(db_pw)
     if not port:
         res.detail = "no se pudo publicar el puerto de WordPress"
         res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
+        res.evidence["screenshots"] = shots
         return None
     if not lab.http_ready(port):
         res.detail = "WordPress no respondio a tiempo"
         res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
+        res.evidence["screenshots"] = shots
         return None
     base_url = f"http://{_lab_host()}:{port}"
     ctx["base_url"] = base_url
@@ -804,17 +808,31 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    "--admin_email=admin@binoracle-lab.invalid", "--skip-email", timeout=90)
     if r.returncode != 0:
         res.detail = f"wp core install fallo: {(r.stderr or r.stdout or '')[:300]}"
+        res.evidence["screenshots"] = shots
         return None
-    # WP_DEBUG + WP_DEBUG_DISPLAY activados en el laboratorio efimero -- confirmado en vivo,
-    # CVE-2024-3552: sin esto, wpdb oculta cualquier error real de MySQL (p.ej. el que provocan
-    # a proposito extractvalue()/updatexml() en el error-based) y, desde WP 5.2, un fatal error
-    # de PHP se sustituye por la pantalla generica "ha ocurrido un error critico" -- asi que la
-    # tecnica error-based no puede funcionar NUNCA contra un WordPress con la configuracion de
-    # fabrica, independientemente de si la inyeccion es real o no. Un laboratorio de pruebas
-    # propio, efimero, no es el objetivo final del analista: no hay nada que proteger activando
-    # esto solo aqui.
-    for dbg_const in ("WP_DEBUG", "WP_DEBUG_DISPLAY"):
-        lab.wp_cli("config", "set", dbg_const, "true", "--raw", "--type=constant", timeout=30)
+    # WP_DEBUG siempre activo en el laboratorio efimero -- confirmado en vivo, CVE-2024-3552:
+    # sin esto, wpdb oculta cualquier error real de MySQL (p.ej. el que provocan a proposito
+    # extractvalue()/updatexml() en el error-based) y, desde WP 5.2, un fatal error de PHP se
+    # sustituye por la pantalla generica "ha ocurrido un error critico". Un laboratorio de
+    # pruebas propio, efimero, no es el objetivo final del analista: no hay nada que proteger
+    # activando esto solo aqui.
+    #
+    # WP_DEBUG_DISPLAY, en cambio, SOLO se activa cuando `wp_debug_display=True` (lo pide
+    # verify_wordpress_sqli para su tecnica error-based, que necesita LEER el error de MySQL
+    # tal cual sale en el cuerpo HTTP). Bug real encontrado en vivo, CVE-2024-1071 (Ultimate
+    # Member): con WP_DEBUG_DISPLAY=true activado SIEMPRE para TODO verificador, un simple aviso
+    # de PHP totalmente ajeno a la inyeccion (p.ej. "_load_textdomain_just_in_time called
+    # incorrectly", del propio plugin cargando su dominio de traduccion demasiado pronto) se
+    # imprimia como HTML ANTES de que WordPress pudiera mandar la cabecera Set-Cookie del login
+    # -- "headers already sent" silencioso, sin error visible, deja el login sin cookie de
+    # sesion para CUALQUIER verificador (XSS, SSRF, account-takeover, CSRF...), no solo SQLi.
+    # Con WP_DEBUG_LOG=true (siempre activo) los errores/avisos se escriben en debug.log sin
+    # tocar la respuesta HTTP -- visibles igual via `docker exec` si hiciera falta depurar,
+    # pero sin romper ningun login.
+    lab.wp_cli("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant", timeout=30)
+    lab.wp_cli("config", "set", "WP_DEBUG_LOG", "true", "--raw", "--type=constant", timeout=30)
+    lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true" if wp_debug_display else "false",
+              "--raw", "--type=constant", timeout=30)
     admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
     step(f"WordPress instalado; admin id={admin_id}")
     step("capturando pantalla: WordPress recien instalado y en pie (laboratorio en vivo)...")
@@ -840,12 +858,14 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
     if not lab.install_plugin(plugin_source_dir, slug):
         res.detail = "no se pudo copiar el plugin al laboratorio"
+        res.evidence["screenshots"] = shots
         return None
     r = lab.wp_cli("plugin", "activate", slug, timeout=60)
     if r.returncode != 0:
         res.detail = f"activacion del plugin fallo: {(r.stderr or r.stdout or '')[:300]}"
         res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
                                "la activacion puede fallar por requisitos del propio plugin")
+        res.evidence["screenshots"] = shots
         return None
     if setup_wp_options:
         for opt in setup_wp_options:
@@ -940,6 +960,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    "--role=subscriber", f"--user_pass={sub_pass}", timeout=30)
     if r.returncode != 0:
         res.detail = f"creacion del subscriber fallo: {(r.stderr or r.stdout or '')[:300]}"
+        res.evidence["screenshots"] = shots
         return None
     step("capturando pantalla: usuario de bajo privilegio creado de verdad (lista de "
          "usuarios, vista admin)...")
@@ -954,6 +975,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
 
     if budget_s - (time.time() - t0) < 30:
         res.detail = "presupuesto de tiempo agotado antes de intentar el ataque"
+        res.evidence["screenshots"] = shots
         return None
 
     step(f"iniciando sesion como '{sub_user}' (bajo privilegio)...")
@@ -961,6 +983,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     if sess is None:
         res.detail = ("no se pudo iniciar sesion como el usuario de bajo privilegio "
                       "(ver el motivo concreto en los pasos de arriba)")
+        res.evidence["screenshots"] = shots
         return None
     res.logs.append(f"login subscriber: OK ({sub_user})")
     step("capturando pantalla: sesion del atacante ANTES del ataque (bajo privilegio)...")
@@ -1791,7 +1814,8 @@ def verify_wordpress_sqli(
                               setup_wp_options=setup_wp_options,
                               companion_plugins=companion_plugins,
                               shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None,
-                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None)
+                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
+                              wp_debug_display=True)
         if boot is None:
             return res
 

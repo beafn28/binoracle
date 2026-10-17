@@ -6441,6 +6441,37 @@ def test_genericverify_lfi_rce_raw_reflection_is_not_confirmed(monkeypatch, tmp_
     assert "LECTURA" in res.detail
 
 
+def test_render_investigation_shows_screenshots_from_a_blocked_attempt():
+    # bug real encontrado en vivo, CVE-2024-1071 (demo real contra Ultimate Member): el
+    # laboratorio efimero capturaba varias pantallas REALES (WordPress instalado, plugin
+    # activo, subscriber creado) antes de bloquearse en el login -- pero el informe las
+    # descartaba por completo porque solo mostraba capturas cuando inv.verified=True.
+    # render_investigation debe mostrarlas igual, como evidencia de hasta donde llego el
+    # intento, usando inv.attempt_evidence (no inv.verified_evidence, que exige verified=True).
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+
+    inv = Investigation(cve_id="CVE-2099-00026")
+    inv.vuln_class = "sqli"
+    inv.verified = False
+    inv.dynamic_verify = {"attempted": True, "available": True, "ok": True,
+                          "verified": False, "detail": "no se pudo iniciar sesion", "logs": []}
+    inv.attempt_evidence = {
+        "screenshots": [
+            {"caption_es": "Paso 1: WordPress instalado", "caption_en": "Step 1: WP installed",
+             "png_b64": "ZmFrZXBuZw==", "url": "http://lab.invalid/wp-login.php"},
+            {"caption_es": "Paso 3: subscriber creado", "caption_en": "Step 3: subscriber created",
+             "png_b64": "ZmFrZXBuZzI=", "url": "http://lab.invalid/wp-admin/users.php"},
+        ]
+    }
+    inv.blockers.append("verificacion dinamica intentada pero no confirmada: no se pudo "
+                        "iniciar sesion")
+
+    md = render_investigation(inv, lang="es", embed_images=True)
+    assert "Evidencia visual del intento" in md
+    assert "WordPress instalado" in md and "subscriber creado" in md
+    assert "ZmFrZXBuZw==" in md and "ZmFrZXBuZzI=" in md   # ambas imagenes embebidas, no solo una
+
+
 def test_cve_agent_escalates_path_traversal_to_lfi_rce_when_available(monkeypatch, tmp_path):
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
@@ -8610,14 +8641,17 @@ def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_pa
     assert "no se pudo iniciar sesion" in (res.detail or "")
 
 
-def test_bootstrap_lab_enables_wp_debug_display_before_attacking(monkeypatch, tmp_path):
-    # bug real confirmado en vivo, CVE-2024-3552: con la configuracion de fabrica, wpdb oculta
-    # cualquier error real de MySQL (p.ej. el que provocan a proposito extractvalue()/
-    # updatexml() en la tecnica error-based) y, desde WP 5.2, un fatal error de PHP se sustituye
-    # por la pantalla generica "ha ocurrido un error critico" -- asi que error-based no puede
-    # funcionar NUNCA contra un laboratorio de pruebas con la configuracion de fabrica,
-    # independientemente de si la inyeccion es real. _bootstrap_lab debe activar WP_DEBUG y
-    # WP_DEBUG_DISPLAY nada mas instalar el core, antes de copiar el plugin objetivo.
+def test_bootstrap_lab_enables_wp_debug_log_but_not_display_by_default(monkeypatch, tmp_path):
+    # bug real confirmado en vivo, CVE-2024-1071 (Ultimate Member), en una demo real: con
+    # WP_DEBUG_DISPLAY=true activado SIEMPRE para TODO verificador (como era antes), un simple
+    # aviso de PHP totalmente ajeno a la inyeccion (p.ej. el propio plugin cargando su dominio
+    # de traduccion demasiado pronto, "_load_textdomain_just_in_time called incorrectly") se
+    # imprimia como HTML ANTES de que WordPress pudiera mandar la cabecera Set-Cookie del login
+    # -- "headers already sent" silencioso, sin error visible, dejaba el login sin cookie de
+    # sesion para CUALQUIER verificador (XSS, SSRF, account-takeover...), no solo SQLi. Por
+    # defecto WP_DEBUG_DISPLAY debe quedar en false (WP_DEBUG_LOG sigue activo: los errores se
+    # escriben en debug.log, visibles via `docker exec` si hiciera falta, sin tocar la
+    # respuesta HTTP y por tanto sin poder romper ningun login).
     import binoracle.workflows.wpverify as wpverify
 
     calls = []
@@ -8665,10 +8699,64 @@ def test_bootstrap_lab_enables_wp_debug_display_before_attacking(monkeypatch, tm
 
     debug_calls = [c for c in calls if c[:2] == ("config", "set")]
     assert ("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant") in debug_calls
-    assert ("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant") in debug_calls
+    assert ("config", "set", "WP_DEBUG_LOG", "true", "--raw", "--type=constant") in debug_calls
+    assert ("config", "set", "WP_DEBUG_DISPLAY", "false", "--raw", "--type=constant") in debug_calls
     install_idx = next(i for i, c in enumerate(calls) if c and c[0] == "install_plugin")
     debug_idxs = [i for i, c in enumerate(calls) if c[:2] == ("config", "set")]
     assert debug_idxs and all(i < install_idx for i in debug_idxs)
+
+
+def test_bootstrap_lab_enables_wp_debug_display_when_requested_by_sqli(monkeypatch, tmp_path):
+    # verify_wordpress_sqli SI necesita WP_DEBUG_DISPLAY=true (lee el error de MySQL tal cual
+    # sale en el cuerpo HTTP para su tecnica error-based) -- pide explicitamente
+    # wp_debug_display=True al bootstrap compartido.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            calls.append(args)
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            calls.append(("install_plugin",) + a)
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **kw: None)
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    wpverify._bootstrap_lab(
+        _FakeLab(), str(tmp_path), "web-directory-free", lambda _m: None, res, _time.time(),
+        1200.0, wp_debug_display=True)
+
+    debug_calls = [c for c in calls if c[:2] == ("config", "set")]
+    assert ("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant") in debug_calls
 
 
 def test_bootstrap_lab_creates_shortcode_page_when_requested(monkeypatch, tmp_path):

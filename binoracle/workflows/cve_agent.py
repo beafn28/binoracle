@@ -121,6 +121,17 @@ class Investigation:
     source_grounding: dict = field(default_factory=dict)  # {found: {fn: [loc,...]}, not_found: [...]}
     dynamic_verify: dict = field(default_factory=dict)    # {attempted, available, verified, detail}
     poc_source_used: str = ""   # URL del PoC publico (GitHub) realmente leido, "" si ninguno
+    attempt_evidence: dict = field(default_factory=dict)  # evidencia REAL del intento (screenshots
+                                                             # incluidas) incluso cuando NO se
+                                                             # confirma -- bug real encontrado en
+                                                             # vivo, CVE-2024-1071: el laboratorio
+                                                             # capturaba varias capturas (WP
+                                                             # instalado, plugin activo, subscriber
+                                                             # creado) ANTES de bloquearse en el
+                                                             # login, pero se perdian porque solo
+                                                             # inv.verified_evidence (que exige
+                                                             # inv.verified=True) llegaba al
+                                                             # informe
 
 
 # Historial local de resultados por CVE -- confirmado en vivo esta misma sesion: reinvestigar la
@@ -487,6 +498,7 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     los ~30 call sites otra vez cuando se conecte."""
     inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
                           "verified": wr.verified, "detail": wr.detail, "logs": wr.logs}
+    inv.attempt_evidence = wr.evidence
     if wr.verified:
         inv.verified = True
         inv.verified_detail = wr.detail
@@ -1592,6 +1604,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                           "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                           "logs": wr.logs}
+                    inv.attempt_evidence = wr.evidence
                     if wr.verified:
                         inv.verified = True
                         inv.verified_detail = wr.detail
@@ -1678,6 +1691,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
+                inv.attempt_evidence = wr.evidence
                 if wr.verified:
                     inv.verified = True
                     inv.verified_detail = wr.detail
@@ -1816,6 +1830,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
+                inv.attempt_evidence = wr.evidence
                 if wr.verified:
                     inv.verified = True
                     inv.verified_detail = wr.detail
@@ -1952,6 +1967,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
+                inv.attempt_evidence = wr.evidence
                 if wr.verified:
                     inv.verified = True
                     inv.verified_detail = wr.detail
@@ -2049,6 +2065,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
+                inv.attempt_evidence = wr.evidence
                 if wr.verified:
                     inv.verified = True
                     inv.verified_detail = wr.detail
@@ -2957,6 +2974,39 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
                        "\n_(no screenshot: Playwright is not available in this container -- "
                        "the textual evidence above, the real payload/password/status code, "
                        "is equally valid without it)_"))
+    # bug real encontrado en vivo, CVE-2024-1071: el laboratorio efimero capturaba varias
+    # pantallas reales (WordPress instalado, plugin activo, usuario de bajo privilegio creado)
+    # ANTES de bloquearse mas adelante (login fallido) -- pero se perdian porque solo se
+    # mostraban capturas cuando inv.verified=True. Esto muestra las que SI se capturaron, como
+    # evidencia de hasta donde llego el intento real, aunque no se haya confirmado del todo.
+    if not inv.verified:
+        attempt_shots = (inv.attempt_evidence or {}).get("screenshots") or []
+        if attempt_shots:
+            out.append("\n### " + ("Evidencia visual del intento (laboratorio efimero, hasta "
+                                   "donde llego antes del bloqueo)" if es else
+                                   "Visual evidence from the attempt (ephemeral lab, as far as "
+                                   "it got before the blocker)"))
+            out.append(("_Capturas reales del laboratorio desechable, en el punto exacto donde "
+                        "cada paso se completo -- el laboratorio ya esta destruido._" if es else
+                        "_Real screenshots from the throwaway lab, at the exact point each step "
+                        "completed -- the lab is already torn down._"))
+            for sh in attempt_shots:
+                caption = sh.get("caption_es" if es else "caption_en") or ""
+                png = sh.get("png_b64")
+                if not png:
+                    continue
+                out.append(f"\n_{caption}_")
+                if sh.get("url"):
+                    out.append(("- Peticion capturada: " if es else "- Request captured: ")
+                               + f"`GET {sh['url']}`")
+                if embed_images:
+                    out.append(f"![paso]({_B64_PNG_PREFIX}{png})")
+                else:
+                    kb = len(png) * 3 // 4 // 1024
+                    out.append((f"[captura disponible, ~{kb} KB -- usa --html/-o para exportar el "
+                               f"informe completo con las imagenes]" if es else
+                               f"[screenshot available, ~{kb} KB -- use --html/-o to export the "
+                               f"full report with images]"))
     if inv.blockers:
         out.append("\n### " + ("Bloqueos para el exploit real" if es else "Blockers for a real exploit"))
         out += [f"- {b}" for b in inv.blockers]
