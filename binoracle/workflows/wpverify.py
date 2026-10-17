@@ -65,6 +65,21 @@ _PASSWD_SIGNATURE_RE = re.compile(r"root:[^:\n]*:0:0:")
 _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
              "domain", "shell")
 _SQLI_HINTS = ("id", "search", "q", "query", "name", "term", "filter", "sort", "order")
+
+# algunos plugins NO crean sus paginas por defecto (Login/Register/Account/Members/...) con la
+# simple activacion -- exigen un paso extra PROPIO de cada plugin (un boton "Create Pages" en su
+# aviso de admin, o una URL de un solo uso), que `wp plugin activate` por si solo nunca dispara.
+# Confirmado por la documentacion oficial del plugin, no adivinado: Ultimate Member necesita
+# visitar 'wp-admin/admin.php?page=um_options&um_adm_action=install_core_pages' como admin para
+# crear sus paginas (Register/Account/Members/...) -- sin esto, NINGUNA pagina del sitio las
+# muestra, y no hay nonce que rascar en ningun lado para su AJAX, lo que parecia (pero no era)
+# un bloqueo de infraestructura distinto -- confirmado en vivo, CVE-2024-1071. No existe una
+# convencion generica de WordPress para esto (cada plugin inventa su propio mecanismo), asi que
+# este registro se amplia caso por caso -- igual que shortcode_name/relationship_table ya lo
+# hacen para otros CVEs (ver _bootstrap_lab).
+_PLUGIN_SETUP_TRIGGER_PATHS = {
+    "ultimate-member": ["/wp-admin/admin.php?page=um_options&um_adm_action=install_core_pages"],
+}
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
@@ -1046,6 +1061,14 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                f"admin, con su password ORIGINAL -- antes del ataque).",
                f"Step 2: plugin '{slug}' installed and ACTIVE in the lab (admin's view, with "
                f"their ORIGINAL password -- before the attack).")
+        for trigger_path in _PLUGIN_SETUP_TRIGGER_PATHS.get(slug, []):
+            step(f"'{slug}' no crea sus paginas por defecto con la simple activacion -- "
+                 f"visitando '{trigger_path}' como admin para crearlas de verdad (paso "
+                 f"documentado por el propio plugin, no generico de WordPress)...")
+            try:
+                admin_sess.get(base_url + trigger_path, timeout=20)
+            except Exception:
+                pass
     step("Creando el usuario de bajo privilegio (subscriber)...")
 
     r = lab.wp_cli("user", "create", sub_user, "subscriber@binoracle-lab.invalid",

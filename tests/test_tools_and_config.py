@@ -8756,6 +8756,78 @@ def test_bootstrap_lab_applies_setup_wp_options_before_login(monkeypatch, tmp_pa
     assert "no se pudo iniciar sesion" in (res.detail or "")
 
 
+def test_bootstrap_lab_triggers_plugin_specific_setup_for_ultimate_member(monkeypatch, tmp_path):
+    # bug real confirmado en vivo + verificado contra la documentacion oficial del plugin,
+    # CVE-2024-1071: Ultimate Member NO crea sus paginas por defecto (Register/Account/
+    # Members/...) con la simple activacion -- hace falta visitar
+    # 'wp-admin/admin.php?page=um_options&um_adm_action=install_core_pages' como admin. Sin
+    # esto, ninguna pagina del sitio muestra nada del plugin y no hay nonce que rascar en
+    # ningun lado -- _bootstrap_lab debe disparar esto de verdad para este plugin concreto, y
+    # NUNCA para un plugin cualquiera (no hay convencion generica de WordPress para esto).
+    import binoracle.workflows.wpverify as wpverify
+
+    admin_get_calls = []
+
+    class _FakeAdminSess:
+        def get(self, url, **kw):
+            admin_get_calls.append(url)
+            class _R:
+                status_code = 200
+                text = ""
+            return _R()
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    def fake_wp_login(base_url, user, password, on_step=None):
+        return _FakeAdminSess() if user == "binoracle_admin" else None
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", fake_wp_login)
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    wpverify._bootstrap_lab(_FakeLab(), str(tmp_path), "ultimate-member", lambda _m: None, res,
+                            _time.time(), 1200.0)
+
+    assert any("um_adm_action=install_core_pages" in u for u in admin_get_calls), (
+        "debia visitar la URL de un solo uso que crea las paginas por defecto de Ultimate Member")
+
+    # para un plugin CUALQUIERA (sin entrada en el registro), nunca debe inventarse nada.
+    admin_get_calls.clear()
+    res2 = wpverify.WpVerifyResult()
+    wpverify._bootstrap_lab(_FakeLab(), str(tmp_path), "some-other-plugin", lambda _m: None,
+                            res2, _time.time(), 1200.0)
+    assert admin_get_calls == []
+
+
 def test_bootstrap_lab_enables_wp_debug_log_but_not_display_by_default(monkeypatch, tmp_path):
     # bug real confirmado en vivo, CVE-2024-1071 (Ultimate Member), en una demo real: con
     # WP_DEBUG_DISPLAY=true activado SIEMPRE para TODO verificador (como era antes), un simple
