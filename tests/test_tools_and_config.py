@@ -3966,6 +3966,36 @@ def test_find_shortcode_name_none_when_plugin_registers_none(tmp_path):
     assert find_shortcode_name(str(tmp_path), "no-shortcode-plugin") is None
 
 
+def test_find_shortcode_name_prefers_the_one_registered_in_the_vulnerable_file(tmp_path):
+    # mejora pedida: con VARIOS shortcodes en ficheros DISTINTOS, no hay forma generica de saber
+    # cual es "el principal" -- pero si ya se conoce el fichero real de la funcion vulnerable
+    # (grounded via grep_vulnerable_functions), el shortcode registrado EN ESE fichero es
+    # informacion real sobre este CVE en concreto, no una suposicion.
+    from binoracle.workflows.websource import find_shortcode_name
+    plugin_dir = tmp_path / "myplugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "admin.php").write_text("<?php\nadd_shortcode('admin_panel', 'render_admin');\n")
+    (plugin_dir / "frontend.php").write_text("<?php\nadd_shortcode('vuln_view', 'render_vuln');\n")
+    vuln_file = str(plugin_dir / "frontend.php")
+    assert find_shortcode_name(str(tmp_path), "myplugin", vulnerable_file=vuln_file) == "vuln_view"
+    # sin la pista, cae al primero en orden de recorrido (admin.php < frontend.php alfabeticamente)
+    assert find_shortcode_name(str(tmp_path), "myplugin") == "admin_panel"
+
+
+def test_find_shortcode_name_prefers_one_using_wpdb_when_no_vuln_file_hint(tmp_path):
+    # segunda senal (generica, no especifica del plugin): un shortcode en un fichero que tambien
+    # usa $wpdb (acceso real a la base de datos) es mas probable que sirva para disparar una
+    # SQLi que uno puramente de presentacion.
+    from binoracle.workflows.websource import find_shortcode_name
+    plugin_dir = tmp_path / "myplugin2"
+    plugin_dir.mkdir()
+    (plugin_dir / "about.php").write_text("<?php\nadd_shortcode('about_box', 'render_about');\n")
+    (plugin_dir / "search.php").write_text(
+        "<?php\nadd_shortcode('search_box', 'render_search');\n"
+        "global $wpdb; $wpdb->get_results($query);\n")
+    assert find_shortcode_name(str(tmp_path), "myplugin2") == "search_box"
+
+
 def test_find_join_relationship_table_finds_real_left_join_confirmed_live(tmp_path):
     # bug real confirmado en vivo, CVE-2024-3552: el sumidero SQLi real (level_filter_where)
     # solo devuelve algo si el post atacado tiene una fila en la tabla de relacion propia del

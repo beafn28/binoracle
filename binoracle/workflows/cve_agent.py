@@ -1901,7 +1901,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # -- confirmado en vivo, CVE-2024-3552: con el shortcode real del plugin,
                 # verify_wordpress_sqli crea una pagina de verdad y ataca ESA en su lugar.
                 endpoint_is_bare_root = (notes.get("endpoint") or "/").strip() in ("", "/")
-                shortcode_name = (find_shortcode_name(fr.local_path, plugin_dir)
+                # si ya se tiene el fichero GROUNDED de la funcion vulnerable (ver
+                # inv.source_grounding mas arriba), se usa para desambiguar CUAL shortcode es el
+                # relevante cuando el plugin registra varios -- informacion real de este CVE en
+                # concreto, no una suposicion generica (ver find_shortcode_name).
+                vuln_file_hint = ""
+                _found = (inv.source_grounding or {}).get("found") or {}
+                _first_locs = next(iter(_found.values()), []) if _found else []
+                if _first_locs:
+                    vuln_file_hint = _first_locs[0].rsplit(":", 1)[0]
+                shortcode_name = (find_shortcode_name(fr.local_path, plugin_dir,
+                                                      vulnerable_file=vuln_file_hint)
                                  if endpoint_is_bare_root else None)
                 # si el sumidero real esta detras de un LEFT JOIN propio del plugin enlazado por
                 # post ID (patron comun en plugins de listados/directorios), una pagina SIN fila

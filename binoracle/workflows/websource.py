@@ -947,19 +947,37 @@ def find_join_relationship_table(local_path: str, plugin_dir: str) -> Optional[d
 _ADD_SHORTCODE_RE = re.compile(r"add_shortcode\s*\(\s*['\"]([A-Za-z0-9_-]+)['\"]")
 
 
-def find_shortcode_name(local_path: str, plugin_dir: str) -> Optional[str]:
-    """Busca el PRIMER shortcode que el propio plugin registra (add_shortcode('nombre', ...)) --
-    confirmado en vivo, CVE-2024-3552: atacar '/' (la portada por defecto de WordPress, sin
-    posts ni contenido) nunca puede mostrar una diferencia booleana ni una fila UNION reflejada,
-    aunque la inyeccion sea real, porque esa pagina no renderiza NADA del plugin -- hace falta
-    una pagina de verdad que invoque su funcionalidad (su shortcode) para que el resultado del
-    query inyectado tenga alguna superficie visible donde reflejarse. Con el nombre real del
-    shortcode, _bootstrap_lab puede crear una pagina de verdad con el (via wp-cli) ANTES de
-    atacar, en vez de adivinar una URL o depender de que el analista la conozca de antemano.
-    Deliberadamente simple (regex, no parser real de PHP): si el plugin registra varios
-    shortcodes, se devuelve el primero que aparece (en orden de recorrido de ficheros) -- no hay
-    forma generica de saber cual es 'el principal' sin leer la documentacion del plugin."""
+def find_shortcode_name(local_path: str, plugin_dir: str,
+                        vulnerable_file: str = "") -> Optional[str]:
+    """Busca el shortcode que el propio plugin registra (add_shortcode('nombre', ...)) mas
+    probable de servir para disparar el sumidero vulnerable -- confirmado en vivo, CVE-2024-3552:
+    atacar '/' (la portada por defecto de WordPress, sin posts ni contenido) nunca puede mostrar
+    una diferencia booleana ni una fila UNION reflejada, aunque la inyeccion sea real, porque esa
+    pagina no renderiza NADA del plugin -- hace falta una pagina de verdad que invoque su
+    funcionalidad (su shortcode) para que el resultado del query inyectado tenga alguna
+    superficie visible donde reflejarse. Con el nombre real del shortcode, _bootstrap_lab puede
+    crear una pagina de verdad con el (via wp-cli) ANTES de atacar, en vez de adivinar una URL o
+    depender de que el analista la conozca de antemano.
+
+    Deliberadamente simple (regex, no parser real de PHP). Si el plugin registra VARIOS
+    shortcodes, no hay forma generica de saber cual es 'el principal' sin leer la documentacion
+    del plugin -- pero SI hay dos senales reales que no requieren adivinar nada especifico del
+    plugin, en orden de prioridad:
+      1. `vulnerable_file` (si se pasa, p.ej. desde la hipotesis del LLM/grep_vulnerable_functions):
+         el shortcode registrado en ESE fichero exacto es casi siempre el que lleva al sumidero
+         vulnerable -- es informacion real sobre ESTE CVE en concreto, no una suposicion generica.
+      2. Un shortcode registrado en un fichero que tambien usa `$wpdb` (acceso a la base de
+         datos) es mas probable que sirva para disparar una SQLi que uno en un fichero puramente
+         de presentacion (CSS/JS/formularios estaticos) -- senal generica, no especifica del
+         plugin.
+    Si ninguna senal aplica (o varios candidatos empatan en la misma senal), se devuelve el
+    primero en orden de recorrido de ficheros, igual que antes."""
     base = os.path.join(local_path, plugin_dir) if plugin_dir else local_path
+    # `vulnerable_file` llega ya como la misma ruta que grep_vulnerable_functions() devuelve
+    # (FuncMatch.file, formada con os.walk desde el mismo `local_path`) -- NO se reune con
+    # `local_path` otra vez (eso duplicaria el prefijo); solo se normaliza para comparar.
+    vuln_abs = os.path.abspath(vulnerable_file) if vulnerable_file else ""
+    candidates = []   # [(nombre, fichero_abs, usa_wpdb)]
     scanned = 0
     for dirpath, _dirs, files in os.walk(base):
         if "node_modules" in dirpath or "/.git" in dirpath:
@@ -976,10 +994,19 @@ def find_shortcode_name(local_path: str, plugin_dir: str) -> Optional[str]:
                 continue
             m = _ADD_SHORTCODE_RE.search(text)
             if m:
-                return m.group(1)
+                candidates.append((m.group(1), os.path.abspath(fp), "$wpdb" in text))
         if scanned >= _MAX_SCAN_FILES:
             break
-    return None
+    if not candidates:
+        return None
+    if vuln_abs:
+        for name, fp, _wpdb in candidates:
+            if fp == vuln_abs:
+                return name
+    for name, _fp, uses_wpdb in candidates:
+        if uses_wpdb:
+            return name
+    return candidates[0][0]
 
 
 def extract_function_body(local_path: str, relative_file: str, start_line: int,
