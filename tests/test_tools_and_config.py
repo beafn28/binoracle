@@ -3246,21 +3246,20 @@ def test_symbolic_angr_rebases_pie_addresses_for_auto_verify():
     assert findings[0].verdict == "verified", notes
 
 
-def test_symbolic_angr_reachable_never_hangs_past_its_budget():
+def test_symbolic_angr_reachable_impl_never_hangs_past_its_budget():
     # Bug real encontrado en vivo probando un binario con un bucle (un menu re-mostrado hasta que
-    # el usuario elige salir): AngrOracle._reachable() hacia una UNICA llamada bloqueante
-    # `simgr.explore(...)` sin ningun limite de tiempo ni de estados activos -- en un binario con
-    # un bucle que multiplica caminos sin fin, se quedaba al 100% de CPU minuto tras minuto sin
-    # devolver nunca nada (mismo patron de fallo que el `pdg` de r2 sin timeout, arreglado antes
-    # en r2session.cmd_timeout). Ahora usa el mismo bucle con deadline + tope de estados activos
-    # que ya usaba reachability.find_input_to() para el mismo problema.
+    # el usuario elige salir): la busqueda hacia una UNICA llamada bloqueante `simgr.explore(...)`
+    # sin ningun limite de tiempo ni de estados activos -- en un binario con un bucle que
+    # multiplica caminos sin fin, se quedaba al 100% de CPU minuto tras minuto sin devolver nunca
+    # nada (mismo patron de fallo que el `pdg` de r2 sin timeout, arreglado antes en
+    # r2session.cmd_timeout). Ahora usa un bucle con deadline + tope de estados activos (ver
+    # _reachable_impl, el cuerpo que corre dentro del subproceso de AngrOracle._reachable).
     import time
     from unittest.mock import MagicMock
-    from binoracle.oracles.symbolic_angr import AngrOracle, _HAVE_ANGR
-    if not _HAVE_ANGR:
+    import binoracle.oracles.symbolic_angr as sa
+    if not sa._HAVE_ANGR:
         return   # angr no instalado en este entorno: se omite
 
-    oracle = AngrOracle("fake.bin")
     fake_active = [MagicMock() for _ in range(500)]   # muchos estados activos, como un bucle real
     fake_simgr = MagicMock()
     fake_simgr.active = fake_active
@@ -3271,11 +3270,12 @@ def test_symbolic_angr_reachable_never_hangs_past_its_budget():
     fake_proj = MagicMock()
     fake_proj.loader.main_object.pic = False   # sin rebase PIE, para simplificar el mock
     fake_proj.factory.simulation_manager.return_value = fake_simgr
-    oracle._project = MagicMock(return_value=fake_proj)
 
-    t0 = time.time()
-    res = oracle._reachable("0x401234", budget_s=0.3, max_active=50)
-    elapsed = time.time() - t0
+    with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+            sa.angr, "Project", return_value=fake_proj):
+        t0 = time.time()
+        res = sa._reachable_impl("fake.bin", 0x401234, [], budget_s=0.3, max_active=50)
+        elapsed = time.time() - t0
 
     assert elapsed < 3.0, "no debe esperar mucho mas que el budget_s pedido"
     assert res.ok and res.meta.get("reachable") is False
@@ -3283,6 +3283,34 @@ def test_symbolic_angr_reachable_never_hangs_past_its_budget():
     assert fake_simgr.explore.call_count > 1   # de verdad iteró varias veces dentro del budget
     # el tope de max_active se aplico: 'active' se recorto, nunca crecio sin control
     assert len(fake_simgr.active) <= 50
+
+
+def test_symbolic_angr_reachable_hard_kills_a_subprocess_that_outlives_its_budget(monkeypatch):
+    # Complementa el test anterior: _reachable_impl solo protege contra un bucle de llamadas a
+    # explore() que NUNCA termina -- pero no puede proteger contra una UNICA llamada a explore()
+    # que se bloquea mucho mas de lo normal (resolucion de restricciones dura; confirmado en vivo
+    # bajo throttling de CPU severo, un step que deberia tardar ~1s tardo mas de 2 HORAS). Para
+    # eso AngrOracle._reachable corre la busqueda en un proceso HIJO y lo MATA si sigue vivo
+    # pasado budget_s + margen -- este test lo confirma con un worker real que duerme mucho mas
+    # que el budget pedido, en vez de devolver nunca el control al bucle interno.
+    import time
+    import binoracle.oracles.symbolic_angr as sa
+    if not sa._HAVE_ANGR:
+        return
+
+    def _slow_worker(binary, target, avoid_list, budget_s, max_active, q):
+        time.sleep(600)   # mucho mas que cualquier budget_s razonable de prueba
+        q.put(sa.ToolResult(True, "angr", "no deberia llegar aqui"))
+    monkeypatch.setattr(sa, "_reachable_worker", _slow_worker)
+
+    oracle = sa.AngrOracle("fake.bin")
+    t0 = time.time()
+    res = oracle._reachable("0x401234", budget_s=1.0, max_active=50)
+    elapsed = time.time() - t0
+
+    assert elapsed < 40.0, "el proceso hijo debe ser forzado a terminar, no esperarse 600s"
+    assert res.ok and res.meta.get("reachable") is False
+    assert "forzado a terminar" in res.data or "NOT reachable" in res.data
 
 
 def test_reachability_rebases_pie_addresses_for_angr():
@@ -3309,6 +3337,30 @@ def test_reachability_rebases_pie_addresses_for_angr():
     # el input concreto recuperado debe ser la contrasena real del reto (prueba de que la busqueda
     # realmente ejecuto el binario correcto, no una direccion aleatoria que resulto alcanzable)
     assert any("sup3rs3cr3t" in f.evidence for f in fs)
+
+
+def test_reachability_find_input_to_hard_kills_a_subprocess_that_outlives_its_budget(monkeypatch):
+    # Bug real encontrado en vivo bajo throttling de CPU severo: un unico `simgr.explore(...)`
+    # dentro de _find_input_to_impl tardo mas de 2 HORAS cuando debia tardar ~25s (budget_s=25) --
+    # el bucle `while time.time() < deadline` solo comprueba el reloj ENTRE llamadas, asi que no
+    # tiene forma de interrumpir una llamada individual que se bloquea mucho mas de lo normal.
+    # find_input_to ahora corre la busqueda real en un proceso HIJO y lo MATA si sigue vivo
+    # pasado budget_s + margen, convirtiendo budget_s en una cota DURA de verdad.
+    import time
+    import binoracle.workflows.reachability as rb
+
+    def _slow_worker(binary, target, avoid, stdin_len, budget_s, max_active, q):
+        time.sleep(600)
+        q.put(rb.ReachResult(ok=True, target=target, note="no deberia llegar aqui"))
+    monkeypatch.setattr(rb, "_find_input_to_worker", _slow_worker)
+
+    t0 = time.time()
+    res = rb.find_input_to("fake.bin", 0x401234, budget_s=1.0)
+    elapsed = time.time() - t0
+
+    assert elapsed < 40.0, "el proceso hijo debe ser forzado a terminar, no esperarse 600s"
+    assert res.ok is False
+    assert "excedio el presupuesto" in res.note or "no alcanzado" in res.note
 
 
 def test_authz_drop_must_guard_the_exec_path(tmp_path):
