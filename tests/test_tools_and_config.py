@@ -3677,6 +3677,35 @@ def test_audit_decompile_vuln_funcs_never_hangs_on_stuck_axtj(monkeypatch, tmp_p
     assert fake.process.killed, "la sesion colgada debe matarse, no quedar zombie"
 
 
+def test_decompile_func_technical_uses_cmd_timeout_not_raw_cmd(monkeypatch):
+    # Parte del barrido "poco a poco": func_technical() llamaba a r.cmd() crudo para afij/afvj/
+    # afcf sobre `func`, que no esta pre-validado contra la lista real de simbolos -- mismo
+    # riesgo de cuelgue que reachability._sink_callsites si r2 se porta mal con un nombre que
+    # no existe. Ahora debe pasar por r2session.cmd_timeout.
+    import json as _json
+    from binoracle.workflows import decompile as dc
+    from binoracle.oracles import r2session
+
+    calls = []
+    def fake_cmd_timeout(binary, cmd, timeout):
+        calls.append(cmd)
+        if cmd.startswith("afij"):
+            return _json.dumps([{"bits": 64, "signature": "int vuln(char *buf)",
+                                 "stackframe": 64, "calltype": "amd64"}])
+        if cmd.startswith("afvj"):
+            return _json.dumps({"bp": [{"name": "buf", "type": "char*",
+                                        "ref": {"base": "rbp", "offset": -40}}], "sp": [], "reg": []})
+        return ""
+    monkeypatch.setattr(r2session, "cmd_timeout", fake_cmd_timeout)
+    monkeypatch.setattr(r2session, "get", lambda binary: object())
+
+    tech = dc.func_technical("fake.bin", "vuln")
+    assert tech.get("signature") == "int vuln(char *buf)"
+    assert tech.get("locals") and tech["locals"][0]["name"] == "buf"
+    assert all(c.startswith(("afij", "afvj")) for c in calls), (
+        "debe usar cmd_timeout para cada consulta, nunca r.cmd() crudo")
+
+
 def test_decompiled_func_has_ok_property():
     # Regresion: la propiedad `ok` de DecompiledFunc estaba mal ubicada (pegada por error dentro
     # del cuerpo de func_technical(), tras su return, como codigo muerto), asi que la dataclass
