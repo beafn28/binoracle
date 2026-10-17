@@ -420,10 +420,21 @@ _WP_NONCE_SETUP_RETRY_HINT = (
     "'instalar paginas', correr un wizard de configuracion...), indicala en "
     "'pagina_setup_admin_requerida' como una ruta relativa que se visitara CON SESION DE ADMIN "
     "antes del siguiente intento -- deja vacio si no tienes ninguna pista concreta. "
+    "TERCER CASO APARTE -- falta un parametro ADICIONAL real, distinto del que se esta probando "
+    "como inyectable: si la respuesta rechaza la peticion por un motivo que NO tiene que ver con "
+    "el parametro/payload inyectado (p.ej. 'Wrong member directory data', 'Invalid form id', "
+    "'Missing X') -- confirmado en vivo, Ultimate Member/CVE-2024-1071: el endpoint exige un "
+    "'directory_id' real ANTES de llegar siquiera al codigo vulnerable, y el parametro inyectable "
+    "('sorting') es otro distinto -- indica el nombre REAL de ese campo que falta (del PoC "
+    "publico, del propio mensaje de error, o de convenciones tipicas de ese plugin -- NUNCA "
+    "inventado) en 'parametro_adicional_requerido'. SE AÑADE a la peticion (binoracle intenta "
+    "resolver su valor real por su cuenta -- p.ej. fuerza bruta de IDs ofuscados -- si el nombre "
+    "pinta a un identificador de recurso), NUNCA sustituye al parametro que se esta inyectando. "
+    "Deja vacio si no tienes ninguna pista concreta. "
 )
 _WP_NONCE_SETUP_RETRY_JSON_FIELDS = (
     "\"pagina_extra_para_nonce\": \"...\" (opcional), \"pagina_setup_admin_requerida\": \"...\" "
-    "(opcional)"
+    "(opcional), \"parametro_adicional_requerido\": \"...\" (opcional)"
 )
 
 _SQLI_RETRY_SYS = (
@@ -596,7 +607,8 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResul
     if not isinstance(data, dict) or not data.get("tiene_sugerencia"):
         return None
     if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")
-           or data.get("pagina_extra_para_nonce") or data.get("pagina_setup_admin_requerida")):
+           or data.get("pagina_extra_para_nonce") or data.get("pagina_setup_admin_requerida")
+           or data.get("parametro_adicional_requerido")):
         return None
     return data
 
@@ -2260,6 +2272,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     sp = sug.get("pagina_setup_admin_requerida")
                     if sp and sp not in extra_setup_trigger_paths:
                         extra_setup_trigger_paths.append(sp)
+                    # parametro ADICIONAL real que el endpoint exige antes de llegar al sumidero
+                    # (p.ej. 'directory_id' en CVE-2024-1071) -- se AÑADE a `params` (mutado in
+                    # place: _attempt_sqli ya lo captura por closure), nunca sustituye al que se
+                    # esta inyectando (`sqli_p`/`pr`, siempre intacto). Si parece un identificador
+                    # de recurso (nombre con 'id'/'dir'), verify_wordpress_sqli ya intenta
+                    # resolverlo por su cuenta via fuerza bruta de IDs ofuscados (ver
+                    # _auto_resolve_wp_blockers en wpverify.py) antes de atacar.
+                    extra_p = sug.get("parametro_adicional_requerido")
+                    if extra_p:
+                        if isinstance(params, dict):
+                            params.setdefault(extra_p, "1")
+                        elif extra_p not in params:
+                            params.append(extra_p)
                 def _attempt_sqli(ep, pr):
                     return verify_wordpress_sqli(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,

@@ -901,6 +901,8 @@ def cmd_investigate(args, config):
         hints["http_method"] = args.method
     if getattr(args, "params", None):
         hints["parameters"] = [p.strip() for p in args.params.split(",") if p.strip()]
+    if getattr(args, "sqli_param", None):
+        hints["sqli_param"] = args.sqli_param
     if getattr(args, "functions", None):
         hints["vulnerable_functions"] = [f.strip() for f in args.functions.split(",") if f.strip()]
     if getattr(args, "table_name", None):
@@ -1500,6 +1502,13 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--endpoint", help="exact vulnerable endpoint/route for a web CVE")
     ip.add_argument("--method", help="HTTP method for --endpoint (default POST)")
     ip.add_argument("--params", help="comma-separated request parameter names (e.g. user_id,email,pass)")
+    ip.add_argument("--sqli-param", help="for --vuln-class sqli: the exact parameter name to "
+                                         "inject into, overriding the automatic guess -- needed "
+                                         "when --params also carries OTHER required parameters "
+                                         "(e.g. a real directory/resource id the endpoint "
+                                         "validates before reaching the vulnerable sink) whose "
+                                         "name would otherwise be picked over the real "
+                                         "injectable one by the generic id/search/sort heuristic")
     ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
                                         "against the fetched source (e.g. update_user,handle_register_submission)")
     ip.add_argument("--table-name", help="for WordPress deserialization: the plugin's own DB "
