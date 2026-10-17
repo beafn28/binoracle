@@ -2650,15 +2650,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                     notes.get("http_method") or "GET", params,
                                                     redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                or_wp_extra_nonce_pages: List[str] = []
+                or_wp_extra_setup_trigger_paths: List[str] = []
+                def _on_or_wp_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in or_wp_extra_nonce_pages:
+                        or_wp_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in or_wp_extra_setup_trigger_paths:
+                        or_wp_extra_setup_trigger_paths.append(sp)
                 def _attempt_or_wp(ep, pr):
                     return verify_wordpress_open_redirect(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(or_wp_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(or_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_or_wp, wr, notes.get("endpoint"), redir_p,
-                    technique_label="open redirect WordPress")
+                    technique_label="open redirect WordPress", on_suggestion=_on_or_wp_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de open-redirect (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2718,15 +2729,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                   notes.get("http_method") or "POST", params,
                                                   file_param_hint=file_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                fu_wp_extra_nonce_pages: List[str] = []
+                fu_wp_extra_setup_trigger_paths: List[str] = []
+                def _on_fu_wp_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in fu_wp_extra_nonce_pages:
+                        fu_wp_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in fu_wp_extra_setup_trigger_paths:
+                        fu_wp_extra_setup_trigger_paths.append(sp)
                 def _attempt_file_upload_wp(ep, pr):
                     return verify_wordpress_file_upload(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
                         file_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(fu_wp_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(fu_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
-                    technique_label="file upload WordPress")
+                    technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/

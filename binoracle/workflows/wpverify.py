@@ -3044,6 +3044,8 @@ def verify_wordpress_open_redirect(
     parameters, redirect_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica open redirect mandando como valor del parametro una URL EXTERNA completa, con
     redirects deshabilitados en el cliente (allow_redirects=False) para inspeccionar la cabecera
@@ -3068,7 +3070,8 @@ def verify_wordpress_open_redirect(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -3096,10 +3099,14 @@ def verify_wordpress_open_redirect(
         from .payload_kb import load_open_redirect_templates
         targets += load_open_redirect_templates(evil_host)
         m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, redirect_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
         tried = []
         confirmed_entry = None
         for target in targets:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(base_params)
             payload[redirect_param] = target
             step(f"probando {m} {endpoint} con {redirect_param}={target!r} (sin seguir redirects)...")
             try:
@@ -3164,6 +3171,8 @@ def verify_wordpress_file_upload(
     parameters, file_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica unrestricted file upload (webshell) en dos pasos, ambos con prueba dura:
 
@@ -3194,7 +3203,8 @@ def verify_wordpress_file_upload(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -3219,9 +3229,11 @@ def verify_wordpress_file_upload(
             ("binoracle_{t}.jpg", b"\xff\xd8\xff\xe0", "image/jpeg"),    # polyglot JPEG SOI + PHP
             ("binoracle_{t}.png", b"\x89PNG\r\n\x1a\n", "image/png"),    # polyglot PNG + PHP
         ]
-        other_params = {k: v for k, v in (dict(parameters) if isinstance(parameters, dict)
-                                          else {p: "" for p in (parameters or [])}).items()
-                        if k != file_param}
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, file_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+        other_params = {k: v for k, v in base_params.items() if k != file_param}
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "file_param": file_param, "metodo": m, "endpoint": endpoint,

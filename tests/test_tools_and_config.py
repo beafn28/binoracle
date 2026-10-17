@@ -5869,7 +5869,8 @@ def test_cve_agent_open_redirect_retries_with_llm_suggestion(monkeypatch, tmp_pa
 
     calls = []
     def fake_or(plugin_source_dir, slug, endpoint, http_method, parameters,
-               redirect_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None):
+               redirect_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None,
+               **kw):
         calls.append(endpoint)
         if "action=go" not in (endpoint or ""):
             wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
