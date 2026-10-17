@@ -3585,6 +3585,55 @@ def test_binfacts_parses_import_names():
     assert has_network(_mock_reg(imports="sym.imp.printf", strings="hello")) is False
 
 
+def test_audit_decompile_vuln_funcs_never_hangs_on_stuck_axtj(monkeypatch, tmp_path):
+    # Mismo bug real que reachability._sink_callsites (ver su fix): `axtj @ sym.imp.<sink>` para
+    # un simbolo que el binario no importa puede colgar r2pipe indefinidamente -- aqui con una
+    # sesion FRESCA (no la cacheada de r2session), que tiene exactamente el mismo riesgo porque
+    # usa el mismo mecanismo de pipe persistente. _r2_cmd_timeout debe acotar cada llamada.
+    import time
+    from binoracle.workflows import audit
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _HangingR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            if c == "aaa":
+                return ""
+            if c.startswith("axtj @ sym.imp.gets"):
+                time.sleep(25)   # mas que el timeout real de 20s para axtj en _decompile_vuln_funcs
+            return ""
+        def quit(self):
+            pass
+
+    fake = _HangingR2()
+    monkeypatch.setattr("r2pipe.open", lambda *a, **kw: fake)
+    monkeypatch.setattr(audit, "_OVERFLOW_SINKS", ("read", "gets", "fgets"))
+
+    b = tmp_path / "fake.bin"; b.write_bytes(b"\x7fELF")
+
+    class _FakeLLM:
+        def available(self):
+            return False
+
+    def fake_decompile_explain(binary, func, llm=None):
+        from binoracle.workflows.decompile import DecompiledFunc
+        return DecompiledFunc(func=func, raw=f"int {func}(){{}}", engine="pdc")
+    monkeypatch.setattr("binoracle.workflows.decompile.decompile_explain", fake_decompile_explain)
+
+    t0 = time.time()
+    out = audit._decompile_vuln_funcs(None, str(b), _FakeLLM(), limit=2)
+    elapsed = time.time() - t0
+    assert elapsed < 30.0, "no debe esperar mucho mas que el timeout real de axtj (20s)"
+    assert out, "debe caer a 'main' como fallback cuando axtj no da nada util"
+    assert fake.process.killed, "la sesion colgada debe matarse, no quedar zombie"
+
+
 def test_decompiled_func_has_ok_property():
     # Regresion: la propiedad `ok` de DecompiledFunc estaba mal ubicada (pegada por error dentro
     # del cuerpo de func_technical(), tras su return, como codigo muerto), asi que la dataclass

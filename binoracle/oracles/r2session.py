@@ -89,6 +89,30 @@ def close_all() -> None:
     _CACHE.clear()
 
 
+def cmd_timeout_on(r, cmd: str, timeout: float) -> str:
+    """Como cmd_timeout(), pero sobre una sesion r2pipe YA ABIERTA a mano (no la cacheada de
+    `get()`) -- para los workflows que deliberadamente abren su propia sesion fresca por llamada
+    (audit.py, backdoors.py) en vez de compartir la cache. Mismo mecanismo: thread daemon +
+    join(timeout) + kill del proceso r2 si sigue vivo. Nunca lanza; devuelve "" (no None, para
+    que encadene bien con `... or ""` en el codigo existente) si se agota el tiempo."""
+    result: dict = {}
+    def _run():
+        try:
+            result["v"] = r.cmd(cmd)
+        except Exception:
+            result["v"] = None
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        try:
+            r.process.kill()
+        except Exception:
+            pass
+        return ""
+    return result.get("v") or ""
+
+
 def cmd_timeout(binary: str, cmd: str, timeout: float = 90.0) -> Optional[str]:
     """Como get(binary).cmd(cmd), pero con limite de tiempo real. Bug encontrado en vivo: `pdg @
     func` (decompilador r2ghidra) NO tiene ningun timeout nativo en r2pipe -- si se queda colgado

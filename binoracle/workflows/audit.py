@@ -78,15 +78,21 @@ _OVERFLOW_SINKS = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "strcpy", "
 
 def _decompile_vuln_funcs(reg, binary, llm, limit: int = 2):
     """Decompila y anota las funciones que llaman a un sink de overflow (la superficie real).
-    Si no hay ninguna, cae a main. Devuelve lista de DecompiledFunc o None."""
+    Si no hay ninguna, cae a main. Devuelve lista de DecompiledFunc o None.
+
+    Bug real encontrado en vivo (mismo que reachability._sink_callsites, ver su fix): `axtj @
+    sym.imp.<sink>` para un simbolo que el binario no importa puede colgar r2 indefinidamente --
+    cada llamada a r.cmd() aqui pasa por r2session.cmd_timeout_on() en vez del `r.cmd()` crudo."""
     from .decompile import decompile_explain
+    from ..oracles.r2session import cmd_timeout_on
     funcs = []
     try:
         import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        r = r2pipe.open(binary, flags=["-2"])
+        cmd_timeout_on(r, "aaa", 180.0)
         import json as _j
         for sink in _OVERFLOW_SINKS:
-            xr = r.cmd(f"axtj @ sym.imp.{sink}") or ""
+            xr = cmd_timeout_on(r, f"axtj @ sym.imp.{sink}", 20.0)
             try:
                 for x in _j.loads(xr) if xr.strip() else []:
                     fn = x.get("fcn_name")
