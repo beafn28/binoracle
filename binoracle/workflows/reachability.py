@@ -51,16 +51,24 @@ def _r2(binary: str):
 
 def _sink_callsites(binary: str) -> list:
     """[(sink, addr_de_la_llamada)] a sinks peligrosos, ejecucion primero. Direcciones del binario
-    (link addr); se rebasan a la base de angr en find_input_to."""
+    (link addr); se rebasan a la base de angr en find_input_to.
+
+    Bug real encontrado en vivo: `axtj @ sym.imp.X` pedido para un simbolo que el binario NO
+    importa (p.ej. preguntar por 'execve' en un binario que solo importa 'system') puede colgar
+    r2 indefinidamente en vez de devolver una lista vacia -- y como este bucle prueba TODOS los
+    ~14 nombres de _EXEC_SINKS/_OVF_SINKS sin saber de antemano cuales importa realmente el
+    binario, un solo simbolo problematico bloqueaba toda la busqueda de sinks. Cada llamada usa
+    `cmd_timeout` (mismo mecanismo ya usado para `pdg`/`aaa`) en vez del `r.cmd()` crudo."""
     r = _r2(binary)
     if r is None:
         return []
+    from ..oracles.r2session import cmd_timeout
     import json
     out = []
     for group in (_EXEC_SINKS, _OVF_SINKS):
         for s in group:
             try:
-                xs = json.loads(r.cmd(f"axtj @ sym.imp.{s}") or "[]")
+                xs = json.loads(cmd_timeout(binary, f"axtj @ sym.imp.{s}", timeout=20.0) or "[]")
             except Exception:
                 xs = []
             for x in xs:
