@@ -10161,6 +10161,89 @@ def test_verify_wordpress_sqli_resolves_nonce_given_as_a_loose_parameter(monkeyp
     assert res.evidence.get("parametros_resueltos_con_valor_real") == {"nonce": "deadbeef01"}
 
 
+def test_verify_wordpress_sqli_matches_real_published_exploit_scraping_and_id_bruteforce(monkeypatch):
+    # reproduce de verdad el exploit publico pegado por el usuario (gbrsh/secragon,
+    # CVE-2024-1071, github.com/gbrsh/CVE-2024-1071): 1) el nonce NO esta en la portada por
+    # defecto, SOLO en '/index.php/register/' (una pagina que Ultimate Member crea al activarse,
+    # no la portada generica) -- hay que enumerar las paginas reales del sitio, no asumir '/'. 2)
+    # 'directory_id' no es un numero cualquiera sino hashlib.md5(str(n))[10:15] para un n pequeno,
+    # exactamente lo que el exploit real prueba por fuerza bruta (n=1..100) hasta que el servidor
+    # acepta. Sin ambos resueltos, el servidor nunca deja pasar la peticion al query vulnerable.
+    import hashlib
+    import binoracle.workflows.wpverify as wpverify
+
+    REAL_NONCE = "abc12345de"
+    REAL_N = 7
+    REAL_DIR_ID = hashlib.md5(str(REAL_N).encode()).hexdigest()[10:15]
+    PAGE_URL = "http://lab.invalid/index.php/register/"
+
+    requested = []
+
+    class _FakeResp:
+        def __init__(self, text="", status_code=200):
+            self.text = text
+            self.status_code = status_code
+
+    class _FakeSubSess:
+        def get(self, url, **kw):
+            requested.append(("GET", url))
+            if url == PAGE_URL:
+                return _FakeResp(
+                    text=f'<script>var um_scripts = {{"nonce":"{REAL_NONCE}"}};</script>')
+            return _FakeResp(text="<html>portada generica, nada del plugin aqui</html>")
+
+        def request(self, method, url, **kw):
+            from urllib.parse import urlparse, parse_qs
+            # nonce/directory_id van EMBEBIDOS en la query string de la URL (vienen del propio
+            # endpoint, '...&nonce=xxx&directory_id=yyy'), no en el body -- igual que la peticion
+            # real que construye verify_wordpress_sqli a partir del endpoint ya resuelto.
+            qs = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+            payload = {**qs, **dict(kw.get("data") or kw.get("params") or {})}
+            requested.append(("REQ", url, payload))
+            if payload.get("nonce") != REAL_NONCE:
+                return _FakeResp(text='{"success":false,"data":"Wrong Nonce"}')
+            if payload.get("directory_id") != REAL_DIR_ID:
+                return _FakeResp(text='{"success":false,"data":"Invalid directory"}')
+            return _FakeResp(text='{"success":true,"data":[]}')
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSubSess(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    class _FakeLab:
+        def wp_cli(self, *args, **kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = _R()
+            if args[:2] == ("post", "list"):
+                r.stdout = PAGE_URL + "\n"
+            return r
+
+        def teardown(self):
+            pass
+
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin",
+        "/wp-admin/admin-ajax.php?action=um_get_members&nonce={nonce}&directory_id={dir_id}",
+        "POST", {"sorting": "1"}, sqli_param_hint="sorting")
+
+    attack_calls = [c for c in requested if c[0] == "REQ"]
+    assert attack_calls, "debia llegar a atacar de verdad, no quedarse bloqueado"
+    assert any(p.get("nonce") == REAL_NONCE and p.get("directory_id") == REAL_DIR_ID
+              for _, _, p in attack_calls), (
+        "al menos la peticion final debe llevar el nonce real Y el directory_id real juntos")
+    assert res.evidence.get("placeholders_resueltos", {}).get("nonce") == REAL_NONCE
+    assert res.evidence.get("placeholders_resueltos", {}).get("dir_id") == REAL_DIR_ID
+
+
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
     # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
     # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando

