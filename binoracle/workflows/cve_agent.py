@@ -2308,15 +2308,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     url_param_hint=url_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                ssrf_wp_extra_nonce_pages: List[str] = []
+                ssrf_wp_extra_setup_trigger_paths: List[str] = []
+                def _on_ssrf_wp_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in ssrf_wp_extra_nonce_pages:
+                        ssrf_wp_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in ssrf_wp_extra_setup_trigger_paths:
+                        ssrf_wp_extra_setup_trigger_paths.append(sp)
                 def _attempt_ssrf_wp(ep, pr):
                     return verify_wordpress_ssrf(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         url_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(ssrf_wp_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(ssrf_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_ssrf_wp, wr, notes.get("endpoint"), url_p,
-                    technique_label="SSRF WordPress")
+                    technique_label="SSRF WordPress", on_suggestion=_on_ssrf_wp_suggestion)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

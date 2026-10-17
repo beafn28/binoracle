@@ -6058,7 +6058,8 @@ def test_cve_agent_ssrf_retries_with_llm_suggestion(monkeypatch, tmp_path):
 
     calls = []
     def fake_ssrf(plugin_source_dir, slug, endpoint, http_method, parameters,
-                 url_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None):
+                 url_param_hint="", on_step=None, budget_s=1200.0, companion_plugins=None,
+                 **kw):
         calls.append(endpoint)
         if "fetch_remote" not in (endpoint or ""):
             wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,

@@ -2396,6 +2396,8 @@ def verify_wordpress_ssrf(
     parameters, url_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SSRF levantando un contenedor 'callback' en la MISMA red Docker del laboratorio
     (no expuesto a internet, solo alcanzable desde dentro) y apuntando el parametro de URL/fichero
@@ -2421,7 +2423,8 @@ def verify_wordpress_ssrf(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -2433,6 +2436,10 @@ def verify_wordpress_ssrf(
 
         listener_ip = lab.container_ip(lab.listener)
         m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, url_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
         found = False
         tried = []
 
@@ -2458,7 +2465,7 @@ def verify_wordpress_ssrf(
         first_resp_captured = False
         for attempt_url in build_urls(_token()):
             token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(base_params)
             payload[url_param] = attempt_url
             step(f"probando {m} {endpoint} con {url_param}={attempt_url!r}...")
             entry = {"url": attempt_url, "token": token}
