@@ -390,7 +390,8 @@ _SQLI_RETRY_MAX_ATTEMPTS = 3
 _RETRY_MAX_ATTEMPTS = _SQLI_RETRY_MAX_ATTEMPTS
 
 _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
-                            "respuesta_control_recorte": "respuesta_control_recorte"}
+                            "respuesta_control_recorte": "respuesta_control_recorte",
+                            "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
 
 _SQLI_RETRY_SYS = (
     "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Una "
@@ -412,10 +413,22 @@ _SQLI_RETRY_SYS = (
     "inventada sin base) una pagina CONCRETA del sitio donde ese nonce se expondria normalmente "
     "(p.ej. una pagina de registro/login/cuenta que el plugin crea para si mismo), indicalo en "
     "'pagina_extra_para_nonce' como una ruta relativa (p.ej. '/register/') para que se pruebe "
-    "tambien -- deja este campo vacio si no tienes ninguna pista concreta. Responde SOLO "
-    "con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista concreta "
-    "de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si tiene_sugerencia), "
-    "\"parametro_alternativo\": \"...\" (opcional), \"pagina_extra_para_nonce\": \"...\" (opcional)}"
+    "tambien -- deja este campo vacio si no tienes ninguna pista concreta. "
+    "OTRO CASO APARTE -- el plugin no muestra NADA de si mismo: si 'diagnostico_scraping_nonce' "
+    "dice que se probaron varias paginas reales del sitio y NINGUNA tenia rastro del plugin "
+    "atacado, es una pista fuerte de que ese plugin no crea su contenido por defecto (paginas, "
+    "shortcodes...) con la simple activacion -- muchos plugins (confirmado en vivo, Ultimate "
+    "Member/CVE-2024-1071, que exige visitar una URL propia de 'instalar paginas por defecto') "
+    "exigen un paso de configuracion aparte. Si conoces (por convenciones tipicas de WordPress, "
+    "o porque el nombre del plugin/la documentacion que conoces lo menciona -- NUNCA inventada) "
+    "una URL de administrador que dispare ese paso (activar una opcion, pulsar un boton de "
+    "'instalar paginas', correr un wizard de configuracion...), indicala en "
+    "'pagina_setup_admin_requerida' como una ruta relativa que se visitara CON SESION DE ADMIN "
+    "antes del siguiente intento -- deja vacio si no tienes ninguna pista concreta. Responde "
+    "SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista "
+    "concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
+    "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional), \"pagina_extra_para_nonce\": "
+    "\"...\" (opcional), \"pagina_setup_admin_requerida\": \"...\" (opcional)}"
 )
 
 
@@ -534,7 +547,7 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResul
     if not isinstance(data, dict) or not data.get("tiene_sugerencia"):
         return None
     if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")
-           or data.get("pagina_extra_para_nonce")):
+           or data.get("pagina_extra_para_nonce") or data.get("pagina_setup_admin_requerida")):
         return None
     return data
 
@@ -2103,11 +2116,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # README/nombre del PoC publico, nunca inventada) para que se pruebe tambien en
                 # el siguiente intento, en vez de rendirse solo porque el scraping determinista
                 # no la encontro.
+                # igual que arriba, pero para cuando el sintoma es "el plugin no muestra NADA de
+                # si mismo en ninguna pagina" (ver 'nonce_scraping_diagnostico' en la evidencia) --
+                # el LLM puede reconocer que ESTE plugin exige un paso de configuracion propio
+                # (confirmado en vivo, Ultimate Member/CVE-2024-1071) y señalar la URL de admin
+                # que lo dispara, sin que binoracle tenga que conocer ya ese plugin de antemano.
                 extra_nonce_pages: List[str] = []
+                extra_setup_trigger_paths: List[str] = []
                 def _on_sqli_suggestion(sug):
                     p = sug.get("pagina_extra_para_nonce")
                     if p and p not in extra_nonce_pages:
                         extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in extra_setup_trigger_paths:
+                        extra_setup_trigger_paths.append(sp)
                 def _attempt_sqli(ep, pr):
                     return verify_wordpress_sqli(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2115,7 +2137,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         setup_wp_options=notes.get("setup_options") or [],
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name,
                         relationship_table=relationship_table,
-                        extra_nonce_pages=list(extra_nonce_pages))
+                        extra_nonce_pages=list(extra_nonce_pages),
+                        extra_setup_trigger_paths=list(extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                     wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",

@@ -831,7 +831,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    companion_plugins: Optional[list] = None,
                    shortcode_name: Optional[str] = None,
                    relationship_table: Optional[dict] = None,
-                   wp_debug_display: bool = False) -> Optional[_LabSession]:
+                   wp_debug_display: bool = False,
+                   extra_setup_trigger_paths: Optional[list] = None) -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
     (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
 
@@ -871,7 +872,15 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     del shortcode en esa tabla ANTES del ataque -- confirmado en vivo con CVE-2024-3552: sin
     ella, el JOIN deja esa columna NULL para cualquier pagina generica (incluida la del
     shortcode) y el WHERE del sumidero nunca es verdadero, inyeccion real o no. Solo tiene
-    efecto si `shortcode_name` tambien se dio (no hay pagina a la que enlazar la fila sin eso)."""
+    efecto si `shortcode_name` tambien se dio (no hay pagina a la que enlazar la fila sin eso).
+
+    `extra_setup_trigger_paths`, si se da, son rutas EXTRA (ademas de las ya conocidas en
+    _PLUGIN_SETUP_TRIGGER_PATHS para este `slug`) a visitar como admin tras el login -- pensado
+    para que el bucle de aprendizaje-y-reintento del LLM (cve_agent.py, _SQLI_RETRY_SYS,
+    'pagina_setup_admin_requerida') pueda señalar la URL de configuracion de un plugin NUEVO
+    (no visto antes, por eso no esta en el registro) cuando reconoce el mismo sintoma -- ninguna
+    pagina del sitio muestra nada del plugin -- en vez de quedarse bloqueado para siempre hasta
+    que alguien añada esa entrada a mano."""
     root_pw, db_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
     admin_user, admin_pass = "binoracle_admin", secrets.token_urlsafe(12)
     sub_user, sub_pass = "binoracle_subscriber", secrets.token_urlsafe(12)
@@ -1061,10 +1070,13 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                f"admin, con su password ORIGINAL -- antes del ataque).",
                f"Step 2: plugin '{slug}' installed and ACTIVE in the lab (admin's view, with "
                f"their ORIGINAL password -- before the attack).")
-        for trigger_path in _PLUGIN_SETUP_TRIGGER_PATHS.get(slug, []):
-            step(f"'{slug}' no crea sus paginas por defecto con la simple activacion -- "
-                 f"visitando '{trigger_path}' como admin para crearlas de verdad (paso "
-                 f"documentado por el propio plugin, no generico de WordPress)...")
+        all_trigger_paths = list(_PLUGIN_SETUP_TRIGGER_PATHS.get(slug, []))
+        for p in (extra_setup_trigger_paths or []):
+            if p and p not in all_trigger_paths:
+                all_trigger_paths.append(p)
+        for trigger_path in all_trigger_paths:
+            step(f"'{slug}' puede no crear sus paginas por defecto con la simple activacion -- "
+                 f"visitando '{trigger_path}' como admin para crearlas de verdad...")
             try:
                 admin_sess.get(base_url + trigger_path, timeout=20)
             except Exception:
@@ -1870,6 +1882,7 @@ def verify_wordpress_sqli(
     shortcode_name: Optional[str] = None,
     relationship_table: Optional[dict] = None,
     extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -1914,7 +1927,14 @@ def verify_wordpress_sqli(
     aprendizaje-y-reintento del LLM (cve_agent.py, _SQLI_RETRY_SYS) pueda señalar una pagina
     CONCRETA cuando la enumeracion automatica no la cubrio (p.ej. porque el README del PoC
     publico la nombra explicitamente) en vez de rendirse solo porque el scraping determinista no
-    la encontro."""
+    la encontro.
+
+    `extra_setup_trigger_paths` (ver _bootstrap_lab): rutas EXTRA a visitar como admin tras el
+    login, ademas de las ya conocidas para este plugin en _PLUGIN_SETUP_TRIGGER_PATHS -- cuando
+    NINGUNA pagina probada muestra rastro del plugin (ver 'nonce_scraping_diagnostico' en la
+    evidencia), el LLM del bucle de reintento puede reconocer que ESTE plugin necesita un paso
+    de configuracion propio y señalar la URL que lo dispara, aunque no sea un plugin ya conocido
+    en el registro."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1938,7 +1958,8 @@ def verify_wordpress_sqli(
                               setup_wp_options=setup_wp_options,
                               companion_plugins=companion_plugins,
                               shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None,
-                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None)
+                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
         # WP_DEBUG_DISPLAY se activa AQUI, DESPUES de que el login del subscriber ya haya
@@ -2008,18 +2029,34 @@ def verify_wordpress_sqli(
                 res.evidence["placeholders_resueltos"] = resolved
             endpoint = new_endpoint
             res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
+            nonces_found = _scrape_nonce_candidates("\n".join(html_sources))
             if nonce_like_keys:
-                nonces = _scrape_nonce_candidates("\n".join(html_sources))
-                if nonces:
+                if nonces_found:
                     resolved_params = {}
                     for k in nonce_like_keys:
-                        base_params[k] = nonces[0]
-                        resolved_params[k] = nonces[0]
+                        base_params[k] = nonces_found[0]
+                        resolved_params[k] = nonces_found[0]
                     step(f"parametro(s) {list(resolved_params)} parecen nonce/token -- "
                          f"sustituidos por un valor REAL raspado de entre {len(probe_urls)} "
                          f"pagina(s) reales del sitio (el que trajo el PoC/LLM es, como mucho, "
                          f"una adivinanza)")
                     res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
+            # diagnostico para el bucle de aprendizaje-y-reintento del LLM (ver _SQLI_RETRY_SYS
+            # en cve_agent.py): si NINGUNA de las paginas reales probadas (ni la portada, ni
+            # ninguna ya publicada) tenia un nonce ni se pudo resolver el placeholder del
+            # endpoint, es una pista fuerte de que el plugin atacado no muestra NADA de su propio
+            # contenido todavia -- confirmado en vivo, CVE-2024-1071: Ultimate Member no crea sus
+            # paginas por defecto con la simple activacion, hace falta un paso de configuracion
+            # propio del plugin (ver _PLUGIN_SETUP_TRIGGER_PATHS) -- cuando ese plugin no esta en
+            # el registro (uno nuevo, no visto antes), el LLM puede reconocer el mismo sintoma por
+            # su cuenta y proponer la URL que lo dispara.
+            if not nonces_found and not resolved:
+                res.evidence["nonce_scraping_diagnostico"] = (
+                    f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
+                    f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible "
+                    f"del plugin '{slug}' -- puede que el plugin necesite un paso de "
+                    f"configuracion propio (p.ej. crear sus paginas por defecto via una accion "
+                    f"de administrador) antes de que su contenido aparezca en ningun lado")
 
         # algunos plugins no usan IDs de recurso numericos planos (el "1" por defecto que
         # construye base_params) sino un identificador OFUSCADO -- confirmado en vivo, Ultimate

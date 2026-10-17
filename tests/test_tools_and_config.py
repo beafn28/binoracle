@@ -6827,6 +6827,56 @@ def test_cve_agent_sqli_retry_loop_forwards_llm_suggested_nonce_page(monkeypatch
         "solo guardarla en el JSON de la sugerencia")
 
 
+def test_cve_agent_sqli_retry_loop_forwards_llm_suggested_setup_trigger_page(monkeypatch, tmp_path):
+    # que el LLM "lo aprenda" tambien para un plugin NUEVO (no en _PLUGIN_SETUP_TRIGGER_PATHS):
+    # si ninguna pagina probada muestra rastro del plugin, el LLM puede reconocer que necesita
+    # un paso de configuracion de administrador propio y señalar la URL que lo dispara via
+    # 'pagina_setup_admin_requerida' -- debe llegar de verdad a extra_setup_trigger_paths en el
+    # siguiente intento de verify_wordpress_sqli, no solo quedarse en el JSON de la sugerencia.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="algun-plugin-nuevo")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "ninguna de las paginas probadas muestra nada de este plugin, que "
+                         "segun su documentacion exige activar un wizard de configuracion",
+                "pagina_setup_admin_requerida": "/wp-admin/admin.php?page=algun-setup&run=1",
+            })
+
+    calls = []
+    def fake_sqli(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(kw.get("extra_setup_trigger_paths"))
+        wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                     detail="no se confirmo")
+        wr.evidence = {"endpoint": endpoint, "sqli_param": kw.get("sqli_param_hint"),
+                      "respuesta_control_recorte": "pagina generica, nada del plugin",
+                      "nonce_scraping_diagnostico": "se probaron 3 paginas reales y ninguna "
+                                                    "tenia rastro del plugin"}
+        return wr
+    monkeypatch.setattr(wpverify, "verify_wordpress_sqli", fake_sqli)
+
+    inv = Investigation(cve_id="CVE-2099-00028")
+    inv.vuln_class = "sqli"
+    inv.llm_notes = {"source_url": "algun-plugin-nuevo", "endpoint": "/wp-admin/admin-ajax.php",
+                     "http_method": "POST", "parameters": {"q": "1"}, "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls[0] in (None, []), "el primer intento no debia traer ya una ruta de setup"
+    assert any(c == ["/wp-admin/admin.php?page=algun-setup&run=1"] for c in calls[1:]), (
+        "el reintento debia pasar la ruta de setup que sugirio el LLM a verify_wordpress_sqli")
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
@@ -10281,6 +10331,60 @@ def test_verify_wordpress_sqli_resolves_nonce_given_as_a_loose_parameter(monkeyp
         assert payload.get("nonce") == "deadbeef01", (
             "el nonce debe sustituirse por el valor real raspado, nunca quedarse en '1'")
     assert res.evidence.get("parametros_resueltos_con_valor_real") == {"nonce": "deadbeef01"}
+
+
+def test_verify_wordpress_sqli_records_diagnostic_when_no_page_shows_any_plugin_trace(monkeypatch):
+    # cuando NINGUNA pagina probada (ni la portada, ni las ya publicadas) tiene un nonce ni
+    # ningun rastro del plugin, verify_wordpress_sqli debe dejarlo registrado en
+    # 'nonce_scraping_diagnostico' -- es la pista que el bucle de aprendizaje-y-reintento del
+    # LLM (_SQLI_RETRY_SYS) necesita para reconocer que el plugin exige un paso de configuracion
+    # propio (ver test en cve_agent sobre 'pagina_setup_admin_requerida'), en vez de quedarse sin
+    # ninguna explicacion de por que el scraping no encontro nada.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeResp:
+        def __init__(self, text="", status_code=200):
+            self.text = text
+            self.status_code = status_code
+
+    class _FakeSubSess:
+        def get(self, url, **kw):
+            return _FakeResp(text="<html>pagina generica, sin nada del plugin</html>")
+
+        def request(self, method, url, **kw):
+            return _FakeResp(text='{"success":false,"data":"Wrong Nonce"}')
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSubSess(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    class _FakeLab:
+        def wp_cli(self, *args, **kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = _R()
+            if args[:2] == ("post", "list"):
+                r.stdout = "http://lab.invalid/sample-page/\n"
+            return r
+
+        def teardown(self):
+            pass
+
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "algun-plugin-nuevo",
+        "/wp-admin/admin-ajax.php?action=x&nonce={nonce}", "GET",
+        {"q": "1"}, sqli_param_hint="q")
+
+    assert "nonce_scraping_diagnostico" in res.evidence
+    assert "ninguna" in res.evidence["nonce_scraping_diagnostico"].lower()
 
 
 def test_verify_wordpress_sqli_matches_real_published_exploit_scraping_and_id_bruteforce(monkeypatch):
