@@ -564,6 +564,65 @@ def test_r2session_cmd_timeout_never_hangs_the_pipeline():
     assert not fast.process.killed
 
 
+def test_r2session_get_aaa_never_hangs_the_pipeline(monkeypatch):
+    # Mismo patron de bug que test_r2session_cmd_timeout_never_hangs_the_pipeline, pero en el
+    # propio `aaa` que get() corre al abrir CUALQUIER binario por primera vez (no solo en `pdg`):
+    # bug real encontrado en vivo probando un PIE real (ret2win_pie) bajo CPU muy limitada --
+    # `aaa` sin timeout dejo el test entero (y por extension cualquier workflow que abra r2 por
+    # primera vez: triage, vulnhunt, chainanalyzer, reachability...) bloqueado mucho mas de lo
+    # razonable. get() debe devolver None dentro del limite de tiempo en vez de colgarse.
+    import os
+    import time
+    import tempfile
+    from binoracle.oracles import r2session
+
+    d = tempfile.mkdtemp()
+    b = os.path.join(d, "target.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _HangingR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            if c == "aaa":
+                time.sleep(5)   # mucho mas que el timeout de prueba (0.2s)
+            return ""
+
+    fake = _HangingR2()
+    monkeypatch.setattr("r2pipe.open", lambda *a, **kw: fake)
+    r2session._CACHE.pop(os.path.abspath(b), None)
+
+    t0 = time.time()
+    r = r2session.get(b, aaa_timeout=0.2)
+    elapsed = time.time() - t0
+
+    assert r is None
+    assert elapsed < 2.0, "get() no debe esperar mucho mas que aaa_timeout"
+    assert fake.process.killed, "la sesion colgada debe matarse para no dejarla zombie"
+    assert os.path.abspath(b) not in r2session._CACHE, "una sesion con aaa colgado no se cachea"
+
+    # camino feliz: aaa que responde a tiempo se cachea normalmente
+    class _FastR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            return ""
+    fast = _FastR2()
+    monkeypatch.setattr("r2pipe.open", lambda *a, **kw: fast)
+    r2session._CACHE.pop(os.path.abspath(b), None)
+    r2 = r2session.get(b, aaa_timeout=2.0)
+    assert r2 is fast
+    assert os.path.abspath(b) in r2session._CACHE
+    assert not fast.process.killed
+
+
 def test_sarif_export():
     import json
     from binoracle.report.render import findings_to_sarif

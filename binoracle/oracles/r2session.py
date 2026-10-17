@@ -18,8 +18,19 @@ from typing import Optional
 _CACHE: dict = {}   # abspath -> (r2_handle, mtime)
 
 
-def get(binary: str):
-    """Devuelve una sesion r2 con `aaa` ya hecho para `binary`, cacheada. None si no hay r2pipe."""
+def get(binary: str, aaa_timeout: float = 180.0):
+    """Devuelve una sesion r2 con `aaa` ya hecho para `binary`, cacheada. None si no hay r2pipe.
+
+    Bug real encontrado en vivo (mismo patron que ya motivo `cmd_timeout` para `pdg`, documentado
+    abajo, pero aqui en el propio `aaa` -- el analisis completo que CASI todo workflow dispara al
+    abrir cualquier binario por primera vez): `aaa` no tenia NINGUN limite de tiempo. En un
+    binario complejo, o bajo CPU muy limitada, puede tardar mucho mas de lo razonable y bloquear
+    indefinidamente a quien sea que llamo a `get()` -- a diferencia de `pdg`, que solo afecta al
+    decompilador, esto afecta a CUALQUIER workflow que abra un r2 por primera vez (triage,
+    vulnhunt, cfg, chainanalyzer, decompile, backdoors, reachability...). Mismo remedio: el `aaa`
+    corre en un hilo daemon con `join(aaa_timeout)`; si no vuelve a tiempo, se mata el proceso r2
+    y se devuelve None (el llamador ya sabe caer a su propia apertura, por contrato previo de
+    `get()`) en vez de colgarse para siempre."""
     try:
         import r2pipe
     except Exception:
@@ -36,8 +47,23 @@ def get(binary: str):
         _quit(ent[0])
     try:
         r = r2pipe.open(key, flags=["-2"])
-        r.cmd("aaa")
     except Exception:
+        return None
+    done: dict = {}
+    def _run_aaa():
+        try:
+            r.cmd("aaa")
+            done["ok"] = True
+        except Exception:
+            done["ok"] = False
+    th = threading.Thread(target=_run_aaa, daemon=True)
+    th.start()
+    th.join(aaa_timeout)
+    if th.is_alive() or not done.get("ok"):
+        try:
+            r.process.kill()
+        except Exception:
+            pass
         return None
     _CACHE[key] = (r, mtime)
     return r
