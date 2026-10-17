@@ -2492,15 +2492,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "GET", params,
                                            ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                ssti_wp_extra_nonce_pages: List[str] = []
+                ssti_wp_extra_setup_trigger_paths: List[str] = []
+                def _on_ssti_wp_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in ssti_wp_extra_nonce_pages:
+                        ssti_wp_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in ssti_wp_extra_setup_trigger_paths:
+                        ssti_wp_extra_setup_trigger_paths.append(sp)
                 def _attempt_ssti_wp(ep, pr):
                     return verify_wordpress_ssti(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(ssti_wp_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(ssti_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_ssti_wp, wr, notes.get("endpoint"), ssti_p,
-                    technique_label="SSTI WordPress")
+                    technique_label="SSTI WordPress", on_suggestion=_on_ssti_wp_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de SSTI (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2560,15 +2571,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                xxe_wp_extra_nonce_pages: List[str] = []
+                xxe_wp_extra_setup_trigger_paths: List[str] = []
+                def _on_xxe_wp_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in xxe_wp_extra_nonce_pages:
+                        xxe_wp_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in xxe_wp_extra_setup_trigger_paths:
+                        xxe_wp_extra_setup_trigger_paths.append(sp)
                 def _attempt_xxe_wp(ep, pr):
                     return verify_wordpress_xxe(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         xml_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(xxe_wp_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(xxe_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_xxe_wp, wr, notes.get("endpoint"), xml_p,
-                    technique_label="XXE WordPress")
+                    technique_label="XXE WordPress", on_suggestion=_on_xxe_wp_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XXE (ver genericverify.py) para cuando el
             # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/compose.
