@@ -6933,6 +6933,59 @@ def test_cve_agent_path_traversal_wp_retry_loop_forwards_llm_suggestions(monkeyp
         "el reintento debia pasar AMBAS sugerencias del LLM a verify_wordpress_path_traversal")
 
 
+def test_cve_agent_account_takeover_retry_loop_forwards_llm_suggestions(monkeypatch, tmp_path):
+    # account-takeover no tenia bucle de aprendizaje-y-reintento en absoluto antes (a diferencia
+    # de SQLi/path-traversal/etc., que ya lo tenian y solo necesitaban el campo nuevo) -- esto
+    # confirma que el bucle AÑADIDO de verdad reenvia las sugerencias del LLM al reintento, no
+    # solo que el primer intento resuelve bloqueos deterministas.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="algun-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "ninguna pagina probada muestra rastro del plugin, que exige un wizard",
+                "pagina_extra_para_nonce": "/account/",
+                "pagina_setup_admin_requerida": "/wp-admin/admin.php?page=algun-setup",
+            })
+
+    calls = []
+    def fake_ato(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append((kw.get("extra_nonce_pages"), kw.get("extra_setup_trigger_paths")))
+        wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                     detail="no se confirmo")
+        wr.evidence = {"endpoint": endpoint, "id_param": kw.get("id_param_hint"),
+                      "respuesta_cuerpo_recorte": "pagina generica, nada del plugin",
+                      "nonce_scraping_diagnostico": "se probaron paginas reales y ninguna tenia "
+                                                    "rastro del plugin"}
+        return wr
+    monkeypatch.setattr(wpverify, "verify_wordpress_account_takeover", fake_ato)
+
+    inv = Investigation(cve_id="CVE-2099-00030")
+    inv.vuln_class = "missing-authorization"
+    inv.llm_notes = {"source_url": "algun-plugin", "endpoint": "/wp-admin/admin-ajax.php",
+                     "http_method": "POST",
+                     "parameters": {"user_id": "1", "email": "x", "pass": "y"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls[0] == (None, None) or calls[0] == ([], []), (
+        "el primer intento no debia traer ya sugerencias")
+    assert any(c == (["/account/"], ["/wp-admin/admin.php?page=algun-setup"])
+              for c in calls[1:]), (
+        "el reintento debia pasar AMBAS sugerencias del LLM a verify_wordpress_account_takeover")
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)

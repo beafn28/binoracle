@@ -1787,6 +1787,33 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         notes.get("http_method") or "POST", params,
                         id_param_hint=id_p or "", email_param_hint=email_p or "",
                         pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    # mismo bucle de aprendizaje-y-reintento que el resto de tecnicas WordPress --
+                    # no existia antes para account-takeover/login-as (pedido explicitamente:
+                    # extenderlo "a todos"), asi que esta es la PRIMERA vez que estas dos tecnicas
+                    # pueden reintentar con una pista del LLM, no solo resolver nonce/setup de
+                    # forma determinista en el unico intento que hacian antes.
+                    ato_extra_nonce_pages: List[str] = []
+                    ato_extra_setup_trigger_paths: List[str] = []
+                    def _on_ato_suggestion(sug):
+                        p = sug.get("pagina_extra_para_nonce")
+                        if p and p not in ato_extra_nonce_pages:
+                            ato_extra_nonce_pages.append(p)
+                        sp = sug.get("pagina_setup_admin_requerida")
+                        if sp and sp not in ato_extra_setup_trigger_paths:
+                            ato_extra_setup_trigger_paths.append(sp)
+                    def _attempt_ato(ep, pr):
+                        return verify_wordpress_account_takeover(
+                            fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
+                            params, id_param_hint=pr or "", email_param_hint=email_p or "",
+                            pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
+                            companion_plugins=companion_plugins,
+                            extra_nonce_pages=list(ato_extra_nonce_pages),
+                            extra_setup_trigger_paths=list(ato_extra_setup_trigger_paths))
+                    wr = _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_ato, wr, notes.get("endpoint"), id_p,
+                        technique_label="account-takeover WordPress",
+                        on_suggestion=_on_ato_suggestion)
                 elif id_p:
                     step(("intentando verificacion DINAMICA -- patron de login-as directo "
                          "(WordPress+MySQL efimero en Docker)..." if es else
@@ -1796,6 +1823,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "GET", params,
                         id_param_hint=id_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    lia_extra_nonce_pages: List[str] = []
+                    lia_extra_setup_trigger_paths: List[str] = []
+                    def _on_lia_suggestion(sug):
+                        p = sug.get("pagina_extra_para_nonce")
+                        if p and p not in lia_extra_nonce_pages:
+                            lia_extra_nonce_pages.append(p)
+                        sp = sug.get("pagina_setup_admin_requerida")
+                        if sp and sp not in lia_extra_setup_trigger_paths:
+                            lia_extra_setup_trigger_paths.append(sp)
+                    def _attempt_lia(ep, pr):
+                        return verify_wordpress_direct_login_as(
+                            fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET",
+                            params, id_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                            companion_plugins=companion_plugins,
+                            extra_nonce_pages=list(lia_extra_nonce_pages),
+                            extra_setup_trigger_paths=list(lia_extra_setup_trigger_paths))
+                    wr = _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_lia, wr, notes.get("endpoint"), id_p,
+                        technique_label="direct login-as WordPress",
+                        on_suggestion=_on_lia_suggestion)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -2859,6 +2907,33 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     table_name=notes.get("table_name"), column_name=notes.get("column_name"),
                     id_column=notes.get("id_column") or "id",
                     serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                # mismo bucle de aprendizaje-y-reintento que el resto -- aqui el PASO 1 es el que
+                # puede bloquearse por nonce/setup sin resolver (el PASO 2 lee directo via wp-cli,
+                # no pasa por HTTP, asi que no tiene ese bloqueo).
+                dct_extra_nonce_pages: List[str] = []
+                dct_extra_setup_trigger_paths: List[str] = []
+                def _on_dct_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in dct_extra_nonce_pages:
+                        dct_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in dct_extra_setup_trigger_paths:
+                        dct_extra_setup_trigger_paths.append(sp)
+                def _attempt_dct(ep, pr):
+                    return verify_wordpress_deserialization_custom_table(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
+                        params, table_name=notes.get("table_name"),
+                        column_name=notes.get("column_name"),
+                        id_column=notes.get("id_column") or "id",
+                        serial_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(dct_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(dct_extra_setup_trigger_paths))
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                    _attempt_dct, wr, notes.get("endpoint"), serial_p,
+                    technique_label="deserialization (tabla propia) WordPress",
+                    on_suggestion=_on_dct_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "deserialization" and notes.get("endpoint")):
@@ -2873,6 +2948,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "POST", params,
                     serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                des_extra_nonce_pages: List[str] = []
+                des_extra_setup_trigger_paths: List[str] = []
+                def _on_des_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in des_extra_nonce_pages:
+                        des_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in des_extra_setup_trigger_paths:
+                        des_extra_setup_trigger_paths.append(sp)
+                def _attempt_des(ep, pr):
+                    return verify_wordpress_deserialization(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
+                        params, serial_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(des_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(des_extra_setup_trigger_paths))
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                    _attempt_des, wr, notes.get("endpoint"), serial_p,
+                    technique_label="deserialization WordPress",
+                    on_suggestion=_on_des_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
