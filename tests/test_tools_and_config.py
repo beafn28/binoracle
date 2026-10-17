@@ -10328,7 +10328,13 @@ def test_verify_wordpress_sqli_resolves_unresolved_endpoint_placeholders(monkeyp
     # el endpoint como PLANTILLA ('nonce={nonce}&directory_id={dir_id}'), y sin resolverlos
     # binoracle mandaba el string literal '{nonce}' -- el servidor rechazaba SIEMPRE con 'Wrong
     # Nonce', un bloqueo de infraestructura (no evidencia real de que la inyeccion no exista).
-    # verify_wordpress_sqli debe raspar un nonce/id REAL de una pagina viva antes de atacar.
+    # verify_wordpress_sqli debe raspar un nonce REAL de una pagina viva antes de atacar. El
+    # placeholder de ID/directorio NO se resuelve por un digito cualquiera visto en el HTML (otro
+    # bug real confirmado en vivo: una pagina de verdad siempre tiene ALGUN numero no relacionado
+    # -- un anio, un post ID... -- que colaria como falso positivo sin validarse nunca contra el
+    # servidor) -- pasa por el mecanismo de fuerza bruta validada en su lugar (aqui, el falso
+    # 'directory_id=42' visible en el HTML se ignora a proposito).
+    import hashlib
     import binoracle.workflows.wpverify as wpverify
 
     requested_urls = []
@@ -10374,13 +10380,19 @@ def test_verify_wordpress_sqli_resolves_unresolved_endpoint_placeholders(monkeyp
         "/wp-admin/admin-ajax.php?action=um_get_members&nonce={nonce}&directory_id={dir_id}",
         "GET", {"sorting": "1"}, sqli_param_hint="sorting")
 
+    # el fake server acepta CUALQUIER peticion ("success":true siempre) -- la fuerza bruta se
+    # queda con el primer candidato probado, n=1.
+    brute_forced_dir_id = hashlib.md5(b"1").hexdigest()[10:15]
     attack_urls = [u for m, u in requested_urls if "admin-ajax.php" in u]
     assert attack_urls, "debia atacar el endpoint real, no quedarse sin peticiones"
     assert all("{nonce}" not in u and "{dir_id}" not in u for u in attack_urls), (
         "el placeholder literal nunca debe llegar a la peticion real")
     assert all("nonce=a1b2c3d4e5" in u for u in attack_urls)
-    assert all("directory_id=42" in u for u in attack_urls)
-    assert res.evidence.get("placeholders_resueltos") == {"nonce": "a1b2c3d4e5", "dir_id": "42"}
+    assert all(f"directory_id={brute_forced_dir_id}" in u for u in attack_urls), (
+        "el 'directory_id=42' falso visible en el HTML no debe usarse sin validar contra el "
+        "servidor -- debe venir del valor que la fuerza bruta SI valido")
+    assert res.evidence.get("placeholders_resueltos", {}).get("nonce") == "a1b2c3d4e5"
+    assert res.evidence.get("placeholders_resueltos", {}).get("dir_id") == brute_forced_dir_id
 
 
 def test_verify_wordpress_sqli_resolves_nonce_given_as_a_loose_parameter(monkeypatch):

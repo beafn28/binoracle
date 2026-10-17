@@ -200,34 +200,36 @@ def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
     """Si `endpoint` trae un placeholder literal sin resolver tal cual vino de un PoC publico
     (p.ej. '.../admin-ajax.php?action=x&nonce={nonce}&directory_id={dir_id}'), lo rellena con un
     valor REAL raspado de una pagina viva del sitio (el nonce de WordPress embebido en el HTML/JS
-    de cualquier pagina que use el plugin atacado, o el primer ID numerico plausible del HTML)
-    en vez de mandar la llave literal '{nonce}' como si fuera el valor -- confirmado en vivo,
-    CVE-2024-1071: el exploit publico de gbrsh trae el endpoint como PLANTILLA, y sin esto
-    binoracle manda el string '{nonce}' tal cual, que el servidor rechaza siempre con
-    'Wrong Nonce' -- un bloqueo de infraestructura (placeholder sin resolver), no evidencia de
-    que la inyeccion SQL real no exista. Funciona para cualquier plugin/CVE, no solo este: no
-    depende de nada especifico de Ultimate Member."""
+    de cualquier pagina que use el plugin atacado) en vez de mandar la llave literal '{nonce}'
+    como si fuera el valor -- confirmado en vivo, CVE-2024-1071: el exploit publico de gbrsh trae
+    el endpoint como PLANTILLA, y sin esto binoracle manda el string '{nonce}' tal cual, que el
+    servidor rechaza siempre con 'Wrong Nonce' -- un bloqueo de infraestructura (placeholder sin
+    resolver), no evidencia de que la inyeccion SQL real no exista. Funciona para cualquier
+    plugin/CVE, no solo este: no depende de nada especifico de Ultimate Member.
+
+    Los placeholders tipo ID/directorio ('{dir_id}', '{directory_id}'...) se dejan SIN resolver
+    aqui a proposito -- bug real confirmado en vivo, CVE-2024-1071, en una demo real: coger "el
+    primer numero plausible que aparezca en el HTML" cuela casi siempre ALGUN numero no
+    relacionado (un anio de copyright, un post ID, una pagina de paginacion...) en una pagina
+    real, y ese valor FALSO nunca se valida contra el servidor antes de usarse -- oculta por
+    completo el mecanismo mucho mas fiable que SI existe para esto (fuerza bruta de IDs
+    ofuscados, validada contra una respuesta real del servidor; ver el bloque de
+    'remaining_placeholders' en _auto_resolve_wp_blockers, que solo se ejecuta sobre los
+    placeholders que esta funcion deja SIN tocar)."""
     placeholders = re.findall(r"\{(\w+)\}", endpoint or "")
     if not placeholders:
         return endpoint, {}
     all_html = "\n".join(h for h in html_sources if h)
     nonces = _scrape_nonce_candidates(all_html)
-    ids_seen = []
-    for m in re.finditer(r'\b(\d{1,6})\b', all_html):
-        if m.group(1) not in ids_seen:
-            ids_seen.append(m.group(1))
     resolved = {}
     new_endpoint = endpoint
     for ph in placeholders:
         low = ph.lower()
-        val = None
         if "nonce" in low or "token" in low or low in ("security",):
             val = nonces[0] if nonces else None
-        elif any(h in low for h in ("id", "dir")):
-            val = ids_seen[0] if ids_seen else None
-        if val is not None:
-            resolved[ph] = val
-            new_endpoint = new_endpoint.replace("{" + ph + "}", val)
+            if val is not None:
+                resolved[ph] = val
+                new_endpoint = new_endpoint.replace("{" + ph + "}", val)
     return new_endpoint, resolved
 
 
