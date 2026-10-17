@@ -1562,6 +1562,8 @@ def verify_wordpress_path_traversal(
     parameters, path_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
     del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
@@ -1592,7 +1594,8 @@ def verify_wordpress_path_traversal(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -1603,13 +1606,22 @@ def verify_wordpress_path_traversal(
         if not boot.lab.write_canary(canary_path, secret):
             res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
             return res
+
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        # mismos bloqueos de infraestructura que SQLi (nonce/token sin resolver, ID ofuscado) --
+        # ver _auto_resolve_wp_blockers: cualquier tecnica contra WordPress puede necesitarlo, no
+        # solo SQLi.
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, path_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "path_param": path_param, "canary_path": canary_path, "canary_secret": secret,
-            "metodo": (http_method or "GET").upper(), "endpoint": endpoint,
+            "metodo": m, "endpoint": endpoint,
         })
 
-        m = (http_method or "GET").upper()
         # varias profundidades de '../': el payload real depende de donde concatena el codigo el
         # parametro, que no podemos saber con certeza sin leer el codigo -- cada intento es una
         # peticion real, no una suposicion que se cuela como si fuera un hecho confirmado.
@@ -1630,7 +1642,7 @@ def verify_wordpress_path_traversal(
         found = False
         tried = []
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(base_params)
             payload[path_param] = payload_value
             step(f"probando {m} {endpoint} con {path_param}={payload_value!r}...")
             try:

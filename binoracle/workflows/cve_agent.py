@@ -393,21 +393,16 @@ _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado"
                             "respuesta_control_recorte": "respuesta_control_recorte",
                             "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
 
-_SQLI_RETRY_SYS = (
-    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Una "
-    "inyeccion SQL contra un laboratorio WordPress REAL (plugin instalado, MySQL real) no se "
-    "confirmo (ni error-based, ni UNION, ni boolean-blind, ni time-based). Te doy la evidencia REAL "
-    "observada: el endpoint/parametro probados, y un recorte del cuerpo REAL de la respuesta de "
-    "control (sin inyeccion). Lee esa evidencia como lo haria un analista humano revisando un "
-    "negativo: si el cuerpo de la respuesta muestra una pista CONCRETA de que el endpoint o el "
-    "parametro probados no son los correctos (p.ej. 'Page not found', un error PHP especifico, "
-    "contenido que no tiene nada que ver con el plugin, una redireccion a login...), sugiere UN "
-    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
-    "da ninguna pista util (la respuesta parece normal/esperada y aun asi no se confirma), dilo "
-    "honestamente -- no inventes un cambio sin base en la evidencia real que te doy. "
-    "CASO APARTE -- nonce/token invalido: si la respuesta de control dice literalmente algo como "
-    "'Wrong Nonce'/'Invalid nonce'/'Invalid security token' (binoracle YA intenta sacar el nonce "
-    "real raspando TODAS las paginas publicadas del sitio antes de atacar, asi que si esto sigue "
+# bloqueos de INFRAESTRUCTURA (no de la tecnica en si) que puede encontrar CUALQUIER verificador
+# dinamico de WordPress, no solo SQLi -- un nonce/token sin resolver, o un plugin que no muestra
+# NADA de si mismo porque exige un paso de configuracion propio (ver _auto_resolve_wp_blockers y
+# _PLUGIN_SETUP_TRIGGER_PATHS en wpverify.py). Factorizado en un unico texto compartido para que
+# cada _X_RETRY_SYS especifico de una tecnica (SQLi, path-traversal, command-injection...) lo
+# incluya sin repetir el mismo parrafo largo -- confirmado en vivo, Ultimate Member/CVE-2024-1071.
+_WP_NONCE_SETUP_RETRY_HINT = (
+    "CASO APARTE -- nonce/token invalido: si la respuesta dice literalmente algo como 'Wrong "
+    "Nonce'/'Invalid nonce'/'Invalid security token' (binoracle YA intenta sacar el nonce real "
+    "raspando TODAS las paginas publicadas del sitio antes de atacar, asi que si esto sigue "
     "pasando es que ese nonce concreto esta en una pagina que esa busqueda no cubrio), y conoces "
     "(por el nombre/README del PoC publico, o por convenciones tipicas de ese plugin -- NUNCA "
     "inventada sin base) una pagina CONCRETA del sitio donde ese nonce se expondria normalmente "
@@ -424,11 +419,30 @@ _SQLI_RETRY_SYS = (
     "una URL de administrador que dispare ese paso (activar una opcion, pulsar un boton de "
     "'instalar paginas', correr un wizard de configuracion...), indicala en "
     "'pagina_setup_admin_requerida' como una ruta relativa que se visitara CON SESION DE ADMIN "
-    "antes del siguiente intento -- deja vacio si no tienes ninguna pista concreta. Responde "
-    "SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista "
-    "concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
-    "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional), \"pagina_extra_para_nonce\": "
-    "\"...\" (opcional), \"pagina_setup_admin_requerida\": \"...\" (opcional)}"
+    "antes del siguiente intento -- deja vacio si no tienes ninguna pista concreta. "
+)
+_WP_NONCE_SETUP_RETRY_JSON_FIELDS = (
+    "\"pagina_extra_para_nonce\": \"...\" (opcional), \"pagina_setup_admin_requerida\": \"...\" "
+    "(opcional)"
+)
+
+_SQLI_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). Una "
+    "inyeccion SQL contra un laboratorio WordPress REAL (plugin instalado, MySQL real) no se "
+    "confirmo (ni error-based, ni UNION, ni boolean-blind, ni time-based). Te doy la evidencia REAL "
+    "observada: el endpoint/parametro probados, y un recorte del cuerpo REAL de la respuesta de "
+    "control (sin inyeccion). Lee esa evidencia como lo haria un analista humano revisando un "
+    "negativo: si el cuerpo de la respuesta muestra una pista CONCRETA de que el endpoint o el "
+    "parametro probados no son los correctos (p.ej. 'Page not found', un error PHP especifico, "
+    "contenido que no tiene nada que ver con el plugin, una redireccion a login...), sugiere UN "
+    "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
+    "da ninguna pista util (la respuesta parece normal/esperada y aun asi no se confirma), dilo "
+    "honestamente -- no inventes un cambio sin base en la evidencia real que te doy. "
+    + _WP_NONCE_SETUP_RETRY_HINT +
+    "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la "
+    "pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si "
+    "tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional), "
+    + _WP_NONCE_SETUP_RETRY_JSON_FIELDS + "}"
 )
 
 
@@ -445,13 +459,17 @@ _PATH_TRAVERSAL_RETRY_SYS = (
     "not moved', 'Page not found', una redireccion a login, contenido que no tiene nada que ver "
     "con el plugin...), sugiere UN cambio concreto de endpoint y/o parametro que valga la pena "
     "reintentar. Si la evidencia NO da ninguna pista util, dilo honestamente -- no inventes un "
-    "cambio sin base real. Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": "
+    "cambio sin base real. "
+    + _WP_NONCE_SETUP_RETRY_HINT +
+    "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, \"razon\": "
     "\"una frase, citando la pista concreta de la evidencia\", \"endpoint_alternativo\": \"...\" "
-    "(opcional, solo si tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional)}"
+    "(opcional, solo si tiene_sugerencia), \"parametro_alternativo\": \"...\" (opcional), "
+    + _WP_NONCE_SETUP_RETRY_JSON_FIELDS + "}"
 )
 _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint",
                                        "parametro_probado": "path_param",
-                                       "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento"}
+                                       "respuesta_cuerpo_recorte": "respuesta_muestra_primer_intento",
+                                       "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
 
 # version GENERICA (no WordPress) del mismo mecanismo -- pedido explicitamente: no quedarse solo
 # en WordPress, el objetivo aqui puede ser CUALQUIER tecnologia (Node/Python/PHP/Go/Java...) que
@@ -1834,16 +1852,31 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     path_param_hint=path_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
                 # aprendizaje y reintento: mismo bucle acotado que el SQLi -- el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
-                # concreta en ESA evidencia, nunca a ciegas.
+                # concreta en ESA evidencia, nunca a ciegas. Tambien puede señalar una pagina
+                # extra para el nonce o una URL de setup de administrador (ver
+                # _WP_NONCE_SETUP_RETRY_HINT) -- mismo mecanismo que SQLi, no exclusivo de esa
+                # tecnica: path-traversal contra un endpoint AJAX puede tropezar con el mismo
+                # nonce/plugin-sin-configurar.
+                pt_extra_nonce_pages: List[str] = []
+                pt_extra_setup_trigger_paths: List[str] = []
+                def _on_wppt_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in pt_extra_nonce_pages:
+                        pt_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in pt_extra_setup_trigger_paths:
+                        pt_extra_setup_trigger_paths.append(sp)
                 def _attempt_wppt(ep, pr):
                     return verify_wordpress_path_traversal(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(pt_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(pt_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _PATH_TRAVERSAL_RETRY_SYS, _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS,
                     _attempt_wppt, wr, notes.get("endpoint"), path_p,
-                    technique_label="path-traversal WordPress")
+                    technique_label="path-traversal WordPress", on_suggestion=_on_wppt_suggestion)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

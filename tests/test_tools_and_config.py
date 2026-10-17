@@ -6877,6 +6877,59 @@ def test_cve_agent_sqli_retry_loop_forwards_llm_suggested_setup_trigger_page(mon
         "el reintento debia pasar la ruta de setup que sugirio el LLM a verify_wordpress_sqli")
 
 
+def test_cve_agent_path_traversal_wp_retry_loop_forwards_llm_suggestions(monkeypatch, tmp_path):
+    # mismo mecanismo que SQLi (_WP_NONCE_SETUP_RETRY_HINT), pero para path-traversal contra
+    # WordPress -- no es exclusivo de SQLi: un endpoint AJAX con nonce o un plugin sin configurar
+    # puede bloquear CUALQUIER tecnica igual. El LLM debe poder señalar tanto una pagina extra
+    # para el nonce como una URL de setup de administrador, y ambas deben llegar de verdad al
+    # siguiente intento de verify_wordpress_path_traversal.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="algun-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "ninguna pagina probada muestra rastro del plugin, que exige un wizard",
+                "pagina_extra_para_nonce": "/account/",
+                "pagina_setup_admin_requerida": "/wp-admin/admin.php?page=algun-setup",
+            })
+
+    calls = []
+    def fake_pt(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append((kw.get("extra_nonce_pages"), kw.get("extra_setup_trigger_paths")))
+        wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                     detail="no se confirmo")
+        wr.evidence = {"endpoint": endpoint, "path_param": kw.get("path_param_hint"),
+                      "respuesta_muestra_primer_intento": "pagina generica, nada del plugin",
+                      "nonce_scraping_diagnostico": "se probaron paginas reales y ninguna tenia "
+                                                    "rastro del plugin"}
+        return wr
+    monkeypatch.setattr(wpverify, "verify_wordpress_path_traversal", fake_pt)
+
+    inv = Investigation(cve_id="CVE-2099-00029")
+    inv.vuln_class = "path-traversal"
+    inv.llm_notes = {"source_url": "algun-plugin", "endpoint": "/wp-admin/admin-ajax.php",
+                     "http_method": "POST", "parameters": {"file": "test.txt"},
+                     "path_param": "file", "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls[0] == (None, None) or calls[0] == ([], []), (
+        "el primer intento no debia traer ya sugerencias")
+    assert any(c == (["/account/"], ["/wp-admin/admin.php?page=algun-setup"])
+              for c in calls[1:]), (
+        "el reintento debia pasar AMBAS sugerencias del LLM a verify_wordpress_path_traversal")
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
