@@ -1814,10 +1814,22 @@ def verify_wordpress_sqli(
                               setup_wp_options=setup_wp_options,
                               companion_plugins=companion_plugins,
                               shortcode_name=shortcode_name if attack_endpoint_is_bare_root else None,
-                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
-                              wp_debug_display=True)
+                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None)
         if boot is None:
             return res
+        # WP_DEBUG_DISPLAY se activa AQUI, DESPUES de que el login del subscriber ya haya
+        # funcionado -- no en _bootstrap_lab (antes del login). Bug real encontrado en vivo,
+        # CVE-2024-1071 (Ultimate Member), en una demo real: activarlo DESDE el bootstrap
+        # (antes del login) seguia rompiendo la cookie de sesion exactamente igual que antes
+        # del primer fix -- un aviso de PHP totalmente ajeno a la inyeccion (el propio plugin
+        # cargando su dominio de traduccion demasiado pronto) se imprimia ANTES del
+        # Set-Cookie del login, sin importar que _bootstrap_lab por defecto ya puesto
+        # WP_DEBUG_DISPLAY=false para todos los DEMAS verificadores -- SQLi es precisamente
+        # el que lo necesita true, asi que el problema seguia aqui mismo. Con el login YA
+        # hecho (boot.sub_sess trae la cookie de sesion real), activar el display despues no
+        # puede romper nada que ya se completo.
+        lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant",
+                  timeout=30)
 
         if boot.shortcode_page_path:
             step(f"endpoint='/' no muestra nada del plugin -- atacando en su lugar la pagina "

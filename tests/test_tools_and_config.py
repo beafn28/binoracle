@@ -3832,6 +3832,29 @@ def test_webexploit_missing_authorization_poc_mentions_user_id_param():
     assert 'TARGET_ID' in out
 
 
+def test_webexploit_sqli_poc_actually_substitutes_true_false_payloads():
+    # bug real encontrado en vivo (una demo real, CVE-2024-1071): el PoC de sqli generado antes
+    # definia PAYLOAD_TRUE/PAYLOAD_FALSE pero las dos peticiones de confirmacion usaban el MISMO
+    # array DATA sin sustituir ninguno de los dos -- mandaba la peticion IDENTICA dos veces,
+    # haciendo inutil la comparacion "true vs false" tal cual se generaba. Ahora cada peticion
+    # debe llevar su propio array DATA (DATA_TRUE/DATA_FALSE) con el parametro mas probable de
+    # ser el inyectable (por nombre: 'sorting'/'id'/'search'...) ya sustituido por su payload real.
+    from binoracle.workflows.webexploit import build_http_poc
+
+    notes = {"endpoint": "/wp-admin/admin-ajax.php?action=x", "http_method": "POST",
+            "parameters": ["nonce", "sorting", "directory_id"]}
+    out = build_http_poc("sqli", "CVE-2024-1071", notes, lang="es")
+
+    assert '--data-urlencode "sorting=$PAYLOAD_TRUE"' in out
+    assert '--data-urlencode "sorting=$PAYLOAD_FALSE"' in out
+    # los demas parametros NO se tocan (sigue habiendo que rellenarlos a mano)
+    assert '--data-urlencode "nonce=..."' in out
+    assert '--data-urlencode "directory_id=..."' in out
+    # las dos peticiones usan arrays DIFERENTES -- nunca la misma peticion repetida dos veces
+    assert "${DATA_TRUE[@]}" in out and "${DATA_FALSE[@]}" in out
+    assert out.count("${DATA_TRUE[@]}") == 1 and out.count("${DATA_FALSE[@]}") == 1
+
+
 def test_build_http_poc_unknown_class_returns_empty():
     from binoracle.workflows.webexploit import build_http_poc
     assert build_http_poc("stack-overflow", "CVE-X", {}, lang="es") == ""
@@ -8707,9 +8730,11 @@ def test_bootstrap_lab_enables_wp_debug_log_but_not_display_by_default(monkeypat
 
 
 def test_bootstrap_lab_enables_wp_debug_display_when_requested_by_sqli(monkeypatch, tmp_path):
-    # verify_wordpress_sqli SI necesita WP_DEBUG_DISPLAY=true (lee el error de MySQL tal cual
-    # sale en el cuerpo HTTP para su tecnica error-based) -- pide explicitamente
-    # wp_debug_display=True al bootstrap compartido.
+    # _bootstrap_lab sigue soportando wp_debug_display=True como parametro (lo usa el test de
+    # abajo, test_verify_wordpress_sqli_enables_debug_display_only_after_login, para confirmar
+    # que verify_wordpress_sqli YA NO lo activa por esta via -- lo activa el mismo con un wp_cli
+    # aparte, DESPUES del login, ver esa otra prueba para el porque). Este test solo confirma
+    # que el parametro, si se pide, se aplica correctamente dentro del propio bootstrap.
     import binoracle.workflows.wpverify as wpverify
 
     calls = []
@@ -9908,6 +9933,71 @@ def test_verify_wordpress_sqli_surfaces_real_response_body_on_negative(monkeypat
     assert res.evidence.get("respuesta_control_recorte") == '{"status":"ok","listings":[]}'
     assert "Respuesta real de la peticion de control" in res.detail
     assert all("respuesta_cuerpo_recorte" in t for t in res.evidence["error_based_intentos"])
+
+
+def test_verify_wordpress_sqli_enables_debug_display_only_after_login(monkeypatch):
+    # bug real encontrado en vivo, CVE-2024-1071 (Ultimate Member), en una demo real: activar
+    # WP_DEBUG_DISPLAY=true DESDE _bootstrap_lab (antes del login del admin/subscriber) hacia
+    # que un aviso de PHP totalmente ajeno a la inyeccion (el propio plugin cargando su dominio
+    # de traduccion demasiado pronto) se imprimiera ANTES de que WordPress pudiera mandar la
+    # cabecera Set-Cookie -- login sin cookie de sesion, verificacion bloqueada antes de
+    # intentar nada de la SQLi real. verify_wordpress_sqli ahora activa WP_DEBUG_DISPLAY con un
+    # wp_cli PROPIO, DESPUES de que _bootstrap_lab ya haya devuelto una sesion (login hecho) --
+    # nunca a traves del parametro wp_debug_display de _bootstrap_lab.
+    import binoracle.workflows.wpverify as wpverify
+
+    calls = []
+
+    class _FakeLabForWpCli:
+        def wp_cli(self, *args, **kw):
+            calls.append(("lab.wp_cli",) + args)
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+
+        def teardown(self):
+            calls.append(("lab.teardown",))
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            calls.append(("request", url))
+            class _R:
+                status_code = 200
+                text = '{"status":"ok"}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=_FakeLabForWpCli(), base_url="http://lab.invalid", admin_id="1", admin_user="a",
+        admin_pass="b", sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None,
+        shots=[], capture=lambda *a, **k: None)
+
+    bootstrap_calls = []
+    def fake_bootstrap(lab, *a, **kw):
+        bootstrap_calls.append(kw)
+        # _bootstrap_lab NUNCA debe recibir wp_debug_display=True para SQLi -- eso rompia el
+        # login de ESE mismo bootstrap antes de que terminara.
+        assert kw.get("wp_debug_display") is not True
+        return fake_boot
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", fake_bootstrap)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLabForWpCli())
+
+    wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=x", "GET",
+        {"sorting": "1"}, sqli_param_hint="sorting")
+
+    wp_cli_calls = [c for c in calls if c[0] == "lab.wp_cli"]
+    display_calls = [c for c in wp_cli_calls
+                     if c[1:4] == ("config", "set", "WP_DEBUG_DISPLAY")]
+    assert display_calls, "verify_wordpress_sqli debe activar WP_DEBUG_DISPLAY el mismo"
+    assert display_calls[0][4] == "true"
+    # el orden real importa: la activacion debe ir DESPUES de que _bootstrap_lab (que incluye
+    # el login) ya haya devuelto, nunca antes -- confirmado porque bootstrap_calls ya se registro
+    # antes de que display_calls exista en absoluto (ambas listas se llenan en orden real de
+    # ejecucion dentro de la misma llamada).
+    assert bootstrap_calls, "_bootstrap_lab debe haberse llamado"
 
 
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
