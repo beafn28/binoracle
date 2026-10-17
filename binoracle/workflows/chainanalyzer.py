@@ -289,22 +289,26 @@ def _parse_csu(disasm: str) -> Optional[dict]:
 
 def _detect_ret2csu(binary: str) -> Optional[dict]:
     """Localiza __libc_csu_init con r2 y extrae los gadgets ret2csu. Best-effort; None si no hay r2
-    o el binario no tiene ese init (gcc >= 2.34 suele no incluirlo)."""
+    o el binario no tiene ese init (gcc >= 2.34 suele no incluirlo).
+
+    IMPORTANTE: comprobar primero que el simbolo EXISTE. Si no, `pdf @ sym.__libc_csu_init`
+    resuelve el flag ausente a 0 y r2 intenta desensamblar/analizar desde la direccion 0, lo que
+    puede colgarse o tardar minutos. `is~` solo lista simbolos (barato) y no desensambla.
+
+    Ademas (mismo bug real que reachability._sink_callsites, ver su fix): incluso con el simbolo
+    confirmado presente, `r.cmd()` sin timeout puede colgar el pipeline por otras razones de r2
+    -- cada llamada pasa por r2session.cmd_timeout() en vez del `r.cmd()` crudo."""
     try:
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is None:
+        from ..oracles.r2session import cmd_timeout as _cmd_timeout, get as _r2get
+        if _r2get(binary) is None:
             return None
-        # IMPORTANTE: comprobar primero que el simbolo EXISTE. Si no, `pdf @ sym.__libc_csu_init`
-        # resuelve el flag ausente a 0 y r2 intenta desensamblar/analizar desde la direccion 0,
-        # lo que puede colgarse o tardar minutos. `is~` solo lista simbolos (barato) y no desensambla.
-        syms = r.cmd("is~__libc_csu_init") or ""
+        syms = _cmd_timeout(binary, "is~__libc_csu_init", 20.0) or ""
         if "__libc_csu_init" not in syms:
             return None
         for sym in ("sym.__libc_csu_init", "__libc_csu_init"):
             # `pd` (linear) in case the function's `ret` splits the view -- gadget2 lives AFTER the
             # gadget1 `ret`, which `pdf` would not include.
-            dis = r.cmd(f"pd 48 @ {sym}") or ""
+            dis = _cmd_timeout(binary, f"pd 48 @ {sym}", 30.0) or ""
             if dis:
                 res = _parse_csu(dis)
                 if res:
@@ -317,17 +321,19 @@ def _detect_ret2csu(binary: str) -> Optional[dict]:
 def _find_csu_gadgets(binary: str) -> Optional[dict]:
     """Localiza los dos gadgets ret2csu en un binario via los simbolos tipicos que los contienen
     (__libc_csu_init o un bloque de gadgets dedicado), sin disparar un analisis completo (aaa/aflj),
-    que es lento. El verificador hace su propia busqueda por bytes; esto es para la deteccion."""
+    que es lento. El verificador hace su propia busqueda por bytes; esto es para la deteccion.
+
+    Mismo bug real que reachability._sink_callsites: cada r.cmd() pasa por cmd_timeout() en vez
+    del `r.cmd()` crudo."""
     try:
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is None:
+        from ..oracles.r2session import cmd_timeout as _cmd_timeout, get as _r2get
+        if _r2get(binary) is None:
             return None
-        syms = r.cmd("is~__libc_csu_init,gadget_block") or ""   # cheap existence check (no disasm)
+        syms = _cmd_timeout(binary, "is~__libc_csu_init,gadget_block", 20.0) or ""   # cheap existence check (no disasm)
         for base, sym in (("__libc_csu_init", "sym.__libc_csu_init"), ("gadget_block", "sym.gadget_block")):
             if base not in syms:
                 continue                        # avoid `pd @ 0` (hang) when the symbol is absent
-            dis = r.cmd(f"pd 48 @ {sym}") or ""
+            dis = _cmd_timeout(binary, f"pd 48 @ {sym}", 30.0) or ""
             res = _parse_csu(dis) if dis else None
             if res and res.get("complete"):
                 return res

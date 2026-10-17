@@ -3003,6 +3003,49 @@ def test_autopoc_word_size_detects_32_vs_64_bit():
         assert _word_size(b64) == 8
 
 
+def test_chainanalyzer_ret2csu_detection_uses_cmd_timeout_not_raw_cmd(monkeypatch):
+    # Parte del barrido "poco a poco" tras el fix de reachability._sink_callsites:
+    # _detect_ret2csu/_find_csu_gadgets usaban r.cmd() crudo (sin timeout) para `is~...` y
+    # `pd 48 @ ...` -- mismo riesgo de cuelgue indefinido si r2 se comporta mal con ese comando
+    # concreto. Ahora deben pasar por r2session.cmd_timeout, nunca por un r.cmd() directo.
+    from binoracle.workflows import chainanalyzer as ca
+    from binoracle.oracles import r2session
+
+    calls = []
+    def fake_cmd_timeout(binary, cmd, timeout):
+        calls.append(cmd)
+        if cmd.startswith("is~__libc_csu_init"):
+            return "100 0x1000 GLOBAL FUNC 0 __libc_csu_init\n"
+        if cmd.startswith("pd 48"):
+            return ("0x00401100      5b              pop rbx\n"
+                    "0x00401101      5d              pop rbp\n"
+                    "0x00401102      415c            pop r12\n"
+                    "0x00401104      415d            pop r13\n"
+                    "0x00401106      415e            pop r14\n"
+                    "0x00401108      415f            pop r15\n"
+                    "0x0040110a      c3              ret\n"
+                    "0x0040110b      4c89fa          mov rdx, r15\n"
+                    "0x0040110e      4c89f6          mov rsi, r14\n"
+                    "0x00401111      4489e8          mov edi, r13d\n"
+                    "0x00401114      41ff14c4        call [r12+rbx*8]\n")
+        return ""
+    monkeypatch.setattr(r2session, "cmd_timeout", fake_cmd_timeout)
+    monkeypatch.setattr(r2session, "get", lambda binary: object())
+
+    res = ca._detect_ret2csu("fake.bin")
+    assert res is not None and res.get("complete") is True
+    assert any(c.startswith("is~") for c in calls) and any(c.startswith("pd 48") for c in calls)
+
+    # simbolo ausente -> None SIN intentar pd (evita el `pd @ 0` que puede colgar r2)
+    calls.clear()
+    monkeypatch.setattr(r2session, "cmd_timeout",
+                        lambda binary, cmd, timeout: ("" if cmd.startswith("is~") else
+                                                      calls.append(cmd) or "no deberia llegar aqui"))
+    res2 = ca._detect_ret2csu("fake.bin")
+    assert res2 is None
+    assert not calls, "no debe intentar 'pd' cuando el simbolo no existe"
+
+
 def test_chainanalyzer_wires_up_write_what_where_driver():
     # Nueva capacidad (user-requested: ampliar la cobertura de clases de vulnerabilidad
     # detectadas/verificadas): oobwrite.c tiene un write-what-where real ('table[idx] = val' sin
