@@ -403,10 +403,19 @@ _SQLI_RETRY_SYS = (
     "contenido que no tiene nada que ver con el plugin, una redireccion a login...), sugiere UN "
     "cambio concreto de endpoint y/o parametro que valga la pena reintentar. Si la evidencia NO "
     "da ninguna pista util (la respuesta parece normal/esperada y aun asi no se confirma), dilo "
-    "honestamente -- no inventes un cambio sin base en la evidencia real que te doy. Responde SOLO "
+    "honestamente -- no inventes un cambio sin base en la evidencia real que te doy. "
+    "CASO APARTE -- nonce/token invalido: si la respuesta de control dice literalmente algo como "
+    "'Wrong Nonce'/'Invalid nonce'/'Invalid security token' (binoracle YA intenta sacar el nonce "
+    "real raspando TODAS las paginas publicadas del sitio antes de atacar, asi que si esto sigue "
+    "pasando es que ese nonce concreto esta en una pagina que esa busqueda no cubrio), y conoces "
+    "(por el nombre/README del PoC publico, o por convenciones tipicas de ese plugin -- NUNCA "
+    "inventada sin base) una pagina CONCRETA del sitio donde ese nonce se expondria normalmente "
+    "(p.ej. una pagina de registro/login/cuenta que el plugin crea para si mismo), indicalo en "
+    "'pagina_extra_para_nonce' como una ruta relativa (p.ej. '/register/') para que se pruebe "
+    "tambien -- deja este campo vacio si no tienes ninguna pista concreta. Responde SOLO "
     "con JSON: {\"tiene_sugerencia\": true/false, \"razon\": \"una frase, citando la pista concreta "
     "de la evidencia\", \"endpoint_alternativo\": \"...\" (opcional, solo si tiene_sugerencia), "
-    "\"parametro_alternativo\": \"...\" (opcional)}"
+    "\"parametro_alternativo\": \"...\" (opcional), \"pagina_extra_para_nonce\": \"...\" (opcional)}"
 )
 
 
@@ -524,14 +533,16 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResul
         return None
     if not isinstance(data, dict) or not data.get("tiene_sugerencia"):
         return None
-    if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")):
+    if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")
+           or data.get("pagina_extra_para_nonce")):
         return None
     return data
 
 
 def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_keys: dict,
                              attempt_fn, wr: "WpVerifyResult", endpoint, param,
-                             technique_label: str = "", max_attempts: int = _RETRY_MAX_ATTEMPTS
+                             technique_label: str = "", max_attempts: int = _RETRY_MAX_ATTEMPTS,
+                             on_suggestion: Optional[Callable[[dict], None]] = None
                              ) -> "WpVerifyResult":
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
@@ -541,7 +552,14 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     el LLM deja de ver ninguna pista nueva. `attempt_fn(endpoint, param) -> WpVerifyResult` es un
     closure que el sitio de llamada define localmente, porque cada verify_* tiene su propia firma
     (distintos nombres de kwargs, distinto numero de argumentos posicionales) -- aqui no se sabe
-    ni se necesita saber como es esa firma."""
+    ni se necesita saber como es esa firma. `on_suggestion(suggestion_dict)`, si se da, se llama
+    con el JSON crudo de CADA sugerencia (antes de aplicar endpoint/param) -- para que un sitio de
+    llamada pueda leer un campo propio de su `system_prompt` a medida (p.ej. _SQLI_RETRY_SYS trae
+    'pagina_extra_para_nonce') sin que este bucle generico tenga que saber nada de el; el sitio de
+    llamada suele usarlo para mutar una lista en su propio scope que su `attempt_fn` ya captura por
+    closure, en vez de ampliar la firma de endpoint/param (que SI cambiaria los ~20 sitios donde ya
+    se usa este bucle). Nunca lanza si `on_suggestion` falla -- un fallo ahi no debe tirar abajo un
+    reintento que de otro modo iria bien."""
     retry_endpoint, retry_param = endpoint, param
     for attempt_n in range(1, max_attempts):
         if wr.verified or not wr.available:
@@ -550,6 +568,11 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                                                       technique_label=technique_label)
         if not suggestion:
             break
+        if on_suggestion is not None:
+            try:
+                on_suggestion(suggestion)
+            except Exception:
+                pass
         retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
         retry_param = suggestion.get("parametro_alternativo") or retry_param
         step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/{max_attempts}) y "
@@ -2073,17 +2096,30 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # _SQLI_RETRY_MAX_ATTEMPTS intentos en total, no infinito): cada iteracion para en
                 # cuanto se confirma, o en cuanto el LLM deja de ver ninguna pista nueva en la
                 # evidencia del ultimo intento -- nunca un reintento a ciegas sin base real.
+                # si "Wrong Nonce"/similar persiste a pesar de que verify_wordpress_sqli YA
+                # rasca el nonce de TODAS las paginas publicadas del sitio (ver wpverify.py,
+                # _list_real_page_urls), es que esta en una pagina que esa enumeracion no cubrio
+                # -- se le da al LLM la oportunidad de señalar una pagina CONCRETA (por el
+                # README/nombre del PoC publico, nunca inventada) para que se pruebe tambien en
+                # el siguiente intento, en vez de rendirse solo porque el scraping determinista
+                # no la encontro.
+                extra_nonce_pages: List[str] = []
+                def _on_sqli_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in extra_nonce_pages:
+                        extra_nonce_pages.append(p)
                 def _attempt_sqli(ep, pr):
                     return verify_wordpress_sqli(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         setup_wp_options=notes.get("setup_options") or [],
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name,
-                        relationship_table=relationship_table)
+                        relationship_table=relationship_table,
+                        extra_nonce_pages=list(extra_nonce_pages))
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                     wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
-                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
+                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion)
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

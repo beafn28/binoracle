@@ -1846,6 +1846,7 @@ def verify_wordpress_sqli(
     companion_plugins: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     relationship_table: Optional[dict] = None,
+    extra_nonce_pages: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -1882,7 +1883,15 @@ def verify_wordpress_sqli(
     find_join_relationship_table() en websource.py y _bootstrap_lab) -- confirmado en vivo,
     CVE-2024-3552: el sumidero real estaba detras de un LEFT JOIN por post ID contra una tabla
     de relacion, y una pagina SIN fila ahi sale siempre NULL en esa columna -- el WHERE nunca es
-    verdadero, inyeccion real o no."""
+    verdadero, inyeccion real o no.
+
+    `extra_nonce_pages`, si se da, son rutas adicionales (p.ej. '/register/') a probar para
+    rascar un nonce real, ADEMAS de la portada y de todas las paginas ya publicadas que esta
+    funcion enumera por su cuenta (ver _list_real_page_urls) -- pensado para que el bucle de
+    aprendizaje-y-reintento del LLM (cve_agent.py, _SQLI_RETRY_SYS) pueda señalar una pagina
+    CONCRETA cuando la enumeracion automatica no la cubrio (p.ej. porque el README del PoC
+    publico la nombra explicitamente) en vez de rendirse solo porque el scraping determinista no
+    la encontro."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1957,6 +1966,9 @@ def verify_wordpress_sqli(
             if boot.shortcode_page_path:
                 probe_urls.append(boot.base_url + boot.shortcode_page_path)
             probe_urls += _list_real_page_urls(lab)
+            for p in (extra_nonce_pages or []):
+                if p:
+                    probe_urls.append(boot.base_url + (p if p.startswith("/") else "/" + p))
             seen_urls = set()
             probe_urls = [u for u in probe_urls if not (u in seen_urls or seen_urls.add(u))]
             html_sources = []

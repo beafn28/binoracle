@@ -6777,6 +6777,56 @@ def test_cve_agent_sqli_retry_loop_is_bounded_not_infinite(monkeypatch, tmp_path
     assert inv.verified is False
 
 
+def test_cve_agent_sqli_retry_loop_forwards_llm_suggested_nonce_page(monkeypatch, tmp_path):
+    # que el LLM "lo aprenda": si el nonce sigue sin resolverse a pesar del scraping determinista
+    # (ver wpverify._list_real_page_urls), el LLM puede señalar una pagina CONCRETA via
+    # 'pagina_extra_para_nonce' en _SQLI_RETRY_SYS, y esa pagina debe llegar de verdad al
+    # siguiente intento de verify_wordpress_sqli como extra_nonce_pages -- no solo quedarse en
+    # el JSON del LLM sin usarse.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="ultimate-member")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "la respuesta de control dice 'Wrong Nonce' y el README del PoC "
+                         "publico scrapea el nonce de la pagina de registro",
+                "pagina_extra_para_nonce": "/register/",
+            })
+
+    calls = []
+    def fake_sqli(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(kw.get("extra_nonce_pages"))
+        wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                     detail="no se confirmo")
+        wr.evidence = {"endpoint": endpoint, "sqli_param": kw.get("sqli_param_hint"),
+                      "respuesta_control_recorte": '{"success":false,"data":"Wrong Nonce"}'}
+        return wr
+    monkeypatch.setattr(wpverify, "verify_wordpress_sqli", fake_sqli)
+
+    inv = Investigation(cve_id="CVE-2099-00027")
+    inv.vuln_class = "sqli"
+    inv.llm_notes = {"source_url": "ultimate-member", "endpoint": "/wp-admin/admin-ajax.php",
+                     "http_method": "POST", "parameters": {"sorting": "1"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert calls[0] in (None, []), "el primer intento no debia traer ya una pagina extra"
+    assert any(c == ["/register/"] for c in calls[1:]), (
+        "el reintento debia pasar la pagina que sugirio el LLM a verify_wordpress_sqli, no "
+        "solo guardarla en el JSON de la sugerencia")
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
