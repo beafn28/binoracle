@@ -10000,6 +10000,66 @@ def test_verify_wordpress_sqli_enables_debug_display_only_after_login(monkeypatc
     assert bootstrap_calls, "_bootstrap_lab debe haberse llamado"
 
 
+def test_verify_wordpress_sqli_resolves_unresolved_endpoint_placeholders(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-1071: el exploit publico (gbrsh/CVE-2024-1071) trae
+    # el endpoint como PLANTILLA ('nonce={nonce}&directory_id={dir_id}'), y sin resolverlos
+    # binoracle mandaba el string literal '{nonce}' -- el servidor rechazaba SIEMPRE con 'Wrong
+    # Nonce', un bloqueo de infraestructura (no evidencia real de que la inyeccion no exista).
+    # verify_wordpress_sqli debe raspar un nonce/id REAL de una pagina viva antes de atacar.
+    import binoracle.workflows.wpverify as wpverify
+
+    requested_urls = []
+
+    class _FakeResp:
+        def __init__(self, text="", status_code=200):
+            self.text = text
+            self.status_code = status_code
+
+    class _FakeSubSess:
+        def get(self, url, **kw):
+            requested_urls.append(("GET", url))
+            return _FakeResp(
+                text='<script>var UM_vars = {"nonce":"a1b2c3d4e5","directory_id":42};</script>')
+
+        def request(self, method, url, **kw):
+            requested_urls.append((method, url))
+            return _FakeResp(text='{"success":true,"data":[]}')
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSubSess(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    class _FakeLab:
+        def wp_cli(self, *a, **kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+
+        def teardown(self):
+            pass
+
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin",
+        "/wp-admin/admin-ajax.php?action=um_get_members&nonce={nonce}&directory_id={dir_id}",
+        "GET", {"sorting": "1"}, sqli_param_hint="sorting")
+
+    attack_urls = [u for m, u in requested_urls if "admin-ajax.php" in u]
+    assert attack_urls, "debia atacar el endpoint real, no quedarse sin peticiones"
+    assert all("{nonce}" not in u and "{dir_id}" not in u for u in attack_urls), (
+        "el placeholder literal nunca debe llegar a la peticion real")
+    assert all("nonce=a1b2c3d4e5" in u for u in attack_urls)
+    assert all("directory_id=42" in u for u in attack_urls)
+    assert res.evidence.get("placeholders_resueltos") == {"nonce": "a1b2c3d4e5", "dir_id": "42"}
+
+
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
     # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
     # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando

