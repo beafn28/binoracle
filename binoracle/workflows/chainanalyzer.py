@@ -734,18 +734,28 @@ _SINK_ORDER = ("scanf", "isoc99_scanf", "gets", "fgets", "gets_s", "strcpy", "st
 
 def _overflow_sink(binary: str):
     """Sink de entrada de la funcion vulnerable (el que gobierna los bad-chars). Devuelve el nombre
-    o None. Busca la funcion que llama a un sink de lectura y toma el mas restrictivo presente."""
+    o None. Busca la funcion que llama a un sink de lectura y toma el mas restrictivo presente.
+
+    Bug real encontrado en vivo (mismo patron que _sink_callsites en reachability.py, y el mismo
+    ya mitigado en el bucle equivalente de _overflow_sink mas abajo con cap de 400/20s): este
+    bucle recorria TODAS las funciones de `aflj` (cientos/miles en un binario estatico) llamando
+    a `r.cmd(f"pdf @ {nm}")` SIN NINGUN limite -- ni de cantidad, ni de tiempo, ni de timeout por
+    llamada individual. Ahora aplica el mismo cap (400 funciones / 20s) y pasa cada comando por
+    r2session.cmd_timeout en vez del `r.cmd()` crudo."""
     try:
         import json
         import re as _re
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is None:
+        import time as _time
+        from ..oracles.r2session import cmd_timeout as _r2cmd, get as _r2get
+        if _r2get(binary) is None:
             return None
         present = set()
-        for fn in json.loads(r.cmd("aflj") or "[]"):
+        _t0 = _time.time()
+        for _i, fn in enumerate(json.loads(_r2cmd(binary, "aflj", 30.0) or "[]")):
+            if _i >= 400 or (_time.time() - _t0) > 20.0:
+                break
             nm = fn.get("name", "")
-            dis = r.cmd(f"pdf @ {nm}") or ""
+            dis = _r2cmd(binary, f"pdf @ {nm}", 15.0) or ""
             for s in _SINK_ORDER:
                 # \b (limite de palabra) en vez de substring: sin el, "gets" hacia match dentro de
                 # "sym.imp.getsockopt"/"call getsockopt" -- confirmado con un binario real que solo

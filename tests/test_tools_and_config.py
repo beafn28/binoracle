@@ -1624,6 +1624,44 @@ def test_chainanalyzer_facts_word_boundaries():
     assert sink is None, "'gets' hizo match dentro de getsockopt"
 
 
+def test_chainanalyzer_overflow_sink_never_hangs_on_a_stuck_pdf(monkeypatch):
+    # Bug real encontrado en vivo (barrido "poco a poco" tras el fix de reachability.
+    # _sink_callsites): _overflow_sink recorria TODAS las funciones de `aflj` llamando a
+    # `r.cmd(f"pdf @ {nm}")` sin ningun cap de cantidad/tiempo ni timeout por llamada -- una
+    # sola funcion que cuelga `pdf` (misma familia que `axtj` sobre un simbolo problematico)
+    # bloqueaba la deteccion entera. Ahora debe acotar con el mismo patron de 400/20s ya usado
+    # en el bucle equivalente de este mismo archivo.
+    import time
+    import json as _json
+    from binoracle.workflows import chainanalyzer as ca
+    from binoracle.oracles import r2session
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _StuckR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            if c == "aflj":
+                return _json.dumps([{"name": "sym.stuck_fn"}, {"name": "sym.other_fn"}])
+            if c.startswith("pdf @ sym.stuck_fn"):
+                time.sleep(600)   # mucho mas que el timeout real de 15s por llamada
+            return ""
+    fake = _StuckR2()
+    monkeypatch.setattr(r2session, "get", lambda binary: fake)
+
+    t0 = time.time()
+    sink = ca._overflow_sink("fake.bin")
+    elapsed = time.time() - t0
+    assert elapsed < 30.0, "una sola funcion con pdf colgado no debe bloquear toda la deteccion"
+    assert sink is None
+    assert fake.process.killed, "la sesion colgada debe matarse, no quedar zombie"
+
+
 def test_analyze_chains_not_applicable_for_non_elf_binaries():
     # BUG real encontrado revisando un informe generado contra un .exe de Windows real
     # (Ingrid.exe, PE32 x86 32-bit): analyze_chains() generaba (y con verify=True, intentaba
