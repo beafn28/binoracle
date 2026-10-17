@@ -2535,6 +2535,8 @@ def verify_wordpress_xss(
     parameters, xss_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica XSS (reflejado, o almacenado cuando la propia respuesta lo renderiza de vuelta)
     cargando la respuesta del endpoint en un Chromium headless REAL (ver _xss_render): el payload
@@ -2573,9 +2575,16 @@ def verify_wordpress_xss(
     lab = _Lab(_token())
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              companion_plugins=companion_plugins)
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths)
         if boot is None:
             return res
+
+        m = (http_method or "GET").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, xss_param, res, step,
+            extra_nonce_pages=extra_nonce_pages)
 
         from urllib.parse import urlsplit
         host = urlsplit(boot.base_url).hostname or "127.0.0.1"
@@ -2623,7 +2632,6 @@ def verify_wordpress_xss(
         from .payload_kb import load_xss_payloads
         attempts += load_xss_payloads(js)
 
-        m = (http_method or "GET").upper()
         found = False
         tried = []
         # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
@@ -2633,7 +2641,7 @@ def verify_wordpress_xss(
         step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
         with _XssBrowserSession() as xb:
             for payload_value in attempts:
-                params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                params = dict(base_params)
                 params[xss_param] = payload_value
                 title, _ = xb.render(boot.base_url, endpoint, m, params, cookies)
                 tried.append({"payload": payload_value, "title_resultante": title})

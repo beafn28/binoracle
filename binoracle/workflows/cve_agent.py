@@ -2414,15 +2414,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                xss_wp_extra_nonce_pages: List[str] = []
+                xss_wp_extra_setup_trigger_paths: List[str] = []
+                def _on_xss_wp_suggestion(sug):
+                    p = sug.get("pagina_extra_para_nonce")
+                    if p and p not in xss_wp_extra_nonce_pages:
+                        xss_wp_extra_nonce_pages.append(p)
+                    sp = sug.get("pagina_setup_admin_requerida")
+                    if sp and sp not in xss_wp_extra_setup_trigger_paths:
+                        xss_wp_extra_setup_trigger_paths.append(sp)
                 def _attempt_xss_wp(ep, pr):
                     return verify_wordpress_xss(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         xss_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins)
+                        companion_plugins=companion_plugins,
+                        extra_nonce_pages=list(xss_wp_extra_nonce_pages),
+                        extra_setup_trigger_paths=list(xss_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
-                    llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
+                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                     _attempt_xss_wp, wr, notes.get("endpoint"), xss_p,
-                    technique_label="XSS WordPress")
+                    technique_label="XSS WordPress", on_suggestion=_on_xss_wp_suggestion)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XSS (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
