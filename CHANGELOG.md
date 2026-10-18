@@ -7,6 +7,168 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Direct unit tests for `_apply_generic_wp_suggestion`**: `notes.get("parameters")` can be a
+  dict (`{name: example_value}`, as several existing investigation notes already use) rather
+  than a plain list of names — the `isinstance(params, dict)` branch handling that case had no
+  test anywhere and could have silently broken (e.g. overwriting a real submitted value with a
+  placeholder) without any test catching it. Added
+  `test_apply_generic_wp_suggestion_dedupes_nonce_and_setup_pages`,
+  `test_apply_generic_wp_suggestion_adds_extra_param_to_list`,
+  `test_apply_generic_wp_suggestion_adds_extra_param_to_dict_without_overwriting` and
+  `test_apply_generic_wp_suggestion_is_noop_without_fields`.
+- **Regression tests for `parametro_adicional_requerido`**: this field (the one that actually
+  unblocks CVE-2024-1071-style sinks, e.g. `directory_id`) had no test of its own anywhere,
+  for SQLi or any other technique, even though the prompt asking the LLM for it predates this
+  session. Added `test_cve_agent_sqli_retry_applies_parametro_adicional_requerido` and
+  `test_cve_agent_path_traversal_retry_applies_parametro_adicional_requerido`, confirming the
+  suggested parameter name actually lands in the retried request's parameter list end-to-end
+  (not just that `_apply_generic_wp_suggestion`'s code compiles) for both SQLi and a non-SQLi
+  technique.
+- **Generalized the LLM retry-suggestion handling to all 12 retry-capable WordPress dynamic
+  verifiers** (previously only SQLi read `parametro_adicional_requerido`, even though the
+  shared retry prompt — `_WP_NONCE_SETUP_RETRY_HINT` — already asks every technique's LLM for
+  it): `_apply_generic_wp_suggestion` factors the three suggestion fields
+  (`pagina_extra_para_nonce`, `pagina_setup_admin_requerida`, `parametro_adicional_requerido`)
+  into one shared function, called by all 12 `_on_*_suggestion` closures
+  (account-takeover, direct-login-as, path-traversal, command-injection, SQLi, SSRF, XSS,
+  SSTI, XXE, open-redirect, file-upload, deserialization and deserialization-custom-table)
+  instead of each duplicating the same two-field mutation and silently dropping the third.
+  Before this, an LLM correctly identifying that e.g. an XSS or SSRF attack needed one more
+  POST parameter to reach the vulnerable sink had no way to act on that insight — only SQLi's
+  retry loop actually applied the suggestion.
+- **Generalized `--keep-lab-on-failure` to all 13 WordPress dynamic verifiers** (previously
+  SQLi-only): `_finalize_lab`, shared by every `verify_wordpress_*` function (including CSRF),
+  decides once whether to tear the ephemeral lab down or leave it alive for manual
+  `wp-content/debug.log` inspection. `_retry_or_keep_lab_alive` wraps every technique's
+  evidence-based retry loop in `cve_agent.py` the same way: with the flag set, no technique
+  retries (since every `verify_wordpress_*` call creates its own independent lab — retrying
+  would tear down the one just left alive to spin up a fresh one, and worse, leave several
+  orphaned containers behind if each attempt also failed). Both are computed/applied once per
+  investigation and threaded into every technique's dispatch, not duplicated per technique.
+- **Generalized the shortcode-page-for-nonce fix to all 12 WordPress dynamic verifiers**
+  (previously SQLi-only): `verify_wordpress_account_takeover`, `_direct_login_as`,
+  `_path_traversal`, `_command_injection`, `_ssrf`, `_xss`, `_ssti`, `_xxe`,
+  `_open_redirect`, `_file_upload`, `_deserialization` and `_deserialization_custom_table`
+  now all accept `shortcode_name` and thread it into `_bootstrap_lab` — a real, generic
+  page using the plugin's own shortcode, which `_auto_resolve_wp_blockers` can scrape for a
+  nonce specific to the AJAX action under attack. Before this, only SQLi could ask for that
+  page at all; any other technique attacking a plugin's own AJAX action (not a generic
+  login/front page) hit the exact same unsolvable "Wrong Nonce" wall SQLi did against
+  CVE-2024-1071, with no way to fix it short of passing a raw nonce by hand.
+  `cve_agent.py` now computes this shortcode name ONCE per investigation (shared across every
+  technique's dispatch, WordPress-only) instead of only within the SQLi branch, and threads
+  it into all corresponding `verify_wordpress_*` calls, including their retry-loop closures.
+- **`investigate --keep-lab-on-failure`**: when the automatic WordPress SQLi verification
+  doesn't confirm, leaves the ephemeral WordPress+MySQL Docker lab ALIVE (base URL + admin
+  credentials surfaced in the report) instead of tearing it down, and skips the retry loop
+  (which would otherwise destroy that same lab to spin up a new one each attempt). For the
+  real case that motivated it (CVE-2024-1071): the target's AJAX handler can swallow the real
+  MySQL error and always return clean JSON, so none of the 5 automated techniques can see it
+  — at that point retrying different payloads blindly doesn't help; inspecting
+  `wp-content/debug.log` inside the live container by hand does. The analyst is responsible
+  for tearing the lab down afterwards (by the printed Docker tag).
+- **WordPress SQLi verifier, a sixth technique: syncing a "custom sort field" gate meta before
+  each payload (Ultimate Member/CVE-2024-1071)**: the official patch (2.8.2 -> 2.8.3) reveals
+  the real sink — a `LEFT JOIN` with the raw value inside single quotes
+  (`...um_key = '{$sortby}'`, rewritten to `$wpdb->prepare()` in the fix) — but that line never
+  runs unless the submitted value matches, by exact string equality, a value already stored in
+  a real post's `_um_sortby_custom` meta (the Member Directory's configured custom sort field).
+  Every injection context (quote + AND/OR) was already covered by techniques 1-4, but without
+  that gate open they never reached the vulnerable line at all. Since the ephemeral lab is our
+  own, `verify_wordpress_sqli` now recovers the real post ID from the already-resolved hashed
+  `directory_id` and writes the exact same value being tested into that meta immediately before
+  every single payload — opening the gate itself instead of depending on it already being
+  configured. Gated by a small per-plugin registry (`_SQLI_CUSTOM_SORT_GATE`), inactive for any
+  other slug.
+- **WordPress SQLi verifier, a fifth technique for ORDER BY-context injection**: the first
+  four techniques (error-based, UNION-based, boolean-blind, time-based blind) all assume the
+  injected value stays part of a WHERE clause (`<value><closer> AND/OR <condition>`) — a sink
+  that puts the parameter directly into an ORDER BY (e.g. an unwhitelisted `WP_User_Query`
+  `orderby`, confirmed live against CVE-2024-1071/Ultimate Member's `sorting` parameter) can
+  never be confirmed that way: there's no WHERE to concatenate onto, and a quote just breaks
+  the column/expression syntax instead of closing a string. The new last-resort technique
+  sends the injected value as a complete, bare scalar subquery (no AND/OR, no quotes, no
+  comment) — first error-based (`extractvalue`/`updatexml`), then, if that filters nothing, a
+  CONDITIONAL time-based pair (`CASE WHEN 1=1/1=2 THEN SLEEP(5) ELSE 0 END`, stricter than an
+  unconditional `SLEEP` since it proves a real condition controls the delay). Not specific to
+  this plugin — any dynamic column/orderby sink without a whitelist hits the same pattern.
+- **WordPress SQLi verifier, two real infrastructure fixes chained from CVE-2024-1071**: the
+  shortcode page `_bootstrap_lab` creates to source a real nonce now gets created even when
+  the attack targets a concrete endpoint (e.g. an AJAX action) rather than the bare homepage —
+  previously it was skipped whenever a real endpoint was already known, so the nonce scraped
+  always came from a generic page that never carried that specific AJAX action's nonce
+  ("Wrong Nonce" forever). Separately, an endpoint placeholder shaped like an id/directory
+  (e.g. `{dir_id}`) is no longer resolved by guessing "the first 1-6 digit number anywhere in
+  the scraped HTML" — a real page always has *some* unrelated number (a copyright year, a
+  post ID...) that silently wins over the far more reliable validated hashed-ID brute force
+  that already exists for exactly this. ID/dir placeholders are now always left for that
+  brute force. The SQLi retry loop can also now recognize a response rejecting the request
+  for a reason unrelated to the parameter being injected (e.g. "Wrong member directory data")
+  and ask for that additional real parameter by name (`parametro_adicional_requerido`) — added
+  to the request, never replacing the one actually being injected.
+- **`investigate --sqli-param`**: lets the analyst pin the exact injectable parameter name,
+  bypassing the generic id/search/sort heuristic when `--params` also carries another
+  required parameter (e.g. a real directory/resource id) whose name would otherwise be
+  preferred by that heuristic over the real injectable one.
+- **Generic (CMS-agnostic) dynamic verifiers for 10 web vuln classes** (`genericverify.py`):
+  for any CVE whose downloaded source isn't a recognized WordPress/Drupal/Joomla plugin,
+  binoracle builds and runs the target's own Dockerfile/docker-compose.yml (or, if it has
+  neither, auto-detects Node/Python/PHP by its own manifest files and writes a minimal
+  Dockerfile itself) and attacks the real resulting container — never `verified=True` by a
+  status code, always by an independent check (a canary written to disk, inside the
+  container, a listener on its own network, a real browser executing JS, a real timing
+  delay...). Covers command-injection, path-traversal, SSRF, blind SQLi, XXE, XSS, SSTI,
+  open-redirect (pre-existing), plus three added this session: an unauthenticated,
+  deliberately WEAKER IDOR check (two IDs, no session — never marks `verified`, only a real
+  observed difference), a file-upload check (confirms real on-disk storage of a dangerous
+  file via `docker exec grep`, not execution), and an LFI-to-RCE escalation via access-log
+  poisoning (confirms real code execution, never a raw-reflection false positive).
+- **WordPress SQLi verifier, three real fixes chained from one CVE (CVE-2024-3552)**: the
+  ephemeral lab now enables `WP_DEBUG`/`WP_DEBUG_DISPLAY` (error-based SQLi was structurally
+  blind without it), auto-creates a real page using the plugin's own shortcode when the given
+  endpoint is the bare homepage (which shows nothing to inject into), and inserts a real,
+  schema-aware row (via a `DESCRIBE`-driven `wp eval`) into whatever relationship table a
+  `LEFT JOIN`-based sink joins by post ID — closing a real class of "sink is real but the
+  test target has no matching row" false negative.
+- **`investigate --json path.json`** (and always in `investigate-batch`): dumps the complete
+  `Investigation` object, untouched by the markdown/HTML report's truncation of every
+  response body to a few hundred chars — closes a real gap hit repeatedly diagnosing the
+  CVE-2024-3552 SQLi, where the full evidence never left the process.
+- **LLM-driven evidence-based retry loop** (`cve_agent.py`), now wired across 26 dispatch
+  sites (WordPress, Drupal, and the CMS-agnostic generic verifier, up from the 3 it started
+  with this session): on a negative, the LLM is handed the same real evidence a human analyst
+  would read (a real response-body snippet from the first/control attempt) and asked to name
+  a concrete alternative endpoint/parameter grounded in something visible there, or say
+  honestly there's no lead — bounded to `_RETRY_MAX_ATTEMPTS` (3) total attempts per
+  technique, never a blind or unbounded retry. Built on a shared, technique-agnostic
+  `_run_evidence_retry_loop()` helper plus a generic `_GENERIC_RETRY_SYS` prompt (the
+  technique name is injected into the evidence payload, not baked into a bespoke prompt per
+  site) so new sites cost one dispatch-site edit, not a new prompt. Covers SQLi,
+  path-traversal, command-injection, SSTI, XXE, file-upload, open-redirect, XSS, SSRF, and
+  blind (time-based) SQLi. Two real evidence-capture bugs were found and fixed along the way:
+  several Drupal verifiers only wrote their response-body snippet on the *winning* branch
+  (useless to a retry loop, which only runs on a negative), and three verifiers (SSRF, blind
+  SQLi, both WP/generic XSS) were silently discarding a usable HTTP response body entirely.
+  Deliberately NOT wired: CSRF/account-takeover/deserialization across all three CMS — their
+  failure mode doesn't reduce to a single endpoint+parameter retry (3+ params exchanged at
+  once, or no endpoint/param axis at all), so forcing them in would mean an ungrounded retry,
+  which defeats the whole point of reading real evidence first.
+- **bash/curl PoC templates** (`webexploit.py`): all 13 web-vuln-class PoC builders now
+  generate copy-pasteable `bash`+`curl` scripts instead of Python/requests.
+- **pytest-xdist** for parallel test runs (`pip install -e .[dev]`): the fast suite (~584
+  tests, excluding angr/chainanalyzer/rop) drops from ~13-15 min serial to ~4.5 min with
+  `-n 4` on a 4-core machine, same pass/fail result.
+
+### Removed
+- **Burp Suite routing from the ephemeral CMS lab** (WordPress/Drupal/Joomla): `_wp_login`/
+  `_drupal_login`/`_joomla_login` now always use a direct `requests.Session()`, even when
+  `--burp-mcp-url` is configured. Routing the lab's own login through Burp was the root cause
+  of two distinct real bugs this session (an `UnknownHostException` on `host.docker.internal`,
+  then a regression in `http_ready()` when `_lab_host()` was made Burp-aware to fix that) for
+  a fully-automated lab that never needed an external proxy in the first place. Burp MCP stays
+  available for `genericverify.py`'s analyst-directed verifiers.
+
+### Added (prior)
 - **Heap-to-shell (tcache-UAF) exploit**: `autoheap.autoheap_shell` drives a menu-style
   use-after-free (new/free/edit/show, e.g. the `heapexp` sample) to a verified shell — it
   defeats glibc safe-linking without needing exact heap offsets (freeing one chunk into an

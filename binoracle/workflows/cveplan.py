@@ -70,7 +70,53 @@ _CLASSES = [
      "tamano/indice erroneo -> overflow o OOB secundario", ["integer-bugs"]),
     ("race", ("race condition", "toctou", "time-of-check", "condicion de carrera", "double fetch"),
      "ventana de carrera -> estado inconsistente (p.ej. escalada/ficheros)", ["race-conditions"]),
+    ("command-injection", ("command injection", "os command injection", "inyeccion de comandos",
+                          "shell command"),
+     "ejecucion de comandos del sistema con entrada no saneada", ["pentest-binarios"]),
+    # --- clases WEB / aplicacion (no memoria nativa: el "exploit" es una peticion HTTP, no ROP) ---
+    ("missing-authorization", ("missing authorization", "broken access control", "falta de autorizacion",
+                               "sin verificar permisos", "missing authentication check"),
+     "actua sobre un recurso/usuario ajeno sin que el servidor compruebe el permiso", ["pentest-binarios"]),
+    ("idor", ("insecure direct object reference", "idor", "direct object reference"),
+     "cambia un identificador referenciado directamente para alcanzar el recurso de otro usuario", []),
+    ("auth-bypass", ("authentication bypass", "auth bypass", "bypass authentication",
+                     "login bypass"),
+     "evita por completo el paso de autenticacion", []),
+    ("sqli", ("sql injection", "sqli", "inyeccion sql"),
+     "inyeccion en una consulta SQL -> lectura/escritura/control sobre la base de datos", []),
+    ("xss", ("cross-site scripting", "xss", "stored xss", "reflected xss", "dom-based xss"),
+     "inyeccion de script en el contexto del navegador de la victima", []),
+    ("ssrf", ("server-side request forgery", "ssrf"),
+     "el servidor hace una peticion a una URL controlada por el atacante (red interna/metadata)", []),
+    ("rce", ("remote code execution", "arbitrary code execution", "ejecucion remota de codigo"),
+     "ejecucion de codigo arbitrario en el servidor", []),
+    ("path-traversal", ("path traversal", "directory traversal", "local file inclusion", "lfi"),
+     "escapa del directorio esperado para leer/escribir ficheros arbitrarios", []),
+    ("file-upload", ("unrestricted file upload", "arbitrary file upload", "file upload vulnerability"),
+     "sube un fichero con extension/contenido no validado (p.ej. webshell)", []),
+    ("deserialization", ("insecure deserialization", "unsafe deserialization", "object injection",
+                         "deserializacion insegura"),
+     "deserializa datos del atacante -> instancia objetos/gadget chain controlados", []),
+    ("xxe", ("xml external entity", "xxe"),
+     "procesa un DTD/entidad externa en XML -> lectura de fichero/SSRF", []),
+    ("ssti", ("server-side template injection", "ssti", "template injection"),
+     "el motor de plantillas evalua entrada del atacante como codigo", []),
+    ("csrf", ("cross-site request forgery", "csrf"),
+     "fuerza una accion autenticada desde un origen ajeno (sin interaccion directa con la sesion)", []),
+    ("open-redirect", ("open redirect", "unvalidated redirect"),
+     "redirige a una URL arbitraria controlada por el atacante (phishing/encadenable)", []),
 ]
+
+# clases que NO son corrupcion de memoria nativa: el PoC es una peticion HTTP (o una pagina para CSRF/
+# XSS), nunca un script pwntools contra un proceso local. Ver workflows/webexploit.py.
+WEB_CLASSES = frozenset({
+    "missing-authorization", "idor", "auth-bypass", "sqli", "xss", "ssrf", "command-injection",
+    "rce", "path-traversal", "file-upload", "deserialization", "xxe", "ssti", "csrf", "open-redirect",
+})
+
+
+def is_web_class(cls: str) -> bool:
+    return (cls or "") in WEB_CLASSES
 
 
 def classify_cve(text: str) -> Optional[str]:
@@ -103,6 +149,37 @@ def classify_cve(text: str) -> Optional[str]:
         return "type-confusion"
     if has("command", "injection") or has("os", "command"):
         return "command-injection"
+    # --- clases web/app (respaldo por co-ocurrencia; la redaccion varia mucho entre CVEs) ---
+    if has("missing", "authorization") or has("broken", "access", "control") or \
+       (has("without", "verifying") and "permission" in t) or \
+       (has("sin", "verificar") and ("permiso" in t or "autoriza" in t)):
+        return "missing-authorization"
+    if has("insecure", "direct", "object") or has("idor"):
+        return "idor"
+    if has("authentication", "bypass") or has("auth", "bypass"):
+        return "auth-bypass"
+    if has("sql", "injection") or "sqli" in t:
+        return "sqli"
+    if has("cross-site", "scripting") or re.search(r"\bxss\b", t):
+        return "xss"
+    if has("server-side", "request", "forgery") or re.search(r"\bssrf\b", t):
+        return "ssrf"
+    if has("remote", "code", "execution") or re.search(r"\brce\b", t):
+        return "rce"
+    if has("path", "traversal") or has("directory", "traversal"):
+        return "path-traversal"
+    if has("file", "upload") and ("unrestricted" in t or "arbitrary" in t or "insufficient" in t):
+        return "file-upload"
+    if "deserializ" in t and ("insecure" in t or "unsafe" in t or "unauthenticated" in t):
+        return "deserialization"
+    if "xxe" in t or has("xml", "external", "entity"):
+        return "xxe"
+    if has("template", "injection") or re.search(r"\bssti\b", t):
+        return "ssti"
+    if has("cross-site", "request", "forgery") or re.search(r"\bcsrf\b", t):
+        return "csrf"
+    if has("open", "redirect"):
+        return "open-redirect"
     return None
 
 
@@ -329,7 +406,11 @@ def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es
     # el desarrollador de exploits genera una plantilla funcional para la clase (sin binario: sin
     # offset concreto, se resuelve en el propio script). plan_from_analysis la sustituye por el
     # script anclado a la prueba si luego hay una cadena verificada.
-    pl.script = develop_exploit(cls, facts, {}, lang=lang)
+    # Una clase WEB no es corrupcion de memoria: no hay 'binario' ni pwntools que montar aqui. El
+    # PoC (peticion HTTP) lo construye cve_agent con webexploit.py, que tiene el endpoint/metodo/
+    # parametros de la hipotesis del LLM; dejamos el script vacio para no generar un esqueleto
+    # pwntools que no tiene sentido (un process(BINARY) que no existe).
+    pl.script = "" if is_web_class(cls) else develop_exploit(cls, facts, {}, lang=lang)
     return pl
 
 

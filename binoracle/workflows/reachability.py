@@ -51,16 +51,24 @@ def _r2(binary: str):
 
 def _sink_callsites(binary: str) -> list:
     """[(sink, addr_de_la_llamada)] a sinks peligrosos, ejecucion primero. Direcciones del binario
-    (link addr); se rebasan a la base de angr en find_input_to."""
+    (link addr); se rebasan a la base de angr en find_input_to.
+
+    Bug real encontrado en vivo: `axtj @ sym.imp.X` pedido para un simbolo que el binario NO
+    importa (p.ej. preguntar por 'execve' en un binario que solo importa 'system') puede colgar
+    r2 indefinidamente en vez de devolver una lista vacia -- y como este bucle prueba TODOS los
+    ~14 nombres de _EXEC_SINKS/_OVF_SINKS sin saber de antemano cuales importa realmente el
+    binario, un solo simbolo problematico bloqueaba toda la busqueda de sinks. Cada llamada usa
+    `cmd_timeout` (mismo mecanismo ya usado para `pdg`/`aaa`) en vez del `r.cmd()` crudo."""
     r = _r2(binary)
     if r is None:
         return []
+    from ..oracles.r2session import cmd_timeout
     import json
     out = []
     for group in (_EXEC_SINKS, _OVF_SINKS):
         for s in group:
             try:
-                xs = json.loads(r.cmd(f"axtj @ sym.imp.{s}") or "[]")
+                xs = json.loads(cmd_timeout(binary, f"axtj @ sym.imp.{s}", timeout=20.0) or "[]")
             except Exception:
                 xs = []
             for x in xs:
@@ -70,8 +78,8 @@ def _sink_callsites(binary: str) -> list:
     return out
 
 
-def find_input_to(binary: str, target: int, avoid: tuple = (), stdin_len: int = 200,
-                  budget_s: float = 45.0, max_active: int = 80) -> Optional[ReachResult]:
+def _find_input_to_impl(binary: str, target: int, avoid: tuple = (), stdin_len: int = 200,
+                        budget_s: float = 45.0, max_active: int = 80) -> Optional[ReachResult]:
     """Ejecuta angr desde el entrypoint con stdin simbolico y busca un estado en `target`. Devuelve
     la entrada concreta que lo alcanza, o None. Acotado por tiempo y numero de estados."""
     try:
@@ -138,6 +146,52 @@ def find_input_to(binary: str, target: int, avoid: tuple = (), stdin_len: int = 
                            note="alcanzado por ejecucion simbolica")
     except Exception as e:
         return ReachResult(ok=False, target=target, note=f"angr: {e.__class__.__name__}")
+
+
+def _find_input_to_worker(binary, target, avoid, stdin_len, budget_s, max_active, q) -> None:
+    try:
+        q.put(_find_input_to_impl(binary, target, avoid, stdin_len, budget_s, max_active))
+    except Exception as e:
+        q.put(ReachResult(ok=False, target=target, note=f"angr: {e.__class__.__name__}"))
+
+
+def find_input_to(binary: str, target: int, avoid: tuple = (), stdin_len: int = 200,
+                  budget_s: float = 45.0, max_active: int = 80) -> Optional[ReachResult]:
+    """Envoltorio de `_find_input_to_impl` con un deadline DURO via subproceso. El bucle interno
+    (`while time.time() < deadline`) solo comprueba el reloj ENTRE llamadas a `simgr.explore(...)`
+    -- si una sola llamada se bloquea mucho mas de lo normal (un step de angr con resolucion de
+    restricciones dura, en un binario real/CPU muy limitada: confirmado en vivo, un step que
+    deberia tardar ~1s tardo mas de 2 HORAS bajo throttling de CPU severo), ese bucle no tiene
+    forma de interrumpirla -- budget_s se convertia en una cota blanda, no dura. Aqui se ejecuta
+    la busqueda real en un proceso HIJO (fork, para no repetir el import de angr) y se le da
+    budget_s mas un margen generoso para el propio arranque/parada del proceso; si para entonces
+    sigue vivo, se MATA (terminate -> kill) y se devuelve 'no alcanzado', en vez de bloquear al
+    proceso llamador indefinidamente. En el camino normal (el 99% de los casos, donde cada step
+    es rapido) esto no cambia nada: el hijo termina solo, bien dentro de budget_s."""
+    import multiprocessing as mp
+    try:
+        ctx = mp.get_context("fork")
+    except ValueError:
+        ctx = mp.get_context()   # plataformas sin fork (no Linux): usa el metodo por defecto
+    q = ctx.Queue()
+    p = ctx.Process(target=_find_input_to_worker,
+                    args=(binary, target, avoid, stdin_len, budget_s, max_active, q))
+    p.start()
+    p.join(budget_s + 30.0)
+    if p.is_alive():
+        p.terminate()
+        p.join(5.0)
+        if p.is_alive():
+            p.kill()
+            p.join()
+        return ReachResult(ok=False, target=target,
+                           note="angr: excedio el presupuesto de tiempo (proceso forzado a "
+                                "terminar, el budget_s pedido era una cota dura)")
+    try:
+        return q.get_nowait()
+    except Exception:
+        return ReachResult(ok=False, target=target,
+                           note="angr: el proceso termino sin devolver resultado")
 
 
 def _f(title_es, title_en, sev, ev, rat_es, rat_en, rec_es, rec_en, lang, loc):

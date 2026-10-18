@@ -2,9 +2,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+# REGRESION encontrada en vivo (`binoracle investigate ... --method POST` perdia "POST" de
+# sys.argv): pwntools escanea y MUTA sys.argv al importarse (busca sus propios flags de
+# log-level/terminal), y los imports de abajo (p.ej. .workflows.rop) tiran de pwntools a nivel
+# de MODULO. El entry point instalado (`binoracle = "binoracle.cli:main"`, ver pyproject.toml)
+# hace `from binoracle.cli import main` antes de llamar a main() -- para cuando main() lee
+# sys.argv, ya esta mutado. Se captura ANTES de que ese import chain corra (primera linea
+# ejecutable del modulo, antes de cualquier `from .workflows...`), y main() lo usa por defecto
+# en vez de releer sys.argv. Protege tanto el entry point instalado como `python -m binoracle`.
+_ARGV = sys.argv[1:]
+
+from . import colorlog
 from .config import load_config
 from .llm import make_backend
 from .oracles import build_registry
@@ -327,6 +339,14 @@ def cmd_primitives(args, config):
     store.close()
 
 
+def cmd_arsenal(args, config):
+    from .workflows.chainanalyzer import analyze_arsenal, render_arsenal
+    binary = _require_binary(args.binary)
+    out = render_arsenal(analyze_arsenal(binary, None, lang="es"), lang="es")
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_gadgets(args, config):
     binary = _require_binary(args.binary)
     reg = build_registry(binary)
@@ -524,6 +544,207 @@ def cmd_serve(args, config):
     serve(host=args.host, port=args.port, open_browser=not args.no_open)
 
 
+def cmd_mcp(args, config):
+    # stdio MCP server: speaks JSON-RPC on stdin/stdout, so nothing must be printed to stdout here.
+    from .mcp_server import serve
+    serve()
+
+
+def cmd_go(args, config):
+    from .workflows.goinspect import inspect_go, render_go
+    binary = _require_binary(args.binary)
+    out = render_go(inspect_go(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_core(args, config):
+    import os
+    from .workflows.coredump import inspect_core, render_core
+    if not os.path.exists(args.core):
+        _eprint(f"core no encontrado: {args.core}")
+        sys.exit(2)
+    out = render_core(inspect_core(args.core))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_elf(args, config):
+    from .workflows.elflayout import inspect_elf, render_elf
+    binary = _require_binary(args.binary)
+    out = render_elf(inspect_elf(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_wasm(args, config):
+    from .workflows.wasminspect import inspect_wasm, render_wasm
+    binary = _require_binary(args.binary)
+    out = render_wasm(inspect_wasm(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_sqlite(args, config):
+    from .workflows.sqliteinspect import inspect_sqlite, render_sqlite
+    binary = _require_binary(args.binary)
+    out = render_sqlite(inspect_sqlite(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_evm(args, config):
+    from .workflows.evminspect import inspect_evm, render_evm
+    binary = _require_binary(args.binary)
+    out = render_evm(inspect_evm(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_har(args, config):
+    from .workflows.harinspect import inspect_har, render_har
+    binary = _require_binary(args.binary)
+    out = render_har(inspect_har(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_java(args, config):
+    from .workflows.jarinspect import inspect_jar, render_jar
+    binary = _require_binary(args.binary)
+    out = render_jar(inspect_jar(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_secrets(args, config):
+    from .workflows.iocscan import scan_iocs, render_iocs
+    binary = _require_binary(args.binary)
+    out = render_iocs(scan_iocs(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_asar(args, config):
+    from .workflows.asarinspect import inspect_asar, render_asar
+    binary = _require_binary(args.binary)
+    out = render_asar(inspect_asar(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_plist(args, config):
+    from .workflows.plistinspect import inspect_plist, render_plist
+    binary = _require_binary(args.binary)
+    out = render_plist(inspect_plist(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_dotnet(args, config):
+    from .workflows.dotnetinspect import inspect_dotnet, render_dotnet
+    binary = _require_binary(args.binary)
+    out = render_dotnet(inspect_dotnet(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_macho(args, config):
+    from .workflows.machoinspect import inspect_macho, render_macho
+    binary = _require_binary(args.binary)
+    out = render_macho(inspect_macho(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_apk(args, config):
+    from .workflows.apkinspect import inspect_apk, render_apk
+    binary = _require_binary(args.binary)
+    out = render_apk(inspect_apk(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_pe(args, config):
+    from .workflows.peinspect import inspect_pe, render_pe
+    binary = _require_binary(args.binary)
+    out = render_pe(inspect_pe(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_jeb(args, config):
+    from .workflows.jebconnect import jeb_list_tools, jeb_call, render_jeb
+    if args.call:
+        import json as _json
+        arguments = _json.loads(args.arguments) if args.arguments else {}
+        r = jeb_call(args.call, arguments, url=args.url)
+    else:
+        r = jeb_list_tools(url=args.url)
+    out = render_jeb(r)
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_js(args, config):
+    from .workflows.jsinspect import inspect_js, render_js
+    target = args.binary
+    import os as _os
+    if not _os.path.exists(target):
+        _eprint(f"error: no existe {target}"); sys.exit(2)
+    out = render_js(inspect_js(target))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_dynamic(args, config):
+    from .workflows import dynamic as dyn
+    k = args.kind
+    if k == "adb-devices":
+        r = dyn.adb_devices()
+    elif k == "adb-packages":
+        r = dyn.adb_packages(serial=args.serial)
+    elif k == "adb-processes":
+        r = dyn.adb_processes(serial=args.serial)
+    elif k == "adb-logcat":
+        r = dyn.adb_logcat(serial=args.serial, lines=args.lines or 200)
+    elif k == "adb-getprop":
+        r = dyn.adb_getprop(serial=args.serial)
+    elif k == "adb-apk-path":
+        r = dyn.adb_apk_path(args.target or "", serial=args.serial)
+    elif k == "frida-devices":
+        r = dyn.frida_devices()
+    elif k == "frida-ps":
+        r = dyn.frida_processes()
+    elif k == "browser":
+        r = dyn.browser_observe(args.target or "", screenshot=args.screenshot)
+    else:
+        _eprint(f"error: kind desconocido {k}"); sys.exit(2)
+    out = dyn.render_dynamic(k, r)
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_caller_tool(args, config):
+    from .workflows import callertools as ct
+    binary = _require_binary(args.binary)
+    fn = {"wat": ct.wat_disassemble, "pcap": ct.pcap_summary, "firmware": ct.firmware_scan,
+          "one_gadget": ct.one_gadget, "capinfos": ct.pcap_fileinfo,
+          "manifest": ct.apktool_manifest, "jadx": ct.jadx_decompile,
+          "ghidra": ct.ghidra_decompile}[args.kind]
+    out = ct.render_caller(args.kind, fn(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_identify(args, config):
+    from .workflows.identify import identify, render_identify
+    binary = _require_binary(args.binary)
+    out = render_identify(identify(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_autopoc(args, config):
     binary = _require_binary(args.binary)
     r = autopoc(binary, offset=args.offset, run=not args.no_run)
@@ -621,13 +842,20 @@ def cmd_learn(args, config):
 def cmd_train(args, config):
     """Agente entrenador: desarrolla + verifica exploits sobre un corpus y cura lo verificado,
     subiendo la habilidad de forma medible. Sin binarios, usa el corpus de ejemplo del repo."""
-    from .workflows.exploit_trainer import train, render_training
+    from .workflows.exploit_trainer import train, render_training, export_playbook
     bins = list(getattr(args, "binaries", None) or [])
     rep = train(binaries=bins or None, config=config,
                 verify=not getattr(args, "no_verify", False),
                 on_step=lambda m: print("  " + m), lang=config.lang,
                 budget_s=float(getattr(args, "budget", 240) or 240))
     print("\n" + render_training(rep, config.lang))
+    pb = getattr(args, "export_playbook", None)
+    if pb is not None:
+        from .workflows.exploit_trainer import default_playbook_path
+        dest = pb or default_playbook_path()
+        n = export_playbook(rep, dest or None, config.lang)
+        print(f"\n[+] playbook: {n} tecnicas verificadas escritas en {dest}" if n
+              else "\n[!] playbook no escrito (ninguna tecnica verificada)")
 
 
 def cmd_autofuzz(args, config):
@@ -652,12 +880,227 @@ def cmd_fetch(args, config):
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
-    verificado y lo bloqueado."""
+    verificado y lo bloqueado. Para una CVE WEB, --source/--cms/--version/--endpoint/--method/--params
+    dejan aportar lo que YA sabes del aviso oficial (el slug/endpoint reales) en vez de depender de
+    que el LLM los adivine; con --source + --endpoint apuntando a un plugin de WordPress o un modulo
+    de Drupal vulnerable a missing-authorization/IDOR, intenta ademas la VERIFICACION DINAMICA
+    (WordPress+MySQL o Drupal+MySQL efimeros en Docker, ver wpverify.py/drupalverify.py)."""
     from .workflows.cve_agent import investigate_cve, render_investigation
+    hints = {}
+    if getattr(args, "vuln_class", None):
+        hints["vuln_class"] = args.vuln_class
+    if getattr(args, "source", None):
+        hints["source_url"] = args.source
+    if getattr(args, "cms", None):
+        hints["cms"] = args.cms
+    if getattr(args, "version", None):
+        hints["affected_version"] = args.version
+    if getattr(args, "endpoint", None):
+        hints["endpoint"] = args.endpoint
+    if getattr(args, "method", None):
+        hints["http_method"] = args.method
+    if getattr(args, "params", None):
+        hints["parameters"] = [p.strip() for p in args.params.split(",") if p.strip()]
+    if getattr(args, "sqli_param", None):
+        hints["sqli_param"] = args.sqli_param
+    if getattr(args, "keep_lab_on_failure", False):
+        hints["keep_lab_on_failure"] = True
+    if getattr(args, "functions", None):
+        hints["vulnerable_functions"] = [f.strip() for f in args.functions.split(",") if f.strip()]
+    if getattr(args, "table_name", None):
+        hints["table_name"] = args.table_name
+    if getattr(args, "column_name", None):
+        hints["column_name"] = args.column_name
+    if getattr(args, "id_column", None):
+        hints["id_column"] = args.id_column
+    if getattr(args, "burp_mcp_url", None):
+        from .workflows.burpmcp import BurpMCPError
+        from .workflows.genericverify import configure_burp_mcp
+        try:
+            configure_burp_mcp(args.burp_mcp_url)
+            colorlog.ok(f"conectado al servidor MCP de Burp en {args.burp_mcp_url} -- las "
+                       f"peticiones de los verificadores genericos pasaran por Burp")
+        except BurpMCPError as e:
+            colorlog.warn(f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones "
+                         f"directas", file=sys.stderr)
     inv = investigate_cve(args.cve, binary=getattr(args, "binary", "") or "",
-                          config=config, on_step=lambda m: print("  " + m), lang=config.lang,
-                          budget_s=float(getattr(args, "budget", 300) or 300))
-    print("\n" + render_investigation(inv, config.lang))
+                          config=config, on_step=lambda m: colorlog.line(m), lang=config.lang,
+                          budget_s=float(getattr(args, "budget", 300) or 300), hints=hints or None,
+                          use_cache=not getattr(args, "no_cache", False))
+    # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
+    # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
+    # SI usa embed_images=True (el default), esas son las que de verdad se pintan como <img>.
+    print("\n" + render_investigation(inv, config.lang, embed_images=False))
+    if getattr(args, "html", None):
+        from .report.html import render_investigation_page
+        md_full = render_investigation(inv, config.lang)
+        Path(args.html).write_text(
+            render_investigation_page(md_full, script=inv.developed_script, cve=args.cve,
+                                      lang=config.lang, poc_kind=inv.poc_kind))
+        _eprint(f"(HTML written to {args.html})")
+    if getattr(args, "json", None):
+        # el markdown/HTML SIEMPRE recorta los cuerpos de respuesta reales a unos cientos de
+        # caracteres (para que el informe sea legible) -- confirmado en vivo multiples veces hoy
+        # mismo: diagnosticar un negativo (CVE-2024-3552) exigio pedir comandos `grep` a mano
+        # dentro del contenedor porque la evidencia COMPLETA (listas enteras de intentos, cuerpos
+        # de respuesta sin recortar) nunca llegaba a salir del objeto Investigation. asdict()
+        # vuelca TODO tal cual esta, sin que render_investigation decida que mostrar y que omitir.
+        from dataclasses import asdict as _asdict
+        Path(args.json).write_text(json.dumps(_asdict(inv), indent=2, ensure_ascii=False))
+        _eprint(f"(full evidence JSON written to {args.json})")
+
+
+def _connect_shared_burp_mcp(args, context_note: str) -> None:
+    """Conecta una vez al MCP de Burp (si --burp-mcp-url se dio), compartido por TODAS las
+    investigaciones que vengan despues en el mismo proceso -- usado tanto por investigate-batch
+    (un lote fijo) como por investigate-watch (lotes sucesivos a medida que llegan CVEs nuevas
+    del canal vigilado)."""
+    if not getattr(args, "burp_mcp_url", None):
+        return
+    from .workflows.burpmcp import BurpMCPError
+    from .workflows.genericverify import configure_burp_mcp
+    try:
+        configure_burp_mcp(args.burp_mcp_url)
+        colorlog.ok(f"conectado al servidor MCP de Burp en {args.burp_mcp_url} -- compartido "
+                   f"por {context_note}")
+    except BurpMCPError as e:
+        colorlog.warn(f"no se pudo conectar a Burp ({e}) -- se sigue sin Burp, peticiones "
+                     f"directas", file=sys.stderr)
+
+
+def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: float,
+                                      out_dir: Path, html_dir, use_cache: bool):
+    """Nucleo compartido de investigate-batch e investigate-watch: lanza investigate_cves_batch
+    sobre `cve_ids`, escribe un informe por CVE en `out_dir` (y en `html_dir` si se da), imprime
+    el progreso en vivo y la tabla resumen al final. Devuelve los BatchItem resultantes."""
+    from .workflows.cve_agent import (investigate_cves_batch, render_batch_summary,
+                                      render_investigation)
+
+    colorlog.info(f"lanzando {len(cve_ids)} investigaciones con paralelismo {parallel}...")
+
+    def on_event(ev):
+        cve_id = ev["cve_id"]
+        if ev["type"] == "start":
+            colorlog.info(f"[{cve_id}] iniciando...")
+        elif ev["type"] == "step":
+            colorlog.line(f"[{cve_id}] {ev['message']}")
+        elif ev["type"] == "finish":
+            if ev["status"] == "error":
+                colorlog.error(f"[{cve_id}] ERROR ({ev['elapsed_s']:.0f}s): {ev['error']}")
+            else:
+                colorlog.ok(f"[{cve_id}] terminado ({ev['elapsed_s']:.0f}s)")
+
+    items = investigate_cves_batch(
+        cve_ids, config=config, lang=config.lang, budget_s=budget_s, parallel=parallel,
+        on_event=on_event, use_cache=use_cache)
+
+    for it in items:
+        if it.investigation is None:
+            continue
+        md = render_investigation(it.investigation, config.lang, embed_images=False)
+        (out_dir / f"{it.cve_id}.md").write_text(md)
+        # evidencia COMPLETA (sin recortar) junto al markdown -- mismo motivo que --json en
+        # 'investigate': el informe renderizado siempre trunca los cuerpos de respuesta reales,
+        # y en un lote no hay forma de pedir --json por CVE individualmente.
+        from dataclasses import asdict as _asdict
+        (out_dir / f"{it.cve_id}.json").write_text(
+            json.dumps(_asdict(it.investigation), indent=2, ensure_ascii=False))
+        if html_dir:
+            from .report.html import render_investigation_page
+            md_full = render_investigation(it.investigation, config.lang)
+            (html_dir / f"{it.cve_id}.html").write_text(
+                render_investigation_page(md_full, script=it.investigation.developed_script,
+                                          cve=it.cve_id, lang=config.lang,
+                                          poc_kind=it.investigation.poc_kind))
+
+    print("\n" + render_batch_summary(items, config.lang))
+    colorlog.info(f"informes individuales en {out_dir}/" +
+                 (f" y HTML en {html_dir}/" if html_dir else ""))
+    return items
+
+
+def cmd_investigate_batch(args, config):
+    """Lanza varias investigaciones de CVE EN PARALELO (ver investigate_cves_batch en
+    cve_agent.py), con un tope de concurrencia (--parallel) -- pensado para explorar varias CVEs
+    sin tener que abrir una terminal por cada una. Cada CVE es independiente: una fallando no
+    tumba el lote. Cada informe se escribe a --out-dir/<CVE-ID>.md (y .html en --html-dir si se
+    da), y al final se imprime una tabla resumen de todo el lote."""
+    _connect_shared_burp_mcp(args, "todas las investigaciones del lote")
+    out_dir = Path(getattr(args, "out_dir", None) or "./binoracle_batch_reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_dir = Path(args.html_dir) if getattr(args, "html_dir", None) else None
+    if html_dir:
+        html_dir.mkdir(parents=True, exist_ok=True)
+    parallel = int(getattr(args, "parallel", 2) or 2)
+    _run_investigate_batch_and_report(
+        args.cves, config, parallel, float(getattr(args, "budget", 300) or 300), out_dir,
+        html_dir, not getattr(args, "no_cache", False))
+
+
+def cmd_investigate_watch(args, config):
+    """Vigila un canal publico de Telegram que notifica CVEs nuevas en cuanto se publican (por
+    defecto @CVENotify, ver cvefeed.py) y, cada vez que aparece una mencion nueva, lanza
+    automaticamente el MISMO pipeline completo que investigate-batch sobre ella: codigo real
+    descargado, laboratorio Docker efimero, verificacion dinamica, capturas -- pensado para que
+    el desarrollo/verificacion de exploits arranque solo en cuanto se publica una CVE nueva, sin
+    tener que estar mirando el canal a mano.
+
+    Por defecto es GENERICO: procesa cualquier CVE que el canal mencione, de cualquier
+    tecnologia, no solo CMS -- investigate_cve() siempre desarrolla una hipotesis + PoC aunque
+    la clase no tenga verificacion dinamica automatica hoy (eso solo existe hoy para
+    missing-authorization/IDOR, SQLi, XXE, path-traversal y deserializacion en WordPress/
+    Drupal/Joomla, ver wpverify.py/drupalverify.py/joomlaverify.py), y ese desarrollo de exploit
+    es exactamente el objetivo de este comando. --cms-only activa el filtro inverso (solo
+    procesar las que tengan pinta de CMS), para cuando se quiere priorizar las que SI pueden
+    llegar a VERIFICADO de principio a fin y no gastar tiempo/Docker en el resto."""
+    import time
+    from .workflows.cvefeed import poll_new_cve_mentions
+
+    _connect_shared_burp_mcp(args, "todas las investigaciones que lance este watch")
+    out_dir = Path(getattr(args, "out_dir", None) or "./binoracle_batch_reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_dir = Path(args.html_dir) if getattr(args, "html_dir", None) else None
+    if html_dir:
+        html_dir.mkdir(parents=True, exist_ok=True)
+    parallel = int(getattr(args, "parallel", 2) or 2)
+    budget_s = float(getattr(args, "budget", 300) or 300)
+    use_cache = not getattr(args, "no_cache", False)
+    channel = getattr(args, "channel", None) or "CVENotify"
+    interval = float(getattr(args, "interval", 300) or 300)
+    cms_only = bool(getattr(args, "cms_only", False))
+
+    colorlog.info(f"vigilando el canal de Telegram @{channel} (sondeo cada {interval:.0f}s" +
+                 (", solo las de pinta CMS" if cms_only else ", TODAS las CVEs (generico)") +
+                 ", Ctrl+C para parar)...")
+    first_cycle = True
+    while True:
+        try:
+            mentions = poll_new_cve_mentions(channel)
+        except Exception as e:
+            colorlog.error(f"fallo sondeando @{channel} ({e}) -- se reintenta en el siguiente "
+                          f"ciclo", file=sys.stderr)
+            mentions = []
+
+        if cms_only and mentions:
+            skipped = [m for m in mentions if not m.cms_related]
+            mentions = [m for m in mentions if m.cms_related]
+            if skipped:
+                colorlog.warn(f"{len(skipped)} CVE(s) nueva(s) ignorada(s) (--cms-only activo, "
+                             f"sin pinta de CMS): " + ", ".join(m.cve_id for m in skipped))
+
+        if mentions:
+            colorlog.ok(f"{len(mentions)} CVE(s) nueva(s) en @{channel}: " +
+                       ", ".join(m.cve_id for m in mentions))
+            _run_investigate_batch_and_report(
+                [m.cve_id for m in mentions], config, parallel, budget_s, out_dir, html_dir,
+                use_cache)
+        elif not first_cycle:
+            colorlog.info(f"sin novedades relevantes en @{channel}")
+        first_cycle = False
+
+        if getattr(args, "once", False):
+            return
+        time.sleep(interval)
 
 
 def cmd_dataset(args, config):
@@ -699,6 +1142,9 @@ def cmd_kb(args, config):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="binoracle",
                                 description="Local, oracle-grounded LLM copilot for binary RE and exploitation.")
+    p.add_argument("--debug", action="store_true",
+                  help="on an unexpected error, show the full Python traceback instead of a "
+                       "one-line summary (useful for reporting a bug)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("doctor", help="show oracle + LLM availability")
@@ -758,6 +1204,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("binary")
     g.add_argument("-f", "--filter", help="substring/regex, e.g. 'pop rdi'")
     g.set_defaults(func=cmd_gadgets)
+
+    ar2 = sub.add_parser("arsenal", help="ROP arsenal: best gadget per arg reg, syscall, pivot, write, ret2csu, one_gadget")
+    ar2.add_argument("binary", help="path to the ELF")
+    ar2.add_argument("-o", "--output")
+    ar2.set_defaults(func=cmd_arsenal)
 
     cy = sub.add_parser("cyclic", help="De Bruijn pattern generate / offset find")
     cy.add_argument("binary", nargs="?", help="optional (not needed)")
@@ -833,6 +1284,117 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
     sv.set_defaults(func=cmd_serve)
 
+    mc = sub.add_parser("mcp", help="run the binoracle MCP server (stdio) so any agent can drive its tools")
+    mc.set_defaults(func=cmd_mcp)
+
+    go = sub.add_parser("go", help="read a Go binary's build info (version, modules, build settings) statically")
+    go.add_argument("binary")
+    go.add_argument("-o", "--output")
+    go.set_defaults(func=cmd_go)
+
+    co = sub.add_parser("core", help="inspect an ELF core dump: signal, per-thread registers, mappings")
+    co.add_argument("core", help="path to the core dump (ELF ET_CORE)")
+    co.add_argument("-o", "--output")
+    co.set_defaults(func=cmd_core)
+
+    el = sub.add_parser("elf", help="offline ELF layout + static mitigation candidates (sections/segments/symbols)")
+    el.add_argument("binary")
+    el.add_argument("-o", "--output")
+    el.set_defaults(func=cmd_elf)
+
+    wa = sub.add_parser("wasm", help="inspect a WebAssembly module statically (sections, types, imports, exports)")
+    wa.add_argument("binary", help="path to the .wasm module")
+    wa.add_argument("-o", "--output")
+    wa.set_defaults(func=cmd_wasm)
+
+    sq = sub.add_parser("sqlite", help="inspect a SQLite database read-only (schema + bounded row sample)")
+    sq.add_argument("binary", help="path to the .sqlite/.db file")
+    sq.add_argument("-o", "--output")
+    sq.set_defaults(func=cmd_sqlite)
+
+    ev = sub.add_parser("evm", help="inspect EVM bytecode statically (selectors, opcodes, Solidity metadata)")
+    ev.add_argument("binary", help="path to the EVM bytecode (raw or hex)")
+    ev.add_argument("-o", "--output")
+    ev.set_defaults(func=cmd_evm)
+
+    hr = sub.add_parser("har", help="inspect a saved HAR network capture (requests, hosts, exposed secrets)")
+    hr.add_argument("binary", help="path to the .har file")
+    hr.add_argument("-o", "--output")
+    hr.set_defaults(func=cmd_har)
+
+    jv = sub.add_parser("java", help="inspect a Java JAR or .class statically (manifest, classes, framework, bytecode version)")
+    jv.add_argument("binary", help="path to the .jar or .class")
+    jv.add_argument("-o", "--output")
+    jv.set_defaults(func=cmd_java)
+
+    se = sub.add_parser("secrets", help="scan ANY artifact for embedded IOCs/secrets (URLs, creds, keys, high-entropy tokens)")
+    se.add_argument("binary", help="path to any file")
+    se.add_argument("-o", "--output")
+    se.set_defaults(func=cmd_secrets)
+
+    ar = sub.add_parser("asar", help="inspect an Electron ASAR archive statically (file tree, package.json, entry point)")
+    ar.add_argument("binary", help="path to the .asar archive")
+    ar.add_argument("-o", "--output")
+    ar.set_defaults(func=cmd_asar)
+
+    pl = sub.add_parser("plist", help="inspect an Apple property-list (Info.plist) statically (bundle id, usage keys, URL schemes)")
+    pl.add_argument("binary", help="path to the .plist file (binary bplist00 or XML)")
+    pl.add_argument("-o", "--output")
+    pl.set_defaults(func=cmd_plist)
+
+    dn = sub.add_parser("dotnet", help="inspect a .NET/CLI managed assembly statically (metadata, tables, names)")
+    dn.add_argument("binary", help="path to the managed .dll/.exe")
+    dn.add_argument("-o", "--output")
+    dn.set_defaults(func=cmd_dotnet)
+
+    mo = sub.add_parser("macho", help="inspect a Mach-O (macOS) statically (arch, segments, dylibs, mitigations)")
+    mo.add_argument("binary", help="path to the Mach-O binary")
+    mo.add_argument("-o", "--output")
+    mo.set_defaults(func=cmd_macho)
+
+    ak = sub.add_parser("apk", help="inspect an Android APK statically (DEX, native libs, framework, signing)")
+    ak.add_argument("binary", help="path to the .apk file")
+    ak.add_argument("-o", "--output")
+    ak.set_defaults(func=cmd_apk)
+
+    pei = sub.add_parser("pe", help="inspect a Windows PE statically (mitigations, sections, imports, capabilities)")
+    pei.add_argument("binary", help="path to the .exe/.dll")
+    pei.add_argument("-o", "--output")
+    pei.set_defaults(func=cmd_pe)
+
+    jb = sub.add_parser("jeb", help="connect to a caller-started JEB MCP server (external engine); list/call its tools")
+    jb.add_argument("--url", help="JEB MCP endpoint (else $BINORACLE_JEB_MCP_URL)")
+    jb.add_argument("--call", help="tool name to call (omit to list tools)")
+    jb.add_argument("--arguments", help="JSON object of arguments for --call")
+    jb.add_argument("-o", "--output")
+    jb.set_defaults(func=cmd_jeb)
+
+    jsp = sub.add_parser("js", help="inspect JavaScript/Electron statically (source maps, imports, IPC/Electron boundaries, native add-ons)")
+    jsp.add_argument("binary", help="path to a .js, a .js.map, or an extracted app directory")
+    jsp.add_argument("-o", "--output")
+    jsp.set_defaults(func=cmd_js)
+
+    dy = sub.add_parser("dynamic", help="RUNTIME analysis (separate from the static core): adb device / frida / live browser — authorized targets only, caller-supplied")
+    dy.add_argument("kind", choices=["adb-devices", "adb-packages", "adb-processes", "adb-logcat",
+                                     "adb-getprop", "adb-apk-path", "frida-devices", "frida-ps", "browser"])
+    dy.add_argument("target", nargs="?", help="URL (browser) or package name (adb-apk-path)")
+    dy.add_argument("-s", "--serial", help="adb device serial")
+    dy.add_argument("--lines", type=int, help="adb-logcat: number of lines")
+    dy.add_argument("--screenshot", help="browser: save a full-page screenshot to this path")
+    dy.add_argument("-o", "--output")
+    dy.set_defaults(func=cmd_dynamic)
+
+    ct = sub.add_parser("caller-tool", help="optional caller-supplied integrations (wat/pcap/firmware); degrade if tool absent")
+    ct.add_argument("kind", choices=["wat", "pcap", "firmware", "one_gadget", "capinfos", "manifest", "jadx", "ghidra"])
+    ct.add_argument("binary", help="path to the artifact (.wasm / .pcap / firmware / libc / .apk / native binary)")
+    ct.add_argument("-o", "--output")
+    ct.set_defaults(func=cmd_caller_tool)
+
+    idf = sub.add_parser("identify", help="detect any artifact's format and route it to the right reader")
+    idf.add_argument("binary", help="path to any file")
+    idf.add_argument("-o", "--output")
+    idf.set_defaults(func=cmd_identify)
+
     ap = sub.add_parser("autopoc", help="auto-generate + verify a ret2win exploit in a sandbox")
     ap.add_argument("binary")
     ap.add_argument("--offset", type=int, help="offset to return address (else angr finds it)")
@@ -892,6 +1454,9 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--no-verify", action="store_true", help="skip sandbox verification (faster)")
     tp.add_argument("--budget", type=float, default=240,
                     help="per-binary time budget in seconds (skip if exceeded; default 240)")
+    tp.add_argument("--export-playbook", nargs="?", const="", default=None, metavar="PATH",
+                    help="write a curated RAG playbook of the VERIFIED techniques (default path: "
+                         "binoracle/kb/verified-playbook.md) so the learned knowledge ships")
     tp.set_defaults(func=cmd_train)
 
     dp = sub.add_parser("dataset", help="build the SFT JSONL to fine-tune an LLM to develop exploits "
@@ -922,16 +1487,181 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--binary", help="vulnerable binary to actually try + verify against")
     ip.add_argument("--budget", type=float, default=300,
                     help="sandbox verification budget in seconds (default 300)")
+    ip.add_argument("--vuln-class", help="known vulnerability class (e.g. missing-authorization, "
+                                         "idor, sqli, rce, stack-overflow...) when the advisory text "
+                                         "already states it; lets the web/HTTP-PoC path trigger even "
+                                         "without NVD access or a local LLM to classify the text")
+    ip.add_argument("--source", help="known source for a web CVE: a WordPress.org plugin slug "
+                                     "(e.g. divi-form-builder), a Drupal.org module machine name "
+                                     "(e.g. webform), a git URL, or a local/remote .zip/.tar.gz; "
+                                     "overrides the LLM's guess")
+    ip.add_argument("--cms", choices=["wordpress", "drupal"],
+                    help="disambiguates --source when it could be either a WordPress.org slug "
+                         "or a Drupal.org module machine name (e.g. a single word with no "
+                         "hyphen/underscore); without it, binoracle guesses from the slug's "
+                         "shape and tries the other one too if the first guess fails")
+    ip.add_argument("--version", help="affected version for --source (e.g. 5.1.8)")
+    ip.add_argument("--endpoint", help="exact vulnerable endpoint/route for a web CVE")
+    ip.add_argument("--method", help="HTTP method for --endpoint (default POST)")
+    ip.add_argument("--params", help="comma-separated request parameter names (e.g. user_id,email,pass)")
+    ip.add_argument("--sqli-param", help="for --vuln-class sqli: the exact parameter name to "
+                                         "inject into, overriding the automatic guess -- needed "
+                                         "when --params also carries OTHER required parameters "
+                                         "(e.g. a real directory/resource id the endpoint "
+                                         "validates before reaching the vulnerable sink) whose "
+                                         "name would otherwise be picked over the real "
+                                         "injectable one by the generic id/search/sort heuristic")
+    ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
+                                        "against the fetched source (e.g. update_user,handle_register_submission)")
+    ip.add_argument("--table-name", help="for WordPress deserialization: the plugin's own DB "
+                                         "table where the attacker-controlled value is stored "
+                                         "via raw SQL ($wpdb->insert/update, not the Options API) "
+                                         "-- when given together with --column-name, triggers the "
+                                         "two-step store+force-unserialize() verifier instead of "
+                                         "the direct one (e.g. wp_myplugin_tokens)")
+    ip.add_argument("--column-name", help="column within --table-name holding the serialized value")
+    ip.add_argument("--id-column", help="primary-key column of --table-name used to pick the "
+                                        "most recently stored row (default: id)")
+    ip.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
+                                           "(github.com/PortSwigger/mcp-server, SSE URL from its "
+                                           "MCP tab, e.g. http://127.0.0.1:9876) so every "
+                                           "request the generic (CMS-agnostic) verifiers send "
+                                           "shows up in Burp's Proxy/Repeater -- requires the "
+                                           "extension loaded and enabled in Burp first")
+    ip.add_argument("-o", "--html", help="also export the full report (including any real "
+                                         "screenshots from a dynamic verification) as a standalone "
+                                         "HTML file at this path -- the terminal output cannot "
+                                         "render images, only this file can")
+    ip.add_argument("--json", help="also dump the COMPLETE Investigation object as JSON at this "
+                                   "path -- unlike the markdown/HTML report (which truncates every "
+                                   "response body to a few hundred chars for readability), this has "
+                                   "every captured attempt/response in full; useful to diagnose a "
+                                   "dynamic-verification negative without re-running anything")
+    ip.add_argument("--no-cache", action="store_true",
+                    help="force a fresh investigation even if this exact CVE id was already "
+                         "investigated before and its result is cached locally (ignored with "
+                         "--binary or any of --source/--endpoint/etc., which never use the "
+                         "cache) -- useful after a binoracle bug fix that should change the "
+                         "outcome, since the cache has no time-based expiry otherwise")
+    ip.add_argument("--keep-lab-on-failure", action="store_true",
+                    help="WordPress SQLi only: if the automatic dynamic verification does NOT "
+                         "confirm, leave the ephemeral WordPress+MySQL Docker lab ALIVE (no "
+                         "retry, since a retry would destroy it to spin up a new one) instead "
+                         "of tearing it down -- useful when the target silently swallows the "
+                         "real MySQL error (e.g. an AJAX handler that catches it and always "
+                         "returns clean JSON) and you need to inspect wp-content/debug.log "
+                         "yourself inside the container. The report gives the lab's base URL "
+                         "and admin credentials; you are responsible for tearing it down "
+                         "afterwards (docker network/volume/container matching the printed tag)")
     ip.set_defaults(func=cmd_investigate)
+
+    ipb = sub.add_parser("investigate-batch", help="run several 'investigate's IN PARALLEL "
+                                                    "(bounded concurrency) -- same pipeline as a "
+                                                    "single investigate (real source, Docker lab, "
+                                                    "dynamic verification, screenshots), just "
+                                                    "several CVEs at once instead of one terminal "
+                                                    "per CVE")
+    ipb.add_argument("cves", nargs="+", help="CVE ids to investigate (e.g. CVE-2024-1071 "
+                                             "CVE-2024-3552 CVE-2025-9501)")
+    ipb.add_argument("--parallel", type=int, default=2,
+                     help="how many investigations run at the same time (default 2, hard cap 6 "
+                          "-- each one can spin up its own WordPress+MySQL Docker lab, so more "
+                          "than a few at once is more likely to exhaust your machine's RAM/CPU "
+                          "than to finish faster)")
+    ipb.add_argument("--budget", type=float, default=300,
+                     help="sandbox verification budget in seconds, per CVE (default 300)")
+    ipb.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
+                                            "once, shared by every investigation in the batch "
+                                            "(same flag as 'investigate', see its help)")
+    ipb.add_argument("--out-dir", default="./binoracle_batch_reports",
+                     help="directory to write one <CVE-ID>.md report per CVE into (default "
+                          "./binoracle_batch_reports, created if missing)")
+    ipb.add_argument("--html-dir", help="also export each report as <CVE-ID>.html (with any real "
+                                        "screenshots) into this directory")
+    ipb.add_argument("--no-cache", action="store_true",
+                     help="force a fresh investigation for every CVE in the batch even if "
+                          "already cached locally from a previous run (same flag as "
+                          "'investigate', see its help)")
+    ipb.set_defaults(func=cmd_investigate_batch)
+
+    ipw = sub.add_parser("investigate-watch", help="watch a public Telegram CVE feed (default "
+                                                   "@CVENotify) and automatically run the same "
+                                                   "full pipeline as investigate-batch on every "
+                                                   "new CVE it posts -- so exploit development "
+                                                   "starts on its own as soon as a CVE drops")
+    ipw.add_argument("--channel", default="CVENotify",
+                     help="Telegram channel to watch, without the @ (default CVENotify) -- read "
+                          "via its public web preview (t.me/s/<channel>), no bot token needed")
+    ipw.add_argument("--interval", type=float, default=300,
+                     help="seconds between polls of the channel (default 300 = 5 min)")
+    ipw.add_argument("--once", action="store_true",
+                     help="poll exactly once and exit instead of looping forever -- useful to "
+                          "test the feed or to run this from your own cron/systemd timer instead "
+                          "of leaving it running")
+    ipw.add_argument("--cms-only", action="store_true",
+                     help="only auto-investigate CVEs that look CMS-related (WordPress/Drupal/"
+                          "Joomla) -- by default this watch is generic and processes EVERY CVE "
+                          "the channel mentions, developing a hypothesis + PoC for any class; "
+                          "CMS-related ones are simply the only ones that can additionally "
+                          "reach a dynamically VERIFIED result today (see wpverify.py/"
+                          "drupalverify.py/joomlaverify.py). Pass this to skip the rest and save "
+                          "time/Docker on CVEs that won't reach that automatic verification")
+    ipw.add_argument("--parallel", type=int, default=2,
+                     help="how many investigations run at the same time per batch of new CVEs "
+                          "(default 2, hard cap 6 -- same caveat as investigate-batch, see its "
+                          "help)")
+    ipw.add_argument("--budget", type=float, default=300,
+                     help="sandbox verification budget in seconds, per CVE (default 300)")
+    ipw.add_argument("--burp-mcp-url", help="connect to the official Burp Suite MCP extension "
+                                            "once, shared by every investigation this watch "
+                                            "launches (same flag as 'investigate', see its help)")
+    ipw.add_argument("--out-dir", default="./binoracle_batch_reports",
+                     help="directory to write one <CVE-ID>.md report per CVE into (default "
+                          "./binoracle_batch_reports, created if missing)")
+    ipw.add_argument("--html-dir", help="also export each report as <CVE-ID>.html (with any real "
+                                        "screenshots) into this directory")
+    ipw.add_argument("--no-cache", action="store_true",
+                     help="force a fresh investigation even for a CVE already cached locally "
+                          "(same flag as 'investigate', see its help)")
+    ipw.set_defaults(func=cmd_investigate_watch)
 
     return p
 
 
 def main(argv=None):
+    # Si no se da argv explicito, usa la captura temprana (_ARGV, arriba) en vez de releer
+    # sys.argv aqui: para cuando esta funcion se ejecuta, los imports de pwntools de este mismo
+    # modulo ya han mutado sys.argv (ver la nota junto a _ARGV).
+    if argv is None:
+        argv = _ARGV
     parser = build_parser()
     args = parser.parse_args(argv)
     config = load_config()
-    return args.func(args, config)
+    try:
+        return args.func(args, config)
+    except KeyboardInterrupt:
+        # Ctrl+C a medio comando: nunca un traceback crudo. Los laboratorios Docker efimeros
+        # (wpverify.py/drupalverify.py/joomlaverify.py) ya envuelven TODO su trabajo en
+        # try/finally con lab.teardown() -- un KeyboardInterrupt, igual que cualquier otra
+        # excepcion, dispara ese finally (Python no distingue BaseException de Exception para
+        # efectos de un bloque finally), asi que el laboratorio se limpia solo salvo que el
+        # propio proceso muera de golpe (dos Ctrl+C muy rapidos, kill -9...). Si algo quedara
+        # suelto de todas formas, 'docker ps -a' lo mostraria -- limpiar a mano con
+        # 'docker rm -f <nombre>' y 'docker network rm <nombre>'.
+        print("\nabortado por el usuario (Ctrl+C). Si habia un laboratorio Docker efimero en "
+             "marcha, se desmonta solo; si 'docker ps -a' muestra algo con el prefijo "
+             "'binoracle-' despues de esto, limpialo a mano con 'docker rm -f' / "
+             "'docker network rm'.", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        # p.ej. 'binoracle ... | head': el otro extremo del pipe se cerro, no es un error real.
+        return 0
+    except Exception as e:
+        if args.debug:
+            raise
+        print(f"\nerror inesperado: {e} (pasa --debug para ver el traceback completo)",
+             file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

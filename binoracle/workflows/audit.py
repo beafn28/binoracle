@@ -78,15 +78,21 @@ _OVERFLOW_SINKS = ("read", "gets", "fgets", "scanf", "isoc99_scanf", "strcpy", "
 
 def _decompile_vuln_funcs(reg, binary, llm, limit: int = 2):
     """Decompila y anota las funciones que llaman a un sink de overflow (la superficie real).
-    Si no hay ninguna, cae a main. Devuelve lista de DecompiledFunc o None."""
+    Si no hay ninguna, cae a main. Devuelve lista de DecompiledFunc o None.
+
+    Bug real encontrado en vivo (mismo que reachability._sink_callsites, ver su fix): `axtj @
+    sym.imp.<sink>` para un simbolo que el binario no importa puede colgar r2 indefinidamente --
+    cada llamada a r.cmd() aqui pasa por r2session.cmd_timeout_on() en vez del `r.cmd()` crudo."""
     from .decompile import decompile_explain
+    from ..oracles.r2session import cmd_timeout_on
     funcs = []
     try:
         import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        r = r2pipe.open(binary, flags=["-2"])
+        cmd_timeout_on(r, "aaa", 180.0)
         import json as _j
         for sink in _OVERFLOW_SINKS:
-            xr = r.cmd(f"axtj @ sym.imp.{sink}") or ""
+            xr = cmd_timeout_on(r, f"axtj @ sym.imp.{sink}", 20.0)
             try:
                 for x in _j.loads(xr) if xr.strip() else []:
                     fn = x.get("fcn_name")
@@ -107,10 +113,29 @@ def _decompile_vuln_funcs(reg, binary, llm, limit: int = 2):
     return out or None
 
 
+def _is_apk(path: str) -> bool:
+    """True si el fichero es un APK (ZIP con classes.dex / AndroidManifest.xml)."""
+    try:
+        if path.lower().endswith(".apk"):
+            return True
+        import zipfile
+        if not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+        return any(n == "AndroidManifest.xml" or n.endswith(".dex") for n in names)
+    except Exception:
+        return False
+
+
 def run_audit(binary: str, llm, config, store=None, on_step=None) -> AgentResult:
-    """Auditoria autonoma. Si Ghidra + el plugin estan instalados y no hay servidor arriba, binoracle
-    ARRANCA el servidor Ghidra headless automaticamente para este binario (decompilacion grado Ghidra
-    en recon e informe) y lo APAGA al terminar. Si falta algo, se sigue con r2 (fallback)."""
+    """Auditoria autonoma. Enruta por tipo: un APK va a la auditoria ANDROID (manifest + Java
+    decompilado + patrones inseguros), un ELF/PE/Mach-O al desarrollo de exploits de memoria.
+    Si Ghidra + el plugin estan instalados y no hay servidor arriba, binoracle ARRANCA el servidor
+    Ghidra headless automaticamente para este binario y lo APAGA al terminar; si falta, sigue con r2."""
+    if _is_apk(binary):
+        from .androidaudit import run_android_audit
+        return run_android_audit(binary, llm=llm, config=config, store=store, on_step=on_step)
     _gh = None
     try:
         from ..oracles import ghidra_server
@@ -171,7 +196,7 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
         # Analisis dinamico real: ejecuta el binario en el sandbox e intercepta red/ficheros/exec
         # (LD_PRELOAD). Lo observado es comportamiento VERIFICADO en ejecucion. Best-effort.
         try:
-            from .dynamic import dynamic_trace, dynamic_findings
+            from .dynamictrace import dynamic_trace, dynamic_findings
             dt = dynamic_trace(binary, stdin=b"A" * 64, timeout=8)
             if dt.ok:
                 dynf = dynamic_findings(dt, lang=_lang)
@@ -315,6 +340,27 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             if store:
                 store.add_finding(fnd)
 
+        # Canary + gift but plain ret2win did not verify (a stack canary stops the linear
+        # overflow): try the canary-LEAK bypass -- leak the canary via a %s echo, then overflow
+        # past it to win(). Only when there is a win() and nothing is verified yet.
+        if not _verified_now() and find_win(binary) is not None:
+            try:
+                from .autocanary import autocanary
+                rc = autocanary(binary)
+            except Exception as e:
+                rc = {"note": f"error: {e}"}
+            if rc.get("verified"):
+                res.ledger.record(res.steps + 2, "try_canary (backstop)",
+                                  "autocanary (sandbox-verified)",
+                                  rc.get("detail") or rc.get("output", ""))
+                res.answer += ("\n\n---\n\n### SHELL VERIFICADA via bypass de canary (backstop)\n"
+                               f"{rc.get('detail','')}. Fuga del stack canary + overflow a win() "
+                               "ejecutado en sandbox. [src: try_canary]")
+                _add_verified("Exploit bypass de stack canary verificado", rc.get("detail", ""),
+                              f"{rc.get('detail','')}\n{rc.get('output','')}",
+                              "Canary filtrado por un %s y reescrito; overflow a win() en sandbox.",
+                              "No imprimir el buffer con %s (fuga del canary); PIE + full RELRO.")
+
         tried = []   # (label, reason) of backstop exploits attempted but not verified
         if not _verified_now() and find_win(binary) is None:
             from .autopoc import autorop
@@ -383,9 +429,13 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
                 res.ledger.record(res.steps + 6, "try_heap (backstop)",
                                   "autoheap (sandbox-verified)",
                                   rh.get("output") or rh.get("detail") or "")
+                menu = rh.get("menu") or {}
+                menu_txt = (f" Menu detectado: new={menu.get('new')} free={menu.get('free')} "
+                            f"edit={menu.get('edit')} show={menu.get('show')} "
+                            f"prompt={menu.get('prompt')!r}." if menu else "")
                 res.answer += (f"\n\n---\n\n### SHELL VERIFICADA via heap (tcache-UAF, backstop)\n"
                                f"{rh.get('detail','')}. Envenenamiento de tcache + free@GOT=win "
-                               f"ejecutado en sandbox: shell obtenida. [src: try_heap]")
+                               f"ejecutado en sandbox: shell obtenida.{menu_txt} [src: try_heap]")
                 _add_verified("Exploit heap (tcache-UAF) a shell verificado", rh.get("detail", ""),
                               f"{rh.get('detail','')}\n{rh.get('output','')}",
                               "tcache poisoning + free@GOT=win ejecutado en sandbox: shell obtenida.",

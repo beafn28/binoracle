@@ -22,6 +22,7 @@ def test_retrieval_is_relevant():
         "execve syscall rop chain static binary": ("execve",),
         "ret2win gift win function jump no leak": ("ret2win", "win"),
         "double free tcache poisoning": ("tcache",),
+        "tcache key clear zeroes GOT neighbor malloc free@GOT win": ("key", "got"),
         "use after free vtable dangling object": ("vtable", "use", "uaf"),
         "leak libc puts then call system shell": ("libc", "system"),
         "commit_creds prepare_kernel_cred modprobe": ("commit_creds", "modprobe"),

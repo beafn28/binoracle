@@ -57,9 +57,14 @@ class AngrOracle(Oracle):
         activos, se quedaba corriendo minuto tras minuto (CPU al 100%, sin avisar de nada) en vez de
         devolver un resultado acotado. Mismo patron de fallo que el `pdg` de r2 sin timeout
         (r2session.cmd_timeout): un oraculo grounded no debe poder colgar el pipeline entero.
-        Ahora usa el mismo bucle con deadline + control de explosion de estados que ya usaba
-        reachability.find_input_to() para el mismo problema, en vez de una llamada bloqueante
-        unica."""
+
+        El bucle con deadline+tope de estados (ver `_reachable_impl`) solo comprueba el reloj
+        ENTRE llamadas a `simgr.explore(...)` -- si una SOLA llamada se bloquea mucho mas de lo
+        normal (resolucion de restricciones dura, confirmado en vivo: un step que deberia tardar
+        ~1s tardo mas de 2 HORAS bajo throttling de CPU severo), ese bucle no puede interrumpirla
+        y budget_s se vuelve una cota blanda. Por eso la busqueda real corre en un proceso HIJO
+        (fork) con un deadline DURO: si sigue vivo tras budget_s + margen, se MATA en vez de
+        colgar el proceso llamador."""
         try:
             target = int(str(addr), 0)
         except ValueError:
@@ -73,54 +78,93 @@ class AngrOracle(Oracle):
                         avoid_list.append(int(a, 0))
                     except ValueError:
                         pass
+        import multiprocessing as mp
         try:
-            proj = self._project()
-            # rebasa target/avoid del espacio de r2 (un PIE se reporta como si cargase en base 0,
-            # p.ej. un sink en 0x11a6) al espacio de angr (que SIEMPRE carga en su propia base fija,
-            # tipicamente 0x400000) -- mismo bug ya encontrado y arreglado en reachability.py:
-            # sin esto, `target` caia fuera del rango de direcciones cargado y explore() NUNCA podia
-            # tener exito en NINGUN binario PIE (que es el modo de compilacion por defecto hoy en
-            # dia), asi que auto_verify jamas promocionaba un hallazgo de grounded a verified ahi.
-            if proj.loader.main_object.pic:
-                base = proj.loader.main_object.mapped_base or 0
-                if target < base:
-                    target += base
-                avoid_list = [(a + base if a < base else a) for a in avoid_list]
-            state = proj.factory.full_init_state(
-                stdin=angr.SimFileStream if hasattr(angr, "SimFileStream") else None
-            ) if False else proj.factory.entry_state()
-            simgr = proj.factory.simulation_manager(state)
-            deadline = time.time() + budget_s
-            while time.time() < deadline:
-                if not simgr.active:
-                    break
-                simgr.explore(find=target, avoid=avoid_list or None, n=1, num_find=1)
-                if simgr.found:
-                    break
-                # controla la explosion de estados (p.ej. un bucle en el binario que multiplica
-                # caminos activos sin limite): recorta a los primeros `max_active`.
-                if len(simgr.active) > max_active:
-                    simgr.active[:] = simgr.active[:max_active]
-                if not simgr.active:
-                    break
-            if simgr.found:
-                found = simgr.found[0]
-                try:
-                    concrete = found.posix.dumps(0)
-                    shown = concrete[:200]
-                    inp = repr(shown)
-                except Exception:
-                    inp = "(reachable; input not recoverable)"
-                return ToolResult(
-                    True, f"angr: explore(find={hex(target)})",
-                    f"REACHABLE from entry.\nconcrete stdin that reaches it: {inp}",
-                    meta={"reachable": True, "addr": hex(target)},
-                )
+            ctx = mp.get_context("fork")
+        except ValueError:
+            ctx = mp.get_context()
+        q = ctx.Queue()
+        p = ctx.Process(target=_reachable_worker,
+                        args=(self.binary, target, avoid_list, budget_s, max_active, q))
+        p.start()
+        p.join(budget_s + 30.0)
+        if p.is_alive():
+            p.terminate()
+            p.join(5.0)
+            if p.is_alive():
+                p.kill()
+                p.join()
             return ToolResult(
                 True, f"angr: explore(find={hex(target)})",
-                f"NOT reachable within budget ({budget_s:.0f}s; deadended="
-                f"{len(simgr.deadended)}, active={len(simgr.active)}).",
+                f"NOT reachable within budget ({budget_s:.0f}s; proceso forzado a terminar, "
+                f"el budget_s pedido era una cota dura).",
                 meta={"reachable": False, "addr": hex(target)},
             )
-        except Exception as e:
-            return ToolResult(False, "angr", "", error=f"angr error: {e}")
+        try:
+            return q.get_nowait()
+        except Exception:
+            return ToolResult(False, "angr", "",
+                              error="angr: el proceso termino sin devolver resultado")
+
+
+def _reachable_impl(binary: str, target: int, avoid_list: list, budget_s: float,
+                    max_active: int) -> ToolResult:
+    """Cuerpo real de la busqueda, pensado para correr dentro del proceso hijo que levanta
+    `AngrOracle._reachable` -- construye su PROPIO Project (no puede compartir el `self._proj`
+    cacheado del proceso padre al otro lado de un fork+exploracion larga)."""
+    try:
+        proj = angr.Project(binary, auto_load_libs=False)
+        # rebasa target/avoid del espacio de r2 (un PIE se reporta como si cargase en base 0,
+        # p.ej. un sink en 0x11a6) al espacio de angr (que SIEMPRE carga en su propia base fija,
+        # tipicamente 0x400000) -- mismo bug ya encontrado y arreglado en reachability.py: sin
+        # esto, `target` caia fuera del rango de direcciones cargado y explore() NUNCA podia
+        # tener exito en NINGUN binario PIE (que es el modo de compilacion por defecto hoy en
+        # dia), asi que auto_verify jamas promocionaba un hallazgo de grounded a verified ahi.
+        if proj.loader.main_object.pic:
+            base = proj.loader.main_object.mapped_base or 0
+            if target < base:
+                target += base
+            avoid_list = [(a + base if a < base else a) for a in avoid_list]
+        state = proj.factory.entry_state()
+        simgr = proj.factory.simulation_manager(state)
+        deadline = time.time() + budget_s
+        while time.time() < deadline:
+            if not simgr.active:
+                break
+            simgr.explore(find=target, avoid=avoid_list or None, n=1, num_find=1)
+            if simgr.found:
+                break
+            # controla la explosion de estados (p.ej. un bucle en el binario que multiplica
+            # caminos activos sin limite): recorta a los primeros `max_active`.
+            if len(simgr.active) > max_active:
+                simgr.active[:] = simgr.active[:max_active]
+            if not simgr.active:
+                break
+        if simgr.found:
+            found = simgr.found[0]
+            try:
+                concrete = found.posix.dumps(0)
+                shown = concrete[:200]
+                inp = repr(shown)
+            except Exception:
+                inp = "(reachable; input not recoverable)"
+            return ToolResult(
+                True, f"angr: explore(find={hex(target)})",
+                f"REACHABLE from entry.\nconcrete stdin that reaches it: {inp}",
+                meta={"reachable": True, "addr": hex(target)},
+            )
+        return ToolResult(
+            True, f"angr: explore(find={hex(target)})",
+            f"NOT reachable within budget ({budget_s:.0f}s; deadended="
+            f"{len(simgr.deadended)}, active={len(simgr.active)}).",
+            meta={"reachable": False, "addr": hex(target)},
+        )
+    except Exception as e:
+        return ToolResult(False, "angr", "", error=f"angr error: {e}")
+
+
+def _reachable_worker(binary, target, avoid_list, budget_s, max_active, q) -> None:
+    try:
+        q.put(_reachable_impl(binary, target, avoid_list, budget_s, max_active))
+    except Exception as e:
+        q.put(ToolResult(False, "angr", "", error=f"angr error: {e}"))

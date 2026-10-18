@@ -7,9 +7,9 @@
 ## 0. Startup
 
 ```text
-□ scope.md: offline sample path or authorized device/target machine
-□ tool-index: file/strings/r2/ida/frida etc actual paths
-□ role: cre (ops/role-map)
+- scope.md: offline sample path or authorized device/target machine
+- tool-index: file/strings/r2/ida/frida etc actual paths
+- role: cre (ops/role-map)
 ```
 
 ## 0.1 Transition Handoff (Decision Delta)
@@ -41,15 +41,15 @@ Typical conflict: User says on shellcode sample "skip deobfuscation and look at 
 ## Triage (5–15 Minutes · Mandatory Starting Point)
 
 ```text
-□ Calculate sample hash (MD5/SHA256) → Unique ID
-□ Identify file type: EXE / DLL / SYS / ELF / Mach-O / .NET / Script (bat/ps1/vba) / JS / APK, etc.
-□ Non-PE/Script/APK/Driver-specific: See §3.4 and `references/nonpe-format-cookbook.md` (U–AV)
-□ File / DIE / Entropy / Shell characteristics (PEiD / DIE / Exeinfo, etc.)
-□ Architecture: x86 / x64 / ARM; Compilation language clues (VC++ / Delphi / .NET / Go / Rust)
-□ Packing type clues: UPX / ASPack / VMProtect / Themida / Unknown obfuscation
-□ Strings / rabin2 -z for leaks
-□ MUST import/export anchors (see below "Import Table Hard Loops and Equivalent Paths") if not PE/Script/APK/Driver-specific; If user is bypassing shell, proceed to §0.5 first.
-□ Output: E-triage (MUST include imports or equivalent anchor summary with quality annotation where applicable) + Hypothesis list
+- Calculate sample hash (MD5/SHA256) → Unique ID
+- Identify file type: EXE / DLL / SYS / ELF / Mach-O / .NET / Script (bat/ps1/vba) / JS / APK, etc.
+- Non-PE/Script/APK/Driver-specific: See §3.4 and `references/nonpe-format-cookbook.md` (U–AV)
+- File / DIE / Entropy / Shell characteristics (PEiD / DIE / Exeinfo, etc.)
+- Architecture: x86 / x64 / ARM; Compilation language clues (VC++ / Delphi / .NET / Go / Rust)
+- Packing type clues: UPX / ASPack / VMProtect / Themida / Unknown obfuscation
+- Strings / rabin2 -z for leaks
+- MUST import/export anchors (see below "Import Table Hard Loops and Equivalent Paths") if not PE/Script/APK/Driver-specific; If user is bypassing shell, proceed to §0.5 first.
+- Output: E-triage (MUST include imports or equivalent anchor summary with quality annotation where applicable) + Hypothesis list
 ```
 
 **Transition Gates (Triage → Static/Dynamic)**: Before recording imports in E-triage and summarizing them **or** if there are no valid equivalent anchors, MUST NOT proceed to Dynamic analysis unless IAT repair failures have been recorded and a dynamic bypass is chosen (see §1.2), and MUST NOT claim "Basic triage completed." If parsing fails, the failure output must be written into Evidence; do not skip it. When users request "redo import table check," they MUST redo the imports/export steps themselves (or complete §0.5 under a pre-condition after negotiation) and MUST NOT switch to other analysis steps as a cover.
@@ -105,13 +105,13 @@ Case B3 (Patch 6): De-encapsulation and IAT repair result in double-click crash 
 | OLLVM Documentation | Control flow flattening suspicion |
 
 ```text
-□ Confirm E-imports/E-triage contains import table or equivalent anchor points Evidence (missing then fix first, do not post-process)
-□ If DLL/SYS: confirm E-exports are recorded
-□ Group sensitive APIs and cluster high-risk combinations (patch 8)
-□ Hardcoded domain/IP/URL strings; is the payload hidden in resource sections?
-□ Pin down key functions (encryption/validation/network/auth) → Address/symbol write Evidence
-□ One path fails → Switch tool (IDA↔r2↔Ghidra)
-□ Timebox (patch 9 · SHOULD default): Static deep dive takes no more than 15 minutes and still no critical paths → Force transfer to §3 Dynamic (user/task can cover duration)
+- Confirm E-imports/E-triage contains import table or equivalent anchor points Evidence (missing then fix first, do not post-process)
+- If DLL/SYS: confirm E-exports are recorded
+- Group sensitive APIs and cluster high-risk combinations (patch 8)
+- Hardcoded domain/IP/URL strings; is the payload hidden in resource sections?
+- Pin down key functions (encryption/validation/network/auth) → Address/symbol write Evidence
+- One path fails → Switch tool (IDA↔r2↔Ghidra)
+- Timebox (patch 9 · SHOULD default): Static deep dive takes no more than 15 minutes and still no critical paths → Force transfer to §3 Dynamic (user/task can cover duration)
 ```
 
 **Without MCP**: Use exported text decompiled for further analysis (compare with P4nda0s reverse skills / IDA-NO-MCP approach), still write Evidence path.
@@ -130,14 +130,14 @@ Before starting the sample with a user-mode debugger (such as x64dbg, etc.), pre
 4. **Fallback**: `ExitProcess` / process exit path breakpoint (patch 10) — If the sample exits due to anti-debugging directly, do not immediately restart; dump memory and record the pre-crash image path in Evidence for string/data recovery.
 
 ```text
-□ Frida / x64dbg / gdb / emulator: Validate static assumptions
-□ Run after setting breakpoints as per §3.0; single-step tracking of stack/registers (white-box)
-□ Behavioral monitoring: Sandbox / Procmon / RegShot (black-box)
-□ IAT repair failure / self-checking crash sample: Hardware breakpoint or memory search to capture APIs like `CreateFile`/`GetFileSize`, check CRC
-□ Anti-debugging / anti-Frida → reverse-engineering / anti-analysis
-□ Android: Root detection / SSL pinning bypass script generated on demand, **must be on authorized device**
-□ Crash logs drive the next hook (adaptive loop)
-□ Time Box (patch 9 · SHOULD default): Single-step tracking of about 200 instructions without malicious behavior clues → Force return to static for string/anchor-point re-mapping (can overwrite)
+- Frida / x64dbg / gdb / emulator: Validate static assumptions
+- Run after setting breakpoints as per §3.0; single-step tracking of stack/registers (white-box)
+- Behavioral monitoring: Sandbox / Procmon / RegShot (black-box)
+- IAT repair failure / self-checking crash sample: Hardware breakpoint or memory search to capture APIs like `CreateFile`/`GetFileSize`, check CRC
+- Anti-debugging / anti-Frida → reverse-engineering / anti-analysis
+- Android: Root detection / SSL pinning bypass script generated on demand, **must be on authorized device**
+- Crash logs drive the next hook (adaptive loop)
+- Time Box (patch 9 · SHOULD default): Single-step tracking of about 200 instructions without malicious behavior clues → Force return to static for string/anchor-point re-mapping (can overwrite)
 ```
 
 ### 3.1 Sandbox / Dynamic No-Action Emergency Branch (MUST)
@@ -162,14 +162,14 @@ No action or immediate exit / indefinite sleep
 For complete index and action details, see `reverse-engineering/anti-analysis.md` "Agent Response Recipe A–T". Here only list **P0 must check + common transitions**. Default to authorized isolation lab; patching/re-setting flags is not an unauthorized production action.
 
 ```text
-□ Frida / x64dbg / gdb / emulator: Validate static assumptions
-□ Run after setting breakpoints as per §3.0; single-step tracking of stack/registers (white-box)
-□ Behavioral monitoring: Sandbox / Procmon / RegShot (black-box)
-□ IAT repair failure / self-checking crash sample: Hardware breakpoint or memory search to capture APIs like `CreateFile`/`GetFileSize`, check CRC
-□ Anti-debugging / anti-Frida → reverse-engineering / anti-analysis
-□ Android: Root detection / SSL pinning bypass script generated on demand, **must be on authorized device**
-□ Crash logs drive the next hook (adaptive loop)
-□ Time Box (patch 9 · SHOULD default): Single-step tracking of about 200 instructions without malicious behavior clues → Force return to static for string/anchor-point re-mapping (can overwrite)
+- Frida / x64dbg / gdb / emulator: Validate static assumptions
+- Run after setting breakpoints as per §3.0; single-step tracking of stack/registers (white-box)
+- Behavioral monitoring: Sandbox / Procmon / RegShot (black-box)
+- IAT repair failure / self-checking crash sample: Hardware breakpoint or memory search to capture APIs like `CreateFile`/`GetFileSize`, check CRC
+- Anti-debugging / anti-Frida → reverse-engineering / anti-analysis
+- Android: Root detection / SSL pinning bypass script generated on demand, **must be on authorized device**
+- Crash logs drive the next hook (adaptive loop)
+- Time Box (patch 9 · SHOULD default): Single-step tracking of about 200 instructions without malicious behavior clues → Force return to static for string/anchor-point re-mapping (can overwrite)
 ```
 
 | Trigger Feature | Preferred Action (Summary) | Evidence |

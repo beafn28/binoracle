@@ -32,16 +32,19 @@ class DecompiledFunc:
 def func_technical(binary: str, func: str) -> dict:
     """Ficha tecnica GROUNDED de la funcion via r2 (afij/afvj): firma, tamano de marco, convencion,
     y variables locales con su offset a RBP, tipo y DISTANCIA a la direccion de retorno guardada
-    (|offset| + tamano de palabra) -> el offset de overflow por variable. Best-effort; {} si falla."""
+    (|offset| + tamano de palabra) -> el offset de overflow por variable. Best-effort; {} si falla.
+
+    Cada r.cmd() pasa por r2session.cmd_timeout (mismo bug real que reachability._sink_callsites:
+    un comando sobre `func` -- que puede no existir como simbolo real -- puede colgar r2
+    indefinidamente; `func` aqui no esta pre-validado contra la lista real de funciones)."""
     try:
         import json
-        from ..oracles.r2session import get as _r2get
-        r = _r2get(binary)
-        if r is None:
+        from ..oracles.r2session import cmd_timeout as _r2cmd, get as _r2get
+        if _r2get(binary) is None:
             return {}
-        info = json.loads(r.cmd(f"afij @ {func}") or "[]")
+        info = json.loads(_r2cmd(binary, f"afij @ {func}", 30.0) or "[]")
         info = info[0] if info else {}
-        av = json.loads(r.cmd(f"afvj @ {func}") or "{}")
+        av = json.loads(_r2cmd(binary, f"afvj @ {func}", 30.0) or "{}")
     except Exception:
         return {}
     bits = info.get("bits", 64)
@@ -49,7 +52,7 @@ def func_technical(binary: str, func: str) -> dict:
     sig = (info.get("signature") or "").strip()
     if not sig:
         try:
-            sig = (r.cmd(f"afcf @ {func}") or "").strip().splitlines()[0]
+            sig = (_r2cmd(binary, f"afcf @ {func}", 30.0) or "").strip().splitlines()[0]
         except Exception:
             sig = ""
     locs = []

@@ -564,11 +564,11 @@ Beyond basic switch-case (see patterns.md): modern OLLVM variants use:
 **现代变种（2026 社区活跃）：** Hikari (Anti Class Dump/String Encryption/Indirect Branch), Polaris (原 Pluto, 含 Trap Angr 专门坑 angr), O-MVLL (Python 驱动, Android 加固常用), Arkari (goron 基础, 间接跳转可被数据段只读对抗), amice (Rust, 含 VM Flatten 需 VM 逆向而非 deflat)。变种识别详见 ollvm-deobfuscation.md 第 1 节。
 
 **Deobfuscation tools (社区活跃度排序):**
-- **obpo-plugin** (629⭐, IDA microcode+concolic 云插件, 效果最强): https://github.com/obpo-project/obpo-plugin
-- **ollvm-breaker** (441⭐, Binary Ninja, Android .so 实战): https://github.com/amimo/ollvm-breaker
-- **ollvm-unflattener** (265⭐, Miasm 符号执行, 纯脚本 x86/x64): https://github.com/cdong1012/ollvm-unflattener
-- **d810-ng** (223⭐, IDA, 集成 Z3, 覆盖 OLLVM/Tigress/Hodur/Approov): https://github.com/w00tzenheimer/d810-ng — **本地首选**
-- **DeObfBR** (96⭐, BR 间接分支混淆专项): https://github.com/Mrack/DeObfBR
+- **obpo-plugin** (629 stars, IDA microcode+concolic 云插件, 效果最强): https://github.com/obpo-project/obpo-plugin
+- **ollvm-breaker** (441 stars, Binary Ninja, Android .so 实战): https://github.com/amimo/ollvm-breaker
+- **ollvm-unflattener** (265 stars, Miasm 符号执行, 纯脚本 x86/x64): https://github.com/cdong1012/ollvm-unflattener
+- **d810-ng** (223 stars, IDA, 集成 Z3, 覆盖 OLLVM/Tigress/Hodur/Approov): https://github.com/w00tzenheimer/d810-ng — **本地首选**
+- **DeObfBR** (96 stars, BR 间接分支混淆专项): https://github.com/Mrack/DeObfBR
 - **D-810** (原版, 已较少维护, 建议用 d810-ng): pattern-based deobfuscation, MBA simplification
 - **Miasm**: Symbolic execution for deobfuscation
 - **Arybo** / **SiMBA**: MBA expression simplification
@@ -577,7 +577,7 @@ Beyond basic switch-case (see patterns.md): modern OLLVM variants use:
 # d810-ng: 复制到 IDA plugins 目录, Ctrl-Shift-D 加载
 # 选择 Unflattener + MBA simplification + Opaque predicate removal
 # obpo: 右键 dispatcher → OBPO → Mark and process function (需联网)
-# ⚠️ Pluto/Polaris 的 Trap Angr pass 会让 angr 失效 → 改用 d810-ng/Unicorn
+# [WARN] Pluto/Polaris 的 Trap Angr pass 会让 angr 失效 → 改用 d810-ng/Unicorn
 ```
 
 ### Mixed Boolean-Arithmetic (MBA) Identification & Simplification

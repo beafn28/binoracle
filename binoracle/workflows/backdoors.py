@@ -45,19 +45,25 @@ def _f(title_es, title_en, sev, ev, rat_es, rat_en, rec_es, rec_en, lang, loc="b
 def _hardcoded_ports(binary: str, sinks) -> list:
     """Busca en el disasm de las funciones que llaman a bind/connect un inmediato que, interpretado
     como htons(puerto), coincida con un puerto tipico de backdoor. Devuelve [(puerto, addr)].
-    Best-effort: si r2 no esta o no hay match, devuelve []."""
+    Best-effort: si r2 no esta o no hay match, devuelve [].
+
+    Bug real encontrado en vivo (mismo que reachability._sink_callsites, ver su fix): `axtj @
+    sym.imp.<sink>` para un simbolo que el binario no importa puede colgar r2 indefinidamente --
+    cada llamada a r.cmd() aqui pasa por r2session.cmd_timeout_on() en vez del `r.cmd()` crudo."""
+    from ..oracles.r2session import cmd_timeout_on
     found = []
     try:
         import json as _j
         import r2pipe
-        r = r2pipe.open(binary, flags=["-2"]); r.cmd("aaa")
+        r = r2pipe.open(binary, flags=["-2"])
+        cmd_timeout_on(r, "aaa", 180.0)
         # inmediatos candidatos: htons hace byte-swap, asi que buscamos ambos (host y network order)
         want = {}
         for p in _BD_PORTS:
             want[p] = p
             want[((p & 0xff) << 8) | (p >> 8)] = p   # byte-swapped (htons en x86 little-endian)
         for sink in sinks:
-            xr = r.cmd(f"axtj @ sym.imp.{sink}") or ""
+            xr = cmd_timeout_on(r, f"axtj @ sym.imp.{sink}", 20.0)
             try:
                 xs = _j.loads(xr) if xr.strip() else []
             except Exception:
@@ -66,7 +72,7 @@ def _hardcoded_ports(binary: str, sinks) -> list:
                 fn = x.get("fcn_name")
                 if not fn:
                     continue
-                dis = r.cmd(f"pdfj @ {fn}") or ""
+                dis = cmd_timeout_on(r, f"pdfj @ {fn}", 30.0)
                 try:
                     ops = _j.loads(dis).get("ops", []) if dis.strip() else []
                 except Exception:

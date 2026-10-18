@@ -206,7 +206,7 @@ Source: https://github.com/w00tzenheimer/d810-ng
 - 在 microcode 层优化反编译输出（不是改 ASM）
 - 支持 IDA 7.5-7.7 + Hex-Rays，多架构 (ARM/ARM64/x86/x64/PPC/MIPS)
 - 云插件：目标函数上传 obpo-server 处理（核心闭源，插件免费）
-- ⚠️ 敏感样本慎用（二进制上传云服务）
+- [WARN] 敏感样本慎用（二进制上传云服务）
 - 用法：右键 dispatcher → OBPO → Mark and process function
 Source: https://github.com/obpo-project/obpo-plugin
 ```

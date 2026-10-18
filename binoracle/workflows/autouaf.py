@@ -15,9 +15,7 @@ Solo para binarios AUTORIZADOS / CTF / research.
 """
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
+from ._sandbox import run_driver
 
 _DRIVER = r'''
 import re
@@ -115,44 +113,16 @@ def _uaf_applicable(binary: str) -> bool:
 def autouaf_shell(binary: str) -> dict:
     """Explota un UAF de reutilizacion de chunk (puntero a funcion en offset 0 de la struct
     liberada) sin envenenar el heap, verificado con shell real en el sandbox."""
-    if not shutil.which("docker"):
-        return {"ok": False, "note": "docker no disponible"}
     if not _uaf_applicable(binary):
         return {"ok": False, "note": "no aplicable (falta win/malloc/free): UAF por reutilizacion requiere los tres"}
-    try:
-        img = subprocess.run(["docker", "image", "inspect", "binoracle-pwn"],
-                             capture_output=True, timeout=15).returncode
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "note": "docker no responde (image inspect timeout)"}
-    if img != 0:
-        return {"ok": False, "note": "falta la imagen 'binoracle-pwn' (make pwn-image)"}
-    d = os.path.dirname(os.path.abspath(binary)); name = os.path.basename(binary)
-    if not os.path.isdir(d):
-        return {"ok": False, "note": f"directorio inexistente: {d}"}
-    drv = os.path.join(d, ".binoracle_uaf.py")
-    try:
-        with open(drv, "w") as f:
-            f.write(_DRIVER)
-    except OSError as e:
-        return {"ok": False, "note": f"no se pudo escribir el driver: {e}"}
-    try:
-        r = subprocess.run(
-            ["docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
-             "--memory", "512m", "--pids-limit", "256", "--security-opt", "seccomp=unconfined",
-             "-v", d + ":/w", "-w", "/w", "binoracle-pwn", "bash", "-c",
-             f"chmod +x ./{name}; python3 .binoracle_uaf.py {name}"],
-            capture_output=True, text=True, timeout=120)
-        out = r.stdout + r.stderr
-    except subprocess.TimeoutExpired:
-        out = "[timeout]"
-    finally:
-        try: os.unlink(drv)
-        except OSError: pass
-    verified = "VERIFIED" in out and "NOT_VERIFIED" not in out
-    line = next((l for l in out.splitlines() if l.startswith("VERIFIED")), "")
-    return {"ok": True, "verified": verified, "detail": line, "output": out[-600:],
-            "note": "UAF (reutilizacion de chunk) -> puntero a funcion=win -> shell (sandbox)" if verified
-                    else "no verificado (menu no reconocido, tamano de chunk distinto, o UAF no explotable asi)"}
+    res = run_driver(binary, _DRIVER, ".binoracle_uaf.py")
+    if not res.get("ok"):
+        return res
+    eng = res.get("engine", "sandbox")
+    res["note"] = (f"UAF (reutilizacion de chunk) -> puntero a funcion=win -> shell (verificado por ejecucion, {eng})"
+                   if res.get("verified")
+                   else f"no verificado ({eng}): menu no reconocido, tamano de chunk distinto, o UAF no explotable asi")
+    return res
 
 
 def render_uaf(r: dict) -> str:

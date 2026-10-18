@@ -18,19 +18,22 @@ from typing import Optional
 _CACHE: dict = {}   # abspath -> (r2_handle, mtime)
 
 
-def get(binary: str, analysis_timeout: float = 180.0):
+def get(binary: str, aaa_timeout: float = 180.0):
     """Devuelve una sesion r2 con `aaa` ya hecho para `binary`, cacheada. None si no hay r2pipe.
 
-    Bug real encontrado en vivo (mismo patron que cmd_timeout() mas abajo, para el `pdg` del
-    decompilador): el propio `aaa` inicial -- que PRACTICAMENTE todo oraculo basado en r2
-    dispara tarde o temprano, directo o via esta cache compartida -- no tenia NINGUN limite de
-    tiempo. En un binario estatico grande (p.ej. una muestra static-PIE del corpus de practica:
-    arrastra la libc entera, miles de funciones) el analisis completo puede tardar varios
-    minutos; si se queda realmente colgado (p.ej. un bug del propio r2 en un binario raro), el
-    pipeline entero esperaba para siempre sin ningun aviso -- el mismo fallo que ya se arreglo
-    para `pdg` (ver cmd_timeout) pero en el chequeo de entrada que lo precede a TODOS. Acotado
-    con el mismo patron de hilo+join: si no vuelve a tiempo, se mata el proceso r2 colgado y se
-    devuelve None (el llamador cae a su propio oraculo/degrada), nunca se bloquea sin limite."""
+    Bug real encontrado en vivo DOS VECES por separado (mismo patron que ya motivo `cmd_timeout`
+    para `pdg`, documentado abajo, pero aqui en el propio `aaa` -- el analisis completo que CASI
+    todo workflow dispara al abrir cualquier binario por primera vez, directo o via esta cache
+    compartida): `aaa` no tenia NINGUN limite de tiempo. En un binario estatico grande (p.ej. una
+    muestra static-PIE del corpus de practica: arrastra la libc entera, miles de funciones) el
+    analisis completo puede tardar varios minutos; si se queda realmente colgado (CPU muy
+    limitada, o un bug del propio r2 en un binario raro), bloquea indefinidamente a quien sea que
+    llamo a `get()` -- a diferencia de `pdg`, que solo afecta al decompilador, esto afecta a
+    CUALQUIER workflow que abra un r2 por primera vez (triage, vulnhunt, cfg, chainanalyzer,
+    decompile, backdoors, reachability...). Mismo remedio: el `aaa` corre en un hilo daemon con
+    `join(aaa_timeout)`; si no vuelve a tiempo, se mata el proceso r2 y se devuelve None (el
+    llamador ya sabe caer a su propia apertura, por contrato previo de `get()`) en vez de
+    colgarse para siempre."""
     try:
         import r2pipe
     except Exception:
@@ -49,17 +52,17 @@ def get(binary: str, analysis_timeout: float = 180.0):
         r = r2pipe.open(key, flags=["-2"])
     except Exception:
         return None
-    result: dict = {}
-    def _run():
+    done: dict = {}
+    def _run_aaa():
         try:
             r.cmd("aaa")
-            result["ok"] = True
+            done["ok"] = True
         except Exception:
-            result["ok"] = False
-    th = threading.Thread(target=_run, daemon=True)
+            done["ok"] = False
+    th = threading.Thread(target=_run_aaa, daemon=True)
     th.start()
-    th.join(analysis_timeout)
-    if th.is_alive() or not result.get("ok"):
+    th.join(aaa_timeout)
+    if th.is_alive() or not done.get("ok"):
         try:
             r.process.kill()
         except Exception:
@@ -91,6 +94,30 @@ def close_all() -> None:
     for r, _ in list(_CACHE.values()):
         _quit(r)
     _CACHE.clear()
+
+
+def cmd_timeout_on(r, cmd: str, timeout: float) -> str:
+    """Como cmd_timeout(), pero sobre una sesion r2pipe YA ABIERTA a mano (no la cacheada de
+    `get()`) -- para los workflows que deliberadamente abren su propia sesion fresca por llamada
+    (audit.py, backdoors.py) en vez de compartir la cache. Mismo mecanismo: thread daemon +
+    join(timeout) + kill del proceso r2 si sigue vivo. Nunca lanza; devuelve "" (no None, para
+    que encadene bien con `... or ""` en el codigo existente) si se agota el tiempo."""
+    result: dict = {}
+    def _run():
+        try:
+            result["v"] = r.cmd(cmd)
+        except Exception:
+            result["v"] = None
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        try:
+            r.process.kill()
+        except Exception:
+            pass
+        return ""
+    return result.get("v") or ""
 
 
 def cmd_timeout(binary: str, cmd: str, timeout: float = 90.0) -> Optional[str]:

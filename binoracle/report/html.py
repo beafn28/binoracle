@@ -63,7 +63,17 @@ def _md_rich(s: str) -> str:
 
     def inline(t: str) -> str:
         h = _esc(t)
+        # imagen embebida (evidencia visual: capturas de pantalla de wpverify.py como data URI) --
+        # antes de negrita/codigo porque el base64 puede contener secuencias que no deben tocarse.
+        h = _re.sub(r"!\[([^\]]*)\]\((data:image/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]+)\)",
+                   r'<img src="\2" alt="\1" loading="lazy" '
+                   r'style="max-width:100%;border:1px solid var(--border,#333);'
+                   r'border-radius:8px;margin:10px 0;display:block">', h)
         h = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
+        # cursiva ("_texto_", p.ej. los pies de foto de wpverify.py) -- SOLO en frontera de
+        # palabra (como CommonMark): sin esto "login_bajo_privilegio" o "user_id" se rompian,
+        # convirtiendo el trozo entre guiones bajos en <em> dentro del propio identificador.
+        h = _re.sub(r"(?<![\w_])_(?!_)(.+?)(?<!_)_(?![\w_])", r"<em>\1</em>", h)
         h = _re.sub(r"`([^`]+)`", r"<code>\1</code>", h)
         return h
 
@@ -104,6 +114,17 @@ def _md_rich(s: str) -> str:
                 close_list(); out.append(f'<h4>{inline(t[3:])}</h4>')
             elif t.startswith("# "):
                 close_list(); out.append(f'<h3>{inline(t[2:])}</h3>')
+            elif t.startswith(">"):
+                # cita/callout (p.ej. el veredicto "> **EXPLOIT VERIFICADO**..."): agrupa las
+                # lineas '>' consecutivas en un unico <blockquote> en vez de una por parrafo,
+                # para que destaque como un bloque, no como texto suelto con un '>' delante.
+                close_list()
+                q_lines = [t[1:].strip()]
+                while j + 1 < len(lines) and lines[j + 1].strip().startswith(">"):
+                    j += 1
+                    q_lines.append(lines[j].strip()[1:].strip())
+                body = "<br>".join(inline(ql) for ql in q_lines if ql)
+                out.append(f'<blockquote class="callout">{body}</blockquote>')
             elif t.startswith(("- ", "* ")):
                 if in_list != "ul":
                     close_list(); out.append("<ul>"); in_list = "ul"
@@ -2286,21 +2307,51 @@ def render_training_page(markdown: str, lang: str = "es") -> str:
 
 
 def render_investigation_page(markdown: str, script: str = "", cve: str = "target",
-                              lang: str = "es") -> str:
-    """Pagina del agente de investigacion: informe (markdown) + descarga del exploit desarrollado."""
+                              lang: str = "es", poc_kind: str = "pwntools") -> str:
+    """Pagina del agente de investigacion: informe (markdown) + descarga del exploit/PoC desarrollado.
+    `poc_kind` ajusta etiqueta/extension/mimetype del boton: 'pwntools' (memoria, .py), 'http' (PoC
+    web en bash/curl, .sh), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python). Autocontenida
+    (CSS y capturas de pantalla embebidas en base64): un solo fichero que se abre, se comparte o se
+    imprime como PDF desde el propio navegador sin depender de nada mas."""
     import base64
     import re as _re
+    from datetime import datetime, timezone
     es = lang == "es"
-    head = (f"<!doctype html><html lang='{lang}'><head><meta charset='utf-8'>"
+    title = _esc(cve or ("informe" if es else "report"))
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    banner = (
+        f'<div class="invhdr">'
+        f'<div class="invhdr-title">{title}</div>'
+        f'<div class="invhdr-meta">'
+        f'{"Generado" if es else "Generated"}: {generated} &middot; binoracle'
+        f'<br>{"Uso exclusivo para objetivos autorizados (pentest / CTF / investigacion de seguridad)." if es else "For authorized targets only (pentest / CTF / security research)."}'
+        f'</div></div>'
+    )
+    print_css = ("<style>@media print{.dlbtn{display:none !important}"
+                "body{background:#fff !important}.invhdr{border-bottom:2px solid #000}}</style>")
+    head = (f"<!doctype html><html lang='{lang}'><head>"
+            f"<meta charset='utf-8'><title>{title}</title>"
             f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            f"<style>{_CSS}</style></head><body><main class='md' style='padding:16px'>")
+            f"<style>{_CSS}</style>{print_css}"
+            f"<style>.invhdr{{padding:18px 16px 14px;border-bottom:1px solid var(--line,#1e2632);"
+            f"margin-bottom:6px}}.invhdr-title{{font-size:20px;font-weight:800;letter-spacing:.2px}}"
+            f".invhdr-meta{{color:var(--mut,#7b8794);font-size:12px;margin-top:4px;line-height:1.5}}"
+            f"</style></head><body>{banner}<main class='md invreport' style='padding:16px'>")
     dl = ""
     if script:
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
         safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", cve or "target")
-        label = ("Descargar exploit (pwntools)" if es else "Download exploit (pwntools)")
-        dl = (f'<p><a class="dlbtn" download="exploit_{safe}.py" '
-              f'href="data:text/x-python;base64,{b64}">&#8681; {label}</a></p>')
+        if poc_kind == "html":
+            label = "Descargar PoC (HTML, CSRF)" if es else "Download PoC (HTML, CSRF)"
+            fname, mime = f"poc_{safe}.html", "text/html"
+        elif poc_kind == "http":
+            label = "Descargar PoC (HTTP/curl)" if es else "Download PoC (HTTP/curl)"
+            fname, mime = f"poc_{safe}.sh", "text/x-shellscript"
+        else:
+            label = "Descargar exploit (pwntools)" if es else "Download exploit (pwntools)"
+            fname, mime = f"exploit_{safe}.py", "text/x-python"
+        dl = (f'<p><a class="dlbtn" download="{fname}" '
+              f'href="data:{mime};base64,{b64}">&#8681; {label}</a></p>')
     return head + dl + _md_rich(markdown or "") + "</main></body></html>"
 
 
@@ -3286,6 +3337,29 @@ def _exploit_html(an, lang: str) -> str:
         + (f"{ripyes} ({ctrl['pivot_gadget']})" if ctrl.get('pivot_gadget') else ripno)
         + f" &middot; SysV AMD{_bits}"
         + f"<br>{'gadgets de registro' if es else 'register gadgets'}: <code>{_regtxt}</code>")
+    # arsenal ROP: syscall, write-what-where y cobertura execve -> se refleja el razonamiento ROP
+    _ars = getattr(an, "arsenal", None) or {}
+    _abits = []
+    if _ars.get("syscall"):
+        _abits.append(f"syscall @ {_ars['syscall']['addr']}")
+    if _ars.get("write"):
+        _abits.append(f"{'escritura' if es else 'write'} @ {_ars['write']['addr']}")
+    _cov = _ars.get("execve_coverage") or {}
+    if _cov:
+        _covtxt = ("completa" if es else "complete") if _cov.get("complete") else \
+            ((", ".join(_cov.get("have") or []) or ("ninguno" if es else "none")))
+        _abits.append(f"{'cobertura execve' if es else 'execve coverage'}: {_covtxt}")
+    _csu = _ars.get("ret2csu")
+    if _csu:
+        _abits.append("ret2csu: __libc_csu_init g1=" + str(_csu.get("gadget1"))
+                      + " g2=" + str(_csu.get("gadget2"))
+                      + (" [" + ("completo" if es else "complete") + "]" if _csu.get("complete") else ""))
+    _og = _ars.get("one_gadget")
+    if _og and _og.get("available"):
+        _abits.append(f"one_gadget: {_og.get('count')} "
+                      + ("magic gadgets (libc estatica)" if es else "magic gadgets (static libc)"))
+    if _abits:
+        ctrl_txt += f"<br>{'arsenal ROP' if es else 'ROP arsenal'}: {' &middot; '.join(_abits)}"
     return (
         f'<h2 data-i18n="exploit_chains" id="sec-xchain"></h2>'
         f'<p class="mut" style="font-size:12px;margin:-4px 0 8px">{_esc(T["score_note"])}</p>'
@@ -3433,6 +3507,19 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
 .md li{margin:3px 0;white-space:normal}
 .md p{white-space:normal}
 .md strong{font-weight:700}
+.md em{color:var(--mut);font-style:italic}
+.md blockquote.callout{margin:16px 0;padding:12px 16px;border-left:4px solid var(--acc);
+  background:color-mix(in srgb, var(--acc) 10%, transparent);border-radius:0 8px 8px 0;
+  font-size:14px;line-height:1.6}
+/* informe de investigacion (render_investigation_page): titulo + secciones con jerarquia clara,
+   separada del resto de usos de .md (paneles de decompilacion, chains, training...) para no
+   tocar su estilo ya establecido. */
+.invreport h4{font-size:21px;font-weight:800;letter-spacing:.1px;color:var(--fg);
+  text-transform:none;margin:4px 0 20px;padding-bottom:12px;border-bottom:2px solid var(--line)}
+.invreport h5{font-size:15px;font-weight:700;color:var(--fg);text-transform:none;
+  letter-spacing:0;margin:28px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.invreport p{line-height:1.6}
+.invreport li{line-height:1.6}
 .md .tbl-wrap{overflow-x:auto;margin:12px 0;white-space:normal}
 .md table{border-collapse:collapse;width:100%;font-size:13px}
 .md th,.md td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
