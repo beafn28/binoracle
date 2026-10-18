@@ -48,9 +48,10 @@ The flagship direction: prove impact end to end.
   back into the verify/triage loop (coverage-guided).
 - **[M] Stripped-binary function ID.** Signature / BinDiff-style matching to recover names in
   stripped targets before analysis.
-- **[S] More formats & backends.** Raw shellcode analysis, Go/Rust binary heuristics, a
-  Ghidra-headless decompilation backend, and the capstone fallback oracle (the extra exists
-  but is currently unused).
+- **[S] More formats & backends.** Raw shellcode analysis, Go/Rust binary heuristics. ~~A
+  Ghidra-headless decompilation backend~~ (shipped: `callertools.py` drives `analyzeHeadless`)
+  ~~and the capstone fallback oracle~~ (shipped: `oracles/capstone_fallback.py`, registers
+  only when radare2 itself is unavailable) are done.
 
 ## v0.5 - Product, trust, workflow
 
