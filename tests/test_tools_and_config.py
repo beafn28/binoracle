@@ -3242,7 +3242,16 @@ def test_symbolic_angr_reachable_never_hangs_past_its_budget():
     fake_simgr.active = fake_active
     fake_simgr.found = []          # NUNCA encuentra el objetivo (simula un bucle sin salida)
     fake_simgr.deadended = []
-    fake_simgr.explore = MagicMock()   # no-op: no reduce 'active' ni pone 'found'
+    # no-op: no reduce 'active' ni pone 'found'. Una funcion simple en vez de un
+    # MagicMock: con budget_s tan bajo el bucle real itera cientos de miles de veces,
+    # y el overhead de registro de llamadas de MagicMock (mock_calls/call_args_list,
+    # que crece con cada invocacion) domina el tiempo y hace el test flaky -- no es
+    # un bug de _reachable (confirmado aparte: con una funcion normal respeta el
+    # budget_s casi exacto incluso con ese mismo volumen de iteraciones).
+    def _fake_explore(*_a, **_k):
+        _fake_explore.call_count += 1
+    _fake_explore.call_count = 0
+    fake_simgr.explore = _fake_explore
 
     fake_proj = MagicMock()
     fake_proj.loader.main_object.pic = False   # sin rebase PIE, para simplificar el mock
