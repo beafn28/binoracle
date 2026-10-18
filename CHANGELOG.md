@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Regression tests for `parametro_adicional_requerido`**: this field (the one that actually
+  unblocks CVE-2024-1071-style sinks, e.g. `directory_id`) had no test of its own anywhere,
+  for SQLi or any other technique, even though the prompt asking the LLM for it predates this
+  session. Added `test_cve_agent_sqli_retry_applies_parametro_adicional_requerido` and
+  `test_cve_agent_path_traversal_retry_applies_parametro_adicional_requerido`, confirming the
+  suggested parameter name actually lands in the retried request's parameter list end-to-end
+  (not just that `_apply_generic_wp_suggestion`'s code compiles) for both SQLi and a non-SQLi
+  technique.
 - **Generalized the LLM retry-suggestion handling to all 12 retry-capable WordPress dynamic
   verifiers** (previously only SQLi read `parametro_adicional_requerido`, even though the
   shared retry prompt — `_WP_NONCE_SETUP_RETRY_HINT` — already asks every technique's LLM for

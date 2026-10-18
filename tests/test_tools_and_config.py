@@ -7042,6 +7042,106 @@ def test_cve_agent_account_takeover_retry_loop_forwards_llm_suggestions(monkeypa
         "el reintento debia pasar AMBAS sugerencias del LLM a verify_wordpress_account_takeover")
 
 
+def test_cve_agent_sqli_retry_applies_parametro_adicional_requerido(monkeypatch, tmp_path):
+    # antes de _apply_generic_wp_suggestion, 'parametro_adicional_requerido' (el campo real que
+    # desbloqueo CVE-2024-1071, p.ej. 'directory_id') nunca tenia un test propio -- esto confirma
+    # que de verdad llega a la lista de parametros del reintento, no solo que el prompt lo pide.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="ultimate-member")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el sumidero esta detras de un campo que nunca se envio",
+                "parametro_adicional_requerido": "directory_id",
+            })
+
+    calls = []
+    def fake_sqli(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(list(params))
+        if "directory_id" not in params:
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"endpoint": endpoint, "sqli_param": kw.get("sqli_param_hint"),
+                          "respuesta_control_recorte": "<title>Page not found</title>"}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="SQLI confirmada tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_sqli", fake_sqli)
+
+    inv = Investigation(cve_id="CVE-2099-00031")
+    inv.vuln_class = "sqli"
+    inv.llm_notes = {"source_url": "ultimate-member", "endpoint": "/wp-admin/admin-ajax.php",
+                     "http_method": "POST", "parameters": {"sortby": "1"},
+                     "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert "directory_id" not in calls[0]
+    assert any("directory_id" in c for c in calls[1:]), (
+        "el reintento debia añadir 'directory_id' a la lista de parametros")
+    assert inv.verified is True
+
+
+def test_cve_agent_path_traversal_retry_applies_parametro_adicional_requerido(monkeypatch, tmp_path):
+    # mismo mecanismo que el test de SQLi de arriba, pero para una tecnica NO-SQLi -- confirma
+    # que _apply_generic_wp_suggestion de verdad generaliza 'parametro_adicional_requerido' a las
+    # otras 11 tecnicas y no es un comportamiento exclusivo de SQLi.
+    import json as _json
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
+    from binoracle.workflows import websource, wpverify
+
+    def fake_fetch_source(target, version="", on_step=None, timeout=90.0, cms_hint="",
+                          exclusive_upper_bound=False):
+        return websource.SourceFetchResult(ok=True, kind="wordpress-plugin", source=target,
+                                           local_path=str(tmp_path), plugin_dir="algun-plugin")
+    monkeypatch.setattr(websource, "fetch_source", fake_fetch_source)
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, json_mode=True):
+            return _json.dumps({
+                "tiene_sugerencia": True,
+                "razon": "el sumidero exige un campo adicional nunca enviado",
+                "parametro_adicional_requerido": "module_id",
+            })
+
+    calls = []
+    def fake_pt(plugin_dir_path, slug, endpoint, method, params, **kw):
+        calls.append(list(params))
+        if "module_id" not in params:
+            wr = wpverify.WpVerifyResult(ok=True, available=True, verified=False,
+                                         detail="no se confirmo")
+            wr.evidence = {"endpoint": endpoint, "path_param": kw.get("path_param_hint"),
+                          "respuesta_muestra_primer_intento": "pagina generica"}
+            return wr
+        return wpverify.WpVerifyResult(ok=True, available=True, verified=True,
+                                       detail="LFI confirmada tras el reintento (fake)")
+    monkeypatch.setattr(wpverify, "verify_wordpress_path_traversal", fake_pt)
+
+    inv = Investigation(cve_id="CVE-2099-00032")
+    inv.vuln_class = "path-traversal"
+    inv.llm_notes = {"source_url": "algun-plugin", "endpoint": "/wp-admin/admin-ajax.php",
+                     "http_method": "POST", "parameters": {"file": "test.txt"},
+                     "path_param": "file", "vulnerable_functions": []}
+    _run_web_investigation(inv, lang="es", step=lambda m: None, llm=_FakeLLM())
+
+    assert "module_id" not in calls[0]
+    assert any("module_id" in c for c in calls[1:]), (
+        "el reintento debia añadir 'module_id' a la lista de parametros")
+    assert inv.verified is True
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
