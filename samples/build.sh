@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
-# Build the practice corpus as real Linux x86-64 ELFs using Docker (gcc:13).
+# Build the practice corpus as real Linux x86-64 ELFs using Docker (gcc:13),
+# falling back to the host's own gcc on Linux when Docker is unavailable
+# (the README documents this fallback; it was missing here).
 # These are intentionally-vulnerable binaries for AUTHORIZED local practice only.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$here/bin"
 img=gcc:13
-run(){ docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"; }
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  run(){ docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"; }
+  have_docker=1
+elif [ "$(uname -s)" = "Linux" ] && command -v gcc >/dev/null 2>&1; then
+  echo "[*] Docker no disponible: compilando con el gcc nativo del host" >&2
+  run(){ ( cd "$here" && bash -c "$1" ); }
+  have_docker=0
+else
+  echo "ERROR: ni Docker ni un gcc nativo de Linux estan disponibles para construir el corpus" >&2
+  exit 1
+fi
 
 echo "[*] ret2win  (no-PIE, no-canary, NX)"
 run "gcc -w -fno-stack-protector -no-pie -o bin/ret2win  src/ret2win.c"
@@ -45,6 +57,12 @@ run "gcc -fno-stack-protector -no-pie -w -o bin/notes_heap src/notes_heap.c"
 echo "[*] ret2win32 (32-bit, requiere multilib; se omite si no esta)"
 run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/ret2win32 src/ret2win32.c" || echo "  (32-bit build omitido: sin multilib)"
 echo "[*] win_chall.exe (Windows PE via mingw)"
-docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
-  'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"
+if [ "$have_docker" = "1" ]; then
+  docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
+    'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"
+elif command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  ( cd "$here" && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c ) || echo "  (mingw build skipped)"
+else
+  echo "  (mingw build skipped: sin Docker y sin x86_64-w64-mingw32-gcc en el host)"
+fi
 echo "[*] done:"; ls -la "$here/bin"
