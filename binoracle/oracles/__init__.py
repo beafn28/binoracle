@@ -8,6 +8,7 @@ from .exploit_helpers import ExploitHelperOracle
 from .exploit_actions import ExploitActionsOracle
 from .ghidra import GhidraOracle
 from .decai import DecaiOracle
+from .capstone_fallback import CapstoneOracle
 
 
 def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bool = False) -> ToolRegistry:
@@ -17,6 +18,7 @@ def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bo
     oracles = [
         ElfMetaOracle(binary),
         R2Oracle(binary),
+        CapstoneOracle(binary),  # only registers itself when radare2 is unavailable
         AngrOracle(binary),
         ExploitHelperOracle(binary),
         GhidraOracle(binary),   # solo se registra si hay un servidor GhidraMCP arriba

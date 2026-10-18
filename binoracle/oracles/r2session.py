@@ -21,16 +21,19 @@ _CACHE: dict = {}   # abspath -> (r2_handle, mtime)
 def get(binary: str, aaa_timeout: float = 180.0):
     """Devuelve una sesion r2 con `aaa` ya hecho para `binary`, cacheada. None si no hay r2pipe.
 
-    Bug real encontrado en vivo (mismo patron que ya motivo `cmd_timeout` para `pdg`, documentado
-    abajo, pero aqui en el propio `aaa` -- el analisis completo que CASI todo workflow dispara al
-    abrir cualquier binario por primera vez): `aaa` no tenia NINGUN limite de tiempo. En un
-    binario complejo, o bajo CPU muy limitada, puede tardar mucho mas de lo razonable y bloquear
-    indefinidamente a quien sea que llamo a `get()` -- a diferencia de `pdg`, que solo afecta al
-    decompilador, esto afecta a CUALQUIER workflow que abra un r2 por primera vez (triage,
-    vulnhunt, cfg, chainanalyzer, decompile, backdoors, reachability...). Mismo remedio: el `aaa`
-    corre en un hilo daemon con `join(aaa_timeout)`; si no vuelve a tiempo, se mata el proceso r2
-    y se devuelve None (el llamador ya sabe caer a su propia apertura, por contrato previo de
-    `get()`) en vez de colgarse para siempre."""
+    Bug real encontrado en vivo DOS VECES por separado (mismo patron que ya motivo `cmd_timeout`
+    para `pdg`, documentado abajo, pero aqui en el propio `aaa` -- el analisis completo que CASI
+    todo workflow dispara al abrir cualquier binario por primera vez, directo o via esta cache
+    compartida): `aaa` no tenia NINGUN limite de tiempo. En un binario estatico grande (p.ej. una
+    muestra static-PIE del corpus de practica: arrastra la libc entera, miles de funciones) el
+    analisis completo puede tardar varios minutos; si se queda realmente colgado (CPU muy
+    limitada, o un bug del propio r2 en un binario raro), bloquea indefinidamente a quien sea que
+    llamo a `get()` -- a diferencia de `pdg`, que solo afecta al decompilador, esto afecta a
+    CUALQUIER workflow que abra un r2 por primera vez (triage, vulnhunt, cfg, chainanalyzer,
+    decompile, backdoors, reachability...). Mismo remedio: el `aaa` corre en un hilo daemon con
+    `join(aaa_timeout)`; si no vuelve a tiempo, se mata el proceso r2 y se devuelve None (el
+    llamador ya sabe caer a su propia apertura, por contrato previo de `get()`) en vez de
+    colgarse para siempre."""
     try:
         import r2pipe
     except Exception:
@@ -62,6 +65,10 @@ def get(binary: str, aaa_timeout: float = 180.0):
     if th.is_alive() or not done.get("ok"):
         try:
             r.process.kill()
+        except Exception:
+            pass
+        try:
+            r.quit()
         except Exception:
             pass
         return None

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build the practice corpus as real Linux x86-64 ELFs.
-# Prefers the gcc:13 Docker image; falls back to the HOST gcc when the image is unavailable
-# (CI / cloud / any box without `make pwn-image`), so the corpus still builds with no Docker.
-# The host fallback only engages on Linux -- a macOS `gcc` is clang and would emit Mach-O, not
-# Linux ELFs, so there we stay on Docker (its auto-pull preserves the original behavior).
+# Prefers the gcc:13 Docker image when it's already present (fastest, exact vanilla toolchain);
+# falls back to the HOST gcc on Linux when the image is unavailable (CI / cloud / any box
+# without `make pwn-image`), so the corpus still builds with no Docker. The host fallback only
+# engages on Linux -- a macOS `gcc` is clang and would emit Mach-O, not Linux ELFs, so there we
+# stay on Docker (its auto-pull preserves the original behavior).
 # Intentionally-vulnerable binaries for AUTHORIZED local practice only.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -23,17 +24,28 @@ if [ "$engine" = none ]; then
   exit 1
 fi
 echo "[*] motor de compilacion: $engine"
+# have_docker: usado mas abajo solo para el build opcional de win_chall.exe via mingw (necesita
+# un contenedor Debian con gcc-mingw-w64, no el host); independiente de 'engine' porque ese build
+# concreto siempre prefiere Docker si lo hay, sin importar como se compilo el resto del corpus.
+have_docker=0
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  have_docker=1
+fi
 run(){
   if [ "$engine" = "docker" ]; then
     docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"
   else
     # Host gcc: the official gcc:13 image is VANILLA gcc (stack-protector and cf-protection OFF
     # by default), but a distro gcc (Ubuntu/Debian) turns BOTH on by default -- which would add
-    # a canary to the "no-canary" samples and endbr64 padding that shifts win()'s address. We
-    # inject the vanilla defaults right after `gcc`; the per-line flags come AFTER and still win
-    # (e.g. the canary sample's -fstack-protector-all overrides). PIE/RELRO are already set
-    # explicitly per line. Tolerate a single build failing (e.g. -static sin glibc-static, -m32
-    # sin multilib) so the rest still builds.
+    # a canary to the "no-canary" samples and endbr64 padding that shifts win()'s address.
+    # Confirmado en vivo: '-fcf-protection=full' por defecto en Ubuntu anade padding endbr64 que
+    # desplaza win() de su direccion esperada, rompiendo find_win()/tests que fijan una direccion
+    # concreta, aunque cada linea ya pase '-fno-stack-protector' explicito (el canary si se
+    # neutraliza, el CET no). Se inyectan los defaults de vainilla justo despues de 'gcc'; los
+    # flags de cada linea van DESPUES y siguen ganando (e.g. la muestra canary's
+    # -fstack-protector-all la sobreescribe). PIE/RELRO ya van explicitos por linea. Tolera que
+    # un build individual falle (p.ej. -static sin glibc-static, -m32 sin multilib) para que el
+    # resto del corpus se siga construyendo.
     local cmd="$1"
     case "$cmd" in
       gcc\ *) cmd="gcc -fno-stack-protector -fcf-protection=none ${cmd#gcc }" ;;
@@ -127,6 +139,12 @@ run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/fmtgot32 src/fmtgot32.c" ||
 echo "[*] pivot (x86-64, static, short overflow -> stack migration to .bss)"
 run "gcc -fno-stack-protector -no-pie -static -w -o bin/pivot src/pivot.c"
 echo "[*] win_chall.exe (Windows PE via mingw)"
-docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
-  'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"
+if [ "$have_docker" = "1" ]; then
+  docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
+    'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"
+elif command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  ( cd "$here" && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c ) || echo "  (mingw build skipped)"
+else
+  echo "  (mingw build skipped: sin Docker y sin x86_64-w64-mingw32-gcc en el host)"
+fi
 echo "[*] done:"; ls -la "$here/bin"

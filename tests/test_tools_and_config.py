@@ -564,20 +564,22 @@ def test_r2session_cmd_timeout_never_hangs_the_pipeline():
     assert not fast.process.killed
 
 
-def test_r2session_get_aaa_never_hangs_the_pipeline(monkeypatch):
-    # Mismo patron de bug que test_r2session_cmd_timeout_never_hangs_the_pipeline, pero en el
-    # propio `aaa` que get() corre al abrir CUALQUIER binario por primera vez (no solo en `pdg`):
-    # bug real encontrado en vivo probando un PIE real (ret2win_pie) bajo CPU muy limitada --
-    # `aaa` sin timeout dejo el test entero (y por extension cualquier workflow que abra r2 por
-    # primera vez: triage, vulnhunt, chainanalyzer, reachability...) bloqueado mucho mas de lo
-    # razonable. get() debe devolver None dentro del limite de tiempo en vez de colgarse.
+def test_r2session_get_never_hangs_on_a_stuck_initial_analysis(monkeypatch):
+    # Mismo bug que cmd_timeout() arregla para `pdg`, pero en el ANALISIS INICIAL ('aaa') que
+    # get() dispara antes de poder cachear nada -- bug real encontrado en vivo DOS VECES por
+    # separado: un binario estatico grande del corpus de practica (static-PIE, arrastra la libc
+    # entera) hace que este analisis tarde varios minutos, y si r2 se queda REALMENTE colgado
+    # (confirmado tambien bajo CPU muy limitada con un PIE real, ret2win_pie) no habia ningun
+    # limite que lo parase -- el mismo punto ciego que cmd_timeout() cubre para 'pdg', aqui en el
+    # chequeo de entrada que PRECEDE a cualquier cmd_timeout() y a CUALQUIER workflow que abra un
+    # r2 por primera vez (triage, vulnhunt, chainanalyzer, reachability...).
     import os
     import time
     import tempfile
     from binoracle.oracles import r2session
 
     d = tempfile.mkdtemp()
-    b = os.path.join(d, "target.bin")
+    b = os.path.join(d, "target2.bin")
     with open(b, "wb") as fh:
         fh.write(b"\x7fELF" + os.urandom(200))
 
@@ -591,36 +593,88 @@ def test_r2session_get_aaa_never_hangs_the_pipeline(monkeypatch):
         def __init__(self):
             self.process = _FakeProc()
         def cmd(self, c):
-            if c == "aaa":
-                time.sleep(5)   # mucho mas que el timeout de prueba (0.2s)
-            return ""
+            time.sleep(5)  # mucho mas que el timeout de prueba
+            return "nunca deberia llegar aqui"
+        def quit(self):
+            pass
 
     fake = _HangingR2()
-    monkeypatch.setattr("r2pipe.open", lambda *a, **kw: fake)
+    import r2pipe as _r2pipe_mod
+    monkeypatch.setattr(_r2pipe_mod, "open", lambda *a, **kw: fake)
     r2session._CACHE.pop(os.path.abspath(b), None)
 
     t0 = time.time()
     r = r2session.get(b, aaa_timeout=0.2)
     elapsed = time.time() - t0
 
-    assert r is None
+    assert r is None, "un analisis inicial colgado debe degradar a None, nunca bloquear"
     assert elapsed < 2.0, "get() no debe esperar mucho mas que aaa_timeout"
-    assert fake.process.killed, "la sesion colgada debe matarse para no dejarla zombie"
-    assert os.path.abspath(b) not in r2session._CACHE, "una sesion con aaa colgado no se cachea"
+    assert fake.process.killed
+    assert os.path.abspath(b) not in r2session._CACHE, "una sesion que nunca termino de analizarse no se cachea"
 
-    # camino feliz: aaa que responde a tiempo se cachea normalmente
+    # camino feliz: el analisis que responde a tiempo se cachea normalmente
     class _FastR2:
         def __init__(self):
             self.process = _FakeProc()
         def cmd(self, c):
             return ""
+        def quit(self):
+            pass
     fast = _FastR2()
-    monkeypatch.setattr("r2pipe.open", lambda *a, **kw: fast)
+    monkeypatch.setattr(_r2pipe_mod, "open", lambda *a, **kw: fast)
     r2session._CACHE.pop(os.path.abspath(b), None)
     r2 = r2session.get(b, aaa_timeout=2.0)
     assert r2 is fast
     assert os.path.abspath(b) in r2session._CACHE
     assert not fast.process.killed
+    r2session._CACHE.pop(os.path.abspath(b), None)
+
+
+def test_r2oracle_analysis_timeout_degrades_instead_of_hanging(monkeypatch):
+    # Mismo bug, tercera instancia: R2Oracle._ensure_analyzed_pipe() (el otro punto de entrada al
+    # analisis inicial, usado cuando NO se pasa por la cache compartida de r2session) tampoco tenia
+    # ningun limite de tiempo -- confirmado en vivo corriendo la suite completa: el analisis de un
+    # binario static-PIE del corpus se quedo consumiendo CPU minutos sin volver.
+    import time
+    from binoracle.oracles.static_r2 import R2Oracle
+    import binoracle.oracles.static_r2 as sr2
+
+    oc = R2Oracle("fake.bin", deep=True)
+    oc.analysis_timeout_s = 0.2
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _HangingR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            time.sleep(5)
+            return "nunca deberia llegar aqui"
+
+    fake = _HangingR2()
+    monkeypatch.setattr(oc, "_pipe", lambda: fake)
+    monkeypatch.setattr(sr2, "_HAVE_R2PIPE", True)
+
+    t0 = time.time()
+    out = oc._run("afl", analyze=True)
+    elapsed = time.time() - t0
+
+    assert elapsed < 2.0, "_run no debe esperar mucho mas que analysis_timeout_s"
+    assert "timed out" in out
+    assert fake.process.killed
+    assert oc._analysis_timed_out is True
+
+    # una segunda llamada no debe reintentar el analisis (ni abrir otro proceso r2): degrada
+    # directamente, rapido.
+    t0 = time.time()
+    out2 = oc._run("afl", analyze=True)
+    elapsed2 = time.time() - t0
+    assert elapsed2 < 0.5
+    assert "timed out" in out2
 
 
 def test_sarif_export():
@@ -3405,7 +3459,16 @@ def test_symbolic_angr_reachable_impl_never_hangs_past_its_budget():
     fake_simgr.active = fake_active
     fake_simgr.found = []          # NUNCA encuentra el objetivo (simula un bucle sin salida)
     fake_simgr.deadended = []
-    fake_simgr.explore = MagicMock()   # no-op: no reduce 'active' ni pone 'found'
+    # no-op: no reduce 'active' ni pone 'found'. Una funcion simple en vez de un
+    # MagicMock: con budget_s tan bajo el bucle real itera cientos de miles de veces,
+    # y el overhead de registro de llamadas de MagicMock (mock_calls/call_args_list,
+    # que crece con cada invocacion) domina el tiempo y hace el test flaky -- no es
+    # un bug de _reachable (confirmado aparte: con una funcion normal respeta el
+    # budget_s casi exacto incluso con ese mismo volumen de iteraciones).
+    def _fake_explore(*_a, **_k):
+        _fake_explore.call_count += 1
+    _fake_explore.call_count = 0
+    fake_simgr.explore = _fake_explore
 
     fake_proj = MagicMock()
     fake_proj.loader.main_object.pic = False   # sin rebase PIE, para simplificar el mock
@@ -3451,6 +3514,75 @@ def test_symbolic_angr_reachable_hard_kills_a_subprocess_that_outlives_its_budge
     assert elapsed < 40.0, "el proceso hijo debe ser forzado a terminar, no esperarse 600s"
     assert res.ok and res.meta.get("reachable") is False
     assert "forzado a terminar" in res.data or "NOT reachable" in res.data
+
+
+def test_capstone_oracle_disassembles_a_real_elf_without_r2(monkeypatch):
+    # Gap del ROADMAP: "capstone fallback oracle (la extra existe pero no se usa)". Este oraculo
+    # solo debe activarse cuando radare2 NO esta disponible (si no, duplicaria static_r2 sin
+    # aportar nada mejor); cuando se activa, debe decodificar instrucciones REALES de un ELF
+    # real compilado, no un mock -- confirma que capstone/pyelftools de verdad leen el binario.
+    import shutil
+    import os
+    import binoracle.oracles.capstone_fallback as cf
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        return  # corpus no construido en este entorno (bash samples/build.sh): se omite
+
+    if not (cf._HAVE_CAPSTONE and cf._HAVE_PYELF):
+        return  # capstone/pyelftools no instalados en este entorno: se omite
+
+    monkeypatch.setattr(cf, "_HAVE_R2PIPE", False)
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in ("r2", "radare2") else real_which(name))
+
+    oc = cf.CapstoneOracle(binp)
+    assert oc.available() is True
+
+    tools = {t.name: t for t in oc.tools()}
+    res = tools["cs_disasm_entry"].run(count=10)
+    assert res.ok, res.error
+    assert res.meta["fallback"] is True
+    assert res.meta["count"] == 10
+    # endbr64 es la primera instruccion tipica en un x86-64 moderno con CET; si esto aparece, de
+    # verdad se decodificaron bytes reales del fichero en la direccion de entrada real del ELF.
+    assert "endbr64" in res.data
+
+    res_at = tools["cs_disasm_at"].run(addr=res.meta["addr"], count=3)
+    assert res_at.ok
+    assert res_at.data.splitlines()[0] == res.data.splitlines()[0]
+
+    bad = tools["cs_disasm_at"].run(addr="0xdeadbeef", count=5)
+    assert bad.ok is False
+    assert "PT_LOAD" in bad.error
+
+
+def test_capstone_oracle_stays_off_when_r2_is_available():
+    # Con r2 presente (el caso normal), el fallback no debe registrarse -- static_r2 ya cubre
+    # disassembly y mucho mas (xrefs, funciones); duplicarlo solo confundiria al agente con dos
+    # oraculos haciendo lo mismo peor.
+    import shutil
+    import binoracle.oracles.capstone_fallback as cf
+    if not (shutil.which("r2") or shutil.which("radare2") or cf._HAVE_R2PIPE):
+        return  # este entorno tampoco tiene r2: no hay nada que comprobar aqui
+    oc = cf.CapstoneOracle("samples/bin/ret2win")
+    assert oc.available() is False
+    assert "radare2" in oc.why_unavailable()
+
+
+def test_capstone_oracle_in_build_registry_degrades_honestly_with_r2(tmp_path):
+    # Sanity end-to-end: build_registry() nunca debe romperse ni duplicar herramientas por
+    # registrar el oraculo capstone junto al de r2.
+    from binoracle.oracles import build_registry
+    import os
+    import shutil
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        return
+    reg = build_registry(binp)
+    names = [t.name for t in reg.available_tools()]
+    assert len(names) == len(set(names))   # sin nombres de tool duplicados
+    if shutil.which("r2") or shutil.which("radare2"):
+        assert "cs_disasm_entry" not in names   # r2 presente: el fallback no se registro
 
 
 def test_reachability_rebases_pie_addresses_for_angr():

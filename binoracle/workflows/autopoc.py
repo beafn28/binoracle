@@ -79,18 +79,25 @@ def find_win(binary: str) -> Optional[int]:
     # fcn.00401176 (sin nombre) llama a system("/bin/sh"), misma direccion que 'win' en la
     # variante no-stripped del mismo reto.
     #
+    # 'aaa' (analisis profundo), NO 'aa', a proposito: bug real encontrado en vivo (dos veces, por
+    # separado) en binarios con este mismo patron de entrada -- con la deteccion ligera de 'aa',
+    # r2 fusiona la funcion gift DENTRO del trampolin de entrada (entry.init0, que empieza con
+    # 'endbr64; jmp ...') en vez de reconocerla como funcion propia, asi que NINGUN xref a
+    # system/execve se descubre y este fallback devolvia None siempre en binarios con ese patron
+    # (confirmado: gcc moderno con CET activo por defecto en las crt*.o precompiladas del sistema,
+    # incluso compilando el propio codigo con -fcf-protection=none; en radare2 5.5.0, `aa; axt` no
+    # encuentra nada, `aaa; axt` si). Este fallback solo se alcanza cuando la busqueda rapida por
+    # nombre ya fallo (caso raro, binario pequeno), asi que el coste extra de 'aaa' es aceptable.
+    #
     # NOTA (investigado en vivo, descartado adrede): probar aqui la sesion r2 CACHEADA (r2session)
     # en vez de un subproceso nuevo por llamada parecia la optimizacion obvia (evita repetir
     # `aaa`) -- pero `r.cmd('axt @ sym.imp.<sink>')` sobre esa sesion PERSISTENTE se cuelga de
-    # verdad en esta version de radare2 (5.5.0; confirmado con y sin el simbolo presente, y
+    # verdad en esta version de radare2 (confirmado con y sin el simbolo presente, y
     # `cmd_timeout()` -- pensado exactamente para esto -- tampoco recuperaba el pipe a tiempo de
     # forma fiable aqui). El subproceso ONE-SHOT de abajo (`_r2()`) SI es fiable: cada llamada es
     # un `radare2` nuevo con su propio `subprocess.run(..., timeout=90)`, que Python SI mata de
     # forma dura si se cuelga. Mas lento (repite `aaa`), pero nunca cuelga el pipeline.
     for sink in ("system", "execve", "execl", "execlp"):
-        # Xrefs to an import are only populated by FULL analysis (`aaa`); plain `aa` leaves
-        # `axt @ sym.imp.<sink>` empty, so the stripped gift was never found (confirmed on
-        # radare2 5.5.0: `aa; axt` -> nothing, `aaa; axt` -> the real caller).
         callers = _r2(binary, f"aaa; axt @ sym.imp.{sink}")
         for m in re.finditer(r"^\S+\s+(0x[0-9a-fA-F]+)\s+\[CALL", callers, re.M):
             call_addr = m.group(1)
