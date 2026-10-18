@@ -10823,6 +10823,56 @@ def test_verify_wordpress_sqli_custom_sort_gate_inactive_for_other_plugins(monke
     assert meta_calls == []
 
 
+def test_verify_wordpress_sqli_custom_sort_gate_skips_meta_sync_when_id_not_a_known_hash(monkeypatch):
+    # si 'directory_id' no es un hash truncado reconocible (p.ej. vino tal cual del placeholder
+    # del PoC, sin pasar por el esquema de fuerza bruta -- o simplemente un plugin que usa IDs
+    # numericos planos), _reverse_hashed_resource_id no encuentra ningun post real -- el gate
+    # debe quedarse inactivo (ninguna meta escrita) en vez de romper el resto del ataque. El
+    # servidor fake rechaza CUALQUIER candidato (para que la fuerza bruta de IDs ofuscados, YA
+    # existente, tampoco "corrija" el valor original a un hash real por su cuenta).
+    import binoracle.workflows.wpverify as wpverify
+
+    meta_calls = []
+
+    class _FakeLab:
+        def wp_cli(self, *args, **kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = _R()
+            if args[:3] == ("post", "meta", "update"):
+                meta_calls.append(args)
+            return r
+
+        def teardown(self):
+            pass
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"success":false,"data":"nope"}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "ultimate-member",
+        "/wp-admin/admin-ajax.php?action=um_get_members", "POST",
+        {"nonce": "x", "directory_id": "not-a-real-hash-at-all", "sorting": "1"},
+        sqli_param_hint="sorting")
+
+    assert meta_calls == []
+    assert res.ok is True, "no debe romperse solo porque el gate no pudiera activarse"
+
+
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
     # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
     # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando
