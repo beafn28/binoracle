@@ -562,6 +562,116 @@ def test_r2session_cmd_timeout_never_hangs_the_pipeline():
     assert not fast.process.killed
 
 
+def test_r2session_get_never_hangs_on_a_stuck_initial_analysis(monkeypatch):
+    # Mismo bug que cmd_timeout() arregla para `pdg`, pero en el ANALISIS INICIAL ('aaa') que
+    # get() dispara antes de poder cachear nada -- bug real encontrado en vivo: un binario estatico
+    # grande del corpus de practica (static-PIE, arrastra la libc entera) hace que este analisis
+    # tarde varios minutos, y si r2 se queda REALMENTE colgado no habia ningun limite que lo
+    # parase -- el mismo punto ciego que cmd_timeout() cubre para 'pdg', aqui en el chequeo de
+    # entrada que PRECEDE a cualquier cmd_timeout().
+    import os
+    import time
+    import tempfile
+    from binoracle.oracles import r2session
+
+    d = tempfile.mkdtemp()
+    b = os.path.join(d, "target2.bin")
+    with open(b, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _HangingR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            time.sleep(5)  # mucho mas que el timeout de prueba
+            return "nunca deberia llegar aqui"
+        def quit(self):
+            pass
+
+    fake = _HangingR2()
+    import r2pipe as _r2pipe_mod
+    monkeypatch.setattr(_r2pipe_mod, "open", lambda *a, **kw: fake)
+    r2session._CACHE.pop(os.path.abspath(b), None)
+
+    t0 = time.time()
+    r = r2session.get(b, analysis_timeout=0.2)
+    elapsed = time.time() - t0
+
+    assert r is None, "un analisis inicial colgado debe degradar a None, nunca bloquear"
+    assert elapsed < 2.0, "get() no debe esperar mucho mas que analysis_timeout"
+    assert fake.process.killed
+    assert os.path.abspath(b) not in r2session._CACHE, "una sesion que nunca termino de analizarse no se cachea"
+
+    # camino feliz: el analisis que responde a tiempo se cachea normalmente
+    class _FastR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            return ""
+        def quit(self):
+            pass
+    fast = _FastR2()
+    monkeypatch.setattr(_r2pipe_mod, "open", lambda *a, **kw: fast)
+    r2session._CACHE.pop(os.path.abspath(b), None)
+    r2 = r2session.get(b, analysis_timeout=2.0)
+    assert r2 is fast
+    assert os.path.abspath(b) in r2session._CACHE
+    r2session._CACHE.pop(os.path.abspath(b), None)
+
+
+def test_r2oracle_analysis_timeout_degrades_instead_of_hanging(monkeypatch):
+    # Mismo bug, tercera instancia: R2Oracle._ensure_analyzed_pipe() (el otro punto de entrada al
+    # analisis inicial, usado cuando NO se pasa por la cache compartida de r2session) tampoco tenia
+    # ningun limite de tiempo -- confirmado en vivo corriendo la suite completa: el analisis de un
+    # binario static-PIE del corpus se quedo consumiendo CPU minutos sin volver.
+    import time
+    from binoracle.oracles.static_r2 import R2Oracle
+    import binoracle.oracles.static_r2 as sr2
+
+    oc = R2Oracle("fake.bin", deep=True)
+    oc.analysis_timeout_s = 0.2
+
+    class _FakeProc:
+        def __init__(self):
+            self.killed = False
+        def kill(self):
+            self.killed = True
+
+    class _HangingR2:
+        def __init__(self):
+            self.process = _FakeProc()
+        def cmd(self, c):
+            time.sleep(5)
+            return "nunca deberia llegar aqui"
+
+    fake = _HangingR2()
+    monkeypatch.setattr(oc, "_pipe", lambda: fake)
+    monkeypatch.setattr(sr2, "_HAVE_R2PIPE", True)
+
+    t0 = time.time()
+    out = oc._run("afl", analyze=True)
+    elapsed = time.time() - t0
+
+    assert elapsed < 2.0, "_run no debe esperar mucho mas que analysis_timeout_s"
+    assert "timed out" in out
+    assert fake.process.killed
+    assert oc._analysis_timed_out is True
+
+    # una segunda llamada no debe reintentar el analisis (ni abrir otro proceso r2): degrada
+    # directamente, rapido.
+    t0 = time.time()
+    out2 = oc._run("afl", analyze=True)
+    elapsed2 = time.time() - t0
+    assert elapsed2 < 0.5
+    assert "timed out" in out2
+
+
 def test_sarif_export():
     import json
     from binoracle.report.render import findings_to_sarif

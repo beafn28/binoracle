@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 from typing import List, Optional
 
 from .base import Oracle, Tool, ToolParam, ToolResult
@@ -42,6 +43,14 @@ class R2Oracle(Oracle):
         self.analysis_cmd = "aaa" if deep else "aa"
         self._r2 = None
         self._analyzed = False
+        self._analysis_timed_out = False
+        # Acotado como el resto de oraculos (r2session.get()/cmd_timeout(), AngrOracle._reachable):
+        # el analisis inicial ('aa'/'aaa') en un binario grande/estatico puede tardar varios
+        # minutos, y si r2 se queda REALMENTE colgado (bug propio de r2 en un binario raro) no
+        # hay ningun otro limite que lo pare -- bug real encontrado en vivo, mismo patron que ya
+        # se arreglo para `pdg` y para AngrOracle._reachable(), aqui en el chequeo de entrada que
+        # los precede a todos.
+        self.analysis_timeout_s = 180.0
 
     def available(self) -> bool:
         return _HAVE_R2PIPE or shutil.which("r2") is not None or shutil.which("radare2") is not None
@@ -56,16 +65,50 @@ class R2Oracle(Oracle):
         return self._r2
 
     def _ensure_analyzed_pipe(self):
-        if not self._analyzed:
-            self._pipe().cmd(self.analysis_cmd)
-            self._analyzed = True
+        if self._analyzed or self._analysis_timed_out:
+            return
+        r2 = self._pipe()
+        result: dict = {}
+        def _run_analysis():
+            try:
+                r2.cmd(self.analysis_cmd)
+                result["ok"] = True
+            except Exception:
+                result["ok"] = False
+        th = threading.Thread(target=_run_analysis, daemon=True)
+        th.start()
+        th.join(self.analysis_timeout_s)
+        if th.is_alive() or not result.get("ok"):
+            # r2 realmente colgado (o el analisis fallo): matar el proceso colgado en vez de
+            # dejarlo bloquear el resto del pipeline; el hilo que sigue esperando el pipe queda
+            # abandonado (es daemon). self._r2 se descarta -- cualquier intento posterior de
+            # reabrir empezaria de cero, pero se marca timed_out para no reintentar el mismo
+            # analisis eterno en esta misma instancia.
+            try:
+                r2.process.kill()
+            except Exception:
+                pass
+            self._analysis_timed_out = True
+            self._r2 = None
+            return
+        self._analyzed = True
 
     def _run(self, cmd: str, analyze: bool = True) -> str:
         """Run one r2 command (with analysis if needed) and return raw text."""
         if _HAVE_R2PIPE:
+            if analyze and self._analysis_timed_out:
+                # ya se intento y se agoto el tiempo en esta instancia -- no abrir otro proceso
+                # r2 inutil solo para descartarlo, devolver el degradado directamente.
+                return (f"[r2 analysis ('{self.analysis_cmd}') timed out after "
+                        f"{self.analysis_timeout_s:.0f}s -- binary too large/complex or r2 "
+                        f"itself stuck; degrading instead of blocking the pipeline]")
             r2 = self._pipe()
             if analyze:
                 self._ensure_analyzed_pipe()
+                if self._analysis_timed_out:
+                    return (f"[r2 analysis ('{self.analysis_cmd}') timed out after "
+                            f"{self.analysis_timeout_s:.0f}s -- binary too large/complex or r2 "
+                            f"itself stuck; degrading instead of blocking the pipeline]")
             return r2.cmd(cmd) or ""
         # subprocess fallback
         exe = shutil.which("r2") or shutil.which("radare2")
