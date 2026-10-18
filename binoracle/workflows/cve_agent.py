@@ -1606,6 +1606,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          (f"the plugin requires {', '.join(companion_plugins)} to be active to "
                          f"load its own functionality (detected in the real source) -- will be "
                          f"installed in the lab before attacking")))
+            # calculado AQUI, UNA vez, para que CUALQUIER tecnica dinamica de WordPress (no solo
+            # SQLi, donde se encontro por primera vez) pueda pasarlo a _bootstrap_lab -- crea una
+            # pagina real con el shortcode del plugin de la que _auto_resolve_wp_blockers rasca
+            # un nonce especifico de una accion AJAX concreta, cuando ninguna pagina generica
+            # (login, portada) lo tiene -- confirmado en vivo, CVE-2024-1071 (ver
+            # verify_wordpress_sqli, que recalcula su propia version mas afinada con el fichero
+            # GROUNDED mas abajo; esta generica basta para las demas tecnicas, que antes de esto
+            # ni siquiera podian pedir esta pagina).
+            from .websource import find_shortcode_name as _find_shortcode_name_generic
+            shortcode_name_generic = (_find_shortcode_name_generic(fr.local_path, plugin_dir)
+                                      if not is_drupal and not is_joomla else None)
             if fn_names:
                 step("confirmando en el codigo real las funciones citadas por el LLM..." if es else
                      "confirming the LLM-cited functions in the real source...")
@@ -1798,7 +1809,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "POST", params,
                         id_param_hint=id_p or "", email_param_hint=email_p or "",
-                        pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                        pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                     # mismo bucle de aprendizaje-y-reintento que el resto de tecnicas WordPress --
                     # no existia antes para account-takeover/login-as (pedido explicitamente:
                     # extenderlo "a todos"), asi que esta es la PRIMERA vez que estas dos tecnicas
@@ -1818,7 +1830,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
                             params, id_param_hint=pr or "", email_param_hint=email_p or "",
                             pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
-                            companion_plugins=companion_plugins,
+                            companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                             extra_nonce_pages=list(ato_extra_nonce_pages),
                             extra_setup_trigger_paths=list(ato_extra_setup_trigger_paths))
                     wr = _run_evidence_retry_loop(
@@ -1834,7 +1846,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     wr = verify_wordpress_direct_login_as(
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "GET", params,
-                        id_param_hint=id_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                        id_param_hint=id_p or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                     lia_extra_nonce_pages: List[str] = []
                     lia_extra_setup_trigger_paths: List[str] = []
                     def _on_lia_suggestion(sug):
@@ -1848,7 +1861,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         return verify_wordpress_direct_login_as(
                             fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET",
                             params, id_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                            companion_plugins=companion_plugins,
+                            companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                             extra_nonce_pages=list(lia_extra_nonce_pages),
                             extra_setup_trigger_paths=list(lia_extra_setup_trigger_paths))
                     wr = _run_evidence_retry_loop(
@@ -1940,7 +1953,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_path_traversal(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
-                    path_param_hint=path_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 # aprendizaje y reintento: mismo bucle acotado que el SQLi -- el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
                 # concreta en ESA evidencia, nunca a ciegas. Tambien puede señalar una pagina
@@ -1961,7 +1975,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_path_traversal(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(pt_extra_nonce_pages),
                         extra_setup_trigger_paths=list(pt_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2097,7 +2111,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_command_injection(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
-                    cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 cmdi_extra_nonce_pages: List[str] = []
                 cmdi_extra_setup_trigger_paths: List[str] = []
                 def _on_cmdi_suggestion(sug):
@@ -2111,7 +2126,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_command_injection(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(cmdi_extra_nonce_pages),
                         extra_setup_trigger_paths=list(cmdi_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2404,7 +2419,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_ssrf(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
-                    url_param_hint=url_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 ssrf_wp_extra_nonce_pages: List[str] = []
                 ssrf_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssrf_wp_suggestion(sug):
@@ -2418,7 +2434,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_ssrf(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         url_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(ssrf_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(ssrf_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2510,7 +2526,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(ephemeral WordPress+MySQL in Docker)..."))
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
-                                          xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                                          xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
+                                          companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):
@@ -2524,7 +2541,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_xss(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         xss_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(xss_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(xss_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2588,7 +2605,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "engine (ephemeral WordPress+MySQL in Docker)..."))
                 wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "GET", params,
-                                           ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                                           ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
+                                           companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 ssti_wp_extra_nonce_pages: List[str] = []
                 ssti_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssti_wp_suggestion(sug):
@@ -2602,7 +2620,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_ssti(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(ssti_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(ssti_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2667,7 +2685,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "entity (ephemeral WordPress+MySQL in Docker)..."))
                 wr = verify_wordpress_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
-                                          xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                                          xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s,
+                                          companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 xxe_wp_extra_nonce_pages: List[str] = []
                 xxe_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xxe_wp_suggestion(sug):
@@ -2681,7 +2700,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_xxe(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         xml_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(xxe_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(xxe_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2746,7 +2765,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "redirects (ephemeral WordPress+MySQL in Docker)..."))
                 wr = verify_wordpress_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                     notes.get("http_method") or "GET", params,
-                                                    redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                                                    redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
+                                                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 or_wp_extra_nonce_pages: List[str] = []
                 or_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_or_wp_suggestion(sug):
@@ -2760,7 +2780,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_open_redirect(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(or_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(or_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2825,7 +2845,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(ephemeral WordPress+MySQL in Docker)..."))
                 wr = verify_wordpress_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                   notes.get("http_method") or "POST", params,
-                                                  file_param_hint=file_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                                                  file_param_hint=file_p or "", on_step=step, budget_s=budget_s,
+                                                  companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 fu_wp_extra_nonce_pages: List[str] = []
                 fu_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_fu_wp_suggestion(sug):
@@ -2839,7 +2860,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_file_upload(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
                         file_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(fu_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(fu_wp_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2955,7 +2976,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     notes.get("http_method") or "POST", params,
                     table_name=notes.get("table_name"), column_name=notes.get("column_name"),
                     id_column=notes.get("id_column") or "id",
-                    serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 # mismo bucle de aprendizaje-y-reintento que el resto -- aqui el PASO 1 es el que
                 # puede bloquearse por nonce/setup sin resolver (el PASO 2 lee directo via wp-cli,
                 # no pasa por HTTP, asi que no tiene ese bloqueo).
@@ -2975,7 +2997,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         column_name=notes.get("column_name"),
                         id_column=notes.get("id_column") or "id",
                         serial_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(dct_extra_nonce_pages),
                         extra_setup_trigger_paths=list(dct_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(
@@ -2996,7 +3018,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_deserialization(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "POST", params,
-                    serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                    serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
                 des_extra_nonce_pages: List[str] = []
                 des_extra_setup_trigger_paths: List[str] = []
                 def _on_des_suggestion(sug):
@@ -3010,7 +3033,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_wordpress_deserialization(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
                         params, serial_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins,
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         extra_nonce_pages=list(des_extra_nonce_pages),
                         extra_setup_trigger_paths=list(des_extra_setup_trigger_paths))
                 wr = _run_evidence_retry_loop(

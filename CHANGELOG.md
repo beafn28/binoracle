@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Generalized the shortcode-page-for-nonce fix to all 12 WordPress dynamic verifiers**
+  (previously SQLi-only): `verify_wordpress_account_takeover`, `_direct_login_as`,
+  `_path_traversal`, `_command_injection`, `_ssrf`, `_xss`, `_ssti`, `_xxe`,
+  `_open_redirect`, `_file_upload`, `_deserialization` and `_deserialization_custom_table`
+  now all accept `shortcode_name` and thread it into `_bootstrap_lab` — a real, generic
+  page using the plugin's own shortcode, which `_auto_resolve_wp_blockers` can scrape for a
+  nonce specific to the AJAX action under attack. Before this, only SQLi could ask for that
+  page at all; any other technique attacking a plugin's own AJAX action (not a generic
+  login/front page) hit the exact same unsolvable "Wrong Nonce" wall SQLi did against
+  CVE-2024-1071, with no way to fix it short of passing a raw nonce by hand.
+  `cve_agent.py` now computes this shortcode name ONCE per investigation (shared across every
+  technique's dispatch, WordPress-only) instead of only within the SQLi branch, and threads
+  it into all corresponding `verify_wordpress_*` calls, including their retry-loop closures.
 - **`investigate --keep-lab-on-failure`**: when the automatic WordPress SQLi verification
   doesn't confirm, leaves the ephemeral WordPress+MySQL Docker lab ALIVE (base URL + admin
   credentials surfaced in the report) instead of tearing it down, and skips the retry loop

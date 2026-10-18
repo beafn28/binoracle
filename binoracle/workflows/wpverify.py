@@ -1279,12 +1279,21 @@ def verify_wordpress_account_takeover(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Levanta WordPress+MySQL en Docker, instala el plugin ya descargado en `plugin_source_dir`
     (debe contener `<slug>/...`), crea un usuario subscriber y un admin, inicia sesion como el
     subscriber y envia la peticion de `endpoint`/`http_method`/`parameters` apuntando al ID del
     admin con un email/password nuevos. `verified=True` SOLO si un login posterior como admin con
-    la password nueva funciona de verdad. Siempre desmonta el laboratorio al terminar."""
+    la password nueva funciona de verdad. Siempre desmonta el laboratorio al terminar.
+
+    `shortcode_name`, si se da, crea una pagina real con el shortcode del plugin ANTES del
+    ataque -- no para atacarla (este verificador siempre ataca `endpoint` tal cual), sino para
+    que _auto_resolve_wp_blockers tenga una pagina real del plugin de donde rascar un nonce
+    especifico de una accion AJAX concreta, ademas de las paginas genericas (login, portada) que
+    nunca lo tienen -- confirmado en vivo, CVE-2024-1071 (ver verify_wordpress_sqli, donde se
+    encontro por primera vez este mismo bloqueo de infraestructura, generico a cualquier
+    verificador, no solo SQLi)."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1306,7 +1315,8 @@ def verify_wordpress_account_takeover(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -1421,6 +1431,7 @@ def verify_wordpress_direct_login_as(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica la OTRA forma de account-takeover por missing-authorization: un plugin cuya accion
     deja a un usuario de bajo privilegio CONVERTIRSE directamente en la sesion de otro usuario
@@ -1439,9 +1450,12 @@ def verify_wordpress_direct_login_as(
     PHP -- exigir el cambio de UNA cookie concreta habria dado un falso negativo contra ese CVE
     real (confirmado probando contra el plugin de verdad).
     Limitacion conocida: si el endpoint real exige un nonce de WordPress (`_wpnonce`) que no esta
-    entre `parameters`, la peticion fallara con ese nonce invalido -- hay que raspar el nonce del
-    HTML de la pagina que lo genera y pasarlo en `parameters` (trabajo futuro: hacerlo aqui
-    automaticamente). Siempre desmonta el laboratorio al terminar."""
+    entre `parameters`, _auto_resolve_wp_blockers ya intenta rasparlo de cualquier pagina real
+    publicada del sitio -- `shortcode_name`, si se da, crea una pagina real con el shortcode del
+    plugin ANTES del ataque para que ese scraping tenga tambien una pagina que de verdad invoca
+    el plugin (no solo login/portada genericas), de donde sacar el nonce de una accion AJAX
+    concreta cuando ninguna otra pagina lo tiene (confirmado en vivo, CVE-2024-1071 -- ver
+    verify_wordpress_sqli). Siempre desmonta el laboratorio al terminar."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -1461,7 +1475,8 @@ def verify_wordpress_direct_login_as(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -1612,6 +1627,7 @@ def verify_wordpress_path_traversal(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
     del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
@@ -1643,7 +1659,8 @@ def verify_wordpress_path_traversal(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -1863,6 +1880,7 @@ def verify_wordpress_command_injection(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica command/OS injection probando que el servidor remoto EVALUA aritmetica que nunca
     se le mando literal: el payload pide `$(( a + b ))` para dos numeros aleatorios y, si la
@@ -1888,7 +1906,8 @@ def verify_wordpress_command_injection(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -2629,6 +2648,7 @@ def verify_wordpress_ssrf(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica SSRF levantando un contenedor 'callback' en la MISMA red Docker del laboratorio
     (no expuesto a internet, solo alcanzable desde dentro) y apuntando el parametro de URL/fichero
@@ -2655,7 +2675,8 @@ def verify_wordpress_ssrf(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -2768,6 +2789,7 @@ def verify_wordpress_xss(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica XSS (reflejado, o almacenado cuando la propia respuesta lo renderiza de vuelta)
     cargando la respuesta del endpoint en un Chromium headless REAL (ver _xss_render): el payload
@@ -2807,7 +2829,8 @@ def verify_wordpress_xss(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -2943,6 +2966,7 @@ def verify_wordpress_ssti(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica server-side template injection con la misma idea que command injection: el payload
     pide al motor de plantillas que CALCULE un producto de dos numeros aleatorios (sintaxis de
@@ -2968,7 +2992,8 @@ def verify_wordpress_ssti(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -3081,6 +3106,7 @@ def verify_wordpress_xxe(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica XML External Entity con el mismo patron de fichero canario que path-traversal/LFI
     (ver verify_wordpress_path_traversal): planta un secreto aleatorio en una ruta del sistema de
@@ -3102,7 +3128,8 @@ def verify_wordpress_xxe(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -3277,6 +3304,7 @@ def verify_wordpress_open_redirect(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica open redirect mandando como valor del parametro una URL EXTERNA completa, con
     redirects deshabilitados en el cliente (allow_redirects=False) para inspeccionar la cabecera
@@ -3302,7 +3330,8 @@ def verify_wordpress_open_redirect(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -3404,6 +3433,7 @@ def verify_wordpress_file_upload(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica unrestricted file upload (webshell) en dos pasos, ambos con prueba dura:
 
@@ -3435,7 +3465,8 @@ def verify_wordpress_file_upload(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -3775,6 +3806,7 @@ def verify_wordpress_deserialization(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Verifica insecure deserialization (PHP Object Injection) en DOS pasos, ambos con prueba
     dura (ver deserialize_gadgets.py para el porque de este diseño):
@@ -3821,7 +3853,8 @@ def verify_wordpress_deserialization(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 
@@ -3909,6 +3942,7 @@ def verify_wordpress_deserialization_custom_table(
     companion_plugins: Optional[list] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
 ) -> WpVerifyResult:
     """Variante EN DOS PASOS de verify_wordpress_deserialization, apuntando al mecanismo REAL de
     object injection almacenado en WordPress -- NO la API de Options/Transients (ver
@@ -3970,7 +4004,8 @@ def verify_wordpress_deserialization_custom_table(
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
+                              extra_setup_trigger_paths=extra_setup_trigger_paths,
+                              shortcode_name=shortcode_name)
         if boot is None:
             return res
 

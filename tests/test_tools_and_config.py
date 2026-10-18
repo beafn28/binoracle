@@ -11056,6 +11056,54 @@ def test_verify_wordpress_sqli_still_attacks_given_endpoint_with_shortcode_page_
     assert all("respuesta_true_recorte" in t for t in res.evidence["boolean_intentos"])
 
 
+def test_verify_wordpress_other_techniques_also_thread_shortcode_name_to_bootstrap(monkeypatch):
+    # el mismo bug/fix que SQLi (ver test_verify_wordpress_sqli_still_attacks_given_endpoint_with_
+    # shortcode_page_for_nonce): CUALQUIER tecnica dinamica de WordPress puede atacar un endpoint
+    # AJAX propio cuyo nonce solo se encuentra en una pagina real que invoque el plugin, no en
+    # paginas genericas (login/portada) -- no es exclusivo de SQLi. Generalizado a 1071 2026:
+    # confirma que account-takeover, login-as, path-traversal, command-injection, SSRF, XSS,
+    # SSTI, XXE, open-redirect, file-upload y deserializacion (ambas variantes) tambien reciben
+    # y pasan `shortcode_name` a _bootstrap_lab -- sin esto, antes ni siquiera podian PEDIR esa
+    # pagina para rascar el nonce.
+    import binoracle.workflows.wpverify as wpverify
+
+    bootstrap_calls = []
+
+    def fake_bootstrap(*a, **kw):
+        bootstrap_calls.append(kw)
+        return None  # corta aqui -- solo nos interesa que shortcode_name llegase
+
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", fake_bootstrap)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    common = ("/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=foo", "GET")
+    calls = [
+        lambda: wpverify.verify_wordpress_account_takeover(
+            *common, {"id": "1", "email": "x"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_direct_login_as(
+            *common, {"id": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_path_traversal(
+            *common, {"path": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_command_injection(
+            *common, {"cmd": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_ssrf(
+            *common, {"url": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_ssti(
+            *common, {"q": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_xxe(
+            *common, {"xml": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_open_redirect(
+            *common, {"redirect": "1"}, shortcode_name="sc"),
+        lambda: wpverify.verify_wordpress_file_upload(
+            *common, {"file": "1"}, shortcode_name="sc"),
+    ]
+    for call in calls:
+        bootstrap_calls.clear()
+        call()
+        assert bootstrap_calls, "_bootstrap_lab debia llamarse"
+        assert bootstrap_calls[0].get("shortcode_name") == "sc"
+
+
 def test_verify_wordpress_sqli_threads_relationship_table_only_for_bare_root(monkeypatch):
     # relationship_table solo tiene sentido junto con shortcode_name (no hay pagina a la que
     # enlazar la fila sin ella) -- debe pasarse a _bootstrap_lab cuando el endpoint es la raiz,
