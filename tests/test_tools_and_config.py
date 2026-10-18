@@ -3270,6 +3270,75 @@ def test_symbolic_angr_reachable_never_hangs_past_its_budget():
     assert len(fake_simgr.active) <= 50
 
 
+def test_capstone_oracle_disassembles_a_real_elf_without_r2(monkeypatch):
+    # Gap del ROADMAP: "capstone fallback oracle (la extra existe pero no se usa)". Este oraculo
+    # solo debe activarse cuando radare2 NO esta disponible (si no, duplicaria static_r2 sin
+    # aportar nada mejor); cuando se activa, debe decodificar instrucciones REALES de un ELF
+    # real compilado, no un mock -- confirma que capstone/pyelftools de verdad leen el binario.
+    import shutil
+    import os
+    import binoracle.oracles.capstone_fallback as cf
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        return  # corpus no construido en este entorno (bash samples/build.sh): se omite
+
+    if not (cf._HAVE_CAPSTONE and cf._HAVE_PYELF):
+        return  # capstone/pyelftools no instalados en este entorno: se omite
+
+    monkeypatch.setattr(cf, "_HAVE_R2PIPE", False)
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name: None if name in ("r2", "radare2") else real_which(name))
+
+    oc = cf.CapstoneOracle(binp)
+    assert oc.available() is True
+
+    tools = {t.name: t for t in oc.tools()}
+    res = tools["cs_disasm_entry"].run(count=10)
+    assert res.ok, res.error
+    assert res.meta["fallback"] is True
+    assert res.meta["count"] == 10
+    # endbr64 es la primera instruccion tipica en un x86-64 moderno con CET; si esto aparece, de
+    # verdad se decodificaron bytes reales del fichero en la direccion de entrada real del ELF.
+    assert "endbr64" in res.data
+
+    res_at = tools["cs_disasm_at"].run(addr=res.meta["addr"], count=3)
+    assert res_at.ok
+    assert res_at.data.splitlines()[0] == res.data.splitlines()[0]
+
+    bad = tools["cs_disasm_at"].run(addr="0xdeadbeef", count=5)
+    assert bad.ok is False
+    assert "PT_LOAD" in bad.error
+
+
+def test_capstone_oracle_stays_off_when_r2_is_available():
+    # Con r2 presente (el caso normal), el fallback no debe registrarse -- static_r2 ya cubre
+    # disassembly y mucho mas (xrefs, funciones); duplicarlo solo confundiria al agente con dos
+    # oraculos haciendo lo mismo peor.
+    import shutil
+    import binoracle.oracles.capstone_fallback as cf
+    if not (shutil.which("r2") or shutil.which("radare2") or cf._HAVE_R2PIPE):
+        return  # este entorno tampoco tiene r2: no hay nada que comprobar aqui
+    oc = cf.CapstoneOracle("samples/bin/ret2win")
+    assert oc.available() is False
+    assert "radare2" in oc.why_unavailable()
+
+
+def test_capstone_oracle_in_build_registry_degrades_honestly_with_r2(tmp_path):
+    # Sanity end-to-end: build_registry() nunca debe romperse ni duplicar herramientas por
+    # registrar el oraculo capstone junto al de r2.
+    from binoracle.oracles import build_registry
+    import os
+    import shutil
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        return
+    reg = build_registry(binp)
+    names = [t.name for t in reg.available_tools()]
+    assert len(names) == len(set(names))   # sin nombres de tool duplicados
+    if shutil.which("r2") or shutil.which("radare2"):
+        assert "cs_disasm_entry" not in names   # r2 presente: el fallback no se registro
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
