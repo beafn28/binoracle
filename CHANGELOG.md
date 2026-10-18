@@ -7,6 +7,36 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **WordPress SQLi verifier, a fifth technique for ORDER BY-context injection**: the first
+  four techniques (error-based, UNION-based, boolean-blind, time-based blind) all assume the
+  injected value stays part of a WHERE clause (`<value><closer> AND/OR <condition>`) — a sink
+  that puts the parameter directly into an ORDER BY (e.g. an unwhitelisted `WP_User_Query`
+  `orderby`, confirmed live against CVE-2024-1071/Ultimate Member's `sorting` parameter) can
+  never be confirmed that way: there's no WHERE to concatenate onto, and a quote just breaks
+  the column/expression syntax instead of closing a string. The new last-resort technique
+  sends the injected value as a complete, bare scalar subquery (no AND/OR, no quotes, no
+  comment) — first error-based (`extractvalue`/`updatexml`), then, if that filters nothing, a
+  CONDITIONAL time-based pair (`CASE WHEN 1=1/1=2 THEN SLEEP(5) ELSE 0 END`, stricter than an
+  unconditional `SLEEP` since it proves a real condition controls the delay). Not specific to
+  this plugin — any dynamic column/orderby sink without a whitelist hits the same pattern.
+- **WordPress SQLi verifier, two real infrastructure fixes chained from CVE-2024-1071**: the
+  shortcode page `_bootstrap_lab` creates to source a real nonce now gets created even when
+  the attack targets a concrete endpoint (e.g. an AJAX action) rather than the bare homepage —
+  previously it was skipped whenever a real endpoint was already known, so the nonce scraped
+  always came from a generic page that never carried that specific AJAX action's nonce
+  ("Wrong Nonce" forever). Separately, an endpoint placeholder shaped like an id/directory
+  (e.g. `{dir_id}`) is no longer resolved by guessing "the first 1-6 digit number anywhere in
+  the scraped HTML" — a real page always has *some* unrelated number (a copyright year, a
+  post ID...) that silently wins over the far more reliable validated hashed-ID brute force
+  that already exists for exactly this. ID/dir placeholders are now always left for that
+  brute force. The SQLi retry loop can also now recognize a response rejecting the request
+  for a reason unrelated to the parameter being injected (e.g. "Wrong member directory data")
+  and ask for that additional real parameter by name (`parametro_adicional_requerido`) — added
+  to the request, never replacing the one actually being injected.
+- **`investigate --sqli-param`**: lets the analyst pin the exact injectable parameter name,
+  bypassing the generic id/search/sort heuristic when `--params` also carries another
+  required parameter (e.g. a real directory/resource id) whose name would otherwise be
+  preferred by that heuristic over the real injectable one.
 - **Generic (CMS-agnostic) dynamic verifiers for 10 web vuln classes** (`genericverify.py`):
   for any CVE whose downloaded source isn't a recognized WordPress/Drupal/Joomla plugin,
   binoracle builds and runs the target's own Dockerfile/docker-compose.yml (or, if it has

