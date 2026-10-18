@@ -684,6 +684,35 @@ def _retry_or_keep_lab_alive(keep_lab_on_failure: bool, step, es: bool, wr: "WpV
     return wr
 
 
+def _apply_generic_wp_suggestion(sug: dict, extra_nonce_pages: list,
+                                 extra_setup_trigger_paths: list, params) -> None:
+    """Aplica los TRES campos genericos que cualquier sugerencia de retry de WordPress puede
+    traer (ver _WP_NONCE_SETUP_RETRY_HINT, compartido por las 13 tecnicas) -- factorizado para
+    no repetir la misma mutacion en cada sitio de llamada, y para que ninguna tecnica se quede
+    (como pasaba antes: solo SQLi lo leia) sin aplicar 'parametro_adicional_requerido' aunque su
+    propio prompt YA se lo pida al LLM igual que a SQLi.
+
+    'pagina_extra_para_nonce'/'pagina_setup_admin_requerida' se acumulan en listas que el sitio
+    de llamada ya captura por closure (y pasa como extra_nonce_pages/extra_setup_trigger_paths
+    al siguiente intento). 'parametro_adicional_requerido' -- un campo que el endpoint exige
+    ADEMAS del que se esta inyectando, p.ej. 'directory_id' en CVE-2024-1071, donde el sumidero
+    real nunca se ejecutaba sin el -- se AÑADE a `params` in place, nunca sustituye al
+    parametro inyectable en si (ese sigue siendo el que ya se le paso a _run_evidence_retry_loop
+    aparte)."""
+    p = sug.get("pagina_extra_para_nonce")
+    if p and p not in extra_nonce_pages:
+        extra_nonce_pages.append(p)
+    sp = sug.get("pagina_setup_admin_requerida")
+    if sp and sp not in extra_setup_trigger_paths:
+        extra_setup_trigger_paths.append(sp)
+    extra_p = sug.get("parametro_adicional_requerido")
+    if extra_p:
+        if isinstance(params, dict):
+            params.setdefault(extra_p, "1")
+        elif extra_p not in params:
+            params.append(extra_p)
+
+
 def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
     """True si `plugin_dir` dentro de `local_path` tiene pinta de modulo/tema de Drupal (un
     .info.yml con 'type: module|theme') en vez de un plugin de WordPress -- desambigua el caso
@@ -1846,12 +1875,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     ato_extra_nonce_pages: List[str] = []
                     ato_extra_setup_trigger_paths: List[str] = []
                     def _on_ato_suggestion(sug):
-                        p = sug.get("pagina_extra_para_nonce")
-                        if p and p not in ato_extra_nonce_pages:
-                            ato_extra_nonce_pages.append(p)
-                        sp = sug.get("pagina_setup_admin_requerida")
-                        if sp and sp not in ato_extra_setup_trigger_paths:
-                            ato_extra_setup_trigger_paths.append(sp)
+                        _apply_generic_wp_suggestion(sug, ato_extra_nonce_pages,
+                                                     ato_extra_setup_trigger_paths, params)
                     def _attempt_ato(ep, pr):
                         return verify_wordpress_account_takeover(
                             fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
@@ -1881,12 +1906,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     lia_extra_nonce_pages: List[str] = []
                     lia_extra_setup_trigger_paths: List[str] = []
                     def _on_lia_suggestion(sug):
-                        p = sug.get("pagina_extra_para_nonce")
-                        if p and p not in lia_extra_nonce_pages:
-                            lia_extra_nonce_pages.append(p)
-                        sp = sug.get("pagina_setup_admin_requerida")
-                        if sp and sp not in lia_extra_setup_trigger_paths:
-                            lia_extra_setup_trigger_paths.append(sp)
+                        _apply_generic_wp_suggestion(sug, lia_extra_nonce_pages,
+                                                     lia_extra_setup_trigger_paths, params)
                     def _attempt_lia(ep, pr):
                         return verify_wordpress_direct_login_as(
                             fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET",
@@ -1998,12 +2019,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 pt_extra_nonce_pages: List[str] = []
                 pt_extra_setup_trigger_paths: List[str] = []
                 def _on_wppt_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in pt_extra_nonce_pages:
-                        pt_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in pt_extra_setup_trigger_paths:
-                        pt_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, pt_extra_nonce_pages,
+                                                 pt_extra_setup_trigger_paths, params)
                 def _attempt_wppt(ep, pr):
                     return verify_wordpress_path_traversal(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2153,12 +2170,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 cmdi_extra_nonce_pages: List[str] = []
                 cmdi_extra_setup_trigger_paths: List[str] = []
                 def _on_cmdi_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in cmdi_extra_nonce_pages:
-                        cmdi_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in cmdi_extra_setup_trigger_paths:
-                        cmdi_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, cmdi_extra_nonce_pages,
+                                                 cmdi_extra_setup_trigger_paths, params)
                 def _attempt_cmdi(ep, pr):
                     return verify_wordpress_command_injection(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2330,25 +2343,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 extra_nonce_pages: List[str] = []
                 extra_setup_trigger_paths: List[str] = []
                 def _on_sqli_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in extra_nonce_pages:
-                        extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in extra_setup_trigger_paths:
-                        extra_setup_trigger_paths.append(sp)
-                    # parametro ADICIONAL real que el endpoint exige antes de llegar al sumidero
-                    # (p.ej. 'directory_id' en CVE-2024-1071) -- se AÑADE a `params` (mutado in
-                    # place: _attempt_sqli ya lo captura por closure), nunca sustituye al que se
-                    # esta inyectando (`sqli_p`/`pr`, siempre intacto). Si parece un identificador
-                    # de recurso (nombre con 'id'/'dir'), verify_wordpress_sqli ya intenta
-                    # resolverlo por su cuenta via fuerza bruta de IDs ofuscados (ver
-                    # _auto_resolve_wp_blockers en wpverify.py) antes de atacar.
-                    extra_p = sug.get("parametro_adicional_requerido")
-                    if extra_p:
-                        if isinstance(params, dict):
-                            params.setdefault(extra_p, "1")
-                        elif extra_p not in params:
-                            params.append(extra_p)
+                    _apply_generic_wp_suggestion(sug, extra_nonce_pages,
+                                                 extra_setup_trigger_paths, params)
                 def _attempt_sqli(ep, pr):
                     return verify_wordpress_sqli(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2457,12 +2453,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 ssrf_wp_extra_nonce_pages: List[str] = []
                 ssrf_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssrf_wp_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in ssrf_wp_extra_nonce_pages:
-                        ssrf_wp_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in ssrf_wp_extra_setup_trigger_paths:
-                        ssrf_wp_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, ssrf_wp_extra_nonce_pages,
+                                                 ssrf_wp_extra_setup_trigger_paths, params)
                 def _attempt_ssrf_wp(ep, pr):
                     return verify_wordpress_ssrf(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2567,12 +2559,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in xss_wp_extra_nonce_pages:
-                        xss_wp_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in xss_wp_extra_setup_trigger_paths:
-                        xss_wp_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, xss_wp_extra_nonce_pages,
+                                                 xss_wp_extra_setup_trigger_paths, params)
                 def _attempt_xss_wp(ep, pr):
                     return verify_wordpress_xss(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2649,12 +2637,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 ssti_wp_extra_nonce_pages: List[str] = []
                 ssti_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssti_wp_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in ssti_wp_extra_nonce_pages:
-                        ssti_wp_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in ssti_wp_extra_setup_trigger_paths:
-                        ssti_wp_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, ssti_wp_extra_nonce_pages,
+                                                 ssti_wp_extra_setup_trigger_paths, params)
                 def _attempt_ssti_wp(ep, pr):
                     return verify_wordpress_ssti(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2732,12 +2716,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 xxe_wp_extra_nonce_pages: List[str] = []
                 xxe_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xxe_wp_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in xxe_wp_extra_nonce_pages:
-                        xxe_wp_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in xxe_wp_extra_setup_trigger_paths:
-                        xxe_wp_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, xxe_wp_extra_nonce_pages,
+                                                 xxe_wp_extra_setup_trigger_paths, params)
                 def _attempt_xxe_wp(ep, pr):
                     return verify_wordpress_xxe(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2815,12 +2795,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 or_wp_extra_nonce_pages: List[str] = []
                 or_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_or_wp_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in or_wp_extra_nonce_pages:
-                        or_wp_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in or_wp_extra_setup_trigger_paths:
-                        or_wp_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, or_wp_extra_nonce_pages,
+                                                 or_wp_extra_setup_trigger_paths, params)
                 def _attempt_or_wp(ep, pr):
                     return verify_wordpress_open_redirect(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
@@ -2898,12 +2874,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 fu_wp_extra_nonce_pages: List[str] = []
                 fu_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_fu_wp_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in fu_wp_extra_nonce_pages:
-                        fu_wp_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in fu_wp_extra_setup_trigger_paths:
-                        fu_wp_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, fu_wp_extra_nonce_pages,
+                                                 fu_wp_extra_setup_trigger_paths, params)
                 def _attempt_file_upload_wp(ep, pr):
                     return verify_wordpress_file_upload(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
@@ -3036,12 +3008,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 dct_extra_nonce_pages: List[str] = []
                 dct_extra_setup_trigger_paths: List[str] = []
                 def _on_dct_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in dct_extra_nonce_pages:
-                        dct_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in dct_extra_setup_trigger_paths:
-                        dct_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, dct_extra_nonce_pages,
+                                                 dct_extra_setup_trigger_paths, params)
                 def _attempt_dct(ep, pr):
                     return verify_wordpress_deserialization_custom_table(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
@@ -3078,12 +3046,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 des_extra_nonce_pages: List[str] = []
                 des_extra_setup_trigger_paths: List[str] = []
                 def _on_des_suggestion(sug):
-                    p = sug.get("pagina_extra_para_nonce")
-                    if p and p not in des_extra_nonce_pages:
-                        des_extra_nonce_pages.append(p)
-                    sp = sug.get("pagina_setup_admin_requerida")
-                    if sp and sp not in des_extra_setup_trigger_paths:
-                        des_extra_setup_trigger_paths.append(sp)
+                    _apply_generic_wp_suggestion(sug, des_extra_nonce_pages,
+                                                 des_extra_setup_trigger_paths, params)
                 def _attempt_des(ep, pr):
                     return verify_wordpress_deserialization(
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",

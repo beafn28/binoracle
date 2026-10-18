@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Generalized the LLM retry-suggestion handling to all 12 retry-capable WordPress dynamic
+  verifiers** (previously only SQLi read `parametro_adicional_requerido`, even though the
+  shared retry prompt — `_WP_NONCE_SETUP_RETRY_HINT` — already asks every technique's LLM for
+  it): `_apply_generic_wp_suggestion` factors the three suggestion fields
+  (`pagina_extra_para_nonce`, `pagina_setup_admin_requerida`, `parametro_adicional_requerido`)
+  into one shared function, called by all 12 `_on_*_suggestion` closures
+  (account-takeover, direct-login-as, path-traversal, command-injection, SQLi, SSRF, XSS,
+  SSTI, XXE, open-redirect, file-upload, deserialization and deserialization-custom-table)
+  instead of each duplicating the same two-field mutation and silently dropping the third.
+  Before this, an LLM correctly identifying that e.g. an XSS or SSRF attack needed one more
+  POST parameter to reach the vulnerable sink had no way to act on that insight — only SQLi's
+  retry loop actually applied the suggestion.
 - **Generalized `--keep-lab-on-failure` to all 13 WordPress dynamic verifiers** (previously
   SQLi-only): `_finalize_lab`, shared by every `verify_wordpress_*` function (including CSRF),
   decides once whether to tear the ephemeral lab down or leave it alive for manual
