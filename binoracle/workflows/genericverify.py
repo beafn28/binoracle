@@ -1519,6 +1519,8 @@ def verify_generic_xss(
         res.detail = ("Playwright no esta instalado: la verificacion de XSS necesita un "
                      "navegador real para confirmar EJECUCION, no basta ver el payload "
                      "reflejado en el HTML crudo")
+        res.limitations.append("verificacion dinamica NO intentada: falta Playwright "
+                               "(pip install playwright && playwright install chromium)")
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)

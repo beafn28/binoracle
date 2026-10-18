@@ -2848,6 +2848,8 @@ def verify_wordpress_xss(
         res.detail = ("Playwright no esta instalado: la verificacion de XSS necesita un "
                      "navegador real para confirmar EJECUCION, no basta ver el payload reflejado "
                      "en el HTML crudo")
+        res.limitations.append("verificacion dinamica NO intentada: falta Playwright "
+                               "(pip install playwright && playwright install chromium)")
         return res
 
     lab = _Lab(_token())

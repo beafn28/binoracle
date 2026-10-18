@@ -1138,6 +1138,8 @@ def verify_drupal_xss(
         res.available = False
         res.detail = ("Playwright no esta instalado: la verificacion de XSS necesita un "
                      "navegador real para confirmar EJECUCION")
+        res.limitations.append("verificacion dinamica NO intentada: falta Playwright "
+                               "(pip install playwright && playwright install chromium)")
         return res
 
     lab = _Lab(_token())

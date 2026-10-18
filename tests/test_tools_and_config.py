@@ -4696,6 +4696,25 @@ def test_wpverify_missing_plugin_dir_degrades(monkeypatch):
     assert "no se encuentra" in r.detail
 
 
+def test_wpverify_xss_degrades_honestly_without_playwright(monkeypatch, tmp_path):
+    # Mismo bug que drupalverify/genericverify (ver test_drupalverify_xss_degrades_honestly_
+    # without_playwright): sin Playwright instalado, el degrade dejaba 'limitations' vacio.
+    # Simula la ausencia con sys.modules (no depende de si este entorno concreto lo tiene
+    # instalado o no -- 'from playwright.sync_api import X' lanza ModuleNotFoundError cuando
+    # sys.modules['playwright.sync_api'] es None, igual que si el paquete no estuviera).
+    import sys
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "some-plugin").mkdir()
+    res = wv.verify_wordpress_xss(str(tmp_path), "some-plugin", "/greet", "GET", ["name"],
+                                  xss_param_hint="name", on_step=lambda m: None)
+    assert res.verified is False
+    assert res.available is False
+    assert res.limitations, "debe explicar en limitations que falta Playwright"
+
+
 def test_wpverify_missing_id_or_value_param_degrades(monkeypatch, tmp_path):
     import binoracle.workflows.wpverify as wv
     monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
@@ -5290,6 +5309,25 @@ def test_drupalverify_xss_requires_param(monkeypatch, tmp_path):
     res = dv.verify_drupal_xss(str(tmp_path), "mymodule", "/mymodule/view", "GET", ["foo"])
     assert res.verified is False
     assert res.limitations
+
+
+def test_drupalverify_xss_degrades_honestly_without_playwright(monkeypatch, tmp_path):
+    # Bug real encontrado en vivo (mismo copy-paste en drupalverify/wpverify/genericverify):
+    # cuando Playwright no esta instalado, el degrade ponia 'available=False' y un 'detail'
+    # explicando por que, pero NUNCA anadia nada a 'limitations' -- rompiendo la convencion que
+    # sigue cualquier otro degrade de este mismo modulo (sin docker, sin parametro...) y dejando
+    # 'limitations' vacio pese a que la verificacion dinamica NO se intento.
+    import sys
+    import binoracle.workflows.drupalverify as dv
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    monkeypatch.setattr(dv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    (tmp_path / "mymodule").mkdir()
+    res = dv.verify_drupal_xss(str(tmp_path), "mymodule", "/mymodule/view", "GET", ["foo"],
+                               xss_param_hint="foo")
+    assert res.verified is False
+    assert res.available is False
+    assert res.limitations, "debe explicar en limitations que falta Playwright"
 
 
 def test_drupalverify_ssti_requires_param(monkeypatch, tmp_path):
@@ -8219,6 +8257,30 @@ def test_burpmcp_client_find_tool_requires_connection(tmp_path):
         client.call_tool("whatever", {})
 
 
+def _wait_for_port(port, host="127.0.0.1", timeout=10.0):
+    """Sondea `host:port` hasta que acepta conexiones TCP, en vez de un `time.sleep(N)` fijo.
+
+    Bug de test real encontrado en vivo corriendo la suite completa en un entorno mas lento: los
+    tests de burpmcp que levantan un servidor MCP de mentira (uvicorn + mcp.server) en un
+    subproceso usaban `time.sleep(2)` antes de conectar, asumiendo que el import en frio de
+    'mcp'+'uvicorn' y el arranque del servidor ASGI siempre caben en 2s -- medido en vivo en este
+    entorno: 3.3-3.4s, de sobra para que el cliente (con su propio timeout corto, pensado para
+    probar OTRA cosa, p.ej. 5s en el test de timeout) fallara a conectar aunque el servidor
+    arrancara bien, solo mas tarde. Sondear el puerto real en vez de adivinar un numero fijo es
+    robusto independientemente de cuanto tarde el entorno en importar/arrancar."""
+    import socket
+    import time as _time
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        try:
+            s = socket.create_connection((host, port), timeout=0.2)
+            s.close()
+            return
+        except OSError:
+            _time.sleep(0.1)
+    raise TimeoutError(f"nada escuchando en {host}:{port} tras {timeout}s")
+
+
 @pytest.mark.skipif(
     __import__("importlib").util.find_spec("mcp") is None
     or __import__("importlib").util.find_spec("uvicorn") is None,
@@ -8296,7 +8358,7 @@ uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning
     proc = subprocess.Popen([sys.executable, "-c", server_code],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(2)
+        _wait_for_port(mcp_port)
         client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=15.0)
         client.connect()
         try:
@@ -8437,7 +8499,7 @@ uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning
     proc = subprocess.Popen([sys.executable, "-c", server_code],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(2)
+        _wait_for_port(mcp_port)
         # timeout de CONEXION a Burp deliberadamente corto (5s) -- si request() no reenviara su
         # propio timeout (20s, de sobra para los 6s que tarda el handler) y usara este en su
         # lugar, la llamada fallaria con un TimeoutError bastante antes de los 6s reales.
@@ -8537,7 +8599,7 @@ uvicorn.run(mcp.sse_app(), host="127.0.0.1", port={mcp_port}, log_level="warning
     proc = subprocess.Popen([sys.executable, "-c", server_code],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(2)
+        _wait_for_port(mcp_port)
         client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=15.0)
         client.connect()
         try:
@@ -8869,7 +8931,7 @@ uvicorn.run(HostCheckMiddleware(mcp.sse_app()), host="0.0.0.0", port={mcp_port},
     proc = subprocess.Popen([sys.executable, "-c", server_code],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(2)
+        _wait_for_port(mcp_port)
         client = BurpMCPClient(f"http://2130706433:{mcp_port}/sse", timeout=10.0)
         assert client.host_header == f"127.0.0.1:{mcp_port}"
         client.connect()
@@ -8993,7 +9055,7 @@ uvicorn.run(mcp.sse_app(sse_path="/"), host="127.0.0.1", port={mcp_port}, log_le
     proc = subprocess.Popen([sys.executable, "-c", server_code],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        time.sleep(2)
+        _wait_for_port(mcp_port)
         client = BurpMCPClient(f"http://127.0.0.1:{mcp_port}/sse", timeout=10.0)
         client.connect()
         try:
