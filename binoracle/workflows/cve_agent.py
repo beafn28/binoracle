@@ -2236,13 +2236,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- UNION-based/boolean-blind "
                      "(ephemeral WordPress+MySQL in Docker)..."))
+                # keep_lab_on_failure: el analista pide depuracion manual (--keep-lab-on-failure)
+                # -- las 5 tecnicas automaticas no pueden ver el error real de MySQL cuando el
+                # propio plugin lo captura y responde con JSON limpio en vez de dejarlo salir en
+                # el cuerpo HTTP (confirmado en vivo, CVE-2024-1071), asi que seguir reintentando
+                # a ciegas (que ademas DESTRUIRIA este mismo laboratorio para levantar uno nuevo
+                # en cada vuelta) no ayuda -- un unico intento, con el laboratorio vivo al final
+                # para que el analista mire wp-content/debug.log el mismo, vale mas que tres
+                # intentos ciegos que nunca dejan nada en pie que inspeccionar.
+                keep_lab_on_failure = bool(notes.get("keep_lab_on_failure"))
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
                     setup_wp_options=notes.get("setup_options") or [],
                     companion_plugins=companion_plugins, shortcode_name=shortcode_name,
-                    relationship_table=relationship_table)
+                    relationship_table=relationship_table,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
@@ -2294,10 +2304,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         relationship_table=relationship_table,
                         extra_nonce_pages=list(extra_nonce_pages),
                         extra_setup_trigger_paths=list(extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
-                    wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
-                    max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion)
+                if not keep_lab_on_failure:
+                    wr = _run_evidence_retry_loop(
+                        llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
+                        wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
+                        max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion)
+                elif not wr.verified:
+                    step("--keep-lab-on-failure pedido: no se reintenta (reintentar destruiria "
+                         "este mismo laboratorio para levantar uno nuevo) -- se deja el unico "
+                         "laboratorio de este intento VIVO para inspeccion manual" if es else
+                         "--keep-lab-on-failure requested: not retrying (a retry would destroy "
+                         "this same lab to spin up a new one) -- leaving this attempt's lab "
+                         "ALIVE for manual inspection instead")
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

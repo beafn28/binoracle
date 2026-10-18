@@ -903,6 +903,8 @@ def cmd_investigate(args, config):
         hints["parameters"] = [p.strip() for p in args.params.split(",") if p.strip()]
     if getattr(args, "sqli_param", None):
         hints["sqli_param"] = args.sqli_param
+    if getattr(args, "keep_lab_on_failure", False):
+        hints["keep_lab_on_failure"] = True
     if getattr(args, "functions", None):
         hints["vulnerable_functions"] = [f.strip() for f in args.functions.split(",") if f.strip()]
     if getattr(args, "table_name", None):
@@ -1541,6 +1543,16 @@ def build_parser() -> argparse.ArgumentParser:
                          "--binary or any of --source/--endpoint/etc., which never use the "
                          "cache) -- useful after a binoracle bug fix that should change the "
                          "outcome, since the cache has no time-based expiry otherwise")
+    ip.add_argument("--keep-lab-on-failure", action="store_true",
+                    help="WordPress SQLi only: if the automatic dynamic verification does NOT "
+                         "confirm, leave the ephemeral WordPress+MySQL Docker lab ALIVE (no "
+                         "retry, since a retry would destroy it to spin up a new one) instead "
+                         "of tearing it down -- useful when the target silently swallows the "
+                         "real MySQL error (e.g. an AJAX handler that catches it and always "
+                         "returns clean JSON) and you need to inspect wp-content/debug.log "
+                         "yourself inside the container. The report gives the lab's base URL "
+                         "and admin credentials; you are responsible for tearing it down "
+                         "afterwards (docker network/volume/container matching the printed tag)")
     ip.set_defaults(func=cmd_investigate)
 
     ipb = sub.add_parser("investigate-batch", help="run several 'investigate's IN PARALLEL "

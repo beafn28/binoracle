@@ -2061,6 +2061,7 @@ def verify_wordpress_sqli(
     relationship_table: Optional[dict] = None,
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -2125,7 +2126,19 @@ def verify_wordpress_sqli(
     NINGUNA pagina probada muestra rastro del plugin (ver 'nonce_scraping_diagnostico' en la
     evidencia), el LLM del bucle de reintento puede reconocer que ESTE plugin necesita un paso
     de configuracion propio y señalar la URL que lo dispara, aunque no sea un plugin ya conocido
-    en el registro."""
+    en el registro.
+
+    `keep_lab_on_failure`, si se da y la inyeccion NO se confirmo, deja el laboratorio Docker
+    VIVO en vez de desmontarlo -- las 5 tecnicas automaticas no pueden ver el error real de
+    MySQL cuando el propio plugin lo captura y responde con JSON "limpio" en vez de dejarlo
+    salir en el cuerpo HTTP (confirmado en vivo, CVE-2024-1071: WP_DEBUG_DISPLAY activo no basta
+    si el handler AJAX nunca deja que WordPress pinte el error) -- en ese caso, seguir
+    adivinando payloads a ciegas no avanza nada; hace falta mirar `wp-content/debug.log` DENTRO
+    del contenedor a mano. Con esto activo, `res.evidence['laboratorio_vivo']` trae la URL base
+    y las credenciales de admin para que el analista pueda hacer ese `docker exec` el mismo --
+    el analista (o un comando aparte) es quien debe desmontarlo despues; binoracle NUNCA lo
+    hace automaticamente con esta opcion puesta, para no destruir la pista antes de que de
+    tiempo a mirarla."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -2143,6 +2156,7 @@ def verify_wordpress_sqli(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         attack_endpoint_is_bare_root = (endpoint or "/").strip() in ("", "/")
         # shortcode_name se crea SIEMPRE que se dio (no solo cuando se ataca la raiz): aunque el
@@ -2588,8 +2602,24 @@ def verify_wordpress_sqli(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        if keep_lab_on_failure and not res.verified and boot is not None:
+            step(f"dejando el laboratorio VIVO para inspeccion manual (no se desmonta) -- "
+                 f"base_url={boot.base_url}, admin={boot.admin_user}/{boot.admin_pass} -- "
+                 f"mira wp-content/debug.log DENTRO del contenedor con 'docker exec' para ver "
+                 f"el error real de MySQL que las 5 tecnicas automaticas no pueden ver si el "
+                 f"plugin lo capturo antes de que llegara al cuerpo HTTP; desmontalo tu mismo "
+                 f"cuando termines ('docker network rm'/'docker volume rm'/'docker rm -f' con "
+                 f"el tag '{lab.tag}', o reinicia Docker)")
+            res.evidence["laboratorio_vivo"] = {
+                "base_url": boot.base_url, "admin_user": boot.admin_user,
+                "admin_pass": boot.admin_pass, "lab_tag": lab.tag}
+            res.limitations.append(
+                f"laboratorio dejado VIVO a proposito (keep_lab_on_failure) para inspeccion "
+                f"manual de wp-content/debug.log -- desmontalo tu mismo cuando termines "
+                f"(tag Docker: '{lab.tag}')")
+        else:
+            step("desmontando el laboratorio (contenedores/red/volumen)...")
+            lab.teardown()
 
 
 def verify_wordpress_ssrf(

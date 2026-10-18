@@ -10873,6 +10873,110 @@ def test_verify_wordpress_sqli_custom_sort_gate_skips_meta_sync_when_id_not_a_kn
     assert res.ok is True, "no debe romperse solo porque el gate no pudiera activarse"
 
 
+def test_verify_wordpress_sqli_keep_lab_on_failure_skips_teardown_when_not_verified(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-1071: las 5 tecnicas automaticas no pueden ver el
+    # error real de MySQL cuando el propio plugin lo captura y responde con JSON limpio --
+    # seguir reintentando a ciegas no avanza nada. Con --keep-lab-on-failure, el laboratorio
+    # debe quedar VIVO (sin desmontar) para que el analista pueda inspeccionar
+    # wp-content/debug.log el mismo, con la URL/credenciales reales en la evidencia.
+    import binoracle.workflows.wpverify as wpverify
+
+    teardown_calls = []
+
+    class _FakeLab:
+        tag = "abc123"
+
+        def wp_cli(self, *a, **k):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+
+        def teardown(self):
+            teardown_calls.append(True)
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"success":true,"data":[]}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="binoracle_admin",
+        admin_pass="s3cr3t", sub_user="s", sub_pass="p", sub_sess=_FakeSession(),
+        admin_sess=None, shots=[], capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=foo", "POST",
+        {"sorting": "1"}, sqli_param_hint="sorting", keep_lab_on_failure=True)
+
+    assert res.verified is False
+    assert teardown_calls == [], "no debe desmontarse el laboratorio con keep_lab_on_failure"
+    live = res.evidence.get("laboratorio_vivo")
+    assert live is not None
+    assert live["base_url"] == "http://lab.invalid"
+    assert live["admin_user"] == "binoracle_admin"
+    assert live["admin_pass"] == "s3cr3t"
+    assert live["lab_tag"] == "abc123"
+    assert any("laboratorio dejado VIVO" in lim for lim in res.limitations)
+
+
+def test_verify_wordpress_sqli_keep_lab_on_failure_still_tears_down_when_verified(monkeypatch):
+    # keep_lab_on_failure solo aplica al caso NO verificado -- si la inyeccion SI se confirmo,
+    # no hay nada que depurar, y el laboratorio se desmonta normalmente.
+    import binoracle.workflows.wpverify as wpverify
+
+    teardown_calls = []
+
+    class _FakeLab:
+        tag = "abc123"
+
+        def wp_cli(self, *a, **k):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+
+        def teardown(self):
+            teardown_calls.append(True)
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            payload = kw.get("data") or kw.get("params") or {}
+            val = payload.get("sorting", "")
+
+            class _R:
+                status_code = 200
+            r = _R()
+            if "extractvalue" in val:
+                r.text = "XPATH syntax error: '~5.7.44-bino'"
+            else:
+                r.text = '{"success":true,"data":[]}'
+            return r
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-plugin", "/wp-admin/admin-ajax.php?action=foo", "POST",
+        {"sorting": "1"}, sqli_param_hint="sorting", keep_lab_on_failure=True)
+
+    assert res.verified is True
+    assert teardown_calls == [True]
+    assert "laboratorio_vivo" not in res.evidence
+
+
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
     # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
     # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando

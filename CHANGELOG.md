@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`investigate --keep-lab-on-failure`**: when the automatic WordPress SQLi verification
+  doesn't confirm, leaves the ephemeral WordPress+MySQL Docker lab ALIVE (base URL + admin
+  credentials surfaced in the report) instead of tearing it down, and skips the retry loop
+  (which would otherwise destroy that same lab to spin up a new one each attempt). For the
+  real case that motivated it (CVE-2024-1071): the target's AJAX handler can swallow the real
+  MySQL error and always return clean JSON, so none of the 5 automated techniques can see it
+  — at that point retrying different payloads blindly doesn't help; inspecting
+  `wp-content/debug.log` inside the live container by hand does. The analyst is responsible
+  for tearing the lab down afterwards (by the printed Docker tag).
 - **WordPress SQLi verifier, a sixth technique: syncing a "custom sort field" gate meta before
   each payload (Ultimate Member/CVE-2024-1071)**: the official patch (2.8.2 -> 2.8.3) reveals
   the real sink — a `LEFT JOIN` with the raw value inside single quotes
