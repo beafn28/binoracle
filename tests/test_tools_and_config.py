@@ -4438,6 +4438,122 @@ def test_wpverify_unavailable_without_docker_daemon(monkeypatch):
     assert r.limitations
 
 
+def test_wpverify_build_minimal_plugin_zip_is_a_valid_wp_plugin():
+    # El ZIP que verify_wordpress_plugin_install_rce sube a Plugin_Upgrader->install() tiene que
+    # parecer un plugin DE VERDAD (cabecera 'Plugin Name:' en el fichero principal, mismo nombre
+    # que la carpeta) o WordPress lo rechaza antes de llegar a ejecutar nada; y el PHP dentro debe
+    # calcular la suma exacta pasada, la misma prueba dura que file-upload usa.
+    import zipfile, io
+    from binoracle.workflows.wpverify import _build_minimal_plugin_zip
+    blob = _build_minimal_plugin_zip("deadbeef", 1234, 5678)
+    zf = zipfile.ZipFile(io.BytesIO(blob))
+    names = zf.namelist()
+    assert names == ["binoracle_shell_deadbeef/binoracle_shell_deadbeef.php"]
+    php = zf.read(names[0]).decode()
+    assert "Plugin Name:" in php
+    assert "echo 1234+5678;" in php
+
+
+def test_wpverify_plugin_install_rce_confirms_real_execution(monkeypatch, tmp_path):
+    # Flujo completo (sin Docker real): sube un ZIP via una accion AJAX, lo "instala" en un
+    # wp-content/plugins/ simulado, y pide la URL publica -- confirma VERIFIED solo si la
+    # respuesta trae la suma que el PHP subido calcula, no solo que el POST devolviera 200.
+    import binoracle.workflows.wpverify as wv
+    import zipfile, io, re
+
+    (tmp_path / "evil-plugin").mkdir()
+    (tmp_path / "evil-plugin" / "evil-plugin.php").write_text("<?php // stub\n")
+
+    class _FakeSubSess:
+        def __init__(self):
+            self.last_zip = None
+            self.file_field = None
+
+        def post(self, url, data=None, files=None, timeout=None):
+            field, (fname, content, ctype) = next(iter(files.items()))
+            self.file_field = field
+            self.last_zip = content
+            class _R:
+                status_code = 200
+                text = '{"success":true}'
+            return _R()
+
+        def get(self, url, timeout=None):
+            zf = zipfile.ZipFile(io.BytesIO(self.last_zip))
+            name = zf.namelist()[0]
+            php = zf.read(name).decode()
+            m = re.search(r"echo (\d+)\+(\d+);", php)
+            a, b = int(m.group(1)), int(m.group(2))
+            class _R:
+                status_code = 200
+                text = f"{a + b}"
+            return _R()
+
+    class _FakeBoot:
+        def __init__(self):
+            self.sub_sess = _FakeSubSess()
+            self.base_url = "http://lab.invalid"
+            self.shots = []
+            self.sub_user, self.sub_pass = "binoracle_subscriber", "pw"
+
+        def capture(self, *a, **kw):
+            pass
+
+    class _FakeLab:
+        def __init__(self, token):
+            self.tag = token
+
+        def teardown(self):
+            pass
+
+        def find_in_webroot(self, token, timeout=10.0, base_dir="wp-content/uploads"):
+            assert base_dir == "wp-content/plugins"   # NO wp-content/uploads: esto no es file-upload
+            return f"/var/www/html/wp-content/plugins/binoracle_shell_{token}/binoracle_shell_{token}.php"
+
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(wv, "_Lab", _FakeLab)
+    monkeypatch.setattr(wv, "_bootstrap_lab", lambda *a, **kw: _FakeBoot())
+    monkeypatch.setattr(
+        wv, "_auto_resolve_wp_blockers",
+        lambda boot, lab, slug, method, endpoint, base_params, exclude, res, step, extra_nonce_pages=None:
+            (endpoint, {**base_params, "_nonce": "realnonce123"}))
+
+    res = wv.verify_wordpress_plugin_install_rce(
+        str(tmp_path), "evil-plugin", "evil_upload_and_install_pro",
+        file_param_hint="fileToUpload", on_step=lambda m: None)
+
+    assert res.ok is True
+    assert res.verified is True
+    assert res.evidence["ajax_action"] == "evil_upload_and_install_pro"
+    assert res.evidence["suma_presente"] is True
+
+
+def test_wpverify_plugin_install_rce_not_verified_without_nonce(monkeypatch, tmp_path):
+    # Sin nonce raspado de ninguna pagina real, la peticion fallaria siempre (wp_verify_nonce) --
+    # no debe ni intentar la subida, y nunca marcar verified.
+    import binoracle.workflows.wpverify as wv
+    (tmp_path / "evil-plugin").mkdir()
+
+    class _FakeBoot:
+        sub_sess = None
+        base_url = "http://lab.invalid"
+        shots = []
+
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(wv, "_Lab", lambda token: type("L", (), {"teardown": lambda self: None})())
+    monkeypatch.setattr(wv, "_bootstrap_lab", lambda *a, **kw: _FakeBoot())
+    monkeypatch.setattr(
+        wv, "_auto_resolve_wp_blockers",
+        lambda boot, lab, slug, method, endpoint, base_params, exclude, res, step, extra_nonce_pages=None:
+            (endpoint, dict(base_params)))   # nonce NUNCA se resolvio
+
+    res = wv.verify_wordpress_plugin_install_rce(
+        str(tmp_path), "evil-plugin", "evil_upload_and_install_pro", on_step=lambda m: None)
+
+    assert res.verified is False
+    assert "nonce" in res.detail.lower()
+
+
 def test_wpverify_missing_plugin_dir_degrades(monkeypatch):
     import binoracle.workflows.wpverify as wv
     monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
