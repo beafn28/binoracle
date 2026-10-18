@@ -7,6 +7,19 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **WordPress SQLi verifier, a sixth technique: syncing a "custom sort field" gate meta before
+  each payload (Ultimate Member/CVE-2024-1071)**: the official patch (2.8.2 -> 2.8.3) reveals
+  the real sink — a `LEFT JOIN` with the raw value inside single quotes
+  (`...um_key = '{$sortby}'`, rewritten to `$wpdb->prepare()` in the fix) — but that line never
+  runs unless the submitted value matches, by exact string equality, a value already stored in
+  a real post's `_um_sortby_custom` meta (the Member Directory's configured custom sort field).
+  Every injection context (quote + AND/OR) was already covered by techniques 1-4, but without
+  that gate open they never reached the vulnerable line at all. Since the ephemeral lab is our
+  own, `verify_wordpress_sqli` now recovers the real post ID from the already-resolved hashed
+  `directory_id` and writes the exact same value being tested into that meta immediately before
+  every single payload — opening the gate itself instead of depending on it already being
+  configured. Gated by a small per-plugin registry (`_SQLI_CUSTOM_SORT_GATE`), inactive for any
+  other slug.
 - **WordPress SQLi verifier, a fifth technique for ORDER BY-context injection**: the first
   four techniques (error-based, UNION-based, boolean-blind, time-based blind) all assume the
   injected value stays part of a WHERE clause (`<value><closer> AND/OR <condition>`) — a sink
