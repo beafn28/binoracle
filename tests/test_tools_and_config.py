@@ -7142,6 +7142,61 @@ def test_cve_agent_path_traversal_retry_applies_parametro_adicional_requerido(mo
     assert inv.verified is True
 
 
+def test_apply_generic_wp_suggestion_dedupes_nonce_and_setup_pages():
+    from binoracle.workflows.cve_agent import _apply_generic_wp_suggestion
+
+    nonce_pages, setup_paths = [], []
+    _apply_generic_wp_suggestion(
+        {"pagina_extra_para_nonce": "/account/",
+         "pagina_setup_admin_requerida": "/wp-admin/admin.php?page=setup"},
+        nonce_pages, setup_paths, [])
+    _apply_generic_wp_suggestion(
+        {"pagina_extra_para_nonce": "/account/",
+         "pagina_setup_admin_requerida": "/wp-admin/admin.php?page=setup"},
+        nonce_pages, setup_paths, [])
+
+    assert nonce_pages == ["/account/"], "no debe duplicar la misma pagina de nonce"
+    assert setup_paths == ["/wp-admin/admin.php?page=setup"], (
+        "no debe duplicar la misma ruta de setup")
+
+
+def test_apply_generic_wp_suggestion_adds_extra_param_to_list():
+    from binoracle.workflows.cve_agent import _apply_generic_wp_suggestion
+
+    params = ["sortby"]
+    _apply_generic_wp_suggestion({"parametro_adicional_requerido": "directory_id"},
+                                 [], [], params)
+    _apply_generic_wp_suggestion({"parametro_adicional_requerido": "directory_id"},
+                                 [], [], params)
+
+    assert params == ["sortby", "directory_id"], (
+        "debe añadirse una vez a una lista de parametros, sin duplicar en un segundo reintento")
+
+
+def test_apply_generic_wp_suggestion_adds_extra_param_to_dict_without_overwriting():
+    # notes.get("parameters") puede ser un dict {nombre: valor_ejemplo} en vez de una lista de
+    # nombres (p.ej. {"user_id": "1", "email": "x"}) -- esta rama nunca tenia un test propio.
+    from binoracle.workflows.cve_agent import _apply_generic_wp_suggestion
+
+    params = {"user_id": "1"}
+    _apply_generic_wp_suggestion({"parametro_adicional_requerido": "token"}, [], [], params)
+    assert params == {"user_id": "1", "token": "1"}
+
+    # si el campo sugerido ya tenia un valor propio, no debe sobreescribirlo
+    params2 = {"user_id": "1", "token": "secreto-real"}
+    _apply_generic_wp_suggestion({"parametro_adicional_requerido": "token"}, [], [], params2)
+    assert params2 == {"user_id": "1", "token": "secreto-real"}
+
+
+def test_apply_generic_wp_suggestion_is_noop_without_fields():
+    from binoracle.workflows.cve_agent import _apply_generic_wp_suggestion
+
+    nonce_pages, setup_paths, params = [], [], ["a"]
+    _apply_generic_wp_suggestion({"tiene_sugerencia": False, "razon": "nada util"},
+                                 nonce_pages, setup_paths, params)
+    assert nonce_pages == [] and setup_paths == [] and params == ["a"]
+
+
 def test_genericverify_file_upload_blocked_without_build_target(monkeypatch, tmp_path):
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)

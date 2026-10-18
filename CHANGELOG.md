@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Direct unit tests for `_apply_generic_wp_suggestion`**: `notes.get("parameters")` can be a
+  dict (`{name: example_value}`, as several existing investigation notes already use) rather
+  than a plain list of names — the `isinstance(params, dict)` branch handling that case had no
+  test anywhere and could have silently broken (e.g. overwriting a real submitted value with a
+  placeholder) without any test catching it. Added
+  `test_apply_generic_wp_suggestion_dedupes_nonce_and_setup_pages`,
+  `test_apply_generic_wp_suggestion_adds_extra_param_to_list`,
+  `test_apply_generic_wp_suggestion_adds_extra_param_to_dict_without_overwriting` and
+  `test_apply_generic_wp_suggestion_is_noop_without_fields`.
 - **Regression tests for `parametro_adicional_requerido`**: this field (the one that actually
   unblocks CVE-2024-1071-style sinks, e.g. `directory_id`) had no test of its own anywhere,
   for SQLi or any other technique, even though the prompt asking the LLM for it predates this
