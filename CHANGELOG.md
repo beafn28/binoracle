@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Generalized `--keep-lab-on-failure` to all 13 WordPress dynamic verifiers** (previously
+  SQLi-only): `_finalize_lab`, shared by every `verify_wordpress_*` function (including CSRF),
+  decides once whether to tear the ephemeral lab down or leave it alive for manual
+  `wp-content/debug.log` inspection. `_retry_or_keep_lab_alive` wraps every technique's
+  evidence-based retry loop in `cve_agent.py` the same way: with the flag set, no technique
+  retries (since every `verify_wordpress_*` call creates its own independent lab — retrying
+  would tear down the one just left alive to spin up a fresh one, and worse, leave several
+  orphaned containers behind if each attempt also failed). Both are computed/applied once per
+  investigation and threaded into every technique's dispatch, not duplicated per technique.
 - **Generalized the shortcode-page-for-nonce fix to all 12 WordPress dynamic verifiers**
   (previously SQLi-only): `verify_wordpress_account_takeover`, `_direct_login_as`,
   `_path_traversal`, `_command_injection`, `_ssrf`, `_xss`, `_ssti`, `_xxe`,

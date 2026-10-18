@@ -6679,6 +6679,62 @@ def test_llm_suggest_retry_from_evidence_is_generic_across_techniques():
     assert suggestion["endpoint_alternativo"] == "/wp-admin/admin-ajax.php?action=otra_accion"
 
 
+def test_retry_or_keep_lab_alive_retries_normally_when_not_requested():
+    # sin --keep-lab-on-failure, el comportamiento de siempre: se llama al bucle de reintento
+    # real sin ninguna diferencia.
+    from binoracle.workflows.cve_agent import _retry_or_keep_lab_alive
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    wr = WpVerifyResult(detail="no se confirmo")
+    calls = []
+
+    def retry_fn():
+        calls.append(True)
+        return WpVerifyResult(verified=True, detail="confirmado en el reintento")
+
+    result = _retry_or_keep_lab_alive(False, lambda m: None, True, wr, retry_fn)
+    assert calls == [True]
+    assert result.verified is True
+
+
+def test_retry_or_keep_lab_alive_skips_retry_when_requested_and_not_verified():
+    # con --keep-lab-on-failure: NUNCA se llama a retry_fn (reintentar destruiria el UNICO
+    # laboratorio de este intento para levantar uno nuevo) -- se devuelve el mismo wr tal cual,
+    # dejando su laboratorio vivo (eso lo hace _finalize_lab, no este helper).
+    from binoracle.workflows.cve_agent import _retry_or_keep_lab_alive
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    wr = WpVerifyResult(verified=False, detail="no se confirmo")
+    calls = []
+
+    def retry_fn():
+        calls.append(True)
+        return WpVerifyResult(verified=True, detail="nunca deberia llegar aqui")
+
+    result = _retry_or_keep_lab_alive(True, lambda m: None, True, wr, retry_fn)
+    assert calls == []
+    assert result is wr
+    assert result.verified is False
+
+
+def test_retry_or_keep_lab_alive_skips_retry_even_when_already_verified():
+    # si el PRIMER intento ya confirmo, tampoco hay que reintentar -- con o sin
+    # keep_lab_on_failure, nunca tiene sentido reintentar algo ya verificado.
+    from binoracle.workflows.cve_agent import _retry_or_keep_lab_alive
+    from binoracle.workflows.wpverify import WpVerifyResult
+
+    wr = WpVerifyResult(verified=True, detail="confirmado a la primera")
+    calls = []
+
+    def retry_fn():
+        calls.append(True)
+        return wr
+
+    result = _retry_or_keep_lab_alive(True, lambda m: None, True, wr, retry_fn)
+    assert calls == []
+    assert result is wr
+
+
 def test_cve_agent_sqli_retries_once_with_llm_suggestion_from_real_evidence(monkeypatch, tmp_path):
     # el punto central pedido explicitamente: que el LLM razone sobre la evidencia REAL (el
     # cuerpo de la respuesta de control) y, si ve una pista concreta, se reintente una vez con un

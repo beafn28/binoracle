@@ -662,6 +662,28 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     return wr
 
 
+def _retry_or_keep_lab_alive(keep_lab_on_failure: bool, step, es: bool, wr: "WpVerifyResult",
+                             retry_fn: Callable[[], "WpVerifyResult"]) -> "WpVerifyResult":
+    """Envuelve CUALQUIER bucle de aprendizaje-y-reintento de WordPress (no solo SQLi, donde se
+    encontro este bloqueo por primera vez): si se pidio --keep-lab-on-failure, NO reintenta --
+    reintentar DESTRUIRIA el unico laboratorio de este primer intento para levantar uno nuevo
+    (cada verify_wordpress_* crea su propio _Lab independiente), dejando ademas varios
+    contenedores huerfanos vivos si cada intento tambien fallara, en vez de UNO solo para
+    inspeccionar. Se deja el laboratorio de este primer/unico intento vivo en su lugar.
+    `retry_fn` ejecuta el bucle real (closure sin argumentos, definido en el sitio de llamada,
+    que ya conoce su propia firma de _run_evidence_retry_loop -- distinta en cada tecnica)."""
+    if not keep_lab_on_failure:
+        return retry_fn()
+    if not wr.verified:
+        step("--keep-lab-on-failure pedido: no se reintenta (reintentar destruiria este mismo "
+             "laboratorio para levantar uno nuevo) -- se deja el unico laboratorio de este "
+             "intento VIVO para inspeccion manual" if es else
+             "--keep-lab-on-failure requested: not retrying (a retry would destroy this same "
+             "lab to spin up a new one) -- leaving this attempt's lab ALIVE for manual "
+             "inspection instead")
+    return wr
+
+
 def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
     """True si `plugin_dir` dentro de `local_path` tiene pinta de modulo/tema de Drupal (un
     .info.yml con 'type: module|theme') en vez de un plugin de WordPress -- desambigua el caso
@@ -1617,6 +1639,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             from .websource import find_shortcode_name as _find_shortcode_name_generic
             shortcode_name_generic = (_find_shortcode_name_generic(fr.local_path, plugin_dir)
                                       if not is_drupal and not is_joomla else None)
+            # igual que shortcode_name_generic, calculado UNA vez para CUALQUIER tecnica
+            # dinamica de WordPress (antes solo existia para SQLi) -- ver keep_lab_on_failure
+            # en wpverify.py/_finalize_lab.
+            keep_lab_on_failure = bool(notes.get("keep_lab_on_failure"))
             if fn_names:
                 step("confirmando en el codigo real las funciones citadas por el LLM..." if es else
                      "confirming the LLM-cited functions in the real source...")
@@ -1810,7 +1836,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         notes.get("http_method") or "POST", params,
                         id_param_hint=id_p or "", email_param_hint=email_p or "",
                         pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure)
                     # mismo bucle de aprendizaje-y-reintento que el resto de tecnicas WordPress --
                     # no existia antes para account-takeover/login-as (pedido explicitamente:
                     # extenderlo "a todos"), asi que esta es la PRIMERA vez que estas dos tecnicas
@@ -1831,13 +1858,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             params, id_param_hint=pr or "", email_param_hint=email_p or "",
                             pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
                             companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                            keep_lab_on_failure=keep_lab_on_failure,
                             extra_nonce_pages=list(ato_extra_nonce_pages),
                             extra_setup_trigger_paths=list(ato_extra_setup_trigger_paths))
-                    wr = _run_evidence_retry_loop(
-                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                        _attempt_ato, wr, notes.get("endpoint"), id_p,
-                        technique_label="account-takeover WordPress",
-                        on_suggestion=_on_ato_suggestion)
+                    wr = _retry_or_keep_lab_alive(
+                        keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                            llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                            _attempt_ato, wr, notes.get("endpoint"), id_p,
+                            technique_label="account-takeover WordPress",
+                            on_suggestion=_on_ato_suggestion))
                 elif id_p:
                     step(("intentando verificacion DINAMICA -- patron de login-as directo "
                          "(WordPress+MySQL efimero en Docker)..." if es else
@@ -1847,7 +1876,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, notes.get("endpoint"),
                         notes.get("http_method") or "GET", params,
                         id_param_hint=id_p or "", on_step=step, budget_s=budget_s,
-                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                        companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure)
                     lia_extra_nonce_pages: List[str] = []
                     lia_extra_setup_trigger_paths: List[str] = []
                     def _on_lia_suggestion(sug):
@@ -1862,13 +1892,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET",
                             params, id_param_hint=pr or "", on_step=step, budget_s=budget_s,
                             companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                            keep_lab_on_failure=keep_lab_on_failure,
                             extra_nonce_pages=list(lia_extra_nonce_pages),
                             extra_setup_trigger_paths=list(lia_extra_setup_trigger_paths))
-                    wr = _run_evidence_retry_loop(
-                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                        _attempt_lia, wr, notes.get("endpoint"), id_p,
-                        technique_label="direct login-as WordPress",
-                        on_suggestion=_on_lia_suggestion)
+                    wr = _retry_or_keep_lab_alive(
+                        keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                            llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                            _attempt_lia, wr, notes.get("endpoint"), id_p,
+                            technique_label="direct login-as WordPress",
+                            on_suggestion=_on_lia_suggestion))
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
@@ -1954,7 +1986,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
-                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 # aprendizaje y reintento: mismo bucle acotado que el SQLi -- el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
                 # concreta en ESA evidencia, nunca a ciegas. Tambien puede señalar una pagina
@@ -1976,12 +2009,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(pt_extra_nonce_pages),
                         extra_setup_trigger_paths=list(pt_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _PATH_TRAVERSAL_RETRY_SYS, _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS,
-                    _attempt_wppt, wr, notes.get("endpoint"), path_p,
-                    technique_label="path-traversal WordPress", on_suggestion=_on_wppt_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _PATH_TRAVERSAL_RETRY_SYS,
+                        _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_wppt, wr,
+                        notes.get("endpoint"), path_p, technique_label="path-traversal WordPress",
+                        on_suggestion=_on_wppt_suggestion))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -2112,7 +2148,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
-                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 cmdi_extra_nonce_pages: List[str] = []
                 cmdi_extra_setup_trigger_paths: List[str] = []
                 def _on_cmdi_suggestion(sug):
@@ -2127,13 +2164,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(cmdi_extra_nonce_pages),
                         extra_setup_trigger_paths=list(cmdi_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_cmdi, wr, notes.get("endpoint"), cmd_p,
-                    technique_label="command injection WordPress",
-                    on_suggestion=_on_cmdi_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_cmdi, wr, notes.get("endpoint"), cmd_p,
+                        technique_label="command injection WordPress",
+                        on_suggestion=_on_cmdi_suggestion))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -2251,15 +2290,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- UNION-based/boolean-blind "
                      "(ephemeral WordPress+MySQL in Docker)..."))
-                # keep_lab_on_failure: el analista pide depuracion manual (--keep-lab-on-failure)
-                # -- las 5 tecnicas automaticas no pueden ver el error real de MySQL cuando el
-                # propio plugin lo captura y responde con JSON limpio en vez de dejarlo salir en
-                # el cuerpo HTTP (confirmado en vivo, CVE-2024-1071), asi que seguir reintentando
-                # a ciegas (que ademas DESTRUIRIA este mismo laboratorio para levantar uno nuevo
-                # en cada vuelta) no ayuda -- un unico intento, con el laboratorio vivo al final
-                # para que el analista mire wp-content/debug.log el mismo, vale mas que tres
+                # keep_lab_on_failure (calculado una vez arriba, para todas las tecnicas): el
+                # analista pide depuracion manual (--keep-lab-on-failure) -- las 5 tecnicas
+                # automaticas no pueden ver el error real de MySQL cuando el propio plugin lo
+                # captura y responde con JSON limpio en vez de dejarlo salir en el cuerpo HTTP
+                # (confirmado en vivo, CVE-2024-1071), asi que seguir reintentando a ciegas (que
+                # ademas DESTRUIRIA este mismo laboratorio para levantar uno nuevo en cada
+                # vuelta) no ayuda -- un unico intento, con el laboratorio vivo al final para
+                # que el analista mire wp-content/debug.log el mismo, vale mas que tres
                 # intentos ciegos que nunca dejan nada en pie que inspeccionar.
-                keep_lab_on_failure = bool(notes.get("keep_lab_on_failure"))
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
@@ -2319,18 +2358,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         relationship_table=relationship_table,
                         extra_nonce_pages=list(extra_nonce_pages),
                         extra_setup_trigger_paths=list(extra_setup_trigger_paths))
-                if not keep_lab_on_failure:
-                    wr = _run_evidence_retry_loop(
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
-                        max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion)
-                elif not wr.verified:
-                    step("--keep-lab-on-failure pedido: no se reintenta (reintentar destruiria "
-                         "este mismo laboratorio para levantar uno nuevo) -- se deja el unico "
-                         "laboratorio de este intento VIVO para inspeccion manual" if es else
-                         "--keep-lab-on-failure requested: not retrying (a retry would destroy "
-                         "this same lab to spin up a new one) -- leaving this attempt's lab "
-                         "ALIVE for manual inspection instead")
+                        max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -2420,7 +2452,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "GET", params,
                     url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
-                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 ssrf_wp_extra_nonce_pages: List[str] = []
                 ssrf_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssrf_wp_suggestion(sug):
@@ -2435,12 +2468,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         url_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(ssrf_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(ssrf_wp_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_ssrf_wp, wr, notes.get("endpoint"), url_p,
-                    technique_label="SSRF WordPress", on_suggestion=_on_ssrf_wp_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_ssrf_wp, wr, notes.get("endpoint"), url_p,
+                        technique_label="SSRF WordPress", on_suggestion=_on_ssrf_wp_suggestion))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -2527,7 +2562,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
-                                          companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                                          companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                                          keep_lab_on_failure=keep_lab_on_failure)
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):
@@ -2542,12 +2578,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         xss_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(xss_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(xss_wp_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_xss_wp, wr, notes.get("endpoint"), xss_p,
-                    technique_label="XSS WordPress", on_suggestion=_on_xss_wp_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_xss_wp, wr, notes.get("endpoint"), xss_p,
+                        technique_label="XSS WordPress", on_suggestion=_on_xss_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XSS (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2606,7 +2644,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_ssti(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "GET", params,
                                            ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
-                                           companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                                           companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                                           keep_lab_on_failure=keep_lab_on_failure)
                 ssti_wp_extra_nonce_pages: List[str] = []
                 ssti_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssti_wp_suggestion(sug):
@@ -2621,12 +2660,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(ssti_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(ssti_wp_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_ssti_wp, wr, notes.get("endpoint"), ssti_p,
-                    technique_label="SSTI WordPress", on_suggestion=_on_ssti_wp_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_ssti_wp, wr, notes.get("endpoint"), ssti_p,
+                        technique_label="SSTI WordPress", on_suggestion=_on_ssti_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de SSTI (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2686,7 +2727,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_xxe(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xml_param_hint=xml_p or "", on_step=step, budget_s=budget_s,
-                                          companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                                          companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                                          keep_lab_on_failure=keep_lab_on_failure)
                 xxe_wp_extra_nonce_pages: List[str] = []
                 xxe_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xxe_wp_suggestion(sug):
@@ -2701,12 +2743,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         xml_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(xxe_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(xxe_wp_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_xxe_wp, wr, notes.get("endpoint"), xml_p,
-                    technique_label="XXE WordPress", on_suggestion=_on_xxe_wp_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_xxe_wp, wr, notes.get("endpoint"), xml_p,
+                        technique_label="XXE WordPress", on_suggestion=_on_xxe_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de XXE (ver genericverify.py) para cuando el
             # codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/compose.
@@ -2766,7 +2810,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_open_redirect(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                     notes.get("http_method") or "GET", params,
                                                     redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
-                                                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                                                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                                                    keep_lab_on_failure=keep_lab_on_failure)
                 or_wp_extra_nonce_pages: List[str] = []
                 or_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_or_wp_suggestion(sug):
@@ -2781,12 +2826,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
                         redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(or_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(or_wp_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_or_wp, wr, notes.get("endpoint"), redir_p,
-                    technique_label="open redirect WordPress", on_suggestion=_on_or_wp_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_or_wp, wr, notes.get("endpoint"), redir_p,
+                        technique_label="open redirect WordPress", on_suggestion=_on_or_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de open-redirect (ver genericverify.py).
             elif (not plugin_dir and fr.local_path and
@@ -2846,7 +2893,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_file_upload(fr.local_path, plugin_dir, notes.get("endpoint"),
                                                   notes.get("http_method") or "POST", params,
                                                   file_param_hint=file_p or "", on_step=step, budget_s=budget_s,
-                                                  companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                                                  companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                                                  keep_lab_on_failure=keep_lab_on_failure)
                 fu_wp_extra_nonce_pages: List[str] = []
                 fu_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_fu_wp_suggestion(sug):
@@ -2861,12 +2909,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST", params,
                         file_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(fu_wp_extra_nonce_pages),
                         extra_setup_trigger_paths=list(fu_wp_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
-                    technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
+                        technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
@@ -2918,7 +2968,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = verify_wordpress_csrf(fr.local_path, plugin_dir, notes.get("endpoint"),
                                            notes.get("http_method") or "POST", params,
                                            email_param_hint=email_p or "",
-                                           pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s, companion_plugins=companion_plugins)
+                                           pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s,
+                                           companion_plugins=companion_plugins, keep_lab_on_failure=keep_lab_on_failure)
                 _apply_wpverify_result(inv, wr, es, llm)
             # deserializacion insegura (PHP Object Injection) -- ver deserialize_gadgets.py: a
             # diferencia de las demas clases, el gadget se busca PRIMERO en el codigo real (sin
@@ -2977,7 +3028,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     table_name=notes.get("table_name"), column_name=notes.get("column_name"),
                     id_column=notes.get("id_column") or "id",
                     serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s,
-                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 # mismo bucle de aprendizaje-y-reintento que el resto -- aqui el PASO 1 es el que
                 # puede bloquearse por nonce/setup sin resolver (el PASO 2 lee directo via wp-cli,
                 # no pasa por HTTP, asi que no tiene ese bloqueo).
@@ -2998,13 +3050,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         id_column=notes.get("id_column") or "id",
                         serial_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(dct_extra_nonce_pages),
                         extra_setup_trigger_paths=list(dct_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_dct, wr, notes.get("endpoint"), serial_p,
-                    technique_label="deserialization (tabla propia) WordPress",
-                    on_suggestion=_on_dct_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_dct, wr, notes.get("endpoint"), serial_p,
+                        technique_label="deserialization (tabla propia) WordPress",
+                        on_suggestion=_on_dct_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "deserialization" and notes.get("endpoint")):
@@ -3019,7 +3073,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, plugin_dir, notes.get("endpoint"),
                     notes.get("http_method") or "POST", params,
                     serial_param_hint=serial_p or "", on_step=step, budget_s=budget_s,
-                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic)
+                    companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 des_extra_nonce_pages: List[str] = []
                 des_extra_setup_trigger_paths: List[str] = []
                 def _on_des_suggestion(sug):
@@ -3034,13 +3089,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
                         params, serial_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(des_extra_nonce_pages),
                         extra_setup_trigger_paths=list(des_extra_setup_trigger_paths))
-                wr = _run_evidence_retry_loop(
-                    llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
-                    _attempt_des, wr, notes.get("endpoint"), serial_p,
-                    technique_label="deserialization WordPress",
-                    on_suggestion=_on_des_suggestion)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_des, wr, notes.get("endpoint"), serial_p,
+                        technique_label="deserialization WordPress",
+                        on_suggestion=_on_des_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else

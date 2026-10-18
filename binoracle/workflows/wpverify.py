@@ -209,6 +209,36 @@ def _reverse_hashed_resource_id(hash_value: str, max_n: int = 100) -> Optional[i
     return None
 
 
+def _finalize_lab(lab: "_Lab", boot: Optional["_LabSession"], res: WpVerifyResult, step,
+                  keep_lab_on_failure: bool) -> None:
+    """Desmonta el laboratorio al terminar CUALQUIER verificador dinamico de WordPress -- salvo
+    que se pida dejarlo vivo (`keep_lab_on_failure`) y la tecnica NO se confirmara: en ese caso
+    ninguna tecnica automatica pudo ver la causa real (confirmado en vivo, CVE-2024-1071: el
+    plugin capturaba el error de MySQL y respondia con JSON limpio, invisible para error-based/
+    UNION/boolean/time-based por igual), asi que insistir con mas payloads a ciegas no ayuda --
+    hace falta que el analista mire el contenedor vivo el mismo (wp-content/debug.log via
+    `docker exec`). Factorizado UNA vez para los 13 verificadores dinamicos que lo necesitan
+    (CSRF incluido -- un negativo ahi puede ser igual de opaco que en SQLi), en vez de repetir
+    la misma decision en cada uno."""
+    if keep_lab_on_failure and not res.verified and boot is not None:
+        step(f"dejando el laboratorio VIVO para inspeccion manual (no se desmonta) -- "
+             f"base_url={boot.base_url}, admin={boot.admin_user}/{boot.admin_pass} -- "
+             f"mira wp-content/debug.log DENTRO del contenedor con 'docker exec' para ver el "
+             f"error real que las tecnicas automaticas no pueden ver si el plugin lo capturo "
+             f"antes de que llegara al cuerpo HTTP; desmontalo tu mismo cuando termines "
+             f"('docker network rm'/'docker volume rm'/'docker rm -f' con el tag '{lab.tag}', "
+             f"o reinicia Docker)")
+        res.evidence["laboratorio_vivo"] = {
+            "base_url": boot.base_url, "admin_user": boot.admin_user,
+            "admin_pass": boot.admin_pass, "lab_tag": lab.tag}
+        res.limitations.append(
+            f"laboratorio dejado VIVO a proposito (keep_lab_on_failure) para inspeccion manual "
+            f"-- desmontalo tu mismo cuando termines (tag Docker: '{lab.tag}')")
+    else:
+        step("desmontando el laboratorio (contenedores/red/volumen)...")
+        lab.teardown()
+
+
 # algunos plugins con un "campo de orden personalizado" en sus listados/directorios (Member
 # Directory, en Ultimate Member) gatean el sumidero vulnerable detras de una comparacion EXACTA
 # contra un valor guardado en META del recurso real -- el sumidero en si (confirmado por el
@@ -1280,6 +1310,7 @@ def verify_wordpress_account_takeover(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Levanta WordPress+MySQL en Docker, instala el plugin ya descargado en `plugin_source_dir`
     (debe contener `<slug>/...`), crea un usuario subscriber y un admin, inicia sesion como el
@@ -1312,6 +1343,7 @@ def verify_wordpress_account_takeover(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -1420,8 +1452,7 @@ def verify_wordpress_account_takeover(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_direct_login_as(
@@ -1432,6 +1463,7 @@ def verify_wordpress_direct_login_as(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica la OTRA forma de account-takeover por missing-authorization: un plugin cuya accion
     deja a un usuario de bajo privilegio CONVERTIRSE directamente en la sesion de otro usuario
@@ -1472,6 +1504,7 @@ def verify_wordpress_direct_login_as(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -1573,8 +1606,7 @@ def verify_wordpress_direct_login_as(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 _HTML_FOLLOWABLE_RE = re.compile(r'(?:src|href)\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
@@ -1628,6 +1660,7 @@ def verify_wordpress_path_traversal(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica path-traversal/LFI: planta un fichero CANARIO con un secreto aleatorio en una ruta
     del sistema de ficheros REAL del contenedor Apache (fuera del volumen /var/www/html, via
@@ -1656,6 +1689,7 @@ def verify_wordpress_path_traversal(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -1869,8 +1903,7 @@ def verify_wordpress_path_traversal(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_command_injection(
@@ -1881,6 +1914,7 @@ def verify_wordpress_command_injection(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica command/OS injection probando que el servidor remoto EVALUA aritmetica que nunca
     se le mando literal: el payload pide `$(( a + b ))` para dos numeros aleatorios y, si la
@@ -1903,6 +1937,7 @@ def verify_wordpress_command_injection(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -2066,8 +2101,7 @@ def verify_wordpress_command_injection(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_sqli(
@@ -2621,24 +2655,7 @@ def verify_wordpress_sqli(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        if keep_lab_on_failure and not res.verified and boot is not None:
-            step(f"dejando el laboratorio VIVO para inspeccion manual (no se desmonta) -- "
-                 f"base_url={boot.base_url}, admin={boot.admin_user}/{boot.admin_pass} -- "
-                 f"mira wp-content/debug.log DENTRO del contenedor con 'docker exec' para ver "
-                 f"el error real de MySQL que las 5 tecnicas automaticas no pueden ver si el "
-                 f"plugin lo capturo antes de que llegara al cuerpo HTTP; desmontalo tu mismo "
-                 f"cuando termines ('docker network rm'/'docker volume rm'/'docker rm -f' con "
-                 f"el tag '{lab.tag}', o reinicia Docker)")
-            res.evidence["laboratorio_vivo"] = {
-                "base_url": boot.base_url, "admin_user": boot.admin_user,
-                "admin_pass": boot.admin_pass, "lab_tag": lab.tag}
-            res.limitations.append(
-                f"laboratorio dejado VIVO a proposito (keep_lab_on_failure) para inspeccion "
-                f"manual de wp-content/debug.log -- desmontalo tu mismo cuando termines "
-                f"(tag Docker: '{lab.tag}')")
-        else:
-            step("desmontando el laboratorio (contenedores/red/volumen)...")
-            lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_ssrf(
@@ -2649,6 +2666,7 @@ def verify_wordpress_ssrf(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica SSRF levantando un contenedor 'callback' en la MISMA red Docker del laboratorio
     (no expuesto a internet, solo alcanzable desde dentro) y apuntando el parametro de URL/fichero
@@ -2672,6 +2690,7 @@ def verify_wordpress_ssrf(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -2778,8 +2797,7 @@ def verify_wordpress_ssrf(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_xss(
@@ -2790,6 +2808,7 @@ def verify_wordpress_xss(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica XSS (reflejado, o almacenado cuando la propia respuesta lo renderiza de vuelta)
     cargando la respuesta del endpoint en un Chromium headless REAL (ver _xss_render): el payload
@@ -2826,6 +2845,7 @@ def verify_wordpress_xss(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -2955,8 +2975,7 @@ def verify_wordpress_xss(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_ssti(
@@ -2967,6 +2986,7 @@ def verify_wordpress_ssti(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica server-side template injection con la misma idea que command injection: el payload
     pide al motor de plantillas que CALCULE un producto de dos numeros aleatorios (sintaxis de
@@ -2989,6 +3009,7 @@ def verify_wordpress_ssti(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -3095,8 +3116,7 @@ def verify_wordpress_ssti(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_xxe(
@@ -3107,6 +3127,7 @@ def verify_wordpress_xxe(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica XML External Entity con el mismo patron de fichero canario que path-traversal/LFI
     (ver verify_wordpress_path_traversal): planta un secreto aleatorio en una ruta del sistema de
@@ -3125,6 +3146,7 @@ def verify_wordpress_xxe(
     xml_param = xml_param_hint or _pick_param(parameters, _XML_HINTS)
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -3293,8 +3315,7 @@ def verify_wordpress_xxe(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_open_redirect(
@@ -3305,6 +3326,7 @@ def verify_wordpress_open_redirect(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica open redirect mandando como valor del parametro una URL EXTERNA completa, con
     redirects deshabilitados en el cliente (allow_redirects=False) para inspeccionar la cabecera
@@ -3327,6 +3349,7 @@ def verify_wordpress_open_redirect(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -3422,8 +3445,7 @@ def verify_wordpress_open_redirect(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_file_upload(
@@ -3434,6 +3456,7 @@ def verify_wordpress_file_upload(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica unrestricted file upload (webshell) en dos pasos, ambos con prueba dura:
 
@@ -3462,6 +3485,7 @@ def verify_wordpress_file_upload(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -3645,8 +3669,7 @@ def verify_wordpress_file_upload(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_csrf(
@@ -3654,6 +3677,7 @@ def verify_wordpress_csrf(
     parameters, email_param_hint: str = "", pass_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     companion_plugins: Optional[list] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica CSRF reproduciendo la peticion de cambio de email/password que la hipotesis
     describe, pero con el escenario classico de self-CSRF: el ADMIN se ataca a si mismo via una
@@ -3684,6 +3708,7 @@ def verify_wordpress_csrf(
         return res
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins)
@@ -3795,8 +3820,7 @@ def verify_wordpress_csrf(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_deserialization(
@@ -3807,6 +3831,7 @@ def verify_wordpress_deserialization(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Verifica insecure deserialization (PHP Object Injection) en DOS pasos, ambos con prueba
     dura (ver deserialize_gadgets.py para el porque de este diseño):
@@ -3850,6 +3875,7 @@ def verify_wordpress_deserialization(
     serial_param = serial_param_hint or _pick_param(parameters, _SERIAL_HINTS)
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -3930,8 +3956,7 @@ def verify_wordpress_deserialization(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_deserialization_custom_table(
@@ -3943,6 +3968,7 @@ def verify_wordpress_deserialization_custom_table(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
 ) -> WpVerifyResult:
     """Variante EN DOS PASOS de verify_wordpress_deserialization, apuntando al mecanismo REAL de
     object injection almacenado en WordPress -- NO la API de Options/Transients (ver
@@ -4001,6 +4027,7 @@ def verify_wordpress_deserialization_custom_table(
     serial_param = serial_param_hint or _pick_param(store_parameters, _SERIAL_HINTS)
 
     lab = _Lab(_token())
+    boot = None
     try:
         boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
                               companion_plugins=companion_plugins,
@@ -4105,5 +4132,4 @@ def verify_wordpress_deserialization_custom_table(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        step("desmontando el laboratorio (contenedores/red/volumen)...")
-        lab.teardown()
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
