@@ -12,7 +12,20 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   have_docker=1
 elif [ "$(uname -s)" = "Linux" ] && command -v gcc >/dev/null 2>&1; then
   echo "[*] Docker no disponible: compilando con el gcc nativo del host" >&2
-  run(){ ( cd "$here" && bash -c "$1" ); }
+  # el gcc:13 de Docker es VAINILLA (stack-protector/cf-protection apagados por defecto), pero
+  # un gcc de distro (Ubuntu/Debian) enciende AMBOS por defecto -- confirmado en vivo:
+  # '-fcf-protection=full' por defecto en este host anade padding endbr64 que desplaza win() de
+  # su direccion esperada, rompiendo find_win()/tests que fijan una direccion concreta, aunque
+  # cada linea ya pase '-fno-stack-protector' explicito (el canary si se neutraliza, el CET no).
+  # Se inyectan los defaults de vainilla justo despues de 'gcc'; los flags de cada linea van
+  # DESPUES y siguen ganando si alguno los necesitara.
+  run(){
+    local cmd="$1"
+    case "$cmd" in
+      gcc\ *) cmd="gcc -fno-stack-protector -fcf-protection=none ${cmd#gcc }" ;;
+    esac
+    ( cd "$here" && bash -c "$cmd" )
+  }
   have_docker=0
 else
   echo "ERROR: ni Docker ni un gcc nativo de Linux estan disponibles para construir el corpus" >&2
