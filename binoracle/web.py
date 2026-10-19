@@ -397,7 +397,14 @@ def run_command(payload: dict) -> dict:
             return {"ok": False, "text": "indica el binario OLD (opcion) y el NEW (arriba); ambos deben existir"}
         from .workflows.regress import run_regress, render_regress
         rr = run_regress(old, binary, config)
-        return {"ok": True, "text": render_regress(rr)}
+        text = render_regress(rr)
+        if opts.get("gen_test"):
+            # mas lento (corre autopwn de verdad en OLD y re-intenta cada tecnica verificada
+            # en NEW) -- opt-in, no en cada "regress" por defecto.
+            from .workflows.regress import autoregress_test, render_regression_tests
+            tests = autoregress_test(old, binary, config=config)
+            text += "\n\n" + render_regression_tests(old, binary, tests)
+        return {"ok": True, "text": text}
 
     # everything else needs a real binary
     if not binary or not os.path.exists(binary):

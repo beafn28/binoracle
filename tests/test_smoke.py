@@ -375,6 +375,53 @@ def test_regress_render():
     assert "Regresiones" in out and "Canary" in out and "NUEVOS" in out
 
 
+def test_regression_tests_render():
+    from binoracle.workflows.regress import RegressionTest, render_regression_tests
+    passed = RegressionTest(technique="ret2win", old_detail="offset=72 win=0x401176",
+                            new_verified=False, passed=True)
+    failed = RegressionTest(technique="ret2libc", old_detail="leak=0x7f...",
+                            new_verified=True, passed=False)
+    out = render_regression_tests("old.bin", "new.bin", [passed, failed])
+    assert "PASA" in out and "FALLA" in out and "fix incompleto o revertido" in out
+
+
+def test_autoregress_generates_and_runs_real_regression_test():
+    # "[M] Patch-diff v2 (n-day)" del ROADMAP v0.4: en vez de limitarse al diff estructural
+    # (radiff2) o a comparar veredictos grounded/verified (run_regress, ya existente), esto
+    # GENERA y EJECUTA un test de regresion real: la MISMA tecnica de autopwn que consiguio un
+    # exploit verificado contra OLD se reintenta contra NEW. ret2win_patched es el MISMO fuente
+    # que ret2win con -fstack-protector-all añadido (el "silent fix" clasico: un canary) --
+    # el exploit que funcionaba en OLD debe dejar de verificar en NEW, y el test debe reportarlo.
+    import os
+    import pytest
+    from binoracle.workflows.regress import autoregress_test
+    old, new = "samples/bin/ret2win", "samples/bin/ret2win_patched"
+    if not os.path.exists(old) or not os.path.exists(new):
+        pytest.skip("samples ret2win/ret2win_patched no compilados (samples/build.sh)")
+    tests = autoregress_test(old, new, techniques=["ret2win"])
+    assert tests, "ret2win debe haber verificado en OLD -- no hay nada que generar"
+    t = next(t for t in tests if t.technique == "ret2win")
+    assert t.new_verified is False
+    assert t.passed is True
+
+
+def test_autoregress_catches_a_fix_that_did_not_actually_fix_anything():
+    # Control: si el "NEW" es el MISMO binario vulnerable (el fix no hizo nada, o se revirtio
+    # en silencio), el test de regresion debe FALLAR -- nunca reportar passed=True solo porque
+    # se pudo volver a ejecutar.
+    import os
+    import pytest
+    from binoracle.workflows.regress import autoregress_test
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    tests = autoregress_test(b, b, techniques=["ret2win"])
+    assert tests
+    t = tests[0]
+    assert t.new_verified is True
+    assert t.passed is False
+
+
 def test_autoheap_render():
     from binoracle.workflows.autoheap import render_heap
     out = render_heap({"ok": True, "confirmed": True,

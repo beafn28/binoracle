@@ -212,8 +212,27 @@ The flagship direction: prove impact end to end.
 
 ## v0.4 - Scale, formats, n-day
 
-- **[M] Patch-diff v2 (n-day).** LLM classifies the "silent security fix" in a radiff2 diff
-  and auto-generates a regression test. Shadow-CI for binaries.
+- **[M] Patch-diff v2 (n-day).** Audited first: two of the three sub-asks were already
+  shipped. ~~LLM classifies the "silent security fix" in a radiff2 diff~~ (`workflows/
+  patchdiff.py`: radiff2 is the oracle for WHICH functions changed, the LLM only interprets
+  that diff -- never invents one). ~~Shadow-CI for binaries~~ (`workflows/regress.py`'s
+  `run_regress`: runs the full grounded pipeline -- triage/hunt/verify -- on an OLD and a NEW
+  build and reports new/fixed findings, verdict changes and mitigation changes). What was
+  actually missing: "auto-generates a regression test" -- `run_regress` only compared static
+  grounded/verified verdicts, it never produced something RE-RUNNABLE. Shipped now:
+  `autoregress_test` in the same module. For every `autopwn` technique that got a REAL
+  verified shell against OLD, it re-attempts that EXACT same technique against NEW; if it no
+  longer verifies, the fix holds (test PASSES); if it still does, the "silent fix" was
+  incomplete or got silently reverted (test FAILS) -- a genuinely executed regression test,
+  not a structural-diff guess, and the technique+payload autopwn already reports (offset,
+  leaked address, whatever it used) IS the regression test, reusable against any future build
+  of the same binary with no LLM involved. New fixture `samples/bin/ret2win_patched` (same
+  source as `ret2win.c`, `-fstack-protector-all` added -- the classic "silently added a
+  canary" micro-fix) proves both directions end to end: the ret2win exploit that verified on
+  `ret2win` correctly stops verifying on the patched build (PASS), and running the SAME
+  binary against itself (a fix that did nothing) correctly FAILS the test instead of reporting
+  a false pass. Wired into `binoracle regress --gen-test` (CLI) and the web UI's regress
+  command (opt-in: slower, drives real `autopwn` runs).
 - **[M] Fuzzing integration.** Auto-build harnesses, drive AFL++/libFuzzer, and feed crashes
   back into the verify/triage loop (coverage-guided).
 - **[M] Stripped-binary function ID.** Signature / BinDiff-style matching to recover names in

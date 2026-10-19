@@ -67,6 +67,56 @@ def run_regress(old: str, new: str, config) -> RegressResult:
     return r
 
 
+@dataclass
+class RegressionTest:
+    technique: str
+    old_detail: str
+    new_verified: bool
+    passed: bool   # True si el fix se sostiene: la tecnica que funcionaba en OLD ya no verifica en NEW
+
+
+def autoregress_test(old: str, new: str, config=None, techniques=None) -> List[RegressionTest]:
+    """Patch-diff v2 ("auto-generates a regression test"): en vez de limitarse al diff
+    estructural (radiff2) o a comparar veredictos 'grounded/verified' estaticos (run_regress,
+    arriba), esto genera y EJECUTA un test de regresion real. Para cada tecnica de autopwn que
+    consiguio una shell/flag VERIFICADA de verdad contra OLD, la vuelve a intentar contra NEW
+    -- si ya NO verifica, el fix se sostiene (test PASA); si SIGUE verificando, el "silent
+    security fix" era incompleto o se revirtio (test FALLA). El propio payload/tecnica que
+    autopwn ya reporta en `old_detail` (offset, direccion, leak, lo que sea que uso) ES el
+    test de regresion -- no hace falta que un LLM lo redacte, ya es un par (tecnica, entrada)
+    ejecutable directamente contra cualquier build futuro de este mismo binario."""
+    from .autopwn import autopwn
+    r_old = autopwn(old, config=config, techniques=techniques)
+    verified_old = [(name, detail) for name, verdict, detail in r_old.attempts if verdict is True]
+    tests = []
+    for name, detail in verified_old:
+        r_new = autopwn(new, config=config, techniques=[name])
+        new_verified = any(a[0] == name and a[1] is True for a in r_new.attempts)
+        tests.append(RegressionTest(technique=name, old_detail=detail,
+                                    new_verified=new_verified, passed=not new_verified))
+    return tests
+
+
+def render_regression_tests(old: str, new: str, tests: List["RegressionTest"]) -> str:
+    out = [f"# Tests de regresion generados y EJECUTADOS\n- old: `{old}`\n- new: `{new}`\n"]
+    if not tests:
+        out.append("_ninguna tecnica verifico un exploit real en OLD -- nada que regresar a probar_")
+        return "\n".join(out)
+    for t in tests:
+        icon = "PASA" if t.passed else "FALLA"
+        out.append(f"## [{icon}] {t.technique}")
+        out.append(f"- OLD: verificado de verdad ({t.old_detail})")
+        out.append("- NEW: " + ("TODAVIA verifica -- fix incompleto o revertido" if t.new_verified
+                                else "ya no verifica -- el fix se sostiene"))
+    failed = [t for t in tests if not t.passed]
+    if failed:
+        out.append(f"\n> [!warning] **{len(failed)} de {len(tests)} regresion(es) FALLAN**: "
+                   f"un exploit que funcionaba en OLD sigue funcionando en NEW.")
+    else:
+        out.append(f"\nTodas las {len(tests)} regresion(es) PASAN.")
+    return "\n".join(out)
+
+
 def render_regress(r: RegressResult) -> str:
     out = [f"# Regresiones\n- old: `{r.old}`\n- new: `{r.new}`\n"]
     def block(title, items, warn=False):

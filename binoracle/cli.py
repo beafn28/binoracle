@@ -40,7 +40,7 @@ from .workflows.fmtstring import fmtstring_help
 from .workflows.autopoc import autopoc, render_poc
 from .workflows.autopwn import autopwn, render_autopwn
 from .workflows.audit import run_audit
-from .workflows.regress import run_regress, render_regress
+from .workflows.regress import run_regress, render_regress, autoregress_test, render_regression_tests
 from .agent.grounding import GroundingLedger
 
 
@@ -794,6 +794,11 @@ def cmd_regress(args, config):
     old = _require_binary(args.old); new = _require_binary(args.new)
     res = run_regress(old, new, config)
     out = render_regress(res)
+    if getattr(args, "gen_test", False):
+        # mas lento (corre autopwn de verdad en OLD y re-intenta cada tecnica verificada en
+        # NEW) -- opt-in, no en cada "regress" por defecto.
+        tests = autoregress_test(old, new, config=config)
+        out += "\n\n" + render_regression_tests(old, new, tests)
     print(out)
     _write_if(args.output, out)
 
@@ -1420,6 +1425,9 @@ def build_parser() -> argparse.ArgumentParser:
     rg = sub.add_parser("regress", help="compare two builds for security regressions")
     rg.add_argument("old"); rg.add_argument("new")
     rg.add_argument("-o", "--output")
+    rg.add_argument("--gen-test", action="store_true",
+                    help="also generate+RUN a real regression test: re-run every autopwn "
+                         "technique verified on OLD against NEW (slower; needs the sandbox)")
     rg.set_defaults(func=cmd_regress)
 
     tl = sub.add_parser("tools", help="detect the installed binary-pentest toolchain")
