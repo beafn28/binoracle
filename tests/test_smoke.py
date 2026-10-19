@@ -3893,3 +3893,75 @@ def test_docs_site_builds_real_valid_html_from_every_source_page():
     finally:
         if not pre_existing and os.path.isdir(site_dir):
             shutil.rmtree(site_dir)
+
+
+def test_r2_heap_does_not_false_positive_on_reallocarray_as_bare_realloc():
+    # Bug real encontrado investigando un CVE REAL contra un binario REAL (no un sample de
+    # juguete): sudo 1.8.31 (CVE-2021-3156) importa `reallocarray` pero no una `realloc` suelta.
+    # `_heap()`'s chequeo anterior ("realloc" in <texto de ii>) daba un falso positivo porque
+    # "realloc" es substring literal de "reallocarray" -- pedia `axt @ sym.imp.realloc` sobre un
+    # simbolo que NO EXISTE, y esa consulta invalida colgaba INDEFINIDAMENTE la sesion de
+    # r2pipe de larga duracion de este oraculo (confirmado: una query equivalente en un proceso
+    # r2 nuevo responde "Invalid address" en <1s -- es la sesion persistente la que se cuelga).
+    # Esto bloqueaba `triage`/`audit`/`investigate_cve --binary` ENTEROS, sin limite de tiempo,
+    # en CUALQUIER binario con reallocarray pero sin realloc -- bastante comun. Reproduce el
+    # caso minimo real (compilado aqui, no el binario completo de sudo) y confirma que: (a)
+    # termina rapido (el timeout de esta prueba es la red de seguridad, no el mecanismo real:
+    # el fix real es el chequeo de nombre exacto en el propio oraculo); (b) solo reporta
+    # reallocarray, nunca realloc.
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    import pytest
+    from binoracle.oracles.static_r2 import R2Oracle
+    if not shutil.which("gcc"):
+        pytest.skip("gcc no disponible")
+    src = os.path.join(tempfile.mkdtemp(), "reallocarray_only.c")
+    binp = src[:-2]
+    with open(src, "w") as f:
+        f.write("#include <stdlib.h>\nint main(){ void *p = reallocarray(NULL, 4, sizeof(int)); "
+               "free(p); return 0; }\n")
+    r = subprocess.run(["gcc", "-o", binp, src], capture_output=True, timeout=30)
+    if r.returncode != 0 or not os.path.exists(binp):
+        pytest.skip("no se pudo compilar el fixture minimo en este entorno")
+    try:
+        o = R2Oracle(binp)
+        if not o.available():
+            pytest.skip("radare2 no disponible")
+        res = o._heap()
+    finally:
+        for p in (src, binp):
+            if os.path.exists(p):
+                os.remove(p)
+    assert res.ok
+    assert "reallocarray" in res.data
+    assert "sym.imp.realloc:" not in res.data and "  realloc:" not in res.data
+
+
+def test_r2oracle_cmd_timed_degrades_instead_of_hanging_forever():
+    # El mecanismo de defensa general (no solo el bug especifico de arriba): CUALQUIER comando
+    # que se quede colgado en la sesion persistente de r2pipe debe degradar, nunca bloquear el
+    # pipeline para siempre. Simula el cuelgue (un r2.cmd que nunca retorna) sin depender de
+    # encontrar OTRO bug real de r2 -- confirma el mecanismo en si, con un timeout de prueba
+    # corto para no alargar la suite.
+    import shutil as _shutil
+    import time as _time
+    import pytest
+    from binoracle.oracles.static_r2 import R2Oracle
+    if not (_shutil.which("r2") or _shutil.which("radare2")):
+        pytest.skip("radare2 no disponible")
+
+    o = R2Oracle("samples/bin/ret2win" if __import__("os").path.exists("samples/bin/ret2win")
+                 else __file__)
+    o.cmd_timeout_s = 1.0   # corto a proposito -- es la red de seguridad, no el bug real
+
+    class _HangingR2:
+        process = type("P", (), {"kill": lambda self: None})()
+        def cmd(self, c):
+            _time.sleep(10)   # mas largo que cmd_timeout_s -- simula el pipe colgado
+            return "nunca llega aqui"
+
+    out = o._cmd_timed(_HangingR2(), "cualquier comando")
+    assert out is None, "un comando colgado debe degradar (None), nunca bloquear indefinidamente"
+    assert o._r2 is None and o._analyzed is False, "el pipe colgado debe descartarse para la siguiente llamada"

@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import threading
-from typing import List
+from typing import List, Optional
 
 from .base import Oracle, Tool, ToolParam, ToolResult
 
@@ -50,6 +50,18 @@ class R2Oracle(Oracle):
         # se arreglo para `pdg` y para AngrOracle._reachable(), aqui en el chequeo de entrada que
         # los precede a todos.
         self.analysis_timeout_s = 180.0
+        # Same bug class, different trigger: a bug found live testing against a REAL CVE binary
+        # (not a small CTF sample) -- sudo 1.8.31 (CVE-2021-3156) has `reallocarray` but no bare
+        # `realloc` import; `_heap()`'s substring check `"realloc" in <ii output text>` false-
+        # positives on `reallocarray` containing that substring, so it asks for `axt @
+        # sym.imp.realloc`, a symbol that doesn't exist. A FRESH r2 process handles that in
+        # <1s ("Invalid address"), but the SAME query on this oracle's own long-lived r2pipe
+        # session hangs indefinitely -- an r2pipe-session-specific pathology, not an r2-the-tool
+        # one. `_ensure_analyzed_pipe` already timeboxes the initial 'aa'/'aaa' analysis for
+        # exactly this kind of real-world r2 misbehavior; ordinary post-analysis commands had no
+        # such bound at all, so any future pathology here (not just this one query) could hang
+        # the entire pipeline (triage, audit, investigate_cve) forever. Bounded the same way.
+        self.cmd_timeout_s = 60.0
 
     def available(self) -> bool:
         return _HAVE_R2PIPE or shutil.which("r2") is not None or shutil.which("radare2") is not None
@@ -92,6 +104,32 @@ class R2Oracle(Oracle):
             return
         self._analyzed = True
 
+    def _cmd_timed(self, r2, cmd: str) -> Optional[str]:
+        """Igual que `_ensure_analyzed_pipe`'s guardia de hilo, pero para UN comando cualquiera
+        tras el analisis inicial. Devuelve None (nunca lanza) si el pipe se queda realmente
+        colgado -- el llamador decide el mensaje de degradacion."""
+        result: dict = {}
+        def _run_cmd():
+            try:
+                result["out"] = r2.cmd(cmd)
+            except Exception:
+                result["out"] = None
+        th = threading.Thread(target=_run_cmd, daemon=True)
+        th.start()
+        th.join(self.cmd_timeout_s)
+        if th.is_alive():
+            # el pipe esta de verdad colgado -- matarlo y descartarlo; la PROXIMA llamada en
+            # esta misma instancia abre uno nuevo y re-analiza desde cero (coste aceptable
+            # frente a quedarse colgado para siempre).
+            try:
+                r2.process.kill()
+            except Exception:
+                pass
+            self._r2 = None
+            self._analyzed = False
+            return None
+        return result.get("out")
+
     def _run(self, cmd: str, analyze: bool = True) -> str:
         """Run one r2 command (with analysis if needed) and return raw text."""
         if _HAVE_R2PIPE:
@@ -108,7 +146,11 @@ class R2Oracle(Oracle):
                     return (f"[r2 analysis ('{self.analysis_cmd}') timed out after "
                             f"{self.analysis_timeout_s:.0f}s -- binary too large/complex or r2 "
                             f"itself stuck; degrading instead of blocking the pipeline]")
-            return r2.cmd(cmd) or ""
+            out = self._cmd_timed(r2, cmd)
+            if out is None:
+                return (f"[r2 command timed out after {self.cmd_timeout_s:.0f}s on this "
+                        f"session ('{cmd}') -- degrading instead of blocking the pipeline]")
+            return out or ""
         # subprocess fallback
         exe = shutil.which("r2") or shutil.which("radare2")
         script = f"{self.analysis_cmd};{cmd}" if analyze else cmd
@@ -485,10 +527,16 @@ class R2Oracle(Oracle):
                           meta={"cpp": is_cpp})
 
     def _heap(self) -> ToolResult:
+        # Bug real encontrado probando contra un binario CVE real (no un sample pequeno de CTF):
+        # `sudo` 1.8.31 (CVE-2021-3156) importa `reallocarray` pero NO una `realloc` suelta --
+        # la comprobacion anterior ("realloc" in imports_text) daba un falso positivo porque
+        # "realloc" es substring literal de "reallocarray", asi que pedia axt sobre un simbolo
+        # (`sym.imp.realloc`) que no existe. Ahora compara nombres EXACTOS, uno por linea de `ii`.
         allocs = ("malloc", "calloc", "realloc", "reallocarray")
         frees = ("free", "cfree")
         imports = self._run("ii")
-        present = [a for a in allocs + frees if a in imports]
+        import_names = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*$", imports, re.M))
+        present = [a for a in allocs + frees if a in import_names]
         if not present:
             return ToolResult(True, "radare2: heap surface", "(no heap allocator calls imported)",
                               meta={"heap": False})
