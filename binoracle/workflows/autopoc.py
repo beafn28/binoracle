@@ -20,10 +20,8 @@ from ._sandbox import run_bash
 
 try:
     import angr  # type: ignore  # noqa: F401 -- presence probe, not referenced by name
-    import logging as _lg
-    _lg.getLogger("angr").setLevel(_lg.ERROR)
-    _lg.getLogger("cle").setLevel(_lg.ERROR)
-    _lg.getLogger("pyvex").setLevel(_lg.ERROR)
+    from .. import _quiet_angr
+    _quiet_angr()
     _HAVE_ANGR = True
 except Exception:
     _HAVE_ANGR = False

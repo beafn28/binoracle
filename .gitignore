@@ -23,3 +23,9 @@ binoracle_report.*
 
 # stray core dumps from crashing exploit processes (the `core` fixture is tracked explicitly)
 core.*
+
+# coverage data (pytest-cov / coverage.py; parallel runs under pytest-xdist leave one per worker)
+.coverage
+.coverage.*
+htmlcov/
+coverage.json

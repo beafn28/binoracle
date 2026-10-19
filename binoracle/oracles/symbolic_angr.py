@@ -13,9 +13,8 @@ from .base import Oracle, Tool, ToolParam, ToolResult
 try:
     import angr  # type: ignore
     from angr import claripy  # type: ignore
-    import logging as _logging
-    _logging.getLogger("angr").setLevel(_logging.ERROR)
-    _logging.getLogger("cle").setLevel(_logging.ERROR)
+    from .. import _quiet_angr
+    _quiet_angr()
     _HAVE_ANGR = True
 except Exception:
     _HAVE_ANGR = False

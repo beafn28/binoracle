@@ -58,10 +58,8 @@ try:
     import archinfo  # type: ignore
     from angr import claripy  # type: ignore
     from angr.exploration_techniques import Tracer  # type: ignore
-    import logging as _lg
-    _lg.getLogger("angr").setLevel(_lg.ERROR)
-    _lg.getLogger("cle").setLevel(_lg.ERROR)
-    _lg.getLogger("pyvex").setLevel(_lg.ERROR)
+    from .. import _quiet_angr
+    _quiet_angr()
     _HAVE_ANGR = True
 except Exception:
     _HAVE_ANGR = False

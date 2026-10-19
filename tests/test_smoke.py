@@ -3793,3 +3793,37 @@ def test_import_availability_probes_are_not_silently_broken():
         _os.path.join(root, "binoracle", "oracles", "capstone_fallback.py"), "r2pipe", "_HAVE_R2PIPE")
     assert _has_real_import_inside_try(
         _os.path.join(root, "binoracle", "workflows", "autopoc.py"), "angr", "_HAVE_ANGR")
+
+
+def test_quiet_angr_silences_all_three_loggers_and_is_shared():
+    # "Quieter optional dependencies (pwntools/angr logging)" del ROADMAP.md. Auditado: pwntools
+    # YA se quietaba correctamente -- nunca se importa en ESTE proceso, cada workflow construye
+    # un driver que corre como subproceso propio y se quieta a si mismo inline (necesario, porque
+    # el nivel del logger debe fijarse DESPUES del propio `from pwn import` de ESE proceso) -- asi
+    # que `_quiet_pwn()`, que SI estaba en el codigo pero sin ningun llamador real (verificado: 0
+    # call sites, y cero `import pwn` a nivel de proceso host), era codigo muerto con un
+    # docstring que afirmaba algo falso. Se elimino. En cambio angr SI se importa directo en este
+    # proceso (symbolic_angr.py, concolic.py, autopoc.py) -- ahi la duplicacion (3 copias del
+    # mismo getLogger().setLevel() x3) era real, y una de las 3 copias (symbolic_angr.py) ni
+    # siquiera quietaba pyvex. Factorizado en `binoracle._quiet_angr()`, usado por los 3.
+    import logging
+    import binoracle
+    assert not hasattr(binoracle, "_quiet_pwn"), "_quiet_pwn murio sin llamadores -- no debe reaparecer"
+    for name in ("angr", "cle", "pyvex"):
+        logging.getLogger(name).setLevel(logging.DEBUG)   # reset para que la asercion sea real
+    binoracle._quiet_angr()
+    for name in ("angr", "cle", "pyvex"):
+        assert logging.getLogger(name).level == logging.ERROR, f"{name} no quedo en ERROR"
+
+
+def test_angr_importing_modules_all_use_the_shared_quiet_helper():
+    import ast
+    import os as _os
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    for rel in ("binoracle/oracles/symbolic_angr.py", "binoracle/oracles/concolic.py",
+               "binoracle/workflows/autopoc.py"):
+        path = _os.path.join(root, rel)
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+        assert "_quiet_angr" in src, f"{rel} importa angr pero no usa el helper compartido"
+        ast.parse(src)   # y sigue siendo sintacticamente valido
