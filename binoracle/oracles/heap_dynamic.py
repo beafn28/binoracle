@@ -54,6 +54,7 @@ este codigo. Para ese patron (UAF via syscall) haria falta otra tecnica (p.ej. F
 las propias syscalls, o un wrapper LD_PRELOAD), fuera de alcance de este incremento."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -238,6 +239,172 @@ f.close()
 '''
 
 
+_CHUNKSTATE_PREFIX = "CHUNKSTATE_JSON "
+
+_GDB_CHUNKS_PYTHON_SCRIPT = '''\
+import gdb, json
+
+LOG = {log_path!r}
+INFILE = {infile!r}
+f = open(LOG, "w")
+
+SIZE_SZ = 8
+MIN_CHUNK = 2 * SIZE_SZ
+MASK64 = 0xffffffffffffffff
+
+def _decode_next(node_addr, raw):
+    """glibc >=2.32 safe-linking: el puntero 'next'/'fd' almacenado en un chunk libre no es la
+    direccion real, es PROTECT_PTR(&campo, real) = (direccion_del_propio_campo >> 12) XOR real.
+    Como la operacion es su propia inversa, se decodifica igual que se codifico. node_addr es la
+    direccion del propio campo (el puntero de usuario para tcache, chunk+2*SIZE_SZ para fastbin:
+    coinciden, es el mismo offset dentro del chunk)."""
+    if raw == 0:
+        return 0
+    return (node_addr >> 12) ^ raw
+
+def _chunk_size(chunk_addr):
+    try:
+        sz = int(gdb.parse_and_eval("*(unsigned long*)0x%x" % (chunk_addr + SIZE_SZ)))
+        return sz & ~0x7
+    except Exception:
+        return None
+
+def _tcache_snapshot():
+    out = {{}}
+    try:
+        tcache = int(gdb.parse_and_eval("(unsigned long)tcache"))
+    except Exception:
+        return out
+    if tcache == 0:
+        return out
+    for idx in range(64):
+        try:
+            count = int(gdb.parse_and_eval(
+                "((struct tcache_perthread_struct*)0x%x)->counts[%d]" % (tcache, idx)))
+            head = int(gdb.parse_and_eval(
+                "((struct tcache_perthread_struct*)0x%x)->entries[%d]" % (tcache, idx))) & MASK64
+        except Exception:
+            continue
+        if count == 0 and head == 0:
+            continue
+        chain = []
+        node = head
+        seen = set()
+        while node and node not in seen and len(chain) < 64:
+            seen.add(node)
+            chain.append({{"addr": "0x%x" % node, "size": _chunk_size(node - MIN_CHUNK)}})
+            try:
+                raw = int(gdb.parse_and_eval("*(unsigned long*)0x%x" % node)) & MASK64
+            except Exception:
+                break
+            node = _decode_next(node, raw) & MASK64
+        out[str(idx)] = {{"count": count, "chain": chain}}
+    return out
+
+def _fastbin_snapshot():
+    out = {{}}
+    for idx in range(10):
+        try:
+            head = int(gdb.parse_and_eval("(unsigned long)main_arena.fastbinsY[%d]" % idx)) & MASK64
+        except Exception:
+            continue
+        if head == 0:
+            continue
+        chain = []
+        node = head
+        seen = set()
+        while node and node not in seen and len(chain) < 64:
+            seen.add(node)
+            user_ptr = node + MIN_CHUNK
+            chain.append({{"addr": "0x%x" % node, "size": _chunk_size(node)}})
+            try:
+                raw = int(gdb.parse_and_eval("*(unsigned long*)0x%x" % user_ptr)) & MASK64
+            except Exception:
+                break
+            node = _decode_next(user_ptr, raw) & MASK64
+        out[str(idx)] = chain
+    return out
+
+def _snapshot(label):
+    try:
+        snap = {{"label": label, "tcache": _tcache_snapshot(), "fastbin": _fastbin_snapshot()}}
+        f.write("CHUNKSTATE_JSON " + json.dumps(snap) + "\\n")
+    except Exception as e:
+        f.write("SNAPSHOT_ERR %s\\n" % e)
+    f.flush()
+
+class _RetBP(gdb.Breakpoint):
+    """Misma tecnica de breakpoint-en-direccion-de-retorno que el resto de este modulo: dispara
+    justo cuando free() REALMENTE termino (el chunk ya esta enlazado en su bin), sin usar
+    `finish`."""
+    def __init__(self, addr, extra):
+        self.extra = extra
+        super().__init__("*0x%x" % addr, gdb.BP_BREAKPOINT, internal=True, temporary=True)
+    def stop(self):
+        f.write("FREE_DONE 0x%x\\n" % self.extra)
+        _snapshot("after free(0x%x)" % self.extra)
+        return False
+
+class _FreeBP(gdb.Breakpoint):
+    def stop(self):
+        try:
+            rdi = int(gdb.parse_and_eval("$rdi")) & MASK64
+            ret_addr = int(gdb.parse_and_eval("*(unsigned long*)$rsp"))
+            _RetBP(ret_addr, rdi)
+        except Exception as e:
+            f.write("FREE_ENTRY_ERR %s\\n" % e)
+        return False
+
+gdb.execute("set pagination off")
+gdb.execute("set confirm off")
+gdb.execute("start < %s" % INFILE)
+_snapshot("inicial")
+try:
+    _FreeBP({free_func!r})
+except gdb.error as e:
+    f.write("BP_ERR %s %s\\n" % ({free_func!r}, e))
+try:
+    gdb.execute("continue")
+except gdb.error as e:
+    f.write("CONTINUE_ERR %s\\n" % e)
+f.close()
+'''
+
+
+def _parse_chunk_log(log_text: str) -> list:
+    """Extrae las snapshots CHUNKSTATE_JSON del log, en el orden en que se capturaron (una por
+    cada free() real que termino durante la ejecucion, mas la inicial antes de cualquier free)."""
+    snapshots = []
+    for line in log_text.splitlines():
+        line = line.strip()
+        if line.startswith(_CHUNKSTATE_PREFIX):
+            try:
+                snapshots.append(json.loads(line[len(_CHUNKSTATE_PREFIX):]))
+            except (ValueError, TypeError):
+                continue
+    return snapshots
+
+
+def _format_chunk_report(snapshots: list) -> str:
+    if not snapshots:
+        return ("(no se capturo ningun estado del heap -- puede que el binario no llame a "
+                "free() con este stdin)")
+    lines = []
+    for snap in snapshots:
+        lines.append(f"== {snap.get('label', '?')} ==")
+        tcache = snap.get("tcache") or {}
+        if not tcache:
+            lines.append("  tcache: vacio o sin inicializar (aun no hubo ningun malloc)")
+        for idx, info in sorted(tcache.items(), key=lambda kv: int(kv[0])):
+            chain = ", ".join(f"{c['addr']}(size={c['size']})" for c in info.get("chain", []))
+            lines.append(f"  tcache idx={idx} count={info.get('count')}: {chain}")
+        fastbin = snap.get("fastbin") or {}
+        for idx, chain_list in sorted(fastbin.items(), key=lambda kv: int(kv[0])):
+            chain = ", ".join(f"{c['addr']}(size={c['size']})" for c in chain_list)
+            lines.append(f"  fastbin idx={idx}: {chain}")
+    return "\n".join(lines)
+
+
 def _replay_events(log_text: str) -> tuple:
     """Reproduce el log MALLOC_RET/FREE_ARG como una maquina de estados: direcciones vivas
     (devueltas por un allocator y no liberadas aun). Devuelve (double_free_addr_or_None,
@@ -346,6 +513,22 @@ class HeapDynamicOracle(Oracle):
                  ToolParam("budget_s", "limite de tiempo en segundos (por defecto 20)",
                            required=False, default=20)],
                 lambda stdin_text, budget_s=20: self._confirm_uaf(stdin_text, budget_s),
+                self.name,
+            ),
+            Tool(
+                "heap_dump_state",
+                "Vuelca el estado REAL (no estatico) del allocator: para cada free() que "
+                "ocurre al ejecutar el binario con el stdin dado, lee directamente los bins de "
+                "tcache y fastbin de glibc desde memoria -- que chunks (direccion + tamano "
+                "real, leido del propio header del chunk) quedan en que indice de bin, "
+                "decodificando los punteros next/fd protegidos por safe-linking (glibc >=2.32). "
+                "Util para chunk/bin analysis y para razonar sobre primitivas de tcache/"
+                "fastbin-poisoning: muestra el estado exacto que un overflow controlado "
+                "tendria que corromper.",
+                [ToolParam("stdin_text", "texto que se pasa por stdin al binario"),
+                 ToolParam("budget_s", "limite de tiempo en segundos (por defecto 20)",
+                           required=False, default=20)],
+                lambda stdin_text, budget_s=20: self._dump_state(stdin_text, budget_s),
                 self.name,
             ),
         ]
@@ -480,6 +663,61 @@ class HeapDynamicOracle(Oracle):
                 True, "gdb (python API): break malloc/free + watchpoint tras free; replay", data_out,
                 meta={"verified": verified, "uaf_addr": addr, "uaf_pc": pc,
                      "raw_gdb_output": gdb_txt.strip()})
+        finally:
+            for p in (infile, log_path, script_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+    def _dump_state(self, stdin_text, budget_s=20) -> ToolResult:
+        try:
+            budget_s = float(budget_s)
+        except (TypeError, ValueError):
+            budget_s = 20.0
+        data = stdin_text.encode("utf-8", "backslashreplace") if isinstance(stdin_text, str) else bytes(stdin_text)
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(data)
+            infile = tf.name
+        log_path = infile + ".chunklog"
+        script_path = None
+        try:
+            script = _GDB_CHUNKS_PYTHON_SCRIPT.format(
+                log_path=log_path, infile=infile, free_func=_FREE_FUNC)
+            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as sf:
+                sf.write(script)
+                script_path = sf.name
+            try:
+                out = subprocess.run(
+                    [self.gdb, "-q", "-batch", "-x", script_path, self.binary],
+                    capture_output=True, text=True, timeout=budget_s,
+                )
+                gdb_txt = out.stdout + ("\n[stderr]\n" + out.stderr if out.stderr else "")
+            except subprocess.TimeoutExpired:
+                return ToolResult(
+                    False, "gdb: heap_dump_state", "",
+                    error=f"gdb no volvio dentro de budget_s={budget_s}s (el objetivo pudo "
+                          f"quedarse esperando mas entrada, o un bucle); sube budget_s o revisa "
+                          f"el stdin dado",
+                )
+            low = gdb_txt.lower()
+            if any(m in low for m in _GDB_UNRUNNABLE):
+                return ToolResult(
+                    False, "gdb: heap_dump_state", gdb_txt.strip(),
+                    error="gdb no pudo ejecutar el objetivo aqui (ptrace no permitido, o el "
+                          "host no puede correr este binario)",
+                    meta={"dbg_unavailable": True})
+            try:
+                with open(log_path) as lf:
+                    log_text = lf.read()
+            except OSError:
+                log_text = ""
+            snapshots = _parse_chunk_log(log_text)
+            report = _format_chunk_report(snapshots)
+            return ToolResult(
+                True, "gdb (python API): walk tcache + main_arena.fastbinsY tras cada free() real",
+                report, meta={"snapshots": snapshots, "raw_gdb_output": gdb_txt.strip()})
         finally:
             for p in (infile, log_path, script_path):
                 if p:

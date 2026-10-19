@@ -24,8 +24,14 @@ Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
   cross-checked against the target's own crash/abort when it independently catches the same
   bug). Known limitation of the UAF check: only direct CPU accesses are caught, not
   syscall-mediated ones (read()/write() into a freed buffer) -- ptrace hardware watchpoints
-  don't fire on kernel copy_to/from_user. Still open: chunk/bin analysis and the
-  tcache/fastbin-poisoning primitive suggester.
+  don't fire on kernel copy_to/from_user. ~~Chunk/bin analysis~~ (shipped: `heap_dump_state` --
+  after every real free() it reads tcache (`tcache_perthread_struct`) and `main_arena.fastbinsY`
+  straight out of process memory, decoding the safe-linking-protected next/fd pointers
+  (glibc >=2.32: `PROTECT_PTR` is its own inverse) so each bin's exact chunk addresses and real
+  sizes -- not a static estimate -- are visible at the point an overflow would need to land to
+  corrupt them). Still open: the tcache/fastbin-poisoning primitive suggester (use
+  `heap_dump_state`'s live bin contents plus a detected controllable overflow to propose a
+  concrete fd/next corruption target) -- not started yet.
 - **[M] ROP builder v2.** Leak-aware chains (auto ret2libc once a leak step exists),
   `one_gadget` integration, `mprotect`+shellcode chains, SROP, and a `ropper` backend as an
   alternative to pwntools.

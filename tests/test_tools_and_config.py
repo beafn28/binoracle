@@ -3647,6 +3647,7 @@ def test_heap_dynamic_registered_only_when_dynamic_enabled():
     names_dynamic = [t.name for t in build_registry(b, enable_dynamic=True).available_tools()]
     assert "heap_confirm_double_free" in names_dynamic
     assert "heap_confirm_uaf" in names_dynamic
+    assert "heap_dump_state" in names_dynamic
 
 
 def _heap_pad(n):
@@ -3710,6 +3711,62 @@ def test_heap_dynamic_uaf_no_false_positive_on_binary_without_heap_bugs():
     r = tool.run(stdin_text="hola\n", budget_s=15)
     assert r.ok, r.error
     assert r.meta["verified"] is False
+
+
+def test_heap_dynamic_dump_state_reports_real_tcache_contents():
+    # Chunk/bin analysis del motor de heap dinamico: tras un free() real, lee directamente
+    # tcache (decodificando el puntero 'next' protegido por safe-linking de glibc >=2.32) y
+    # reporta el chunk exacto (direccion + tamano REAL leido del header) que quedo en el bin --
+    # no una heuristica, el estado real del allocator en ese punto de la ejecucion.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/uaf"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_dump_state"]
+
+    # antes de cualquier malloc: tcache debe salir vacio/sin inicializar
+    r0 = tool.run(stdin_text=_heap_pad(9), budget_s=15)
+    assert r0.ok, r0.error
+    snaps0 = r0.meta["snapshots"]
+    assert snaps0 and snaps0[0]["label"] == "inicial"
+    assert snaps0[0]["tcache"] == {}
+
+    # 1=new, 2=free: una struct obj (8+24=32 bytes de usuario -> chunk de 48 bytes) debe
+    # aparecer en tcache tras el free, con su tamano real y la direccion exacta liberada.
+    r = tool.run(stdin_text=_heap_pad(1) + _heap_pad(2), budget_s=20)
+    assert r.ok, r.error
+    snaps = r.meta["snapshots"]
+    assert len(snaps) >= 2, "debe capturar una snapshot inicial y una tras el free"
+    after_free = snaps[-1]
+    assert after_free["label"].startswith("after free(")
+    tcache = after_free["tcache"]
+    assert tcache, "el chunk liberado debe aparecer en algun bin de tcache"
+    entries = [c for bin_info in tcache.values() for c in bin_info["chain"]]
+    assert len(entries) == 1
+    assert entries[0]["size"] == 48
+    freed_addr = after_free["label"].split("(")[1].rstrip(")")
+    assert entries[0]["addr"] == freed_addr
+    assert "tcache idx=" in r.data
+
+
+def test_heap_dynamic_dump_state_no_false_positive_without_frees():
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_dump_state"]
+    r = tool.run(stdin_text="hola\n", budget_s=15)
+    assert r.ok, r.error
+    # ret2win no libera nada explicitamente: ninguna snapshot debe reportar chunks en tcache
+    for snap in r.meta["snapshots"]:
+        assert snap["tcache"] == {}
 
 
 def test_reachability_rebases_pie_addresses_for_angr():
