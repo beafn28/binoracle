@@ -531,6 +531,23 @@ class HeapDynamicOracle(Oracle):
                 lambda stdin_text, budget_s=20: self._dump_state(stdin_text, budget_s),
                 self.name,
             ),
+            Tool(
+                "heap_verify_tcache_poison",
+                "Confirma DINAMICAMENTE si un tcache/fastbin-poisoning realmente funciono: "
+                "ejecuta el binario con el stdin dado (que ya debe contener el overflow que "
+                "escribe el payload calculado por heap_tcache_poison_payload), engancha "
+                "malloc/calloc/realloc igual que heap_confirm_double_free, y marca verified si "
+                "alguna llamada a malloc-family devuelve EXACTAMENTE target_addr -- la prueba "
+                "de que el allocator fue engañado para devolver esa direccion controlada por el "
+                "atacante, no una suposicion.",
+                [ToolParam("stdin_text", "texto que se pasa por stdin al binario (ya con el overflow incluido)"),
+                 ToolParam("target_addr", "direccion que deberia devolver la malloc envenenada (hex o int)"),
+                 ToolParam("budget_s", "limite de tiempo en segundos (por defecto 20)",
+                           required=False, default=20)],
+                lambda stdin_text, target_addr, budget_s=20: self._verify_tcache_poison(
+                    stdin_text, target_addr, budget_s),
+                self.name,
+            ),
         ]
 
     def _confirm(self, stdin_text, budget_s=20) -> ToolResult:
@@ -718,6 +735,94 @@ class HeapDynamicOracle(Oracle):
             return ToolResult(
                 True, "gdb (python API): walk tcache + main_arena.fastbinsY tras cada free() real",
                 report, meta={"snapshots": snapshots, "raw_gdb_output": gdb_txt.strip()})
+        finally:
+            for p in (infile, log_path, script_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+    def _verify_tcache_poison(self, stdin_text, target_addr, budget_s=20) -> ToolResult:
+        try:
+            budget_s = float(budget_s)
+        except (TypeError, ValueError):
+            budget_s = 20.0
+        try:
+            if isinstance(target_addr, int):
+                ta = target_addr & 0xffffffffffffffff
+            else:
+                s = str(target_addr).strip()
+                ta = (int(s, 16) if s.lower().startswith("0x") else int(s)) & 0xffffffffffffffff
+        except (TypeError, ValueError):
+            return ToolResult(False, "heap_verify_tcache_poison", "",
+                              error="target_addr debe ser una direccion (hex o int)")
+        target_hex = "0x%x" % ta
+        # Reutiliza EXACTAMENTE el mismo engranaje de heap_confirm_double_free (hookear
+        # malloc/calloc/realloc con breakpoint-en-retorno) -- aqui solo cambia lo que se busca
+        # en el log: no una secuencia invalida de free(), sino si alguna malloc-family devolvio
+        # la direccion exacta que el payload de poisoning queria forzar.
+        data = stdin_text.encode("utf-8", "backslashreplace") if isinstance(stdin_text, str) else bytes(stdin_text)
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(data)
+            infile = tf.name
+        log_path = infile + ".poisonlog"
+        script_path = None
+        try:
+            script = _GDB_PYTHON_SCRIPT.format(
+                log_path=log_path, infile=infile,
+                alloc_funcs=list(_ALLOC_FUNCS), free_func=_FREE_FUNC)
+            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as sf:
+                sf.write(script)
+                script_path = sf.name
+            try:
+                out = subprocess.run(
+                    [self.gdb, "-q", "-batch", "-x", script_path, self.binary],
+                    capture_output=True, text=True, timeout=budget_s,
+                )
+                gdb_txt = out.stdout + ("\n[stderr]\n" + out.stderr if out.stderr else "")
+            except subprocess.TimeoutExpired:
+                return ToolResult(
+                    False, "gdb: heap_verify_tcache_poison", "",
+                    error=f"gdb no volvio dentro de budget_s={budget_s}s; sube budget_s o "
+                          f"revisa el stdin dado",
+                )
+            low = gdb_txt.lower()
+            if any(m in low for m in _GDB_UNRUNNABLE):
+                return ToolResult(
+                    False, "gdb: heap_verify_tcache_poison", gdb_txt.strip(),
+                    error="gdb no pudo ejecutar el objetivo aqui (ptrace no permitido, o el "
+                          "host no puede correr este binario)",
+                    meta={"dbg_unavailable": True})
+            try:
+                with open(log_path) as lf:
+                    log_text = lf.read()
+            except OSError:
+                log_text = ""
+            malloc_returns = []
+            for line in log_text.splitlines():
+                m = _MALLOC_RET_RE.match(line.strip())
+                if m:
+                    malloc_returns.append(m.group(1))
+            verified = target_hex in malloc_returns
+            if verified:
+                data_out = (f"TCACHE/FASTBIN-POISONING CONFIRMADO: una malloc-family devolvio "
+                           f"{target_hex} de verdad en esta ejecucion -- el allocator fue "
+                           f"engañado para entregar esa direccion controlada por el atacante.\n\n"
+                           f"Direcciones devueltas por malloc/calloc/realloc en orden: "
+                           f"{', '.join(malloc_returns) if malloc_returns else '(ninguna)'}")
+            else:
+                data_out = (f"NO se confirmo: ninguna malloc-family devolvio {target_hex} con "
+                           f"este stdin.\n\nDirecciones devueltas: "
+                           f"{', '.join(malloc_returns) if malloc_returns else '(ninguna)'}\n\n"
+                           f"Revisa que el stdin incluya de verdad el overflow con el payload "
+                           f"de heap_tcache_poison_payload, y que field_addr usado para "
+                           f"calcularlo fuera realmente la direccion vigente en esta ejecucion "
+                           f"(ASLR puede cambiarla entre runs).")
+            return ToolResult(
+                True, "gdb (python API): break malloc/calloc/realloc; busca target_addr entre los retornos",
+                data_out, meta={"verified": verified, "target_addr": target_hex,
+                                "malloc_returns": malloc_returns, "raw_gdb_output": gdb_txt.strip()})
         finally:
             for p in (infile, log_path, script_path):
                 if p:

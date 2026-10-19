@@ -29,9 +29,18 @@ Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
   straight out of process memory, decoding the safe-linking-protected next/fd pointers
   (glibc >=2.32: `PROTECT_PTR` is its own inverse) so each bin's exact chunk addresses and real
   sizes -- not a static estimate -- are visible at the point an overflow would need to land to
-  corrupt them). Still open: the tcache/fastbin-poisoning primitive suggester (use
-  `heap_dump_state`'s live bin contents plus a detected controllable overflow to propose a
-  concrete fd/next corruption target) -- not started yet.
+  corrupt them). ~~tcache/fastbin-poisoning primitive suggester~~ (shipped, split in two, same
+  grounded pattern as the rest of this engine: `heap_tcache_poison_payload` in
+  `exploit_helpers.py` is a pure, dependency-free calculator -- given a freed chunk's real
+  next/fd field address (read with `heap_dump_state`) and a desired target address, it computes
+  the exact safe-linking-encoded value to write; `heap_verify_tcache_poison` in
+  `heap_dynamic.py` then actually runs the target with stdin that includes that payload and
+  confirms a real malloc() call returns the attacker's target address -- not a claim that the
+  math "should" work. Verified end-to-end against `samples/bin/heapexp`'s own UAF-write primitive
+  (new/new/free/free/edit/new/new), including the negative control (no overflow -> legitimate
+  reuse, never the target) and a realistic rejection case: glibc's own `malloc(): unaligned
+  tcache chunk detected` abort when the target address isn't 16-byte aligned, correctly reported
+  as verified=False rather than pretending the primitive succeeded).
 - **[M] ROP builder v2.** Leak-aware chains (auto ret2libc once a leak step exists),
   `one_gadget` integration, `mprotect`+shellcode chains, SROP, and a `ropper` backend as an
   alternative to pwntools.
