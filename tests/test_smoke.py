@@ -177,6 +177,18 @@ def test_autopwn_render_shows_context_and_rationale():
     assert "fuga del canary" in j["rationale"]
 
 
+def test_autopwn_why_covers_mprotect_and_leakchain_combos():
+    # autopwn ahora orquesta tambien mprotect-shellcode y leak-chain (los dos ultimos
+    # incrementos de v0.2: ROP builder v2 y automatic infoleak chaining) -- la razon
+    # "defensa -> tecnica" del informe debe nombrarlos especificamente, no caer en el generico
+    # "seleccionada segun las defensas observadas".
+    from binoracle.workflows.autopwn import _why
+    mp = _why({}, False, "mprotect-shellcode")
+    assert "mprotect" in mp.lower()
+    lc = _why({}, False, "leak-chain")
+    assert "leak" in lc.lower() and "escritura" in lc.lower()
+
+
 def test_autolibc_render():
     from binoracle.workflows.autolibc import render_libc
     out = render_libc({"ok": True, "verified": True, "detail": "VERIFIED off=88 base=0x7f...",

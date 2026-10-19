@@ -88,9 +88,26 @@ Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
 
 The flagship direction: prove impact end to end.
 
-- **[L] Auto-PoC generation.** From a verified crash, synthesize a runnable pwntools exploit
-  (ret2win first, then ROP / ret2libc) and *run it in the sandbox* to confirm a shell or the
-  flag. "Verified exploit" becomes a real verdict above "verified reachability".
+- **[L] Auto-PoC generation.** Audited (asked to "audita autopoc/autopwn y sigue con lo que
+  falte"): this was already substantially shipped before v0.3 was opened, well beyond the
+  stated scope. `workflows/autopoc.py` does exactly the stated ret2win case (angr offset
+  discovery -> concrete pwntools exploit -> run in sandbox -> confirm). `workflows/autopwn.py`
+  is the orchestrator: recon (checksec/sinks/gadgets), optionally an LLM-ranked attempt order,
+  then tries ret2win, SROP, ROP/execve, ret2libc-with-leak (+ one_gadget), stack shellcode,
+  format-string GOT-overwrite, heap (double-free/UAF/tcache-dup/write-what-where), canary
+  bypass and ret2dlresolve -- each *verified* by a real shell/flag in the sandbox, not inferred;
+  `render_autopwn`/`autopwn_to_json` report WHY each technique was chosen, tied to the observed
+  mitigations. Added to the orchestrator this sprint: `mprotect-shellcode`
+  (`autoropmprotect.py`) and `leak-chain` (`autoleakchain.py`), both from this session's own
+  ROP-builder-v2/infoleak-chaining work, so autopwn tries them too instead of only the
+  techniques that existed when autopwn was first written. Honest gap found by the audit: 14
+  further standalone exploit tools registered in `mcp_server.py` (`autocsu`, `autopivot`, and
+  the house-of-force/spirit/einherjar/botcake/corrosion/mind, IO_FILE/FSOP, fastbin-dup,
+  unsafe-unlink and tcache-stashing glibc-internals techniques) are NOT in autopwn's own
+  applicability/decision tree yet -- each needs its own `_xxx_applicable()` detector analogous
+  to the existing heap ones before autopwn can try them autonomously. Not done in this pass
+  (14 individual detectors is its own sizeable increment); tracked here rather than silently
+  left out.
 - **[M] Frida dynamic oracle.** Cross-platform, scriptable hooks (heap tracing, function
   interception) to augment/replace gdb/lldb.
 - **[L] Concolic loop.** Drive angr from a real dynamic trace (symbolic-assisted crash

