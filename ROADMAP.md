@@ -125,8 +125,25 @@ The flagship direction: prove impact end to end.
   check level against their own fixtures (all standalone modules were already execution-
   verified in earlier sessions). "[L] Auto-PoC generation" is now fully closed: every
   standalone exploit tool the project has is reachable from the autonomous orchestrator.
-- **[M] Frida dynamic oracle.** Cross-platform, scriptable hooks (heap tracing, function
-  interception) to augment/replace gdb/lldb.
+- **[M] Frida dynamic oracle.** First increment shipped: `oracles/frida_dynamic.py` --
+  `frida_confirm_double_free`, the Frida equivalent of `heap_confirm_double_free`: hooks
+  malloc/calloc/realloc/free via `Interceptor.attach` (function interception, no ptrace) and
+  reuses `heap_dynamic._replay_events` so both backends reach the same verdict on the same
+  binary. Registered opt-in alongside the gdb-based oracles (`enable_dynamic=True`); degrades
+  honestly when the optional `frida` package isn't installed (`pip install frida`, now its own
+  `[frida]` extra in `pyproject.toml`). Real quirk found and fixed while building this: Frida's
+  `send()` is asynchronous, and the agent thread that flushes it to the host can be torn down
+  WITH the process if it aborts moments after a hook fires -- exactly the double-free shape
+  (glibc aborts inside the second `free()` call, right after the entry hook already fired). A
+  bare `send()` silently lost that second event every time against `samples/bin/uaf`; fixed by
+  making every hook block on a synchronous ack (`send(msg); recv('ack', cb).wait();`) before
+  letting the instrumented thread continue, guaranteeing the host has the event before the
+  process can abort. Verified end-to-end against `samples/bin/heapbug` (positive: real
+  double-free, cross-confirmed by glibc's own abort; negative: no double-free with other
+  input), plus a clean binary with no heap bugs. Still open: a UAF-watchpoint equivalent (Frida's
+  `MemoryAccessMonitor` API is the cross-platform counterpart to the gdb hardware watchpoint
+  `heap_confirm_uaf` uses) and actually exercising this on macOS/Windows (only verified on
+  Linux so far, even though the mechanism itself is documented cross-platform).
 - **[L] Concolic loop.** Drive angr from a real dynamic trace (symbolic-assisted crash
   triage), so verification scales past toy binaries.
 - **[M] Windows PE dynamic + symbolic.** Wine sandbox for `dbg_run_input`, and SimProcedures

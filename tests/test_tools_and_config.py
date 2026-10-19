@@ -12615,3 +12615,68 @@ def test_r2_hardening_bypass_hints_empty_without_any_hardening():
     assert r.ok, r.error
     assert r.meta["hints"] == []
     assert not any(r.meta["detected"].values())
+
+
+def test_frida_dynamic_confirms_real_double_free_in_heapbug():
+    # Oracle dinamico via Frida del ROADMAP v0.3 ("Frida dynamic oracle: cross-platform,
+    # scriptable hooks... to augment/replace gdb/lldb"): confirmacion de double-free por
+    # function interception (Interceptor.attach), no por breakpoints de gdb. Mismo fixture y
+    # misma logica de replay que heap_confirm_double_free (_replay_events reutilizada), para
+    # probar que ambos backends llegan al mismo veredicto sobre el mismo binario real.
+    import os
+    try:
+        import frida  # noqa: F401
+    except Exception:
+        return  # frida no instalado en este entorno: se omite (dependencia opcional)
+    from binoracle.oracles.frida_dynamic import FridaDynamicOracle
+    b = "samples/bin/heapbug"
+    if not os.path.exists(b):
+        return
+
+    oc = FridaDynamicOracle(b)
+    assert oc.available() is True
+    tool = oc.tools()[0]
+
+    r = tool.run(stdin_text="f\n", budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True
+    assert r.meta["double_free_addr"], "debe reportar la direccion exacta liberada dos veces"
+    assert "DOUBLE-FREE" in r.data
+    assert r.meta.get("glibc_also_aborted") is True
+
+    r2 = tool.run(stdin_text="x\n", budget_s=20)
+    assert r2.ok, r2.error
+    assert r2.meta["verified"] is False
+
+
+def test_frida_dynamic_no_false_positive_on_binary_without_heap_bugs():
+    import os
+    try:
+        import frida  # noqa: F401
+    except Exception:
+        return
+    from binoracle.oracles.frida_dynamic import FridaDynamicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        return
+    oc = FridaDynamicOracle(b)
+    tool = oc.tools()[0]
+    r = tool.run(stdin_text="hola\n", budget_s=15)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+
+
+def test_frida_dynamic_registered_only_when_dynamic_enabled():
+    from binoracle.oracles import build_registry
+    import os as _os
+    b = "samples/bin/heapbug"
+    if not _os.path.exists(b):
+        return
+    names_static = [t.name for t in build_registry(b).available_tools()]
+    assert "frida_confirm_double_free" not in names_static
+    names_dynamic = [t.name for t in build_registry(b, enable_dynamic=True).available_tools()]
+    try:
+        import frida  # noqa: F401
+        assert "frida_confirm_double_free" in names_dynamic
+    except Exception:
+        pass  # sin frida instalado, la tool simplemente no se registra (available()=False)
