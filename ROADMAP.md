@@ -14,10 +14,14 @@ Effort is a rough guide: S (days), M (a week or two), L (multi-week / research).
 
 Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
 
-- **[L] Heap exploitation engine.** glibc malloc version detection, chunk/bin analysis, and
-  *dynamic* confirmation of UAF / double-free by hooking malloc/free (ltrace / gdb / Frida)
-  instead of the current static candidates. Then a tcache/fastbin-poisoning primitive
-  suggester. This is the biggest real gap.
+- **[L] Heap exploitation engine.** glibc malloc version detection (shipped: `versions.py`).
+  *Dynamic* confirmation of double-free by hooking malloc/free with gdb (shipped:
+  `oracles/heap_dynamic.py` -- `heap_confirm_double_free`, opt-in like the rest of dynamic
+  execution; replaces the static "free appears >=2 times" heuristic with a real malloc/free
+  state machine over the actual run, cross-checked against glibc's own abort when it catches
+  the same bug). Still open: the same dynamic confirmation for UAF (needs watchpoints/memory
+  reads on freed chunks, a different and more expensive check than double-free), chunk/bin
+  analysis, and the tcache/fastbin-poisoning primitive suggester.
 - **[M] ROP builder v2.** Leak-aware chains (auto ret2libc once a leak step exists),
   `one_gadget` integration, `mprotect`+shellcode chains, SROP, and a `ropper` backend as an
   alternative to pwntools.

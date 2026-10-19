@@ -3585,6 +3585,69 @@ def test_capstone_oracle_in_build_registry_degrades_honestly_with_r2(tmp_path):
         assert "cs_disasm_entry" not in names   # r2 presente: el fallback no se registro
 
 
+def test_heap_dynamic_confirms_real_double_free_in_heapbug():
+    # Primer incremento del motor de heap DINAMICO del ROADMAP (confirmacion real via gdb, no
+    # el heuristico estatico "free aparece >=2 veces en el codigo"). samples/bin/heapbug: con
+    # input 'f' hace free(a) dos veces de verdad (double-free real); con cualquier otro input,
+    # no. Prueba dura de verdad (sin mocks): engancha malloc/free reales con gdb y reproduce la
+    # secuencia observada en ejecucion, igual que glibc misma detecta el double-free (prueba
+    # independiente, 'glibc_also_aborted').
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/heapbug"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return  # corpus/gdb no disponibles en este entorno: se omite
+
+    oc = HeapDynamicOracle(b)
+    assert oc.available() is True
+    tool = oc.tools()[0]
+
+    # positivo: 'f' dispara double-free(a) de verdad
+    r = tool.run(stdin_text="f\n", budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True
+    assert r.meta["double_free_addr"], "debe reportar la direccion exacta liberada dos veces"
+    assert "DOUBLE-FREE" in r.data
+    assert r.meta.get("glibc_also_aborted") is True, ("glibc deberia abortar tambien con "
+                                                       "'double free detected' -- confirmacion independiente")
+
+    # control negativo: cualquier otro input libera a y b una sola vez cada uno
+    r2 = tool.run(stdin_text="x\n", budget_s=20)
+    assert r2.ok, r2.error
+    assert r2.meta["verified"] is False
+    assert "DOUBLE-FREE" not in r2.data
+
+
+def test_heap_dynamic_no_false_positive_on_binary_without_heap_bugs():
+    # Control negativo mas fuerte: ret2win NO llama a malloc/free el mismo (solo libc interna,
+    # p.ej. buffers de stdio) -- nunca debe marcar verified=True por mucho que la libc reutilice
+    # una direccion entre dos allocations internas sin que el programa libere nada explicitamente.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+    oc = HeapDynamicOracle(b)
+    tool = oc.tools()[0]
+    r = tool.run(stdin_text="hola\n", budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+
+
+def test_heap_dynamic_registered_only_when_dynamic_enabled():
+    from binoracle.oracles import build_registry
+    import os as _os
+    b = "samples/bin/heapbug"
+    if not _os.path.exists(b):
+        return
+    names_static = [t.name for t in build_registry(b).available_tools()]
+    assert "heap_confirm_double_free" not in names_static
+    names_dynamic = [t.name for t in build_registry(b, enable_dynamic=True).available_tools()]
+    assert "heap_confirm_double_free" in names_dynamic
+
+
 def test_reachability_rebases_pie_addresses_for_angr():
     # Regresion CRITICA: find_input_to/reachable_findings nunca rebasaba la direccion objetivo del
     # espacio de r2 (que en un binario PIE reporta offsets como si la carga fuera en base 0, p.ej.
