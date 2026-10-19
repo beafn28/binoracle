@@ -103,11 +103,19 @@ The flagship direction: prove impact end to end.
   techniques that existed when autopwn was first written. Honest gap found by the audit: 14
   further standalone exploit tools registered in `mcp_server.py` (`autocsu`, `autopivot`, and
   the house-of-force/spirit/einherjar/botcake/corrosion/mind, IO_FILE/FSOP, fastbin-dup,
-  unsafe-unlink and tcache-stashing glibc-internals techniques) are NOT in autopwn's own
-  applicability/decision tree yet -- each needs its own `_xxx_applicable()` detector analogous
-  to the existing heap ones before autopwn can try them autonomously. Not done in this pass
-  (14 individual detectors is its own sizeable increment); tracked here rather than silently
-  left out.
+  unsafe-unlink and tcache-stashing glibc-internals techniques) were NOT in autopwn's own
+  applicability/decision tree -- each needs its own `_xxx_applicable()` detector analogous to
+  the existing heap ones before autopwn can try them autonomously. Two closed in a follow-up
+  pass: `_csu_applicable()` (needs `win`+`fnptr`, or `retptr` for the execve variant) and
+  `_pivot_applicable()` (needs a win/gift-like symbol AND a known `.bss` staging-buffer symbol)
+  added, both cheap pyelftools symbol pre-checks matching the existing `_heap_shell_applicable`/
+  `_uaf_applicable` convention; `ret2csu` and `pivot` wired into `autopwn()`'s combo sequence
+  (tried before the generic ROP sweep, since ret2csu's whole point is having no pop rsi/pop rdx
+  of its own) and `_why()`'s rationale, verified end-to-end through the ORCHESTRATOR itself
+  (not just the standalone module) against `samples/bin/ret2csu` and `samples/bin/pivot`.
+  Still open: the remaining 12 (house-of-*, IO_FILE/FSOP, fastbin-dup, unsafe-unlink,
+  tcache-stashing) -- each is its own, more involved applicability check (glibc-internals
+  preconditions, not just symbol presence) and still needs a dedicated pass.
 - **[M] Frida dynamic oracle.** Cross-platform, scriptable hooks (heap tracing, function
   interception) to augment/replace gdb/lldb.
 - **[L] Concolic loop.** Drive angr from a real dynamic trace (symbolic-assisted crash

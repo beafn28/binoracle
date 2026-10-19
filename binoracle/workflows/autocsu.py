@@ -100,9 +100,35 @@ sys.exit(1)
 '''
 
 
+def _csu_applicable(binary: str) -> bool:
+    """Chequeo barato (sin sandbox): strategy A necesita 'win' y 'fnptr'; strategy B necesita
+    'retptr' (el gadget1/gadget2 __libc_csu_init-style y los demas gadgets de la strategy B se
+    buscan por patron de bytes / ROP dentro del driver, donde ya hay pwntools cargado -- aqui
+    solo se filtra lo que es barato de saber de antemano, igual que el resto de _xxx_applicable
+    de este motor)."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except Exception:
+        return True
+    try:
+        names = set()
+        with open(binary, "rb") as f:
+            elf = ELFFile(f)
+            for sec in elf.iter_sections():
+                if sec.name in (".symtab", ".dynsym"):
+                    for s in sec.iter_symbols():
+                        if s.name:
+                            names.add(s.name)
+        return ("win" in names and "fnptr" in names) or "retptr" in names
+    except Exception:
+        return True
+
+
 def autocsu(binary: str) -> dict:
     """ret2csu execve/call-win verificado por ejecucion. Necesita los 2 gadgets universales y un
     puntero a funcion conocido (`fnptr`). Docker o sandbox nativo; degrada limpio."""
+    if not _csu_applicable(binary):
+        return {"ok": False, "note": "no aplicable (falta win+fnptr o retptr): ret2csu necesita uno de los dos"}
     res = run_driver(binary, _DRIVER, ".binoracle_csu.py")
     if not res.get("ok"):
         return res

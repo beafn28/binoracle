@@ -12,6 +12,8 @@ that stages into a fixed buffer, then the short overflow) and a `win()` gift fun
 re-alignment ret-slide is swept for glibc's MOVAPS. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
+import re
+
 from ._sandbox import run_driver
 
 _DRIVER = r'''
@@ -85,9 +87,40 @@ sys.exit(1)
 '''
 
 
+_PIVOT_WIN_RE = re.compile(r"(?:^|\.)(win|shell|backdoor|giveshell)$")
+_PIVOT_STAGE_CANDS = ("notes", "buf", "name", "data", "store", "global_buf")
+
+
+def _pivot_applicable(binary: str) -> bool:
+    """Chequeo barato (sin sandbox): necesita una funcion win()/gift y un buffer .bss de nombre
+    conocido donde escalonar la cadena (los mismos candidatos que busca el driver). El gadget
+    `leave; ret` se busca dentro del driver, donde ya hay pwntools/ROP cargado -- barato de
+    verdad solo ahi, igual que el resto de _xxx_applicable de este motor."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except Exception:
+        return True
+    try:
+        names = set()
+        with open(binary, "rb") as f:
+            elf = ELFFile(f)
+            for sec in elf.iter_sections():
+                if sec.name in (".symtab", ".dynsym"):
+                    for s in sec.iter_symbols():
+                        if s.name:
+                            names.add(s.name)
+        has_win = any(_PIVOT_WIN_RE.search(n) for n in names)
+        has_stage = any(c in names for c in _PIVOT_STAGE_CANDS)
+        return has_win and has_stage
+    except Exception:
+        return True
+
+
 def autopivot(binary: str) -> dict:
     """Stack-pivot (migration a .bss) verificado por ejecucion. Necesita un `leave; ret`, una
     funcion win()/gift, y un buffer fijo conocido donde se escalona la cadena. Docker o nativo."""
+    if not _pivot_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin win/gift o sin buffer .bss de nombre conocido)"}
     res = run_driver(binary, _DRIVER, ".binoracle_pivot.py")
     if not res.get("ok"):
         return res
