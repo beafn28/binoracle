@@ -3412,3 +3412,81 @@ def test_chainanalyzer_canary_chain_builds():
     c = cc[0]
     assert c.unmet_requirements == 0 and c.feasible
     assert c.break_points == [], "el canary no debe ser un break-point para la propia cadena de bypass"
+
+
+def test_funcid_render_no_crash():
+    from binoracle.workflows.funcid import FuncIdResult, FuncMatch, render_funcid
+    r = FuncIdResult(ok=True, note="1 funcion recuperada", stripped="s", reference="r",
+                     matches=[FuncMatch(addr=0x1209, size=37, stripped_name="fcn.00001209",
+                                        recovered_name="sym.win", confidence="exact-calls", score=1.0)])
+    out = render_funcid(r)
+    assert "sym.win" in out and "fcn.00001209" in out and "ALTA" in out
+    assert "No disponible" in render_funcid(FuncIdResult(ok=False, note="radare2 no esta instalado"))
+
+
+def test_funcid_recovers_win_across_optimization_levels():
+    # "[M] Stripped-binary function ID" del ROADMAP v0.4: recupera el nombre de una funcion en
+    # un binario STRIPPED comparando su firma de llamadas (import calls resueltas via .dynsym,
+    # que sobrevive a `strip`) contra un binario de referencia NOMBRADO -- no un no-op de
+    # comparar un binario contra su propia copia stripped (eso emparejaria trivialmente por
+    # direccion/tamanio). Aqui el target es la MISMA fuente recompilada a -O1 y luego stripped:
+    # win() cambia de prologo/epilogo por completo (gana endbr64, pierde push/pop rbp) pero su
+    # firma de llamadas (puts, system) debe seguir matcheando EXACTO y sin ambiguedad.
+    import os
+    import shutil
+    import subprocess
+    import pytest
+    from binoracle.workflows.funcid import r2_available, identify_stripped_functions
+    ref, src = "samples/bin/ret2win", "samples/src/ret2win.c"
+    if not os.path.exists(ref) or not os.path.exists(src):
+        pytest.skip("sample ret2win/fuente no disponibles (samples/build.sh)")
+    if not r2_available():
+        pytest.skip("radare2 no disponible (apt install radare2)")
+    if not shutil.which("gcc") or not shutil.which("strip"):
+        pytest.skip("gcc/strip no disponibles")
+
+    o1 = "/tmp/binoracle_test_ret2win_O1"
+    o1_stripped = o1 + "_stripped"
+    try:
+        subprocess.run(["gcc", "-O1", "-o", o1, src], capture_output=True, timeout=60)
+        if not os.path.exists(o1):
+            pytest.skip("no se pudo compilar ret2win a -O1 en este entorno")
+        shutil.copy(o1, o1_stripped)
+        subprocess.run(["strip", o1_stripped], capture_output=True, timeout=30)
+
+        r = identify_stripped_functions(o1_stripped, ref)
+        assert r.ok, r.note
+        win_matches = [m for m in r.matches if m.recovered_name == "sym.win"]
+        assert win_matches, f"win() no se recupero: {[(m.stripped_name, m.recovered_name) for m in r.matches]}"
+        assert win_matches[0].confidence == "exact-calls" and win_matches[0].score == 1.0
+        # ninguna OTRA funcion anonima debe reclamar el mismo nombre (sin ambiguedad)
+        assert len(win_matches) == 1
+    finally:
+        for p in (o1, o1_stripped):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_funcid_degrades_cleanly_without_named_reference():
+    # Control negativo: si la "referencia" no tiene ninguna funcion nombrada que comparar
+    # (p.ej. tambien esta stripped), no debe inventar ningun match -- debe degradar con nota.
+    import os
+    import pytest
+    from binoracle.workflows.funcid import r2_available, identify_stripped_functions
+    b = "samples/bin/ret2win.stripped"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win.stripped no disponible")
+    if not r2_available():
+        pytest.skip("radare2 no disponible")
+    r = identify_stripped_functions(b, "/nonexistent/reference/binary")
+    assert r.ok is False
+    assert "nombradas" in r.note or "no tiene" in r.note or r.note
+
+
+def test_funcid_degrades_cleanly_without_r2(monkeypatch):
+    # Si r2/radare2 no esta en PATH, debe fallar limpio con una nota clara, nunca lanzar.
+    from binoracle.workflows import funcid
+    monkeypatch.setattr(funcid.shutil, "which", lambda name: None)
+    r = funcid.identify_stripped_functions("samples/bin/ret2win.stripped", "samples/bin/ret2win")
+    assert r.ok is False
+    assert "radare2" in r.note.lower()

@@ -254,8 +254,38 @@ The flagship direction: prove impact end to end.
   source file (the instrumented path this increment actually verified) or the user building
   AFL++'s own QEMU support themselves. Wired into `binoracle fuzz --run` (CLI, alongside the
   existing template-printing default) and as its own MCP tool, `autofuzz_afl`.
-- **[M] Stripped-binary function ID.** Signature / BinDiff-style matching to recover names in
-  stripped targets before analysis.
+- **[M] Stripped-binary function ID.** Audited first: nothing resembling FLIRT/BinDiff/signature
+  matching existed anywhere in the codebase (`patchdiff.py`'s radiff2 wrapper diffs two binaries
+  structurally but never recovers a NAME). Shipped: `workflows/funcid.py`, `identify_stripped_functions
+  (stripped_binary, reference_binary)`. radare2 is the oracle (same convention as
+  `patchdiff.py`'s radiff2 use): it lists functions (`aflj`) and disassembles each one
+  (`pdfj @ addr`, whose `ops[].disasm` already carries RESOLVED call-target names); this module
+  never invents a function body. The signature is two-tiered: (1) high confidence -- the ORDERED
+  list of resolved import-call names (`sym.imp.*`) a function calls. This survives `strip`
+  entirely, because a dynamically-linked ELF's `.dynsym` (needed at runtime to resolve
+  `puts`/`system`/etc through the PLT) is a *different* table from `.symtab` (local symbols,
+  what `strip` actually removes) -- so library-call names stay visible in a stripped binary even
+  though local function names become `fcn.XXXXXXXX`. (2) fallback, heuristic-only, labelled
+  `"similar"` and never `"exact-calls"` -- a plain `difflib.SequenceMatcher` ratio over mnemonic
+  sequences, used only when a function calls nothing resolvable (confirmed live this signal alone
+  is weak: 0.53 vs 0.48 for a true vs. an unrelated match on a short function, not a safe margin
+  on its own). Verified end-to-end against a genuinely harder case than "a binary vs. its own
+  stripped copy" (which would trivially match by address): `samples/src/ret2win.c` rebuilt at
+  `-O1` and stripped, compared against the existing `-O0` unstripped `samples/bin/ret2win` as the
+  named reference. `win()`'s prologue/epilogue changed completely under `-O1` (gained `endbr64`,
+  lost its `push rbp`/`pop rbp` frame, moved address), but its call signature
+  (`[sym.imp.puts, sym.imp.system]`) matched EXACTLY and uniquely against every other function in
+  the stripped target -- recovered as `exact-calls`, score 1.0, no ambiguity. Degrades honestly:
+  no radare2 installed, or a reference binary with no named functions to compare against, returns
+  `ok=False` with a clear note rather than guessing. A real snag hit while prototyping (fixed
+  before landing in the final module): `pdj %d @ addr` treats its first argument as an
+  INSTRUCTION count, not a byte count, so passing a function's byte `size` there over-disassembles
+  past its real boundary -- the final module sidesteps this entirely by using `pdfj @ addr`
+  (disassembles the whole recognized function body at once, no count ambiguity). Covered by real
+  tests in `tests/test_smoke.py`: the harder -O1-stripped-vs-O0 recovery case (compiled on the
+  fly), a negative control (reference with no named functions -> clean `ok=False`, no invented
+  match), and a degrade-cleanly-without-radare2 case. Wired into `binoracle funcid <stripped>
+  <reference>` (CLI) and the web UI's `funcid` command.
 - **[S] More formats & backends.** Raw shellcode analysis, Go/Rust binary heuristics. ~~A
   Ghidra-headless decompilation backend~~ (shipped: `callertools.py` drives `analyzeHeadless`)
   ~~and the capstone fallback oracle~~ (shipped: `oracles/capstone_fallback.py`, registers

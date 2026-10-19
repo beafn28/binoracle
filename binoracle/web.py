@@ -405,6 +405,16 @@ def run_command(payload: dict) -> dict:
             tests = autoregress_test(old, binary, config=config)
             text += "\n\n" + render_regression_tests(old, binary, tests)
         return {"ok": True, "text": text}
+    if cmd == "funcid":
+        import os as _os
+        reference = (opts.get("reference") or "").strip()
+        if not reference or not _os.path.exists(reference) or not _os.path.exists(binary):
+            return {"ok": False, "text": "indica el binario stripped (arriba) y la REFERENCIA "
+                                         "nombrada (opcion); ambos deben existir"}
+        from .workflows.funcid import identify_stripped_functions, render_funcid
+        min_sim = float(opts.get("min_similarity") or 0.6)
+        r = identify_stripped_functions(binary, reference, min_similarity=min_sim)
+        return {"ok": True, "text": render_funcid(r)}
 
     # everything else needs a real binary
     if not binary or not os.path.exists(binary):

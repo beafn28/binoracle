@@ -808,6 +808,16 @@ def cmd_regress(args, config):
     _write_if(args.output, out)
 
 
+def cmd_funcid(args, config):
+    stripped = _require_binary(args.stripped)
+    reference = _require_binary(args.reference)
+    from .workflows.funcid import identify_stripped_functions, render_funcid
+    res = identify_stripped_functions(stripped, reference, min_similarity=args.min_similarity)
+    out = render_funcid(res)
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_heap(args, config):
     binary = _require_binary(args.binary)
     from .workflows.autoheap import autoheap, render_heap
@@ -1442,6 +1452,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also generate+RUN a real regression test: re-run every autopwn "
                          "technique verified on OLD against NEW (slower; needs the sandbox)")
     rg.set_defaults(func=cmd_regress)
+
+    fi = sub.add_parser("funcid", help="stripped-binary function ID: BinDiff-style "
+                        "signature matching to recover names before analysis")
+    fi.add_argument("stripped", help="stripped binary missing local symbol names")
+    fi.add_argument("reference", help="named reference (same program, any build/opt level)")
+    fi.add_argument("-o", "--output")
+    fi.add_argument("--min-similarity", type=float, default=0.6,
+                    help="umbral de similitud de mnemonics para el fallback heuristico (0-1)")
+    fi.set_defaults(func=cmd_funcid)
 
     tl = sub.add_parser("tools", help="detect the installed binary-pentest toolchain")
     tl.set_defaults(func=cmd_tools)
