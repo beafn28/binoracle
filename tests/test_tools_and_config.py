@@ -3646,6 +3646,70 @@ def test_heap_dynamic_registered_only_when_dynamic_enabled():
     assert "heap_confirm_double_free" not in names_static
     names_dynamic = [t.name for t in build_registry(b, enable_dynamic=True).available_tools()]
     assert "heap_confirm_double_free" in names_dynamic
+    assert "heap_confirm_uaf" in names_dynamic
+
+
+def _heap_pad(n):
+    # uaf.c lee con read() CRUDO (no fgets): cada comando debe llenar exactamente los 7 bytes
+    # que read(0,b,7) pide, o una sola llamada "engulle" varios comandos de golpe (confirmado en
+    # vivo: sin este padding, el segundo/tercer comando se perdian y el programa salia pronto).
+    return ("%d\n" % n) + "\n" * 5
+
+
+def test_heap_dynamic_confirms_real_uaf_funcptr_hijack():
+    # samples/bin/uaf: 1=new (malloc + action=hello), 2=free(o) SIN limpiar el puntero,
+    # 3=run (o->action() -- lee el campo function-pointer DEL CHUNK YA LIBERADO). Secuencia
+    # 1,2,3 sin reasignar antes es un UAF real -- y ademas CRASHEA (tcache safe-linking corrompe
+    # el valor leido), confirmacion independiente igual que glibc con el double-free.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/uaf"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_confirm_uaf"]
+
+    r = tool.run(stdin_text=_heap_pad(1) + _heap_pad(2) + _heap_pad(3), budget_s=25)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True
+    assert r.meta["uaf_addr"], "debe reportar la direccion exacta tocada tras liberarla"
+    assert "USE-AFTER-FREE" in r.data
+
+
+def test_heap_dynamic_uaf_no_false_positive_on_legitimate_reallocation():
+    # Mismo patron, pero con un 'new' de verdad ENTRE el free y el run: el allocator reutiliza
+    # legitimamente la misma direccion (tcache LIFO de una entrada), y el segundo 'new' vuelve a
+    # fijar action=hello antes del 'run' -- no debe marcarse UAF (y de hecho no crashea: imprime
+    # "hello" limpio). Control negativo mas exigente que "no tocar nada": SI se toca la memoria,
+    # pero de forma legitima tras una reasignacion real.
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/uaf"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_confirm_uaf"]
+    r = tool.run(stdin_text=_heap_pad(1) + _heap_pad(2) + _heap_pad(1) + _heap_pad(3), budget_s=25)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+
+
+def test_heap_dynamic_uaf_no_false_positive_on_binary_without_heap_bugs():
+    import os
+    import shutil
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        return
+    oc = HeapDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["heap_confirm_uaf"]
+    r = tool.run(stdin_text="hola\n", budget_s=15)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
 
 
 def test_reachability_rebases_pie_addresses_for_angr():

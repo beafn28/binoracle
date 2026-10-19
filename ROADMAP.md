@@ -15,13 +15,17 @@ Effort is a rough guide: S (days), M (a week or two), L (multi-week / research).
 Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
 
 - **[L] Heap exploitation engine.** glibc malloc version detection (shipped: `versions.py`).
-  *Dynamic* confirmation of double-free by hooking malloc/free with gdb (shipped:
-  `oracles/heap_dynamic.py` -- `heap_confirm_double_free`, opt-in like the rest of dynamic
-  execution; replaces the static "free appears >=2 times" heuristic with a real malloc/free
-  state machine over the actual run, cross-checked against glibc's own abort when it catches
-  the same bug). Still open: the same dynamic confirmation for UAF (needs watchpoints/memory
-  reads on freed chunks, a different and more expensive check than double-free), chunk/bin
-  analysis, and the tcache/fastbin-poisoning primitive suggester.
+  *Dynamic* confirmation of double-free AND use-after-free by hooking malloc/free with gdb
+  (shipped: `oracles/heap_dynamic.py` -- `heap_confirm_double_free` + `heap_confirm_uaf`,
+  opt-in like the rest of dynamic execution; replaces the static "free appears >=2 times"/
+  "alloc+free in same function" heuristics with real malloc/free state tracking plus, for UAF,
+  an access watchpoint on the freed chunk filtered by `gdb.solib_name()` so glibc's own tcache
+  bookkeeping doesn't false-positive and a legitimate later reallocation disarms it -- both
+  cross-checked against the target's own crash/abort when it independently catches the same
+  bug). Known limitation of the UAF check: only direct CPU accesses are caught, not
+  syscall-mediated ones (read()/write() into a freed buffer) -- ptrace hardware watchpoints
+  don't fire on kernel copy_to/from_user. Still open: chunk/bin analysis and the
+  tcache/fastbin-poisoning primitive suggester.
 - **[M] ROP builder v2.** Leak-aware chains (auto ret2libc once a leak step exists),
   `one_gadget` integration, `mprotect`+shellcode chains, SROP, and a `ropper` backend as an
   alternative to pwntools.
