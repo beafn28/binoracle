@@ -55,8 +55,17 @@ Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
   since this libc build never happens to have one on its own) so pwntools' automatic
   register-setting can reach rdi/rsi/rdx and build the call). Still open: a `ropper` backend as
   an alternative to pwntools for gadget-finding -- not started.
-- **[M] Automatic infoleak chaining.** Wire a format-string / OOB-read leak into a follow-on
-  GOT-overwrite or ROP as a *single* verified chain, not two separate findings.
+- **[M] Automatic infoleak chaining.** (shipped: `workflows/autoleakchain.py` -- a single
+  out-of-bounds indexable-array bug used TWICE in one run: first as a READ that leaks an
+  already-resolved libc pointer sitting next to the array (genuinely unknown ahead of time --
+  it depends on the libc build/ASLR slide of that run, never hardcoded or read from
+  `/proc/maps`), from which `libc_base` and `system()`'s address are computed; then as a WRITE
+  that hijacks a neighbouring function pointer with that computed address, and calling it (with
+  a known, static `/bin/sh` argument -- no leak needed there) spawns a shell. One bug class, one
+  verified chain -- not an "OOB read" finding and a "write-what-where" finding left for a human
+  to compose by hand. New fixture `samples/bin/leakchain`. A canary-leak variant of this same
+  idea -- format-string `%p`/`%s` leak feeding a same-process overflow -- already shipped
+  earlier as `workflows/autocanary.py`'s Strategy B, before this ROADMAP item was opened.)
 - **[S-M] CFI / SafeStack / ASan reasoning.** Turn detection into grounded bypass-strategy
   hints (still not auto-bypass), tied to the observed hardening.
 

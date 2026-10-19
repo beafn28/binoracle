@@ -140,6 +140,8 @@ echo "[*] pivot (x86-64, static, short overflow -> stack migration to .bss)"
 run "gcc -fno-stack-protector -no-pie -static -w -o bin/pivot src/pivot.c"
 echo "[*] mprotectshell (x86-64, static, no-PIE: ROP a mprotect() en un buffer .bss fijo -> shellcode real, NX bypass sin leak)"
 run "gcc -fno-stack-protector -no-pie -static -w -o bin/mprotectshell src/mprotectshell.c"
+echo "[*] leakchain (x86-64, no-PIE, dinamico: OOB read filtra puntero libc real -> OOB write hijacka callback -> system('/bin/sh'), infoleak chaining)"
+run "gcc -fno-stack-protector -no-pie -w -o bin/leakchain src/leakchain.c"
 echo "[*] win_chall.exe (Windows PE via mingw)"
 if [ "$have_docker" = "1" ]; then
   docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \

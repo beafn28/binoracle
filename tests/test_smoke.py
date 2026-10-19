@@ -1526,6 +1526,49 @@ def test_autoropmprotect_degrades_cleanly_without_mprotect_symbol():
     assert "NOT_APPLICABLE" in (r.get("output") or "")
 
 
+def test_autoleakchain_verifies_leak_informed_hijack():
+    # Verificacion POSITIVA de "[M] Automatic infoleak chaining" (ROADMAP) por EJECUCION:
+    # leakchain.c tiene UN solo bug (table[idx] sin cota) usado dos veces en la MISMA
+    # ejecucion -- como OOB READ filtra un puntero libc YA resuelto (printf_leak, cuyo valor
+    # real depende del build de libc y NUNCA se asume de antemano) y como OOB WRITE hijacka un
+    # function-pointer con system() calculado a partir de ESE leak. Prueba que el oraculo
+    # compuso ambos pasos en una sola cadena -- no dos hallazgos sueltos que un humano tendria
+    # que unir a mano -- y que la shell final es real.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/leakchain"
+    if not os.path.exists(binp):
+        pytest.skip("sample leakchain no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autoleakchain import autoleakchain
+    r = autoleakchain(binp)
+    assert r.get("ok") and r.get("verified"), f"infoleak chaining no verificado: {r.get('note')}"
+    assert "leak_fn=printf" in (r.get("detail") or "")
+    assert "system=" in (r.get("detail") or "")
+
+
+def test_autoleakchain_degrades_cleanly_without_known_symbols():
+    # Control negativo: ret2win no tiene table/<fn>_leak/callback -- no debe inventarse una
+    # cadena; NOT_APPLICABLE honesto, nunca un falso "verified".
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win no compilado")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autoleakchain import autoleakchain
+    r = autoleakchain(binp)
+    assert r.get("ok")
+    assert r.get("verified") is False
+    assert "NOT_APPLICABLE" in (r.get("output") or "")
+
+
 def test_autofmt_verifies_32bit_got_overwrite():
     # Verificacion POSITIVA de format-string de x86-32 por EJECUCION: en fmtgot32 el bug
     # printf(buf) permite sobrescribir printf@GOT con system (Partial RELRO, no-PIE) y luego

@@ -1218,6 +1218,12 @@ _exploit_tool("autoropmprotect", "ROP builder v2 (bypass NX sin leak): un read()
               "el simbolo mprotect() resoluble y un buffer de nombre conocido. Verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autoropmprotect", fromlist=["autoropmprotect"]).autoropmprotect,
                        __import__("binoracle.workflows.autoropmprotect", fromlist=["render_ropmprotect"]).render_ropmprotect))
+_exploit_tool("autoleakchain", "infoleak chaining automatico: un OOB read filtra un puntero "
+              "libc YA resuelto (desconocido hasta esta ejecucion) -> calcula libc_base y "
+              "system() -> el mismo bug como OOB write hijacka un function-pointer -> "
+              "callback('/bin/sh') -> shell. Una sola cadena verificada, no dos hallazgos sueltos.",
+              lambda: (__import__("binoracle.workflows.autoleakchain", fromlist=["autoleakchain"]).autoleakchain,
+                       __import__("binoracle.workflows.autoleakchain", fromlist=["render_leakchain"]).render_leakchain))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------
