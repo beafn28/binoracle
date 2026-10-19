@@ -432,25 +432,29 @@ The flagship direction: prove impact end to end.
   raise it to the real measured number (with headroom) once that run completes. All three are
   wired into `.github/workflows/ci.yml`.
 - ~~Quieter optional dependencies (pwntools/angr logging), graceful-degradation everywhere.~~
-  Audited: pwntools logging was already quiet, just via a different mechanism than the codebase's
-  own comment claimed -- `binoracle/__init__.py` had a `_quiet_pwn()` helper whose docstring said
-  "each exploit workflow does that via `_quiet_pwn()` right after importing pwn", but confirmed
-  live it had ZERO call sites, and pwntools is never actually imported into this process at all:
-  every exploit workflow builds a driver SCRIPT (a separate `from pwn import ...` string) that
-  runs as its own subprocess and quiets itself inline via `context.log_level = "error"` --
-  necessarily so, since the logger level must be set in the process that owns it. Removed the
-  dead function and corrected the comment to describe the real mechanism (and kept the one part
-  that IS real and load-bearing: setting `PWNLIB_NOTERM` here, inherited by every spawned driver).
-  angr, unlike pwntools, genuinely IS imported straight into this process (`oracles/
-  symbolic_angr.py`, `oracles/concolic.py`, `workflows/autopoc.py`), where the duplication was
-  real: three separate copies of the same `getLogger(...).setLevel(ERROR)` block, and one of them
-  (`symbolic_angr.py`) was missing `pyvex` entirely (quieting `angr`+`cle` only). Factored into a
-  shared `binoracle._quiet_angr()`, now used by all three (and automatically covers `pyvex`
-  everywhere). Graceful-degradation audit: every oracle file already guards its optional import
-  with `try/except` (no bare unguarded `import` found across `oracles/*.py`) -- already solid, no
-  gap found there. Covered by real tests in `tests/test_smoke.py`: `_quiet_pwn` confirmed gone,
-  `_quiet_angr` confirmed to actually pin all three loggers to ERROR, and an AST-based check that
-  all three angr-importing modules call the shared helper (so a future one can't silently drift).
+  angr, which IS imported straight into this process (`oracles/symbolic_angr.py`,
+  `oracles/concolic.py`, `workflows/autopoc.py`), had real duplication: three separate copies of
+  the same `getLogger(...).setLevel(ERROR)` block, one of them (`symbolic_angr.py`) missing
+  `pyvex` entirely (quieting `angr`+`cle` only). Factored into a shared `binoracle._quiet_angr()`,
+  now used by all three (and automatically covers `pyvex` everywhere). `binoracle/__init__.py`
+  also has a `_quiet_pwn()` helper for the small number of workflows that build a pwntools chain
+  / PoC snippet directly in THIS process (`rop.py`, `shellcode.py`, `fmtstring.py`, `autopoc.py`,
+  and now `autofuzz.py`'s `_cyclic` too, added here for the same consistency); every OTHER
+  exploit workflow instead builds a driver SCRIPT (a separate `from pwn import ...` string) that
+  runs as its own subprocess and quiets itself inline via `context.log_level = "error"`, since
+  `_quiet_pwn()` can only run in the process it was imported into. A real mistake was made and
+  caught mid-session: an initial pass concluded `_quiet_pwn()` was dead (grepped only for
+  TOP-LEVEL, column-0 `from pwn import` and missed the four indented host-process call sites
+  above) and deleted it -- confirmed broken not by static analysis but by actually running
+  `binoracle autopwn` against a real sample (`samples/bin/canleak`) and seeing its `rop-chain`
+  combo report `pwntools no disponible: cannot import name '_quiet_pwn'` instead of a real
+  reason. Restored immediately, with a test (`test_quiet_pwn_has_real_host_process_callers`)
+  confirming `rop.py` genuinely detects pwntools again. Graceful-degradation audit: every oracle
+  file already guards its optional import with `try/except` (no bare unguarded `import` found
+  across `oracles/*.py`) -- already solid, no gap found there. Covered by real tests in
+  `tests/test_smoke.py`: `_quiet_angr` confirmed to pin all three loggers to ERROR, an AST-based
+  check that all three angr-importing modules call the shared helper, and the restored
+  `_quiet_pwn` coverage above.
 - A docs site with a guided tutorial over the `samples/` corpus.
 
 ## Explicitly out of scope

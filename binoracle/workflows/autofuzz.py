@@ -43,6 +43,8 @@ class FuzzResult:
 def _cyclic(n: int) -> bytes:
     try:
         from pwn import cyclic
+        from binoracle import _quiet_pwn
+        _quiet_pwn()
         return cyclic(n)
     except Exception:
         # fallback deterministico si pwntools no esta: patron aaaabaaac...

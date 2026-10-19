@@ -3796,19 +3796,18 @@ def test_import_availability_probes_are_not_silently_broken():
 
 
 def test_quiet_angr_silences_all_three_loggers_and_is_shared():
-    # "Quieter optional dependencies (pwntools/angr logging)" del ROADMAP.md. Auditado: pwntools
-    # YA se quietaba correctamente -- nunca se importa en ESTE proceso, cada workflow construye
-    # un driver que corre como subproceso propio y se quieta a si mismo inline (necesario, porque
-    # el nivel del logger debe fijarse DESPUES del propio `from pwn import` de ESE proceso) -- asi
-    # que `_quiet_pwn()`, que SI estaba en el codigo pero sin ningun llamador real (verificado: 0
-    # call sites, y cero `import pwn` a nivel de proceso host), era codigo muerto con un
-    # docstring que afirmaba algo falso. Se elimino. En cambio angr SI se importa directo en este
-    # proceso (symbolic_angr.py, concolic.py, autopoc.py) -- ahi la duplicacion (3 copias del
-    # mismo getLogger().setLevel() x3) era real, y una de las 3 copias (symbolic_angr.py) ni
-    # siquiera quietaba pyvex. Factorizado en `binoracle._quiet_angr()`, usado por los 3.
+    # "Quieter optional dependencies (pwntools/angr logging)" del ROADMAP.md. angr SI se importa
+    # directo en este proceso (symbolic_angr.py, concolic.py, autopoc.py) -- ahi la duplicacion
+    # (3 copias del mismo getLogger().setLevel() x3) era real, y una de las 3 copias
+    # (symbolic_angr.py) ni siquiera quietaba pyvex. Factorizado en `binoracle._quiet_angr()`,
+    # usado por los 3. (`_quiet_pwn()` SIGUE existiendo y con llamadores reales -- un intento
+    # anterior de borrarlo por "sin uso" solo greppeo imports de `pwn` en columna 0 y se perdio
+    # 4 `from pwn import` indentados dentro de un `try:` a nivel de proceso host en rop.py/
+    # shellcode.py/fmtstring.py/autopoc.py; lo capturo una ejecucion real de `autopwn`, no un
+    # analisis estatico -- ver test_quiet_pwn_sets_error_level y test_autopwn_rop_chain_combo_
+    # does_not_crash_on_missing_quiet_pwn mas abajo.)
     import logging
     import binoracle
-    assert not hasattr(binoracle, "_quiet_pwn"), "_quiet_pwn murio sin llamadores -- no debe reaparecer"
     for name in ("angr", "cle", "pyvex"):
         logging.getLogger(name).setLevel(logging.DEBUG)   # reset para que la asercion sea real
     binoracle._quiet_angr()
@@ -3827,3 +3826,25 @@ def test_angr_importing_modules_all_use_the_shared_quiet_helper():
             src = f.read()
         assert "_quiet_angr" in src, f"{rel} importa angr pero no usa el helper compartido"
         ast.parse(src)   # y sigue siendo sintacticamente valido
+
+
+def test_quiet_pwn_has_real_host_process_callers():
+    # Regresion especifica (ver comentario en test_quiet_angr_silences_all_three_loggers_and_is_
+    # shared): `_quiet_pwn` tiene 5 llamadores reales a nivel de proceso HOST (no dentro de un
+    # driver-string que corre como subproceso aparte) -- rop.py, shellcode.py, fmtstring.py,
+    # autopoc.py y autofuzz.py. Confirmado en vivo: sin `_quiet_pwn`, `rop.py`'s `_HAVE_PWN`
+    # queda en False con el motivo real siendo un ImportError de `_quiet_pwn` mismo (no "pwntools
+    # no instalado" -- un fallo mucho mas confuso), y `binoracle autopwn` sobre un binario con
+    # canary (donde SI se intenta la combo rop-chain) reporta literalmente "pwntools no
+    # disponible: cannot import name '_quiet_pwn'" en vez de un motivo real de por que la cadena
+    # ROP no se pudo construir.
+    import shutil
+    import pytest
+    from binoracle.workflows.rop import _HAVE_PWN
+    if not shutil.which("python3"):
+        pytest.skip("python3 no disponible")
+    try:
+        import pwn  # noqa: F401
+    except Exception:
+        pytest.skip("pwntools no instalado -- _HAVE_PWN=False es la respuesta correcta, nada que verificar")
+    assert _HAVE_PWN is True, "rop.py no detecto pwntools -- revisa que binoracle._quiet_pwn exista"
