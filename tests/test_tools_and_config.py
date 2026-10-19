@@ -12910,3 +12910,61 @@ def test_regression_dashboard_degrades_cleanly_with_fewer_than_two_runs():
     assert "Sin runs" in render_targets([])
     record_run(db, target, [])
     assert diff_latest_two(db, target)["ok"] is False  # solo 1 run todavia -- no alcanza para diff
+
+
+def test_investigate_binary_path_falls_back_to_full_autopwn_engine():
+    # El `investigate_cve --binary` -> plan_for_binary()'s unico motor de explotacion era
+    # chainanalyzer.analyze_chains (~6-13 cadenas modeladas), mucho mas estrecho que el motor
+    # completo de autopwn.py (29 tecnicas, construido/verificado a lo largo de esta sesion:
+    # todas las de heap, SROP, ret2csu, dl-resolve, leak-chain, mprotect-shellcode...). Un CVE
+    # real sobre un binario nativo merece el motor completo, no solo el subconjunto que el
+    # analizador de cadenas sabe construir. Regresion confirmada en vivo ANTES de este fix:
+    # chainanalyzer.analyze_chains('samples/bin/leakchain', verify=True) devuelve CERO cadenas
+    # verificadas (el leak de infoleak-chaining no esta modelado ahi), mientras que
+    # autopwn ya verificaba 'leak-chain' en ese mismo binario desde que se construyo
+    # ("Automatic infoleak chaining" del ROADMAP). _augment_with_autopwn cierra ese hueco.
+    import os
+    import shutil
+    import pytest
+    from binoracle.workflows.cveplan import ExploitPlan, _augment_with_autopwn
+    b = "samples/bin/leakchain"
+    if not os.path.exists(b):
+        pytest.skip("sample leakchain no compilado (samples/build.sh)")
+    if not shutil.which("docker") and not shutil.which("unshare"):
+        pytest.skip("ni docker ni unshare disponibles -- sin sandbox para verificar")
+
+    pl = ExploitPlan(vuln_class="stack-overflow")
+    _augment_with_autopwn(pl, b, "es", True)
+    assert pl.verified, "autopwn debia verificar 'leak-chain' en este binario"
+    assert pl.concrete.get("chain") == "leak-chain"
+    assert pl.proof.get("system"), f"proof incompleta: {pl.proof}"
+    assert "autopwn" in pl.script.lower()
+
+
+def test_augment_with_autopwn_never_overwrites_an_existing_verification():
+    # Si el plan YA viene verificado (p.ej. chainanalyzer encontro su propia cadena), la
+    # augmentacion con autopwn no debe tocar nada -- ni re-ejecutar autopwn (coste), ni
+    # pisar una prueba que ya era real.
+    from binoracle.workflows.cveplan import ExploitPlan, _augment_with_autopwn
+    pl = ExploitPlan(vuln_class="stack-overflow", verified=True,
+                     proof={"marker": "YA_VERIFICADO"}, concrete={"chain": "ret2win"})
+    _augment_with_autopwn(pl, "/nonexistent/binary/no/deberia/ni/abrirse", "es", True)
+    assert pl.proof == {"marker": "YA_VERIFICADO"}
+    assert pl.concrete.get("chain") == "ret2win"
+
+
+def test_augment_with_autopwn_degrades_cleanly_when_nothing_verifies():
+    # Un binario inexistente nunca debe hacer que _augment_with_autopwn lance -- ni que
+    # reporte un falso verificado.
+    from binoracle.workflows.cveplan import ExploitPlan, _augment_with_autopwn
+    pl = ExploitPlan(vuln_class="stack-overflow")
+    _augment_with_autopwn(pl, "/nonexistent/binary", "es", True)
+    assert pl.verified is False
+
+
+def test_parse_kv_detail_extracts_autopwn_proof_fields():
+    from binoracle.workflows.cveplan import _parse_kv_detail
+    d = _parse_kv_detail("VERIFIED offset=6 system=0x155555258750 printf_got=0x404000")
+    assert d == {"offset": "6", "system": "0x155555258750", "printf_got": "0x404000"}
+    assert _parse_kv_detail("") == {}
+    assert _parse_kv_detail(None) == {}

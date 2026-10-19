@@ -697,11 +697,73 @@ def plan_from_analysis(an, facts: dict, binary_name: str = "target", text: str =
     return pl
 
 
+def _parse_kv_detail(detail: str) -> dict:
+    """Autopwn's winning-attempt detail strings are space-separated `key=value` pairs (e.g.
+    "offset=72 win=0x401176", "VERIFIED offset=6 system=0x... printf_got=0x...") -- turns one
+    into a dict so it can populate ExploitPlan.proof the same way a chainanalyzer chain's own
+    `.proof` dict already does."""
+    out = {}
+    for m in re.finditer(r"(\w+)=(\S+)", detail or ""):
+        out[m.group(1)] = m.group(2)
+    return out
+
+
+def _augment_with_autopwn(pl: "ExploitPlan", binary: str, lang: str, verify: bool) -> None:
+    """Si el Analizador de cadenas (chainanalyzer) no verifico ningun exploit, prueba TAMBIEN
+    el motor completo de `autopwn` -- 29 tecnicas (ret2win, ret2libc, format-string, SROP,
+    ret2csu, pivot, dl-resolve, y las ~15 de heap: house-of-*, fastbin-dup, tcache-*,
+    unsafe-unlink, iofile-fsop...) frente a las ~6 cadenas que chainanalyzer modela. Investigar
+    una CVE de un binario real (via `investigate_cve`) merece el motor COMPLETO, no solo el
+    subconjunto que el analizador de cadenas sabe construir. Muta `pl` in-place SOLO si encuentra
+    un exploit verificado que chainanalyzer no encontro; nunca sobreescribe una verificacion que
+    ya existia."""
+    if pl.verified or not verify:
+        return
+    es = lang == "es"
+    try:
+        from .autopwn import autopwn
+        res = autopwn(binary, run=True)
+    except Exception:
+        return
+    if not res.win_exploit:
+        return
+    hit = next(((n, ok, d) for n, ok, d in res.attempts if ok is True), None)
+    if hit is None:
+        return
+    name, _, detail = hit
+    pl.verified = True
+    pl.proof = _parse_kv_detail(detail)
+    pl.concrete["chain"] = name
+    pl.script = (f"# Exploit VERIFICADO por binoracle autopwn (tecnica: {name}).\n"
+                 f"# Para el script pwntools reproducible completo y la traza, corre:\n"
+                 f"#   binoracle autopwn {binary}\n" if es else
+                 f"# Exploit VERIFIED by binoracle autopwn (technique: {name}).\n"
+                 f"# For the full reproducible pwntools script and trace, run:\n"
+                 f"#   binoracle autopwn {binary}\n")
+    pl.phases.append(Phase(
+        "Exploit VERIFICADO (autopwn)" if es else "VERIFIED exploit (autopwn)",
+        (f"tecnica '{name}' ejecutada en sandbox por el motor completo de autopwn (29 tecnicas) "
+         f"-> objetivo alcanzado" if es else
+         f"technique '{name}' executed in sandbox by the full autopwn engine (29 techniques) "
+         f"-> goal reached"),
+        ("prueba: " + "  ".join(f"{k}={v}" for k, v in pl.proof.items()) if pl.proof else
+         ("sin detalle de prueba estructurado" if es else "no structured proof detail")),
+        "chainanalyzer no habia verificado ninguna cadena; autopwn cubre un conjunto de tecnicas "
+        "mucho mas amplio (incluye todas las de heap)" if es else
+        "chainanalyzer had not verified any chain; autopwn covers a much wider technique set "
+        "(includes every heap technique)"))
+
+
 def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es",
                     verify: bool = True) -> ExploitPlan:
     """Concreta el esquema con un binario cargado: rellena offset/gadgets/objetivo reales via el
     Analizador de cadenas y, si `verify`, VERIFICA el exploit en sandbox (script + prueba). Si no se
-    da `text`, infiere la clase (overflow -> control de RIP) de los hechos del binario."""
+    da `text`, infiere la clase (overflow -> control de RIP) de los hechos del binario.
+
+    Si `verify` y el Analizador de cadenas NO verifica ningun exploit, intenta ademas el motor
+    completo de `autopwn` (ver `_augment_with_autopwn`) antes de rendirse -- cubre muchas mas
+    tecnicas (todo lo construido en `workflows/autopwn.py`: heap, SROP, ret2csu, dl-resolve...)
+    que las ~6 cadenas que el Analizador de cadenas sabe modelar."""
     import os
     facts = {}
     an = None
@@ -720,8 +782,10 @@ def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es"
         an = analyze_chains(binary, None, verify=verify, lang=lang)
     except Exception:
         an = None
-    return plan_from_analysis(an, facts, binary_name=os.path.basename(binary), text=text,
-                              cve=cve, lang=lang)
+    pl = plan_from_analysis(an, facts, binary_name=os.path.basename(binary), text=text,
+                            cve=cve, lang=lang)
+    _augment_with_autopwn(pl, binary, lang, verify)
+    return pl
 
 
 def render_plan(pl: ExploitPlan, lang: str = "es") -> str:

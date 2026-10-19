@@ -125,6 +125,24 @@ The flagship direction: prove impact end to end.
   check level against their own fixtures (all standalone modules were already execution-
   verified in earlier sessions). "[L] Auto-PoC generation" is now fully closed: every
   standalone exploit tool the project has is reachable from the autonomous orchestrator.
+  - Follow-up gap closed: `investigate_cve --binary` (this item's own CVE-to-exploit agent)
+    builds its exploit plan via `workflows/cveplan.py`'s `plan_for_binary`, which only ever
+    called `chainanalyzer.analyze_chains` -- a real exploitation engine, but modeling far fewer
+    chains than the full `autopwn()` engine above (29 named techniques vs. chainanalyzer's own
+    set). Confirmed live with a genuine counter-example: `chainanalyzer.analyze_chains` against
+    `samples/bin/leakchain` (the infoleak-chaining fixture from "Automatic infoleak chaining")
+    returns ZERO verified chains, while `autopwn()` has verified `leak-chain` on that exact
+    binary since that item shipped. Added `_augment_with_autopwn` to `cveplan.py`: when
+    chainanalyzer's own pass doesn't verify anything, `plan_for_binary` now also tries the full
+    `autopwn()` engine and, on a hit, fills in `ExploitPlan.verified/proof/concrete["chain"]`
+    from autopwn's real sandbox-verified attempt (never overwrites an existing chainanalyzer
+    verification). Verified end-to-end through `investigate_cve` itself (not just the helper in
+    isolation): investigating a fake CVE ID against `samples/bin/leakchain` with no LLM backend
+    and no network now reports "EXPLOIT VERIFICADO en sandbox" with the real leaked libc base
+    and `system()` address, where it previously would have fallen through to an unverified
+    template. Tests added to `tests/test_tools_and_config.py`: the real leak-chain recovery
+    above, a check that an existing verification is never overwritten, and a clean degrade for
+    a binary that verifies nothing.
 - **[M] Frida dynamic oracle.** First increment shipped: `oracles/frida_dynamic.py` --
   `frida_confirm_double_free`, the Frida equivalent of `heap_confirm_double_free`: hooks
   malloc/calloc/realloc/free via `Interceptor.attach` (function interception, no ptrace) and
