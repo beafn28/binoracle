@@ -3728,3 +3728,68 @@ def test_gadget_cache_degrades_cleanly_on_a_bad_db_path():
     finally:
         gc.load_gadgets = orig_load
         gc.save_gadgets = orig_save
+
+
+def test_ruff_lint_gate_passes_clean():
+    # Cross-cutting quality (ROADMAP.md) -- "Type hints + mypy, ruff lint, and a coverage gate
+    # in CI". El gate real es `ruff check binoracle` (ver [tool.ruff] en pyproject.toml, select
+    # = ["F"] a proposito -- pyflakes puro, confirmado en cero). Este test reproduce EXACTAMENTE
+    # ese comando para que una regresion de lint la capture la propia suite, no solo el CI.
+    import os as _os
+    import shutil
+    import subprocess
+    import pytest
+    if not (shutil.which("ruff") or _module_importable("ruff")):
+        pytest.skip("ruff no instalado (pip install ruff, o extra [dev])")
+    r = subprocess.run(["python3", "-m", "ruff", "check", "binoracle"],
+                       cwd=_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"ruff encontro hallazgos de pyflakes (F):\n{r.stdout}\n{r.stderr}"
+
+
+def _module_importable(name: str) -> bool:
+    import importlib
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception:
+        return False
+
+
+def test_import_availability_probes_are_not_silently_broken():
+    # Regresion especifica: el propio auto-fix de ruff (al limpiar F401 "unused import") borro
+    # SILENCIOSAMENTE dos `try: import X ... except: _HAVE_X = False` -- un patron deliberado
+    # donde el import solo existe para que su ImportError sea atrapado (el NOMBRE nunca se usa
+    # despues), asi que un chequeo de "import sin usar" no puede distinguirlo de uno de verdad
+    # muerto. Confirmado en vivo: tras el auto-fix, `_HAVE_R2PIPE`/`_HAVE_ANGR` quedaban SIEMPRE
+    # en True (el try ya no podia fallar), incluso sin r2pipe/angr instalados -- restaurados con
+    # `# noqa: F401` explicito. Este test fija el contrato: ambos modulos deben seguir teniendo
+    # el import real (no solo la bandera) para que el ImportError real siga pudiendo ocurrir.
+    import ast
+    import os as _os
+
+    def _has_real_import_inside_try(path: str, module_name: str, flag_name: str) -> bool:
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            has_import = any(
+                isinstance(n, ast.Import) and any(a.name == module_name for a in n.names)
+                for n in ast.walk(node)
+            )
+            sets_flag = any(
+                isinstance(n, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == flag_name for t in n.targets
+                )
+                for n in node.body
+            )
+            if has_import and sets_flag:
+                return True
+        return False
+
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    assert _has_real_import_inside_try(
+        _os.path.join(root, "binoracle", "oracles", "capstone_fallback.py"), "r2pipe", "_HAVE_R2PIPE")
+    assert _has_real_import_inside_try(
+        _os.path.join(root, "binoracle", "workflows", "autopoc.py"), "angr", "_HAVE_ANGR")

@@ -24,8 +24,7 @@ from typing import Callable, List, Optional
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request, _lab_host,
-                       _pick_param, _redirect_location_is_external, _run, _token,
-                       configure_burp_mcp)
+                       _pick_param, _redirect_location_is_external, _run, _token)
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
                          load_ssti_arithmetic_payloads, load_xss_payloads)
 import secrets

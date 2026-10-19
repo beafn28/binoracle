@@ -175,7 +175,7 @@ def _dec_tech_html(tech: dict, es: bool) -> str:
     if rows:
         th = (("Variable", "Tipo", "Offset", "a RIP guardado") if es
               else ("Variable", "Type", "Offset", "to saved RIP"))
-        tbl = (f'<table class="dectech"><thead><tr>' + "".join(f"<th>{_esc(x)}</th>" for x in th)
+        tbl = ('<table class="dectech"><thead><tr>' + "".join(f"<th>{_esc(x)}</th>" for x in th)
                + f'</tr></thead><tbody>{rows}</tbody></table>')
     note = ("'a RIP guardado' = |offset| + tamano de palabra: es el numero de bytes de entrada para "
             "pisar la direccion de retorno desde esa variable (offset de overflow)." if es else
@@ -667,7 +667,7 @@ def _attack_chain(findings, mit: dict, lang: str) -> str:
              ("Root" if es else "Root", "El comando inyectado se ejecuta como root." if es else "The injected command runs as root.", "grounded")]))
     # 4) callback en runtime -> C2 / exfiltracion (observado dinamicamente)
     if has("conexion saliente en runtime", "runtime outbound", "reverse shell", "bind shell"):
-        rev = has("reverse shell") or has("conexion saliente")
+        has("reverse shell") or has("conexion saliente")
         chains.append((("Callback en runtime -> C2 / exfiltracion" if es else "Runtime callback -> C2 / exfiltration"),
             [("Shell/socket a atacante" if es else "Shell/socket to attacker",
               "El binario abre un canal de red hacia un atacante (reverse/bind shell)." if es
@@ -3068,7 +3068,7 @@ def _cveplan_html(plan, lang: str) -> str:
     if plan is None or not getattr(plan, "ok", False):
         return ""
     es = lang == "es"
-    parts = [f'<h2 data-i18n="exploit_plan" id="sec-exploitplan"></h2>']
+    parts = ['<h2 data-i18n="exploit_plan" id="sec-exploitplan"></h2>']
     note = (("Esquema tecnico y grounded de explotacion. Solo objetivos autorizados / CTF / research."
              if es else
              "Grounded technical exploitation schema. Authorized targets / CTF / research only."))
@@ -3232,7 +3232,7 @@ def _exploit_html(an, lang: str) -> str:
         rows += (f'<tr><td><b>{_esc(c.name)}</b></td><td style="color:{fc};font-weight:700">{fe}</td>'
                  f'<td>{c.score}</td><td>{len(c.gadgets_used)}</td><td>{miss}</td>'
                  f'<td><code>{_esc(c.target)}</code></td></tr>')
-    cmp_tbl = (f'<table class="xgcmp"><thead><tr>' + "".join(f"<th>{_esc(h)}</th>" for h in th)
+    cmp_tbl = ('<table class="xgcmp"><thead><tr>' + "".join(f"<th>{_esc(h)}</th>" for h in th)
                + f'</tr></thead><tbody>{rows}</tbody></table>')
     # tarjetas de factibilidad detallada por cadena (con export)
     cards = ""

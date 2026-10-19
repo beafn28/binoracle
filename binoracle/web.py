@@ -26,7 +26,6 @@ from .workflows.fmtstring import fmtstring_help
 from .workflows.skeleton import generate_skeleton
 from .workflows.verify import verify_address
 from .report.html import render_html
-from .report.render import render_triage
 
 _registries = {}
 
@@ -1119,7 +1118,7 @@ def run_streaming(command, binary, ai, emit, text="", opts=None):
                                     cred = getattr(rf, "credential_candidate", None)
                                     if not cred:
                                         continue
-                                    emit("step", f"IA sugirio una credencial verificable: probandola en sandbox...")
+                                    emit("step", "IA sugirio una credencial verificable: probandola en sandbox...")
                                     ba = try_credential_bypass(binary, cred, timeout=8)
                                     if ba.ran and ba.differs:
                                         rf.verdict = "verified"

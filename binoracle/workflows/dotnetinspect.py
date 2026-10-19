@@ -83,7 +83,7 @@ def inspect_dotnet(path: str) -> dict:
         return {"ok": True, "is_pe": False, "is_dotnet": False, "note": f"no es PE: {e}"}
     try:
         pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR"]])
-        com = getattr(pe, "DIRECTORY_ENTRY_COM_DESCRIPTOR", None)
+        getattr(pe, "DIRECTORY_ENTRY_COM_DESCRIPTOR", None)
         dd = pe.OPTIONAL_HEADER.DATA_DIRECTORY[14]
         if dd.VirtualAddress == 0 or dd.Size == 0:
             return {"ok": True, "is_pe": True, "is_dotnet": False,

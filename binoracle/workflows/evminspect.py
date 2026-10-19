@@ -20,7 +20,7 @@ def _load_bytecode(path: str):
     raw = read_bounded(path)
     stripped = raw.strip()
     # accept a hex string (optionally 0x-prefixed) or raw bytes
-    text = stripped.decode("ascii", "ignore") if stripped else ""
+    stripped.decode("ascii", "ignore") if stripped else ""
     hexchars = set(b"0123456789abcdefABCDEF")
     body = stripped[2:] if stripped[:2] in (b"0x", b"0X") else stripped
     if body and len(body) % 2 == 0 and all(c in hexchars for c in body):

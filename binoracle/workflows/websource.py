@@ -30,7 +30,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 _WP_API = "https://api.wordpress.org/plugins/info/1.0/{slug}.json"

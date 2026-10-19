@@ -1555,7 +1555,7 @@ def verify_drupal_open_redirect(
             res.detail = (f"OPEN REDIRECT confirmado: la peticion con {redirect_param}="
                           f"{confirmed_entry['target']!r} produjo un {confirmed_entry['status']} "
                           f"con Location={confirmed_entry['location']!r}")
-            step(f"VERIFICADO: Location contiene el dominio externo enviado.")
+            step("VERIFICADO: Location contiene el dominio externo enviado.")
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de bypass para {redirect_param} y "

@@ -77,7 +77,7 @@ def _reg(binary: str):
 
 
 def _render_chains(an, lang: str = "es") -> str:
-    out = [f"## Analisis de cadenas de explotacion\n"]
+    out = ["## Analisis de cadenas de explotacion\n"]
     note = getattr(an, "note", "")
     if note:
         out.append(f"> {note}\n")

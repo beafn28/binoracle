@@ -14,7 +14,7 @@ la auditoria. Best-effort: sin angr o si no converge, no rompe (se queda en grou
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 

@@ -1,7 +1,7 @@
 name: ci
 # CERO gasto: el workflow NO se ejecuta solo (ni en push ni en PR). Solo corre si lo lanzas a mano
 # desde la pestana Actions ("Run workflow"). Asi no consume minutos de GitHub Actions ni sale en rojo.
-# Las pruebas se corren en LOCAL: .venv/bin/python -m pytest tests/ -q  (67 pasan).
+# Las pruebas se corren en LOCAL: .venv/bin/python -m pytest tests/ -q
 on:
   workflow_dispatch:
 jobs:
@@ -14,11 +14,20 @@ jobs:
           python-version: "3.12"
       - name: Install radare2
         run: sudo apt-get update && sudo apt-get install -y radare2
-      - name: Install binoracle (+ optional oracles)
+      - name: Install binoracle (+ optional oracles, dev tools)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[elf]" r2pipe pytest cvss olefile
+          pip install -e ".[elf,dev]" r2pipe cvss olefile
       - name: Compile check
         run: python -m compileall -q binoracle
-      - name: Run tests
-        run: pytest -q tests/
+      - name: Lint (ruff -- pyflakes correctness checks, hard gate)
+        run: ruff check binoracle
+      - name: Type check (mypy -- advisory for now, see pyproject.toml's [tool.mypy] comment)
+        run: mypy binoracle --ignore-missing-imports || true
+      - name: Run tests with coverage
+        # 20% is a deliberately conservative floor, not an aspiration -- it's the gate's FIRST
+        # value, set before a full-suite coverage measurement finished (the suite is slow: many
+        # tests drive real sandboxes/angr/docker). Raise it to the real measured value (rounded
+        # down a couple points for headroom) once that run completes, then again over time as
+        # coverage grows -- never lower it without a documented reason.
+        run: pytest -q tests/ --cov=binoracle --cov-report=term-missing --cov-fail-under=20

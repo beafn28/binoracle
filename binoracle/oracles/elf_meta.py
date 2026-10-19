@@ -5,10 +5,9 @@ parser so that basic triage works with zero pip installs."""
 from __future__ import annotations
 
 import struct
-from pathlib import Path
 from typing import List
 
-from .base import Oracle, Tool, ToolParam, ToolResult
+from .base import Oracle, Tool, ToolResult
 
 try:
     from elftools.elf.elffile import ELFFile  # type: ignore

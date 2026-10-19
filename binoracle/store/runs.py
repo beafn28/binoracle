@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (

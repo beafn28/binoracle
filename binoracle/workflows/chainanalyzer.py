@@ -1695,7 +1695,7 @@ def render_arsenal(r: dict, lang: str = "es") -> str:
         out.append(f"\n### Cobertura execve-por-syscall ({_needtxt}): **{mark}**")
     csu = ars.get("ret2csu")
     if csu:
-        out.append(f"\n### ret2csu (gadget universal __libc_csu_init)")
+        out.append("\n### ret2csu (gadget universal __libc_csu_init)")
         out.append(f"- gadget1 (pop rbx..r15): {csu.get('gadget1')}")
         out.append(f"- gadget2 (mov rdx/rsi/edi; call [r12+rbx*8]): {csu.get('gadget2')}")
         out.append(f"- {'completo' if csu.get('complete') else 'parcial'}: controla rdi/rsi/rdx sin `pop` directos")

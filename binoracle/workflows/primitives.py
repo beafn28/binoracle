@@ -6,11 +6,11 @@ that reasons on top of the same evidence. Never claims exploitability it did not
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from ..oracles.base import ToolRegistry
 from ..agent.grounding import GroundingLedger
-from ..agent.loop import AgentLoop, AgentResult
+from ..agent.loop import AgentResult
 from ..store.session import Finding
 
 
@@ -187,7 +187,7 @@ def _heuristic_primitives(registry: ToolRegistry, store=None) -> AgentResult:
         f"- confidence: {strat.confidence}\n"
         f"- mitigations: NX={nx} PIE/PIC={pic} canary={canary} [src: r2_checksec]\n\n"
         f"### reasoning\n" + ("\n".join(f"- {r}" for r in strat.reasoning) or "- (none)") + "\n\n"
-        f"### blockers\n" + ("\n".join(f"- {b}" for b in strat.blockers) or "- none observed") + "\n\n"
-        f"Bring up a local model for deeper multi-step reasoning, or run angr/debugger to verify."
+        "### blockers\n" + ("\n".join(f"- {b}" for b in strat.blockers) or "- none observed") + "\n\n"
+        "Bring up a local model for deeper multi-step reasoning, or run angr/debugger to verify."
     )
     return AgentResult(ledger.annotate(answer), [finding], ledger, 1, "heuristic")

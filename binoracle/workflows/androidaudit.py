@@ -220,7 +220,7 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
         counts[f.severity] = counts.get(f.severity, 0) + 1
     head = [f"# Auditoria Android — {os.path.basename(apk)}",
             f"- paquete: **{pkg}**" + (f"  ·  framework: **{fw}**" if fw else ""),
-            f"- hallazgos: " + (", ".join(f"{n} {s}" for s, n in sorted(counts.items(),
+            "- hallazgos: " + (", ".join(f"{n} {s}" for s, n in sorted(counts.items(),
                                  key=lambda kv: sev_rank.get(kv[0], 9))) or "ninguno") + "\n"]
     for f in findings[:40]:
         head.append(f"### [{f.severity.upper()}] {f.title}")

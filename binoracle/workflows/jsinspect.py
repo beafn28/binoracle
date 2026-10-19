@@ -78,7 +78,7 @@ def _inspect_sourcemap(path: str) -> dict:
         return {"ok": True, "is_js": False, "note": "JSON sin forma de source map (version/sources)"}
     sources = doc.get("sources") or []
     gen = ""
-    x = doc.get("x_google_ignoreList")
+    doc.get("x_google_ignoreList")
     for key in ("webpack", "rollup", "esbuild", "terser"):
         if any(key in str(s).lower() for s in sources[:50]):
             gen = key

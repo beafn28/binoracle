@@ -3,6 +3,9 @@ from .base import LLMBackend, LLMUnavailable, Message
 from .ollama import OllamaBackend
 from .openai_compat import OpenAICompatBackend
 
+__all__ = ["LLMBackend", "LLMUnavailable", "Message", "OllamaBackend", "OpenAICompatBackend",
+          "make_backend"]
+
 
 def make_backend(config) -> LLMBackend:
     if config.backend == "ollama":

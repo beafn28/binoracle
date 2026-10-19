@@ -143,7 +143,7 @@ def analyze_raw_shellcode(data: bytes, base_addr: int = 0) -> RawShellcodeResult
 
 
 def render_raw_shellcode(r: RawShellcodeResult, top_n: int = 3, max_insns_shown: int = 40) -> str:
-    out = [f"## Raw shellcode analysis\n", f"- tamano: {r.size} bytes\n"]
+    out = ["## Raw shellcode analysis\n", f"- tamano: {r.size} bytes\n"]
     if not r.ok:
         return "\n".join(out + ["No disponible: " + r.note])
     out.append(r.note + "\n")

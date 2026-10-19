@@ -4,12 +4,11 @@ Prefers r2pipe (persistent session, analysis cached). Falls back to invoking the
 binary via subprocess so it works even without the r2pipe python package installed."""
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
 import threading
-from typing import List, Optional
+from typing import List
 
 from .base import Oracle, Tool, ToolParam, ToolResult
 

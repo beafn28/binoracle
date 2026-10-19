@@ -18,11 +18,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 _B64_PNG_PREFIX = "data:image/png;base64,"
 
@@ -575,7 +574,7 @@ _WP_GENERIC_MUESTRA_EVIDENCE_KEYS = {
     "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
 
 
-def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResult",
+def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
                                      evidence_keys: dict, technique_label: str = "") -> Optional[dict]:
     """Automatiza, con el LLM, el mismo paso que un analista humano hace a mano tras un negativo:
     leer el cuerpo REAL de la respuesta y la evidencia observada, y decidir si hay una pista
@@ -614,10 +613,10 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: "WpVerifyResul
 
 
 def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_keys: dict,
-                             attempt_fn, wr: "WpVerifyResult", endpoint, param,
+                             attempt_fn, wr: Any, endpoint, param,
                              technique_label: str = "", max_attempts: int = _RETRY_MAX_ATTEMPTS,
                              on_suggestion: Optional[Callable[[dict], None]] = None
-                             ) -> "WpVerifyResult":
+                             ) -> Any:
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
     que lea la evidencia real y, solo si ve una pista concreta, reintenta con el endpoint/
@@ -662,8 +661,8 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     return wr
 
 
-def _retry_or_keep_lab_alive(keep_lab_on_failure: bool, step, es: bool, wr: "WpVerifyResult",
-                             retry_fn: Callable[[], "WpVerifyResult"]) -> "WpVerifyResult":
+def _retry_or_keep_lab_alive(keep_lab_on_failure: bool, step, es: bool, wr: Any,
+                             retry_fn: Callable[[], Any]) -> Any:
     """Envuelve CUALQUIER bucle de aprendizaje-y-reintento de WordPress (no solo SQLi, donde se
     encontro este bloqueo por primera vez): si se pidio --keep-lab-on-failure, NO reintenta --
     reintentar DESTRUIRIA el unico laboratorio de este primer intento para levantar uno nuevo
@@ -3137,7 +3136,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     from ..config import load_config
     from ..llm import make_backend
     from .cvelookup import fetch_cve
-    from .cveplan import classify_cve, classify_binary, plan, plan_for_binary, is_web_class
+    from .cveplan import classify_cve, classify_binary, plan, is_web_class
 
     step = on_step or (lambda _m: None)
     es = lang == "es"
@@ -3408,7 +3407,7 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
     if impact:
         sev_es, txt_es, sev_en, txt_en = impact
         sev, txt = (sev_es, txt_es) if es else (sev_en, txt_en)
-        out.append(f"\n### " + ("Impacto" if es else "Impact"))
+        out.append("\n### " + ("Impacto" if es else "Impact"))
         out.append(f"\n> **[{sev}]** {txt}")
     if inv.llm_notes:
         out.append("\n### " + ("Investigacion del LLM (hipotesis)" if es else "LLM research (hypothesis)"))

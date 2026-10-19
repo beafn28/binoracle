@@ -488,7 +488,7 @@ class _Lab:
     def start_mysql(self, root_pw: str, db_pw: str):
         self.sh("run", "-d", "--name", self.mysql, "--network", self.net, "--platform", "linux/amd64",
                "-e", f"MYSQL_ROOT_PASSWORD={root_pw}", "-e", "MYSQL_DATABASE=wordpress",
-               "-e", "MYSQL_USER=wordpress", f"-e", f"MYSQL_PASSWORD={db_pw}", _MYSQL_IMAGE,
+               "-e", "MYSQL_USER=wordpress", "-e", f"MYSQL_PASSWORD={db_pw}", _MYSQL_IMAGE,
                timeout=90)
         self._created.append(("container", self.mysql))
 
@@ -4296,11 +4296,11 @@ def verify_wordpress_deserialization_custom_table(
                  f"propia confirmada.")
         else:
             res.ok = True
-            res.detail = (f"se almaceno el payload en el paso 1 y se forzo la lectura+"
-                          f"unserialize() en el paso 2, pero el fichero canario no aparecio -- "
-                          f"no se confirmo (puede que la tabla/columna no sean las reales, que "
-                          f"el valor se guarde escapado/modificado antes del INSERT, o que la "
-                          f"columna tenga un tipo que trunque el valor)")
+            res.detail = ("se almaceno el payload en el paso 1 y se forzo la lectura+"
+                          "unserialize() en el paso 2, pero el fichero canario no aparecio -- "
+                          "no se confirmo (puede que la tabla/columna no sean las reales, que "
+                          "el valor se guarde escapado/modificado antes del INSERT, o que la "
+                          "columna tenga un tipo que trunque el valor)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

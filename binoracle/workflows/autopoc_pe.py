@@ -16,7 +16,6 @@ SimProcedures so it actually resolves calls on a PE without crashing into unmode
 is NOT part of this increment -- see ROADMAP.md."""
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import struct

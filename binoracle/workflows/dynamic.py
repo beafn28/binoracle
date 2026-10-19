@@ -217,7 +217,7 @@ def browser_observe(url: str, timeout_s: int = 20, screenshot: str = None,
     secrets = []
     if secret_scan and inline_bodies:
         try:
-            from .iocscan import _iter_strings, _PATTERNS, _redact
+            from .iocscan import _PATTERNS, _redact
             seen = set()
             for body in inline_bodies:
                 for name, rx, gate in _PATTERNS:

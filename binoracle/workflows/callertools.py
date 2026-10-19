@@ -86,7 +86,6 @@ def ghidra_decompile(binary: str, func: str = None, max_functions: int = 40, tim
     throwaway project dir (removed afterwards). Output is untrusted (derived from the binary).
     Returns {ok, functions:[{name,addr,pseudocode}], count} or an honest degrade."""
     import os
-    import re as _re
     import shutil as _sh
     import tempfile
     headless = _find_ghidra_headless()

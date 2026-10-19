@@ -13,6 +13,11 @@ from .ghidra import GhidraOracle
 from .decai import DecaiOracle
 from .capstone_fallback import CapstoneOracle
 
+__all__ = ["Oracle", "Tool", "ToolParam", "ToolResult", "ToolRegistry", "ElfMetaOracle",
+          "R2Oracle", "AngrOracle", "DebuggerOracle", "HeapDynamicOracle", "FridaDynamicOracle",
+          "ConcolicOracle", "ExploitHelperOracle", "ExploitActionsOracle", "GhidraOracle",
+          "DecaiOracle", "CapstoneOracle", "build_registry"]
+
 
 def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bool = False) -> ToolRegistry:
     """Assemble all oracles for a target binary.

@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from ..llm.base import Message
-from ..agent.grounding import GroundingLedger
 
 
 @dataclass
@@ -80,7 +79,7 @@ def _explain_diff(llm, res: DiffResult) -> str:
 
 def render_patchdiff(res: DiffResult) -> str:
     out = [
-        f"# binoracle patch-diff\n",
+        "# binoracle patch-diff\n",
         f"- old: `{res.old}`\n- new: `{res.new}`\n- changed functions: {len(res.changed)}\n",
         "## Changed functions (radiff2, similarity < 1.0)\n",
         "```\n" + ("\n".join(res.changed) if res.changed else "(none detected)") + "\n```\n",

@@ -54,7 +54,7 @@ def fmtstring_help(offset: Optional[int] = None, target_addr: Optional[str] = No
     if target_addr and value:
         ta = int(str(target_addr), 0)
         val = int(str(value), 0)
-        out.append(f"### Write primitive\n```\n" + write_payload(ta, val, offset) + "\n```")
+        out.append("### Write primitive\n```\n" + write_payload(ta, val, offset) + "\n```")
     else:
         out.append("Provide --addr and --value to also generate a write (e.g. GOT overwrite).")
     return "\n".join(out)

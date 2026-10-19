@@ -19,7 +19,7 @@ from typing import List, Optional
 from ._sandbox import run_bash
 
 try:
-    import angr  # type: ignore
+    import angr  # type: ignore  # noqa: F401 -- presence probe, not referenced by name
     import logging as _lg
     _lg.getLogger("angr").setLevel(_lg.ERROR)
     _lg.getLogger("cle").setLevel(_lg.ERROR)

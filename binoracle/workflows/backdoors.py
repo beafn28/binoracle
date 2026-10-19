@@ -123,7 +123,7 @@ def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "Posible bind shell / backdoor de red",
             "Possible bind shell / network backdoor", sev,
             f"[radare2: ii + axt]\nsocket + bind + listen + {', '.join(spawn)}\nfuncion: {fn_txt}"
-            + (f"\ncadena de shell presente: /bin/sh" if has_shell_str else "") + port_ev,
+            + ("\ncadena de shell presente: /bin/sh" if has_shell_str else "") + port_ev,
             f"El binario abre un socket, escucha en un puerto y puede lanzar un shell "
             f"({', '.join(spawn)}), todo desde la misma funcion ({fn_txt}, confirmado por xref). Es "
             "el patron de una bind shell: cualquiera que conecte al puerto obtiene ejecucion de "
@@ -149,7 +149,7 @@ def scan_backdoors(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "Posible reverse shell / callback a atacante",
             "Possible reverse shell / attacker callback", sev,
             f"[radare2: ii + axt]\nsocket + connect + {', '.join(spawn)}\nfuncion: {fn_txt}"
-            + (f"\ncadena de shell presente: /bin/sh" if has_shell_str else "") + port_ev,
+            + ("\ncadena de shell presente: /bin/sh" if has_shell_str else "") + port_ev,
             f"El binario abre un socket, se CONECTA a un host y puede lanzar un shell "
             f"({', '.join(spawn)}), todo desde la misma funcion ({fn_txt}, confirmado por xref). Es "
             "el patron de una reverse shell: el binario llama de vuelta a un atacante y le entrega "

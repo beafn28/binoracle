@@ -451,11 +451,11 @@ def _srop_lines(indent: str = "") -> list:
 def _onegadget_lines(libc_var: str = "libc", indent: str = "") -> list:
     """Bloque one-gadget: una sola direccion de libc que da execve('/bin/sh') si se cumplen sus
     constraints (p.ej. [rsp+0x40]==NULL). Evita montar toda la cadena ret2libc cuando ya hay leak."""
-    L = [f"# --- one-gadget: execve('/bin/sh') con UNA direccion de libc (revisa constraints) ---",
-         f"# instala one_gadget y busca los candidatos:  one_gadget ./libc.so.6",
-         f"one_gadgets = [0xe3afe, 0xe3b01, 0xe3b04]   # <-- offsets reales de tu libc (one_gadget)",
+    L = ["# --- one-gadget: execve('/bin/sh') con UNA direccion de libc (revisa constraints) ---",
+         "# instala one_gadget y busca los candidatos:  one_gadget ./libc.so.6",
+         "one_gadgets = [0xe3afe, 0xe3b01, 0xe3b04]   # <-- offsets reales de tu libc (one_gadget)",
          f"og = {libc_var}.address + one_gadgets[0]     # prueba cada uno hasta cumplir constraints",
-         f"# uso tipico: sobreescribe un puntero de retorno / __free_hook / __malloc_hook con 'og'"]
+         "# uso tipico: sobreescribe un puntero de retorno / __free_hook / __malloc_hook con 'og'"]
     return [indent + x for x in L]
 
 
@@ -703,7 +703,6 @@ def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es"
     Analizador de cadenas y, si `verify`, VERIFICA el exploit en sandbox (script + prueba). Si no se
     da `text`, infiere la clase (overflow -> control de RIP) de los hechos del binario."""
     import os
-    es = lang == "es"
     facts = {}
     an = None
     try:
@@ -757,7 +756,7 @@ def render_plan(pl: ExploitPlan, lang: str = "es") -> str:
     out.append("\n### " + ("Fases" if es else "Phases"))
     for i, ph in enumerate(pl.phases, 1):
         out.append(f"{i}. **{ph.name}**: {ph.goal}\n   - " + ("como" if es else "how") + f": {ph.technique}"
-                   + (f"\n   - " + ("necesita" if es else "needs") + f": {ph.needs}" if ph.needs else ""))
+                   + ("\n   - " + ("necesita" if es else "needs") + f": {ph.needs}" if ph.needs else ""))
     if pl.mitigations:
         out.append("\n### " + ("Mitigaciones a sortear" if es else "Mitigations to bypass"))
         out += [f"- {m}" for m in pl.mitigations]

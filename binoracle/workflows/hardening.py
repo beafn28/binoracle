@@ -97,7 +97,7 @@ def scan_hardening(reg: ToolRegistry, binary: str, lang: str = "es") -> List[Fin
             "Rebuild with NX, PIE, stack canary and Full RELRO.", lang, "configuracion / build"))
 
     imports = _imports(reg)
-    strings = _strings(reg)
+    _strings(reg)
     # (b) manipulacion insegura del entorno (LD_*): altera la busqueda de librerias. Exige que
     # LD_PRELOAD/LD_LIBRARY_PATH sea el VALOR EXACTO de un string (el nombre de variable que se le
     # pasaria a setenv/putenv), no una mencion dentro de una frase mas larga (p.ej. un texto de ayuda

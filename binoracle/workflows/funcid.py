@@ -162,7 +162,7 @@ def identify_stripped_functions(stripped_binary: str, reference_binary: str,
 
 
 def render_funcid(r: FuncIdResult) -> str:
-    out = [f"## Stripped-binary function ID (BinDiff-style)\n",
+    out = ["## Stripped-binary function ID (BinDiff-style)\n",
           f"- stripped: `{r.stripped}`\n- referencia: `{r.reference}`\n"]
     if not r.ok:
         return "\n".join(out + ["No disponible: " + r.note])

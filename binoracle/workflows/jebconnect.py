@@ -47,7 +47,7 @@ def jeb_rpc(method: str, params: dict = None, url: str = None, timeout: int = 60
     import urllib.request
     ep = _endpoint(url)
     if not ep:
-        return _degrade(f"sin endpoint JEB configurado")
+        return _degrade("sin endpoint JEB configurado")
     try:
         req = urllib.request.Request(ep, data=build_rpc(method, params),
                                      headers={"Content-Type": "application/json",

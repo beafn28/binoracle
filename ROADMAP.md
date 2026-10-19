@@ -402,7 +402,35 @@ The flagship direction: prove impact end to end.
 
 ## Cross-cutting quality (ongoing)
 
-- Type hints + mypy, `ruff` lint, and a coverage gate in CI.
+- ~~Type hints + mypy, `ruff` lint, and a coverage gate in CI.~~ First increment shipped.
+  `[tool.ruff]`/`[tool.mypy]` added to `pyproject.toml`: the ruff gate is deliberately narrow --
+  `select = ["F"]` (pyflakes only: unused imports, undefined names, unused variables, pointless
+  f-strings), confirmed at zero across the whole codebase. Broader style/modernization rulesets
+  (line length, import sorting, py3-upgrade rewrites) found thousands of pre-existing hits across
+  this codebase's history and are deliberately deferred rather than mass-mechanically
+  "fixed" -- enforcing those now would mean either a risky mechanical reformat or ignoring real
+  findings just to get a passing gate; broadening the ruleset is future "ongoing" work, done
+  rule-by-rule with the same scrutiny. A real regression was caught and fixed while reaching that
+  zero: ruff's own `--fix` for "unused import" silently deleted TWO deliberate `try: import X ...
+  except: _HAVE_X = False` availability probes (`oracles/capstone_fallback.py`'s r2pipe check and
+  `workflows/autopoc.py`'s angr check) -- the import's NAME is never referenced again by design
+  (only its potential `ImportError` matters), which a plain unused-import check can't tell apart
+  from a genuinely dead import; confirmed live that after the auto-fix `_HAVE_R2PIPE`/`_HAVE_ANGR`
+  were stuck at `True` even without r2pipe/angr installed, since the try block could no longer
+  fail. Restored both with an explicit `# noqa: F401`, and added a regression test
+  (`tests/test_smoke.py`) that parses both files' ASTs and asserts the real import sits inside the
+  `try` next to the flag it guards -- so a future "cleanup" can't silently reintroduce this bug.
+  mypy is wired in as ADVISORY, not a hard gate yet: a first `--ignore-missing-imports` pass over
+  this ~15k-line, mostly-untyped codebase found ~400 pre-existing errors across ~70 files (a few
+  look like genuine latent bugs worth triaging later, most are missing-annotation noise) --
+  burying a brand-new CI gate under 400 failures on day one would just get it disabled, so CI runs
+  it and reports the count without failing the build; promote files to a hard per-module gate as
+  they get cleaned up. The coverage gate (`pytest --cov=binoracle --cov-fail-under=N`) is real and
+  enforced from day one, deliberately started at a conservative floor (20%) rather than the
+  measured value -- this codebase's own test suite is slow enough (many tests drive real
+  sandboxes/angr/docker/Wine) that a full coverage run didn't finish before this increment shipped;
+  raise it to the real measured number (with headroom) once that run completes. All three are
+  wired into `.github/workflows/ci.yml`.
 - Quieter optional dependencies (pwntools/angr logging), graceful-degradation everywhere.
 - A docs site with a guided tutorial over the `samples/` corpus.
 

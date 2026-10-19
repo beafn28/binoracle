@@ -3,7 +3,7 @@ produce a facts-only report. This is deliberately deterministic and offline."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from ..oracles.base import ToolRegistry
 

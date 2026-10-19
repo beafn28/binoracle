@@ -7,7 +7,7 @@ beyond what the verdict allows. Evidence stays the raw tool output. This adds
 professionalism and depth without introducing false positives."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from ..llm.base import Message
 from ..store.session import Finding

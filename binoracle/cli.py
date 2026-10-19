@@ -180,7 +180,7 @@ def _print_toolchain_status() -> None:
     try:
         from .oracles import decai as _dc
         inst = _dc.installed()
-        ready = _dc._llm_ready() if inst else False
+        _dc._llm_ready() if inst else False
         print(f"  {ok(inst)}decai (r2ai): " + ("instalado" if inst else "no instalado (r2pm -Uci decai)"))
         if inst:
             print(f"  {ok(_dc.enabled())}decai activo: " + ("si" if _dc.enabled() else "no (necesita ollama arriba o una API key)"))

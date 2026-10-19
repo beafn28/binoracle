@@ -10,11 +10,9 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
 from ..oracles import build_registry
-from .triage import run_triage
 from .vulnhunt import run_hunt
 from .verify import auto_verify
 from .autopoc import autopoc, find_win
-from .rop import build_rop_chain
 
 
 @dataclass
@@ -492,7 +490,7 @@ def _flag(v) -> bool:
 def _why(mit: dict, has_win: bool, technique: str) -> str:
     """Razon 'defensa -> tecnica': por que ESTA tecnica es la adecuada para este contexto."""
     t = (technique or "").lower()
-    pie = _flag(mit.get("pic")); can = _flag(mit.get("canary"))
+    pie = _flag(mit.get("pic")); _flag(mit.get("canary"))
     if "canary" in t:
         return "canary ACTIVO + win() + buffer impreso -> fuga del canary, reescritura y overflow a win()"
     if "ret2win" in t:

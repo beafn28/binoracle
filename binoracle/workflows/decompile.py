@@ -147,7 +147,6 @@ def _crosscheck(variants: list, lang: str = "es") -> str:
     sinks = ("read", "gets", "strcpy", "strcat", "sprintf", "memcpy", "scanf", "recv", "system",
              "popen", "execve")
     rows = []
-    agree_sink = None
     for engine, code in variants:
         low = code.lower()
         found = sorted({s for s in sinks if s + "(" in low or s + " (" in low})

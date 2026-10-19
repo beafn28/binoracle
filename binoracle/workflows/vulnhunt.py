@@ -5,7 +5,7 @@ deterministic heuristic pass that still produces grounded candidates from the si
 so the tool is useful even with no model loaded."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from ..agent.loop import AgentLoop, AgentResult
 from ..oracles.base import ToolRegistry
