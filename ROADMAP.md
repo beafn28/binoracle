@@ -143,6 +143,29 @@ The flagship direction: prove impact end to end.
     template. Tests added to `tests/test_tools_and_config.py`: the real leak-chain recovery
     above, a check that an existing verification is never overwritten, and a clean degrade for
     a binary that verifies nothing.
+  - Second follow-up quality fix, found investigating a REAL CVE (CVE-2021-3156, "Baron
+    Samedit") end to end -- never by executing the actual vulnerable sudo binary (that crosses
+    a line this project won't cross: weaponizing a real setuid-root LPE against a live host is
+    out of scope, full stop; the finding below came from reading `develop_exploit`'s own output
+    for the CVE's classified vulnerability class). `cveplan.py`'s `develop_exploit` generates a
+    GENERIC pwntools template per vulnerability class, and for `heap-overflow`/`uaf`/
+    `double-free` that template assumes an interactive CTF-style menu (`alloc`/`free`/`show`
+    over stdin, `sendlineafter(b'>', ...)` wrappers) -- a reasonable default for this project's
+    own `samples/` corpus, but presented with zero caveat even when investigating a REAL CVE on
+    a real-world program. Baron Samedit is an off-by-one in `sudo`'s own argv/getenv parsing,
+    triggered via `sudoedit -s` and a crafted command-line argument -- nothing remotely like a
+    menu, so the generated "exploit" would be actively misleading if followed literally.
+    Threaded `has_public_exploit`/`poc_ref_url` (already known to `investigate_cve` via
+    `cvelookup.fetch_cve`) through `plan()` / `plan_from_analysis` / `plan_for_binary` /
+    `develop_exploit`, across the `binoracle cveplan --json` subprocess boundary
+    `exploit_trainer.plan_with_budget` crosses too (new `--has-public-exploit`/`--poc-url` CLI
+    flags) -- so when a CVE is already known to have a real public exploit, the generated
+    script now leads with an explicit notice pointing at that real PoC and naming exactly why
+    the generic per-class template below it may not apply, instead of presenting a plausible-
+    looking but wrong script as if it were this CVE's actual technique. Verified end-to-end
+    through all three paths (`develop_exploit` directly, `plan()`'s no-binary path exactly as
+    `investigate_cve` calls it, and the real `binoracle cveplan` CLI subprocess) using this
+    exact CVE-2021-3156 scenario. Tests added to `tests/test_tools_and_config.py` for all three.
 - **[M] Frida dynamic oracle.** First increment shipped: `oracles/frida_dynamic.py` --
   `frida_confirm_double_free`, the Frida equivalent of `heap_confirm_double_free`: hooks
   malloc/calloc/realloc/free via `Interceptor.attach` (function interception, no ptrace) and

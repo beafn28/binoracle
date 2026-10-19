@@ -3308,7 +3308,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
              f"binary provided: attempting exploit + sandbox verification (budget {budget_s:.0f}s)...")
         from .exploit_trainer import plan_with_budget
         hint = classify_binary(binary) or inv.vuln_class or ""
-        pl, err = plan_with_budget(binary, hint, lang, True, budget_s)
+        _poc_ref = next((r.url for r in info.exploit_refs), "") if info.exploit_refs else ""
+        pl, err = plan_with_budget(binary, hint, lang, True, budget_s,
+                                   has_public_exploit=info.has_public_exploit, poc_ref_url=_poc_ref)
         if pl is None:
             inv.blockers.append(("verificacion agoto el presupuesto" if err == "timeout" else f"error: {err}")
                                 if es else ("verification exceeded budget" if err == "timeout" else f"error: {err}"))
@@ -3326,7 +3328,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                      "could not verify an executable chain; developed template remains.")
     else:
         # sin binario: desarrolla la plantilla y deja claros los bloqueos reales
-        pl = plan(inv.description or inv.cve_id, {}, cve=inv.cve_id, lang=lang)
+        _poc_ref = next((r.url for r in info.exploit_refs), "") if info.exploit_refs else ""
+        pl = plan(inv.description or inv.cve_id, {}, cve=inv.cve_id, lang=lang,
+                 has_public_exploit=info.has_public_exploit, poc_ref_url=_poc_ref)
         inv.developed_script = pl.script
         tgt = inv.llm_notes.get("target_binary") or ("el binario vulnerable concreto" if es else
                                                      "the specific vulnerable binary")

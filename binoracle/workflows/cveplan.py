@@ -374,9 +374,18 @@ def _generic_phases(cls: str, es: bool) -> List[Phase]:
     ]
 
 
-def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es") -> ExploitPlan:
+def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es",
+        has_public_exploit: bool = False, poc_ref_url: str = "") -> ExploitPlan:
     """Construye el esquema de explotacion para la CVE/descripcion. `facts` (checksec del binario)
-    concreta las mitigaciones. No lanza."""
+    concreta las mitigaciones. No lanza.
+
+    `has_public_exploit`/`poc_ref_url`: si quien llama YA SABE (via cvelookup.fetch_cve) que esta
+    CVE tiene un exploit publico documentado, se lo dice al desarrollador de exploits (ver
+    `develop_exploit`) para que anteponga esa realidad en vez de dejar que una plantilla GENERICA
+    (p.ej. la de heap, que asume un reto CTF con menu interactivo alloc/free/show) se presente como
+    si fuera LA tecnica real de esta CVE -- bug real encontrado investigando CVE-2021-3156 (Baron
+    Samedit, un off-by-one en el parseo de argv/getenv de un setuid real, sin menu ni interfaz
+    stdin de ningun tipo): el heap-overflow generico no tiene nada que ver con la tecnica real."""
     es = lang == "es"
     facts = facts or {}
     cls = classify_cve(text) or classify_cve(cve)
@@ -410,7 +419,8 @@ def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es
     # PoC (peticion HTTP) lo construye cve_agent con webexploit.py, que tiene el endpoint/metodo/
     # parametros de la hipotesis del LLM; dejamos el script vacio para no generar un esqueleto
     # pwntools que no tiene sentido (un process(BINARY) que no existe).
-    pl.script = "" if is_web_class(cls) else develop_exploit(cls, facts, {}, lang=lang)
+    pl.script = "" if is_web_class(cls) else develop_exploit(
+        cls, facts, {}, lang=lang, has_public_exploit=has_public_exploit, poc_ref_url=poc_ref_url)
     return pl
 
 
@@ -460,14 +470,43 @@ def _onegadget_lines(libc_var: str = "libc", indent: str = "") -> list:
 
 
 def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
-                    lang: str = "es") -> str:
+                    lang: str = "es", has_public_exploit: bool = False,
+                    poc_ref_url: str = "") -> str:
     """Desarrollador de exploits multi-clase: genera un script pwntools FUNCIONAL (o la aproximacion
     mas cercana) para CUALQUIER clase de vulnerabilidad, adaptado a las mitigaciones (checksec) y a
     la concrecion del binario (offset/gadgets si se conocen). No requiere cadena verificada: es la
     plantilla de trabajo que el analista completa donde queda un TODO (leak/target). Para
-    stack-overflow verificado se prefiere _pwn_script_from_proof (anclado a la prueba)."""
+    stack-overflow verificado se prefiere _pwn_script_from_proof (anclado a la prueba).
+
+    `has_public_exploit`/`poc_ref_url`: cuando ya se sabe que ESTA CVE tiene un exploit publico
+    documentado, se antepone un aviso dirigiendo a ESE PoC real -- las plantillas genericas de
+    heap/UAF/double-free de abajo asumen un reto CTF con menu interactivo (alloc/free/show por
+    stdin); para un PROGRAMA REAL (no un reto hecho para practicar) esa interfaz casi nunca existe,
+    y presentarla sin avisar como si fuera "el" exploit de la CVE es activamente engañoso. Bug real
+    encontrado investigando CVE-2021-3156 (Baron Samedit): es un off-by-one en el parseo de
+    argv/getenv de un `sudo` setuid real -- ni remotamente parecido a un menu de alloc/free/show."""
     facts = facts or {}
     concrete = concrete or {}
+    es = lang == "es"
+    _poc_notice = ""
+    if has_public_exploit:
+        _poc_notice = (
+            (f"# AVISO: esta CVE YA TIENE un exploit publico documentado"
+             f"{f' ({poc_ref_url})' if poc_ref_url else ''}.\n"
+             f"# USA ESE PoC real en vez de este esqueleto -- la plantilla generica de abajo\n"
+             f"# NO conoce la tecnica real de esta CVE concreta (solo asume la forma tipica\n"
+             f"# de su CLASE de vulnerabilidad); para un programa real (no un reto CTF) puede\n"
+             f"# no aplicar en absoluto -- confirmado en vivo con CVE-2021-3156 (Baron Samedit):\n"
+             f"# su plantilla de clase 'heap-overflow' asume un menu interactivo alloc/free/show\n"
+             f"# que un sudo real, explotado via argv/getenv, nunca tiene.\n") if es else
+            (f"# NOTICE: this CVE ALREADY HAS a documented public exploit"
+             f"{f' ({poc_ref_url})' if poc_ref_url else ''}.\n"
+             f"# USE that real PoC instead of this skeleton -- the generic template below does\n"
+             f"# NOT know this specific CVE's real technique (it only assumes the typical shape\n"
+             f"# of its vulnerability CLASS); for a real-world program (not a CTF challenge) it\n"
+             f"# may not apply at all -- confirmed live with CVE-2021-3156 (Baron Samedit): its\n"
+             f"# 'heap-overflow' class template assumes an interactive alloc/free/show menu that\n"
+             f"# a real sudo, exploited via argv/getenv, never has.\n"))
     nx = facts.get("nx") is not False           # NX activo salvo que checksec diga lo contrario
     canary = facts.get("canary") is True
     pie = facts.get("pie") is True
@@ -517,7 +556,7 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                           "    except Exception:",
                           "        # (D) SROP: pocos gadgets -> sigcontext falso (rt_sigreturn)"]
             body += _srop_lines("        ")
-        return "\n".join(_dev_header(name, tag) + body)
+        return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
     if cls == "format-string":
         tag = "clase: format string -> lectura/escritura arbitraria (%n)"
@@ -532,7 +571,7 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                 "value  = elf.sym.get('win') or elf.sym.get('system') or 0x0",
                 "payload = fmtstr_payload(OFFSET, {target: value})",
                 "io.sendline(payload)", "io.interactive()"]
-        return "\n".join(_dev_header(name, tag) + body)
+        return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
     if cls in ("heap-overflow", "uaf", "double-free"):
         tag = f"clase: {cls} -> corrupcion de heap (tcache/fastbin poisoning)"
@@ -570,7 +609,7 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                 "",
                 "# 3) DISPARA: si target=__free_hook -> free() de un chunk con '/bin/sh'; si FSOP -> _IO",
                 "io.interactive()"]
-        return "\n".join(_dev_header(name, tag) + body)
+        return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
     if cls == "oob-write":
         tag = "clase: out-of-bounds write -> write-what-where"
@@ -580,7 +619,7 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                 "VALUE = elf.sym.get('win') or 0   # <-- que escribir",
                 "# io.sendlineafter(b'index', str(IDX).encode()); io.sendlineafter(b'value', str(VALUE).encode())",
                 "io.interactive()"]
-        return "\n".join(_dev_header(name, tag) + body)
+        return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
     if cls == "integer-overflow":
         tag = "clase: integer overflow -> tamano/indice erroneo (overflow secundario)"
@@ -588,21 +627,21 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                 "# que degenera en un desbordamiento de pila/heap. Encadena con la clase resultante.",
                 "SIZE = 0xffffffff   # <-- valor que hace overflow del contador/tamano",
                 "io.interactive()"]
-        return "\n".join(_dev_header(name, tag) + body)
+        return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
     if cls == "type-confusion":
         tag = "clase: type confusion -> control de vtable/puntero de funcion"
         body = ["# Confunde el tipo de un objeto para que un puntero de funcion (vtable) apunte a codigo",
                 "# controlado. 1) leak para derrotar ASLR; 2) coloca una vtable falsa; 3) dispara la llamada.",
                 "io.interactive()"]
-        return "\n".join(_dev_header(name, tag) + body)
+        return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
     # generico: esqueleto de trabajo
     tag = f"clase: {cls or 'desconocida'} -> plantilla generica de trabajo"
     body = ["# binoracle no tiene plantilla especifica para esta clase; esqueleto de trabajo:",
             "# 1) primitiva (lectura/escritura/control de flujo)  2) leak (ASLR)  3) objetivo (RCE/flag)",
             "io.interactive()"]
-    return "\n".join(_dev_header(name, tag) + body)
+    return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
 
 def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
@@ -651,7 +690,8 @@ def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
 
 
 def plan_from_analysis(an, facts: dict, binary_name: str = "target", text: str = "",
-                       cve: str = "", lang: str = "es") -> ExploitPlan:
+                       cve: str = "", lang: str = "es", has_public_exploit: bool = False,
+                       poc_ref_url: str = "") -> ExploitPlan:
     """Construye el esquema a partir de un ChainAnalysis YA calculado (sin re-ejecutar el sandbox).
     Para el informe/audit, que ya corre analyze_chains con verify. Concreta offset/gadgets/objetivo
     y, si hay cadena verificada, adjunta prueba + script pwntools."""
@@ -661,8 +701,10 @@ def plan_from_analysis(an, facts: dict, binary_name: str = "target", text: str =
     if not cls and an is not None and getattr(an, "control", {}).get("RIP"):
         cls = "stack-overflow"
     if not cls:
-        return plan(text or cve, facts, cve=cve, lang=lang)
-    pl = plan(text or ("stack overflow" if cls == "stack-overflow" else cls), facts, cve=cve, lang=lang)
+        return plan(text or cve, facts, cve=cve, lang=lang,
+                   has_public_exploit=has_public_exploit, poc_ref_url=poc_ref_url)
+    pl = plan(text or ("stack overflow" if cls == "stack-overflow" else cls), facts, cve=cve,
+             lang=lang, has_public_exploit=has_public_exploit, poc_ref_url=poc_ref_url)
     pl.vuln_class = cls
     if an is not None:
         ctrl = an.control
@@ -686,7 +728,9 @@ def plan_from_analysis(an, facts: dict, binary_name: str = "target", text: str =
     # Si no hubo cadena verificada, el DESARROLLADOR de exploits genera igualmente un script
     # funcional (o la aproximacion mas cercana) para la clase, adaptado a las mitigaciones.
     if not pl.script:
-        pl.script = develop_exploit(cls, facts, pl.concrete, name=os.path.basename(binary_name), lang=lang)
+        pl.script = develop_exploit(cls, facts, pl.concrete, name=os.path.basename(binary_name),
+                                   lang=lang, has_public_exploit=has_public_exploit,
+                                   poc_ref_url=poc_ref_url)
         pl.phases.append(Phase(
             "Exploit desarrollado (plantilla)" if es else "Developed exploit (template)",
             ("script pwntools funcional para la clase, a completar donde queda TODO (leak/objetivo)"
@@ -755,7 +799,8 @@ def _augment_with_autopwn(pl: "ExploitPlan", binary: str, lang: str, verify: boo
 
 
 def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es",
-                    verify: bool = True) -> ExploitPlan:
+                    verify: bool = True, has_public_exploit: bool = False,
+                    poc_ref_url: str = "") -> ExploitPlan:
     """Concreta el esquema con un binario cargado: rellena offset/gadgets/objetivo reales via el
     Analizador de cadenas y, si `verify`, VERIFICA el exploit en sandbox (script + prueba). Si no se
     da `text`, infiere la clase (overflow -> control de RIP) de los hechos del binario.
@@ -783,7 +828,8 @@ def plan_for_binary(binary: str, text: str = "", cve: str = "", lang: str = "es"
     except Exception:
         an = None
     pl = plan_from_analysis(an, facts, binary_name=os.path.basename(binary), text=text,
-                            cve=cve, lang=lang)
+                            cve=cve, lang=lang, has_public_exploit=has_public_exploit,
+                            poc_ref_url=poc_ref_url)
     _augment_with_autopwn(pl, binary, lang, verify)
     return pl
 

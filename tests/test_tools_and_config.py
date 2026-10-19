@@ -12968,3 +12968,62 @@ def test_parse_kv_detail_extracts_autopwn_proof_fields():
     assert d == {"offset": "6", "system": "0x155555258750", "printf_got": "0x404000"}
     assert _parse_kv_detail("") == {}
     assert _parse_kv_detail(None) == {}
+
+
+def test_develop_exploit_warns_when_a_real_cve_has_a_different_real_technique():
+    # Pulido del "desarrollador de exploits" para CVEs (no se ejecuta ningun binario vulnerable
+    # aqui -- es puramente la calidad del PLAN/PLANTILLA que investigate_cve genera). Bug real
+    # de calidad encontrado investigando CVE-2021-3156 (Baron Samedit) de verdad: su clase es
+    # 'heap-overflow', y la plantilla GENERICA de esa clase asume un reto CTF con menu
+    # interactivo (alloc/free/show por stdin, con wrappers sendlineafter) -- pero Baron Samedit
+    # es un off-by-one en el parseo de argv/getenv de un `sudo` setuid REAL, sin menu ni
+    # interfaz stdin de ningun tipo. Presentar ese esqueleto sin avisar, cuando YA se sabe que
+    # la CVE tiene un exploit publico con una tecnica real completamente distinta, es activamente
+    # enganoso. Ahora antepone un aviso dirigiendo al PoC real.
+    from binoracle.workflows.cveplan import develop_exploit
+    url = "https://github.com/worawit/CVE-2021-3156"
+    with_notice = develop_exploit("heap-overflow", {"nx": True, "canary": False, "pie": False},
+                                  {}, name="sudo", lang="es", has_public_exploit=True,
+                                  poc_ref_url=url)
+    assert with_notice.startswith("# AVISO")
+    assert url in with_notice
+    assert "no aplicar en absoluto" in with_notice.lower() or "no aplicar" in with_notice.lower()
+    # el esqueleto generico sigue presente DEBAJO del aviso (sigue siendo util como punto de
+    # partida para la clase, solo que ya no se presenta como "la" tecnica de esta CVE)
+    assert "#!/usr/bin/env python3" in with_notice
+
+    without_notice = develop_exploit("heap-overflow", {}, {}, lang="es")
+    assert without_notice.startswith("#!/usr/bin/env python3")
+    assert "AVISO" not in without_notice
+
+
+def test_plan_threads_public_exploit_notice_through_to_the_final_script():
+    # Confirma el camino completo (no solo develop_exploit en aislamiento): plan() -- lo que
+    # investigate_cve llama en la rama SIN binario -- debe propagar has_public_exploit/
+    # poc_ref_url hasta pl.script.
+    from binoracle.workflows.cveplan import plan
+    pl = plan("Sudo before 1.9.5p2 contains an off-by-one error that can result in a "
+             "heap-based buffer overflow", {"nx": True, "canary": False, "pie": False},
+             cve="CVE-2021-3156", lang="es", has_public_exploit=True,
+             poc_ref_url="https://github.com/worawit/CVE-2021-3156")
+    assert pl.vuln_class == "heap-overflow"
+    assert pl.script.startswith("# AVISO")
+    assert "CVE-2021-3156" in pl.script
+
+    pl_no_poc = plan("heap buffer overflow", {}, cve="CVE-OTHER", lang="es")
+    assert pl_no_poc.script.startswith("#!/usr/bin/env python3")
+
+
+def test_cveplan_cli_has_public_exploit_flag_reaches_the_script():
+    # Camino de CLI real (lo que binoracle cveplan expone, y lo que plan_with_budget -- el
+    # subproceso que investigate_cve usa en la rama CON binario -- invoca).
+    import subprocess
+    import sys
+    r = subprocess.run(
+        [sys.executable, "-m", "binoracle", "cveplan", "heap buffer overflow",
+         "--cve", "CVE-2021-3156", "--has-public-exploit",
+         "--poc-url", "https://github.com/worawit/CVE-2021-3156"],
+        capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert "AVISO" in r.stdout
+    assert "https://github.com/worawit/CVE-2021-3156" in r.stdout

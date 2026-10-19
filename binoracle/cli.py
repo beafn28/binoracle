@@ -73,12 +73,16 @@ def cmd_cveplan(args, config):
     """Esquema de explotacion a partir de una CVE / descripcion (a la inversa: de la vuln al exploit).
     Con --binary, concreta las mitigaciones desde checksec."""
     from .workflows.cveplan import plan, plan_for_binary, render_plan
+    has_poc = getattr(args, "has_public_exploit", False)
+    poc_url = getattr(args, "poc_url", "") or ""
     if getattr(args, "binary", None):
         # concreta el esquema con el binario (offset/gadgets reales) y verifica en sandbox
         pl = plan_for_binary(args.binary, text=args.text, cve=getattr(args, "cve", ""),
-                             lang=config.lang, verify=not getattr(args, "no_verify", False))
+                             lang=config.lang, verify=not getattr(args, "no_verify", False),
+                             has_public_exploit=has_poc, poc_ref_url=poc_url)
     else:
-        pl = plan(args.text, {}, cve=getattr(args, "cve", ""), lang=config.lang)
+        pl = plan(args.text, {}, cve=getattr(args, "cve", ""), lang=config.lang,
+                 has_public_exploit=has_poc, poc_ref_url=poc_url)
     if getattr(args, "json", False):
         # salida estructurada (una linea JSON): la usa el trainer/dataset para correr cada binario
         # como subproceso con presupuesto de tiempo.
@@ -1225,6 +1229,11 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--no-verify", action="store_true", help="do not run the sandbox verification")
     cp.add_argument("--out", help="write the developed pwntools exploit script to this file (executable)")
     cp.add_argument("--json", action="store_true", help="emit the plan as one JSON line (for tooling)")
+    cp.add_argument("--has-public-exploit", action="store_true",
+                    help="this CVE already has a documented public exploit -- prepend a notice "
+                         "pointing to it instead of presenting the generic per-class template "
+                         "as if it were this CVE's actual technique")
+    cp.add_argument("--poc-url", default="", help="URL of the known public exploit (with --has-public-exploit)")
     cp.set_defaults(func=cmd_cveplan)
 
     t = sub.add_parser("triage", help="grounded facts + mitigations (no model needed)")
