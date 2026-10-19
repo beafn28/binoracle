@@ -373,8 +373,30 @@ The flagship direction: prove impact end to end.
   a non-zero exit -- the actual "fails a PR" mechanism the ROADMAP line asks for, not just a
   library function. Covered by real tests in `tests/test_smoke.py`: the real pass/fail cases
   above, plus a unit test confirming a mitigation being STRENGTHENED alone never trips the gate.
-- **[L] Cross-engagement knowledge base.** Reuse discovered gadgets and attack patterns
-  across targets, anonymized, so each run makes the next one better.
+- **[L] Cross-engagement knowledge base.** Audited first: most of "attack PATTERNS, anonymized,
+  across targets" already existed and is already CONSUMED, not just written --
+  `store/session.py`'s `global_facts` (anonymized verified findings keyed by arch/sink, read
+  back via `relevant_facts()` and fed into the agent's own prompt in `workflows/audit.py`) and
+  `exploit_skill` (per arch/class/strategy attempts+successes, read and updated by
+  `workflows/exploit_trainer.py`) already make this true for findings and exploit strategies.
+  What was genuinely missing is literal GADGET reuse: `workflows/chainanalyzer.py`'s
+  `_enum_gadgets` runs a full ROP scan of `.text` via radare2 (`/Rj` per pattern) that its own
+  comment already flagged as expensive -- "~6s EACH... ~17 patterns = ~110s" on an 800KB static
+  binary (hence the existing `BINORACLE_GADGET_BUDGET` time-box). Shipped: `store/gadget_cache.py`,
+  wired straight into `_enum_gadgets`. Keyed by the exact SHA256 of the scanned binary's content
+  (same hashing `store.session.binary_id` already uses) -- NOT a similarity heuristic, so a false
+  hit is structurally impossible: two targets (a repeated challenge binary, or two different
+  targets that statically embed the same libc/musl `.text`) only ever share a cache entry when
+  their scanned bytes are byte-identical, in which case the gadgets genuinely ARE identical.
+  Anonymized by construction: the cache stores the content hash and the gadget list (addresses +
+  instruction text), never the original path or filename. Verified end-to-end against a real
+  fixture (`samples/bin/ret2win`): the real r2 scan took ~6s on the first call; a second call on
+  the identical binary returned the SAME gadgets (same addresses, same instruction text) in
+  effectively 0s with radare2 never invoked again (confirmed by spying on the r2 session
+  getter -- zero calls on the cache hit). Degrades honestly: if the cache itself fails to read or
+  write for any reason, `_enum_gadgets` still falls through to the real scan rather than returning
+  an empty/stale result. Covered by real tests in `tests/test_smoke.py`: the cache-hit-skips-r2
+  case above, and a degrade-cleanly case with the cache forced to raise on every call.
 - **[M] Model quality.** Prompt-tuning for the agent loop, a planner+verifier multi-model
   split, and better native tool-calling for capable local models.
 

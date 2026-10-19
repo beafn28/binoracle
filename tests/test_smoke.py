@@ -3655,3 +3655,76 @@ def test_identify_routes_real_rust_binary_to_elf_rust():
         for p in (src, binp):
             if os.path.exists(p):
                 os.remove(p)
+
+
+def test_gadget_cache_hit_skips_the_real_r2_scan():
+    # "[L] Cross-engagement knowledge base" del ROADMAP v0.5 -- reuso de gadgets DESCUBIERTOS
+    # entre targets. chainanalyzer._enum_gadgets corre un escaneo ROP real via radare2 (/Rj por
+    # patron); esto confirma que una SEGUNDA llamada sobre el MISMO contenido (mismo hash sha256)
+    # NUNCA vuelve a invocar r2 -- devuelve los gadgets cacheados tal cual, byte-identicos porque
+    # la clave ES el contenido.
+    import os
+    import shutil
+    import tempfile
+    import pytest
+    import binoracle.oracles.r2session as r2s
+    import binoracle.workflows.chainanalyzer as ca
+    from binoracle.config import Config
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    if not (shutil.which("r2") or shutil.which("radare2")):
+        pytest.skip("radare2 no disponible")
+
+    state_dir = tempfile.mkdtemp()
+    old_env = os.environ.get("BINORACLE_STATE_DIR")
+    os.environ["BINORACLE_STATE_DIR"] = state_dir
+    try:
+        g1 = ca._enum_gadgets(b, bits=64)
+        assert g1, "el scan real no encontro ningun gadget -- nada que cachear/verificar"
+
+        orig_get = r2s.get
+        calls = {"n": 0}
+        def _spy(*a, **kw):
+            calls["n"] += 1
+            return orig_get(*a, **kw)
+        r2s.get = _spy
+        try:
+            g2 = ca._enum_gadgets(b, bits=64)
+        finally:
+            r2s.get = orig_get
+        assert calls["n"] == 0, "cache MISS -- r2 se invoco de nuevo pese a contenido identico"
+        assert [g.addr for g in g1] == [g.addr for g in g2]
+        assert [g.text for g in g1] == [g.text for g in g2]
+    finally:
+        if old_env is None:
+            os.environ.pop("BINORACLE_STATE_DIR", None)
+        else:
+            os.environ["BINORACLE_STATE_DIR"] = old_env
+        shutil.rmtree(state_dir, ignore_errors=True)
+
+
+def test_gadget_cache_degrades_cleanly_on_a_bad_db_path():
+    # Si el cache de gadgets no se puede leer/escribir (ruta invalida), _enum_gadgets debe
+    # seguir devolviendo el escaneo real via r2 -- nunca lanzar ni devolver [] por el fallo del
+    # cache en si.
+    import os
+    import shutil
+    import pytest
+    import binoracle.workflows.chainanalyzer as ca
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    if not (shutil.which("r2") or shutil.which("radare2")):
+        pytest.skip("radare2 no disponible")
+    import binoracle.store.gadget_cache as gc
+    orig_load = gc.load_gadgets
+    orig_save = gc.save_gadgets
+    gc.load_gadgets = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("cache roto"))
+    gc.save_gadgets = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("cache roto"))
+    try:
+        g = ca._enum_gadgets(b, bits=64)
+        assert g, "el fallo del cache no debe impedir el escaneo real"
+    finally:
+        gc.load_gadgets = orig_load
+        gc.save_gadgets = orig_save

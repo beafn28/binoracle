@@ -473,6 +473,20 @@ def _enum_gadgets(binary: str, bits: int = 64) -> List[Gadget]:
     ebx/ecx/edx/eax e `int 0x80`; en 64b, rdi/rsi/rdx/rax y `syscall`. Best-effort; [] si no hay r2."""
     out: List[Gadget] = []
     seen = set()
+    # Cross-engagement cache (ROADMAP v0.5): the same gadget scan on byte-identical content
+    # (a repeated challenge binary, or a different target that statically embeds the same
+    # libc/musl .text) is a wasted ~100s+ re-scan of the exact same bytes -- skip it entirely
+    # on a cache hit. Keyed by content hash, never by path, so a false hit is impossible.
+    _chash = None
+    try:
+        from ..config import Config
+        from ..store.gadget_cache import content_hash as _content_hash, load_gadgets, save_gadgets
+        _chash = _content_hash(binary)
+        cached = load_gadgets(Config().db_path(), _chash)
+        if cached is not None:
+            return [Gadget(**g) for g in cached]
+    except Exception:
+        pass
     try:
         import json
         import time as _time
@@ -523,6 +537,14 @@ def _enum_gadgets(binary: str, bits: int = 64) -> List[Gadget]:
                     out.append(g)
     except Exception:
         return out
+    if _chash is not None:
+        try:
+            from dataclasses import asdict
+            from ..config import Config
+            from ..store.gadget_cache import save_gadgets
+            save_gadgets(Config().db_path(), _chash, bits, [asdict(g) for g in out])
+        except Exception:
+            pass
     return out
 
 
