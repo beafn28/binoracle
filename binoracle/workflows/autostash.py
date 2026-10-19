@@ -15,7 +15,7 @@ ASLR off and `hobj`/`win` are fixed symbols, so the fake-chunk address is determ
 AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -57,10 +57,21 @@ sys.exit(1)
 '''
 
 
+def _stash_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un chunk falso objetivo (hobj/fake/fnptr) y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    hobj = any(n in names for n in ("hobj", "fake", "fnptr"))
+    return hobj and "win" in names
+
+
 def autostash(binary: str) -> dict:
     """Tcache-stashing-unlink verificado por ejecucion (contra un asignador que reproduce el stash
     de smallbin->tcache, incluido el chequeo de consistencia >=2.31). Necesita la forma de practica
     (hobj/win). Docker o sandbox nativo (ASLR off); degrada limpio."""
+    if not _stash_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin hobj/fake/fnptr + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_stash.py")
     if not res.get("ok"):
         return res

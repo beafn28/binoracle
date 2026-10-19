@@ -11,7 +11,7 @@ runs with ASLR off, and the chunk table is a fixed symbol, so the heap address n
 safe-linking is read from /proc/<pid>/mem (no info leak required). For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -69,9 +69,20 @@ sys.exit(1)
 '''
 
 
+def _botcake_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un array chunks[], un function-pointer objetivo y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    handler = any(n in names for n in ("handler", "fnptr"))
+    return "chunks" in names and handler and "win" in names
+
+
 def autobotcake(binary: str) -> dict:
     """House-of-botcake verificado por ejecucion (tcache de glibc real >=2.29). Necesita la forma de
     menu (chunks[]+handler+win). Docker o sandbox nativo (ASLR off); degrada limpio."""
+    if not _botcake_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin chunks[] + handler/fnptr + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_botcake.py")
     if not res.get("ok"):
         return res

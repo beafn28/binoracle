@@ -103,19 +103,28 @@ The flagship direction: prove impact end to end.
   techniques that existed when autopwn was first written. Honest gap found by the audit: 14
   further standalone exploit tools registered in `mcp_server.py` (`autocsu`, `autopivot`, and
   the house-of-force/spirit/einherjar/botcake/corrosion/mind, IO_FILE/FSOP, fastbin-dup,
-  unsafe-unlink and tcache-stashing glibc-internals techniques) were NOT in autopwn's own
-  applicability/decision tree -- each needs its own `_xxx_applicable()` detector analogous to
-  the existing heap ones before autopwn can try them autonomously. Two closed in a follow-up
-  pass: `_csu_applicable()` (needs `win`+`fnptr`, or `retptr` for the execve variant) and
-  `_pivot_applicable()` (needs a win/gift-like symbol AND a known `.bss` staging-buffer symbol)
-  added, both cheap pyelftools symbol pre-checks matching the existing `_heap_shell_applicable`/
-  `_uaf_applicable` convention; `ret2csu` and `pivot` wired into `autopwn()`'s combo sequence
-  (tried before the generic ROP sweep, since ret2csu's whole point is having no pop rsi/pop rdx
-  of its own) and `_why()`'s rationale, verified end-to-end through the ORCHESTRATOR itself
-  (not just the standalone module) against `samples/bin/ret2csu` and `samples/bin/pivot`.
-  Still open: the remaining 12 (house-of-*, IO_FILE/FSOP, fastbin-dup, unsafe-unlink,
-  tcache-stashing) -- each is its own, more involved applicability check (glibc-internals
-  preconditions, not just symbol presence) and still needs a dedicated pass.
+  unsafe-unlink, tcache-stashing glibc-internals techniques, plus aarch64 SROP) were NOT in
+  autopwn's own applicability/decision tree -- each needs its own `_xxx_applicable()` detector
+  analogous to the existing heap ones before autopwn can try them autonomously. All 14 now
+  closed, in two passes: `_csu_applicable()`/`_pivot_applicable()` first (ret2csu needs
+  `win`+`fnptr` or `retptr`; pivot needs a win/gift-like symbol AND a known `.bss`
+  staging-buffer symbol), then the remaining 12 -- one `_xxx_applicable()` each for
+  house-of-force/spirit/einherjar/botcake/corrosion/mind, IO_FILE/FSOP, fastbin-dup,
+  unsafe-unlink and tcache-stashing (every one a cheap pyelftools symbol pre-check against that
+  technique's own practice-shape symbols, e.g. `heap`/`arena`/`buf` + a function-pointer target
+  + `win`; the actual glibc-internals precondition -- top-chunk carve shape, safe-linking
+  absence, etc. -- stays checked inside each driver, where pwntools is already loaded, exactly
+  like the two done first), plus an arch-gated check for `srop-aarch64` (only attempted when
+  recon's own `arch` says ARM, since the driver needs an aarch64 runtime/qemu). All added as a
+  shared `elf_symbol_names()` helper in `_sandbox.py` (the symbol-scanning boilerplate every
+  `_xxx_applicable()` repeated) and wired into `autopwn()`'s `heap_combos` list alongside the
+  existing heap-shell/uaf-funcptr/tcache-dup/write-what-where ones, each gated by its own
+  applicability check, plus `_why()` rationale for all 12. Verified end-to-end through the
+  ORCHESTRATOR itself (not just the standalone modules) against `samples/bin/hos` (house-of-
+  spirit) and `samples/bin/hof` (house-of-force); the other 9 verified at the applicability-
+  check level against their own fixtures (all standalone modules were already execution-
+  verified in earlier sessions). "[L] Auto-PoC generation" is now fully closed: every
+  standalone exploit tool the project has is reachable from the autonomous orchestrator.
 - **[M] Frida dynamic oracle.** Cross-platform, scriptable hooks (heap tracing, function
   interception) to augment/replace gdb/lldb.
 - **[L] Concolic loop.** Drive angr from a real dynamic trace (symbolic-assisted crash

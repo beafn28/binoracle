@@ -50,6 +50,30 @@ def _elf_machine(path: str):
     return struct.unpack_from("<H", head, 18)[0]
 
 
+def elf_symbol_names(binary: str) -> set | None:
+    """Simbolos de .symtab/.dynsym, barato (sin sandbox, sin pwntools/ROP). Devuelve None si
+    pyelftools no esta disponible o el ELF no se puede leer -- en ese caso el llamador debe
+    dejar que el driver decida (no bloquear un intento solo porque este pre-chequeo fallo).
+    Compartido por los `_xxx_applicable()` de cada tecnica de exploit (misma logica que antes
+    se repetia en cada modulo)."""
+    try:
+        from elftools.elf.elffile import ELFFile
+    except Exception:
+        return None
+    try:
+        names = set()
+        with open(binary, "rb") as f:
+            elf = ELFFile(f)
+            for sec in elf.iter_sections():
+                if sec.name in (".symtab", ".dynsym"):
+                    for s in sec.iter_symbols():
+                        if s.name:
+                            names.add(s.name)
+        return names
+    except Exception:
+        return None
+
+
 def _host_target_ok(binary: str) -> tuple[bool, str]:
     """Host/target preconditions common to every native run: Linux x86-64 host, an x86-64 (or
     i386 -- the host runs 32-bit ELFs too) target, and `setarch` (to turn ASLR off). Network

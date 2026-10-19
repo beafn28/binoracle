@@ -222,6 +222,63 @@ def test_autopivot_applicable_checks_symbols_cheaply():
     assert _pivot_applicable("samples/bin/ret2win") is False
 
 
+def test_autopwn_why_covers_remaining_heap_internals_combos():
+    # Ultimo paso del hueco de la auditoria de autopwn: 11 tecnicas de glibc-internals mas
+    # (house-of-*, IO_FILE/FSOP, fastbin-dup, unsafe-unlink, tcache-stash) + SROP aarch64.
+    from binoracle.workflows.autopwn import _why
+    names_fragments = {
+        "house-of-force": "top",
+        "house-of-spirit": "tcache",
+        "house-of-einherjar": "consolidacion",
+        "house-of-botcake": "unsorted",
+        "largebin-attack": "largebin",
+        "house-of-mind": "ar_ptr",
+        "iofile-fsop": "vtable",
+        "fastbin-dup": "fasttop",
+        "unsafe-unlink": "unlink",
+        "house-of-corrosion": "global_max_fast",
+        "tcache-stash": "stash",
+        "srop-aarch64": "aarch64",
+    }
+    for name, frag in names_fragments.items():
+        why = _why({}, False, name)
+        assert frag in why.lower(), f"{name}: {why!r} no nombra el mecanismo real"
+        assert why != "seleccionada segun las defensas y primitivas observadas"
+    # srop-aarch64 no debe caer en el _why() generico de SROP x86 (que no menciona aarch64)
+    assert "aarch64" not in _why({}, False, "srop").lower()
+
+
+def test_heap_internals_applicable_checks_symbols_cheaply():
+    # Pre-filtro barato (sin sandbox) de las 11 tecnicas de glibc-internals añadidas al
+    # orquestador: True contra su propio fixture, False contra un binario sin esos simbolos.
+    import os
+    import pytest
+    checks = [
+        ("hof", "autohof", "_hof_applicable"),
+        ("hos", "autohos", "_hos_applicable"),
+        ("hoe", "autohoe", "_hoe_applicable"),
+        ("botcake", "autobotcake", "_botcake_applicable"),
+        ("largebin", "autolargebin", "_largebin_applicable"),
+        ("homind", "autohomind", "_homind_applicable"),
+        ("iofile", "autoiofile", "_iofile_applicable"),
+        ("fastbindup", "autofastbindup", "_fastbindup_applicable"),
+        ("unsafeunlink", "autounsafeunlink", "_unsafeunlink_applicable"),
+        ("hoc", "autohoc", "_hoc_applicable"),
+        ("stash", "autostash", "_stash_applicable"),
+    ]
+    if not os.path.exists("samples/bin/ret2win"):
+        pytest.skip("sample ret2win no compilado")
+    import importlib
+    for sample, mod_name, fn_name in checks:
+        binp = f"samples/bin/{sample}"
+        if not os.path.exists(binp):
+            continue
+        mod = importlib.import_module(f"binoracle.workflows.{mod_name}")
+        fn = getattr(mod, fn_name)
+        assert fn(binp) is True, f"{fn_name} deberia aplicar a su propio fixture {binp}"
+        assert fn("samples/bin/ret2win") is False, f"{fn_name} no deberia aplicar a ret2win"
+
+
 def test_autolibc_render():
     from binoracle.workflows.autolibc import render_libc
     out = render_libc({"ok": True, "verified": True, "detail": "VERIFIED off=88 base=0x7f...",

@@ -10,7 +10,7 @@ trick); binoracle verifies against a target whose allocator reproduces the pre-2
 sandbox runs with ASLR off and `heap`/`hslot`/`win` are fixed symbols. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -52,10 +52,21 @@ sys.exit(1)
 '''
 
 
+def _fastbindup_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un chunk falso objetivo (hslot/fake/hook_slot) y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    hslot = any(n in names for n in ("hslot", "fake", "hook_slot"))
+    return hslot and "win" in names
+
+
 def autofastbindup(binary: str) -> dict:
     """Fastbin-dup clasico verificado por ejecucion (contra un asignador que reproduce el fastbin
     pre-2.32: chequeo debil ==fasttop + chequeo de size, sin safe-linking). Necesita la forma de
     practica (hslot/win). Docker o sandbox nativo (ASLR off); degrada limpio."""
+    if not _fastbindup_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin hslot/fake/hook_slot + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_fastdup.py")
     if not res.get("ok"):
         return res

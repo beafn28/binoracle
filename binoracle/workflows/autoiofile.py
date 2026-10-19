@@ -10,7 +10,7 @@ binoracle verifies the vtable-hijack technique against a target whose stream flu
 `fp`/`fake_vtable`/`win` are fixed symbols. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -55,10 +55,23 @@ sys.exit(1)
 '''
 
 
+def _iofile_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un _IO_FILE conocido (fp/file), una vtable falsa (fake_vtable/
+    vtable) y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    fp = any(n in names for n in ("fp", "file"))
+    fake = any(n in names for n in ("fake_vtable", "vtable"))
+    return fp and fake and "win" in names
+
+
 def autoiofile(binary: str) -> dict:
     """IO_FILE/FSOP verificado por ejecucion (contra un flujo cuya operacion reproduce la llamada
     vtable[__overflow](fp)). Necesita la forma de practica (fp/fake_vtable/win). Docker o sandbox
     nativo (ASLR off); degrada limpio."""
+    if not _iofile_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin fp/file + fake_vtable/vtable + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_fsop.py")
     if not res.get("ok"):
         return res

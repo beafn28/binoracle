@@ -10,7 +10,7 @@ heap_for_ptr -> ar_ptr -> fastbin-insertion write, and degrades honestly otherwi
 with ASLR off and `heap`/`hom_slot`/`win` are fixed symbols. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -58,10 +58,21 @@ sys.exit(1)
 '''
 
 
+def _homind_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un slot objetivo (hom_slot/slot/target) y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    hom = any(n in names for n in ("hom_slot", "slot", "target"))
+    return hom and "win" in names
+
+
 def autohomind(binary: str) -> dict:
     """House-of-Mind verificado por ejecucion (contra un asignador que reproduce heap_for_ptr ->
     ar_ptr -> escritura de insercion en fastbin). Necesita la forma de practica (hom_slot/win).
     Docker o sandbox nativo (ASLR off); degrada limpio."""
+    if not _homind_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin hom_slot/slot/target + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_homind.py")
     if not res.get("ok"):
         return res

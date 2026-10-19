@@ -14,7 +14,7 @@ with ASLR off and `heap`/`slot`/`win` are fixed symbols, so the chunk addresses 
 For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -66,10 +66,22 @@ sys.exit(1)
 '''
 
 
+def _largebin_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita heap/arena fijo, un slot/target/fnptr objetivo y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    heap = any(n in names for n in ("heap", "arena"))
+    slot = any(n in names for n in ("slot", "target", "fnptr"))
+    return heap and slot and "win" in names
+
+
 def autolargebin(binary: str) -> dict:
     """Ataque de largebin verificado por ejecucion (contra un asignador que reproduce la escritura
     de insercion). Necesita la forma de practica (heap/slot/win). Docker o sandbox nativo (ASLR off);
     degrada limpio."""
+    if not _largebin_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin heap/arena + slot/target/fnptr + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_largebin.py")
     if not res.get("ok"):
         return res

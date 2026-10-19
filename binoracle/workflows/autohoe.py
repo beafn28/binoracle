@@ -12,7 +12,7 @@ consolidation condition, and degrades honestly otherwise. The chain uses the add
 reaches a fake chunk above the heap. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -73,9 +73,21 @@ sys.exit(1)
 '''
 
 
+def _hoe_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita heap/arena fijo, un function-pointer objetivo y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    heap = any(n in names for n in ("heap", "arena"))
+    handler = any(n in names for n in ("handler", "fnptr", "hook"))
+    return heap and handler and "win" in names
+
+
 def autohoe(binary: str) -> dict:
     """House-of-einherjar verificado por ejecucion (contra un asignador que reproduce la
     consolidacion hacia atras). Necesita la forma de practica (heap/handler/win). Docker o nativo."""
+    if not _hoe_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin heap/arena + handler/fnptr/hook + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_hoe.py")
     if not res.get("ok"):
         return res

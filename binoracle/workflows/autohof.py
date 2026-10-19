@@ -11,7 +11,7 @@ that shape is not present. The chain uses the address wraparound that moves `top
 hijack target sits below the heap. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -77,9 +77,23 @@ sys.exit(1)
 '''
 
 
+def _hof_applicable(binary: str) -> bool:
+    """Chequeo barato (sin sandbox): necesita la forma de practica -- heap/arena/buf fijo,
+    un function-pointer objetivo (handler/fnptr/hook) y win(). El resto (el carve exacto del
+    top-chunk) se resuelve dentro del driver."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    heap = any(n in names for n in ("heap", "arena", "buf"))
+    handler = any(n in names for n in ("handler", "fnptr", "hook"))
+    return heap and handler and "win" in names
+
+
 def autohof(binary: str) -> dict:
     """House-of-force verificado por ejecucion (contra un asignador que reproduce el top-chunk
     pre-2.29). Necesita la forma de practica (simbolos heap/handler/win). Docker o nativo."""
+    if not _hof_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin heap/arena/buf + handler/fnptr/hook + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_hof.py")
     if not res.get("ok"):
         return res

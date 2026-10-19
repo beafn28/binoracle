@@ -13,7 +13,7 @@ binoracle verifies the technique against a target whose allocator reproduces the
 AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -64,10 +64,23 @@ sys.exit(1)
 '''
 
 
+def _unsafeunlink_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un puntero global (chunkptr/ptr), un function-pointer objetivo
+    (handler/fnptr) y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    chunkptr = any(n in names for n in ("chunkptr", "ptr"))
+    handler = any(n in names for n in ("handler", "fnptr"))
+    return chunkptr and handler and "win" in names
+
+
 def autounsafeunlink(binary: str) -> dict:
     """Unsafe-unlink verificado por ejecucion (contra un asignador que reproduce la escritura de
     unlink + el chequeo de consistencia >=2.3.4). Necesita la forma de practica (chunkptr/handler/
     win). Docker o sandbox nativo (ASLR off); degrada limpio."""
+    if not _unsafeunlink_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin chunkptr/ptr + handler/fnptr + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_unlink.py")
     if not res.get("ok"):
         return res

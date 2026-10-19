@@ -8,7 +8,7 @@ free fast-path returns before the fastbin next-size checks, so only a valid alig
 aligned mem pointer are needed. Verified by execution. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -65,9 +65,21 @@ sys.exit(1)
 '''
 
 
+def _hos_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita un function-pointer objetivo (handler/fnptr/hook) y win(). El
+    alineamiento a 16 bytes se comprueba dentro del driver."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    handler = any(n in names for n in ("handler", "fnptr", "hook"))
+    return handler and "win" in names
+
+
 def autohos(binary: str) -> dict:
     """House-of-spirit verificado por ejecucion (tcache de glibc real). Necesita la forma de
     practica (un puntero de funcion 16-alineado + win()). Docker o sandbox nativo; degrada limpio."""
+    if not _hos_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin handler/fnptr/hook + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_hos.py")
     if not res.get("ok"):
         return res

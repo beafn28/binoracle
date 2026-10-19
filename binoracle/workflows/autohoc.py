@@ -11,7 +11,7 @@ runs with ASLR off and `heap`/`fastbinsY`/`hook_slot`/`win` are fixed symbols, s
 deterministic. For AUTHORIZED / CTF targets."""
 from __future__ import annotations
 
-from ._sandbox import run_driver
+from ._sandbox import elf_symbol_names, run_driver
 
 _DRIVER = r'''
 import sys, time
@@ -66,10 +66,23 @@ sys.exit(1)
 '''
 
 
+def _hoc_applicable(binary: str) -> bool:
+    """Chequeo barato: necesita heap fijo, fastbinsY/fastbins, un slot objetivo (hook_slot/slot/
+    target) y win()."""
+    names = elf_symbol_names(binary)
+    if names is None:
+        return True
+    fastbins = any(n in names for n in ("fastbinsY", "fastbins"))
+    hook = any(n in names for n in ("hook_slot", "slot", "target"))
+    return "heap" in names and fastbins and hook and "win" in names
+
+
 def autohoc(binary: str) -> dict:
     """House-of-corrosion verificado por ejecucion (contra un asignador que reproduce la escritura de
     indice de fastbin sin cota al corromper global_max_fast). Necesita la forma de practica
     (heap/fastbinsY/hook_slot/win). Docker o sandbox nativo (ASLR off); degrada limpio."""
+    if not _hoc_applicable(binary):
+        return {"ok": False, "note": "no aplicable (sin heap + fastbinsY/fastbins + hook_slot/slot/target + win)"}
     res = run_driver(binary, _DRIVER, ".binoracle_hoc.py")
     if not res.get("ok"):
         return res
