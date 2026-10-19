@@ -80,15 +80,21 @@ def identify(path: str) -> dict:
             from .coredump import inspect_core
             detail = inspect_core(path)
         elif fmt == "elf":
-            # prefer Go build-info if present, else the ELF layout
+            # prefer Go build-info if present, else Rust toolchain heuristics, else the ELF layout
             from .goinspect import inspect_go
             go = inspect_go(path)
             if go.get("is_go"):
                 routed = "elf-go"
                 detail = go
             else:
-                from .elflayout import inspect_elf
-                detail = inspect_elf(path)
+                from .rustinspect import inspect_rust
+                rust = inspect_rust(path)
+                if rust.is_likely_rust:
+                    routed = "elf-rust"
+                    detail = rust
+                else:
+                    from .elflayout import inspect_elf
+                    detail = inspect_elf(path)
         elif fmt == "macho":
             from .machoinspect import inspect_macho
             detail = inspect_macho(path)
@@ -152,7 +158,8 @@ def render_identify(r: dict) -> str:
         return "\n".join(out)
     renderers = {
         "elf-core": ("coredump", "render_core"), "elf": ("elflayout", "render_elf"),
-        "elf-go": ("goinspect", "render_go"), "macho": ("machoinspect", "render_macho"),
+        "elf-go": ("goinspect", "render_go"), "elf-rust": ("rustinspect", "render_rust"),
+        "macho": ("machoinspect", "render_macho"),
         "wasm": ("wasminspect", "render_wasm"), "sqlite": ("sqliteinspect", "render_sqlite"),
         "pe-dotnet": ("dotnetinspect", "render_dotnet"), "pe": ("peinspect", "render_pe"),
         "apk": ("apkinspect", "render_apk"), "zip": ("apkinspect", "render_apk"),

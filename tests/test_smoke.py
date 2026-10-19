@@ -3490,3 +3490,111 @@ def test_funcid_degrades_cleanly_without_r2(monkeypatch):
     r = funcid.identify_stripped_functions("samples/bin/ret2win.stripped", "samples/bin/ret2win")
     assert r.ok is False
     assert "radare2" in r.note.lower()
+
+
+def test_rawshellcode_identifies_real_execve_shellcode_as_x86_64():
+    # "[S] More formats & backends" del ROADMAP v0.4 -- "raw shellcode analysis": un blob SIN
+    # contenedor ELF/PE. Usa el shellcode amd64 REAL (no sintetico) que este proyecto ya genera
+    # en workflows/shellcode.py (execve("/bin/sh")) y confirma que x86-64 queda rankeado
+    # primero, con la instruccion `syscall` detectada y la cadena `/bin//sh` extraida -- no solo
+    # que "algo" se devuelva.
+    import pytest
+    from binoracle.workflows.rawshellcode import analyze_raw_shellcode as _ars, _HAVE_CAPSTONE
+    from binoracle.workflows.shellcode import _PRECOMPILED_SH
+    if not _HAVE_CAPSTONE:
+        pytest.skip("capstone no disponible")
+    r = _ars(_PRECOMPILED_SH["amd64"])
+    assert r.ok
+    assert r.best.arch == "x86-64"
+    assert r.best.n_syscall_insns >= 1
+    assert any("/bin" in s for s in r.strings)
+
+
+def test_rawshellcode_degrades_cleanly_on_empty_input():
+    from binoracle.workflows.rawshellcode import analyze_raw_shellcode, render_raw_shellcode
+    r = analyze_raw_shellcode(b"")
+    assert r.ok is False and r.note
+    assert isinstance(render_raw_shellcode(r), str) and render_raw_shellcode(r)
+
+
+def test_rustinspect_detects_real_stripped_rust_binary():
+    # "[S] More formats & backends" del ROADMAP v0.4 -- "Rust binary heuristics". Compila una
+    # fuente Rust minima, la STRIPEA, y confirma que las firmas (hash de commit de rustc, al
+    # menos un crate de dependencia de Cargo) sobreviven y se recuperan -- no un no-op de leer
+    # un binario ya nombrado.
+    import os
+    import shutil
+    import subprocess
+    import pytest
+    from binoracle.workflows.rustinspect import inspect_rust
+    if not shutil.which("rustc") or not shutil.which("strip"):
+        pytest.skip("rustc/strip no disponibles")
+
+    src = "/tmp/binoracle_test_rust_hello.rs"
+    binp = "/tmp/binoracle_test_rust_hello"
+    stripped = binp + ".stripped"
+    with open(src, "w") as f:
+        f.write('fn main() { println!("hola desde rust"); }\n')
+    try:
+        subprocess.run(["rustc", "-O", "-o", binp, src], capture_output=True, timeout=120)
+        if not os.path.exists(binp):
+            pytest.skip("no se pudo compilar el fixture Rust en este entorno")
+        shutil.copy(binp, stripped)
+        subprocess.run(["strip", stripped], capture_output=True, timeout=30)
+
+        r = inspect_rust(stripped)
+        assert r.ok
+        assert r.is_likely_rust, r.note
+        assert r.rustc_commit or r.dep_crates, "ninguna senal de alta confianza sobrevivio al strip"
+    finally:
+        for p in (src, binp, stripped):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_rustinspect_c_binary_is_not_flagged_as_rust():
+    # Control negativo: un binario C real (ret2win) no debe reportar is_likely_rust=True.
+    import os
+    import pytest
+    from binoracle.workflows.rustinspect import inspect_rust
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no disponible")
+    r = inspect_rust(b)
+    assert r.ok
+    assert r.is_likely_rust is False
+    assert not r.rustc_commit and not r.dep_crates
+
+
+def test_rustinspect_degrades_cleanly_on_missing_file():
+    from binoracle.workflows.rustinspect import inspect_rust
+    r = inspect_rust("/nonexistent/binary")
+    assert r.ok is False and r.note
+
+
+def test_identify_routes_real_rust_binary_to_elf_rust():
+    # El identificador unificado (usado por `binoracle identify`/la web UI) debe preferir Go,
+    # luego las heuristicas de Rust, antes de caer al layout ELF generico -- confirmado contra
+    # un binario Rust REAL (no un ELF sintetico con bytes a mano).
+    import os
+    import shutil
+    import subprocess
+    import pytest
+    from binoracle.workflows.identify import identify
+    if not shutil.which("rustc") or not shutil.which("strip"):
+        pytest.skip("rustc/strip no disponibles")
+    src = "/tmp/binoracle_test_rust_identify.rs"
+    binp = "/tmp/binoracle_test_rust_identify"
+    with open(src, "w") as f:
+        f.write('fn main() { println!("x"); }\n')
+    try:
+        subprocess.run(["rustc", "-O", "-o", binp, src], capture_output=True, timeout=120)
+        if not os.path.exists(binp):
+            pytest.skip("no se pudo compilar el fixture Rust en este entorno")
+        subprocess.run(["strip", binp], capture_output=True, timeout=30)
+        r = identify(binp)
+        assert r["ok"] and r["routed"] == "elf-rust"
+    finally:
+        for p in (src, binp):
+            if os.path.exists(p):
+                os.remove(p)

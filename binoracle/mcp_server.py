@@ -219,6 +219,30 @@ def _h_go(args):
     return render_go(inspect_go(b))
 
 
+@_tool("inspect_rust_binary", "Heuristicas estaticas de Rust: hash de commit del compilador "
+       "rustc, crates de dependencia (via Cargo) y simbolos mangled, leidos de cadenas ASCII "
+       "embebidas que SOBREVIVEN a strip. La ausencia de senales no prueba que no sea Rust.",
+       {"binary": {"type": "string", "description": "ruta al binario (ELF/PE/Mach-O)"}}, ["binary"])
+def _h_rust(args):
+    from .workflows.rustinspect import inspect_rust, render_rust
+    b = _binary(args)
+    return render_rust(inspect_rust(b))
+
+
+@_tool("analyze_raw_shellcode", "Desensambla un blob de shellcode CRUDO (sin contenedor ELF/PE) "
+       "probando cada arquitectura que capstone conoce y rankeando los candidatos por "
+       "heuristica (bytes consumidos, ruido tipico de x86 mal decodificado, presencia de "
+       "syscall/interrupcion) -- nunca afirma una arquitectura unica con certeza.",
+       {"path": {"type": "string", "description": "ruta a un archivo con el blob de shellcode crudo"}},
+       ["path"])
+def _h_rawshellcode(args):
+    from .workflows.rawshellcode import analyze_raw_shellcode, render_raw_shellcode
+    path = (args or {}).get("path")
+    with open(path, "rb") as f:
+        data = f.read()
+    return render_raw_shellcode(analyze_raw_shellcode(data))
+
+
 @_tool("wasm_to_wat", "Desensambla un modulo .wasm a texto WAT usando WABT (wasm2wat) SI el "
        "llamador lo tiene instalado; si no, degrada indicando como obtenerlo. Integracion "
        "caller-supplied (binoracle no empaqueta WABT).",

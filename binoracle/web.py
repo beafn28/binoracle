@@ -590,7 +590,7 @@ def run_command(payload: dict) -> dict:
 
     # static readers: route by format (apk/elf/macho/pe/go/wasm/sqlite/evm/dotnet/js/plist/asar/
     # har/java/flutter/identify) through the unified identifier so the web UI can analyze any artifact.
-    if cmd in ("identify", "apk", "elf", "macho", "pe", "go", "wasm", "sqlite", "evm", "dotnet",
+    if cmd in ("identify", "apk", "elf", "macho", "pe", "go", "rust", "wasm", "sqlite", "evm", "dotnet",
                "js", "plist", "asar", "har", "java", "flutter", "firmware", "secrets"):
         if not binary or not os.path.exists(binary):
             return {"ok": False, "text": f"binary not found: {binary!r}"}
@@ -599,6 +599,14 @@ def run_command(payload: dict) -> dict:
             return {"ok": True, "text": render_identify(identify(binary))}
         except Exception as e:
             return {"ok": False, "text": f"error: {e}"}
+
+    if cmd == "rawshellcode":
+        if not binary or not os.path.exists(binary):
+            return {"ok": False, "text": f"archivo con el blob no encontrado: {binary!r}"}
+        from .workflows.rawshellcode import analyze_raw_shellcode, render_raw_shellcode
+        with open(binary, "rb") as f:
+            data = f.read()
+        return {"ok": True, "text": render_raw_shellcode(analyze_raw_shellcode(data))}
 
     return {"ok": False, "text": f"unknown command: {cmd}"}
 

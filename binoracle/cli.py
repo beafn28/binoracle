@@ -563,6 +563,24 @@ def cmd_go(args, config):
     _write_if(args.output, out)
 
 
+def cmd_rust(args, config):
+    from .workflows.rustinspect import inspect_rust, render_rust
+    binary = _require_binary(args.binary)
+    out = render_rust(inspect_rust(binary))
+    print(out)
+    _write_if(args.output, out)
+
+
+def cmd_rawshellcode(args, config):
+    from .workflows.rawshellcode import analyze_raw_shellcode, render_raw_shellcode
+    path = _require_binary(args.path)
+    with open(path, "rb") as f:
+        data = f.read()
+    out = render_raw_shellcode(analyze_raw_shellcode(data))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_core(args, config):
     import os
     from .workflows.coredump import inspect_core, render_core
@@ -1319,6 +1337,16 @@ def build_parser() -> argparse.ArgumentParser:
     go.add_argument("binary")
     go.add_argument("-o", "--output")
     go.set_defaults(func=cmd_go)
+
+    ru = sub.add_parser("rust", help="Rust binary heuristics: rustc commit, Cargo dependency crates, mangled symbols")
+    ru.add_argument("binary")
+    ru.add_argument("-o", "--output")
+    ru.set_defaults(func=cmd_rust)
+
+    rs = sub.add_parser("rawshellcode", help="disassemble a raw shellcode blob (no ELF/PE container), ranking candidate architectures")
+    rs.add_argument("path")
+    rs.add_argument("-o", "--output")
+    rs.set_defaults(func=cmd_rawshellcode)
 
     co = sub.add_parser("core", help="inspect an ELF core dump: signal, per-thread registers, mappings")
     co.add_argument("core", help="path to the core dump (ELF ET_CORE)")

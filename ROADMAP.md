@@ -286,10 +286,39 @@ The flagship direction: prove impact end to end.
   fly), a negative control (reference with no named functions -> clean `ok=False`, no invented
   match), and a degrade-cleanly-without-radare2 case. Wired into `binoracle funcid <stripped>
   <reference>` (CLI) and the web UI's `funcid` command.
-- **[S] More formats & backends.** Raw shellcode analysis, Go/Rust binary heuristics. ~~A
-  Ghidra-headless decompilation backend~~ (shipped: `callertools.py` drives `analyzeHeadless`)
-  ~~and the capstone fallback oracle~~ (shipped: `oracles/capstone_fallback.py`, registers
-  only when radare2 itself is unavailable) are done.
+- **[S] More formats & backends.** ~~A Ghidra-headless decompilation backend~~ (shipped:
+  `callertools.py` drives `analyzeHeadless`) ~~and the capstone fallback oracle~~ (shipped:
+  `oracles/capstone_fallback.py`, registers only when radare2 itself is unavailable) were already
+  done. Audited: Go binary heuristics already existed (`goinspect.py` reads the embedded
+  build-info blob); nothing existed for raw shellcode (no-container blobs) or Rust. Shipped both:
+  - ~~Raw shellcode analysis~~: `workflows/rawshellcode.py`, `analyze_raw_shellcode(data)`.
+    capstone (same dependency `capstone_fallback.py` already needs) tries EVERY architecture it
+    knows how to decode x86/ARM/MIPS shellcode in and ranks the candidates heuristically (bytes
+    consumed as valid instructions, penalized for classic "decoded non-code as x86" noise
+    mnemonics like `das`/`aad`, rewarded for an actual `syscall`/interrupt instruction present) --
+    per this project's "no false positives by construction" rule, it NEVER asserts a single
+    architecture, only a ranked list with scores shown. Verified against this project's own real
+    amd64 `execve("/bin/sh")` shellcode (`workflows/shellcode.py`'s precompiled blob): x86-64
+    correctly ranks first (score 1.2) over x86-32 (1.16, same bytes decode as "valid" but with
+    `das`/BCD-arithmetic noise) and ARM/ARM64/MIPS (which fail to consume most of the bytes at
+    all); the `syscall` instruction and the embedded `/bin//sh` string are both surfaced.
+  - ~~Rust binary heuristics~~: `workflows/rustinspect.py`, `inspect_rust(path)`, the Rust
+    counterpart to `goinspect.py`. Rust has no build-info blob like Go's, but rustc bakes the full
+    source path of every library it compiles into panic-location strings:
+    `/rustc/<40-hex-commit>/library/...` for std, `/rust/deps/<crate>-<version>/...` for Cargo
+    dependencies -- plain ASCII in `.rodata`, so (confirmed live) they SURVIVE `strip` entirely,
+    unlike mangled symbol names (checked as a secondary, lower-confidence signal only). Verified
+    end-to-end: compiled a real `rustc -O` binary, `strip`-ped it, and recovered the exact rustc
+    commit hash plus its Cargo dependency crates (`addr2line`, `gimli`, `miniz_oxide`) from the
+    stripped binary; a real C binary (`ret2win`) correctly reports no Rust signal. Wired into
+    the unified `identify()`/`binoracle identify` path (ELF routing now tries Go, then Rust,
+    before falling back to the generic ELF layout reader) so it is picked up automatically, not
+    only via its own explicit command.
+  Both are covered by real tests in `tests/test_smoke.py` (positive cases against real compiled/
+  stripped binaries, a negative control, and a clean degrade when the dependency -- capstone, or
+  rustc+strip for the test's own fixture build -- is missing), and wired as their own MCP tools
+  (`analyze_raw_shellcode`, `inspect_rust_binary`) and CLI subcommands (`binoracle rawshellcode`,
+  `binoracle rust`).
 
 ## v0.5 - Product, trust, workflow
 
