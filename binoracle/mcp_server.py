@@ -1212,6 +1212,12 @@ _exploit_tool("autostash", "tcache stashing unlink: un stash de smallbin->tcache
               "disparo via calloc) -> alloc en direccion elegida -> hijack -> shell. Verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autostash", fromlist=["autostash"]).autostash,
                        __import__("binoracle.workflows.autostash", fromlist=["render_stash"]).render_stash))
+_exploit_tool("autoropmprotect", "ROP builder v2 (bypass NX sin leak): un read() previo deja "
+              "shellcode en un buffer .bss fijo conocido; el overflow hace `mprotect(buf, "
+              "PAGE, RWX)` via ROP y salta al buffer -> shellcode real corre -> shell. Necesita "
+              "el simbolo mprotect() resoluble y un buffer de nombre conocido. Verificado en sandbox.",
+              lambda: (__import__("binoracle.workflows.autoropmprotect", fromlist=["autoropmprotect"]).autoropmprotect,
+                       __import__("binoracle.workflows.autoropmprotect", fromlist=["render_ropmprotect"]).render_ropmprotect))
 
 
 # --- JSON-RPC / MCP plumbing ----------------------------------------------------------------------

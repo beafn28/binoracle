@@ -1483,6 +1483,49 @@ def test_autopivot_verifies_stack_migration():
     assert "leave_ret=" in (r.get("detail") or "")
 
 
+def test_autoropmprotect_verifies_nx_bypass():
+    # Verificacion POSITIVA del tercer sub-item de "[M] ROP builder v2" (ROADMAP) por EJECUCION:
+    # mprotectshell.c hace un primer read() que deja shellcode en un buffer .bss fijo conocido
+    # (shellbuf, sin leak -- no-PIE), y un segundo read() desborda la pila con una cadena ROP que
+    # llama a mprotect(shellbuf, 0x1000, RWX) y salta al buffer -- el shellcode real corre y abre
+    # una shell. Prueba que pwntools encontro los gadgets para fijar rdi/rsi/rdx (incluido el
+    # "pop rdx; ret" deliberadamente incluido en el fixture) y que el barrido de offset/padding
+    # dio con el layout real del frame.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/mprotectshell"
+    if not os.path.exists(binp):
+        pytest.skip("sample mprotectshell no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autoropmprotect import autoropmprotect
+    r = autoropmprotect(binp)
+    assert r.get("ok") and r.get("verified"), f"mprotect()+shellcode no verificado: {r.get('note')}"
+    assert "mprotect=" in (r.get("detail") or "")
+    assert "stage=" in (r.get("detail") or "")
+
+
+def test_autoropmprotect_degrades_cleanly_without_mprotect_symbol():
+    # Control negativo: ret2win no referencia mprotect() -- el simbolo no es resoluble, asi que
+    # no debe inventarse un primitivo; NOT_APPLICABLE honesto, no un falso "verified".
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win no compilado")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autoropmprotect import autoropmprotect
+    r = autoropmprotect(binp)
+    assert r.get("ok")
+    assert r.get("verified") is False
+    assert "NOT_APPLICABLE" in (r.get("output") or "")
+
+
 def test_autofmt_verifies_32bit_got_overwrite():
     # Verificacion POSITIVA de format-string de x86-32 por EJECUCION: en fmtgot32 el bug
     # printf(buf) permite sobrescribir printf@GOT con system (Partial RELRO, no-PIE) y luego

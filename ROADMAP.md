@@ -41,9 +41,20 @@ Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
   reuse, never the target) and a realistic rejection case: glibc's own `malloc(): unaligned
   tcache chunk detected` abort when the target address isn't 16-byte aligned, correctly reported
   as verified=False rather than pretending the primitive succeeded).
-- **[M] ROP builder v2.** Leak-aware chains (auto ret2libc once a leak step exists),
-  `one_gadget` integration, `mprotect`+shellcode chains, SROP, and a `ropper` backend as an
-  alternative to pwntools.
+- **[M] ROP builder v2.** ~~Leak-aware chains (auto ret2libc once a leak step exists)~~ and
+  ~~`one_gadget` integration~~ (already shipped before this sprint: `workflows/autolibc.py` --
+  stage-1 leaks a libc address via puts@GOT/PLT and recomputes the base, stage-2 calls
+  `system('/bin/sh')`, falling back to a swept one_gadget when it can't; both verified by a real
+  shell in the sandbox). ~~SROP~~ (already shipped: `workflows/autosrop.py` +
+  `autosrop_aarch64.py`). ~~`mprotect`+shellcode chains~~ (shipped this sprint:
+  `workflows/autoropmprotect.py` -- for the common two-read shape (one read stages shellcode
+  into a known, page-aligned .bss buffer; the overflow ROPs a call to the binary's own
+  `mprotect(buf, PAGE, RWX)` and jumps into it), verified end-to-end against a new fixture,
+  `samples/bin/mprotectshell` -- statically linked so `mprotect` is a resolvable symbol, with
+  one deliberately engineered `pop rdx; ret` gadget (same craft as `ret2csu.c`'s `gadget_block`,
+  since this libc build never happens to have one on its own) so pwntools' automatic
+  register-setting can reach rdi/rsi/rdx and build the call). Still open: a `ropper` backend as
+  an alternative to pwntools for gadget-finding -- not started.
 - **[M] Automatic infoleak chaining.** Wire a format-string / OOB-read leak into a follow-on
   GOT-overwrite or ROP as a *single* verified chain, not two separate findings.
 - **[S-M] CFI / SafeStack / ASan reasoning.** Turn detection into grounded bypass-strategy

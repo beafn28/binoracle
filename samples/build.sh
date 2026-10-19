@@ -138,6 +138,8 @@ echo "[*] fmtgot32 (32-bit, format-string -> printf@GOT=system; requiere multili
 run "gcc -m32 -fno-stack-protector -no-pie -w -o bin/fmtgot32 src/fmtgot32.c" || echo "  (fmtgot32 build omitido: sin multilib)"
 echo "[*] pivot (x86-64, static, short overflow -> stack migration to .bss)"
 run "gcc -fno-stack-protector -no-pie -static -w -o bin/pivot src/pivot.c"
+echo "[*] mprotectshell (x86-64, static, no-PIE: ROP a mprotect() en un buffer .bss fijo -> shellcode real, NX bypass sin leak)"
+run "gcc -fno-stack-protector -no-pie -static -w -o bin/mprotectshell src/mprotectshell.c"
 echo "[*] win_chall.exe (Windows PE via mingw)"
 if [ "$have_docker" = "1" ]; then
   docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
