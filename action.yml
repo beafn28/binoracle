@@ -1,0 +1,71 @@
+name: "binoracle CI gate"
+description: >-
+  Fails the build on NEW *verified* vulnerability findings or security regressions between
+  two builds of a native binary (e.g. this PR's build vs. the base branch's). Runs binoracle's
+  grounded pipeline (triage + hunt + angr verification) -- no local LLM needed for this gate.
+author: "beafn28"
+branding:
+  icon: "shield"
+  color: "red"
+
+inputs:
+  old:
+    description: "Path to the OLD/baseline binary (e.g. built from the base branch)."
+    required: true
+  new:
+    description: "Path to the NEW binary (e.g. built from this PR's branch)."
+    required: true
+  gen-test:
+    description: >-
+      Also re-run every autopwn technique that verified on `old` against `new` for real in the
+      sandbox (slower; the strongest possible "still exploitable" signal). "true"/"false".
+    required: false
+    default: "false"
+  install-radare2:
+    description: "Install radare2 via apt before running (set false if your runner already has it)."
+    required: false
+    default: "true"
+
+outputs:
+  passed:
+    description: "'true' if the gate passed (no new verified findings or regressions), else 'false'."
+    value: ${{ steps.gate.outputs.passed }}
+  report:
+    description: "The rendered CI gate report (markdown)."
+    value: ${{ steps.gate.outputs.report }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install radare2
+      if: inputs.install-radare2 == 'true'
+      shell: bash
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq radare2
+
+    - name: Install binoracle
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e "${{ github.action_path }}[elf]" r2pipe
+
+    - name: Run the CI gate
+      id: gate
+      shell: bash
+      run: |
+        set +e
+        GEN_TEST_FLAG=""
+        if [ "${{ inputs.gen-test }}" = "true" ]; then GEN_TEST_FLAG="--gen-test"; fi
+        binoracle ci-gate "${{ inputs.old }}" "${{ inputs.new }}" $GEN_TEST_FLAG -o /tmp/binoracle_ci_gate_report.md
+        code=$?
+        {
+          echo "report<<BINORACLE_CI_GATE_EOF"
+          cat /tmp/binoracle_ci_gate_report.md
+          echo "BINORACLE_CI_GATE_EOF"
+        } >> "$GITHUB_OUTPUT"
+        if [ "$code" -eq 0 ]; then
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+        fi
+        cat /tmp/binoracle_ci_gate_report.md >> "$GITHUB_STEP_SUMMARY"
+        exit $code

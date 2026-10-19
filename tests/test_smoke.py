@@ -422,6 +422,63 @@ def test_autoregress_catches_a_fix_that_did_not_actually_fix_anything():
     assert t.passed is False
 
 
+def test_ci_gate_passes_on_a_real_fix_no_llm_needed():
+    # "[M] CI action" del ROADMAP v0.5: la verdad PASS/FAIL para una GitHub Action. Audit
+    # (run_audit) necesita un LLM local, que un runner de CI generico no tiene -- este gate usa
+    # el pipeline grounded (run_regress, llm=None) en su lugar, confirmado SIN ningun backend
+    # LLM disponible. ret2win_patched es el fix real (canary anadido): debe PASAR -- anadir una
+    # proteccion nunca debe fallar el build.
+    import os
+    import pytest
+    from binoracle.config import Config
+    from binoracle.workflows.ci_gate import run_ci_gate, render_ci_gate
+    old, new = "samples/bin/ret2win", "samples/bin/ret2win_patched"
+    if not os.path.exists(old) or not os.path.exists(new):
+        pytest.skip("samples ret2win/ret2win_patched no compilados (samples/build.sh)")
+    r = run_ci_gate(old, new, Config())
+    assert r.ok, r.note
+    assert r.passed is True, r.fail_reasons
+    assert "PASA" in render_ci_gate(r)
+
+
+def test_ci_gate_fails_on_a_real_exploit_regression():
+    # Control: NEW es el MISMO binario vulnerable (ningun fix real) -- con --gen-test, el
+    # exploit verificado en OLD SIGUE verificando en NEW, y el gate debe FALLAR con el motivo
+    # correcto, nunca solo "paso porque se pudo volver a ejecutar".
+    import os
+    import pytest
+    from binoracle.config import Config
+    from binoracle.workflows.ci_gate import run_ci_gate, render_ci_gate
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    r = run_ci_gate(b, b, Config(), gen_test=True, techniques=["ret2win"])
+    assert r.ok, r.note
+    assert r.passed is False
+    assert any("ret2win" in reason for reason in r.fail_reasons)
+    assert "FALLA" in render_ci_gate(r)
+
+
+def test_ci_gate_does_not_fail_on_strengthened_mitigation_alone():
+    # Un mit_change de False->True (p.ej. Canary se ENCIENDE) no debe, por si solo, aparecer
+    # como motivo de fallo -- solo un DEBILITAMIENTO (True->False) debe hacerlo.
+    from binoracle.workflows.ci_gate import run_ci_gate
+    from binoracle.workflows.regress import RegressResult
+
+    class _FakeConfig:
+        pass
+
+    import binoracle.workflows.ci_gate as cg_mod
+    fake = RegressResult(old="a", new="b", mit_changes=["Canary: False -> True"])
+    orig = cg_mod.run_regress
+    cg_mod.run_regress = lambda old, new, config: fake
+    try:
+        r = run_ci_gate("a", "b", _FakeConfig())
+    finally:
+        cg_mod.run_regress = orig
+    assert r.ok and r.passed is True, r.fail_reasons
+
+
 def test_autoheap_render():
     from binoracle.workflows.autoheap import render_heap
     out = render_heap({"ok": True, "confirmed": True,

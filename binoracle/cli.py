@@ -830,6 +830,18 @@ def cmd_runs(args, config):
     _write_if(args.output, out)
 
 
+def cmd_ci_gate(args, config):
+    old = _require_binary(args.old); new = _require_binary(args.new)
+    from .workflows.ci_gate import run_ci_gate, render_ci_gate
+    r = run_ci_gate(old, new, config, gen_test=getattr(args, "gen_test", False))
+    out = render_ci_gate(r)
+    print(out)
+    _write_if(args.output, out)
+    if not r.ok:
+        sys.exit(2)       # el pipeline grounded no pudo correr -- no es un veredicto, es un error
+    sys.exit(0 if r.passed else 1)
+
+
 def cmd_regress(args, config):
     old = _require_binary(args.old); new = _require_binary(args.new)
     res = run_regress(old, new, config)
@@ -1504,6 +1516,15 @@ def build_parser() -> argparse.ArgumentParser:
     rn.add_argument("--diff", action="store_true", help="diff the two latest runs for this target")
     rn.add_argument("-o", "--output")
     rn.set_defaults(func=cmd_runs)
+
+    cg = sub.add_parser("ci-gate", help="CI gate for a GitHub Action: exit 0 (pass)/1 (fail) on "
+                        "new verified findings or security regressions between OLD and NEW builds")
+    cg.add_argument("old"); cg.add_argument("new")
+    cg.add_argument("--gen-test", action="store_true",
+                    help="also re-verify every autopwn technique that verified on OLD against "
+                         "NEW in the sandbox (slower, strongest signal)")
+    cg.add_argument("-o", "--output")
+    cg.set_defaults(func=cmd_ci_gate)
 
     fi = sub.add_parser("funcid", help="stripped-binary function ID: BinDiff-style "
                         "signature matching to recover names before analysis")

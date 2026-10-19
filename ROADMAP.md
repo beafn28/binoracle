@@ -348,8 +348,31 @@ The flagship direction: prove impact end to end.
   (`regression_targets`, `regression_diff`), and the web UI's dispatcher (`runs_targets`/
   `runs_diff` commands) -- same dispatcher-only integration `regress`/`funcid` already use, no
   dedicated catalog panel yet (same as those two).
-- **[M] CI action.** A `binoracle` GitHub Action that fails a PR on new *verified* findings or
-  regressions.
+- **[M] CI action.** Audited first: `run_audit` (the LLM agent loop) is the wrong engine for a
+  generic CI runner -- it needs a local LLM backend reachable, which most CI runners simply don't
+  have. `workflows/regress.py`'s `run_regress` already runs the grounded pipeline (triage + hunt
+  + angr verification) with `llm=None` between an OLD and a NEW build -- confirmed live it
+  genuinely works with zero LLM backend configured. Shipped: `workflows/ci_gate.py`,
+  `run_ci_gate(old, new, config, gen_test=False)` -- the missing PASS/FAIL verdict layer on top
+  of `run_regress`'s diffs (and, with `gen_test=True`, `autoregress_test`'s real exploit
+  re-verification). Deliberately narrow about what fails the build: a NEW finding only fails if
+  its verdict is `verified` (not merely `grounded`/`unverified`); a verdict escalating TO
+  `verified` on an existing finding fails too; a mitigation change only fails if it WEAKENS
+  something that was on (`True -> False`) -- turning a protection ON must never fail a build, only
+  turning one OFF; and (with `--gen-test`) any autopwn technique that verified on OLD and STILL
+  verifies on NEW is the strongest possible signal and always fails. Verified end-to-end against
+  real fixtures: `ret2win` (vulnerable) vs. `ret2win_patched` (same source + a canary) correctly
+  PASSES (adding a protection is a fix, not a regression); `ret2win` vs. itself, WITH
+  `--gen-test`, correctly FAILS with the exact reason (`ret2win` still verifies on NEW) -- not a
+  vacuous pass just because the pipeline could re-run. Wired into `binoracle ci-gate <old> <new>
+  [--gen-test]` (CLI) with a real process exit code (0 pass / 1 fail / 2 pipeline error, so a
+  shell `&&`/`if` or a CI step's own failure detection just works), and into an actual
+  distributable **`action.yml`** at the repo root (a composite GitHub Action other repos can
+  reference as `uses: beafn28/binoracle@<ref>` with `old`/`new`/`gen-test` inputs) that installs
+  radare2 + binoracle, runs the gate, writes the report to the job summary, and fails the step on
+  a non-zero exit -- the actual "fails a PR" mechanism the ROADMAP line asks for, not just a
+  library function. Covered by real tests in `tests/test_smoke.py`: the real pass/fail cases
+  above, plus a unit test confirming a mitigation being STRENGTHENED alone never trips the gate.
 - **[L] Cross-engagement knowledge base.** Reuse discovered gadgets and attack patterns
   across targets, anonymized, so each run makes the next one better.
 - **[M] Model quality.** Prompt-tuning for the agent loop, a planner+verifier multi-model
