@@ -144,6 +144,8 @@ class R2Oracle(Oracle):
                  [], lambda: self._checksec(), self.name),
             Tool("r2_hardening", "Detect MODERN hardening from symbols/imports: FORTIFY_SOURCE, AddressSanitizer, CFI, SafeStack, stack canary.",
                  [], lambda: self._hardening(), self.name),
+            Tool("r2_hardening_bypass_hints", "Turn modern-hardening detection into GROUNDED bypass-strategy hints tied to what THIS binary actually exposes (e.g. which raw/unwrapped calls FORTIFY misses, whether CFI lacks SafeStack so return-address ROP is untouched) -- heuristic/candidate, NOT an auto-bypass.",
+                 [], lambda: self._hardening_bypass_hints(), self.name),
             Tool("r2_rop", "Search ROP gadgets (optionally matching a regex like 'pop rdi').",
                  [ToolParam("filter", "optional substring/regex to match, e.g. 'pop rdi'", required=False)],
                  lambda filter=None: self._rop(filter), self.name),
@@ -292,25 +294,137 @@ class R2Oracle(Oracle):
         return ToolResult(True, "radare2: iI (checksec)", txt,
                           meta={"canary": canary, "nx": nx, "pic": pic, "arch": arch, "bits": bits, "format": fmt})
 
-    def _hardening(self) -> ToolResult:
+    # The actual _chk wrappers FORTIFY_SOURCE can emit, grouped by the raw/unsafe function each
+    # one replaces -- used both to DETECT fortify precisely (not a blunt "_chk" substring, which
+    # false-positives on __stack_chk_fail/__stack_chk_guard) and to name a SPECIFIC gap (a
+    # wrapper that is absent) instead of a vague "FORTIFY detected" claim.
+    _FORTIFY_WRAPPERS = {
+        "strcpy": "__strcpy_chk", "strcat": "__strcat_chk", "sprintf": "__sprintf_chk",
+        "vsprintf": "__vsprintf_chk", "memcpy": "__memcpy_chk", "memmove": "__memmove_chk",
+        "memset": "__memset_chk", "gets": "__gets_chk", "read": "__read_chk",
+        "fgets": "__fgets_chk", "snprintf": "__snprintf_chk", "vsnprintf": "__vsnprintf_chk",
+    }
+
+    _HARDENING_CHECKS = {
+        "AddressSanitizer": ["__asan_", "asan_report"],
+        "CFI (clang)":      ["__cfi_", "__cfi_check"],
+        "SafeStack":        ["__safestack", "safestack_"],
+        "Stack canary":     ["__stack_chk_fail", "__stack_chk_guard"],
+        "UBSan":            ["__ubsan_"],
+    }
+
+    def _detect_hardening(self):
+        """Simbolos realmente presentes (imports + simbolos de funcion) -- base compartida para
+        la deteccion cruda y para los hints de bypass, que citan los simbolos EXACTOS en vez de
+        una afirmacion generica."""
         syms = self._run("is~FUNC") + "\n" + self._run("ii")
-        checks = {
-            "FORTIFY_SOURCE": ["_chk"],                         # __memcpy_chk, __printf_chk...
-            "AddressSanitizer": ["__asan_", "asan_report"],
-            "CFI (clang)":      ["__cfi_", "__cfi_check"],
-            "SafeStack":        ["__safestack", "safestack_"],
-            "Stack canary":     ["__stack_chk_fail", "__stack_chk_guard"],
-            "UBSan":            ["__ubsan_"],
-            "RELRO/bind_now":   ["__libc_start_main"],          # informative only
-        }
-        lines = []
-        for name, markers in checks.items():
-            hit = any(mk in syms for mk in markers)
-            if name == "RELRO/bind_now":
-                continue
-            lines.append(f"{name:18s}: {'DETECTED' if hit else 'not detected'}")
+        detected = {name: any(mk in syms for mk in markers)
+                   for name, markers in self._HARDENING_CHECKS.items()}
+        # FORTIFY_SOURCE checked against the KNOWN wrapper names specifically (not a bare "_chk"
+        # substring), since that also matches __stack_chk_fail/__stack_chk_guard.
+        detected["FORTIFY_SOURCE"] = any(w in syms for w in self._FORTIFY_WRAPPERS.values())
+        return syms, detected
+
+    def _hardening(self) -> ToolResult:
+        syms, detected = self._detect_hardening()
+        lines = [f"{name:18s}: {'DETECTED' if hit else 'not detected'}"
+                 for name, hit in detected.items()]
         return ToolResult(True, "radare2: is/ii (modern hardening)", "\n".join(lines),
-                          meta={})
+                          meta={"detected": detected})
+
+    def _hardening_bypass_hints(self) -> ToolResult:
+        """Convierte la deteccion cruda en hints de bypass FUNDAMENTADOS (citando lo que
+        realmente se observo: que symbolos/funciones de fortify faltan, si hay canary/CFI a la
+        vez, etc.) -- siguen siendo heuristica/candidato (no auto-bypass), pero atados a lo que
+        este binario concreto expone, no un parrafo generico pegado para cualquier target."""
+        syms, detected = self._detect_hardening()
+        checksec = self._checksec()
+        canary_on = (checksec.meta or {}).get("canary", "").lower() == "true"
+        hints = []
+
+        if detected.get("FORTIFY_SOURCE"):
+            present = {raw: wrapper for raw, wrapper in self._FORTIFY_WRAPPERS.items() if wrapper in syms}
+            missing = [raw for raw, wrapper in self._FORTIFY_WRAPPERS.items()
+                      if wrapper not in syms and raw in syms]
+            if missing:
+                hints.append(
+                    "FORTIFY_SOURCE: wrapped=[" + ", ".join(sorted(present)) + "] but the binary "
+                    "ALSO calls the raw, UNWRAPPED function(s) [" + ", ".join(sorted(missing)) +
+                    "] directly -- those calls get no `_chk` bounds check at all (the compiler "
+                    "could not prove a destination size, or the call predates the FORTIFY "
+                    "annotation). Target the raw call, not the wrapped ones.")
+            else:
+                hints.append(
+                    "FORTIFY_SOURCE: every risky call seen also has a `_chk` wrapper present -- "
+                    "the bounds check only aborts when the DESTINATION size is known at compile "
+                    "time AND exceeded; it does nothing for a logically-sized but "
+                    "attacker-controlled index/offset bug (e.g. write-what-where via an array "
+                    "index) or a heap/UAF primitive. Look there instead of a flat buffer overrun.")
+
+        if detected.get("CFI (clang)"):
+            if not detected.get("SafeStack"):
+                hints.append(
+                    "CFI (clang forward-edge): __cfi_check is present but SafeStack/shadow-stack "
+                    "markers are NOT -- clang's CFI instruments indirect call/jump TARGETS, it "
+                    "does not protect the return address on the normal stack. A classic ROP "
+                    "overwrite of a saved return address is a plausible bypass path entirely "
+                    "orthogonal to CFI; only an indirect call/vtable-dispatch hijack needs to "
+                    "satisfy CFI's type check (land on a function with a COMPATIBLE "
+                    "signature already in its type set -- a type-confusion angle, not a "
+                    "flat redirect to an arbitrary gadget).")
+            else:
+                hints.append(
+                    "CFI + SafeStack together: both indirect-call targets and the return address "
+                    "are checked/isolated. A bypass needs either a type-confused indirect-call "
+                    "target that still satisfies CFI's check, or a way to corrupt data ON THE "
+                    "UNSAFE STACK that SafeStack itself relocates pointers from (see the "
+                    "SafeStack hint below) -- a flat stack-overwrite is unlikely to reach "
+                    "anything that matters here.")
+
+        if detected.get("SafeStack"):
+            hints.append(
+                "SafeStack: only values whose address is taken / that can't be proven not to "
+                "escape (arrays, big locals, anything &'d) live on the UNSAFE stack an overflow "
+                "can still reach; return addresses, spilled registers and non-escaping locals "
+                "move to a separate, normally-not-overflowable safe stack. The bypass angle is a "
+                "local on the UNSAFE side that is itself a pointer (a local function-pointer "
+                "array, a local struct with a vtable-like field) -- overflow INTO that, not "
+                "toward the return address, which this overflow can no longer reach directly.")
+
+        if detected.get("AddressSanitizer"):
+            hints.append(
+                "AddressSanitizer: rarely a PRODUCTION mitigation (it is a bug-finding build, "
+                "usually absent from release binaries) -- if you are seeing this, double check "
+                "this is really the deployed target. Its real effect on exploitation is "
+                "layout, not blocking: redzones around every allocation mean heap-overflow "
+                "offsets measured against a non-ASan build will be WRONG here; re-derive them "
+                "dynamically against this exact binary (heap_dump_state) rather than reusing "
+                "assumed tcache/fastbin offsets.")
+
+        if detected.get("UBSan"):
+            hints.append(
+                "UBSan: traps on behavior the C STANDARD calls undefined (signed overflow, "
+                "misaligned access, etc.) -- it does not catch a bug that is undefined-behavior-"
+                "free by the standard but still attacker-exploitable, e.g. an out-of-bounds "
+                "ARRAY INDEX the program never range-checks itself (plain pointer arithmetic "
+                "into memory the C standard doesn't forbid addressing) needs the separate "
+                "`-fsanitize=bounds`/`array-bounds` check, which this generic marker does not "
+                "distinguish from the default set. A write-what-where via an unchecked index is "
+                "a realistic path UBSan's default build leaves untouched.")
+
+        if canary_on and not any("canary" in h.lower() or "leak" in h.lower() for h in hints):
+            hints.append(
+                "Stack canary: blocks a LINEAR overflow through the canary, but does nothing "
+                "once the canary's own value is known -- a format-string/OOB-read leak feeding "
+                "the same overflow (see autocanary.py / heap_confirm_* style leak-then-overwrite "
+                "chaining) remains a direct, grounded bypass path, not a hint.")
+
+        if not hints:
+            return ToolResult(True, "r2_hardening_bypass_hints", "(no modern hardening detected -- nothing to reason about)",
+                              meta={"detected": detected, "hints": []})
+        body = "\n\n".join(f"- {h}" for h in hints)
+        return ToolResult(True, "radare2 symbols + checksec -> grounded bypass hints (heuristic, NOT auto-bypass)",
+                          body, meta={"detected": detected, "hints": hints})
 
     def _rop(self, filt=None) -> ToolResult:
         # /Rl lists rop gadgets one per line; radare needs analysis off is fine.

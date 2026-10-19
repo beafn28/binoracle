@@ -405,7 +405,8 @@ def run_command(payload: dict) -> dict:
     reg = _reg(binary)
 
     if cmd == "checksec":
-        return {"ok": True, "text": _tool_text(reg, "r2_checksec") + "\n\n" + _tool_text(reg, "r2_hardening")}
+        return {"ok": True, "text": _tool_text(reg, "r2_checksec") + "\n\n" + _tool_text(reg, "r2_hardening")
+                           + "\n\n" + _tool_text(reg, "r2_hardening_bypass_hints")}
     if cmd == "dashboard":
         cs = reg.get("r2_checksec").run()
         m = cs.meta if cs.ok else {}

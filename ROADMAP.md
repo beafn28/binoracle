@@ -66,8 +66,23 @@ Close the items that shipped in 0.1.0 as "light" (heap, ROP, infoleak, CFI).
   to compose by hand. New fixture `samples/bin/leakchain`. A canary-leak variant of this same
   idea -- format-string `%p`/`%s` leak feeding a same-process overflow -- already shipped
   earlier as `workflows/autocanary.py`'s Strategy B, before this ROADMAP item was opened.)
-- **[S-M] CFI / SafeStack / ASan reasoning.** Turn detection into grounded bypass-strategy
-  hints (still not auto-bypass), tied to the observed hardening.
+- **[S-M] CFI / SafeStack / ASan reasoning.** (shipped: `oracles/static_r2.py` --
+  `r2_hardening_bypass_hints`, a new tool next to the existing raw `r2_hardening` detector.
+  Heuristic/candidate by design (no execution involved), but tied to what THIS binary actually
+  exposes, not a canned paragraph: for FORTIFY_SOURCE it names the SPECIFIC raw/unwrapped calls
+  present alongside the `_chk` wrappers (the real gap, not "FORTIFY detected"); for CFI it notes
+  that clang's forward-edge check never touches the return address, so a classic ROP overwrite
+  is orthogonal to it unless SafeStack/a shadow stack is ALSO present; for SafeStack it points
+  at the unsafe-stack/pointer-escape angle a flat overflow still has; for ASan it flags that
+  measured heap offsets won't transfer (redzones) and that it is rarely a production
+  mitigation; for UBSan it names the standards-defined-behavior gap (an unchecked array index
+  is fully-defined C, so the default UBSan build never catches it) and for a detected canary
+  points back at this sprint's own `autoleakchain.py`/`autocanary.py` leak-then-overwrite
+  pattern as the concrete bypass, instead of a vague "need a leak". Also fixed a real bug found
+  while building this: the original FORTIFY_SOURCE check was a bare `"_chk"` substring, which
+  also matched `__stack_chk_fail`/`__stack_chk_guard` -- any binary with a canary but NO real
+  FORTIFY wrapper was silently mis-reported as FORTIFY_SOURCE=DETECTED; now checked against the
+  actual known wrapper symbol set.)
 
 ## v0.3 - Verified exploits, not just verified reachability
 

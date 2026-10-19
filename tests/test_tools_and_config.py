@@ -12543,3 +12543,75 @@ def test_investigate_cve_skips_cache_when_hints_given(monkeypatch, tmp_path):
                              on_step=lambda m: None, lang="es",
                              hints={"source_url": "some-slug"})
     assert calls["n"] == 2   # con hints, nunca se mira la cache
+
+
+def test_r2_hardening_bypass_hints_grounded_on_real_binary():
+    # "[S-M] CFI / SafeStack / ASan reasoning" (ROADMAP): la deteccion cruda (r2_hardening) solo
+    # dice DETECTED/not detected; r2_hardening_bypass_hints debe atar cada hint a lo que ESTE
+    # binario concreto expone -- no un parrafo generico. samples/bin/staticrop (estatico) tiene
+    # __stack_chk_fail (canary) Y wrappers _chk de FORTIFY para memcpy/memmove/memset, pero
+    # TAMBIEN llama a read/gets/fgets/strcpy/sprintf sin wrapper -- el hint de FORTIFY debe
+    # nombrar exactamente esos huecos, no limitarse a "FORTIFY detectado".
+    import os
+    import shutil
+    import pytest
+    if not shutil.which("r2") and not shutil.which("radare2"):
+        pytest.skip("r2/radare2 no disponible")
+    binp = "samples/bin/staticrop"
+    if not os.path.exists(binp):
+        pytest.skip("sample staticrop no compilado (samples/build.sh)")
+    from binoracle.oracles.static_r2 import R2Oracle
+    oc = R2Oracle(binp)
+    tool = {t.name: t for t in oc.tools()}["r2_hardening_bypass_hints"]
+    r = tool.run()
+    assert r.ok, r.error
+    assert r.meta["detected"]["FORTIFY_SOURCE"] is True
+    assert r.meta["detected"]["Stack canary"] is True
+    fortify_hint = next(h for h in r.meta["hints"] if "FORTIFY_SOURCE" in h)
+    assert "read" in fortify_hint or "gets" in fortify_hint  # nombra el hueco real, no generico
+    canary_hint = next(h for h in r.meta["hints"] if "canary" in h.lower())
+    assert "leak" in canary_hint.lower()
+
+
+def test_r2_hardening_bypass_hints_no_false_fortify_from_stack_chk_substring():
+    # Bug real encontrado al construir esto: el marcador original de FORTIFY_SOURCE era un bare
+    # substring "_chk", que tambien matchea "__stack_chk_fail"/"__stack_chk_guard" -- CUALQUIER
+    # binario con canary (sin fortify real) se marcaba como FORTIFY_SOURCE=DETECTED por error.
+    # samples/bin/canary tiene canary pero (siendo dinamico, sin -D_FORTIFY_SOURCE) ningun
+    # wrapper _chk real -- no debe aparecer ningun hint de FORTIFY.
+    import os
+    import shutil
+    import pytest
+    if not shutil.which("r2") and not shutil.which("radare2"):
+        pytest.skip("r2/radare2 no disponible")
+    binp = "samples/bin/canary"
+    if not os.path.exists(binp):
+        pytest.skip("sample canary no compilado (samples/build.sh)")
+    from binoracle.oracles.static_r2 import R2Oracle
+    oc = R2Oracle(binp)
+    tool = {t.name: t for t in oc.tools()}["r2_hardening_bypass_hints"]
+    r = tool.run()
+    assert r.ok, r.error
+    assert r.meta["detected"]["FORTIFY_SOURCE"] is False
+    assert not any("FORTIFY" in h for h in r.meta["hints"])
+    assert r.meta["detected"]["Stack canary"] is True
+
+
+def test_r2_hardening_bypass_hints_empty_without_any_hardening():
+    # ret2win: NX on, pero sin canary/FORTIFY/CFI/SafeStack/ASan/UBSan -- no hay nada que
+    # razonar, y no debe inventarse un hint para algo no detectado.
+    import os
+    import shutil
+    import pytest
+    if not shutil.which("r2") and not shutil.which("radare2"):
+        pytest.skip("r2/radare2 no disponible")
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win no compilado")
+    from binoracle.oracles.static_r2 import R2Oracle
+    oc = R2Oracle(binp)
+    tool = {t.name: t for t in oc.tools()}["r2_hardening_bypass_hints"]
+    r = tool.run()
+    assert r.ok, r.error
+    assert r.meta["hints"] == []
+    assert not any(r.meta["detected"].values())
