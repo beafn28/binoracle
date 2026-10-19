@@ -134,6 +134,9 @@ def check_tools() -> list[ToolStatus]:
                          "extraccion de firmware/blobs (carve de imagenes empotradas)"))
 
     # --- emulacion / instrumentacion dinamica ---
+    st.append(ToolStatus("afl++", "dynamic", bool(_which("afl-fuzz")), _which("afl-fuzz"),
+                         "fuzzing guiado por cobertura (autofuzz_afl: build instrumentado + "
+                         "crashes retroalimentados al oraculo dinamico)"))
     st.append(ToolStatus("qemu-user", "dynamic",
                          bool(_which("qemu-x86_64") or _which("qemu-aarch64") or _which("qemu-mips")),
                          _which("qemu-x86_64") or _which("qemu-aarch64") or _which("qemu-mips"),

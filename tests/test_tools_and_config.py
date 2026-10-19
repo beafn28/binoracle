@@ -1523,6 +1523,48 @@ def test_autofuzz_render_and_result():
     assert len(_cyclic(100)) == 100
 
 
+def test_autofuzz_afl_finds_and_confirms_a_real_crash():
+    # "[M] Fuzzing integration" del ROADMAP v0.4: a diferencia de autofuzz.py (prueba una lista
+    # fija de payloads con forma de vulnerabilidad conocida) o fuzz.py (solo imprime una
+    # plantilla/comando para que el usuario lo corra el mismo), este modulo CONSTRUYE un
+    # harness instrumentado con afl-clang-fast y CORRE afl-fuzz de verdad (guiado por
+    # cobertura), y retroalimenta cada crash al oraculo dinamico (gdb) para confirmarlo con
+    # registros/backtrace reales -- no solo el codigo de salida que afl ya vio.
+    import os
+    import shutil
+    import pytest
+    from binoracle.workflows.autofuzz_afl import afl_available, autofuzz_afl
+    b, src = "samples/bin/ret2win", "samples/src/ret2win.c"
+    if not os.path.exists(b) or not os.path.exists(src):
+        pytest.skip("sample ret2win/fuente no disponibles")
+    if not afl_available() or not shutil.which("afl-clang-fast") or not shutil.which("gdb"):
+        pytest.skip("afl-fuzz/afl-clang-fast/gdb no disponibles (apt install afl++ gdb)")
+
+    r = autofuzz_afl(b, source=src, budget_s=30)
+    assert r.ok, r.note
+    assert r.mode == "instrumented"
+    assert r.crashes, f"afl-fuzz no encontro ningun crash en 30s contra un gets() sin cotas: {r.note}"
+    assert r.confirmed_crashes >= 1, "ningun crash de afl se reprodujo bajo gdb"
+
+
+def test_autofuzz_afl_degrades_cleanly_without_qemu_support():
+    # Sin fuente (modo QEMU) y sin el helper afl-qemu-trace que el paquete afl++ de esta
+    # distro no trae compilado: debe degradar honestamente, no fingir que corrio algo.
+    import os
+    import pytest
+    from binoracle.workflows.autofuzz_afl import afl_available, _afl_qemu_available, autofuzz_afl
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no disponible")
+    if not afl_available():
+        pytest.skip("afl-fuzz no disponible")
+    if _afl_qemu_available():
+        pytest.skip("afl-qemu-trace SI esta disponible en este entorno -- este test cubre el caso contrario")
+    r = autofuzz_afl(b, source=None, budget_s=5)
+    assert r.ok is False
+    assert "qemu" in r.note.lower()
+
+
 def test_autofuzz_expand_tokens():
     # Regresion: _expand usa `re` (PAD/CYCLIC) - un import faltante rompia TODO caso dirigido
     # silenciosamente (capturado por el except generico de directed_fuzz). Debe expandir de verdad.

@@ -233,8 +233,27 @@ The flagship direction: prove impact end to end.
   binary against itself (a fix that did nothing) correctly FAILS the test instead of reporting
   a false pass. Wired into `binoracle regress --gen-test` (CLI) and the web UI's regress
   command (opt-in: slower, drives real `autopwn` runs).
-- **[M] Fuzzing integration.** Auto-build harnesses, drive AFL++/libFuzzer, and feed crashes
-  back into the verify/triage loop (coverage-guided).
+- **[M] Fuzzing integration.** Audited first: `workflows/autofuzz.py` only tries a short fixed
+  list of KNOWN vulnerability-shaped payloads (cyclic patterns, `%p`/`%n`, extreme integers) --
+  no real coverage feedback, no mutation engine; `workflows/fuzz.py` only prints a harness
+  template or an afl-fuzz command LINE for the human to run themselves. Neither is "drive
+  AFL++... coverage-guided". Shipped now: `workflows/autofuzz_afl.py` -- actually BUILDS (with
+  `afl-clang-fast`, given the C source) and RUNS `afl-fuzz` for a real time budget, then feeds
+  every crash it saves back into `dynamic_dbg.DebuggerOracle`'s `dbg_run_input` for confirmation
+  (registers + backtrace from a real gdb/lldb run, not just "afl said SIGSEGV"). Verified
+  end-to-end against `samples/src/ret2win.c`'s unbounded `gets()`: afl-fuzz found a real
+  SIGSEGV-crashing input via genuine coverage-guided mutation in under 30s, and binoracle's own
+  gdb oracle reproduced and confirmed it (the crash backtrace even showed `win()`, a bonus
+  signal of RIP control). A real snag hit and fixed: this project's own intentionally-vulnerable
+  sample corpus uses classic unsafe calls (`gets()`) that modern clang treats as a hard
+  `-Werror`-class failure (not a mere warning, so `-w` alone doesn't help) under its default C
+  standard -- fixed by building with `-std=gnu89`, matching the old-C assumptions these samples
+  were written against. Black-box/QEMU mode (`afl-fuzz -Q`, binary only, no source needed) is
+  implemented too, but degrades honestly as NOT_APPLICABLE here: confirmed live that the stock
+  Ubuntu `afl++` package does not ship `afl-qemu-trace` built, so that path needs either a
+  source file (the instrumented path this increment actually verified) or the user building
+  AFL++'s own QEMU support themselves. Wired into `binoracle fuzz --run` (CLI, alongside the
+  existing template-printing default) and as its own MCP tool, `autofuzz_afl`.
 - **[M] Stripped-binary function ID.** Signature / BinDiff-style matching to recover names in
   stripped targets before analysis.
 - **[S] More formats & backends.** Raw shellcode analysis, Go/Rust binary heuristics. ~~A

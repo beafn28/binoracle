@@ -36,6 +36,7 @@ from .workflows.enrich import enrich_findings, executive_summary
 from .workflows.rop import build_rop_chain
 from .workflows.shellcode import gen_shellcode
 from .workflows.fuzz import generate_fuzz
+from .workflows.autofuzz_afl import autofuzz_afl, render_autofuzz_afl
 from .workflows.fmtstring import fmtstring_help
 from .workflows.autopoc import autopoc, render_poc
 from .workflows.autopwn import autopwn, render_autopwn
@@ -497,6 +498,10 @@ def cmd_shellcode(args, config):
 
 def cmd_fuzz(args, config):
     binary = _require_binary(args.binary)
+    if getattr(args, "run", False):
+        r = autofuzz_afl(binary, source=args.source, budget_s=args.budget_s)
+        print(render_autofuzz_afl(r))
+        return
     print(generate_fuzz(binary, target_func=args.func, mode=args.mode))
 
 
@@ -1268,6 +1273,14 @@ def build_parser() -> argparse.ArgumentParser:
     fz.add_argument("binary")
     fz.add_argument("--mode", default="afl", choices=["afl", "libfuzzer"])
     fz.add_argument("--func", help="target function for the libfuzzer harness")
+    fz.add_argument("--run", action="store_true",
+                    help="actually BUILD and DRIVE afl-fuzz (coverage-guided) instead of just "
+                         "printing a template, and feed any crash found back into "
+                         "dbg_run_input for confirmation")
+    fz.add_argument("--source", help="C source to auto-build with afl-clang-fast (with --run); "
+                                     "without it, falls back to QEMU/black-box mode")
+    fz.add_argument("--budget-s", type=int, default=60, dest="budget_s",
+                    help="afl-fuzz time budget in seconds (with --run)")
     fz.set_defaults(func=cmd_fuzz)
 
     fs = sub.add_parser("fmtstring", help="format-string leak/write helper (infoleak)")

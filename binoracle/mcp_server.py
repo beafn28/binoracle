@@ -1112,6 +1112,24 @@ def _h_autopwn(args):
     return render_autopwn(r)
 
 
+@_tool("autofuzz_afl", "Fuzzing integration: construye un harness instrumentado con "
+       "afl-clang-fast (si se da el fuente C) o usa modo QEMU/caja negra sobre el binario, "
+       "corre afl-fuzz de verdad (guiado por cobertura) durante budget_s segundos, y "
+       "retroalimenta cada crash encontrado al oraculo dinamico (gdb/lldb) para confirmarlo "
+       "con registros y backtrace reales, no solo el codigo de salida de afl. AUTORIZADO/CTF.",
+       {"binary": {"type": "string", "description": "ruta al ELF"},
+        "source": {"type": "string", "description": "fuente .c (opcional, para build "
+                                                      "instrumentado -- sin el, modo QEMU)"},
+        "budget_s": {"type": "integer", "description": "presupuesto de tiempo de afl-fuzz en "
+                                                        "segundos (def. 60)"}}, ["binary"])
+def _h_autofuzz_afl(args):
+    from .workflows.autofuzz_afl import autofuzz_afl, render_autofuzz_afl
+    b = _binary(args)
+    r = autofuzz_afl(b, source=(args or {}).get("source"),
+                     budget_s=int((args or {}).get("budget_s", 60)))
+    return render_autofuzz_afl(r)
+
+
 def _exploit_tool(name, desc, importer):
     @_tool(name, desc + " AUTORIZADO/CTF; verifica por ejecucion y degrada honestamente.",
            {"binary": {"type": "string", "description": "ruta al ELF"}}, ["binary"])
