@@ -169,8 +169,29 @@ The flagship direction: prove impact end to end.
   depend on stdin at all. Known cost: gdb single-stepping the whole real run (including libc
   startup) is slow -- budget generously (60-150s is typical for a small CTF binary). Still
   open: indirect call/jump hijacks, heap-pointer-controlled crashes, and PIE binaries.
-- **[M] Windows PE dynamic + symbolic.** Wine sandbox for `dbg_run_input`, and SimProcedures
-  for the MSVCRT/mingw runtime so `angr_reachable` works properly on PE.
+- **[M] Windows PE dynamic + symbolic.** Dynamic half shipped: `workflows/autopoc_pe.py` --
+  the direct PE analogue of `autopoc.py`'s ELF ret2win, run under Wine and verified by
+  execution, not inferred. `pwntools`' `ELF()`/`ROP()` don't load PE, so the win()-like symbol
+  is found with plain `nm` (binutils reads COFF/PE symbol tables as readily as ELF -- no
+  mingw-prefixed binutils needed) and the payload is built by hand with an offset sweep, same
+  idea as the ELF version's own offset discovery. `autopwn()` now detects PE up front and
+  routes straight to this path, skipping every other combo (they all assume ELF -- pwntools
+  `ELF()`/`ROP()`, r2 checksec read as NX/PIE/canary, etc.) instead of trying to coax each one
+  into tolerating a format it was never built for. One real snag hit and fixed while building
+  this: wrapping the Wine subprocess with this project's usual rlimit preexec (the same
+  `RLIMIT_AS` cap every native-sandbox driver uses) made wine fail outright
+  ("could not exec wineserver") -- confirmed live that ~2GB, which is generous for a normal
+  pwntools target, is nowhere near enough for the address space Wine reserves to emulate
+  Windows' own layout even when little of it is actually committed; fixed by dropping the
+  memory/process rlimits for this one driver and keeping only the network-namespace isolation
+  and the subprocess timeout. Verified end-to-end against a new fixture, `samples/bin/
+  win_chall.exe` (built with `gcc-mingw-w64-x86-64`, same no-canary linear-overflow shape as
+  `ret2win.c`): offset 72 (identical to the ELF build -- the x86-64 stack ABI doesn't care
+  which OS it's targeting) redirects to `win()`, which prints its marker and spawns `cmd.exe`
+  under Wine. Scope: no ASLR/DEP bypass, no SEH-based hijack, no canary handling -- this is
+  the ret2win case only. Still open, and NOT part of this increment: the symbolic half
+  (MSVCRT/mingw `SimProcedure`s so `angr_reachable` resolves PE externals instead of choking on
+  unmodeled calls).
 
 ## v0.4 - Scale, formats, n-day
 

@@ -1212,6 +1212,11 @@ _exploit_tool("autostash", "tcache stashing unlink: un stash de smallbin->tcache
               "disparo via calloc) -> alloc en direccion elegida -> hijack -> shell. Verificado en sandbox.",
               lambda: (__import__("binoracle.workflows.autostash", fromlist=["autostash"]).autostash,
                        __import__("binoracle.workflows.autostash", fromlist=["render_stash"]).render_stash))
+_exploit_tool("autopoc_pe", "Windows PE: ret2win verificado ejecutando bajo Wine (offset lineal "
+              "-> win() encontrado con nm). No es ASLR/DEP/SEH bypass, solo el analogo directo "
+              "del ret2win de ELF para un binario PE32+ sin canary.",
+              lambda: (__import__("binoracle.workflows.autopoc_pe", fromlist=["autopoc_pe"]).autopoc_pe,
+                       __import__("binoracle.workflows.autopoc_pe", fromlist=["render_poc_pe"]).render_poc_pe))
 _exploit_tool("autoropmprotect", "ROP builder v2 (bypass NX sin leak): un read() previo deja "
               "shellcode en un buffer .bss fijo conocido; el overflow hace `mprotect(buf, "
               "PAGE, RWX)` via ROP y salta al buffer -> shellcode real corre -> shell. Necesita "

@@ -139,6 +139,53 @@ def test_patchdiff_parses_similarity():
     assert "0.833" in render_patchdiff(r)
 
 
+def test_autopoc_pe_verifies_ret2win_under_wine():
+    # "[M] Windows PE dynamic + symbolic" del ROADMAP v0.3, mitad dinamica: ret2win sobre un
+    # PE32+ verificado ejecutando bajo Wine (no una suposicion). win_chall.exe tiene el mismo
+    # patron que ret2win.c (overflow lineal + win() sin canary); el offset de la direccion de
+    # retorno (72 = 64 de buf + 8 de saved rbp) coincide con la version ELF porque la ABI de
+    # pila de x86-64 es la misma independientemente del SO.
+    import os
+    import shutil
+    import pytest
+    from binoracle.workflows.autopoc_pe import autopoc_pe, wine_available, find_win_pe, is_pe
+    b = "samples/bin/win_chall.exe"
+    if not os.path.exists(b):
+        pytest.skip("sample win_chall.exe no compilado (samples/build.sh; necesita mingw)")
+    if not wine_available():
+        pytest.skip("wine no instalado (apt install wine)")
+    assert is_pe(b) is True
+    assert find_win_pe(b) is not None
+
+    r = autopoc_pe(b)
+    assert r.get("ok") and r.get("verified"), f"ret2win (PE/Wine) no verificado: {r.get('note')}"
+    assert "off=72" in r.get("detail", "")
+
+
+def test_autopoc_pe_degrades_cleanly_on_non_pe():
+    from binoracle.workflows.autopoc_pe import autopoc_pe
+    r = autopoc_pe("samples/bin/ret2win")
+    assert r.get("ok") is False
+    assert "MZ" in r.get("note", "")
+
+
+def test_autopwn_routes_pe_binaries_to_wine_ret2win():
+    # autopwn() debe desviarse a ret2win-pe (Wine) para un PE, sin intentar el resto de combos
+    # que asumen ELF (checksec de r2, pwntools ELF()/ROP(), etc.).
+    import os
+    import pytest
+    from binoracle.workflows.autopoc_pe import wine_available
+    b = "samples/bin/win_chall.exe"
+    if not os.path.exists(b):
+        pytest.skip("sample win_chall.exe no compilado")
+    if not wine_available():
+        pytest.skip("wine no instalado")
+    from binoracle.workflows.autopwn import autopwn
+    r = autopwn(b)
+    assert r.attempts and r.attempts[0][0] == "ret2win-pe"
+    assert r.win_exploit is True
+
+
 def test_autopoc_script_and_render():
     from binoracle.workflows.autopoc import build_script, render_poc, PoCResult
     sc = build_script("/tmp/x", 72, 0x401176, 0x401016)

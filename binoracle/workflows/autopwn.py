@@ -37,7 +37,6 @@ class AutopwnResult:
 def autopwn(binary: str, config=None, store=None,
             on_step: Optional[Callable[[str], None]] = None, run: bool = True, llm=None,
             techniques: Optional[List[str]] = None) -> AutopwnResult:
-    reg = build_registry(binary)
     res = AutopwnResult(binary=binary)
 
     def log(m: str):
@@ -51,6 +50,27 @@ def autopwn(binary: str, config=None, store=None,
 
     def want(t: str) -> bool:
         return (not techniques) or (t in techniques)
+
+    # PE (Windows): todo lo demas en esta funcion asume ELF (pwntools ELF()/ROP(), checksec de
+    # r2 interpretado como NX/PIE/canary de ELF, etc.) -- en vez de intentar colar un formato
+    # distinto por cada combo, se desvia aqui a su propio camino (ret2win bajo Wine).
+    from .autopoc_pe import autopoc_pe, is_pe
+    if is_pe(binary):
+        res.arch, res.bits = "x86", "64"
+        log("[recon] formato PE detectado -> ret2win bajo Wine (autopoc_pe)")
+        if run and want("ret2win"):
+            try:
+                rp = autopoc_pe(binary, run=run)
+                verdict = True if rp.get("verified") else (None if rp.get("ok") else False)
+                res.attempts.append(("ret2win-pe", verdict, rp.get("detail") or rp.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rp.get("verified"))
+                log(f"[combo] ret2win (PE/Wine) -> {'SHELL VERIFICADA' if rp.get('verified') else 'no verificado'}")
+                learn(f"ret2win-pe verified={rp.get('verified')} {rp.get('detail','')}")
+            except Exception as e:
+                res.attempts.append(("ret2win-pe", False, str(e)))
+        return res
+
+    reg = build_registry(binary)
 
     # 1) recon facts -> feed the KB
     cs = reg.get("r2_checksec").run()

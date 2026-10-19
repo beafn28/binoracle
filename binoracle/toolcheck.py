@@ -147,6 +147,9 @@ def check_tools() -> list[ToolStatus]:
                          "instrumentacion dinamica: hooks en runtime (anti-debug, tracing)"))
     st.append(ToolStatus("valgrind", "dynamic", bool(_which("valgrind")), _which("valgrind"),
                          "memcheck: detecta UAF, double-free, OOB y leaks en dinamico"))
+    st.append(ToolStatus("wine", "dynamic", bool(_which("wine") or _which("wine64")),
+                         _which("wine") or _which("wine64"),
+                         "ejecutar PE32+ en Linux (autopoc_pe: ret2win verificado en Windows)"))
 
     # --- exploit / heap / libc ---
     st.append(ToolStatus("seccomp-tools", "exploit", bool(_which("seccomp-tools")), _which("seccomp-tools"),
