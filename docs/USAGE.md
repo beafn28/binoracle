@@ -171,6 +171,21 @@ pip install -e . && bash samples/build.sh && \
 
 ---
 
+## 8. Sitio de documentación estático (tutorial guiado incluido)
+
+```bash
+pip install -e ".[docs]"
+python3 docs/build_site.py
+# abre docs/site/index.html en tu navegador
+```
+
+Genera un sitio HTML estático (sin servidor, sin JS) a partir de `docs/TUTORIAL.md` (un recorrido
+guiado, paso a paso, por el corpus de `samples/` -- de `triage` a un exploit verificado), más
+`USAGE.md`, `ENGINE.md` y `ROADMAP.md`. `docs/site/` no se versiona (es un artefacto generado);
+reconstrúyelo cuando cambie cualquier `.md` fuente.
+
+---
+
 ## Plataformas soportadas
 
 | Plataforma | Núcleo estático (lectores) | Verificación de exploits por ejecución |

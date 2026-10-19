@@ -3848,3 +3848,48 @@ def test_quiet_pwn_has_real_host_process_callers():
     except Exception:
         pytest.skip("pwntools no instalado -- _HAVE_PWN=False es la respuesta correcta, nada que verificar")
     assert _HAVE_PWN is True, "rop.py no detecto pwntools -- revisa que binoracle._quiet_pwn exista"
+
+
+def test_docs_site_builds_real_valid_html_from_every_source_page():
+    # "A docs site with a guided tutorial over the samples/ corpus" del ROADMAP.md. Corre el
+    # generador DE VERDAD (docs/build_site.py) contra las fuentes reales del repo (no fixtures
+    # sinteticas) y confirma que cada pagina (incluido el tutorial) sale como HTML valido con
+    # contenido real -- no solo que el script "no lanzo excepcion".
+    import glob
+    import importlib.util
+    import os
+    import shutil
+    import tempfile
+    from html.parser import HTMLParser
+    import pytest
+    if importlib.util.find_spec("markdown") is None:
+        pytest.skip("markdown no instalado (pip install -e '.[docs]')")
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    site_dir = os.path.join(root, "docs", "site")
+    pre_existing = os.path.isdir(site_dir)
+    try:
+        import subprocess
+        r = subprocess.run(["python3", os.path.join(root, "docs", "build_site.py")],
+                           cwd=root, capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+
+        pages = sorted(glob.glob(os.path.join(site_dir, "*.html")))
+        assert len(pages) == 5, f"se esperaban 5 paginas (index + 4), se generaron: {pages}"
+
+        class _Strict(HTMLParser):
+            def error(self, message):
+                raise AssertionError(message)
+
+        for p in pages:
+            with open(p, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert len(content) > 500, f"{p} parece vacio/truncado"
+            _Strict().feed(content)   # lanza si el HTML esta mal formado
+
+        with open(os.path.join(site_dir, "tutorial.html"), "r", encoding="utf-8") as f:
+            tut = f.read()
+        assert "<pre>" in tut and "ret2win" in tut and "SHELL VERIFICADA" in tut
+    finally:
+        if not pre_existing and os.path.isdir(site_dir):
+            shutil.rmtree(site_dir)

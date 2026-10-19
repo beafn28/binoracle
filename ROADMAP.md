@@ -455,7 +455,24 @@ The flagship direction: prove impact end to end.
   `tests/test_smoke.py`: `_quiet_angr` confirmed to pin all three loggers to ERROR, an AST-based
   check that all three angr-importing modules call the shared helper, and the restored
   `_quiet_pwn` coverage above.
-- A docs site with a guided tutorial over the `samples/` corpus.
+- ~~A docs site with a guided tutorial over the `samples/` corpus.~~ Shipped `docs/TUTORIAL.md`:
+  a progressive, hands-on walkthrough of the practice corpus -- `triage` first (grounded facts,
+  no execution), then `ret2win` (no canary, verified), `canleak` (canary ON but with a genuine
+  leak -- the right bypass technique is chosen automatically because the canary is detected,
+  verified), `fmtstring` (no gift function at all, format-string GOT overwrite to a shell,
+  verified), and an HONEST heap negative (`notes_heap` under the generic heap prober genuinely
+  doesn't trigger with its fixed test inputs -- the tutorial explains why that's the CORRECT
+  behavior, not a bug, and points to the dedicated per-technique heap fixtures that DO verify).
+  Every command's output in the tutorial is copy-pasted from an actual run against the real
+  compiled sample, not invented. Shipped `docs/build_site.py`: an actual static-site generator
+  (needs only the `markdown` package, no server/JS) that renders the tutorial plus `USAGE.md`/
+  `ENGINE.md`/this file into real, navigable HTML with a shared nav sidebar -- `python3
+  docs/build_site.py` writes `docs/site/*.html`, openable directly in a browser. Verified
+  end-to-end: ran the generator for real and parsed every one of its 5 output pages with a
+  strict HTML parser (catches malformed markup, not just "the script didn't crash"), and
+  confirmed the tutorial page's rendered HTML actually contains its real verified-exploit
+  content. Covered by a real test in `tests/test_smoke.py` doing exactly that. `docs/site/` is
+  a build artifact (gitignored), not committed -- rebuild it whenever a source `.md` changes.
 
 ## Explicitly out of scope
 
