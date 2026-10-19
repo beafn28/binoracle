@@ -43,6 +43,40 @@ class AgentLoop:
         self.on_step = on_step or (lambda i, a: None)
         self.kb_hint = kb_hint            # RAG cheat-sheet context (reference, not proof)
 
+    def _native_tool_schema(self) -> Optional[List[dict]]:
+        """OpenAI-style function-calling schema for every available tool, PLUS a synthetic
+        `finish` tool the model calls instead of emitting the portable protocol's bare
+        `{"action":"final",...}` object -- native tool-calling has no other way to signal
+        "I'm done, here's the answer" distinct from "call this tool". `run()` recognizes a
+        call to `finish` by name and maps it back to the exact same final-answer path as the
+        portable protocol (see the `tool == "finish"` check there), so every downstream
+        consumer (grounding gate, finding persistence) is untouched. None (not an empty list)
+        when native tool-calling isn't both backend-capable and config-enabled, so the caller
+        never pays for building this and the backend never receives an unwanted `tools` kwarg."""
+        if not getattr(self.llm, "_supports_native_tools", False):
+            return None
+        if not getattr(self.config, "native_tools", False):
+            return None
+        schema = []
+        for t in self.registry.available_tools():
+            props = {p.name: {"type": "string", "description": p.description} for p in t.params}
+            required = [p.name for p in t.params if p.required]
+            schema.append({"type": "function", "function": {
+                "name": t.name, "description": t.description,
+                "parameters": {"type": "object", "properties": props, "required": required},
+            }})
+        schema.append({"type": "function", "function": {
+            "name": "finish",
+            "description": "Call this INSTEAD of any other tool once you have enough grounded "
+                           "evidence to answer. Ends the investigation.",
+            "parameters": {"type": "object", "properties": {
+                "answer": {"type": "string", "description": "the final answer, citing tool sources"},
+                "findings": {"type": "array", "description": "list of {title,severity,verdict,"
+                            "evidence,location,rationale,recommendation} objects, [] if none"},
+            }, "required": ["answer"]},
+        }})
+        return schema
+
     def _system(self, mode: str) -> str:
         catalog = self.registry.catalog()
         tmpl = AUDIT_SYSTEM if mode == "audit" else (HUNT_SYSTEM if mode == "hunt" else ASK_SYSTEM)
@@ -72,6 +106,7 @@ class AgentLoop:
         # distinta, un simbolo distinto): no se limitan, para no truncar un analisis legitimo.
         uncapped = {"r2_disasm", "r2_xrefs", "r2_stackframe", "elf_symbols", "elf_relocations",
                     "ghidra_decompile", "decai_decompile", "r2_cmd"}
+        tool_schema = self._native_tool_schema()   # None unless backend+config both opt in
 
         for step in range(1, budget + 1):
             # If we are on the last step, or the model keeps repeating or emitting junk, force
@@ -88,8 +123,20 @@ class AgentLoop:
             # Ask for JSON-constrained output: the whole protocol is a single JSON object,
             # so this stops small models from wrapping the action in prose (the main cause
             # of 'not valid protocol' nudges). Falls back gracefully if the backend ignores it.
-            reply = self.llm.chat(messages, json_mode=True)
+            # `tools=` is only passed when actually in play (native_tools opted in AND the
+            # backend supports it) -- never unconditionally, so a backend/test-double whose
+            # chat() predates this parameter (no `tools` kwarg at all) keeps working unchanged.
+            reply = self.llm.chat(messages, json_mode=True, **({"tools": tool_schema} if tool_schema else {}))
             action = extract_action(reply)
+
+            # Native tool-calling has no bare "I'm done" signal distinct from "call this tool"
+            # -- the model calls the synthetic `finish` tool instead (see
+            # `_native_tool_schema`). Map it back to the exact same final-answer shape the
+            # portable protocol already produces, so every line below this is unchanged.
+            if action is not None and action.get("action") == "tool" and action.get("tool") == "finish":
+                fargs = action.get("args") or {}
+                action = {"action": "final", "answer": fargs.get("answer", ""),
+                         "findings": fargs.get("findings", [])}
 
             if action is None:
                 malformed += 1

@@ -25,6 +25,13 @@ class Config:
     # Constrain agent-loop replies to valid JSON (Ollama format:json / OpenAI response_format).
     # On by default; set BINORACLE_JSON_MODE=0 for a model whose server does not support it.
     json_mode: bool = field(default_factory=lambda: _env("BINORACLE_JSON_MODE", "1") != "0")
+    # Opt-in, never auto-detected: native function-calling (Ollama's `tools` field / OpenAI
+    # `tools`+`tool_calls`) works well on SOME local models (Llama 3.1+, Qwen2.5+, and others
+    # tagged "tools" in `ollama show`) and unreliably or not at all on others -- there is no
+    # cheap, safe way to probe which from here, so the user asserts it for a model they KNOW
+    # supports it. Off by default: every model keeps working through the portable JSON-action
+    # protocol (agent/tools.py's extract_action) unless this is explicitly turned on.
+    native_tools: bool = field(default_factory=lambda: _env("BINORACLE_NATIVE_TOOLS", "0") == "1")
     request_timeout: int = field(default_factory=lambda: int(_env("BINORACLE_TIMEOUT", "600")))
 
     # --- agent budget (keeps the loop from running away) ---

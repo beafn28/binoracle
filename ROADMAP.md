@@ -438,8 +438,43 @@ The flagship direction: prove impact end to end.
   write for any reason, `_enum_gadgets` still falls through to the real scan rather than returning
   an empty/stale result. Covered by real tests in `tests/test_smoke.py`: the cache-hit-skips-r2
   case above, and a degrade-cleanly case with the cache forced to raise on every call.
-- **[M] Model quality.** Prompt-tuning for the agent loop, a planner+verifier multi-model
-  split, and better native tool-calling for capable local models.
+- **[M] Model quality.** Prompt-tuning for the agent loop and a planner+verifier multi-model
+  split remain open -- both need a live local LLM to iterate against and verify honestly,
+  and this environment has none reachable (confirmed: `ollama` down, and `ollama.com`/
+  `registry.ollama.ai`/`huggingface.co`, every source of model weights or the ollama binary
+  itself, are all blocked by this environment's own egress policy -- not something to work
+  around, a real constraint of where this ran).
+  - ~~Better native tool-calling for capable local models.~~ Shipped, and fully testable
+    without a live model (every test below drives a real `AgentLoop` end-to-end against a
+    fake backend, or a real `OllamaBackend`/`OpenAICompatBackend` against a faked HTTP layer
+    -- never a live network call). `binoracle/llm/base.py`'s `chat()` gained an optional
+    `tools` parameter (an OpenAI-style function-calling schema); `OllamaBackend` and
+    `OpenAICompatBackend` send it as native `tools` (Ollama's `/api/chat` `tools` field /
+    OpenAI `tools`) ONLY when both the backend supports it and `config.native_tools` is
+    explicitly turned on (`BINORACLE_NATIVE_TOOLS=1`) -- deliberately opt-in, never
+    auto-detected, since native tool-calling only works well on SOME local models (Llama
+    3.1+, Qwen2.5+, others tagged "tools" in `ollama show`) and the project has no cheap, safe
+    way to probe which from here. Critically, this does NOT introduce a second, parallel
+    protocol: when the model's own function-calling layer returns a native tool-call, the
+    backend converts it back into the EXACT SAME portable JSON text
+    (`{"name": ..., "arguments": {...}}`) `agent/tools.py`'s `extract_action` already parses,
+    so `AgentLoop`'s own anti-repeat/anti-spam/gating logic and every other `chat()` consumer
+    are completely unaffected -- native tool-calling only changes how the model is ASKED to
+    act (its own structured function-calling instead of hoping free text happens to parse as
+    JSON), never the shape `chat()` hands back. `AgentLoop._native_tool_schema()` builds the
+    schema from the live `ToolRegistry` plus a synthetic `finish` tool (native tool-calling
+    has no other way to signal "I'm done" distinct from "call this tool"); calling `finish` is
+    mapped back to the exact same final-answer path the portable protocol already uses.
+    Verified end-to-end with fake/faked backends: a native tool call drives the real target
+    tool, a native `finish` call ends the loop with the right answer, the tool schema sent to
+    the backend includes both the real tools and `finish`, and -- the regression that caught
+    a real bug while building this -- passing `tools=` unconditionally to every backend's
+    `chat()` broke any backend/test-double written before this parameter existed (a
+    `TypeError: unexpected keyword argument 'tools'`); fixed by only including the `tools`
+    kwarg at all when native tool-calling is actually in play. Confirmed off by default: with
+    `native_tools` unset, `chat()` never even receives a `tools` kwarg, so a backend whose
+    `chat()` predates this feature entirely keeps working unchanged. 7 tests added to
+    `tests/test_smoke.py` covering all of the above.
 
 ## Cross-cutting quality (ongoing)
 

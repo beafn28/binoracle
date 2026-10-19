@@ -538,6 +538,174 @@ def test_agent_loop_caps_repeated_tool_calls():
     assert res.steps <= cfg.max_steps
 
 
+def test_agent_loop_uses_native_tool_calling_when_backend_and_config_opt_in():
+    # "[M] Model quality" del ROADMAP.md -- "better native tool-calling for capable local
+    # models". Simula lo que un backend real (Ollama/OpenAI-compat) devuelve cuando el modelo
+    # usa function-calling de verdad: un backend fake que implementa `_supports_native_tools`
+    # y de verdad lee el `tools=` que el loop le pasa (confirma que SI se construyo y envio el
+    # esquema, con la tool synthetic 'finish' incluida), y devuelve la llamada convertida al
+    # MISMO texto JSON portable que extract_action ya entiende -- exactamente como hacen
+    # OllamaBackend/OpenAICompatBackend de verdad (ver sus propios chat()). Dirige un AgentLoop
+    # REAL de principio a fin: una llamada a la tool real, luego 'finish'.
+    import json
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    calls = {"n": 0}
+
+    class _Echo(Oracle):
+        name = "echo"
+        def available(self):
+            return True
+        def tools(self):
+            def run(value):
+                calls["n"] += 1
+                return ToolResult(True, "echo", f"got {value}")
+            return [Tool("echo_tool", "echo", [ToolParam("value", "v")], run, self.name)]
+
+    class _NativeToolsLLM:
+        _supports_native_tools = True
+        def __init__(self):
+            self.step = 0
+            self.seen_tools_arg = None
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False, tools=None):
+            self.seen_tools_arg = tools   # confirma que el loop SI construyo/envio el esquema
+            self.step += 1
+            if self.step == 1:
+                return json.dumps({"name": "echo_tool", "arguments": {"value": "hola"}})
+            return json.dumps({"name": "finish",
+                               "arguments": {"answer": "listo", "findings": []}})
+
+    cfg = load_config()
+    cfg.native_tools = True
+    reg = ToolRegistry([_Echo()])
+    llm = _NativeToolsLLM()
+    res = AgentLoop(llm, reg, cfg).run("usa echo_tool y termina", mode="ask")
+
+    assert calls["n"] == 1, "la llamada nativa a echo_tool debia ejecutar la tool real"
+    assert res.answer.strip().startswith("listo") or "listo" in res.answer
+    assert res.stopped_reason == "final"
+    assert llm.seen_tools_arg is not None, "el esquema de tools no se envio al backend"
+    names = {f["function"]["name"] for f in llm.seen_tools_arg}
+    assert "echo_tool" in names and "finish" in names
+
+
+def test_agent_loop_never_sends_tools_when_native_tools_is_off_by_default():
+    # Opt-in de verdad: sin native_tools=True (el default), el loop NUNCA debe pasar `tools`
+    # al backend, ni aunque el backend SI lo soporte -- un backend/modelo que lo soporta pero
+    # que el usuario no activo explicitamente debe seguir usando el protocolo JSON portable.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import ToolRegistry
+
+    class _CapableButNotOptedInLLM:
+        _supports_native_tools = True
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):   # a proposito SIN kwarg `tools`
+            return '{"action":"final","answer":"ok","findings":[]}'
+
+    cfg = load_config()
+    assert cfg.native_tools is False, "native_tools debe ser False por defecto"
+    res = AgentLoop(_CapableButNotOptedInLLM(), ToolRegistry([]), cfg).run("x", mode="ask")
+    assert res.stopped_reason == "final"   # no lanzo TypeError por un kwarg `tools` inesperado
+
+
+def test_ollama_backend_converts_native_tool_call_to_portable_json():
+    # Confirma el backend REAL (no el fake de arriba): OllamaBackend.chat() con native_tools
+    # activo construye el payload `tools` y convierte la respuesta `message.tool_calls` de
+    # Ollama de vuelta al MISMO texto JSON portable {"name":...,"arguments":...} que
+    # agent/tools.py.extract_action ya sabe parsear -- sin tocar la red real.
+    from binoracle.agent.tools import extract_action
+    from binoracle.config import load_config
+    from binoracle.llm.ollama import OllamaBackend
+
+    cfg = load_config()
+    cfg.native_tools = True
+    backend = OllamaBackend(cfg)
+    captured = {}
+    def _fake_post(path, payload, timeout):
+        captured["payload"] = payload
+        return {"message": {"tool_calls": [
+            {"function": {"name": "r2_checksec", "arguments": {}}}
+        ]}}
+    backend._post = _fake_post
+    out = backend.chat([], json_mode=True, tools=[{"type": "function",
+                       "function": {"name": "r2_checksec", "description": "d",
+                                   "parameters": {"type": "object", "properties": {}}}}])
+    assert "tools" in captured["payload"]
+    assert "format" not in captured["payload"], "format=json no debe mezclarse con tool-calling nativo"
+    action = extract_action(out)
+    assert action == {"action": "tool", "tool": "r2_checksec", "args": {}}
+
+
+def test_ollama_backend_ignores_tools_when_native_tools_config_is_off():
+    # Sin native_tools (el default), OllamaBackend.chat() NUNCA debe mandar `tools` al
+    # servidor ni aunque el llamador se lo pase -- confirma el opt-in a nivel de backend,
+    # no solo a nivel del agent loop.
+    from binoracle.config import load_config
+    from binoracle.llm.ollama import OllamaBackend
+
+    cfg = load_config()
+    assert cfg.native_tools is False
+    backend = OllamaBackend(cfg)
+    captured = {}
+    def _fake_post(path, payload, timeout):
+        captured["payload"] = payload
+        return {"message": {"content": "hola"}}
+    backend._post = _fake_post
+    out = backend.chat([], json_mode=True, tools=[{"type": "function", "function": {"name": "x"}}])
+    assert "tools" not in captured["payload"]
+    assert out == "hola"
+
+
+def test_openai_compat_backend_converts_native_tool_call_to_portable_json():
+    # Simetrico al test de OllamaBackend, para el otro backend real (llama.cpp server/vLLM/LM
+    # Studio via la API estilo OpenAI): tool_calls -> el mismo texto JSON portable.
+    import urllib.request
+    from binoracle.agent.tools import extract_action
+    from binoracle.config import load_config
+    from binoracle.llm.openai_compat import OpenAICompatBackend
+
+    cfg = load_config()
+    cfg.native_tools = True
+    backend = OpenAICompatBackend(cfg)
+    captured = {}
+
+    class _FakeResp:
+        def __init__(self, body):
+            self._body = body
+        def read(self):
+            import json as _json
+            return _json.dumps(self._body).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        import json as _json
+        captured["payload"] = _json.loads(req.data.decode("utf-8"))
+        return _FakeResp({"choices": [{"message": {"tool_calls": [
+            {"function": {"name": "r2_checksec", "arguments": "{}"}}
+        ]}}]})
+
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = _fake_urlopen
+    try:
+        out = backend.chat([], json_mode=True, tools=[{"type": "function",
+                           "function": {"name": "r2_checksec", "description": "d",
+                                       "parameters": {"type": "object", "properties": {}}}}])
+    finally:
+        urllib.request.urlopen = orig
+    assert "tools" in captured["payload"]
+    assert "response_format" not in captured["payload"]
+    assert extract_action(out) == {"action": "tool", "tool": "r2_checksec", "args": {}}
+
+
 def test_gate_allows_verified_with_sandbox_exploit():
     # Un exploit ejecutado y confirmado en sandbox es prueba suficiente para 'verified'
     # (mas fuerte que la alcanzabilidad de angr); no debe degradarse a 'grounded'.
