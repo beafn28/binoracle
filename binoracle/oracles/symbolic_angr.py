@@ -12,12 +12,66 @@ from .base import Oracle, Tool, ToolParam, ToolResult
 
 try:
     import angr  # type: ignore
+    from angr import claripy  # type: ignore
     import logging as _logging
     _logging.getLogger("angr").setLevel(_logging.ERROR)
     _logging.getLogger("cle").setLevel(_logging.ERROR)
     _HAVE_ANGR = True
 except Exception:
     _HAVE_ANGR = False
+
+
+def _is_pe(binary: str) -> bool:
+    try:
+        with open(binary, "rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+if _HAVE_ANGR:
+    class _SimpleMingwRead(angr.SimProcedure):
+        """Reemplaza fgets()/gets() del modelo generico de angr para binarios PE/mingw.
+
+        Bug real encontrado en vivo construyendo esto: el `fgets` generico de angr construye
+        una expresion `ite` ANIDADA (una rama por cada posible longitud de linea hasta el
+        salto de linea) para el buffer resultante. Esa expresion, combinada con el `strcmp()`
+        posterior sobre un secreto fijo, resulto en un resultado CONCRETO (no symbolic) en vez
+        de bifurcar en dos sucesores -- confirmado contra samples/bin/win_chall.exe:
+        `explore(find=win)` nunca encontraba `win()` (los 64 estados activos terminaban en
+        deadend sin ninguna bifurcacion real en el `strcmp`), exactamente el motivo por el que
+        este item del ROADMAP ("SimProcedures for the MSVCRT/mingw runtime so angr_reachable
+        works properly on PE") seguia sin funcionar. El reemplazo es deliberadamente simple:
+        lee `size-1` (o un tope fijo para `gets`, que no recibe tamano) bytes DIRECTAMENTE del
+        fd 0 simbolico de angr (como hace el propio `SIM_PROCEDURES['posix']['read']`), sin la
+        busqueda de salto de linea -- con eso, `explore()` SI bifurca en el strcmp y resuelve
+        el secreto exacto por constraint-solving (confirmado: ~2.5s), Y el stdin concreto
+        reportado (`found.posix.dumps(0)`) sigue siendo el real, porque el dato leido queda
+        enganchado al propio modelo de fd 0, no a una variable simbolica suelta."""
+        def run(self, s, size=None, stream=None):
+            cap = 256
+            if size is not None:
+                try:
+                    cap = min(self.state.solver.eval(size) - 1, cap)
+                except Exception:
+                    pass
+            cap = max(cap, 0)
+            simfd = self.state.posix.get_fd(0)
+            n = simfd.read(s, cap) if simfd is not None else 0
+            self.state.memory.store(s + n, claripy.BVV(0, 8))
+            return s
+
+
+def _hook_mingw_io(proj) -> None:
+    """Enganchado solo para proyectos PE (mingw/MSVCRT): sustituye fgets/gets por el modelo
+    simplificado de _SimpleMingwRead. No se toca nada en binarios ELF."""
+    for name in ("fgets", "gets"):
+        sym = proj.loader.find_symbol(name)
+        if sym is not None:
+            try:
+                proj.hook_symbol(name, _SimpleMingwRead())
+            except Exception:
+                pass
 
 
 class AngrOracle(Oracle):
@@ -114,6 +168,8 @@ def _reachable_impl(binary: str, target: int, avoid_list: list, budget_s: float,
     cacheado del proceso padre al otro lado de un fork+exploracion larga)."""
     try:
         proj = angr.Project(binary, auto_load_libs=False)
+        if _is_pe(binary):
+            _hook_mingw_io(proj)
         # rebasa target/avoid del espacio de r2 (un PIE se reporta como si cargase en base 0,
         # p.ej. un sink en 0x11a6) al espacio de angr (que SIEMPRE carga en su propia base fija,
         # tipicamente 0x400000) -- mismo bug ya encontrado y arreglado en reachability.py: sin

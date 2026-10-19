@@ -3440,6 +3440,54 @@ def test_symbolic_angr_rebases_pie_addresses_for_auto_verify():
     assert findings[0].verdict == "verified", notes
 
 
+def test_symbolic_angr_reachable_works_on_pe_via_mingw_simprocedures():
+    # Mitad simbolica de "[M] Windows PE dynamic + symbolic" (ROADMAP v0.3): sin el hook de
+    # fgets()/gets() de symbolic_angr._hook_mingw_io, angr_reachable NUNCA encuentra win() en
+    # win_chall.exe -- confirmado en vivo: el fgets generico de angr construye una expresion
+    # ite anidada que, combinada con el strcmp() posterior sobre el secreto fijo, resuelve a un
+    # resultado CONCRETO en vez de bifurcar, y los 64 estados activos deadendean sin tocar
+    # win(). Con el reemplazo (lee size-1 bytes directo del fd 0 simbolico, sin buscar el
+    # salto de linea), explore() SI bifurca y resuelve el secreto exacto por constraint-solving.
+    import os
+    import pytest
+    try:
+        import angr  # noqa: F401
+    except ImportError:
+        pytest.skip("angr no instalado")
+    b = "samples/bin/win_chall.exe"
+    if not os.path.exists(b):
+        pytest.skip("sample win_chall.exe no compilado (samples/build.sh; necesita mingw)")
+    from binoracle.oracles.symbolic_angr import AngrOracle
+    win_addr = 0x1400014d4   # misma direccion que usa autopoc_pe (no-PIE, build estable)
+    oc = AngrOracle(b)
+    tool = oc.tools()[0]
+    r = tool.run(addr=hex(win_addr))
+    assert r.ok, r.error
+    assert r.meta["reachable"] is True
+    assert b"sup3rs3cr3t" in r.data.encode()
+
+
+def test_symbolic_angr_pe_hook_does_not_touch_elf_binaries():
+    # El gancho mingw/MSVCRT es un no-op fuera de PE: no debe alterar el comportamiento ya
+    # probado de angr_reachable sobre ELF.
+    import os
+    import pytest
+    try:
+        import angr  # noqa: F401
+    except ImportError:
+        pytest.skip("angr no instalado")
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    from binoracle.oracles.symbolic_angr import _is_pe
+    assert _is_pe(b) is False
+    from binoracle.oracles.symbolic_angr import AngrOracle
+    oc = AngrOracle(b)
+    tool = oc.tools()[0]
+    r = tool.run(addr="0x401176")
+    assert r.ok and r.meta["reachable"] is True
+
+
 def test_symbolic_angr_reachable_impl_never_hangs_past_its_budget():
     # Bug real encontrado en vivo probando un binario con un bucle (un menu re-mostrado hasta que
     # el usuario elige salir): la busqueda hacia una UNICA llamada bloqueante `simgr.explore(...)`

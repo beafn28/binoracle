@@ -189,9 +189,26 @@ The flagship direction: prove impact end to end.
   `ret2win.c`): offset 72 (identical to the ELF build -- the x86-64 stack ABI doesn't care
   which OS it's targeting) redirects to `win()`, which prints its marker and spawns `cmd.exe`
   under Wine. Scope: no ASLR/DEP bypass, no SEH-based hijack, no canary handling -- this is
-  the ret2win case only. Still open, and NOT part of this increment: the symbolic half
-  (MSVCRT/mingw `SimProcedure`s so `angr_reachable` resolves PE externals instead of choking on
-  unmodeled calls).
+  the ret2win case only.
+
+  Symbolic half ALSO shipped now: `oracles/symbolic_angr.py` -- `_hook_mingw_io`, a custom
+  `fgets`/`gets` `SimProcedure` applied automatically when the target is a PE. Root cause found
+  by tracing it live, step by step, against `win_chall.exe`: angr's GENERIC `fgets` builds a
+  nested `ite` expression (one branch per possible line length up to the newline) for the
+  buffer it returns; that expression, fed into the following `strcmp()` against a fixed
+  secret, resolved to a CONCRETE "not equal" result instead of forking into two symbolic
+  successors -- confirmed by walking the exact same path with `explore(find=<the strcmp call>)`
+  (reached fine, buffer was genuinely symbolic) and then one step further (immediately forced
+  into the "avoid" branch, zero fork). That is exactly why `angr_reachable` could never reach
+  `win()` on a PE: 64 active states, all deadending, none of them ever took the equal branch.
+  Fixed with a deliberately simple replacement: read `size-1` bytes straight from the symbolic
+  fd 0 (the same primitive `SIM_PROCEDURES['posix']['read']` uses) instead of hunting for a
+  newline, which keeps the result tied to real stdin (so `found.posix.dumps(0)` still reports
+  the genuine solved input, not an orphaned symbol) while staying simple enough for the solver
+  to fork normally. Verified end-to-end: `angr_reachable` on `win_chall.exe` now finds `win()`
+  in ~2.5s and solves the EXACT secret string (`sup3rs3cr3t\n`) by real constraint-solving;
+  confirmed the hook is a no-op on ELF targets (unchanged behavior, separate test). This closes
+  v0.3 completely.
 
 ## v0.4 - Scale, formats, n-day
 
