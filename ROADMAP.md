@@ -322,8 +322,32 @@ The flagship direction: prove impact end to end.
 
 ## v0.5 - Product, trust, workflow
 
-- **[M] Regression dashboard.** Persistent multi-target web UI beyond the single HTML report,
-  with a diff-between-runs view (which findings are new / fixed / reintroduced).
+- **[M] Regression dashboard.** Audited first: `store/session.py`'s `SessionStore` already
+  persists the CURRENT state of a binary's findings (keyed by content-hash `bin_id`, upserted in
+  place on re-analysis) and `web.py` already has a multi-target history list (the sidebar "H"
+  button) -- so "persistent multi-target web UI" already existed. What was missing, and is the
+  point of this item, is "diff-between-runs": there was no history of PAST states to diff
+  against (upsert overwrites in place), and content-hash is the wrong key for it anyway -- a
+  patch changes the hash, so re-scanning the same logical target after a fix would land on a
+  *different* `bin_id` row instead of accumulating history on the same one. Shipped:
+  `store/runs.py`, keyed by the TARGET PATH (the string handed to `audit`, stable across builds)
+  instead of content hash. `record_run(db_path, target, findings)` snapshots the current finding
+  set as a new row every time `run_audit` finishes (wired into `workflows/audit.py`, right after
+  the existing `save_verified_facts` curation step) -- each audit of the same target accumulates
+  one more point in its history, even as the underlying binary changes. `diff_latest_two` compares
+  the two most recent runs and classifies every finding key (title+location) into one of three
+  GROUNDED categories (never inferred): `new` (never appeared before the previous run),
+  `reintroduced` (absent from the previous run but present in an OLDER one -- fixed once, came
+  back), `fixed` (was in the previous run, gone from the latest). Verified end-to-end against a
+  real `SessionStore` (not synthetic dicts): three simulated audit runs on the same target path --
+  run 1 has findings A+B, run 2 has A + a new C (B "fixed" by deleting its row, as a real
+  re-analysis would), run 3 brings B back -- correctly classifies C as `new` in the first diff and
+  B as `reintroduced` (not `new`) once it returns. Covered by real tests in
+  `tests/test_tools_and_config.py` (the three-run classification above, plus a degrade-cleanly
+  case for fewer than 2 runs). Wired into `binoracle runs [target] [--diff]` (CLI), two MCP tools
+  (`regression_targets`, `regression_diff`), and the web UI's dispatcher (`runs_targets`/
+  `runs_diff` commands) -- same dispatcher-only integration `regress`/`funcid` already use, no
+  dedicated catalog panel yet (same as those two).
 - **[M] CI action.** A `binoracle` GitHub Action that fails a PR on new *verified* findings or
   regressions.
 - **[L] Cross-engagement knowledge base.** Reuse discovered gadgets and attack patterns

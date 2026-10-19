@@ -1136,6 +1136,27 @@ def _h_autopwn(args):
     return render_autopwn(r)
 
 
+@_tool("regression_diff", "Dashboard de regresion persistente: diffea las DOS ultimas runs "
+       "registradas de un target (acumuladas cada vez que `audit` corre sobre esa ruta) y "
+       "clasifica sus hallazgos en nuevos / corregidos / reintroducidos / sin cambio.",
+       {"target": {"type": "string", "description": "ruta del target tal como se le paso a audit"}},
+       ["target"])
+def _h_runs_diff(args):
+    from .config import Config
+    from .store.runs import diff_latest_two, render_run_diff
+    target = (args or {}).get("target") or ""
+    return render_run_diff(diff_latest_two(Config().db_path(), target))
+
+
+@_tool("regression_targets", "Lista los targets con historial de runs registrado (ROADMAP v0.5 "
+       "dashboard de regresion), con cuantas runs tiene cada uno y la mas reciente.",
+       {}, [])
+def _h_runs_targets(args):
+    from .config import Config
+    from .store.runs import list_targets, render_targets
+    return render_targets(list_targets(Config().db_path()))
+
+
 @_tool("autofuzz_afl", "Fuzzing integration: construye un harness instrumentado con "
        "afl-clang-fast (si se da el fuente C) o usa modo QEMU/caja negra sobre el binario, "
        "corre afl-fuzz de verdad (guiado por cobertura) durante budget_s segundos, y "

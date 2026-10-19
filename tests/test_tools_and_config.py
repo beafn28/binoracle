@@ -12828,3 +12828,74 @@ def test_concolic_honest_negative_without_rip_control():
     assert r.ok, r.error
     assert r.meta["verified"] is False
     assert "no depende del stdin" in r.meta.get("note", "").lower()
+
+
+def test_regression_dashboard_classifies_new_fixed_reintroduced():
+    # ROADMAP v0.5 "[M] Regression dashboard" -- la parte que faltaba (SessionStore ya trackea
+    # el estado ACTUAL persistente de un target; esto agrega la HISTORIA de estados pasados y
+    # un diff real entre ellos). Usa el store real (Finding real, insertados via add_finding,
+    # exactamente como run_audit los deja) para las dos primeras runs, y confirma las tres
+    # categorias de cambio -- no solo que "algo" se devuelva.
+    import os
+    import tempfile
+    from binoracle.store.session import SessionStore, Finding
+    from binoracle.store.runs import record_run, list_targets, list_runs, diff_latest_two, render_run_diff
+
+    d = tempfile.mkdtemp()
+    target = os.path.join(d, "target.bin")
+    with open(target, "wb") as fh:
+        fh.write(b"\x7fELF" + os.urandom(200))
+    db = os.path.join(d, "sess.db")
+
+    s = SessionStore(db, target)
+    s.add_finding(Finding(title="overflow in parse", severity="high", verdict="verified",
+                          evidence="e", location="parse"))
+    s.add_finding(Finding(title="leak in dump", severity="medium", verdict="grounded",
+                          evidence="e", location="dump"))
+    run1 = record_run(db, target, s.findings())
+    assert run1
+
+    # run 2: "leak in dump" se corrige (ya no se reporta), aparece "uaf in free_ctx" nueva.
+    # (SessionStore.add_finding es un upsert in-place -- simulamos el estado post-fix abriendo
+    # una conexion nueva sobre la MISMA fila de bin_id y borrando/insertando como lo haria un
+    # re-analisis real: solo lo que `store.findings()` devuelve en ESE momento se snapshotea.)
+    s._conn.execute("DELETE FROM findings WHERE bin_id=? AND title=?", (s.bin_id, "leak in dump"))
+    s._conn.commit()
+    s.add_finding(Finding(title="uaf in free_ctx", severity="critical", verdict="verified",
+                          evidence="e", location="free_ctx"))
+    run2 = record_run(db, target, s.findings())
+    assert run2 != run1
+
+    targets = list_targets(db)
+    assert len(targets) == 1 and targets[0]["target"] == target and targets[0]["n_runs"] == 2
+    assert len(list_runs(db, target)) == 2
+
+    d_ = diff_latest_two(db, target)
+    assert d_["ok"]
+    assert [x["title"] for x in d_["new"]] == ["uaf in free_ctx"]
+    assert [x["title"] for x in d_["fixed"]] == ["leak in dump"]
+    assert [x["title"] for x in d_["persisted"]] == ["overflow in parse"]
+    assert d_["reintroduced"] == []
+    out = render_run_diff(d_)
+    assert "uaf in free_ctx" in out and "leak in dump" in out and "NUEVOS" in out
+
+    # run 3: "leak in dump" vuelve -> ahora es REINTRODUCIDO, no nuevo.
+    s.add_finding(Finding(title="leak in dump", severity="medium", verdict="grounded",
+                          evidence="e", location="dump"))
+    record_run(db, target, s.findings())
+    d2 = diff_latest_two(db, target)
+    assert [x["title"] for x in d2["reintroduced"]] == ["leak in dump"]
+    s.close()
+
+
+def test_regression_dashboard_degrades_cleanly_with_fewer_than_two_runs():
+    import os
+    import tempfile
+    from binoracle.store.runs import record_run, diff_latest_two, render_run_diff, render_targets
+    db = os.path.join(tempfile.mkdtemp(), "sess.db")
+    target = "/no/such/target"
+    assert diff_latest_two(db, target)["ok"] is False
+    assert "No disponible" in render_run_diff(diff_latest_two(db, target))
+    assert "Sin runs" in render_targets([])
+    record_run(db, target, [])
+    assert diff_latest_two(db, target)["ok"] is False  # solo 1 run todavia -- no alcanza para diff

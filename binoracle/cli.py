@@ -813,6 +813,23 @@ def cmd_audit(args, config):
     store.close()
 
 
+def cmd_runs(args, config):
+    from .store.runs import list_targets, list_runs, diff_latest_two, render_run_diff, render_targets
+    if not getattr(args, "target", None):
+        out = render_targets(list_targets(config.db_path()))
+    elif getattr(args, "diff", False):
+        out = render_run_diff(diff_latest_two(config.db_path(), args.target))
+    else:
+        runs = list_runs(config.db_path(), args.target)
+        import time as _time
+        out = "\n".join([f"## Runs para `{args.target}`\n"] +
+                        (["Sin runs registradas para este target."] if not runs else
+                         [f"- run #{r['run_id']}: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(r['ts']))} -- "
+                          f"{r['n_findings']} hallazgo(s)" for r in runs]))
+    print(out)
+    _write_if(args.output, out)
+
+
 def cmd_regress(args, config):
     old = _require_binary(args.old); new = _require_binary(args.new)
     res = run_regress(old, new, config)
@@ -1480,6 +1497,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also generate+RUN a real regression test: re-run every autopwn "
                          "technique verified on OLD against NEW (slower; needs the sandbox)")
     rg.set_defaults(func=cmd_regress)
+
+    rn = sub.add_parser("runs", help="regression dashboard: persistent run history per target, "
+                        "diff-between-runs (new/fixed/reintroduced findings)")
+    rn.add_argument("target", nargs="?", help="target path (omit to list all targets with run history)")
+    rn.add_argument("--diff", action="store_true", help="diff the two latest runs for this target")
+    rn.add_argument("-o", "--output")
+    rn.set_defaults(func=cmd_runs)
 
     fi = sub.add_parser("funcid", help="stripped-binary function ID: BinDiff-style "
                         "signature matching to recover names before analysis")

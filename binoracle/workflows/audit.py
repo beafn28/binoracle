@@ -471,4 +471,12 @@ def _run_audit_impl(binary: str, llm, config, store=None, on_step=None) -> Agent
             store.save_verified_facts(res.findings or [], arch, bits, mit)
         except Exception:
             pass
+        try:
+            # Regression dashboard (ROADMAP v0.5): snapshot this audit as a new run, keyed by
+            # the target PATH (not content-hash bin_id -- a patch changes the hash, so keying by
+            # content would start a fresh history on every fix instead of accumulating one).
+            from ..store.runs import record_run
+            record_run(store.db_path, binary, store.findings())
+        except Exception:
+            pass
     return res

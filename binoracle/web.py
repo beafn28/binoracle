@@ -390,6 +390,16 @@ def run_command(payload: dict) -> dict:
         deleted = sum(1 for r in results if r.get("ok"))
         return {"ok": deleted > 0, "deleted_count": deleted, "requested": len(ids),
                 "results": results, "history": list_all_binaries(config.db_path())}
+    if cmd == "runs_targets":
+        from .store.runs import list_targets
+        return {"ok": True, "targets": list_targets(config.db_path())}
+    if cmd == "runs_diff":
+        from .store.runs import diff_latest_two, render_run_diff
+        target = (opts.get("target") or "").strip()
+        if not target:
+            return {"ok": False, "text": "indica el target (ruta usada en una auditoria previa)"}
+        d = diff_latest_two(config.db_path(), target)
+        return {"ok": True, "text": render_run_diff(d), "diff": d}
     if cmd == "regress":
         import os as _os
         old = (opts.get("old") or "").strip()
