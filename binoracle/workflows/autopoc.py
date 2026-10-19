@@ -284,18 +284,49 @@ def _static_offset(binary: str) -> Optional[int]:
         return None
 
 
+def _offset_from_read_sinks(binary: str) -> Optional[int]:
+    """Offset derivado SIN depender de que r2 reconozca una funcion formal que contenga el
+    overflow: localiza la llamada a un read sink (gets/read/fgets/...) via xref -- el mismo
+    truco que find_win() usa para resolver el gift function sin simbolo -- y lee hacia atras
+    desde ahi el ultimo 'lea <reg>, [rbp - 0xNN]' (la direccion del buffer que se le pasa).
+
+    Hace falta en vivo en ret2win.stripped: r2 (`aaa`) desensambla main() perfectamente por
+    analisis lineal (se ve completo en `pd`/`pdf @ <direccion>`), pero NUNCA crea una entrada
+    'fcn.' para ella -- solo se llega a main() por el puntero que _start le pasa a
+    __libc_start_main, no por una instruccion CALL, asi que r2 no la detecta como funcion propia
+    -- y _static_offset, que itera `aflj` (la lista de funciones YA reconocidas), la salta
+    siempre y nunca encuentra el offset real, aunque el codigo este ahi y sea perfectamente
+    legible por direccion."""
+    read_sinks = ("gets", "read", "fgets", "scanf", "isoc99_scanf", "recv", "fread", "gets_s")
+    wsz = _word_size(binary)
+    for sink in read_sinks:
+        callers = _r2(binary, f"aaa; axt @ sym.imp.{sink}")
+        for m in re.finditer(r"^\S+\s+(0x[0-9a-fA-F]+)\s+\[CALL", callers, re.M):
+            call_addr = m.group(1)
+            dis = _r2(binary, f"aaa; pd -40 @ {call_addr}")
+            best = None
+            for vm in re.finditer(r"\[(?:e|r)bp\s*-\s*(0x[0-9a-fA-F]+)\]", dis):
+                off = int(vm.group(1), 16)
+                if best is None or off > best:
+                    best = off
+            if best is not None:
+                return best + wsz
+    return None
+
+
 def _offset_candidates(binary: str, offset: Optional[int]) -> list:
-    """Offsets a probar, en orden. Si el usuario da uno, solo ese. Si no, combina angr y el
-    metodo estatico (r2), descartando valores absurdos (<=0, el 0 bogus que a veces da angr).
-    Por cada candidato tambien se prueban sus vecinos a +/- word_size: el padding de alineacion
-    que el compilador mete antes del buffer (o entre el buffer y rbp/ebp guardado) puede
-    desplazar el offset real por exactamente eso, y tanto angr como el metodo estatico pueden
-    fallar por ese margen (confirmado en ret2win32: angr dio 80, el offset real era 76)."""
+    """Offsets a probar, en orden. Si el usuario da uno, solo ese. Si no, combina angr, el
+    metodo estatico (r2) y el metodo estatico basado en la llamada al read sink (ver
+    _offset_from_read_sinks), descartando valores absurdos (<=0, el 0 bogus que a veces da
+    angr). Por cada candidato tambien se prueban sus vecinos a +/- word_size: el padding de
+    alineacion que el compilador mete antes del buffer (o entre el buffer y rbp/ebp guardado)
+    puede desplazar el offset real por exactamente eso, y tanto angr como el metodo estatico
+    pueden fallar por ese margen (confirmado en ret2win32: angr dio 80, el offset real era 76)."""
     if offset is not None:
         return [offset]
     wsz = _word_size(binary)
     cands = []
-    for fn in (find_pc_offset, _static_offset):
+    for fn in (find_pc_offset, _static_offset, _offset_from_read_sinks):
         try:
             o = fn(binary)
         except Exception:

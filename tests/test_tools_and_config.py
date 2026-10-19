@@ -3076,11 +3076,22 @@ def test_find_win_resolves_gift_function_in_stripped_binary():
 
 
 def test_ret2win_stripped_verifies_end_to_end():
+    # El guard original solo miraba shutil.which("docker") -- en un entorno con el BINARIO
+    # docker presente pero sin daemon alcanzable (p.ej. un contenedor cloud sin acceso a
+    # /var/run/docker.sock), eso pasaba el guard y caia directo en analyze_chains(verify=True),
+    # que SI degrada sola a la sandbox nativa (run_driver en _sandbox.py), pero el test nunca le
+    # daba esa oportunidad de forma honesta: si la nativa tampoco aplica (sin pwntools, host no
+    # x86-64, falta setarch) el test debe saltarse igual, no asumir que docker=disponible.
     import os
     import shutil
+    from binoracle.workflows._sandbox import native_available
     b = "samples/bin/ret2win.stripped"
-    if not os.path.exists(b) or not shutil.which("docker"):
+    if not os.path.exists(b):
         return
+    if not shutil.which("docker"):
+        ok, why = native_available(b)
+        if not ok:
+            return
     from binoracle.workflows.chainanalyzer import analyze_chains
     from binoracle.workflows.autopoc import find_win
     an = analyze_chains(b, None, verify=True, lang="es")
