@@ -12680,3 +12680,61 @@ def test_frida_dynamic_registered_only_when_dynamic_enabled():
         assert "frida_confirm_double_free" in names_dynamic
     except Exception:
         pass  # sin frida instalado, la tool simplemente no se registra (available()=False)
+
+
+def test_concolic_solves_rip_control_against_real_trace():
+    # "[L] Concolic loop" del ROADMAP v0.3: en vez de una exploracion simbolica CIEGA desde
+    # main() (la que ya tiene symbolic_angr.py, con el riesgo de explosion de estados que su
+    # propio docstring documenta), este oraculo CAPTURA el trace REAL de una ejecucion con gdb,
+    # lo REPRODUCE en angr (Tracer) dejando el stdin SIMBOLICO -- un solo camino, sin
+    # explosion -- y resuelve por constraint-solving el payload exacto para un target_addr
+    # elegido. Verificado con una ejecucion SEPARADA (breakpoint real), no una inferencia.
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample ret2win o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    assert oc.available() is True
+    tool = oc.tools()[0]
+
+    win_addr = 0x401176   # direccion real de win() en este build (no-PIE, estable)
+    seed = b"A" * 80 + b"\n"   # overflow lineal real: 64 (buf) + 8 (saved rbp) + 8 (ret addr)
+    r = tool.run(stdin_text=seed, target_addr=hex(win_addr), budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True, r.data
+    assert r.meta["controlled_offsets"] == [72, 73, 74, 75, 76, 77, 78, 79]
+    assert r.meta["target_addr"] == hex(win_addr)
+
+
+def test_concolic_honest_negative_without_rip_control():
+    # Un stdin que no desborda nada no debe "inventarse" un payload: la direccion de retorno
+    # real en ese punto no depende del stdin, y el tool debe decirlo honestamente (no un
+    # verified=True falso, ni un error opaco).
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample ret2win o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    tool = oc.tools()[0]
+    r = tool.run(stdin_text=b"hola\n", target_addr="0x401176", budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+    assert "no depende del stdin" in r.meta.get("note", "").lower()

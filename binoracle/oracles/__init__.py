@@ -6,6 +6,7 @@ from .symbolic_angr import AngrOracle
 from .dynamic_dbg import DebuggerOracle
 from .heap_dynamic import HeapDynamicOracle
 from .frida_dynamic import FridaDynamicOracle
+from .concolic import ConcolicOracle
 from .exploit_helpers import ExploitHelperOracle
 from .exploit_actions import ExploitActionsOracle
 from .ghidra import GhidraOracle
@@ -30,6 +31,7 @@ def build_registry(binary: str, enable_dynamic: bool = False, enable_exploit: bo
         oracles.append(DebuggerOracle(binary))
         oracles.append(HeapDynamicOracle(binary))
         oracles.append(FridaDynamicOracle(binary))
+        oracles.append(ConcolicOracle(binary))
     if enable_exploit:
         oracles.append(ExploitActionsOracle(binary))
     return ToolRegistry(oracles)

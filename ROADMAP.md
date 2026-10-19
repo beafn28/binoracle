@@ -144,8 +144,31 @@ The flagship direction: prove impact end to end.
   `MemoryAccessMonitor` API is the cross-platform counterpart to the gdb hardware watchpoint
   `heap_confirm_uaf` uses) and actually exercising this on macOS/Windows (only verified on
   Linux so far, even though the mechanism itself is documented cross-platform).
-- **[L] Concolic loop.** Drive angr from a real dynamic trace (symbolic-assisted crash
-  triage), so verification scales past toy binaries.
+- **[L] Concolic loop.** First increment shipped: `oracles/concolic.py` --
+  `concolic_solve_rip_control`. `symbolic_angr.py`'s existing `angr_reachable` explores BLINDLY
+  from `main()` (its own docstring already documents having to fork a child process with a
+  hard deadline just to bound the state explosion on anything with a loop/menu); this tool
+  instead captures the REAL basic-block trace of an actual crashing run with gdb and replays
+  EXACTLY that path through angr (`angr.exploration_techniques.Tracer`) with the stdin bytes
+  left symbolic -- one path, no explosion -- then solves by real constraint-solving for the
+  exact payload that redirects the controlled return address to a chosen target, and confirms
+  it with a SEPARATE real execution (a breakpoint at the target, not an inference). Two real
+  bugs found and fixed while building this: (1) `Tracer` wants a trace at angr's own
+  basic-block granularity, not gdb's raw per-instruction `stepi` trace -- feeding it the latter
+  desyncs almost immediately; fixed by collapsing to block boundaries with capstone (keep an
+  address only when it's not the natural continuation of the previous instruction). (2)
+  `state.memory.load()` with no `endness` returns bytes in claripy's own convention, not the
+  architecture's real load order -- solving with that produced a payload with the target
+  address's bytes reversed, confirmed live (it solved `sat` but replaying it for real missed
+  by a mile); fixed with `endness=archinfo.Endness.LE`. Verified end-to-end against
+  `samples/bin/ret2win`: solved the exact return-address payload for `win()` purely from
+  constraint-solving over the real trace (correctly identifying offsets 72-79 as the
+  controlled bytes), and a separate gdb run confirmed the solved payload actually lands there.
+  Scope of this increment: the classic linear-overflow-controls-return-address shape only, and
+  honestly reports `verified=False` (not a guess) when the traced return address doesn't
+  depend on stdin at all. Known cost: gdb single-stepping the whole real run (including libc
+  startup) is slow -- budget generously (60-150s is typical for a small CTF binary). Still
+  open: indirect call/jump hijacks, heap-pointer-controlled crashes, and PIE binaries.
 - **[M] Windows PE dynamic + symbolic.** Wine sandbox for `dbg_run_input`, and SimProcedures
   for the MSVCRT/mingw runtime so `angr_reachable` works properly on PE.
 
