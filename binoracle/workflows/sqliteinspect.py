@@ -37,7 +37,7 @@ def inspect_sqlite(path: str, rows_per_table: int = 5) -> dict:
             if otype == "table":
                 cols = []
                 try:
-                    for cid, cname, ctype, notnull, dflt, pk in cur.execute(
+                    for _cid, cname, ctype, notnull, _dflt, pk in cur.execute(
                             f'PRAGMA table_info("{name}")').fetchall():
                         cols.append({"name": cname, "type": ctype, "notnull": bool(notnull),
                                      "pk": bool(pk)})

@@ -86,7 +86,17 @@ target-version = "py310"
 # diffing the fix and restored with a `# noqa: F401` before this gate was added) or ignoring real
 # findings to get there faster. F-only is the honest, zero-regression baseline; broadening it is
 # future "ongoing" work per ROADMAP.md, done rule-by-rule with the same scrutiny.
-select = ["F"]
+#
+# First broadening increment: B (flake8-bugbear) added. Confirmed at zero PRE-EXISTING hits
+# across the whole package once each real finding was fixed by hand (never --fix on this
+# ruleset either -- B007's own autofix is "hidden"/unsafe for the same class of reason F401's
+# was): a genuine duplicate dict/set literal in rag.py's _STOP ("un" listed twice -- harmless in
+# a set, but a real copy-paste residue), a `zip()` over two sequences without `strict=` (already
+# guaranteed equal-length by an earlier length check, so no live bug, but now says so instead of
+# relying on a caller to have checked), and several unused loop-unpack variables (renamed to
+# `_name`, or `enumerate()` dropped entirely where the index was never used at all) in
+# rag.py/report/html.py/workflows/cveplan.py/workflows/dotnetgraph.py/workflows/sqliteinspect.py.
+select = ["F", "B"]
 
 [tool.mypy]
 python_version = "3.10"

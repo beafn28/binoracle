@@ -400,7 +400,7 @@ def plan(text: str, facts: Optional[dict] = None, cve: str = "", lang: str = "es
     pl.phases = _mem_phases(cls, facts, es) if mem else _generic_phases(cls, es)
     # mitigaciones a sortear (concretadas si hay facts)
     if facts:
-        for k, on, how_es, how_en in (
+        for _k, on, how_es, how_en in (
             ("canary", facts.get("canary") is True, "hay canary -> necesitas fugarlo o brute (fork)",
              "canary present -> leak or brute-force it (fork)"),
             ("pie", facts.get("pie") is True, "PIE/ASLR -> necesitas un leak de la base",

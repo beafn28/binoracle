@@ -86,7 +86,7 @@ def _save_rag_prefs(prefs: dict) -> None:
 def _cos_list(a, b) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    num = sum(x * y for x, y in zip(a, b))
+    num = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     return num / (na * nb) if na and nb else 0.0
@@ -118,7 +118,7 @@ _EXPAND = {
 _STOP = {
     "the", "a", "de", "la", "el", "en", "y", "o", "un", "una", "los", "las", "con",
     "por", "para", "que", "se", "es", "al", "del", "lo", "si", "no", "su", "of", "to",
-    "in", "and", "or", "is", "on", "for", "with", "un",
+    "in", "and", "or", "is", "on", "for", "with",
 }
 
 _WORD = re.compile(r"[a-zA-Z_%$][a-zA-Z0-9_%$]+")
@@ -548,7 +548,7 @@ class KnowledgeBase:
             return ""
         blocks = []
         used = 0
-        for c, score in hits:
+        for c, _score in hits:
             snippet = c.text.strip()
             header = f"[{c.doc} / {c.title}]"
             block = f"{header}\n{snippet}"

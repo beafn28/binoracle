@@ -239,7 +239,7 @@ def build_graph_from_metadata(md: bytes, max_types: int = 20000) -> dict:
         return None
 
     edges = []
-    for i, td in enumerate(typedefs):
+    for td in typedefs:
         tgt = resolve(td["extends"])
         if tgt and tgt["name"] not in ("System.Object", ""):
             edges.append({"from": td["name"], "to": tgt["name"], "kind": "extends",
@@ -465,7 +465,7 @@ def build_call_graph(tables: "_Tables", read_body, max_methods: int = 40000) -> 
 
     edges = []
     scanned = 0
-    for idx, m in enumerate(methods[:max_methods]):
+    for m in methods[:max_methods]:
         if not m["rva"]:
             continue
         body = read_body(m["rva"])

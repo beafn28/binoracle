@@ -1389,7 +1389,7 @@ def _triage_import_names(triage) -> set:
     if triage is None:
         return set()
     imports_text = ""
-    for title, source, text in triage.sections:
+    for title, _source, text in triage.sections:
         if "import" in title.lower():
             imports_text += text + "\n"
     names = set()
@@ -1804,7 +1804,7 @@ def _pe_dll_hijack_check(triage) -> dict:
     if triage is None:
         return {}
     imports_text = ""
-    for title, source, text in triage.sections:
+    for title, _source, text in triage.sections:
         if "import" in title.lower():
             imports_text += text + "\n"
     if not imports_text.strip():
