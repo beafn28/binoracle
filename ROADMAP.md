@@ -677,6 +677,76 @@ The flagship direction: prove impact end to end.
   shell via `shell: true`), not a generic "any CLI tool" framework -- if payload-in-an-argv-VALUE
   (rather than a filename) turns up as a second real confirmed case, it gets added with the same
   "poco a poco" discipline, not guessed ahead of time.
+- Dynamic n-day verification for a THIRD form of WordPress missing-authorization, distinct from
+  the two `wpverify.py` already had (`verify_wordpress_account_takeover`: an authenticated
+  low-privilege session changes another user's credential by ID; `verify_wordpress_direct_login_as`:
+  an authenticated low-privilege session impersonates another user by ID) -- grounded in a real,
+  current CVE, not guessed: CVE-2026-2991 (KiviCare for WordPress,
+  `AuthController::patientSocialLogin`, `POST /wp-json/kivicare/v1/auth/patient/social-login`,
+  `permission_callback => '__return_true'`). Read the real plugin source (downloaded straight
+  from the official wordpress.org SVN/API, both the vulnerable 4.1.2 and the patched 4.1.3) to
+  confirm the exact mechanism: the handler looks up an existing user by email/phone and, if
+  found, calls `wp_set_auth_cookie($user_id)` with ZERO validation of the "access_token" it
+  claims to check -- anyone who knows a registered patient's email is logged in as them, no
+  password or real token needed at all. The patched version simply deletes the endpoint. Shipped
+  `verify_wordpress_unauthenticated_login_bypass(plugin_source_dir, slug, endpoint, http_method,
+  parameters, email_param_hint, victim_role="subscriber", ...)` in `wpverify.py`: unlike the two
+  existing techniques, it needs NO prior session at all -- attacks with a brand-new anonymous
+  `requests.Session()`, creates its OWN victim user (not the shared bootstrap subscriber, since
+  some plugins including this one only accept a role they define) with a known email, and
+  confirms via a SEPARATE, independent page the attacked endpoint never touches
+  (`/wp-admin/profile.php`, cookie-only auth, no REST nonce involved at all) that the real email
+  of that exact victim shows up -- never a deduction from the attacked endpoint's own status
+  code, which this CVE's own plugin proves can mislead: it returns 403 ("not a patient account")
+  AFTER already calling `wp_set_auth_cookie`, so the real compromise happens regardless of that
+  403. First proof mechanism attempted (`/wp-json/wp/v2/users/me` + a nonce scraped from the
+  attacked endpoint's own JSON response) was found live, while writing this verifier's own test,
+  to be fragile: that REST endpoint demands a valid `X-WP-Nonce` even with a correct session
+  cookie (anti-CSRF), and a nonce only comes out correctly formed in the response if the
+  attacked plugin does a specific trick (rewriting `$_COOKIE[LOGGED_IN_COOKIE]` mid-request
+  before calling `wp_create_nonce`) that KiviCare happens to do but nothing guarantees any other
+  vulnerable plugin will -- would have produced a FALSE NEGATIVE against an equally-real bypass
+  on a plugin that doesn't do that trick. Switched to the admin profile page instead (same
+  cookie-only pattern `verify_wordpress_direct_login_as` already uses), which needs no nonce at
+  all. A second real, generalizable infrastructure gap surfaced along the way and was fixed at
+  the SHARED bootstrap level (`_bootstrap_lab`, used by every WordPress dynamic verifier, not
+  just this one): a fresh `wp core install` leaves permalinks on "plain" (`?p=123`), under which
+  `/wp-json/...` REST routes (the pattern newer plugins increasingly use instead of the older
+  `admin-ajax.php`) silently return the homepage HTML with a 200 instead of routing at all --
+  every real WordPress CVE this project had verified before this one happened to be
+  `admin-ajax.php`-based, which works under any permalink structure, so this had never been hit.
+  Fixed by running `wp rewrite structure '/%postname%/'` + `wp rewrite flush` right after core
+  install. Wired into `cve_agent.py`'s dispatch behind an explicit new hint,
+  `unauthenticated_login_bypass` (`--unauthenticated-login-bypass`/`--victim-role` CLI flags) --
+  never auto-detected from the parameter shape alone, since an email+password pair in the
+  hypothesis could just as plausibly mean the EXISTING credential-change pattern; only an
+  analyst who read the real advisory knows the endpoint is genuinely unauthenticated. Also
+  widened that dispatch's vuln_class gate to include `auth-bypass` alongside
+  `missing-authorization`/`idor`: a second real bug found live -- `classify_cve()` maps an
+  advisory that literally says "authentication bypass" to its own `auth-bypass` category, which
+  WINS over any `--vuln-class missing-authorization` the analyst passes by hand (`classify_cve`
+  is tried on the real description first), so the whole branch was being skipped entirely before
+  this widening, regardless of the new technique. Verified end-to-end for real: the real
+  vulnerable 4.1.2 plugin (downloaded from wordpress.org, installed in an ephemeral WordPress+
+  MySQL Docker lab) gives `verified=True`; the real patched 4.1.3 gives `verified=False` (404 --
+  the route is simply gone). Confirmed through the actual CLI end to end too: `binoracle
+  investigate CVE-2026-2991 --source <plugin.zip> --cms wordpress --version 4.1.2 --vuln-class
+  missing-authorization --endpoint /wp-json/kivicare/v1/auth/patient/social-login --method POST
+  --params "login_type=google,password=...,first_name=Attacker,email"
+  --unauthenticated-login-bypass --victim-role kiviCare_patient` -> "Estado: VERIFICADO en
+  sandbox". Covered by 2 new tests in `tests/test_tools_and_config.py`: a quick offline degrade
+  case (no email param identifiable), and a LIVE test (skipped without Docker, matching the
+  house convention for the other two WordPress techniques) against a SYNTHETIC minimal plugin
+  reproducing the exact vulnerability shape plus a genuinely-fixed negative control (validates a
+  real per-user secret token that no attacker can know) -- never downloads the real KiviCare zip
+  in CI, which stays a manual, one-off investigation step.
+  (One lab-only snag hit investigating the real plugin, never shipped: KiviCare 4.1.2/4.1.3's
+  own `KCMigrator.php` references `KCScaffold::class` unqualified from inside the
+  `App\database\classes` namespace, but the real class lives in `App\database\CLI` -- an
+  authoring bug in the THIRD-PARTY plugin itself, unrelated to the CVE, that blocks `wp plugin
+  activate` under WP-CLI; worked around with a one-line `use` import added to the LOCAL
+  downloaded copy only, purely to stand the lab up, the same spirit as this session's earlier
+  vendor-pip-install workarounds -- never touches anything binoracle ships.)
 
 ## Explicitly out of scope
 

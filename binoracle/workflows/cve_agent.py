@@ -1860,7 +1860,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         pass_param_hint=pass_p or "", on_step=step, budget_s=budget_s)
                     _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                    and inv.vuln_class in ("missing-authorization", "idor") and notes.get("endpoint")):
+                    # "auth-bypass" incluido junto a missing-authorization/idor: bug real
+                    # encontrado en vivo con CVE-2026-2991 (KiviCare) -- classify_cve() clasifica
+                    # un aviso que literalmente dice "authentication bypass" como "auth-bypass"
+                    # (su propia categoria, ver cveplan.py), NUNCA como missing-authorization/
+                    # idor aunque --vuln-class missing-authorization se pase a mano: classify_cve
+                    # se prueba primero sobre la DESCRIPCION real del aviso, que gana. Las tres
+                    # tecnicas de esta rama (account-takeover/direct-login-as/unauthenticated-
+                    # login-bypass) son, en el fondo, formas de missing-authorization de todos
+                    # modos -- un login bypass no autenticado ES una forma de auth-bypass Y de
+                    # missing-authorization a la vez.
+                    and inv.vuln_class in ("missing-authorization", "idor", "auth-bypass")
+                    and notes.get("endpoint")):
                 # el mecanismo exacto de account-takeover no es siempre el mismo (ver wpverify.py):
                 # unos plugins te dejan CAMBIAR la password/email de otro usuario (confirmable con
                 # un segundo login), otros te dejan CONVERTIRTE DIRECTAMENTE en su sesion sin tocar
@@ -1869,7 +1880,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # hipotesis del LLM (o los hints) ya trae -- si hay un parametro de email/password,
                 # es el primer caso; si solo hay un ID objetivo, el segundo.
                 from .wpverify import (verify_wordpress_account_takeover,
-                                       verify_wordpress_direct_login_as, _pick_param,
+                                       verify_wordpress_direct_login_as,
+                                       verify_wordpress_unauthenticated_login_bypass, _pick_param,
                                        _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
                 params = notes.get("parameters") or []
                 # preferir el mapeo de rol que el LLM extrajo LEYENDO el codigo real (mas fiable
@@ -1879,7 +1891,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
                 pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
                 wr = None
-                if email_p or pass_p:
+                # TERCERA forma, distinta de las dos de abajo: NINGUNA sesion previa hace falta
+                # (confirmado en vivo, CVE-2026-2991/KiviCare) -- nunca se adivina sola a partir
+                # de la forma de los parametros (un email+password aqui no implica el patron de
+                # "cambiar la credencial de otro" de mas abajo: ver verify_wordpress_
+                # unauthenticated_login_bypass, el propio CVE usa 'password' como un token social
+                # jamas validado, no como una password nueva que fijar) -- exige el hint explicito
+                # unauthenticated_login_bypass (de --unauthenticated-login-bypass) porque solo el
+                # analista que leyo el aviso real sabe que el endpoint es publico.
+                if notes.get("unauthenticated_login_bypass"):
+                    step(("intentando verificacion DINAMICA -- login bypass SIN NINGUNA sesion "
+                         "previa (WordPress+MySQL efimero en Docker)..." if es else
+                         "attempting DYNAMIC verification -- login bypass with NO prior session "
+                         "at all (ephemeral WordPress+MySQL in Docker)..."))
+                    wr = verify_wordpress_unauthenticated_login_bypass(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "POST", params,
+                        email_param_hint=email_p or "",
+                        victim_role=notes.get("victim_role") or "subscriber",
+                        on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
+                        shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure)
+                elif email_p or pass_p:
                     step(("intentando verificacion DINAMICA -- patron de cambio de credencial "
                          "(WordPress+MySQL efimero en Docker)..." if es else
                          "attempting DYNAMIC verification -- credential-change pattern "

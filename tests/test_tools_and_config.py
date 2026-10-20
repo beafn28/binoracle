@@ -5333,6 +5333,95 @@ def test_wpverify_missing_id_or_value_param_degrades(monkeypatch, tmp_path):
     assert "parametro" in r.detail
 
 
+def test_wpverify_unauthenticated_login_bypass_requires_email_param(monkeypatch, tmp_path):
+    import binoracle.workflows.wpverify as wv
+    monkeypatch.setattr(wv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    d = tmp_path / "some-plugin"
+    d.mkdir()
+    (d / "some-plugin.php").write_text("<?php // placeholder\n")
+    r = wv.verify_wordpress_unauthenticated_login_bypass(
+        str(tmp_path), "some-plugin", "/wp-json/x/v1/y", "POST",
+        ["foo", "bar"], on_step=lambda m: None)
+    assert r.ok is False and r.verified is False
+    assert "email" in r.detail
+
+
+def test_wpverify_live_unauthenticated_login_bypass_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker; se salta si no esta): reproduce la FORMA exacta de
+    # CVE-2026-2991 (KiviCare para WordPress, patientSocialLogin) con un plugin SINTETICO --
+    # un endpoint REST publico (permission_callback '__return_true') que busca un usuario
+    # existente por email y, si lo encuentra, llama wp_set_auth_cookie($user->ID) SIN validar
+    # ningun token/credencial real contra nada -- confirmado en vivo contra el CVE real
+    # (ROADMAP.md) que esto ocurre con una sesion COMPLETAMENTE anonima, sin login previo.
+    # Repite contra una version PARCHEADA (valida un token secreto real por usuario que el
+    # atacante nunca puede conocer) como control negativo. Se salta sin Docker.
+    import pytest
+    from binoracle.workflows.wpverify import (verify_wordpress_unauthenticated_login_bypass,
+                                              _docker_daemon_ok)
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    endpoint = "/wp-json/myplugin/v1/social-login"
+    params = ["email", "token"]
+
+    vuln_root = tmp_path / "vuln"
+    (vuln_root / "my-login-plugin").mkdir(parents=True)
+    (vuln_root / "my-login-plugin" / "my-login-plugin.php").write_text(
+        "<?php\n/*\nPlugin Name: My Login Plugin\n*/\n"
+        "add_action('rest_api_init', function () {\n"
+        "    register_rest_route('myplugin/v1', '/social-login', array(\n"
+        "        'methods' => 'POST', 'callback' => 'my_social_login',\n"
+        "        'permission_callback' => '__return_true'));\n"
+        "});\n"
+        "function my_social_login($request) {\n"
+        "    $email = sanitize_email($request->get_param('email'));\n"
+        "    $user = get_user_by('email', $email);\n"
+        "    if (!$user) { return new WP_REST_Response(array('status' => false), 404); }\n"
+        "    wp_set_current_user($user->ID);\n"
+        "    wp_set_auth_cookie($user->ID);\n"
+        "    return new WP_REST_Response(array('status' => true, "
+        "'nonce' => wp_create_nonce('wp_rest')), 200);\n"
+        "}\n")
+
+    fixed_root = tmp_path / "fixed"
+    (fixed_root / "my-login-plugin").mkdir(parents=True)
+    (fixed_root / "my-login-plugin" / "my-login-plugin.php").write_text(
+        "<?php\n/*\nPlugin Name: My Login Plugin\n*/\n"
+        "add_action('rest_api_init', function () {\n"
+        "    register_rest_route('myplugin/v1', '/social-login', array(\n"
+        "        'methods' => 'POST', 'callback' => 'my_social_login',\n"
+        "        'permission_callback' => '__return_true'));\n"
+        "});\n"
+        "function my_social_login($request) {\n"
+        "    $email = sanitize_email($request->get_param('email'));\n"
+        "    $token = (string) $request->get_param('token');\n"
+        "    $user = get_user_by('email', $email);\n"
+        "    if (!$user) { return new WP_REST_Response(array('status' => false), 404); }\n"
+        "    $real_token = get_user_meta($user->ID, 'real_social_token', true);\n"
+        "    if (empty($real_token) || !hash_equals($real_token, $token)) {\n"
+        "        return new WP_REST_Response(array('status' => false, "
+        "'message' => 'invalid token'), 403);\n"
+        "    }\n"
+        "    wp_set_current_user($user->ID);\n"
+        "    wp_set_auth_cookie($user->ID);\n"
+        "    return new WP_REST_Response(array('status' => true, "
+        "'nonce' => wp_create_nonce('wp_rest')), 200);\n"
+        "}\n")
+
+    r_vuln = verify_wordpress_unauthenticated_login_bypass(
+        str(vuln_root), "my-login-plugin", endpoint, "POST", params,
+        email_param_hint="email", on_step=lambda m: None, budget_s=420)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+
+    r_fixed = verify_wordpress_unauthenticated_login_bypass(
+        str(fixed_root), "my-login-plugin", endpoint, "POST", params,
+        email_param_hint="email", on_step=lambda m: None, budget_s=420)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: la version PARCHEADA no deberia verificar"
+
+
 def test_wpverify_live_account_takeover_and_negative_control(tmp_path):
     # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): levanta un
     # WordPress+MySQL real, instala un plugin SINTETICO que reproduce la forma exacta de

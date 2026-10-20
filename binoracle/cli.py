@@ -1004,6 +1004,10 @@ def cmd_investigate(args, config):
         hints["cli_setup_cmd"] = args.cli_setup_cmd
     if getattr(args, "cli_run_cmd", None):
         hints["cli_run_cmd"] = args.cli_run_cmd
+    if getattr(args, "unauthenticated_login_bypass", False):
+        hints["unauthenticated_login_bypass"] = True
+    if getattr(args, "victim_role", None):
+        hints["victim_role"] = args.victim_role
     if getattr(args, "keep_lab_on_failure", False):
         hints["keep_lab_on_failure"] = True
     if getattr(args, "functions", None):
@@ -1678,6 +1682,22 @@ def build_parser() -> argparse.ArgumentParser:
                                           "after planting a file whose NAME is the payload; "
                                           "verified if a canary file appears in the work dir "
                                           "(see cliverify.py)")
+    ip.add_argument("--unauthenticated-login-bypass", action="store_true",
+                    help="WordPress missing-authorization/idor only: the endpoint needs NO "
+                         "prior session at all (fully public/unauthenticated) and lets an "
+                         "attacker log in as an existing user by supplying only a non-secret "
+                         "identifier (typically their email) via --params, with no real "
+                         "credential/token validated -- a THIRD pattern distinct from both "
+                         "the credential-change and the by-ID login-as account-takeover (set "
+                         "this explicitly; it is never guessed from --params alone, since an "
+                         "email+password pair there could just as easily mean 'change this "
+                         "admin's credential', the existing account-takeover pattern)")
+    ip.add_argument("--victim-role", default="",
+                    help="with --unauthenticated-login-bypass: the exact WordPress role the "
+                         "victim account needs for the plugin's own endpoint to accept it "
+                         "(default: subscriber) -- some plugins gate the endpoint's success "
+                         "path on a role THEY define (e.g. a 'patient' role), not any "
+                         "logged-in user")
     ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
                                         "against the fetched source (e.g. update_user,handle_register_submission)")
     ip.add_argument("--table-name", help="for WordPress deserialization: the plugin's own DB "
