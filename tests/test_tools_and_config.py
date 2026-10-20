@@ -13013,6 +13013,21 @@ def test_heap_template_always_warns_it_assumes_a_ctf_menu_even_with_no_known_pub
         assert "AVISO" not in s   # ese es el aviso condicional (has_public_exploit), no este
 
 
+def test_all_dev_templates_warn_the_stdin_input_vector_may_not_be_real():
+    # Mismo gap de honestidad, generalizado: TODO esqueleto de develop_exploit (no solo el de
+    # heap) usa `io.sendline(payload)` sobre un `io = process(BINARY)` -- asume que el payload
+    # se manda por stdin. Para una CVE real eso puede ser falso (argv, variable de entorno,
+    # fichero, peticion de red). Al estar en _dev_header (compartido por todas las clases),
+    # el aviso aplica a cada plantilla por igual sin tener que repetirlo clase por clase.
+    from binoracle.workflows.cveplan import develop_exploit, _CLASSES, WEB_CLASSES
+    mem_classes = [c for c, *_ in _CLASSES if c not in WEB_CLASSES]
+    assert mem_classes, "deberia haber al menos una clase de memoria para probar"
+    for cls in mem_classes:
+        s = develop_exploit(cls, {}, {}, lang="es")
+        assert "VECTOR DE ENTRADA" in s, f"falta el aviso de vector de entrada para {cls}"
+        assert "argv" in s
+
+
 def test_plan_threads_public_exploit_notice_through_to_the_final_script():
     # Confirma el camino completo (no solo develop_exploit en aislamiento): plan() -- lo que
     # investigate_cve llama en la rama SIN binario -- debe propagar has_public_exploit/

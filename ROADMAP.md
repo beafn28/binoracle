@@ -180,6 +180,20 @@ The flagship direction: prove impact end to end.
     `tests/test_tools_and_config.py` confirming the caveat is present with no known public
     exploit (the gap this closes) and that it doesn't collide with the conditional notice
     above.
+  - Fourth follow-up, generalizing the same gap: audited every other `develop_exploit`
+    template (`oob-write`, `integer-overflow`, `type-confusion`, the generic fallback) and
+    every `webexploit.py` web-class builder (sqli, xss, ssrf, rce, path-traversal,
+    file-upload, deserialization, xxe, ssti, open-redirect, csrf) for the same kind of
+    confidently-wrong assumption the heap template had -- none had it: they're already
+    minimal skeletons with explicit TODOs, or (the web builders) already build from the
+    LLM's grounded hypothesis rather than a hardcoded guess. One real remaining gap, shared by
+    EVERY `develop_exploit` template (not just heap): all of them use
+    `io.sendline(payload)` against `io = process(BINARY)`, silently assuming the payload
+    arrives over stdin -- wrong for a real CVE triggered via argv, an environment variable, a
+    file, or a network request. Added one caveat line to `_dev_header` (shared by every class
+    branch) naming the assumption and the argv alternative (`process([BINARY, payload])`),
+    so every template carries it without repeating it per class. Test added confirming every
+    non-web vulnerability class's template carries it.
 - **[M] Frida dynamic oracle.** First increment shipped: `oracles/frida_dynamic.py` --
   `frida_confirm_double_free`, the Frida equivalent of `heap_confirm_double_free`: hooks
   malloc/calloc/realloc/free via `Interceptor.attach` (function interception, no ptrace) and

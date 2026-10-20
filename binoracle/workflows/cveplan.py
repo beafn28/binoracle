@@ -433,7 +433,11 @@ def _dev_header(name: str, tag: str) -> list:
             f"BINARY = './{name}'",
             "elf = context.binary = ELF(BINARY, checksec=False)",
             "# libc = ELF('./libc.so.6', checksec=False)   # <-- si es remoto, pon aqui la libc",
-            "io = process(BINARY)   # o: io = remote('HOST', PORT)"]
+            "io = process(BINARY)   # o: io = remote('HOST', PORT)",
+            "# VECTOR DE ENTRADA: el esqueleto de abajo asume que el payload se manda por stdin",
+            "# (io.sendline(...)). Un programa real puede dispararse por argv, una variable de",
+            "# entorno, un fichero, o una peticion de red en vez de stdin -- confirma el vector real",
+            "# antes de lanzar esto: p.ej. io = process([BINARY, payload]) para argv."]
 
 
 def _srop_lines(indent: str = "") -> list:
