@@ -624,6 +624,25 @@ The flagship direction: prove impact end to end.
   confirmed the tutorial page's rendered HTML actually contains its real verified-exploit
   content. Covered by a real test in `tests/test_smoke.py` doing exactly that. `docs/site/` is
   a build artifact (gitignored), not committed -- rebuild it whenever a source `.md` changes.
+- Audited (not applied): dynamic n-day verification for CLI-tool argument/filename-driven
+  command injection, with no network endpoint at all. Investigated against a real, current CVE
+  to ground this rather than guessing -- CVE-2025-64756 (`glob` npm CLI, GHSA-5j98-mcp5-4vw2):
+  `-c`/`--cmd` passes matched filenames to a shell with `shell: true`, so a crafted filename
+  (e.g. `` $(touch injected) ``) executes arbitrary commands. Reproduced for real, locally and
+  disposably (an isolated `/tmp` npm install of the vulnerable `glob@11.0.0`, nothing touching a
+  real/production system): ran the CLI against a directory containing that filename and
+  confirmed the injected command actually executed (the planted file appeared). Every existing
+  `investigate_cve` verifier (`wpverify.py`/`drupalverify.py`/`joomlaverify.py`/
+  `genericverify.py`) is built around `notes.get("endpoint")` -- an HTTP request sent to a
+  running service -- which this vulnerability shape has none of: the "request" is a local
+  argv/filename, there's no server to spin up a lab against. Bolting a new verifier category
+  onto the existing HTTP-shaped architecture for this one CVE would be scope creep speculating
+  about a pattern (local CLI tools trusting filenames/argv passed to a shell) this project
+  hasn't otherwise needed -- deliberately NOT built; left as a documented, real architectural
+  gap rather than forced. If n-day coverage for local CLI tools becomes an actual goal, the
+  natural shape is a parallel verifier family keyed on something like `notes.get("argv_template")`
+  instead of `endpoint`, with its own ephemeral-sandbox-per-attempt helper (no Docker service
+  needed -- a disposable temp dir and a subprocess call cover it).
 
 ## Explicitly out of scope
 
