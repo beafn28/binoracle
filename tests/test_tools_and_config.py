@@ -12997,6 +12997,22 @@ def test_develop_exploit_warns_when_a_real_cve_has_a_different_real_technique():
     assert "AVISO" not in without_notice
 
 
+def test_heap_template_always_warns_it_assumes_a_ctf_menu_even_with_no_known_public_exploit():
+    # Segundo gap de calidad, mas fundamental que el anterior: el aviso de arriba solo se
+    # antepone cuando YA se sabe que hay un exploit publico documentado (has_public_exploit).
+    # Pero el esqueleto de menu CTF (alloc/free/show) es enganoso incluso para una CVE de heap
+    # SIN exploit publico conocido todavia (p.ej. recien publicada): sigue sin ser 'la' tecnica
+    # real de un programa cualquiera. El esqueleto ahora lleva su propio caveat estructural,
+    # SIEMPRE presente, diciendo explicitamente que asume ese menu y que un programa real
+    # (argv, red, fichero, env) casi nunca lo tiene -- independiente de has_public_exploit.
+    from binoracle.workflows.cveplan import develop_exploit
+    for cls in ("heap-overflow", "uaf", "double-free"):
+        s = develop_exploit(cls, {}, {}, lang="es")
+        assert "CAVEAT ESTRUCTURAL" in s, f"falta el caveat estructural para {cls}"
+        assert "menu interactivo" in s
+        assert "AVISO" not in s   # ese es el aviso condicional (has_public_exploit), no este
+
+
 def test_plan_threads_public_exploit_notice_through_to_the_final_script():
     # Confirma el camino completo (no solo develop_exploit en aislamiento): plan() -- lo que
     # investigate_cve llama en la rama SIN binario -- debe propagar has_public_exploit/

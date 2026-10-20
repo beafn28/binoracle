@@ -166,6 +166,20 @@ The flagship direction: prove impact end to end.
     through all three paths (`develop_exploit` directly, `plan()`'s no-binary path exactly as
     `investigate_cve` calls it, and the real `binoracle cveplan` CLI subprocess) using this
     exact CVE-2021-3156 scenario. Tests added to `tests/test_tools_and_config.py` for all three.
+  - Third follow-up quality fix, same investigation: the notice above only fires when the
+    caller already KNOWS a public exploit exists (`has_public_exploit=True`). But the
+    `heap-overflow`/`uaf`/`double-free` template's CTF-menu assumption (`alloc`/`free`/`show`
+    over stdin) is misleading for ANY real-world CVE investigation, not only one that happens
+    to have an indexed public PoC already -- a freshly-disclosed heap CVE with no PoC on
+    exploit-db/GitHub yet would still get the same confident-looking menu skeleton with zero
+    caveat. Added a short, ALWAYS-present structural caveat right in the template itself
+    (independent of `has_public_exploit`): it names the menu assumption explicitly and says a
+    real program's actual trigger is more likely argv, a network request, a file, or an
+    environment variable -- so the skeleton reads as "the common case for this vuln class,
+    adapt the wrappers" rather than "the technique". Test added to
+    `tests/test_tools_and_config.py` confirming the caveat is present with no known public
+    exploit (the gap this closes) and that it doesn't collide with the conditional notice
+    above.
 - **[M] Frida dynamic oracle.** First increment shipped: `oracles/frida_dynamic.py` --
   `frida_confirm_double_free`, the Frida equivalent of `heap_confirm_double_free`: hooks
   malloc/calloc/realloc/free via `Interceptor.attach` (function interception, no ptrace) and

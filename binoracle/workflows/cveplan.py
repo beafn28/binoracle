@@ -575,7 +575,15 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
 
     if cls in ("heap-overflow", "uaf", "double-free"):
         tag = f"clase: {cls} -> corrupcion de heap (tcache/fastbin poisoning)"
-        body = ["# Exploit de heap para glibc con tcache (>=2.26). Adapta los wrappers del menu del reto",
+        body = ["# CAVEAT ESTRUCTURAL (siempre, haya o no exploit publico conocido): este esqueleto",
+                "# asume un reto CTF con menu interactivo (alloc/free/show por numero de opcion sobre",
+                "# stdin) -- la forma MAS COMUN de practicar esta clase, pero NO la unica. Un programa",
+                "# real rara vez tiene ese menu: el disparador puede ser un argumento de linea de",
+                "# comandos, una peticion de red, un fichero, una variable de entorno... Si esto no es",
+                "# un reto con ese menu, NO copies los wrappers de abajo tal cual -- usa el layout de",
+                "# heap real (que asignas, que liberas, que filtras) segun COMO se dispara de verdad",
+                "# la vulnerabilidad en el programa concreto.",
+                "# Exploit de heap para glibc con tcache (>=2.26). Adapta los wrappers del menu del reto",
                 "# (indices de opcion, prompts) a la interfaz real del binario.",
                 "def alloc(i, sz, data=b'A'):",
                 "    io.sendlineafter(b'>', b'1')",
