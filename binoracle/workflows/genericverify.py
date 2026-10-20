@@ -591,7 +591,7 @@ def verify_generic_path_traversal(
         found = False
         tried = []
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[path_param] = payload_value
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,
@@ -721,7 +721,7 @@ def verify_generic_lfi_rce(
         found = False
         tried = []
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[path_param] = payload_value
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,
@@ -817,7 +817,7 @@ def verify_generic_idor(
     lab, base_url, container = boot
     try:
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "id_param": id_param, "own_id": own_id,
                              "victim_id": victim_id})
@@ -1048,7 +1048,7 @@ def verify_generic_ssrf(
         first_resp_captured = False
         for attempt_url in build_urls(_token()):
             token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[url_param] = attempt_url
             entry = {"url": attempt_url, "token": token}
             try:
@@ -1153,7 +1153,7 @@ def verify_generic_sqli_blind(
     lab, base_url, container = boot
     try:
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
         orig_value = str(base_params.get(sqli_param) or "1")
 
         def timed_send(val, capture_body: bool = False) -> Optional[float]:
@@ -1342,7 +1342,7 @@ def verify_generic_xxe(
             if found:
                 break
             if xml_param:
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[xml_param] = xml_body
                 try_send(f"{label}, parametro de formulario",
                          data=payload if m != "GET" else None,
@@ -1365,7 +1365,7 @@ def verify_generic_xxe(
                 oob_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
                           f'"http://{lab.listener}:8080/binoracle-xxe-oob-{oob_token}">]>'
                           f'<foo>&xxe;</foo>')
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 try:
                     if xml_param:
                         payload[xml_param] = oob_xml
@@ -1475,7 +1475,7 @@ def verify_generic_open_redirect(
         tried = []
         confirmed_entry = None
         for target in targets:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[redirect_param] = target
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,
@@ -1604,7 +1604,7 @@ def verify_generic_xss(
         step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
         with _XssBrowserSession() as xb:
             for payload_value in attempts:
-                params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 params[xss_param] = payload_value
                 title, _ = xb.render(base_url, endpoint, m, params, [])
                 tried.append({"payload": payload_value, "title_resultante": title})
@@ -1631,8 +1631,7 @@ def verify_generic_xss(
                           f"(puede que el contexto de reflexion sea distinto, que haya "
                           f"sanitizacion real, o que el efecto solo se vea en otra pagina)")
             try:
-                sample_params = dict(parameters) if isinstance(parameters, dict) else {
-                    p: "" for p in (parameters or [])}
+                sample_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 sample_params[xss_param] = attempts[0] if attempts else ""
                 sample_resp = _http_request(m, base_url + endpoint,
                                             data=sample_params if m != "GET" else None,
@@ -1703,7 +1702,7 @@ def verify_generic_ssti(
         tried = []
         for payload_value, payload_expected in attempt_pairs:
             pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[ssti_param] = payload_value
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,

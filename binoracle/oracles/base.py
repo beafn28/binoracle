@@ -93,7 +93,7 @@ class ToolRegistry:
         lines = []
         for oc in self.oracles:
             if oc.available():
-                n = len([t for t in oc.tools()])
+                n = len(list(oc.tools()))
                 lines.append(f"[ok]   {oc.name}: {n} tool(s)")
             else:
                 lines.append(f"[--]   {oc.name}: {oc.why_unavailable()}")

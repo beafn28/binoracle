@@ -117,7 +117,7 @@ def inspect_android_class(apk: str, classname: str, max_bytes: int = 200000) -> 
     methods = re.findall(r"(?:public|private|protected|static|final|\s)+[\w<>\[\].,\s]+?\b(\w+)\s*\([^;{]*\)\s*\{",
                          code)
     return {"ok": True, "available": True, "tool": "android_query", "class": _classname(root, path),
-            "methods": sorted(set(m for m in methods if m not in ("if", "for", "while", "switch", "catch")))[:120],
+            "methods": sorted({m for m in methods if m not in ("if", "for", "while", "switch", "catch")})[:120],
             "java": code,
             "limitations": ["Java decompilado por JADX (aproximado); JADX decompila, no ejecuta"]}
 

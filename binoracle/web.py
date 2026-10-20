@@ -461,7 +461,7 @@ def run_command(payload: dict) -> dict:
         run_triage(reg, binary, store=store)
         hunt = run_hunt(reg, binary, llm=None, config=config, store=store, lang=config.lang)
         findings, _ = auto_verify(reg, hunt.findings, store=store)
-        by_sev = {k: 0 for k in ("critical", "high", "medium", "low", "info")}
+        by_sev = dict.fromkeys(("critical", "high", "medium", "low", "info"), 0)
         verified = 0
         for f in findings:
             by_sev[f.severity] = by_sev.get(f.severity, 0) + 1
@@ -731,7 +731,7 @@ def _build_dashboard_data(reg, findings):
     (checksec/sinks/funciones/formato via r2). No verifica ni ejecuta nada por si misma."""
     cs = reg.get("r2_checksec").run(); m = cs.meta if cs.ok else {}
     sk = reg.get("r2_sinks").run(); sinks = sk.meta.get("sinks", []) if sk.ok else []
-    by = {k: 0 for k in ("critical", "high", "medium", "low", "info")}
+    by = dict.fromkeys(("critical", "high", "medium", "low", "info"), 0)
     verified = 0
     for f in findings:
         by[f.severity] = by.get(f.severity, 0) + 1

@@ -59,7 +59,7 @@ class GroundingLedger:
                 continue
             matched = any(cl in s or s in cl for s in sources) \
                 or any(cl == t or t in cl or cl in t for t in tools) \
-                or bool({tok for tok in re.findall(r"[a-z0-9_]{4,}", cl)} & known)
+                or bool(set(re.findall(r"[a-z0-9_]{4,}", cl)) & known)
             if not matched and c not in bad:
                 bad.append(c)
         return bad

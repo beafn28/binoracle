@@ -401,7 +401,7 @@ def verify_drupal_account_takeover(
 
         admin_uid = "1"   # drush site:install SIEMPRE crea el primer usuario como uid=1
         m = (http_method or "POST").upper()
-        payload = dict(params) if isinstance(params, dict) else {p: "" for p in (params or [])}
+        payload = dict(params) if isinstance(params, dict) else dict.fromkeys(params or [], "")
         path_substituted = False
         if id_p:
             endpoint, path_substituted = _substitute_path_param(endpoint, id_p, admin_uid)
@@ -545,7 +545,7 @@ def verify_drupal_path_traversal(
         tried = []
         first_resp_captured = False
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[path_param] = payload_value
             step(f"probando {m} {endpoint} con {path_param}={payload_value!r}...")
             try:
@@ -653,7 +653,7 @@ def verify_drupal_command_injection(
         tried = []
         first_resp_captured = False
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[cmd_param] = payload_value
             step(f"probando {m} {endpoint} con {cmd_param}={payload_value!r}...")
             try:
@@ -682,7 +682,7 @@ def verify_drupal_command_injection(
         if not found:
             step("ninguna variante reflejo la suma; probando blind command injection por "
                  "temporizacion (sleep)...")
-            base_payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            base_payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             base_payload[cmd_param] = "1"
             try:
                 t_base0 = time.time()
@@ -696,7 +696,7 @@ def verify_drupal_command_injection(
             sleep_attempts = [f"; sleep {sleep_n}", f"| sleep {sleep_n}", f"`sleep {sleep_n}`",
                               f"$(sleep {sleep_n})", f"&& sleep {sleep_n}"]
             for sp in sleep_attempts:
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[cmd_param] = sp
                 step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion)...")
                 try:
@@ -787,7 +787,7 @@ def verify_drupal_sqli(
             return res
 
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
         orig_value = str(base_params.get(sqli_param) or "1")
 
         def send(val):
@@ -1053,7 +1053,7 @@ def verify_drupal_ssrf(
         first_resp_captured = False
         for attempt_url in build_urls(_token()):
             token = attempt_url.rsplit("binoracle-ssrf-", 1)[-1]
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[url_param] = attempt_url
             step(f"probando {m} {endpoint} con {url_param}={attempt_url!r}...")
             entry = {"url": attempt_url, "token": token}
@@ -1176,7 +1176,7 @@ def verify_drupal_xss(
         step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
         with _XssBrowserSession() as xb:
             for payload_value in attempts:
-                params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 params[xss_param] = payload_value
                 title, _png = xb.render(boot.base_url, endpoint, m, params, cookies)
                 tried.append({"payload": payload_value, "title_resultante": title})
@@ -1200,8 +1200,7 @@ def verify_drupal_xss(
             res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
                           f"ninguna el navegador ejecuto el script -- el XSS no se confirmo")
             try:
-                sample_params = dict(parameters) if isinstance(parameters, dict) else {
-                    p: "" for p in (parameters or [])}
+                sample_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 sample_params[xss_param] = attempts[0] if attempts else ""
                 sample_resp = boot.sub_sess.request(
                     m, boot.base_url + endpoint,
@@ -1276,7 +1275,7 @@ def verify_drupal_ssti(
         tried = []
         first_resp_captured = False
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[ssti_param] = payload_value
             step(f"probando {m} {endpoint} con {ssti_param}={payload_value!r}...")
             try:
@@ -1400,7 +1399,7 @@ def verify_drupal_xxe(
             if found:
                 break
             if xml_param:
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[xml_param] = xml_body
                 try_send(f"{label}, parametro de formulario",
                          data=payload if m != "GET" else None,
@@ -1424,7 +1423,7 @@ def verify_drupal_xxe(
                 oob_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
                           f'"http://{lab.listener}:8080/binoracle-xxe-oob-{oob_token}">]>'
                           f'<foo>&xxe;</foo>')
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 try:
                     if xml_param:
                         payload[xml_param] = oob_xml
@@ -1521,7 +1520,7 @@ def verify_drupal_open_redirect(
         tried = []
         confirmed_entry = None
         for target in targets:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[redirect_param] = target
             step(f"probando {m} {endpoint} con {redirect_param}={target!r} (sin seguir redirects)...")
             try:
@@ -1624,7 +1623,7 @@ def verify_drupal_file_upload(
             ("binoracle_{t}.png", b"\x89PNG\r\n\x1a\n", "image/png"),
         ]
         other_params = {k: v for k, v in (dict(parameters) if isinstance(parameters, dict)
-                                          else {p: "" for p in (parameters or [])}).items()
+                                          else dict.fromkeys(parameters or [], "")).items()
                         if k != file_param}
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
@@ -1745,7 +1744,7 @@ def verify_drupal_csrf(
             return res
 
         m = (http_method or "POST").upper()
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         for k in list(payload.keys()):
             if any(h in k.lower() for h in ("nonce", "token", "csrf", "form_build_id")):
                 del payload[k]
@@ -1923,7 +1922,7 @@ def verify_drupal_deserialization(
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
 
         if serial_param:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[serial_param] = payload_obj
             try_send("parametro de formulario",
                      data=payload if m != "GET" else None,

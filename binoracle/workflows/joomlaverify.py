@@ -380,7 +380,7 @@ def verify_joomla_account_takeover(
             return res
 
         m = (http_method or "POST").upper()
-        payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+        payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         if id_p:
             payload[id_p] = boot.admin_id
         new_email = f"takeover-{_token()}@binoracle-lab.invalid" if email_p else None
@@ -525,7 +525,7 @@ def verify_joomla_deserialization(
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
 
         if serial_param:
-            payload = dict(parameters) if isinstance(parameters, dict) else {p: "" for p in (parameters or [])}
+            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
             payload[serial_param] = payload_obj
             try_send("parametro de formulario",
                      data=payload if m != "GET" else None,

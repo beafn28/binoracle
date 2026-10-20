@@ -96,7 +96,21 @@ target-version = "py310"
 # relying on a caller to have checked), and several unused loop-unpack variables (renamed to
 # `_name`, or `enumerate()` dropped entirely where the index was never used at all) in
 # rag.py/report/html.py/workflows/cveplan.py/workflows/dotnetgraph.py/workflows/sqliteinspect.py.
-select = ["F", "B"]
+#
+# Second increment: C4 (flake8-comprehensions) added. 55 hits, all pure equivalence rewrites
+# (a comprehension that is a verbatim no-op wrapper around a builtin -- {k: v for k in X} ->
+# dict.fromkeys(X, v), {x for x in gen} -> set(gen), [x for x in it] -> list(it)) -- reviewed the
+# whole diff by hand before accepting ruff's own --fix for the 52 of them it offered (never
+# --unsafe-fixes): every single hit was dict.fromkeys()-shaped (the same `{p: v for p in
+# parameters}` pattern repeated ~45 times across every wpverify.py/drupalverify.py/
+# genericverify.py/joomlaverify.py verifier that builds a default payload dict) plus a couple of
+# severity-counter dicts in report/html.py/web.py -- none of them had any filtering/
+# transformation logic ruff could have mis-collapsed. The remaining 3 (marked "unsafe" by ruff
+# itself, so fixed by hand instead of forcing them): a set comprehension wrapping a set literal
+# in agent/grounding.py, a list comprehension wrapping len() in oracles/base.py, and a
+# generator-in-set() in workflows/androidquery.py -- same equivalence, just outside ruff's
+# "safe" threshold for its own fixer.
+select = ["F", "B", "C4"]
 
 [tool.mypy]
 python_version = "3.10"
