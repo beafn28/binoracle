@@ -6370,6 +6370,30 @@ def test_genericverify_auto_detects_bare_php_without_any_manifest(tmp_path):
     assert '-S", "0.0.0.0:8000"' in content
 
 
+def test_genericverify_auto_detects_bare_flask_script_without_requirements_txt(tmp_path):
+    # Hallazgo real investigando CVE-2025-57633 (FTP-Flask-python) en vivo: un PoC publico de un
+    # solo fichero Flask (import flask, sin requirements.txt NI ningun otro manifest) no coincide
+    # con ninguna de las 3 senales de _STACK_SIGNALS -- sin esto, se queda sin Dockerfile alguno,
+    # igual que el caso bare-PHP de arriba. Ademas, un PoC de un solo fichero casi siempre trae
+    # su propio `if __name__=='__main__': app.run(...)` SIN host='0.0.0.0' (el default de Flask
+    # es 127.0.0.1) -- confirmado en vivo contra un contenedor real: `python <script>.py`
+    # arrancaba bien, pero el mapeo de puertos de Docker nunca podia alcanzarlo desde fuera
+    # (conexion rechazada). El Dockerfile generado usa `flask run --host=0.0.0.0`, que ignora
+    # ese app.run() hardcodeado por completo en vez de intentar parchear el script del PoC.
+    from binoracle.workflows.genericverify import _find_build_target
+    (tmp_path / "ftp_app.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\n"
+        "if __name__ == '__main__':\n    app.run(debug=True)\n")
+    target = _find_build_target(str(tmp_path))
+    assert target["auto_generado"] is True
+    assert "ftp_app" in target["stack_detectado"]
+    content = open(target["path"]).read()
+    assert "FROM python:" in content
+    assert "ENV FLASK_APP=ftp_app" in content
+    assert '"flask", "run", "--host=0.0.0.0"' in content
+    assert "pip install" in content and "flask" in content
+
+
 def test_genericverify_prefers_dockerfile_compose_over_auto_detection(tmp_path):
     # si el repo SI trae su propio Dockerfile/compose, nunca se genera uno propio por encima --
     # el del autor del PoC siempre gana.

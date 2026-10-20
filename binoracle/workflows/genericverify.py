@@ -68,6 +68,40 @@ _PHP_BARE_DOCKERFILE = ["WORKDIR /app", "COPY . .",
                        'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']
 
 
+def _detect_bare_flask_entry(source_dir: str) -> Optional[str]:
+    """Busca un script Flask SUELTO (sin requirements.txt -- el caso real confirmado en vivo con
+    CVE-2025-57633/FTP-Flask-python: un PoC de un solo fichero, `import flask`/`from flask
+    import`, sin manifest de dependencias de ningun tipo). Devuelve el nombre del MODULO (sin
+    '.py', para FLASK_APP) del primer candidato encontrado a <=2 niveles de profundidad, o None.
+    Un simple `python <script>.py` no basta aqui: un PoC de un solo fichero casi siempre trae su
+    propio `if __name__ == '__main__': app.run(...)` SIN `host='0.0.0.0'` (el default de Flask
+    es 127.0.0.1) -- confirmado en vivo exactamente con ese CVE: el contenedor arrancaba bien,
+    pero el mapeo de puertos de Docker nunca podia alcanzarlo (conexion rechazada/reseteada
+    desde fuera, con o sin inyeccion real). `flask run --host=0.0.0.0` (ver el Dockerfile que
+    construye esta deteccion) IGNORA ese `app.run()` hardcodeado por completo -- usa su propio
+    servidor de desarrollo, nunca ejecuta el bloque `__main__` -- en vez de intentar parchear el
+    binding del script del autor del PoC."""
+    candidates = []
+    for root, dirs, files in os.walk(source_dir):
+        depth = root[len(source_dir):].count(os.sep)
+        if depth > 2:
+            dirs[:] = []
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".py"):
+                continue
+            path = os.path.join(root, fn)
+            try:
+                with open(path, "r", errors="ignore") as f:
+                    head = f.read(4096)
+            except OSError:
+                continue
+            if re.search(r"^\s*(from flask import|import flask)\b", head, re.MULTILINE):
+                rel = os.path.relpath(path, source_dir)
+                candidates.append(rel[:-3].replace(os.sep, "."))   # quita '.py', path -> modulo
+    return candidates[0] if candidates else None
+
+
 def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
@@ -84,6 +118,18 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
                 f.write("\n".join(lines) + "\n")
             return {"kind": "dockerfile", "path": path, "context": source_dir,
                    "auto_generado": True, "stack_detectado": signal_file}
+    flask_module = _detect_bare_flask_entry(source_dir)
+    if flask_module:
+        lines = ["FROM python:3.11-slim", "WORKDIR /app", "COPY . .",
+                 "RUN pip install --no-cache-dir flask",
+                 f"ENV FLASK_APP={flask_module}",
+                 'CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]',
+                 "EXPOSE 5000"]
+        path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return {"kind": "dockerfile", "path": path, "context": source_dir,
+               "auto_generado": True, "stack_detectado": f"*.py (Flask suelto: {flask_module})"}
     has_bare_php = any(fn.lower().endswith(".php")
                       for fn in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, fn)))
     if not has_bare_php:
