@@ -553,6 +553,35 @@ The flagship direction: prove impact end to end.
     only (zero ongoing cost pressure; see the item above). Left `ci.yml` as plain serial pytest.
     Revisit with a bounded worker count (`-n 2`) and/or `pytest.mark.serial` on the Docker/angr
     tests specifically, if the full-suite runtime ever becomes an actual blocker.
+  - Follow-up: found the ACTUAL root cause of the slow/apparently-hanging full-suite runs above
+    (a manual `ci.yml` run was left running 4+ hours with no sign of finishing before being
+    cancelled). It was never the lack of parallelism or genuinely stuck `r2session.cmd_timeout`
+    machinery (that machinery's own daemon-thread-join-then-kill design turned out to be sound):
+    it was `tests/test_smoke.py::test_pe_inspect_on_real_pe_if_present`, which used
+    `glob.glob(os.path.join(root, "**", "*.dll"), recursive=True)` (and `*.exe`) over `/usr` and
+    `/opt` to find a real PE file to sanity-test `inspect_pe` against, then sliced `[:50]` --
+    but the slice happens AFTER `glob.glob` returns, so it has to finish walking the ENTIRE tree
+    first. In a container with a full `/usr` (every Python package, every doc/locale file, plus
+    r2/angr/Docker's own installed footprint), that unbounded recursive walk is slow enough to
+    plausibly explain hours, not minutes. Two real fixes landed together: (1) `pytest-timeout`
+    was an installed dependency in some environments but never a DECLARED dependency nor
+    configured anywhere -- added `pytest-timeout>=2.3` to the `dev` extras and a
+    `[tool.pytest.ini_options]` with `timeout = 300` (`timeout_method = "thread"`, since this
+    suite's own real subprocess/thread use doesn't play well with signal-based interruption) in
+    `pyproject.toml`, set comfortably above every known-legitimate slow operation
+    (`r2session.py`'s own internal 180s/90s timeouts) so it only fires on a genuine hang, not a
+    merely-slow test -- this is what actually caught the glob bug live (300s timeout tripped
+    mid-walk) instead of it staying silently undiagnosed. (2) Rewrote the test itself to use a
+    directory-count-capped `os.walk` that stops at the FIRST real PE found, instead of
+    enumerating the whole tree twice per directory -- confirmed live: 4+ minutes (hit the new
+    300s cap) down to 4 seconds. Caught and fixed a real mistake made while editing this: the
+    first edit to add `[tool.pytest.ini_options]` accidentally deleted the `[tool.ruff]` table
+    header line it was inserted next to, silently reparenting `line-length`/`target-version`
+    under the wrong table (confirmed via a `PytestConfigWarning: Unknown config option` pytest
+    itself emitted) -- caught before anything was pushed, fixed, and reverified (`ruff check
+    binoracle` clean, TOML re-parses correctly) rather than shipped broken. Verified end to end:
+    the fixed test (4s), then the full `test_smoke.py`/`test_autoheap.py`/`test_rag.py`/
+    `test_sandbox.py` regression subset (199 passed, 6 skipped, 0 failed, ~8 min, no hangs).
 - ~~Quieter optional dependencies (pwntools/angr logging), graceful-degradation everywhere.~~
   angr, which IS imported straight into this process (`oracles/symbolic_angr.py`,
   `oracles/concolic.py`, `workflows/autopoc.py`), had real duplication: three separate copies of

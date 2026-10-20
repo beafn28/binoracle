@@ -2513,19 +2513,37 @@ def test_pe_mitigations_decoder():
 
 
 def test_pe_inspect_on_real_pe_if_present():
-    import glob
+    # Bug real encontrado en vivo (pytest-timeout lo atrapo con -300s de limite): la version
+    # anterior usaba glob.glob(root/**/*.dll, recursive=True), que recorre el arbol COMPLETO de
+    # /usr (y /opt) antes de aplicar el [:50] -- el slice llega demasiado tarde para acotar nada.
+    # En un contenedor con /usr lleno (paquetes de Python, docs, locales, r2/angr/docker...) ese
+    # recorrido puede tardar minutos o mas; en una suite sin timeout por test, se traga la suite
+    # entera en silencio. Ahora para en cuanto encuentra un PE real (es lo unico que necesita:
+    # UN candidato para probar inspect_pe contra algo real), con os.walk acotado por numero de
+    # directorios visitados en vez de un glob recursivo sin limite.
     import os
     import pytest
     from binoracle.workflows.peinspect import inspect_pe, render_pe
-    cands = []
-    for root in ("/usr", "/opt"):
-        cands += glob.glob(os.path.join(root, "**", "*.dll"), recursive=True)[:50]
-        cands += glob.glob(os.path.join(root, "**", "*.exe"), recursive=True)[:50]
     pe = None
-    for c in cands:
-        r = inspect_pe(c)
-        if r.get("is_pe"):
-            pe = r
+    MAX_DIRS = 4000   # tope duro de directorios visitados, no de resultados: para de verdad
+    for root in ("/usr", "/opt"):
+        if not os.path.isdir(root):
+            continue
+        visited = 0
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda e: None):
+            visited += 1
+            if visited > MAX_DIRS:
+                break
+            for fn in filenames:
+                if not fn.lower().endswith((".dll", ".exe")):
+                    continue
+                r = inspect_pe(os.path.join(dirpath, fn))
+                if r.get("is_pe"):
+                    pe = r
+                    break
+            if pe is not None:
+                break
+        if pe is not None:
             break
     if pe is None:
         pytest.skip("sin PE real en el sistema")

@@ -35,8 +35,8 @@ burp = ["mcp>=1.0"]
 frida = ["frida>=16.0"]
 docs = ["markdown>=3.5"]
 all = ["pyelftools>=0.30", "pefile>=2023.2.7", "olefile>=0.47", "r2pipe>=1.8", "angr>=9.2", "capstone>=5.0", "pwntools>=4.11", "cvss>=3.0", "mcp>=1.0", "frida>=16.0"]
-dev = ["pytest>=8.0", "pytest-xdist>=3.5", "cvss>=3.0", "pefile>=2023.2.7", "olefile>=0.47",
-       "ruff>=0.17", "mypy>=1.10", "pytest-cov>=5.0", "coverage>=7.0"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5", "pytest-timeout>=2.3", "cvss>=3.0", "pefile>=2023.2.7",
+       "olefile>=0.47", "ruff>=0.17", "mypy>=1.10", "pytest-cov>=5.0", "coverage>=7.0"]
 
 [project.scripts]
 binoracle = "binoracle.cli:main"
@@ -51,6 +51,22 @@ include = ["binoracle*"]
 
 [tool.setuptools.package-data]
 binoracle = ["kb/*.md", "kb/**/*.md", "kb/skills/LICENSE"]
+
+[tool.pytest.ini_options]
+# Real gap found live: a manual GitHub Actions ci.yml run ran for 4+ hours with no sign of
+# finishing (eventually cancelled) with zero per-test safety net -- pytest-timeout was an
+# installed dependency in some environments but was never actually a declared dependency NOR
+# configured anywhere, so a genuinely hanging test (as opposed to a merely slow one) could
+# consume the suite's entire run, and on CI, the whole job (no explicit timeout-minutes there
+# either, so GitHub's own 360-minute default is the only backstop). 300s is set well above the
+# slowest known-legitimate single operation this suite does on purpose (oracles/r2session.py's
+# own internal timeouts: 180s for a fresh `aaa` full analysis, 90s for most individual r2
+# commands) so it should never fire on a test that is merely slow-but-working, only on one that
+# genuinely never returns. thread method (not the default signal-based one): this codebase
+# spawns real subprocesses/threads itself (Docker, r2, angr) and signal-based interruption can't
+# reliably land inside a blocking C-level wait the way a thread-based watchdog can.
+timeout = 300
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 120
