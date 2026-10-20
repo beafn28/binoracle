@@ -948,6 +948,22 @@ def cmd_fetch(args, config):
     print("\n" + render_fetch(res, config.lang))
 
 
+def _parse_cli_params(raw_arg: str):
+    """Parsea --params: nombres sueltos ("action,nonce") o "nombre=valor" (ver cmd_investigate
+    para el porque). Extraido a su propia funcion para poder probarlo sin invocar el CLI entero."""
+    raw = [p.strip() for p in raw_arg.split(",") if p.strip()]
+    if any("=" in p for p in raw):
+        parsed: dict = {}
+        for p in raw:
+            if "=" in p:
+                k, _, v = p.partition("=")
+                parsed[k.strip()] = v.strip()
+            else:
+                parsed[p] = "1"   # sin valor dado: marcador neutro, solo declara que existe
+        return parsed
+    return raw
+
+
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
@@ -971,7 +987,17 @@ def cmd_investigate(args, config):
     if getattr(args, "method", None):
         hints["http_method"] = args.method
     if getattr(args, "params", None):
-        hints["parameters"] = [p.strip() for p in args.params.split(",") if p.strip()]
+        # Bug real encontrado en vivo investigando CVE-2025-57633 (FTP-Flask-python) sin LLM:
+        # --params solo aceptaba nombres sueltos ("action,nonce,directory_id"), nunca un VALOR
+        # concreto -- pero muchas apps reales gatean que rama de codigo se ejecuta detras de un
+        # parametro acompanante con un valor LITERAL fijo (aqui, request.form['submit'] ==
+        # 'Upload File'; en otras, action=X/type=Y/mode=Z). Sin forma de fijarlo a mano, el
+        # analista sin LLM manda ese parametro vacio o ausente, la app nunca llega al codigo
+        # vulnerable, y el verificador reporta "no confirmado" por una razon de infraestructura,
+        # no porque la vulnerabilidad no exista -- confirmado en vivo: el mismo payload/endpoint
+        # fallo 13/13 sin 'submit=Upload File' y confirmo la inyeccion real a la primera con el.
+        # Acepta ahora "nombre=valor" ademas de "nombre" suelto (ver _parse_cli_params).
+        hints["parameters"] = _parse_cli_params(args.params)
     if getattr(args, "sqli_param", None):
         hints["sqli_param"] = args.sqli_param
     if getattr(args, "keep_lab_on_failure", False):
@@ -1625,7 +1651,10 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--version", help="affected version for --source (e.g. 5.1.8)")
     ip.add_argument("--endpoint", help="exact vulnerable endpoint/route for a web CVE")
     ip.add_argument("--method", help="HTTP method for --endpoint (default POST)")
-    ip.add_argument("--params", help="comma-separated request parameter names (e.g. user_id,email,pass)")
+    ip.add_argument("--params", help="comma-separated request parameters: bare names "
+                                     "(id,email) or name=value when a companion parameter needs "
+                                     "a specific literal to even reach the vulnerable code path "
+                                     "(e.g. submit=Upload File,ftp_file) -- mixing both is fine")
     ip.add_argument("--sqli-param", help="for --vuln-class sqli: the exact parameter name to "
                                          "inject into, overriding the automatic guess -- needed "
                                          "when --params also carries OTHER required parameters "

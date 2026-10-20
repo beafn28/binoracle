@@ -975,6 +975,20 @@ def test_cve_exploit_plan():
     assert classify_cve("use-after-free in the handler") == "uaf"
     assert classify_cve("uncontrolled format string (%n)") == "format-string"
     assert classify_cve("nothing recognizable here") is None
+
+
+def test_cli_parse_params_accepts_name_equals_value_for_gating_parameters():
+    # Bug real encontrado en vivo investigando CVE-2025-57633 (FTP-Flask-python) sin LLM, a mano
+    # por CLI: --params solo producia una lista de nombres sueltos, nunca un valor -- pero el
+    # codigo vulnerable real exige request.form['submit'] == 'Upload File' EXACTO para siquiera
+    # ejecutar la rama donde esta la inyeccion. Confirmado en vivo con el verificador real de
+    # binoracle: el mismo endpoint/payload fallo 13/13 sin ese valor fijado y confirmo la
+    # inyeccion real (ejecucion de comando dentro del contenedor) a la primera con el.
+    from binoracle.cli import _parse_cli_params
+    assert _parse_cli_params("action,nonce,directory_id") == ["action", "nonce", "directory_id"]
+    assert _parse_cli_params("submit=Upload File,ftp_file") == {
+        "submit": "Upload File", "ftp_file": "1"}
+    assert _parse_cli_params("user_id=5,email=a@b.com") == {"user_id": "5", "email": "a@b.com"}
     # plan de stack overflow con NX+PIE+canary -> fases de leak + control + ROP
     pl = plan("stack buffer overflow via strcpy", {"nx": True, "pie": True, "canary": True, "relro": "full"},
               cve="CVE-2024-1", lang="es")
