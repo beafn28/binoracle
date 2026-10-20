@@ -88,6 +88,21 @@ _SQLI_HINTS = ("id", "search", "q", "query", "name", "term", "filter", "sort", "
 _PLUGIN_SETUP_TRIGGER_PATHS = {
     "ultimate-member": ["/wp-admin/admin.php?page=um_options&um_adm_action=install_core_pages"],
 }
+# Mismo patron, otro bloqueo distinto -- confirmado en vivo, CVE-2024-1071: el shortcode pegado
+# en una pagina generica (ver shortcode_page_path en _bootstrap_lab) basta para MUCHOS plugins,
+# pero Ultimate Member guarda la configuracion real del "Member Directory" (incluido el campo de
+# ordenacion personalizado que el sumidero vulnerable de verdad usa) como su PROPIO custom post
+# type (`um_directory`), no como meta de una pagina generica -- sin un post real de este tipo, la
+# resolucion por fuerza bruta de `directory_id` (md5(str(n))[10:15] para n=1..99, exactamente el
+# mismo patron que usa el exploit publico de gbrsh/CVE-2024-1071) nunca encuentra nada valido, y
+# CADA peticion se rechaza antes de llegar siquiera al codigo vulnerable -- 380 intentos reales
+# de las 5 tecnicas de inyeccion devolvieron consistentemente la misma respuesta de control sin
+# una sola senal, no porque las tecnicas fallaran, sino porque ninguna llegaba a disparar el
+# sumidero real. slug -> post_type de "directorio/listado" propio del plugin a crear ademas de
+# la pagina del shortcode.
+_PLUGIN_DIRECTORY_CPT = {
+    "ultimate-member": "um_directory",
+}
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
@@ -1245,6 +1260,23 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 f"no se pudo crear una pagina real con el shortcode '{shortcode_name}' "
                 f"({(r_page.stderr or r_page.stdout or '')[:200]}) -- se sigue atacando el "
                 f"endpoint dado, que puede no mostrar ninguna superficie visible del plugin")
+
+    directory_cpt = _PLUGIN_DIRECTORY_CPT.get(slug)
+    if directory_cpt:
+        step(f"creando un '{directory_cpt}' real (no solo una pagina con el shortcode pegado) "
+             f"-- este plugin guarda su configuracion de directorio/listado como su propio "
+             f"custom post type, y la resolucion de IDs de recurso necesita uno real al que "
+             f"apuntar...")
+        r_dir = lab.wp_cli("post", "create", f"--post_type={directory_cpt}",
+                           "--post_status=publish", "--post_title=binoracle-lab-directory",
+                           "--porcelain", timeout=30)
+        dir_post_id = (r_dir.stdout or "").strip()
+        if r_dir.returncode != 0 or not dir_post_id.isdigit():
+            res.limitations.append(
+                f"no se pudo crear un '{directory_cpt}' real "
+                f"({(r_dir.stderr or r_dir.stdout or '')[:200]}) -- la resolucion de "
+                f"directory_id/resource_id puede no encontrar nada valido, y el ataque puede "
+                f"rechazarse antes de llegar al codigo vulnerable")
 
     step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
          "vulnerable, activo)...")

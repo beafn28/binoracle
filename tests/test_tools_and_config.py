@@ -4990,6 +4990,64 @@ def test_wpverify_wp_image_is_overridable_for_php_version_sensitive_cves(monkeyp
         assert wv._WP_IMAGE == "wordpress:php8.2-apache"
 
 
+def test_wpverify_creates_a_real_plugin_directory_cpt_when_known(monkeypatch, tmp_path):
+    # Segundo hallazgo real investigando CVE-2024-1071 en vivo, contra el mismo laboratorio real
+    # (no solo leyendo el codigo): Ultimate Member guarda la configuracion de su "Member
+    # Directory" como su PROPIO custom post type (`um_directory`), no como meta de una pagina
+    # generica -- la pagina con el shortcode pegado que _bootstrap_lab ya creaba para TODOS los
+    # plugins (shortcode_page_path) no es, por si sola, un recurso que el propio plugin reconozca
+    # como un directorio real. _PLUGIN_DIRECTORY_CPT registra, por slug, el post_type extra que
+    # hay que crear -- mismo patron y mismo estilo que _PLUGIN_SETUP_TRIGGER_PATHS, que ya
+    # resuelve el bloqueo DISTINTO (paginas por defecto) para este mismo plugin/CVE.
+    import binoracle.workflows.wpverify as wpverify
+    assert wpverify._PLUGIN_DIRECTORY_CPT.get("ultimate-member") == "um_directory"
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    wp_cli_calls = []
+
+    class _FakeLab:
+        def __init__(self):
+            self.mysql = "fake-mysql"
+            self.wp = "fake-wp"
+        def setup_network_and_volume(self):
+            pass
+        def start_mysql(self, *a):
+            pass
+        def mysql_ready(self, *a, **kw):
+            return True
+        def start_wordpress(self, *a):
+            return 12345
+        def http_ready(self, *a):
+            return True
+        def wp_cli(self, *args, **kw):
+            wp_cli_calls.append(args)
+            if args[:2] == ("post", "create"):
+                return _FakeCompletedProcess(stdout="7")
+            if args[:2] == ("user", "get"):
+                return _FakeCompletedProcess(stdout="1")
+            return _FakeCompletedProcess(returncode=0)
+        def install_plugin(self, *a):
+            return True
+        def logs_tail(self, *a):
+            return ""
+
+    monkeypatch.setattr(wpverify, "_lab_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(wpverify, "_wp_login", lambda *a, **k: None)
+    monkeypatch.setattr(wpverify, "_screenshot_authenticated", lambda *a, **kw: None)
+
+    import time as _time
+    res = wpverify.WpVerifyResult()
+    wpverify._bootstrap_lab(_FakeLab(), str(tmp_path), "ultimate-member", lambda _m: None, res,
+                            _time.time(), 1200.0, shortcode_name="ultimatemember")
+    assert any(c[:2] == ("post", "create") and "--post_type=um_directory" in c
+              for c in wp_cli_calls), "no se creo el post um_directory real durante el bootstrap"
+
+
 def test_wpverify_unavailable_without_docker_daemon(monkeypatch):
     # Cuando no hay daemon Docker, degrada honestamente: available=False, verified=False, y
     # NO intenta levantar nada (nunca llega a crear red/contenedores).
