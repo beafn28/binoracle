@@ -535,6 +535,24 @@ The flagship direction: prove impact end to end.
   sandboxes/angr/docker/Wine) that a full coverage run didn't finish before this increment shipped;
   raise it to the real measured number (with headroom) once that run completes. All three are
   wired into `.github/workflows/ci.yml`.
+  - Audited, NOT applied: `pytest-xdist` (`-n auto`) as a fix for the slow-suite problem named
+    above. It's already an installed dependency and looks like a free, low-risk win on paper --
+    the suite is mostly independent test files, and a quick check confirmed no fixed ports or
+    named Docker containers that would collide across workers (every socket test binds port 0,
+    every Docker test lets the daemon assign a random container name). But two separate live
+    attempts to run the full suite with `-n auto` in this environment did NOT complete cleanly:
+    one stalled around 93-97% with no worker processes left alive and no final summary; a
+    second attempt WITH `-x` (meant to abort fast on the first failure) still didn't exit within
+    280s, consistent with xdist's own limitation that `-x` can only stop scheduling new tests,
+    not interrupt whichever slow test is already running in another worker. Most likely cause:
+    this suite runs real Docker containers and real angr symbolic execution directly (per the
+    comment above), and 4 of those competing for memory/CPU at once behaves very differently
+    from one running at a time. Conclusion: `-n auto` is not the safe drop-in it looks like for
+    THIS suite without first identifying and isolating (or serial-only marking) the handful of
+    heavy sandbox/angr tests -- real work, not worth it for a workflow that's `workflow_dispatch`
+    only (zero ongoing cost pressure; see the item above). Left `ci.yml` as plain serial pytest.
+    Revisit with a bounded worker count (`-n 2`) and/or `pytest.mark.serial` on the Docker/angr
+    tests specifically, if the full-suite runtime ever becomes an actual blocker.
 - ~~Quieter optional dependencies (pwntools/angr logging), graceful-degradation everywhere.~~
   angr, which IS imported straight into this process (`oracles/symbolic_angr.py`,
   `oracles/concolic.py`, `workflows/autopoc.py`), had real duplication: three separate copies of
