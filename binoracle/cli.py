@@ -1000,6 +1000,10 @@ def cmd_investigate(args, config):
         hints["parameters"] = _parse_cli_params(args.params)
     if getattr(args, "sqli_param", None):
         hints["sqli_param"] = args.sqli_param
+    if getattr(args, "cli_setup_cmd", None):
+        hints["cli_setup_cmd"] = args.cli_setup_cmd
+    if getattr(args, "cli_run_cmd", None):
+        hints["cli_run_cmd"] = args.cli_run_cmd
     if getattr(args, "keep_lab_on_failure", False):
         hints["keep_lab_on_failure"] = True
     if getattr(args, "functions", None):
@@ -1662,6 +1666,18 @@ def build_parser() -> argparse.ArgumentParser:
                                          "validates before reaching the vulnerable sink) whose "
                                          "name would otherwise be picked over the real "
                                          "injectable one by the generic id/search/sort heuristic")
+    ip.add_argument("--cli-setup-cmd", help="for a command-injection CVE in a LOCAL CLI tool "
+                                            "(no HTTP endpoint at all, e.g. a CVE in an npm/pip "
+                                            "package's own CLI): shell command that prepares a "
+                                            "disposable work dir with the exact version to check, "
+                                            "e.g. 'npm install glob@11.0.0' -- run once, before "
+                                            "anything else. Requires --cli-run-cmd too")
+    ip.add_argument("--cli-run-cmd", help="paired with --cli-setup-cmd: shell command that "
+                                          "invokes the tool exactly as an analyst would, e.g. "
+                                          "'node node_modules/.bin/glob -c echo \"**/*\"' -- run "
+                                          "after planting a file whose NAME is the payload; "
+                                          "verified if a canary file appears in the work dir "
+                                          "(see cliverify.py)")
     ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
                                         "against the fetched source (e.g. update_user,handle_register_submission)")
     ip.add_argument("--table-name", help="for WordPress deserialization: the plugin's own DB "

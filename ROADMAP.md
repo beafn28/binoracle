@@ -624,25 +624,59 @@ The flagship direction: prove impact end to end.
   confirmed the tutorial page's rendered HTML actually contains its real verified-exploit
   content. Covered by a real test in `tests/test_smoke.py` doing exactly that. `docs/site/` is
   a build artifact (gitignored), not committed -- rebuild it whenever a source `.md` changes.
-- Audited (not applied): dynamic n-day verification for CLI-tool argument/filename-driven
-  command injection, with no network endpoint at all. Investigated against a real, current CVE
-  to ground this rather than guessing -- CVE-2025-64756 (`glob` npm CLI, GHSA-5j98-mcp5-4vw2):
-  `-c`/`--cmd` passes matched filenames to a shell with `shell: true`, so a crafted filename
-  (e.g. `` $(touch injected) ``) executes arbitrary commands. Reproduced for real, locally and
-  disposably (an isolated `/tmp` npm install of the vulnerable `glob@11.0.0`, nothing touching a
-  real/production system): ran the CLI against a directory containing that filename and
-  confirmed the injected command actually executed (the planted file appeared). Every existing
-  `investigate_cve` verifier (`wpverify.py`/`drupalverify.py`/`joomlaverify.py`/
-  `genericverify.py`) is built around `notes.get("endpoint")` -- an HTTP request sent to a
-  running service -- which this vulnerability shape has none of: the "request" is a local
-  argv/filename, there's no server to spin up a lab against. Bolting a new verifier category
-  onto the existing HTTP-shaped architecture for this one CVE would be scope creep speculating
-  about a pattern (local CLI tools trusting filenames/argv passed to a shell) this project
-  hasn't otherwise needed -- deliberately NOT built; left as a documented, real architectural
-  gap rather than forced. If n-day coverage for local CLI tools becomes an actual goal, the
-  natural shape is a parallel verifier family keyed on something like `notes.get("argv_template")`
-  instead of `endpoint`, with its own ephemeral-sandbox-per-attempt helper (no Docker service
-  needed -- a disposable temp dir and a subprocess call cover it).
+- ~~Dynamic n-day verification for CLI-tool filename-driven command injection, with no network
+  endpoint at all.~~ First shipped against a real, current CVE rather than a guessed shape --
+  CVE-2025-64756 (`glob` npm CLI, GHSA-5j98-mcp5-4vw2): `-c`/`--cmd` passes matched filenames to
+  a shell with `shell: true`, so a crafted filename (e.g. `` $(touch injected) ``) executes
+  arbitrary commands. Every existing `investigate_cve` verifier (`wpverify.py`/`drupalverify.py`/
+  `joomlaverify.py`/`genericverify.py`) was built around `notes.get("endpoint")` -- an HTTP
+  request sent to a running service -- which this vulnerability shape has none of: the "request"
+  is a local filename, there's no server to spin up a lab against. First investigated and
+  audited here as a deliberately-deferred gap, then actually built once asked to: a NEW,
+  narrowly-scoped verifier, `workflows/cliverify.py`'s
+  `verify_cli_filename_command_injection(setup_cmd, run_cmd, ...)` -- no Docker, no network, no
+  session: a disposable `tempfile.mkdtemp()` work dir, a file whose NAME IS the payload
+  (`$(touch <canary>)`), the tool run exactly as an analyst would, and a canary-file check
+  (never a deduction from exit code/stdout). Reproduced for real, locally and disposably (an
+  isolated `/tmp` npm install of the real vulnerable `glob@11.0.0`, nothing touching a real/
+  production system): `verified=True` with the injected file actually present. Negative control
+  against the real PATCHED version (`glob@11.1.0`) confirmed `verified=False` -- not a verifier
+  that just always says yes. Wired into `cve_agent.py`'s dispatch (`_run_web_investigation`,
+  right after `notes = inv.llm_notes or {}`, returning early): reuses the existing
+  `command-injection`/`os-command-injection` vuln_class (a new invented label would never win --
+  `classify_cve(inv.description)` is tried before any analyst hint when `inv.vuln_class` is
+  assigned), gated instead on two new hints, `cli_setup_cmd`/`cli_run_cmd` (new `--cli-setup-cmd`/
+  `--cli-run-cmd` CLI flags), since those are what actually distinguishes "no endpoint, a local
+  tool" from the web case -- confirmed end-to-end for real via `binoracle investigate
+  CVE-2025-64756 --cli-setup-cmd "npm install glob@11.0.0" --cli-run-cmd '...' --no-cache`:
+  "Estado: VERIFICADO en sandbox".
+  That same end-to-end run surfaced a SECOND real, broader honesty bug while reading the
+  rendered report: the "Evidencia real de la ejecucion" section hard-coded the WordPress
+  account-takeover evidence shape (`login_bajo_privilegio`/`admin_user`/...) and an unconditional
+  caption claiming "contra el WordPress desechable de arriba" -- for ANY other verified class
+  (command-injection/SQLi/SSRF/SSTI/path-traversal across wpverify.py/drupalverify.py/
+  genericverify.py, dozens of real call sites that set `evidence["payload_ganador"]`) the report
+  showed literally NOTHING of the real proof, or worse, composite `None` strings (the old filter
+  `value not in ("None", "`None`")` never caught `` `None` (id=None) ``) under a false "WordPress"
+  claim -- for this CLI CVE specifically it rendered "Usuario de bajo privilegio: `None` /
+  `None`" for a target that was never WordPress, never had a login at all. Fixed generically:
+  the caption no longer names any CMS, the row list is now built conditionally per the KEYS
+  actually present in `evidence` (WordPress account-takeover shape / HTTP request+status shape /
+  the new CLI shape), a new row surfaces `parametro_ganador`/`payload_ganador` whenever present
+  (the fix with the widest blast radius -- every command-injection/SQLi/SSRF/SSTI/path-traversal
+  verifier across all three CMS-specific modules plus the generic one gets its real winning
+  payload shown for the first time), and the `None`-filter now rejects any row whose rendered
+  value contains "None" anywhere, not just an exact match. Covered by 5 new tests in
+  `tests/test_tools_and_config.py`: the verifier against a self-contained offline repro of the
+  exact bug shape (no network needed for CI: an `eval` over shell-globbed filenames, not the
+  real npm package) with both a positive and a safely-quoted negative control, a setup-failure
+  path, the full dispatch+render path for the CLI case, and a render test proving the
+  `payload_ganador` row now appears for a non-WordPress verified class with zero WordPress-shaped
+  fields.
+  Deliberately still narrow: covers exactly the proven shape (a crafted FILENAME reaching a
+  shell via `shell: true`), not a generic "any CLI tool" framework -- if payload-in-an-argv-VALUE
+  (rather than a filename) turns up as a second real confirmed case, it gets added with the same
+  "poco a poco" discipline, not guessed ahead of time.
 
 ## Explicitly out of scope
 

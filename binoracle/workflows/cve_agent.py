@@ -1576,6 +1576,31 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     from .webexploit import build_http_poc
 
     notes = inv.llm_notes or {}
+    # CVE sobre una herramienta CLI LOCAL (sin servicio escuchando, sin endpoint HTTP) -- ver
+    # cliverify.py, confirmado en vivo con CVE-2025-64756 (glob npm CLI). Reusa la clase
+    # command-injection/os-command-injection de siempre (asi la clasifica classify_cve() sobre
+    # la descripcion real del aviso, igual que para el caso web -- un vuln_class nuevo e
+    # inventado aqui nunca ganaria: classify_cve(inv.description) se intenta ANTES que el hint
+    # del analista en la asignacion de inv.vuln_class, ver mas abajo en investigate_cve). Lo que
+    # distingue el caso CLI del caso web no es la clase, es la FORMA del objetivo: aqui no hay
+    # endpoint, hay un comando de preparacion + un comando de ejecucion. Se resuelve aqui mismo y
+    # se sale pronto: el resto de esta funcion (fetch_source de un plugin/modulo, grep de
+    # funciones citadas, PoC HTTP...) no aplica a una herramienta sin endpoint ni codigo de
+    # plugin que descargar -- el "source" aqui es el propio setup_cmd (p.ej. "npm install
+    # glob@11.0.0"), no un repo/zip que fetch_source entienda.
+    if (inv.vuln_class in ("command-injection", "os-command-injection")
+            and notes.get("cli_setup_cmd") and notes.get("cli_run_cmd")):
+        from .cliverify import verify_cli_filename_command_injection
+        step(("intentando verificacion DINAMICA de una herramienta CLI local (sin endpoint "
+             "HTTP): se prepara un entorno descartable, se planta un fichero cuyo nombre es el "
+             "payload, y se ejecuta la herramienta tal cual la usaria un analista..." if es else
+             "attempting DYNAMIC verification of a local CLI tool (no HTTP endpoint): a "
+             "disposable environment is prepared, a file whose name is the payload is planted, "
+             "and the tool is run exactly as an analyst would..."))
+        wr = verify_cli_filename_command_injection(
+            notes["cli_setup_cmd"], notes["cli_run_cmd"], on_step=step, budget_s=budget_s)
+        _apply_wpverify_result(inv, wr, es, llm)
+        return
     source = (notes.get("source_url") or "").strip()
     version_raw = (notes.get("affected_version") or "").strip()
     version = _clean_affected_version(version_raw)
@@ -3457,41 +3482,79 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
                    + "** (sandbox): " + inv.verified_detail)
         if inv.verified_evidence:
             ev = inv.verified_evidence
-            out.append("\n### " + ("Evidencia real de la ejecucion (laboratorio efimero)" if es else
-                                   "Real evidence from the run (ephemeral lab)"))
-            out.append(("_Datos reales de la peticion que SE EJECUTO y SE CONFIRMO de verdad contra "
-                        "el WordPress desechable de arriba -- no una plantilla. El laboratorio ya "
-                        "esta destruido: estas credenciales no abren nada, se muestran como prueba "
-                        "de que el flujo corrio de verdad, no que se simulo._" if es else
-                        "_Real data from the request that WAS ACTUALLY SENT and CONFIRMED against "
-                        "the throwaway WordPress above -- not a template. The lab is already torn "
-                        "down: these credentials unlock nothing, shown as proof the flow really "
-                        "ran, not that it was simulated._"))
-            rows = [
-                (("Usuario de bajo privilegio" if es else "Low-privilege user"),
-                 f"`{ev.get('login_bajo_privilegio')}` / `{ev.get('login_bajo_privilegio_password')}`"),
-                (("Admin objetivo (laboratorio)" if es else "Target admin (lab)"),
-                 f"`{ev.get('admin_user')}` (id={ev.get('admin_id')})"),
-                (("Parametros (rol -> nombre real)" if es else "Parameters (role -> real name)"),
-                 ", ".join(f"{role}={name}" for role, name in
-                          (("id", ev.get("id_param")), ("email", ev.get("email_param")),
-                           ("password", ev.get("pass_param"))) if name)),
-                (("Peticion enviada" if es else "Request sent"),
-                 f"`{ev.get('metodo')} {ev.get('endpoint')}`"),
-                (("Payload real" if es else "Real payload"), f"`{ev.get('payload_enviado')}`"),
-                (("Codigo de respuesta" if es else "Response status"),
-                 str(ev.get("status_code_respuesta"))),
-            ]
-            if ev.get("password_nueva_confirmada"):
-                rows.append((("Password fijada y CONFIRMADA por segundo login" if es else
-                             "Password set and CONFIRMED by second login"),
-                            f"`{ev['password_nueva_confirmada']}`"))
-            if ev.get("email_nuevo_confirmado"):
-                rows.append((("Email fijado y CONFIRMADO leyendo el usuario" if es else
-                             "Email set and CONFIRMED by reading the user"),
-                            f"`{ev['email_nuevo_confirmado']}` (leido: `{ev.get('email_leido_tras_ataque')}`)"))
+            out.append("\n### " + ("Evidencia real de la ejecucion" if es else
+                                   "Real evidence from the run"))
+            out.append(("_Datos reales de la ejecucion que SE CONFIRMO de verdad -- no una "
+                        "plantilla. Si fue un laboratorio efimero (Docker), ya esta destruido: "
+                        "estas credenciales/rutas no abren nada, se muestran como prueba de que "
+                        "el flujo corrio de verdad, no que se simulo._" if es else
+                        "_Real data from the run that WAS ACTUALLY CONFIRMED -- not a template. "
+                        "If it was an ephemeral (Docker) lab, it's already torn down: these "
+                        "credentials/paths unlock nothing, shown as proof the flow really ran, "
+                        "not that it was simulated._"))
+            # bug real confirmado en vivo investigando CVE-2025-64756 (glob npm CLI): esta tabla
+            # solo conocia la FORMA concreta del account-takeover de wpverify.py
+            # (login_bajo_privilegio/admin_user/...) -- cualquier otro verificador (command
+            # injection/SQLi/SSRF/SSTI/path-traversal en wpverify.py/drupalverify.py/
+            # genericverify.py, DECENAS de sitios reales que guardan `payload_ganador` en
+            # evidence) se quedaba SIN NINGUNA fila de prueba en el informe, y el filtro de
+            # "None" tampoco atrapaba cadenas COMPUESTAS como "`None` (id=None)" -- asi que un
+            # CVE verificado de verdad por una de esas clases mostraba filas falsas rotuladas
+            # "WordPress" con `None` por todos lados en vez de la prueba real que SI se calculo.
+            rows = []
+            if ev.get("login_bajo_privilegio") or ev.get("admin_user"):
+                rows += [
+                    (("Usuario de bajo privilegio" if es else "Low-privilege user"),
+                     f"`{ev.get('login_bajo_privilegio')}` / `{ev.get('login_bajo_privilegio_password')}`"),
+                    (("Admin objetivo (laboratorio)" if es else "Target admin (lab)"),
+                     f"`{ev.get('admin_user')}` (id={ev.get('admin_id')})"),
+                    (("Parametros (rol -> nombre real)" if es else "Parameters (role -> real name)"),
+                     ", ".join(f"{role}={name}" for role, name in
+                              (("id", ev.get("id_param")), ("email", ev.get("email_param")),
+                               ("password", ev.get("pass_param"))) if name)),
+                ]
+                if ev.get("password_nueva_confirmada"):
+                    rows.append((("Password fijada y CONFIRMADA por segundo login" if es else
+                                 "Password set and CONFIRMED by second login"),
+                                f"`{ev['password_nueva_confirmada']}`"))
+                if ev.get("email_nuevo_confirmado"):
+                    rows.append((("Email fijado y CONFIRMADO leyendo el usuario" if es else
+                                 "Email set and CONFIRMED by reading the user"),
+                                f"`{ev['email_nuevo_confirmado']}` (leido: `{ev.get('email_leido_tras_ataque')}`)"))
+            if ev.get("endpoint") and (ev.get("metodo") or ev.get("http_method")):
+                rows.append((("Peticion enviada" if es else "Request sent"),
+                            f"`{ev.get('metodo') or ev.get('http_method')} {ev.get('endpoint')}`"))
+            if ev.get("payload_enviado"):
+                rows.append((("Payload real" if es else "Real payload"),
+                            f"`{ev.get('payload_enviado')}`"))
+            if ev.get("status_code_respuesta") is not None:
+                rows.append((("Codigo de respuesta" if es else "Response status"),
+                            str(ev.get("status_code_respuesta"))))
+            # parametro/payload ganador: la prueba real de command injection/SQLi/SSRF/SSTI/
+            # path-traversal en wpverify.py/drupalverify.py/genericverify.py (ver arriba) -- antes
+            # de este fix, NUNCA se mostraba en el informe pese a calcularse siempre.
+            if ev.get("payload_ganador") or ev.get("parametro_ganador"):
+                rows.append((("Parametro/payload que confirmo la vulnerabilidad" if es else
+                             "Parameter/payload that confirmed the vulnerability"),
+                            f"`{ev.get('parametro_ganador') or '?'}` = `{ev.get('payload_ganador')}`"))
+            if ev.get("canary_path") or ev.get("canary_secret"):
+                rows.append((("Canario (fichero/secreto)" if es else "Canary (file/secret)"),
+                            f"`{ev.get('canary_path') or ''}` -- `{ev.get('canary_secret') or ''}`"))
+            # forma de verify_cli_filename_command_injection (cliverify.py): sin endpoint/sesion,
+            # un comando de preparacion + un comando de ejecucion sobre un fichero-payload local.
+            if ev.get("run_cmd") and ev.get("canary_name"):
+                rows += [
+                    (("Comando de preparacion (entorno descartable)" if es else
+                     "Setup command (disposable environment)"), f"`{ev.get('setup_cmd')}`"),
+                    (("Comando ejecutado" if es else "Command run"), f"`{ev.get('run_cmd')}`"),
+                    (("Fichero-payload plantado (su NOMBRE es el payload)" if es else
+                     "Payload file planted (its NAME is the payload)"),
+                     f"`{ev.get('payload_filename')}`"),
+                    (("Canario confirmado" if es else "Canary confirmed"),
+                     f"`{ev.get('canary_name')}` ({ev.get('canario_presente')})"),
+                ]
             for label, value in rows:
-                if value and value not in ("None", "`None`"):
+                if value and "None" not in value:
                     out.append(f"- **{label}**: {value}")
         shots = (inv.verified_evidence or {}).get("screenshots") or []
         if shots:

@@ -4844,6 +4844,105 @@ def test_cve_agent_renders_real_evidence_not_a_placeholder_on_verified(monkeypat
     assert "Evidencia real" in rendered
 
 
+def test_cliverify_detects_real_filename_command_injection_without_network():
+    # Reproduce el patron exacto de CVE-2025-64756 (glob npm CLI: nombres de fichero pasados a
+    # una shell sin escapar via `foregroundChild(cmd, matches, { shell: true })`) sin red/npm --
+    # un `eval` sobre cada nombre de fichero listado por el propio shell es la misma clase de bug,
+    # autocontenida y deterministica para el test (la version real SI se reprodujo en vivo contra
+    # el paquete npm real, ver ROADMAP.md).
+    from binoracle.workflows.cliverify import verify_cli_filename_command_injection
+
+    r = verify_cli_filename_command_injection(
+        "true", 'for f in *; do eval "echo $f" >/dev/null 2>&1; done')
+    assert r.verified is True
+    assert r.ok is True
+    assert r.evidence["canario_presente"] is True
+    assert r.evidence["canary_name"] in r.detail
+
+
+def test_cliverify_reports_not_verified_when_filename_is_handled_safely():
+    # Control negativo -- el MISMO listado de ficheros, pero citado entre comillas (nunca
+    # reinterpretado por una shell): ninguna version parcheada de una herramienta real deberia
+    # confundirse con una vulnerable. Confirmado tambien en vivo contra glob@11.1.0 (version
+    # parcheada real), ver ROADMAP.md.
+    from binoracle.workflows.cliverify import verify_cli_filename_command_injection
+
+    r = verify_cli_filename_command_injection(
+        "true", 'for f in *; do echo "$f" >/dev/null 2>&1; done')
+    assert r.verified is False
+    assert r.ok is True
+    assert r.evidence["canario_presente"] is False
+
+
+def test_cliverify_reports_setup_failure_without_crashing():
+    from binoracle.workflows.cliverify import verify_cli_filename_command_injection
+
+    r = verify_cli_filename_command_injection("exit 1", "echo unreachable")
+    assert r.ok is False
+    assert r.verified is False
+    assert r.evidence["setup_returncode"] == 1
+
+
+def test_cve_agent_cli_command_injection_dispatches_without_endpoint_and_renders_real_evidence(monkeypatch):
+    # Bug real encontrado en vivo investigando CVE-2025-64756 (glob npm CLI) sin LLM: una CVE de
+    # command injection en una herramienta CLI LOCAL no tiene endpoint HTTP -- el despacho debe
+    # reconocerla por los hints cli_setup_cmd/cli_run_cmd (nunca por source_url/endpoint, que
+    # aqui no existen) y NUNCA entrar en el camino web generico (que fallaria sin source_url). El
+    # informe debe mostrar la FORMA REAL de esta evidencia (comando ejecutado, fichero-payload,
+    # canario) -- antes de este fix, mostraba filas de WordPress rotuladas "contra el WordPress
+    # desechable" con literales "None" por todas partes, para una CVE que ni siquiera es web.
+    from binoracle.workflows.cve_agent import Investigation, _run_web_investigation, render_investigation
+    from binoracle.workflows.wpverify import WpVerifyResult
+    import binoracle.workflows.cliverify as cliverify
+
+    inv = Investigation(cve_id="CVE-2025-64756")
+    inv.vuln_class = "command-injection"
+    inv.llm_notes = {"cli_setup_cmd": "npm install glob@11.0.0",
+                     "cli_run_cmd": 'node node_modules/.bin/glob -c echo "**/*"'}
+
+    fake_wr = WpVerifyResult(
+        ok=True, verified=True,
+        detail="COMMAND INJECTION confirmada: el canario aparecio",
+        evidence={"setup_cmd": "npm install glob@11.0.0",
+                  "run_cmd": 'node node_modules/.bin/glob -c echo "**/*"',
+                  "payload_filename": "$(touch binoracle_cli_canary_abc)",
+                  "canary_name": "binoracle_cli_canary_abc", "canario_presente": True})
+    monkeypatch.setattr(cliverify, "verify_cli_filename_command_injection", lambda *a, **k: fake_wr)
+
+    _run_web_investigation(inv, lang="es", step=lambda m: None)
+    assert inv.verified is True
+
+    rendered = render_investigation(inv, lang="es")
+    assert "binoracle_cli_canary_abc" in rendered
+    assert "npm install glob@11.0.0" in rendered
+    assert "WordPress" not in rendered
+    evidence_block = rendered.split("Evidencia real")[1].split("Recomendaciones")[0]
+    assert "None" not in evidence_block
+
+
+def test_cve_agent_renders_winning_payload_for_non_wordpress_verifiers():
+    # Bug real encontrado al auditar el informe: `payload_ganador`/`parametro_ganador` -- la
+    # prueba real que command injection/SQLi/SSRF/SSTI/path-traversal en wpverify.py/
+    # drupalverify.py/genericverify.py SIEMPRE calculan al verificar -- nunca se mostraba en el
+    # informe (la tabla solo conocia la forma de account-takeover de WordPress). Confirma que
+    # ahora sale, para una evidencia que NO tiene ninguno de los campos de WordPress.
+    from binoracle.workflows.cve_agent import Investigation, render_investigation
+
+    inv = Investigation(cve_id="CVE-2025-9999")
+    inv.vuln_class = "sqli"
+    inv.verified = True
+    inv.verified_detail = "SQLI confirmada"
+    inv.verified_evidence = {"base_url": "http://127.0.0.1:1234", "endpoint": "/vuln.php",
+                             "metodo": "GET", "parametro_ganador": "id",
+                             "payload_ganador": "1' OR SLEEP(5)-- -"}
+    rendered = render_investigation(inv, lang="es")
+    assert "1' OR SLEEP(5)-- -" in rendered
+    assert "id" in rendered
+    evidence_block = rendered.split("Evidencia real")[1].split("Recomendaciones")[0]
+    assert "WordPress" not in evidence_block
+    assert "None" not in evidence_block
+
+
 def test_md_rich_renders_italics_without_breaking_snake_case_identifiers():
     # Bug real: "_Paso 1: WordPress recien instalado._" (los pies de foto de wpverify.py) salia
     # con los guiones bajos literales -- _md_rich no soportaba cursiva markdown en absoluto. El
