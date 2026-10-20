@@ -4967,6 +4967,29 @@ def test_wpverify_docker_daemon_check_is_safe():
     assert isinstance(_docker_daemon_ok(timeout=3.0), bool)
 
 
+def test_wpverify_wp_image_is_overridable_for_php_version_sensitive_cves(monkeypatch):
+    # Hallazgo real investigando CVE-2024-1071 (Ultimate Member SQLi) en vivo contra un
+    # laboratorio real: el sink vulnerable (ORDER BY con el valor de 'sorting' sin escapar,
+    # via $this->query_args['orderby'] = $sortby en class-member-directory.php) depende de como
+    # WP_Users_Query construye el SQL final, y el comportamiento puede variar segun la version de
+    # PHP del objetivo (el PoC publico original se penso para un entorno tipico de esa epoca,
+    # PHP 7.x). Fijar siempre la MISMA imagen de WordPress (una sola version de PHP) en el
+    # laboratorio efimero puede dar un falso negativo para una CVE cuyo entorno real era otro.
+    # BINORACLE_WP_IMAGE deja al analista fijar la imagen oficial 'wordpress' concreta (p.ej.
+    # wordpress:php7.4-apache) sin tocar codigo.
+    import importlib
+    import binoracle.workflows.wpverify as wv
+    assert wv._WP_IMAGE == "wordpress:php8.2-apache"   # default sin la variable
+    monkeypatch.setenv("BINORACLE_WP_IMAGE", "wordpress:php7.4-apache")
+    importlib.reload(wv)
+    try:
+        assert wv._WP_IMAGE == "wordpress:php7.4-apache"
+    finally:
+        monkeypatch.delenv("BINORACLE_WP_IMAGE", raising=False)
+        importlib.reload(wv)   # deja el modulo como estaba para el resto de la suite
+        assert wv._WP_IMAGE == "wordpress:php8.2-apache"
+
+
 def test_wpverify_unavailable_without_docker_daemon(monkeypatch):
     # Cuando no hay daemon Docker, degrada honestamente: available=False, verified=False, y
     # NO intenta levantar nada (nunca llega a crear red/contenedores).

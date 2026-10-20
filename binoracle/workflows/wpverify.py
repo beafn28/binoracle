@@ -48,7 +48,14 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 _MYSQL_IMAGE = "mysql:5.7"
-_WP_IMAGE = "wordpress:php8.2-apache"
+# Overridable: confirmed live investigating CVE-2024-1071 (Ultimate Member SQLi) that the
+# vulnerable code's `in_array($sortby, $custom_sort)` / loose `==` comparisons are PHP-version
+# sensitive (PHP 8's stricter comparison semantics vs PHP 7.x's looser type juggling) -- a lab
+# pinned to one PHP version can give a false negative for a CVE whose original PoC environment
+# ran an older PHP. BINORACLE_WP_IMAGE lets the analyst pin a specific official `wordpress`
+# Docker Hub tag (e.g. wordpress:php7.4-apache) to match the CVE's real-world era/environment
+# instead of always using the current default.
+_WP_IMAGE = os.environ.get("BINORACLE_WP_IMAGE", "wordpress:php8.2-apache")
 _WPCLI_IMAGE = "wordpress:cli"
 _ALPINE_IMAGE = "alpine:3.20"
 
