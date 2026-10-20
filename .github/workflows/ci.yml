@@ -13,11 +13,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install radare2
-        run: sudo apt-get update && sudo apt-get install -y radare2
+        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential
       - name: Install binoracle (+ optional oracles, dev tools)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[elf,dev]" r2pipe cvss olefile
+          pip install -e ".[elf,dev,web]" r2pipe cvss olefile
+      - name: Build the practice corpus (samples/bin -- gitignored, never checked in)
+        # samples/build.sh falls back to the host gcc on Linux when the gcc:13 Docker image
+        # isn't already present (which it isn't on a fresh runner) -- build-essential above
+        # covers it. Several tests (default_corpus, exploit_trainer, chainanalyzer...) need
+        # these real compiled ELFs; without this step they silently find an empty corpus.
+        run: bash samples/build.sh
       - name: Compile check
         run: python -m compileall -q binoracle
       - name: Lint (ruff -- pyflakes correctness checks, hard gate)
