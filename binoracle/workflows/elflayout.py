@@ -91,11 +91,9 @@ def inspect_elf(path: str) -> dict:
                 for tag in sec.iter_tags():
                     if tag.entry.d_tag == "DT_NEEDED":
                         needed.append(tag.needed)
-                    elif tag.entry.d_tag == "DT_BIND_NOW":
-                        bind_now = True
-                    elif tag.entry.d_tag == "DT_FLAGS" and (tag.entry.d_val & 0x8):      # DF_BIND_NOW
-                        bind_now = True
-                    elif tag.entry.d_tag == "DT_FLAGS_1" and (tag.entry.d_val & 0x1):    # DF_1_NOW
+                    elif (tag.entry.d_tag == "DT_BIND_NOW"
+                          or (tag.entry.d_tag == "DT_FLAGS" and (tag.entry.d_val & 0x8))      # DF_BIND_NOW
+                          or (tag.entry.d_tag == "DT_FLAGS_1" and (tag.entry.d_val & 0x1))):  # DF_1_NOW
                         bind_now = True
 
         pie = elf["e_type"] == "ET_DYN"

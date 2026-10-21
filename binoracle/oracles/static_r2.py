@@ -546,7 +546,7 @@ class R2Oracle(Oracle):
             xr = self._run(f"axt @ sym.imp.{fn}")
             for line in xr.splitlines():
                 line = line.strip()
-                if not line or "no" == line[:2].lower():
+                if not line or line[:2].lower() == "no":
                     continue
                 caller = line.split()[0] if line.split() else "?"
                 by_func.setdefault(caller, {"alloc": 0, "free": 0, "lines": []})

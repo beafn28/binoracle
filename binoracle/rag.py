@@ -615,9 +615,7 @@ def query_from_facts(facts: dict) -> str:
     for name, val in mit.items():
         s = str(val).lower()
         if name.lower() in ("nx", "pie", "canary", "relro"):
-            if "no" in s or "disabled" in s or val is False or "partial" in s:
-                parts.append(name)
-            elif val is True or "enabled" in s or "full" in s:
+            if "no" in s or "disabled" in s or val is False or "partial" in s or val is True or "enabled" in s or "full" in s:
                 parts.append(name)
     for imp in (facts.get("imports") or []):
         parts.append(str(imp))
