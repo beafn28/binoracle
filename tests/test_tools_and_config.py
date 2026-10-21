@@ -5080,6 +5080,28 @@ def test_wpverify_docker_daemon_check_is_safe():
     assert isinstance(_docker_daemon_ok(timeout=3.0), bool)
 
 
+def test_genericverify_reexports_configure_burp_mcp():
+    # Bug real encontrado por mypy (no por ruff/pytest -- F401 no detecta un reexport
+    # deliberado, y nada hasta ahora importaba configure_burp_mcp DESDE genericverify en un
+    # test): genericverify.py's import de wpverify.py se quedo sin `configure_burp_mcp` en su
+    # lista pese a que el comentario justo debajo prometia que SI se reexportaba "para no romper
+    # el `from .genericverify import configure_burp_mcp` que cli.py/web.py ya usaban" -- los tres
+    # sitios reales que hacen exactamente ese import (cli.py x2, web.py) fallaban con
+    # ImportError en cuanto alguien pasaba --burp-mcp-url: la integracion con Burp Suite estaba
+    # rota de verdad, en silencio, sin ningun test que lo cubriera. Confirma los tres import
+    # sites reales, no solo el modulo.
+    from binoracle.workflows.genericverify import configure_burp_mcp as from_generic
+    from binoracle.workflows.wpverify import configure_burp_mcp as from_wp
+    assert from_generic is from_wp
+    import ast
+    for path in ("binoracle/cli.py", "binoracle/web.py"):
+        tree = ast.parse(open(path).read(), filename=path)
+        found = any(isinstance(n, ast.ImportFrom) and n.module == "workflows.genericverify"
+                   and any(a.name == "configure_burp_mcp" for a in n.names)
+                   for n in ast.walk(tree))
+        assert found, f"{path} ya no importa configure_burp_mcp desde genericverify"
+
+
 def test_wpverify_wp_image_is_overridable_for_php_version_sensitive_cves(monkeypatch):
     # Hallazgo real investigando CVE-2024-1071 (Ultimate Member SQLi) en vivo contra un
     # laboratorio real: el sink vulnerable (ORDER BY con el valor de 'sorting' sin escapar,
