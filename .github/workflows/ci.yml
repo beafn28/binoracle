@@ -15,9 +15,14 @@ jobs:
       - name: Install radare2
         run: sudo apt-get update && sudo apt-get install -y radare2 build-essential
       - name: Install binoracle (+ optional oracles, dev tools)
+        # pwntools (the 'pwn' extra) was missing here -- real gap, not local noise: confirmed
+        # live by reproducing this exact install command and test run outside CI. Several
+        # live-verified exploit-chain tests (ROP/SROP cyclic-pattern offsets, chainanalyzer's
+        # execve-syscall driver) depend on pwntools and were silently reporting
+        # "pwntools no disponible: No module named 'pwn'" instead of actually verifying.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[elf,dev,web]" r2pipe cvss olefile
+          pip install -e ".[elf,dev,web,pwn]" r2pipe cvss olefile
       - name: Build the practice corpus (samples/bin -- gitignored, never checked in)
         # samples/build.sh falls back to the host gcc on Linux when the gcc:13 Docker image
         # isn't already present (which it isn't on a fresh runner) -- build-essential above

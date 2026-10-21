@@ -6484,6 +6484,299 @@ def test_joomlaverify_legacy_sqli_live_confirms_and_negative_control(tmp_path):
     assert r_fixed.verified is False, "falso positivo: la version con $db->Quote() no deberia verificar"
 
 
+def _write_location_selector_style_module(root, slug, fixed):
+    # Reproduce la MISMA forma que el modulo contrib real Location Selector <1.3.0
+    # (CVE-2026-15081 / SA-CONTRIB-2026-072, LocationSelectorFilter::opEqual() en
+    # git.drupalcode.org/project/location_selector) -- nunca el modulo real descargado (no se
+    # commitea, por politica del proyecto, igual que _write_legacy_vvisit_style_module para
+    # CVE-2025-40636), sino una reproduccion SINTETICA escrita a mano con la misma forma de
+    # vulnerabilidad: un filtro de Views cuyo valor expuesto debe ser JSON valido (json_decode),
+    # que extrae la CLAVE de un objeto anidado (key($values['selected'])) y la concatena cruda
+    # dentro de un JSON_CONTAINS_PATH(...) via addWhereExpression -- la parte boilerplate de
+    # FilterPluginBase (valueForm/operators) se simplifica porque no aporta nada a la forma de
+    # la vulnerabilidad en si.
+    mod = root / slug
+    (mod / "src" / "Plugin" / "Field" / "FieldType").mkdir(parents=True)
+    (mod / "src" / "Plugin" / "views" / "filter").mkdir(parents=True)
+
+    (mod / f"{slug}.info.yml").write_text(
+        "name: 'Binoracle Location Synth'\n"
+        "type: module\n"
+        "description: 'Synthetic reproduction (never the real downloaded module) of the "
+        "location_selector Views-filter SQLi shape, CVE-2026-15081.'\n"
+        "core_version_requirement: ^10 || ^11\n"
+        "package: 'Binoracle'\n")
+
+    (mod / f"{slug}.module").write_text(
+        "<?php\n\n"
+        "use Drupal\\field\\FieldStorageConfigInterface;\n\n"
+        f"function {slug}_field_views_data_alter(array &$data, "
+        "FieldStorageConfigInterface $field_storage) {\n"
+        f"  if ($field_storage->getType() == '{slug}_type') {{\n"
+        "    foreach ($data as $table_name => $table_data) {\n"
+        "      foreach ($table_data as $field_name => $field_data) {\n"
+        "        if (isset($field_data['filter']) && $field_name != 'delta') {\n"
+        f"          $data[$table_name][$field_name]['filter']['id'] = '{slug}_filter';\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n")
+
+    class_base = "".join(p.capitalize() for p in slug.split("_"))
+    (mod / "src" / "Plugin" / "Field" / "FieldType" / f"{class_base}Type.php").write_text(
+        "<?php\n\n"
+        f"namespace Drupal\\{slug}\\Plugin\\Field\\FieldType;\n\n"
+        "use Drupal\\Core\\Field\\FieldItemBase;\n"
+        "use Drupal\\Core\\Field\\FieldStorageDefinitionInterface;\n"
+        "use Drupal\\Core\\TypedData\\DataDefinition;\n\n"
+        "/**\n"
+        " * @FieldType(\n"
+        f" *   id = \"{slug}_type\",\n"
+        " *   label = @Translation(\"Binoracle Location Synth\"),\n"
+        " *   default_widget = \"string_textfield\",\n"
+        " *   default_formatter = \"string\"\n"
+        " * )\n"
+        " */\n"
+        f"class {class_base}Type extends FieldItemBase {{\n\n"
+        "  public static function schema(FieldStorageDefinitionInterface $field_definition) {\n"
+        "    return ['columns' => ['value' => ['type' => 'json', 'mysql_type' => 'json', "
+        "'not null' => FALSE]]];\n"
+        "  }\n\n"
+        "  public function isEmpty() {\n"
+        "    $value = $this->get('value')->getValue();\n"
+        "    return $value === NULL || $value === '';\n"
+        "  }\n\n"
+        "  public static function propertyDefinitions(FieldStorageDefinitionInterface $field_definition) {\n"
+        "    $properties['value'] = DataDefinition::create('string')->setLabel(t('JSON value'));\n"
+        "    return $properties;\n"
+        "  }\n\n"
+        "}\n")
+
+    if fixed:
+        # El arreglo real de 8.x-1.3: placeholders ligados (:mode/:path) en vez de concatenar
+        # $value crudo dentro del texto SQL.
+        op_equal = (
+            "  public function opEqual($field) {\n"
+            "    $values = json_decode($this->value, TRUE);\n"
+            "    if (json_last_error() == JSON_ERROR_NONE) {\n"
+            "      if (!empty($values['selected'])) {\n"
+            "        $value = key($values['selected']);\n"
+            "        $condition = 'JSON_CONTAINS_PATH(' . $field . ', :mode, :path)';\n"
+            "        $this->query->addWhereExpression($this->options['group'], $condition, [\n"
+            "          ':mode' => 'one',\n"
+            "          ':path' => '$.\"selected\".\"' . $value . '\"',\n"
+            "        ]);\n"
+            "      }\n"
+            "    }\n"
+            "  }\n")
+    else:
+        # La forma vulnerable real: $value es key($values['selected']) -- la CLAVE de un objeto
+        # JSON anidado, no un valor -- concatenada cruda dentro del texto SQL.
+        op_equal = (
+            "  public function opEqual($field) {\n"
+            "    $values = json_decode($this->value, TRUE);\n"
+            "    if (json_last_error() == JSON_ERROR_NONE) {\n"
+            "      if (!empty($values['selected'])) {\n"
+            "        $one_or_all = 'one';\n"
+            "        $value = key($values['selected']);\n"
+            "        $query_string = 'JSON_CONTAINS_PATH(' . $field . ', \\'' . $one_or_all . "
+            "'\\', \\'$.\"selected\".\"' . $value . '\"\\')';\n"
+            "        $this->query->addWhereExpression($this->options['group'], $query_string);\n"
+            "      }\n"
+            "    }\n"
+            "  }\n")
+
+    (mod / "src" / "Plugin" / "views" / "filter" / f"{class_base}Filter.php").write_text(
+        "<?php\n\n"
+        f"namespace Drupal\\{slug}\\Plugin\\views\\filter;\n\n"
+        "use Drupal\\Core\\Form\\FormStateInterface;\n"
+        "use Drupal\\views\\Plugin\\views\\filter\\FilterPluginBase;\n\n"
+        "/**\n"
+        " * @ingroup views_filter_handlers\n"
+        f" * @ViewsFilter(\"{slug}_filter\")\n"
+        " */\n"
+        f"class {class_base}Filter extends FilterPluginBase {{\n\n"
+        "  protected $alwaysMultiple = TRUE;\n\n"
+        "  public function operators() {\n"
+        "    return ['=' => ['title' => $this->t('Is equal to'), 'short' => $this->t('='), "
+        "'method' => 'opEqual', 'values' => 1]];\n"
+        "  }\n\n"
+        "  protected function valueForm(&$form, FormStateInterface $form_state) {\n"
+        "    $form['value'] = ['#type' => 'textfield', '#title' => $this->t('Value'), "
+        "'#default_value' => $this->value];\n"
+        "  }\n\n"
+        "  public function query() {\n"
+        "    $this->ensureMyTable();\n"
+        "    $field = \"$this->tableAlias.$this->realField\";\n"
+        "    $this->opEqual($field);\n"
+        "  }\n\n"
+        f"{op_equal}"
+        "}\n")
+
+
+def _location_selector_style_view_setup_php(slug, field_name):
+    # Reproduce la precondicion REAL que la propia advisory describe (SA-CONTRIB-2026-072): "a
+    # View that uses the affected filter AND is configured to accept user input" -- un campo del
+    # tipo que expone el filtro vulnerable, un nodo real con ese campo poblado (sin eso el JOIN
+    # no tiene fila sobre la que evaluar la expresion WHERE, y SLEEP() nunca llega a ejecutarse),
+    # y una View con ese filtro expuesto como parametro GET. Auditado en vivo contra el modulo
+    # REAL (no commiteado) con este mismo script, antes de parametrizarlo para el sintetico.
+    class_base = "".join(p.capitalize() for p in slug.split("_"))
+    table = f"node__{field_name}"
+    column = f"{field_name}_value"
+    return f"""<?php
+use Drupal\\field\\Entity\\FieldConfig;
+use Drupal\\field\\Entity\\FieldStorageConfig;
+use Drupal\\node\\Entity\\Node;
+use Drupal\\views\\Entity\\View;
+
+if (!FieldStorageConfig::loadByName('node', '{field_name}')) {{
+  FieldStorageConfig::create([
+    'field_name' => '{field_name}',
+    'entity_type' => 'node',
+    'type' => '{slug}_type',
+  ])->save();
+}}
+if (!FieldConfig::loadByName('node', 'page', '{field_name}')) {{
+  FieldConfig::create([
+    'field_name' => '{field_name}',
+    'entity_type' => 'node',
+    'bundle' => 'page',
+    'label' => 'Location (synth)',
+  ])->save();
+}}
+
+$existing = \\Drupal::entityQuery('node')->condition('type', 'page')
+  ->condition('title', 'binoracle-loc-node')->accessCheck(FALSE)->execute();
+if (!$existing) {{
+  Node::create([
+    'type' => 'page',
+    'title' => 'binoracle-loc-node',
+    'status' => 1,
+    '{field_name}' => ['value' => json_encode(['selected' => ['germany' => 1]])],
+  ])->save();
+}}
+
+if (View::load('binoracle_loc_test')) {{
+  View::load('binoracle_loc_test')->delete();
+}}
+$view = View::create([
+  'id' => 'binoracle_loc_test',
+  'label' => 'Binoracle Location SQLi Test',
+  'module' => 'views',
+  'base_table' => 'node_field_data',
+  'base_field' => 'nid',
+  'core' => 8005,
+  'display' => [
+    'default' => [
+      'display_plugin' => 'default',
+      'id' => 'default',
+      'display_title' => 'Master',
+      'position' => 0,
+      'display_options' => [
+        'title' => 'Binoracle Location SQLi Test',
+        'fields' => [
+          'title' => ['id' => 'title', 'table' => 'node_field_data', 'field' => 'title',
+            'plugin_id' => 'field', 'entity_type' => 'node', 'entity_field' => 'title'],
+        ],
+        'filters' => [
+          '{column}' => [
+            'id' => '{column}',
+            'table' => '{table}',
+            'field' => '{column}',
+            'plugin_id' => '{slug}_filter',
+            'operator' => '=',
+            'value' => '',
+            'group' => 1,
+            'exposed' => TRUE,
+            'expose' => [
+              'operator_id' => '',
+              'label' => 'Location',
+              'identifier' => 'loc',
+              'required' => FALSE,
+            ],
+            'entity_type' => 'node',
+            'entity_field' => '{field_name}',
+          ],
+        ],
+        'sorts' => [],
+        'arguments' => [],
+        'access' => ['type' => 'perm', 'options' => ['perm' => 'access content']],
+        'cache' => ['type' => 'none', 'options' => []],
+        'query' => ['type' => 'views_query', 'options' => []],
+        'exposed_form' => ['type' => 'basic', 'options' => ['submit_button' => 'Apply']],
+        'pager' => ['type' => 'full', 'options' => ['items_per_page' => 25, 'offset' => 0]],
+        'style' => ['type' => 'default'],
+        'row' => ['type' => 'fields'],
+      ],
+    ],
+    'page_1' => [
+      'display_plugin' => 'page',
+      'id' => 'page_1',
+      'display_title' => 'Page',
+      'position' => 1,
+      'display_options' => ['path' => 'binoracle-loc-test', 'display_extenders' => []],
+    ],
+  ],
+  'status' => TRUE,
+]);
+$view->save();
+drupal_flush_all_caches();
+echo "BINORACLE_SETUP_OK\\n";
+"""
+
+
+def test_drupalverify_sqli_json_key_envelope_live_confirms_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): reproduce la
+    # forma EXACTA de CVE-2026-15081 / SA-CONTRIB-2026-072 (modulo contrib Location Selector,
+    # LocationSelectorFilter::opEqual(), <1.3.0) en un modulo sintetico -- json_decode() exige
+    # JSON valido en el valor expuesto, y el codigo vulnerable concatena CRUDA la CLAVE de un
+    # objeto JSON anidado (key($values['selected'])) dentro de un JSON_CONTAINS_PATH(...) SQL.
+    # Auditada primero en vivo contra el modulo REAL descargado de git.drupalcode.org (8.x-1.2,
+    # nunca commiteado): ninguna de las 4 tecnicas que verify_drupal_sqli ya tenia llega siquiera
+    # a ejecutar la consulta, porque todas asumen que el valor crudo del parametro ES el
+    # fragmento SQL -- aqui tiene que seguir siendo JSON valido. json_key_envelope (ver su
+    # docstring en verify_drupal_sqli) resuelve eso sin duplicar las 4 tecnicas. Tambien
+    # necesito un payload nuevo en timing_pairs (closing-quote-resync, ver su comentario) porque
+    # los 3 payloads previos usan un comentario '-- ' que se come el parentesis de cierre que
+    # Views agrega DESPUES en la misma linea -- y el fix de "repetir el MISMO payload 2 veces"
+    # (en vez de exigir que acuerden payloads DISTINTOS, igual que ya hace
+    # verify_generic_sqli_blind) porque solo ESE UNO de los 4 payloads es sintacticamente capaz
+    # de llegar al sumidero real. Control negativo: el mismo modulo pero con el arreglo real
+    # (placeholders :mode/:path) no debe dar falso positivo.
+    import pytest
+    from binoracle.workflows.drupalverify import verify_drupal_sqli, _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    slug = "binoracle_locsynth"
+    field_name = f"field_{slug}"
+    setup_php = _location_selector_style_view_setup_php(slug, field_name)
+
+    vuln_root = tmp_path / "vuln"
+    _write_location_selector_style_module(vuln_root, slug, fixed=False)
+    fixed_root = tmp_path / "fixed"
+    _write_location_selector_style_module(fixed_root, slug, fixed=True)
+
+    common_kwargs = dict(
+        endpoint="/binoracle-loc-test", http_method="GET", parameters={"loc": "x"},
+        sqli_param_hint="loc", json_key_envelope='{"selected":{"{key}":"1"}}',
+        extra_setup_script=setup_php, budget_s=900.0,
+    )
+
+    r_vuln = verify_drupal_sqli(str(vuln_root), slug, **common_kwargs)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert "SLEEP" in r_vuln.evidence.get("payload_ganador", "")
+
+    r_fixed = verify_drupal_sqli(str(fixed_root), slug, **common_kwargs)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, (
+        "falso positivo: la version con placeholders :mode/:path no deberia verificar")
+
+
 def test_cve_agent_deterministic_hints_recognizes_wp_rest_route(tmp_path):
     from binoracle.workflows.cve_agent import _deterministic_web_hints_from_source
     (tmp_path / "rest-plugin.php").write_text(
@@ -8647,6 +8940,255 @@ def test_genericverify_sqli_blind_blocked_without_docker(monkeypatch, tmp_path):
     assert res.verified is False
 
 
+def _write_generic_nested_paren_sqli_app(root, parameterized):
+    # Reproduce la MISMA forma que CVE-2025-40636 (ver _write_legacy_vvisit_style_module /
+    # joomlaverify.py mas arriba: WHERE ip=UNHEX(SHA1('$ip')), payload ganador real con
+    # exactamente DOS parentesis de cierre) pero en un objetivo HTTP generico (Flask + sqlite,
+    # sin CMS alguno) para probar genericverify.py's propio _SQLI_CONTEXTS -- el valor
+    # contaminado se nida DOS niveles dentro de llamadas a funcion (ABS(('<val>'))), igual que
+    # el UNHEX(SHA1(...)) real, en vez de un simple WHERE col='$val'. SQLite no trae SLEEP()
+    # propio -- se registra como funcion SQL propia (create_function), tal como el comentario de
+    # _SQLI_SLEEP_EXPRS en genericverify.py ya anticipa ("SQLite con create_function propio").
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "requirements.txt").write_text("flask\n")
+    (root / "Dockerfile").write_text(
+        "FROM python:3.11-slim\n"
+        "WORKDIR /app\n"
+        "COPY requirements.txt .\n"
+        "RUN pip install --no-cache-dir -r requirements.txt\n"
+        "COPY app.py .\n"
+        "EXPOSE 5000\n"
+        'CMD ["python", "app.py"]\n'
+    )
+    if parameterized:
+        query_line = '    query = "SELECT * FROM items WHERE id=ABS((?))"\n'
+        exec_line = "        cur = conn.execute(query, (item_id,))\n"
+    else:
+        query_line = '    query = "SELECT * FROM items WHERE id=ABS((\'%s\'))" % item_id\n'
+        exec_line = "        cur = conn.execute(query)\n"
+    (root / "app.py").write_text(
+        "import sqlite3\n"
+        "import time\n"
+        "from flask import Flask, request, jsonify\n\n"
+        "app = Flask(__name__)\n"
+        'DB_PATH = "/tmp/items.db"\n\n\n'
+        "def _sql_sleep(seconds):\n"
+        "    time.sleep(float(seconds))\n"
+        "    return 0\n\n\n"
+        "def get_conn():\n"
+        "    conn = sqlite3.connect(DB_PATH)\n"
+        '    conn.create_function("SLEEP", 1, _sql_sleep)\n'
+        "    return conn\n\n\n"
+        "def init_db():\n"
+        "    conn = get_conn()\n"
+        '    conn.execute("CREATE TABLE IF NOT EXISTS items (id INTEGER, name TEXT)")\n'
+        '    conn.execute("DELETE FROM items")\n'
+        '    conn.execute("INSERT INTO items (id, name) VALUES (1, \'widget\')")\n'
+        "    conn.commit()\n"
+        "    conn.close()\n\n\n"
+        "init_db()\n\n\n"
+        '@app.route("/item")\n'
+        "def item():\n"
+        '    item_id = request.args.get("id", "1")\n'
+        "    conn = get_conn()\n"
+        f"{query_line}"
+        "    try:\n"
+        f"{exec_line}"
+        "        rows = cur.fetchall()\n"
+        "    except Exception as e:\n"
+        '        return jsonify({"error": str(e)}), 500\n'
+        "    finally:\n"
+        "        conn.close()\n"
+        '    return jsonify({"rows": rows})\n\n\n'
+        'if __name__ == "__main__":\n'
+        '    app.run(host="0.0.0.0", port=5000)\n'
+    )
+
+
+def test_genericverify_sqli_blind_live_confirms_nested_paren_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): cierra el gap que
+    # ec3f98b (joomlaverify.py) dejo documentado a proposito en ROADMAP.md -- _SQLI_CONTEXTS en
+    # genericverify.py solo cerraba UN nivel de parentesis, pero SQL real frecuentemente nida el
+    # valor contaminado dentro de llamadas a funcion (confirmado en vivo contra CVE-2025-40636:
+    # UNHEX(SHA1('$ip')), payload ganador real con exactamente DOS parentesis de cierre).
+    #
+    # Levanta un objetivo HTTP generico sintetico (Flask + sqlite, SIN ningun CMS) cuya query
+    # nida el parametro DOS niveles dentro de funciones (ABS(('<val>'))) -- analoga en forma a
+    # UNHEX(SHA1(...)) pero generica -- y confirma que verify_generic_sqli_blind con la lista
+    # YA ampliada detecta la SQLi ciega por tiempo real (verified=True, con el payload ganador
+    # necesitando "'))" para cuadrar los parentesis). Control negativo: el mismo objetivo con la
+    # query parametrizada (sqlite3 placeholder "?", el arreglo real) no debe dar un falso
+    # positivo (verified=False).
+    #
+    # Antes de este cambio (lista vieja sin variantes anidadas), se corrio manualmente este mismo
+    # objetivo vulnerable contra verify_generic_sqli_blind y NO detecto la inyeccion (24
+    # combinaciones probadas, ninguna cuadraba los parentesis) -- prueba de que el gap era real,
+    # no asumido; ver el commit que agrego este test para los detalles de esa corrida.
+    import pytest
+    from binoracle.workflows.genericverify import verify_generic_sqli_blind
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_generic_nested_paren_sqli_app(vuln_root, parameterized=False)
+    fixed_root = tmp_path / "fixed"
+    _write_generic_nested_paren_sqli_app(fixed_root, parameterized=True)
+
+    r_vuln = verify_generic_sqli_blind(str(vuln_root), "/item", "GET", {"id": "1"},
+                                       sqli_param_hint="id", budget_s=240.0)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert "))" in r_vuln.evidence.get("payload_ganador", "")
+
+    r_fixed = verify_generic_sqli_blind(str(fixed_root), "/item", "GET", {"id": "1"},
+                                        sqli_param_hint="id", budget_s=240.0)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: la query parametrizada no deberia verificar"
+
+
+def _write_generic_login_no_match_sqli_app(root, parameterized):
+    # Reproduce la MISMA forma real que CVE-2026-9469 (StudentManagementSystem /success.php:
+    # "SELECT * FROM admin WHERE user='$user' AND password='$hash'") en un objetivo HTTP
+    # generico (Flask + MySQL real via docker-compose, sin CMS alguno) -- un formulario de
+    # login probado SIN credenciales validas (el caso mas comun: nadie conoce ya una cuenta real
+    # de antemano). Confirmado en vivo contra el repo real descargado en el commit que agrego
+    # este test: el bucle viejo de verify_generic_sqli_blind SOLO probaba "<val> AND <sleep>",
+    # que MySQL cortocircuita por fila sin evaluar SLEEP() nunca cuando <val> no machea ninguna
+    # fila (0.0s en 45/45 combinaciones AND contra la tabla `admin` real, 6 filas) -- la
+    # inyeccion es real pero no se detectaba. Usa MySQL real (no SQLite): SQLite pliega la
+    # subquery derivada ("SELECT 1 FROM (SELECT SLEEP(n))") como constante SIN LLEGAR A LLAMAR
+    # la funcion registrada (confirmado aparte, a mano, al disenar este fixture) -- un
+    # comportamiento propio de su optimizador que no reproduce el de MySQL/MariaDB, el motor
+    # real de esta CVE.
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "docker-compose.yml").write_text(
+        "services:\n"
+        "  app:\n"
+        "    build: .\n"
+        '    ports:\n'
+        '      - "5000"\n'
+        "    depends_on:\n"
+        "      - db\n"
+        "  db:\n"
+        "    image: mysql:8.0\n"
+        "    environment:\n"
+        '      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"\n'
+        "      MYSQL_DATABASE: appdb\n"
+    )
+    (root / "Dockerfile").write_text(
+        "FROM python:3.11-slim\n"
+        "WORKDIR /app\n"
+        "COPY requirements.txt .\n"
+        "RUN pip install --no-cache-dir -r requirements.txt\n"
+        "COPY app.py .\n"
+        "EXPOSE 5000\n"
+        'CMD ["python", "app.py"]\n'
+    )
+    (root / "requirements.txt").write_text("flask\npymysql\n")
+    if parameterized:
+        query_lines = ('    sql = "SELECT * FROM users WHERE user=%s AND pass=%s"\n'
+                       "    cur.execute(sql, (user, pw))\n")
+    else:
+        query_lines = ('    sql = "SELECT * FROM users WHERE user=\'%s\' AND pass=\'%s\'" '
+                       '% (user, pw)\n'
+                       "    cur.execute(sql)\n")
+    (root / "app.py").write_text(
+        "import time\n"
+        "from flask import Flask, request, jsonify\n"
+        "import pymysql\n\n"
+        "app = Flask(__name__)\n\n\n"
+        "def get_conn():\n"
+        "    last_err = None\n"
+        "    for _ in range(40):\n"
+        "        try:\n"
+        '            return pymysql.connect(host="db", user="root", password="",\n'
+        '                                    database="appdb", autocommit=True)\n'
+        "        except Exception as e:\n"
+        "            last_err = e\n"
+        "            time.sleep(1)\n"
+        "    raise last_err\n\n\n"
+        "def init_db():\n"
+        "    conn = get_conn()\n"
+        "    cur = conn.cursor()\n"
+        '    cur.execute("CREATE TABLE IF NOT EXISTS users (user VARCHAR(255), '
+        'pass VARCHAR(255))")\n'
+        '    cur.execute("DELETE FROM users")\n'
+        '    seed = [("alice", "x"), ("bob", "x"), ("carol", "x"), ("dave", "x"), '
+        '("erin", "x")]\n'
+        '    cur.executemany("INSERT INTO users (user, pass) VALUES (%s, %s)", seed)\n'
+        "    conn.close()\n\n\n"
+        "init_db()\n\n\n"
+        '@app.route("/")\n'
+        "def root():\n"
+        '    return "OK"\n\n\n'
+        '@app.route("/login", methods=["POST"])\n'
+        "def login():\n"
+        '    user = request.form.get("user", "")\n'
+        '    pw = request.form.get("pass", "")\n'
+        "    conn = get_conn()\n"
+        "    cur = conn.cursor()\n"
+        f"{query_lines}"
+        "    rows = cur.fetchall()\n"
+        "    conn.close()\n"
+        '    return jsonify({"rows": rows})\n\n\n'
+        'if __name__ == "__main__":\n'
+        '    app.run(host="0.0.0.0", port=5000)\n'
+    )
+
+
+def test_genericverify_sqli_blind_live_confirms_or_combinator_login_no_match_and_negative_control(
+        tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): cierra el gap
+    # confirmado en vivo contra CVE-2026-9469 (StudentManagementSystem real, /success.php,
+    # parametro `User`/`user`) -- verify_generic_sqli_blind SOLO probaba "<val> AND <sleep>",
+    # que requiere que <val> YA machee una fila real. Un formulario de login generico probado
+    # SIN credenciales validas (el caso mas comun) nunca la machea, y MySQL cortocircuita el AND
+    # por fila sin evaluar SLEEP() -- confirmado en vivo contra el repo real descargado: 45/45
+    # combinaciones AND, 0.0s cada una, pese a que la inyeccion es real y confirmable por fuera
+    # (success.php real, con y=curl manual, con "OR" si retraso la respuesta).
+    #
+    # "OR <sleep>" en bruto si fuerza la evaluacion sin necesitar fila que machee, pero SLEEP()
+    # se evalua UNA VEZ POR FILA escaneada (no cortocircuita -- SLEEP() siempre devuelve
+    # 0/falso) -- confirmado en vivo contra la tabla `admin` real (6 filas): "OR SLEEP(4)" tardo
+    # ~24s, no ~4s, un retraso que crece sin limite con el tamano de la tabla y arriesga superar
+    # el timeout de la peticion. Envolver el SLEEP en una subquery derivada sin correlacion
+    # ("OR (SELECT 1 FROM (SELECT SLEEP(n)) x)") la fuerza a materializarse una sola vez por
+    # consulta -- confirmado en vivo, mismo "OR" contra la misma tabla real: ~4.0s.
+    #
+    # Fixture: Flask + MySQL real via docker-compose (nunca el codigo real de
+    # StudentManagementSystem, que no se commitea, por politica del proyecto) reproduciendo la
+    # MISMA forma (login WHERE user='$user' AND pass='$hash', tabla con 5 filas, ninguna machea
+    # el valor base de prueba) -- confirma verified=True con el payload "OR" ganador contra la
+    # version vulnerable, y verified=False (negativo, no falso positivo) contra la misma app con
+    # la query parametrizada (el arreglo real).
+    import pytest
+    from binoracle.workflows.genericverify import verify_generic_sqli_blind
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_generic_login_no_match_sqli_app(vuln_root, parameterized=False)
+    fixed_root = tmp_path / "fixed"
+    _write_generic_login_no_match_sqli_app(fixed_root, parameterized=True)
+
+    r_vuln = verify_generic_sqli_blind(str(vuln_root), "/login", "POST",
+                                       {"user": "nope", "pass": "nope"},
+                                       sqli_param_hint="user", budget_s=400.0)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert " OR " in r_vuln.evidence.get("payload_ganador", "")
+
+    r_fixed = verify_generic_sqli_blind(str(fixed_root), "/login", "POST",
+                                        {"user": "nope", "pass": "nope"},
+                                        sqli_param_hint="user", budget_s=400.0)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: la query parametrizada no deberia verificar"
+
+
 def test_cve_agent_dispatches_generic_sqli_for_unrecognized_source(monkeypatch, tmp_path):
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
@@ -8882,6 +9424,45 @@ def test_genericverify_sqli_blind_includes_mssql_waitfor_dialect():
     from binoracle.workflows import genericverify
     src = inspect.getsource(genericverify.verify_generic_sqli_blind)
     assert "WAITFOR DELAY" in src
+
+
+def test_genericverify_package_json_without_main_or_scripts_is_not_a_node_signal(tmp_path):
+    # Confirmado en vivo contra CVE-2026-9469 (StudentManagementSystem, PHP real): su
+    # package.json es el de la plantilla front-end Bootstrap "SB Admin" -- solo
+    # dependencies/devDependencies de gulp/sass/jquery para su pipeline de assets, SIN "main" NI
+    # "scripts" en absoluto. _STACK_SIGNALS probaba package.json ANTES que composer.json/PHP
+    # suelto y lo detectaba como stack Node por error (generando un Dockerfile que nunca arranca
+    # nada real: "npm start || node index.js || ..." -- ninguno existe en un PoC de un solo
+    # tema de plantilla), dejando el PHP real (y la SQLi real) sin alcanzar nunca.
+    import json
+    from binoracle.workflows.genericverify import _find_build_target
+
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "startbootstrap-sb-admin", "version": "5.0.2",
+        "dependencies": {"bootstrap": "4.1.3", "jquery": "3.3.1"},
+        "devDependencies": {"gulp": "^3.9.1"},
+    }))
+    (tmp_path / "success.php").write_text("<?php echo 'real php app'; ?>\n")
+
+    target = _find_build_target(str(tmp_path))
+    assert target is not None
+    assert target["stack_detectado"] == "*.php (sin composer.json)"
+
+
+def test_genericverify_package_json_with_scripts_start_is_still_a_node_signal(tmp_path):
+    # Control negativo del fix de arriba: un package.json que SI declara como arrancarse
+    # (scripts.start) sigue detectandose como stack Node -- el fix solo excluye los que no
+    # declaran ninguna forma de arranque, no package.json en general.
+    import json
+    from binoracle.workflows.genericverify import _find_build_target
+
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "a-real-node-app", "scripts": {"start": "node server.js"},
+    }))
+
+    target = _find_build_target(str(tmp_path))
+    assert target is not None
+    assert target["stack_detectado"] == "package.json"
 
 
 # --- payload_kb.py: carga en tiempo de ejecucion de las wordlists reales de
@@ -13499,3 +14080,168 @@ def test_cveplan_cli_has_public_exploit_flag_reaches_the_script():
     assert r.returncode == 0, r.stderr
     assert "AVISO" in r.stdout
     assert "https://github.com/worawit/CVE-2021-3156" in r.stdout
+
+
+def _write_generic_gated_install_path_traversal_app(root, patched):
+    # Reproduce la forma real de CVE-2026-65694 (Microweber CMS 2.0.20, path traversal NO
+    # autenticado en ServeStaticFileContoller::serveFromUserfiles(), PR
+    # microweber/microweber#1181) en un objetivo HTTP generico (PHP puro, SIN Laravel ni base de
+    # datos real) -- confirmado en vivo contra el Microweber real (commit 51ac711, la base exacta
+    # de ese PR), instalado via su propio `php artisan microweber:install` CLI real:
+    #
+    # 1) ANTES de un paso de instalacion/migracion real, la app Laravel responde HTTP 200 a
+    #    CUALQUIER ruta -- incluida la propia ruta vulnerable -- con la pagina de instalacion, NO
+    #    con el codigo real del controlador (confirmado en vivo: /userfiles/{cualquier-cosa}
+    #    devolvia la pagina "Installation" hasta ejecutar el instalador real). Sin un paso de
+    #    configuracion real DESPUES de levantar el contenedor, cualquier generico que solo haga
+    #    `docker compose up` prueba contra esa pagina siempre-200 y NUNCA contra el codigo real,
+    #    sea vulnerable o no -- un falso negativo por entorno, no por el payload. Esto es lo que
+    #    el nuevo parametro `setup_commands` de _bootstrap_generic_lab/verify_generic_path_
+    #    traversal cierra.
+    # 2) La vulnerabilidad real: Laravel resuelve la propiedad magica `$request->path` (accedida,
+    #    NO llamada como metodo) contra el INPUT de la peticion antes que contra el parametro de
+    #    ruta real (`Illuminate\Http\Request::__get`: `Arr::get($this->all(), $key, fn () =>
+    #    $this->route($key))`) -- asi que un `?path=` de query SOBRESCRIBE el segmento `{path}`
+    #    de la ruta real, y el resultado se concatena con `normalize_path()`, que solo normaliza
+    #    separadores de ruta SIN quitar `..`. Reproducido aqui en PHP puro con el mismo patron
+    #    exacto (query 'path' pisando el segmento de ruta, concatenacion sin sanear).
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Dockerfile").write_text(
+        "FROM php:8.2-cli\n"
+        "WORKDIR /app\n"
+        "COPY index.php .\n"
+        "RUN mkdir -p /app/userfiles && echo real-asset > /app/userfiles/legit.txt\n"
+        "EXPOSE 8000\n"
+        'CMD ["php", "-S", "0.0.0.0:8000", "-t", "/app", "index.php"]\n'
+    )
+    if patched:
+        # El arreglo real (PR #1181): leer el parametro de ruta LIGADO de verdad
+        # ($request->route('path')), nunca la propiedad de input, mas confinar con
+        # realpath()+comprobacion de prefijo -- aqui, el equivalente en PHP puro.
+        controller = (
+            "$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);\n"
+            "$seg = preg_replace('#^/files/#', '', $uri);\n"
+            "$base = realpath('/app/userfiles');\n"
+            "$resolved = realpath($base . '/' . $seg);\n"
+            "if ($resolved === false "
+            "|| strncmp($resolved, $base . '/', strlen($base) + 1) !== 0) {\n"
+            "    http_response_code(404); echo 'Not Found'; exit;\n"
+            "}\n"
+            "$path = $resolved;\n"
+        )
+    else:
+        controller = (
+            "$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);\n"
+            "// vulnerable: ?path= (query) pisa el segmento de la ruta real, igual que\n"
+            "// $request->path de Laravel -- CVE-2026-65694 real.\n"
+            "$seg = isset($_GET['path']) ? $_GET['path'] : preg_replace('#^/files/#', '', $uri);\n"
+            "$path = '/app/userfiles/' . $seg;   // SIN sanear '..'\n"
+        )
+    (root / "index.php").write_text(
+        "<?php\n"
+        "if (!file_exists('/app/installed.flag')) {\n"
+        "    http_response_code(200);\n"
+        "    echo 'NOT INSTALLED';\n"
+        "    exit;\n"
+        "}\n"
+        f"{controller}"
+        "if (!is_file($path)) {\n"
+        "    http_response_code(404);\n"
+        "    echo 'Not Found';\n"
+        "    exit;\n"
+        "}\n"
+        "readfile($path);\n"
+    )
+
+
+def test_genericverify_path_traversal_live_needs_setup_commands_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker; se salta si no esta): confirma el gap real que la
+    # investigacion de CVE-2026-65694 (Microweber) expuso -- sin un paso de configuracion real
+    # DESPUES de levantar el contenedor, verify_generic_path_traversal nunca llega al codigo
+    # vulnerable de un objetivo que, como Laravel/Microweber, solo se comporta de verdad tras
+    # una instalacion real. Primero se prueba el objetivo vulnerable SIN setup_commands (el
+    # comportamiento que tenia esta funcion ANTES de este commit) para probar que el gap era
+    # real -- no asumido: debe salir verified=False a pesar de ser realmente vulnerable. Luego,
+    # con setup_commands, el mismo objetivo vulnerable debe dar verified=True, y el objetivo
+    # parcheado (misma instalacion real) debe seguir dando verified=False (control negativo: no
+    # es que el verificador siempre diga que si).
+    import pytest
+    from binoracle.workflows.genericverify import verify_generic_path_traversal
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_generic_gated_install_path_traversal_app(vuln_root, patched=False)
+
+    r_not_installed = verify_generic_path_traversal(
+        str(vuln_root), "/files/x", "GET", {"path": ""}, path_param_hint="path", budget_s=180.0)
+    assert r_not_installed.ok is True, r_not_installed.detail
+    assert r_not_installed.verified is False, (
+        "sin setup_commands, el objetivo nunca sale de la pagina 'no instalado' -- si esto da "
+        "True, el gap ya no es real")
+
+    install_cmd = ["touch /app/installed.flag"]
+
+    r_vuln = verify_generic_path_traversal(
+        str(vuln_root), "/files/x", "GET", {"path": ""}, path_param_hint="path", budget_s=180.0,
+        setup_commands=install_cmd)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+
+    patched_root = tmp_path / "patched"
+    _write_generic_gated_install_path_traversal_app(patched_root, patched=True)
+    r_patched = verify_generic_path_traversal(
+        str(patched_root), "/files/x", "GET", {"path": ""}, path_param_hint="path",
+        budget_s=180.0, setup_commands=install_cmd)
+    assert r_patched.ok is True, r_patched.detail
+    assert r_patched.verified is False, (
+        "falso positivo: el objetivo con el arreglo real de PR #1181 no deberia verificar")
+
+
+def test_genericverify_path_traversal_setup_command_failure_aborts_honestly(monkeypatch, tmp_path):
+    # Si un setup_command falla, hay que abortar con el detalle real en vez de seguir probando
+    # contra un objetivo que sabemos a medio arrancar (falso negativo silencioso).
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def __init__(self):
+            self.torn_down = False
+        def build_and_run(self, target, timeout_build=600.0, timeout_run=60.0):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+        def running_containers(self):
+            return ["app"]
+        def published_ports(self, container):
+            return ["8000"]
+        def discover_http(self, tries=60, delay=3.0):
+            return ("app", "8000")
+        def logs_tail(self, name, lines=40):
+            return ""
+        def sh(self, *args, timeout=60.0, input_text=None):
+            class _R:
+                returncode = 1
+                stdout = "comando no encontrado"
+                stderr = ""
+            return _R()
+        def teardown(self):
+            self.torn_down = True
+
+    fake_lab = _FakeLab()
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_GenericLab", lambda tag: fake_lab)
+    monkeypatch.setattr(gv, "_find_build_target",
+                        lambda source_dir: {"kind": "dockerfile", "path": "Dockerfile",
+                                             "context": source_dir})
+
+    res = gv.verify_generic_path_traversal(
+        str(tmp_path), "/files/x", "GET", {"path": ""}, path_param_hint="path",
+        setup_commands=["php artisan microweber:install"])
+
+    assert res.verified is False
+    assert "comando no encontrado" in (res.detail or "")
+    assert fake_lab.torn_down is True

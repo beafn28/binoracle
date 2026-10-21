@@ -858,6 +858,333 @@ The flagship direction: prove impact end to end.
   that would require is real, scoped work of its own, not something to bolt on speculatively
   here.
 
+- `drupalverify.py`'s FIRST real-CVE confirmation (it had a mature `verify_drupal_sqli` and
+  Docker-lab bootstrap since before this session, but no CVE had ever been run through it end to
+  end). Grounded in a real, current, open-source Drupal contrib module CVE:
+  **CVE-2026-15081** / **SA-CONTRIB-2026-072** (contrib module `location_selector`, Views filter
+  `LocationSelectorFilter::opEqual()`, affecting <1.3.0, fixed in 1.3.0, CWE-89). Unlike the two
+  previous CVEs this project worked (Joomla/WordPress commercial extensions with no public
+  mirror), this one is GPL and hosted on `git.drupalcode.org/project/location_selector` --
+  cloned directly, confirmed the exact vulnerable/fixed boundary by diffing tag `8.x-1.2`
+  (vulnerable) against `8.x-1.3` (fixed): `opEqual()` does `$value = key($values['selected'])` --
+  the KEY of a nested JSON object the exposed filter's value decodes into, not a value -- then
+  concatenates it RAW into `'JSON_CONTAINS_PATH(' . $field . ', \'one\', \'$."selected"."' .
+  $value . '"\')'` via `addWhereExpression()`. The fix (`8.x-1.3`) switches to bound placeholders
+  (`:mode`/`:path`).
+  Two genuine, concrete gaps found by actually trying to run the existing `verify_drupal_sqli`
+  against the real module (not guessed in advance):
+  1. **The injection point is a JSON object KEY nested inside the parameter's value, not the
+     raw value itself.** Drupal Views requires `$this->value` to be valid JSON
+     (`json_decode()` gates the whole vulnerable branch) -- every existing SQLi technique in
+     this project (`_SQLI_CONTEXTS`/`_LEGACY_SQLI_CONTEXTS`, and `verify_drupal_sqli`'s own
+     local `contexts`) assumes the raw parameter value directly becomes the SQL fragment, so
+     splicing a context+payload suffix onto it always breaks JSON syntax and the vulnerable
+     code never even reaches the query builder. Fixed with a new, narrowly-scoped
+     `json_key_envelope` parameter on `verify_drupal_sqli`: an opt-in template with a literal
+     `{key}` placeholder: each candidate the 4 existing techniques already build gets
+     substituted into the placeholder (double-quote-escaped for safety) before being sent, so
+     the parameter stays valid JSON with the payload living in the nested key -- reusable for
+     any future CVE with this same JSON-envelope shape, zero behavior change when unused.
+  2. **The exploitable context needs a closing paren AFTER the injected SQL, not before it, and
+     no closing comment.** Breaking out of the single-quoted JSON-path string lands INSIDE
+     `JSON_CONTAINS_PATH(...)`'s still-open argument list, not at the top-level WHERE clause (the
+     mirror image of the nested-paren shape `09e1daf` already handles) -- confirmed by reading
+     the real MySQL 1064 error returned by a deliberately-too-simple payload. Worse: the
+     vulnerable PHP template always appends a literal stray `"` right after the injection point,
+     outside any string once broken out, so the obvious fix (`-- ` comment to eat the rest)
+     backfires -- it also eats the derived-table's own closing paren that Views appends on the
+     SAME line AFTER the WHERE clause, turning a working injection into an unrelated 1064. The
+     winning real payload needs no comment at all: `x' OR SLEEP(5) OR '` breaks the string,
+     injects the condition, and re-opens a one-character string that absorbs that stray `"` as
+     literal content, letting the template's own trailing `'` and `)` resume their normal role.
+     Added as one new entry to `verify_drupal_sqli`'s `timing_pairs` (the other 3 pre-existing
+     entries are real attempts that simply can't reach this CVE's sink, not weakened).
+  Also fixed a real, concrete scoring bug this CVE exposed in `verify_drupal_sqli`'s time-based
+  blind step: it required 2 of N *different* `timing_pairs` entries to each independently show
+  one delayed request, but for THIS CVE only 1 of the 4 entries is even syntactically capable of
+  reaching the sink, so that threshold could never pass no matter how real the injection was.
+  `genericverify.py`'s `verify_generic_sqli_blind` already solves this correctly (2 INDEPENDENT
+  repeats of the SAME winning payload, both over threshold) -- ported that exact discipline into
+  `verify_drupal_sqli`, which is a strictly stronger confirmation (two tries of one payload, not
+  one try each of two), not a weaker one.
+  A third real, concrete gap, scoped and fixed without generalizing beyond what this CVE
+  actually needs: the advisory's own precondition ("a View that uses the affected filter AND is
+  configured to accept user input") requires site configuration beyond what any previous
+  `verify_drupal_*` needed -- a field of the vulnerable type, a node with it populated (with no
+  matching row the JOIN has nothing to evaluate the WHERE expression against, and `SLEEP()`
+  never runs), and a View exposing the filter as a GET parameter -- none of which `pm:enable`
+  alone produces. Added `extra_setup_script` (optional PHP, run via `drush scr` right after the
+  module is active): NOT a generic Drupal-site-building mechanism, exactly the verbatim script
+  that creates the field (`FieldStorageConfig`/`FieldConfig`), the node (`Node::create()`), and
+  the View (`View::create()` with the real schema a working Views config entity needs -- filter
+  `plugin_id` matching what the module's own `hook_field_views_data_alter()` registers for its
+  field type, same mechanism the real `location_selector_field_views_data_alter()` uses).
+  Confirmed end-to-end for real, against the actual downloaded module (never committed):
+  cloned `location_selector` at tag `8.x-1.2`, installed it into `drupalverify.py`'s real
+  Drupal 10 + MySQL 5.7 lab, configured the field/node/View by hand first (via `drush scr`) to
+  prove the precondition is buildable at all, then confirmed the real time-based blind SQLi by
+  hand with `curl` (slow payload ~5.1s vs ~0.2s baseline, 3 independent repeats) before touching
+  `verify_drupal_sqli` itself. After shipping the 3 fixes above, ran the ACTUAL extended
+  `verify_drupal_sqli()` (not a hand-rolled script) against the same real module twice more:
+  `verified=True` both times (`~5.0s` vs `~0.03s`, 2 independent repeats each run), and against
+  the real FIXED `8.x-1.3` module as a negative control: `verified=False`, no delay at all --
+  not a verifier that always says yes. Shipped as a real, repeatable test,
+  `test_drupalverify_sqli_json_key_envelope_live_confirms_and_negative_control` in
+  `tests/test_tools_and_config.py` (skipped without Docker): a SYNTHETIC module reproducing the
+  identical vulnerability shape (never the real GPL module, which the project still doesn't
+  distribute even though its license would allow it, for consistency with how the Joomla/
+  WordPress tests already handle this) gives `verified=True`, and the same module with the real
+  fix (bound `:mode`/`:path` placeholders) gives `verified=False`.
+  Deliberately NOT done, flagged honestly rather than forced: not wired into `cve_agent.py`'s
+  automatic `investigate_cve` dispatch (which has no hint for "needs `json_key_envelope`
+  and/or `extra_setup_script`") -- same reasoning as the Joomla entry above, a second real CVE
+  of this JSON-envelope-nested-key shape is needed before generalizing the dispatch hint
+  correctly.
+
+- Attempted second real-CVE generalization test for `verify_joomla_legacy_module_sqli_cookie()`
+  (the reusable harness `ec3f98b` shipped and explicitly flagged as needing "a second real CVE
+  of this exact legacy-extension-can't-even-boot shape" before trusting it as generic) --
+  **could not be run, for an honest reason outside this project's control, not a code
+  problem.** Target: **CVE-2025-26855** (`mod_articles_calendar` / "Articles Calendar",
+  `joomcar.net`, 1.0.0-1.0.1.0007, CWE-89, CVSS 9.8), independently confirmed real via
+  `cveawg.mitre.org`'s own CVE record. Unlike CVE-2025-40636 (the `mod_vvisit_counter` CVE this
+  harness was built against), which had a real INCIBE advisory naming the exact cookie and
+  helper method, this CVE's own CNA record (`providerMetadata.shortName: "Joomla"`) carries
+  ONLY the boilerplate description ("A SQL injection ... allows attackers to execute arbitrary
+  SQL commands") and a single reference -- the vendor homepage, nothing product-specific. No
+  CWE location, no parameter, no file, no PoC anywhere.
+  Tried every legitimate channel this project used successfully for the two prior Joomla/
+  WordPress-class CVEs, and each came up empty:
+  - `joomcar.net` itself: the live site no longer sells/serves the vulnerable 1.0.0-1.0.1.0007
+    line at all. Its only "Articles Calendar" product today is **"Articles Calendar 2," built
+    for Joomla 6** (a different major version than the CVE's affected range) -- and even that
+    is gated behind a MetaMask/crypto-only payment flow (`payment_ajax=1&task=serveDownload`,
+    confirmed by reading the page's own JS), not a free download. No changelog, no version
+    history, no archived download link anywhere on the current site.
+  - Internet Archive Wayback Machine: queried the CDX API for the whole `joomcar.net` domain
+    (2000+ captures, 2011-2026) AND specifically for `/articles-calendar*` -- zero captures of
+    any Articles Calendar product page EVER existed. The domain's actual archived history
+    (2011-2020) is a completely unrelated Joomla K2/car-catalog demo site; the "Articles
+    Calendar" storefront is a later, unarchived addition. `archive.ph` also has no snapshot.
+  - Joomla Extensions Directory (JED): a real listing exists
+    (`extensions.joomla.org/extension/calendars-a-events/time/articles-calendar`, found via a
+    third-party aggregator, CommonNinja, that still links to it) but it is **unpublished**,
+    marked `PE1` ("Under Investigation" -- "The JED team has received one or more user
+    reports," can stay in this state indefinitely per JED's own knowledgebase) -- no vendor
+    link, no download link, no description are shown on the live page. Searching JED's public
+    Vulnerable/Resolved lists (both the browse pages and the title-filter query param) for
+    "Articles Calendar" or "joomcar" returned nothing, consistent with PE1 (investigation) being
+    a separate, earlier stage than the public VEL listing (UR3).
+  - GitHub: no source mirror found anywhere. The one GitHub artifact that exists,
+    `GHSA-qg92-5gwc-2jxx`, is an auto-generated advisory that only restates the NVD record --
+    zero additional technical content.
+  - MITRE/NVD/GCVE/`cve.imfht.com`/`cvelogic.com`/`mysites.guru`/INCIBE's own early-warning
+    mirror: all independently re-publish the SAME one-line boilerplate description and the
+    SAME single vendor-homepage reference; none names a parameter, file, or line, and none
+    links a PoC or vendor advisory. (Contrast with INCIBE's CVE-2025-40636 page, which named the
+    exact cookie and helper method -- confirmed by direct comparison.)
+  - The credited finders (Kamil Szczurowski, Robert Kruczek) are real Polish security
+    researchers, but their public work in this period (a DEF CON 2026 talk on scanning Poland's
+    public-facing web en masse) is consistent with a bulk/automated extension-scanning campaign
+    feeding Joomla's VEL/CNA pipeline directly, not a per-target technical write-up -- which
+    matches this CVE record's complete absence of disclosed detail.
+  No source code, no PoC, no advisory, no archived snapshot: **step 1 of this investigation
+  (get the real vulnerable source and read the actual injection point) could not be completed
+  by any available legitimate channel**, so steps 2-6 (confirm the injection shape, decide
+  whether to reuse `verify_joomla_legacy_module_sqli_cookie()` vs. build something new, attempt
+  live dynamic verification) could not honestly be attempted either. Deliberately did NOT: (a)
+  guess at the injection point and write a "plausible" synthetic module as if it were a
+  confirmed reproduction of this CVE's real shape -- every prior synthetic-module test in this
+  project (`09e1daf`, the two entries above) was built only AFTER reading real vulnerable code
+  first, to reproduce a shape that was actually confirmed, not invented; doing that here would
+  be exactly the kind of unverified claim this project's own standard forbids; (b) use a piracy/
+  "nulled extension" mirror to obtain the zip even though some likely exist, since that's outside
+  this project's authorized-research scope regardless of the CVE being real.
+  Net honest result: `verify_joomla_legacy_module_sqli_cookie()`'s generalization to a second
+  real CVE remains UNTESTED -- not because it failed, but because no second real CVE candidate
+  of this shape with actual public technical detail and obtainable source has been found yet.
+  The concrete, reusable lesson for whoever picks this up next: prefer CVEs with a real vendor/
+  CERT advisory naming the injection point (like CVE-2025-40636's INCIBE page) or an open-source
+  target (like CVE-2026-15081's GPL Drupal module) over a Joomla-VEL/bulk-scan-sourced CVE whose
+  only reference is a bare vendor homepage -- the latter is a strong signal that no public
+  technical detail or source will exist, no matter how real the CVE itself is.
+
+- Investigated a real, current, non-CMS CVE to exercise `genericverify.py`'s own
+  (un-CMS-specific) lab bootstrap for the first time against a real target: **CVE-2026-9469**
+  (`yashpokharna2555/StudentManagementSystem`, GitHub, plain PHP, commit
+  `cb2f558ddf8d19396de0f92abf2d224d46a0a203`), unauthenticated SQLi in `/success.php` via the
+  `user` POST parameter, CWE-89, independently confirmed real via `cveawg.mitre.org`'s own CVE
+  record. Cloned the real repo at the exact commit and read the real vulnerable code: `success.php`
+  builds `"SELECT * FROM \`admin\` WHERE \`user\` = '" .$user. "' AND \`password\` = '" . $h_pass . "' "`
+  from `trim($_POST['user'])` with zero escaping, then `$db->query($sql)` (`connection.php`:
+  `mysqli_connect('localhost', 'root', '')` against database `studinfosystem`) -- confirmed
+  exactly where the CVE record's `/success.php` + `User` parameter said, with a real seed dump
+  (`studinfosystem (8).sql`) providing the `admin` table and a real admin account.
+  Found and fixed two genuine, concrete gaps in `genericverify.py`, each reproduced live against
+  the OLD code first (per this project's own standard) before fixing:
+  1. `_STACK_SIGNALS`/`_detect_and_write_auto_dockerfile` checked `package.json` BEFORE
+     `composer.json`/bare-PHP detection, with no check that it actually declared a runnable Node
+     app. This real repo's `package.json` is the one bundled with the "SB Admin" Bootstrap
+     template (gulp/sass/jquery front-end tooling only, no `main`, no `scripts` at all) -- the
+     OLD code misdetected it as a Node stack (confirmed live: `_find_build_target` on the real
+     repo returned `stack_detectado: "package.json"`, generating a Dockerfile whose
+     `npm start || node index.js || ...` never reaches anything real), which would have left the
+     actual PHP app -- and the real SQLi -- unreachable. Fixed with
+     `_package_json_has_runnable_entry()`: a `package.json` only counts as a Node signal if it
+     declares a `main` or a non-empty `scripts`; otherwise detection falls through to
+     composer.json/bare-PHP as before (confirmed live, same repo, same function: now returns
+     `stack_detectado: "*.php (sin composer.json)"`).
+  2. `verify_generic_sqli_blind` only ever tried `"<val> AND <sleep>"`. That requires the
+     ORIGINAL parameter value to already match a real row -- true for CMS-specific verifiers
+     that already know a valid identity, false for a generic login form probed without known
+     credentials (the most common real case). Confirmed live against the real admin table (6
+     rows): 45/45 AND-based context/dialect/comment combinations gave exactly 0.0s, despite the
+     injection being real and independently confirmable with `curl` using `OR`. Raw `"<val> OR
+     <sleep>"` does fire without needing a matching row, but `SLEEP()` inside an `OR` is
+     evaluated once per row SCANNED, not once per query (confirmed live: `OR SLEEP(4)` against
+     the same 6-row table took ~24s, not ~4s) -- a delay that grows unboundedly with table size
+     and risks exceeding the request timeout on a larger table. Fixed by adding `OR` as a second
+     boolean combinator (`_SQLI_BOOLEAN_OPS`), wrapping its sleep expression in a non-correlated
+     derived subquery (`(SELECT 1 FROM (SELECT SLEEP(n)) x)`, `_sqli_sleep_clause`) that MySQL
+     materializes once per query instead of once per row -- confirmed live, same real table:
+     `~4.01s`/`~4.01s` across 2 independent repeats. Ran the ACTUAL extended
+     `verify_generic_sqli_blind()` (not a hand-rolled script) against the real app, with a
+     purpose-built lab Dockerfile (PHP + a local MariaDB server in the SAME container, needed
+     because `connection.php` hardcodes `'localhost'` -- a separate compose `db` service would
+     never be reachable by the real, unmodified source; never committed): `verified=True`, winning
+     payload `user="nope' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -"`,
+     `~4.0s` vs a `~0.07s` baseline, 2 independent repeats. Negative control: the same real app
+     with `success.php`'s query switched to a bound `mysqli` prepared statement (`?`/
+     `bind_param`) gave `verified=False` across 81 combinations tried -- not a verifier that
+     always says yes.
+  Shipped two repeatable tests in `tests/test_tools_and_config.py` (skip cleanly without
+  Docker): `test_genericverify_package_json_without_main_or_scripts_is_not_a_node_signal` (+ a
+  positive-control sibling for a `package.json` that DOES declare `scripts.start`), and
+  `test_genericverify_sqli_blind_live_confirms_or_combinator_login_no_match_and_negative_control`
+  -- a SYNTHETIC Flask + real MySQL (via `docker-compose.yml`, never the real third-party PHP
+  source) fixture reproducing the identical login-form/no-matching-row shape, confirmed
+  `verified=True` (OR-based payload) against the vulnerable version and `verified=False` against
+  the same fixture with a parameterized query. Ran the full genericverify-related suite: 55/56
+  passed (including both new tests); the 1 failure
+  (`test_genericverify_xss_blocked_without_build_target`) is the same pre-existing, unrelated
+  Playwright-missing-sandbox gap `09e1daf`/`1b59422` already documented, confirmed by reproducing
+  it identically against the pre-fix code. `ruff` clean on both changed regions (pre-existing
+  findings elsewhere in the test file, untouched, same as prior commits). `mypy` errors on
+  `genericverify.py`: the exact same pre-existing 11, confirmed by diff, just shifted by line
+  number.
+  Honestly incomplete, flagged rather than forced: SQLite does NOT execute the non-correlated
+  derived-subquery form the same way MySQL does -- confirmed separately, by hand, while
+  designing the test fixture: SQLite's query planner folds
+  `(SELECT 1 FROM (SELECT SLEEP(n)))` to a constant WITHOUT ever invoking the registered
+  `SLEEP()` function at all (returns instantly, no delay), unlike MySQL/MariaDB which
+  materializes it exactly once. This only risks a missed detection on SQLite targets using this
+  specific OR-bounded shape, never a false positive (consistent with this function's own stated
+  tolerance for imperfect per-engine generalization) -- not fixed further here, since it wasn't
+  needed for the real CVE (MySQL/MariaDB) and over-generalizing a SQLite-specific workaround
+  without a second real CVE needing it would be guessing. Also not done: not wired into
+  `cve_agent.py`'s automatic dispatch beyond what already existed for generic SQLi (this CVE
+  needed no new dispatch hint -- `sqli_param_hint="user"` plus the existing generic path was
+  enough once the two gaps above were fixed).
+
+- First **path-traversal** CVE worked in this repo (vs. the three SQLi CVEs above): **CVE-2026-
+  65694**, unauthenticated arbitrary file read in **Microweber CMS** <=2.0.20,
+  `ServeStaticFileContoller::serveFromUserfiles()`, CWE-22, CVSS v4.0 8.7. Independently
+  confirmed real via `cveawg.mitre.org`'s own CVE record. Read the real researcher PR
+  (`microweber/microweber#1181`, unmerged at investigation time) and diffed it against the real
+  base commit (`51ac711`, cloned straight from GitHub): the vulnerable code is
+  `$path = $request->path; $path = normalize_path(userfiles_path() . $path, false); return
+  $this->sendResponse($path, $request);` -- `$request->path`, accessed as a PROPERTY (not
+  called as `$request->path()`), resolves via Laravel's own
+  `Illuminate\Http\Request::__get($key) { return Arr::get($this->all(), $key, fn () =>
+  $this->route($key)); }`, i.e. it checks the request's QUERY/POST input FIRST and only falls
+  back to the bound `{path}` route parameter -- so an unauthenticated `?path=../../../../etc/
+  passwd` query string silently overrides the real `{path}` route segment on `GET /userfiles/
+  {path}` (`routes/web.php`, middleware group `api.static` = only `SessionlessMiddleware` +
+  `CheckResponseForModifications`, no auth, no install-check). `normalize_path()`
+  (`App/functions/common.php`) only normalizes path SEPARATORS (`/`/`\` -> `DIRECTORY_SEPARATOR`,
+  collapses doubles) -- it never strips `..`. The real fix (PR #1181): read the bound route
+  segment via `$request->route('path')` instead, then confine with `realpath()` + a prefix check
+  against `realpath(userfiles_path())`.
+  Stood up the REAL, unmodified vulnerable app (not a reproduction): cloned the real repo at
+  `51ac711`, built it with its OWN shipped `docker-compose.yml` (`thecodingmachine/php` +
+  MariaDB) after one test-only infra fix -- the shipped compose pinned
+  `thecodingmachine/php:8.1-v4-apache-node16`, but `composer.lock` requires PHP ~8.2/~8.3
+  (confirmed live: the 8.1 image failed dependency resolution before even reaching the
+  vulnerable code) -- bumped the tag to the `8.2` variant of the SAME image family (no
+  application code touched). Installed Microweber for real via its own unattended CLI installer
+  (`php artisan microweber:install --db-host=mariadb ...`), confirmed necessary live: an
+  uninstalled Microweber returns HTTP 200 with its own "Installation" page on EVERY route,
+  including the vulnerable one, so testing against a merely-booted-but-uninstalled instance is a
+  guaranteed false negative, not evidence of anything. One more real, concrete gap found and
+  fixed along the way (narrower than Microweber's own install flakiness, see below): the
+  project's shipped `.htaccess` has an unconditional `RewriteCond %{REQUEST_URI} ^/userfiles/.*$
+  [NC,OR] ... RewriteRule . - [PT,L]` that intercepts EVERY `/userfiles/*` request at the Apache
+  layer before Laravel's router ever runs, for both existing files (served directly, fine) and
+  non-existing ones (Apache's own `ErrorDocument 404`, confirmed live via the exact "Not Found"
+  Apache signature vs. Laravel's own 404 view) -- an Apache-specific accidental partial
+  mitigation that a standard nginx `try_files $uri $uri/ /index.php?$query_string;` deployment of
+  this same app does NOT have. Disabled that one rewrite block (test-only, clearly commented,
+  never touching the vulnerable PHP) to test the REAL vulnerable-code behavior rather than an
+  Apache config artifact.
+  Confirmed end-to-end for real, by hand with `curl` against the real installed app: `GET
+  /userfiles/x?path=../../../../../../../../etc/passwd` returned the real `/etc/passwd` from
+  inside the container; the same technique against `?path=../.env` returned the real `APP_KEY`/
+  `DB_PASSWORD` (matching PR #1181's own stated impact); a planted random canary at
+  `/tmp/binoracle_canary2.txt` came back verbatim too. Negative control: applied the REAL PR
+  #1181 patch to the same running app (live-reloaded, no container rebuild needed since PHP is
+  interpreted) -- both the `/etc/passwd` and canary reads then 404'd, while the legitimate
+  `/userfiles/modules/microweber/default.css` asset kept working (no regression from the
+  patch).
+  While getting this real app running long enough to drive the ACTUAL `genericverify.py`
+  function (not a hand-rolled script) against it, found and fixed one genuine, concrete,
+  generalizable gap: `_bootstrap_generic_lab`/`verify_generic_path_traversal` had no way to run
+  anything inside the container AFTER it starts responding to HTTP but BEFORE the attack begins
+  -- exactly the Microweber "always-200-until-installed" problem above, which is not
+  Microweber-specific (any framework needing a real install/migration step before its routes
+  behave like production -- Drupal's Views needed the analogous thing, fixed in
+  `drupalverify.py`'s `extra_setup_script` by `1b59422`). Added `setup_commands` (a list of real
+  shell commands run via `docker exec` right after `discover_http()` succeeds, before any
+  attack payload is sent; any failing command aborts with the real stdout/stderr instead of
+  silently probing a half-booted target) to both `_bootstrap_generic_lab` and
+  `verify_generic_path_traversal`. Shipped as a repeatable test (skips cleanly without Docker),
+  `test_genericverify_path_traversal_live_needs_setup_commands_and_negative_control` in
+  `tests/test_tools_and_config.py`, against a SYNTHETIC gated-install PHP app (never a real
+  third-party source) reproducing the identical shape (always-200-until-a-flag-file-exists, plus
+  the same `?path=` query-overrides-route-segment pattern as the real CVE): first proves the gap
+  was real by running the vulnerable app WITHOUT `setup_commands` (`verified=False` despite being
+  genuinely vulnerable -- the "not installed" page masks it), then WITH `setup_commands`
+  (`verified=True`), then the patched app with the same `setup_commands` as a negative control
+  (`verified=False`). A second unit test,
+  `test_genericverify_path_traversal_setup_command_failure_aborts_honestly`, confirms a failing
+  setup command aborts with the real error instead of continuing. Full genericverify-related
+  suite: 69/70 passed (both new tests included); the 1 failure
+  (`test_genericverify_xss_blocked_without_build_target`) is the same pre-existing, unrelated
+  Playwright-missing-sandbox gap already documented in `09e1daf`/`1b59422`/the CVE-2026-9469
+  entry above. `ruff` clean on both changed files.
+  Honestly incomplete, flagged rather than forced: the actual LIVE, automated
+  `verify_generic_path_traversal()` run against the real Microweber app (as opposed to the
+  by-hand `curl` confirmation above, which IS complete and conclusive) could not be completed in
+  this environment. Root cause is NOT a genericverify.py bug: Microweber's own `composer
+  install` (run by its shipped `docker-compose.yml` on every fresh container) triggers, as a
+  `post-autoload-dump` side effect of `artisan package:discover`, an EAGER database read
+  (`ModuleRepository::getSystemLicenses()`, `SELECT * FROM system_licenses`) during its OWN
+  first-boot bootstrap, BEFORE any migration has created that table -- this crashed the
+  container with an uncaught `QueryException` on 2 of 3 attempts (including after adding a real
+  `depends_on: condition: service_healthy` MariaDB healthcheck plus a 15s buffer, AND on a fully
+  fresh `composer install` with no cached `vendor/`), but NOT on the very first attempt, which
+  installed and booted cleanly end-to-end (that is the run the by-hand `curl` confirmation above
+  used). This looks like non-determinism inside Microweber's own first-boot sequence (plausibly
+  tied to Composer's own autoload/class-discovery ordering, which this investigation did not
+  chase further) rather than a timing race this project's tooling can reliably paper over --
+  documented here rather than forced, same standard as the Joomla-3-web-installer gap in
+  `ec3f98b`. The new `setup_commands` mechanism and `verify_generic_path_traversal`'s own attack
+  logic ARE confirmed correct and sufficient for this exact CVE shape (query-param-overrides-
+  route-segment, `../` depth up to 12) via the synthetic live test above, which deterministically
+  exercises the identical mechanism without Microweber's own flaky boot sequence in the way.
+  Whoever revisits Microweber specifically should pin the install step with a retry loop around
+  `docker compose up` (observed to self-resolve on retry) rather than trying to fix Microweber's
+  package-discovery ordering from the outside.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

