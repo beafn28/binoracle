@@ -6406,12 +6406,6 @@ def _write_legacy_vvisit_style_module(root, escape_with_quote):
     # el repo sin distribuir software de terceros.
     mod = root / "mod_synth_counter"
     mod.mkdir(parents=True)
-    if escape_with_quote:
-        ip_expr = "$this->db->Quote($this->callerIP)"
-        sql_ip = "$ip"
-    else:
-        ip_expr = None
-        sql_ip = "'$ip'"
     body = (
         "<?php\n"
         "defined('_JEXEC') or die('Restricted access');\n\n"
