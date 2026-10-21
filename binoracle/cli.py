@@ -30,7 +30,7 @@ from .workflows.patchdiff import run_patchdiff, render_patchdiff
 from .agent.loop import AgentLoop
 from .report.render import render_triage, render_agent_result
 from .report.html import render_html
-from .report.render import findings_to_json, findings_to_sarif
+from .report.render import findings_to_json, findings_to_sarif, render_findings
 from .workflows.verify import auto_verify, verify_address
 from .workflows.enrich import enrich_findings, executive_summary
 from .workflows.rop import build_rop_chain
@@ -948,6 +948,20 @@ def cmd_fetch(args, config):
     print("\n" + render_fetch(res, config.lang))
 
 
+def cmd_phpestate(args, config):
+    """Inventario/clasificacion de interpretes PHP (EOL/BEHIND/CURRENT), local y opcionalmente
+    remoto. No es un verificador de exploit -- ver el docstring de workflows/phpestate.py."""
+    from .workflows.phpestate import run_phpestate
+    findings = run_phpestate(paths=args.paths or None, url=getattr(args, "url", "") or "",
+                             authorized=bool(getattr(args, "authorized", False)), lang=config.lang)
+    if getattr(args, "json", None):
+        Path(args.json).write_text(findings_to_json(args.url or "local", findings))
+        _eprint(f"(JSON -> {args.json})")
+    out = render_findings(findings)
+    print(out)
+    _write_if(getattr(args, "output", None), out)
+
+
 def _parse_cli_params(raw_arg: str):
     """Parsea --params: nombres sueltos ("action,nonce") o "nombre=valor" (ver cmd_investigate
     para el porque). Extraido a su propia funcion para poder probarlo sin invocar el CLI entero."""
@@ -1636,6 +1650,21 @@ def build_parser() -> argparse.ArgumentParser:
     fp.add_argument("path", help="absolute path in the image (/usr/sbin/nscd) or a binary name (nscd)")
     fp.add_argument("--out", help="destination directory (default ./fetched)")
     fp.set_defaults(func=cmd_fetch)
+
+    pep = sub.add_parser("phpestate", help="PHP exposure/triage: inventory local PHP interpreters "
+                                           "(and, opt-in, a remote host's headers) and classify "
+                                           "EOL/BEHIND/CURRENT against php.net's own release data "
+                                           "-- inventory only, never an exploit")
+    pep.add_argument("paths", nargs="*", help="root path(s) or direct php binary path(s) to scan; "
+                                              "default: PATH + common install layouts")
+    pep.add_argument("--url", help="remote HTTP(S) URL to passively fingerprint (headers/cookies "
+                                   "only, one GET, requires --authorized)")
+    pep.add_argument("--authorized", action="store_true",
+                     help="REQUIRED alongside --url: confirms you are authorized to test that "
+                          "host. Without it, --url is accepted but no request is ever sent.")
+    pep.add_argument("--json", help="also write machine-readable findings to this path")
+    pep.add_argument("--output", help="also write the rendered findings to this path")
+    pep.set_defaults(func=cmd_phpestate)
 
     ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "
                                             "reason + develop + (with --binary) verify in sandbox")

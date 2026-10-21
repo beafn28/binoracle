@@ -1185,6 +1185,85 @@ The flagship direction: prove impact end to end.
   `docker compose up` (observed to self-resolve on retry) rather than trying to fix Microweber's
   package-discovery ordering from the outside.
 
+- **PHP exposure/triage (`phpestate.py`), defensive-only, built the same night as the trigger
+  that caused it**: on 2026-10-21, PHP's security team pre-announced two critical core RCEs
+  nicknamed "php2shell" in the wild -- **CVE-2026-109618** / **CVE-2026-109619**, each
+  pre-announced CVSS v4.0 9.2, security release scheduled 14:00 UTC the same day. Confirmed by
+  hand, independently, before writing anything: php.net's own archive feed
+  (`https://www.php.net/archive/2026.php`) carries exactly the advance notice described above and
+  nothing more ("With the release, we will publish ... further details") -- no root cause, no
+  affected-version range, no fixed version yet; `cveawg.mitre.org`'s own API returns
+  `CVE_RECORD_DNE` for both IDs (RESERVED, no description). Several public GitHub repos already
+  claim working PoCs for these IDs; independent review found strong evidence those are fake/bait
+  (internal inconsistencies, claims contradicting the official unpublished status, anomalous
+  star/fork ratios for day-old repos) -- not fetched, not trusted, not reproduced here. Building
+  an exploit/trigger for a mechanism that is not published yet would be pure guessing dressed up
+  as research -- exactly the overclaiming this project's whole standard (`versions.py`,
+  `wpverify.py`: grounded over generated) forbids, so this ships as inventory/classification only,
+  the same pre-CVE hygiene question `versions.py` already asks of other components: is this
+  install old enough to be exposed to whatever the next security release turns out to fix.
+  Three pieces: (1) `scan_php_local` finds real `php`/`phpX.Y` interpreters under given paths (or
+  common install layouts), runs `php -v` for REAL (never inferred from package-manager metadata),
+  and classifies the real version EOL/BEHIND/CURRENT/UNKNOWN; (2) `fingerprint_php_remote` is
+  opt-in and gated behind an explicit `authorized=True` the caller must pass before a single byte
+  is sent -- unset, it returns immediately without building or sending any request, mirroring
+  this project's own Docker-gated dynamic verifiers (`wpverify.py` et al. never touch a target
+  without an explicit, checked opt-in either); authorized, it sends exactly one passive GET and
+  reads only standard response headers/cookies already sent to any visitor, never a crafted path
+  or payload; (3) `classify_php_version` returns one of EOL/BEHIND/CURRENT/UNKNOWN, with UNKNOWN
+  reserved for "no data available" so a branch this tool simply hasn't catalogued is never rounded
+  up to CURRENT or down to EOL. Output is `Finding` (the static-inventory shape `versions.py`
+  uses), not `WpVerifyResult` -- this module never runs or confirms an exploit end-to-end, so a
+  `verified` flag would be a lie here.
+  Verified live, the same day, by hand: `https://www.php.net/releases/index.php?json&version=
+  <major.minor>` is real and reachable (confirmed with `curl`) -- for a supported branch (e.g.
+  `8.2`) it returns that branch's real latest patch (`8.2.34` as of this writing) plus the full
+  list of currently-supported branches (`8.2`-`8.5`); for an EOL branch (`7.4`, `8.1`, `8.0`, all
+  confirmed live) the same query returns the SAME supported-branch list with that branch absent
+  from it -- exactly the EOL signal `classify_php_version` needs, with no extra endpoint or
+  guesswork. This is the live counterpart to the static fallback table (`_STATIC_LATEST`,
+  confirmed by hand against `https://www.php.net/archive/2026.php`'s own release announcements,
+  dated `2026-09-24`): same "umbral conservador" honesty as `versions.py` -- every finding built
+  from the fallback says so, and says it can go stale.
+  One genuine, concrete, honestly-documented environment gap found while testing, not papered
+  over: the live feed fetch succeeds under this machine's Homebrew Python (`/opt/homebrew/bin/
+  python3`, confirmed live with `curl` and with a bare `urllib` call) but fails with
+  `SSLCertVerificationError: self signed certificate in certificate chain` under this repo's own
+  tested interpreter (`/Library/Frameworks/Python.framework/Versions/3.10`, the one `pytest` runs
+  under in this sandboxed dev container) -- reproduced with a bare `urllib.request.urlopen` call
+  with no `phpestate.py` code involved at all, so it is a property of this dev sandbox's
+  TLS-intercepting proxy and that specific interpreter's trust store, not a bug in this module.
+  `fetch_live_release_data` already catches this (and any other network failure) generically and
+  returns `None`, which is exactly the fallback-to-static-table path the tests exercise -- so the
+  behavior this gap exposes IS the intended honest degradation, not a defect; flagged here only so
+  whoever next runs this tool's one opportunistic live test somewhere else is not confused if it
+  behaves differently depending on which `python3` binary matters.
+  Shipped as its own module and test file: `tests/test_phpestate.py`, 17 tests, 16 passed + 1
+  skipped (the one opportunistic real-network test against php.net itself, which skips cleanly --
+  not fails -- when the feed is unreachable, same pattern as this repo's Docker-availability
+  skips) -- version parsing against a real (fake, but genuinely executed) `php -v` script,
+  EOL/BEHIND/CURRENT/UNKNOWN classification against both a faked live feed and the static
+  fallback, the bounded-depth directory walk, vendor/lookalike-name filtering, and -- the hard
+  requirement from this task -- a test proving `fingerprint_php_remote` calls `urllib.request.
+  urlopen` ZERO times when `authorized` is unset, plus a second test confirming it sends EXACTLY
+  one request to the EXACT URL given once authorized. `ruff` clean on both the module and the
+  test file. Wired into the CLI (`binoracle phpestate [paths...] [--url URL] [--authorized]
+  [--json PATH] [--output PATH]`), since this operates on filesystem paths/URLs rather than a
+  compiled binary, the same shape as `fetch`'s standalone command, not something that fits inside
+  `audit.py`'s per-binary ToolRegistry pipeline alongside `versions.py`.
+  Honestly incomplete, flagged rather than forced: (1) the live feed gives the latest patch for a
+  specific branch but no historical CVE-count/severity data -- classification here is purely
+  version-skew (EOL/BEHIND/CURRENT), never a CVE claim, by design; (2) remote fingerprinting is
+  passive-header-only, confirmed against a REAL target (php.net's own homepage, fetched live,
+  authorized as the tool's own informational source rather than a system under test) to return
+  the honest "no PHP version visible" result, since php.net itself serves through BunnyCDN with
+  no `X-Powered-By`/`Server: PHP` token -- this is the real-world shape of the exact limitation
+  documented in the module's own rationale text (`expose_php=Off`, CDN/WAF stripping headers),
+  not a hypothetical; (3) nothing here references CVE-2026-109618/109619 by mechanism, and nothing
+  ever will from this module alone -- if/when php.net publishes real technical detail this
+  afternoon, a FOLLOW-UP CVE-specific verifier (grounded in the real advisory, not this guess-free
+  placeholder) would be the next real step, not a change to this file.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
