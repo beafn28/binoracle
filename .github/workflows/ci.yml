@@ -13,7 +13,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install radare2
-        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential
+        # gdb added here too -- real gap, not local noise: confirmed live by reproducing this
+        # exact runner setup (gdb absent, matching a stock ubuntu-latest image, which does NOT
+        # ship it by default) outside CI. oracles/heap_dynamic.py's dynamic double-free/UAF
+        # tools (heap_confirm_double_free and friends) gate their own registration on
+        # `shutil.which("gdb")`, so test_heap_dynamic_registered_only_when_dynamic_enabled
+        # failed on a bare runner for a real, concrete reason, not flakiness.
+        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential gdb
       - name: Install binoracle (+ optional oracles, dev tools)
         # pwntools (the 'pwn' extra) was missing here -- real gap, not local noise: confirmed
         # live by reproducing this exact install command and test run outside CI. Several

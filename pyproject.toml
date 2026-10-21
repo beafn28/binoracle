@@ -28,14 +28,28 @@ pe = ["pefile>=2023.2.7"]
 msi = ["olefile>=0.47"]
 r2 = ["r2pipe>=1.8"]
 symbolic = ["angr>=9.2"]
-pwn = ["pwntools>=4.11"]
-disasm = ["capstone>=5.0"]
+# capstone pinned here too (not just in `disasm` below): pwntools' OWN metadata declares
+# `capstone>=3.0.5rc2` -- a floor that is itself a pre-release identifier, which under PEP 440
+# tells pip pre-releases are in scope for this package. With nothing else in an `[elf,dev,web,pwn]`
+# install (no `angr`, which pins an exact `capstone==5.0.9`, and no `disasm`, whose own
+# `capstone>=5.0` below never gets consulted unless that extra is explicitly requested) to pull
+# it back down, pip resolved straight to a `capstone==6.0.0a11` ALPHA -- confirmed live via a
+# real CI run (binoracle==0.1.0 install log: "Collecting capstone>=3.0.5rc2 (from
+# pwntools>=4.11->binoracle==0.1.0)" -> "Successfully installed ... capstone-6.0.0a11 ..."),
+# which broke for real: capstone 6 renamed its ARM64 constants, so
+# `workflows/rawshellcode.py`'s `capstone.CS_ARCH_ARM64` raised AttributeError
+# (test_rawshellcode_identifies_real_execve_shellcode_as_x86_64/_degrades_cleanly_on_empty_input,
+# both genuinely new CI failures, not a pre-existing documented gap). This codebase's capstone
+# usage targets the 5.x API throughout; excluding 6.x here is the fix, not a version bump of the
+# code to match 6.x's renamed constants.
+pwn = ["pwntools>=4.11", "capstone>=5.0,<6"]
+disasm = ["capstone>=5.0,<6"]
 cvss = ["cvss>=3.0"]
 burp = ["mcp>=1.0"]
 frida = ["frida>=16.0"]
 web = ["requests>=2.28"]   # wpverify.py's live HTTP verification (login, plugin setup, probes)
 docs = ["markdown>=3.5"]
-all = ["pyelftools>=0.30", "pefile>=2023.2.7", "olefile>=0.47", "r2pipe>=1.8", "angr>=9.2", "capstone>=5.0", "pwntools>=4.11", "cvss>=3.0", "mcp>=1.0", "frida>=16.0", "requests>=2.28"]
+all = ["pyelftools>=0.30", "pefile>=2023.2.7", "olefile>=0.47", "r2pipe>=1.8", "angr>=9.2", "capstone>=5.0,<6", "pwntools>=4.11", "cvss>=3.0", "mcp>=1.0", "frida>=16.0", "requests>=2.28"]
 dev = ["pytest>=8.0", "pytest-xdist>=3.5", "pytest-timeout>=2.3", "cvss>=3.0", "pefile>=2023.2.7",
        "olefile>=0.47", "ruff>=0.17", "mypy>=1.10", "pytest-cov>=5.0", "coverage>=7.0"]
 
