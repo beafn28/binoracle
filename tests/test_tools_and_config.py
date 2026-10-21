@@ -6484,6 +6484,299 @@ def test_joomlaverify_legacy_sqli_live_confirms_and_negative_control(tmp_path):
     assert r_fixed.verified is False, "falso positivo: la version con $db->Quote() no deberia verificar"
 
 
+def _write_location_selector_style_module(root, slug, fixed):
+    # Reproduce la MISMA forma que el modulo contrib real Location Selector <1.3.0
+    # (CVE-2026-15081 / SA-CONTRIB-2026-072, LocationSelectorFilter::opEqual() en
+    # git.drupalcode.org/project/location_selector) -- nunca el modulo real descargado (no se
+    # commitea, por politica del proyecto, igual que _write_legacy_vvisit_style_module para
+    # CVE-2025-40636), sino una reproduccion SINTETICA escrita a mano con la misma forma de
+    # vulnerabilidad: un filtro de Views cuyo valor expuesto debe ser JSON valido (json_decode),
+    # que extrae la CLAVE de un objeto anidado (key($values['selected'])) y la concatena cruda
+    # dentro de un JSON_CONTAINS_PATH(...) via addWhereExpression -- la parte boilerplate de
+    # FilterPluginBase (valueForm/operators) se simplifica porque no aporta nada a la forma de
+    # la vulnerabilidad en si.
+    mod = root / slug
+    (mod / "src" / "Plugin" / "Field" / "FieldType").mkdir(parents=True)
+    (mod / "src" / "Plugin" / "views" / "filter").mkdir(parents=True)
+
+    (mod / f"{slug}.info.yml").write_text(
+        "name: 'Binoracle Location Synth'\n"
+        "type: module\n"
+        "description: 'Synthetic reproduction (never the real downloaded module) of the "
+        "location_selector Views-filter SQLi shape, CVE-2026-15081.'\n"
+        "core_version_requirement: ^10 || ^11\n"
+        "package: 'Binoracle'\n")
+
+    (mod / f"{slug}.module").write_text(
+        "<?php\n\n"
+        "use Drupal\\field\\FieldStorageConfigInterface;\n\n"
+        f"function {slug}_field_views_data_alter(array &$data, "
+        "FieldStorageConfigInterface $field_storage) {\n"
+        f"  if ($field_storage->getType() == '{slug}_type') {{\n"
+        "    foreach ($data as $table_name => $table_data) {\n"
+        "      foreach ($table_data as $field_name => $field_data) {\n"
+        "        if (isset($field_data['filter']) && $field_name != 'delta') {\n"
+        f"          $data[$table_name][$field_name]['filter']['id'] = '{slug}_filter';\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n")
+
+    class_base = "".join(p.capitalize() for p in slug.split("_"))
+    (mod / "src" / "Plugin" / "Field" / "FieldType" / f"{class_base}Type.php").write_text(
+        "<?php\n\n"
+        f"namespace Drupal\\{slug}\\Plugin\\Field\\FieldType;\n\n"
+        "use Drupal\\Core\\Field\\FieldItemBase;\n"
+        "use Drupal\\Core\\Field\\FieldStorageDefinitionInterface;\n"
+        "use Drupal\\Core\\TypedData\\DataDefinition;\n\n"
+        "/**\n"
+        " * @FieldType(\n"
+        f" *   id = \"{slug}_type\",\n"
+        " *   label = @Translation(\"Binoracle Location Synth\"),\n"
+        " *   default_widget = \"string_textfield\",\n"
+        " *   default_formatter = \"string\"\n"
+        " * )\n"
+        " */\n"
+        f"class {class_base}Type extends FieldItemBase {{\n\n"
+        "  public static function schema(FieldStorageDefinitionInterface $field_definition) {\n"
+        "    return ['columns' => ['value' => ['type' => 'json', 'mysql_type' => 'json', "
+        "'not null' => FALSE]]];\n"
+        "  }\n\n"
+        "  public function isEmpty() {\n"
+        "    $value = $this->get('value')->getValue();\n"
+        "    return $value === NULL || $value === '';\n"
+        "  }\n\n"
+        "  public static function propertyDefinitions(FieldStorageDefinitionInterface $field_definition) {\n"
+        "    $properties['value'] = DataDefinition::create('string')->setLabel(t('JSON value'));\n"
+        "    return $properties;\n"
+        "  }\n\n"
+        "}\n")
+
+    if fixed:
+        # El arreglo real de 8.x-1.3: placeholders ligados (:mode/:path) en vez de concatenar
+        # $value crudo dentro del texto SQL.
+        op_equal = (
+            "  public function opEqual($field) {\n"
+            "    $values = json_decode($this->value, TRUE);\n"
+            "    if (json_last_error() == JSON_ERROR_NONE) {\n"
+            "      if (!empty($values['selected'])) {\n"
+            "        $value = key($values['selected']);\n"
+            "        $condition = 'JSON_CONTAINS_PATH(' . $field . ', :mode, :path)';\n"
+            "        $this->query->addWhereExpression($this->options['group'], $condition, [\n"
+            "          ':mode' => 'one',\n"
+            "          ':path' => '$.\"selected\".\"' . $value . '\"',\n"
+            "        ]);\n"
+            "      }\n"
+            "    }\n"
+            "  }\n")
+    else:
+        # La forma vulnerable real: $value es key($values['selected']) -- la CLAVE de un objeto
+        # JSON anidado, no un valor -- concatenada cruda dentro del texto SQL.
+        op_equal = (
+            "  public function opEqual($field) {\n"
+            "    $values = json_decode($this->value, TRUE);\n"
+            "    if (json_last_error() == JSON_ERROR_NONE) {\n"
+            "      if (!empty($values['selected'])) {\n"
+            "        $one_or_all = 'one';\n"
+            "        $value = key($values['selected']);\n"
+            "        $query_string = 'JSON_CONTAINS_PATH(' . $field . ', \\'' . $one_or_all . "
+            "'\\', \\'$.\"selected\".\"' . $value . '\"\\')';\n"
+            "        $this->query->addWhereExpression($this->options['group'], $query_string);\n"
+            "      }\n"
+            "    }\n"
+            "  }\n")
+
+    (mod / "src" / "Plugin" / "views" / "filter" / f"{class_base}Filter.php").write_text(
+        "<?php\n\n"
+        f"namespace Drupal\\{slug}\\Plugin\\views\\filter;\n\n"
+        "use Drupal\\Core\\Form\\FormStateInterface;\n"
+        "use Drupal\\views\\Plugin\\views\\filter\\FilterPluginBase;\n\n"
+        "/**\n"
+        " * @ingroup views_filter_handlers\n"
+        f" * @ViewsFilter(\"{slug}_filter\")\n"
+        " */\n"
+        f"class {class_base}Filter extends FilterPluginBase {{\n\n"
+        "  protected $alwaysMultiple = TRUE;\n\n"
+        "  public function operators() {\n"
+        "    return ['=' => ['title' => $this->t('Is equal to'), 'short' => $this->t('='), "
+        "'method' => 'opEqual', 'values' => 1]];\n"
+        "  }\n\n"
+        "  protected function valueForm(&$form, FormStateInterface $form_state) {\n"
+        "    $form['value'] = ['#type' => 'textfield', '#title' => $this->t('Value'), "
+        "'#default_value' => $this->value];\n"
+        "  }\n\n"
+        "  public function query() {\n"
+        "    $this->ensureMyTable();\n"
+        "    $field = \"$this->tableAlias.$this->realField\";\n"
+        "    $this->opEqual($field);\n"
+        "  }\n\n"
+        f"{op_equal}"
+        "}\n")
+
+
+def _location_selector_style_view_setup_php(slug, field_name):
+    # Reproduce la precondicion REAL que la propia advisory describe (SA-CONTRIB-2026-072): "a
+    # View that uses the affected filter AND is configured to accept user input" -- un campo del
+    # tipo que expone el filtro vulnerable, un nodo real con ese campo poblado (sin eso el JOIN
+    # no tiene fila sobre la que evaluar la expresion WHERE, y SLEEP() nunca llega a ejecutarse),
+    # y una View con ese filtro expuesto como parametro GET. Auditado en vivo contra el modulo
+    # REAL (no commiteado) con este mismo script, antes de parametrizarlo para el sintetico.
+    class_base = "".join(p.capitalize() for p in slug.split("_"))
+    table = f"node__{field_name}"
+    column = f"{field_name}_value"
+    return f"""<?php
+use Drupal\\field\\Entity\\FieldConfig;
+use Drupal\\field\\Entity\\FieldStorageConfig;
+use Drupal\\node\\Entity\\Node;
+use Drupal\\views\\Entity\\View;
+
+if (!FieldStorageConfig::loadByName('node', '{field_name}')) {{
+  FieldStorageConfig::create([
+    'field_name' => '{field_name}',
+    'entity_type' => 'node',
+    'type' => '{slug}_type',
+  ])->save();
+}}
+if (!FieldConfig::loadByName('node', 'page', '{field_name}')) {{
+  FieldConfig::create([
+    'field_name' => '{field_name}',
+    'entity_type' => 'node',
+    'bundle' => 'page',
+    'label' => 'Location (synth)',
+  ])->save();
+}}
+
+$existing = \\Drupal::entityQuery('node')->condition('type', 'page')
+  ->condition('title', 'binoracle-loc-node')->accessCheck(FALSE)->execute();
+if (!$existing) {{
+  Node::create([
+    'type' => 'page',
+    'title' => 'binoracle-loc-node',
+    'status' => 1,
+    '{field_name}' => ['value' => json_encode(['selected' => ['germany' => 1]])],
+  ])->save();
+}}
+
+if (View::load('binoracle_loc_test')) {{
+  View::load('binoracle_loc_test')->delete();
+}}
+$view = View::create([
+  'id' => 'binoracle_loc_test',
+  'label' => 'Binoracle Location SQLi Test',
+  'module' => 'views',
+  'base_table' => 'node_field_data',
+  'base_field' => 'nid',
+  'core' => 8005,
+  'display' => [
+    'default' => [
+      'display_plugin' => 'default',
+      'id' => 'default',
+      'display_title' => 'Master',
+      'position' => 0,
+      'display_options' => [
+        'title' => 'Binoracle Location SQLi Test',
+        'fields' => [
+          'title' => ['id' => 'title', 'table' => 'node_field_data', 'field' => 'title',
+            'plugin_id' => 'field', 'entity_type' => 'node', 'entity_field' => 'title'],
+        ],
+        'filters' => [
+          '{column}' => [
+            'id' => '{column}',
+            'table' => '{table}',
+            'field' => '{column}',
+            'plugin_id' => '{slug}_filter',
+            'operator' => '=',
+            'value' => '',
+            'group' => 1,
+            'exposed' => TRUE,
+            'expose' => [
+              'operator_id' => '',
+              'label' => 'Location',
+              'identifier' => 'loc',
+              'required' => FALSE,
+            ],
+            'entity_type' => 'node',
+            'entity_field' => '{field_name}',
+          ],
+        ],
+        'sorts' => [],
+        'arguments' => [],
+        'access' => ['type' => 'perm', 'options' => ['perm' => 'access content']],
+        'cache' => ['type' => 'none', 'options' => []],
+        'query' => ['type' => 'views_query', 'options' => []],
+        'exposed_form' => ['type' => 'basic', 'options' => ['submit_button' => 'Apply']],
+        'pager' => ['type' => 'full', 'options' => ['items_per_page' => 25, 'offset' => 0]],
+        'style' => ['type' => 'default'],
+        'row' => ['type' => 'fields'],
+      ],
+    ],
+    'page_1' => [
+      'display_plugin' => 'page',
+      'id' => 'page_1',
+      'display_title' => 'Page',
+      'position' => 1,
+      'display_options' => ['path' => 'binoracle-loc-test', 'display_extenders' => []],
+    ],
+  ],
+  'status' => TRUE,
+]);
+$view->save();
+drupal_flush_all_caches();
+echo "BINORACLE_SETUP_OK\\n";
+"""
+
+
+def test_drupalverify_sqli_json_key_envelope_live_confirms_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): reproduce la
+    # forma EXACTA de CVE-2026-15081 / SA-CONTRIB-2026-072 (modulo contrib Location Selector,
+    # LocationSelectorFilter::opEqual(), <1.3.0) en un modulo sintetico -- json_decode() exige
+    # JSON valido en el valor expuesto, y el codigo vulnerable concatena CRUDA la CLAVE de un
+    # objeto JSON anidado (key($values['selected'])) dentro de un JSON_CONTAINS_PATH(...) SQL.
+    # Auditada primero en vivo contra el modulo REAL descargado de git.drupalcode.org (8.x-1.2,
+    # nunca commiteado): ninguna de las 4 tecnicas que verify_drupal_sqli ya tenia llega siquiera
+    # a ejecutar la consulta, porque todas asumen que el valor crudo del parametro ES el
+    # fragmento SQL -- aqui tiene que seguir siendo JSON valido. json_key_envelope (ver su
+    # docstring en verify_drupal_sqli) resuelve eso sin duplicar las 4 tecnicas. Tambien
+    # necesito un payload nuevo en timing_pairs (closing-quote-resync, ver su comentario) porque
+    # los 3 payloads previos usan un comentario '-- ' que se come el parentesis de cierre que
+    # Views agrega DESPUES en la misma linea -- y el fix de "repetir el MISMO payload 2 veces"
+    # (en vez de exigir que acuerden payloads DISTINTOS, igual que ya hace
+    # verify_generic_sqli_blind) porque solo ESE UNO de los 4 payloads es sintacticamente capaz
+    # de llegar al sumidero real. Control negativo: el mismo modulo pero con el arreglo real
+    # (placeholders :mode/:path) no debe dar falso positivo.
+    import pytest
+    from binoracle.workflows.drupalverify import verify_drupal_sqli, _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    slug = "binoracle_locsynth"
+    field_name = f"field_{slug}"
+    setup_php = _location_selector_style_view_setup_php(slug, field_name)
+
+    vuln_root = tmp_path / "vuln"
+    _write_location_selector_style_module(vuln_root, slug, fixed=False)
+    fixed_root = tmp_path / "fixed"
+    _write_location_selector_style_module(fixed_root, slug, fixed=True)
+
+    common_kwargs = dict(
+        endpoint="/binoracle-loc-test", http_method="GET", parameters={"loc": "x"},
+        sqli_param_hint="loc", json_key_envelope='{"selected":{"{key}":"1"}}',
+        extra_setup_script=setup_php, budget_s=900.0,
+    )
+
+    r_vuln = verify_drupal_sqli(str(vuln_root), slug, **common_kwargs)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert "SLEEP" in r_vuln.evidence.get("payload_ganador", "")
+
+    r_fixed = verify_drupal_sqli(str(fixed_root), slug, **common_kwargs)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, (
+        "falso positivo: la version con placeholders :mode/:path no deberia verificar")
+
+
 def test_cve_agent_deterministic_hints_recognizes_wp_rest_route(tmp_path):
     from binoracle.workflows.cve_agent import _deterministic_web_hints_from_source
     (tmp_path / "rest-plugin.php").write_text(

@@ -858,6 +858,89 @@ The flagship direction: prove impact end to end.
   that would require is real, scoped work of its own, not something to bolt on speculatively
   here.
 
+- `drupalverify.py`'s FIRST real-CVE confirmation (it had a mature `verify_drupal_sqli` and
+  Docker-lab bootstrap since before this session, but no CVE had ever been run through it end to
+  end). Grounded in a real, current, open-source Drupal contrib module CVE:
+  **CVE-2026-15081** / **SA-CONTRIB-2026-072** (contrib module `location_selector`, Views filter
+  `LocationSelectorFilter::opEqual()`, affecting <1.3.0, fixed in 1.3.0, CWE-89). Unlike the two
+  previous CVEs this project worked (Joomla/WordPress commercial extensions with no public
+  mirror), this one is GPL and hosted on `git.drupalcode.org/project/location_selector` --
+  cloned directly, confirmed the exact vulnerable/fixed boundary by diffing tag `8.x-1.2`
+  (vulnerable) against `8.x-1.3` (fixed): `opEqual()` does `$value = key($values['selected'])` --
+  the KEY of a nested JSON object the exposed filter's value decodes into, not a value -- then
+  concatenates it RAW into `'JSON_CONTAINS_PATH(' . $field . ', \'one\', \'$."selected"."' .
+  $value . '"\')'` via `addWhereExpression()`. The fix (`8.x-1.3`) switches to bound placeholders
+  (`:mode`/`:path`).
+  Two genuine, concrete gaps found by actually trying to run the existing `verify_drupal_sqli`
+  against the real module (not guessed in advance):
+  1. **The injection point is a JSON object KEY nested inside the parameter's value, not the
+     raw value itself.** Drupal Views requires `$this->value` to be valid JSON
+     (`json_decode()` gates the whole vulnerable branch) -- every existing SQLi technique in
+     this project (`_SQLI_CONTEXTS`/`_LEGACY_SQLI_CONTEXTS`, and `verify_drupal_sqli`'s own
+     local `contexts`) assumes the raw parameter value directly becomes the SQL fragment, so
+     splicing a context+payload suffix onto it always breaks JSON syntax and the vulnerable
+     code never even reaches the query builder. Fixed with a new, narrowly-scoped
+     `json_key_envelope` parameter on `verify_drupal_sqli`: an opt-in template with a literal
+     `{key}` placeholder: each candidate the 4 existing techniques already build gets
+     substituted into the placeholder (double-quote-escaped for safety) before being sent, so
+     the parameter stays valid JSON with the payload living in the nested key -- reusable for
+     any future CVE with this same JSON-envelope shape, zero behavior change when unused.
+  2. **The exploitable context needs a closing paren AFTER the injected SQL, not before it, and
+     no closing comment.** Breaking out of the single-quoted JSON-path string lands INSIDE
+     `JSON_CONTAINS_PATH(...)`'s still-open argument list, not at the top-level WHERE clause (the
+     mirror image of the nested-paren shape `09e1daf` already handles) -- confirmed by reading
+     the real MySQL 1064 error returned by a deliberately-too-simple payload. Worse: the
+     vulnerable PHP template always appends a literal stray `"` right after the injection point,
+     outside any string once broken out, so the obvious fix (`-- ` comment to eat the rest)
+     backfires -- it also eats the derived-table's own closing paren that Views appends on the
+     SAME line AFTER the WHERE clause, turning a working injection into an unrelated 1064. The
+     winning real payload needs no comment at all: `x' OR SLEEP(5) OR '` breaks the string,
+     injects the condition, and re-opens a one-character string that absorbs that stray `"` as
+     literal content, letting the template's own trailing `'` and `)` resume their normal role.
+     Added as one new entry to `verify_drupal_sqli`'s `timing_pairs` (the other 3 pre-existing
+     entries are real attempts that simply can't reach this CVE's sink, not weakened).
+  Also fixed a real, concrete scoring bug this CVE exposed in `verify_drupal_sqli`'s time-based
+  blind step: it required 2 of N *different* `timing_pairs` entries to each independently show
+  one delayed request, but for THIS CVE only 1 of the 4 entries is even syntactically capable of
+  reaching the sink, so that threshold could never pass no matter how real the injection was.
+  `genericverify.py`'s `verify_generic_sqli_blind` already solves this correctly (2 INDEPENDENT
+  repeats of the SAME winning payload, both over threshold) -- ported that exact discipline into
+  `verify_drupal_sqli`, which is a strictly stronger confirmation (two tries of one payload, not
+  one try each of two), not a weaker one.
+  A third real, concrete gap, scoped and fixed without generalizing beyond what this CVE
+  actually needs: the advisory's own precondition ("a View that uses the affected filter AND is
+  configured to accept user input") requires site configuration beyond what any previous
+  `verify_drupal_*` needed -- a field of the vulnerable type, a node with it populated (with no
+  matching row the JOIN has nothing to evaluate the WHERE expression against, and `SLEEP()`
+  never runs), and a View exposing the filter as a GET parameter -- none of which `pm:enable`
+  alone produces. Added `extra_setup_script` (optional PHP, run via `drush scr` right after the
+  module is active): NOT a generic Drupal-site-building mechanism, exactly the verbatim script
+  that creates the field (`FieldStorageConfig`/`FieldConfig`), the node (`Node::create()`), and
+  the View (`View::create()` with the real schema a working Views config entity needs -- filter
+  `plugin_id` matching what the module's own `hook_field_views_data_alter()` registers for its
+  field type, same mechanism the real `location_selector_field_views_data_alter()` uses).
+  Confirmed end-to-end for real, against the actual downloaded module (never committed):
+  cloned `location_selector` at tag `8.x-1.2`, installed it into `drupalverify.py`'s real
+  Drupal 10 + MySQL 5.7 lab, configured the field/node/View by hand first (via `drush scr`) to
+  prove the precondition is buildable at all, then confirmed the real time-based blind SQLi by
+  hand with `curl` (slow payload ~5.1s vs ~0.2s baseline, 3 independent repeats) before touching
+  `verify_drupal_sqli` itself. After shipping the 3 fixes above, ran the ACTUAL extended
+  `verify_drupal_sqli()` (not a hand-rolled script) against the same real module twice more:
+  `verified=True` both times (`~5.0s` vs `~0.03s`, 2 independent repeats each run), and against
+  the real FIXED `8.x-1.3` module as a negative control: `verified=False`, no delay at all --
+  not a verifier that always says yes. Shipped as a real, repeatable test,
+  `test_drupalverify_sqli_json_key_envelope_live_confirms_and_negative_control` in
+  `tests/test_tools_and_config.py` (skipped without Docker): a SYNTHETIC module reproducing the
+  identical vulnerability shape (never the real GPL module, which the project still doesn't
+  distribute even though its license would allow it, for consistency with how the Joomla/
+  WordPress tests already handle this) gives `verified=True`, and the same module with the real
+  fix (bound `:mode`/`:path` placeholders) gives `verified=False`.
+  Deliberately NOT done, flagged honestly rather than forced: not wired into `cve_agent.py`'s
+  automatic `investigate_cve` dispatch (which has no hint for "needs `json_key_envelope`
+  and/or `extra_setup_script`") -- same reasoning as the Joomla entry above, a second real CVE
+  of this JSON-envelope-nested-key shape is needed before generalizing the dispatch hint
+  correctly.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
