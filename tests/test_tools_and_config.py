@@ -14084,3 +14084,168 @@ def test_cveplan_cli_has_public_exploit_flag_reaches_the_script():
     assert r.returncode == 0, r.stderr
     assert "AVISO" in r.stdout
     assert "https://github.com/worawit/CVE-2021-3156" in r.stdout
+
+
+def _write_generic_gated_install_path_traversal_app(root, patched):
+    # Reproduce la forma real de CVE-2026-65694 (Microweber CMS 2.0.20, path traversal NO
+    # autenticado en ServeStaticFileContoller::serveFromUserfiles(), PR
+    # microweber/microweber#1181) en un objetivo HTTP generico (PHP puro, SIN Laravel ni base de
+    # datos real) -- confirmado en vivo contra el Microweber real (commit 51ac711, la base exacta
+    # de ese PR), instalado via su propio `php artisan microweber:install` CLI real:
+    #
+    # 1) ANTES de un paso de instalacion/migracion real, la app Laravel responde HTTP 200 a
+    #    CUALQUIER ruta -- incluida la propia ruta vulnerable -- con la pagina de instalacion, NO
+    #    con el codigo real del controlador (confirmado en vivo: /userfiles/{cualquier-cosa}
+    #    devolvia la pagina "Installation" hasta ejecutar el instalador real). Sin un paso de
+    #    configuracion real DESPUES de levantar el contenedor, cualquier generico que solo haga
+    #    `docker compose up` prueba contra esa pagina siempre-200 y NUNCA contra el codigo real,
+    #    sea vulnerable o no -- un falso negativo por entorno, no por el payload. Esto es lo que
+    #    el nuevo parametro `setup_commands` de _bootstrap_generic_lab/verify_generic_path_
+    #    traversal cierra.
+    # 2) La vulnerabilidad real: Laravel resuelve la propiedad magica `$request->path` (accedida,
+    #    NO llamada como metodo) contra el INPUT de la peticion antes que contra el parametro de
+    #    ruta real (`Illuminate\Http\Request::__get`: `Arr::get($this->all(), $key, fn () =>
+    #    $this->route($key))`) -- asi que un `?path=` de query SOBRESCRIBE el segmento `{path}`
+    #    de la ruta real, y el resultado se concatena con `normalize_path()`, que solo normaliza
+    #    separadores de ruta SIN quitar `..`. Reproducido aqui en PHP puro con el mismo patron
+    #    exacto (query 'path' pisando el segmento de ruta, concatenacion sin sanear).
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Dockerfile").write_text(
+        "FROM php:8.2-cli\n"
+        "WORKDIR /app\n"
+        "COPY index.php .\n"
+        "RUN mkdir -p /app/userfiles && echo real-asset > /app/userfiles/legit.txt\n"
+        "EXPOSE 8000\n"
+        'CMD ["php", "-S", "0.0.0.0:8000", "-t", "/app", "index.php"]\n'
+    )
+    if patched:
+        # El arreglo real (PR #1181): leer el parametro de ruta LIGADO de verdad
+        # ($request->route('path')), nunca la propiedad de input, mas confinar con
+        # realpath()+comprobacion de prefijo -- aqui, el equivalente en PHP puro.
+        controller = (
+            "$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);\n"
+            "$seg = preg_replace('#^/files/#', '', $uri);\n"
+            "$base = realpath('/app/userfiles');\n"
+            "$resolved = realpath($base . '/' . $seg);\n"
+            "if ($resolved === false "
+            "|| strncmp($resolved, $base . '/', strlen($base) + 1) !== 0) {\n"
+            "    http_response_code(404); echo 'Not Found'; exit;\n"
+            "}\n"
+            "$path = $resolved;\n"
+        )
+    else:
+        controller = (
+            "$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);\n"
+            "// vulnerable: ?path= (query) pisa el segmento de la ruta real, igual que\n"
+            "// $request->path de Laravel -- CVE-2026-65694 real.\n"
+            "$seg = isset($_GET['path']) ? $_GET['path'] : preg_replace('#^/files/#', '', $uri);\n"
+            "$path = '/app/userfiles/' . $seg;   // SIN sanear '..'\n"
+        )
+    (root / "index.php").write_text(
+        "<?php\n"
+        "if (!file_exists('/app/installed.flag')) {\n"
+        "    http_response_code(200);\n"
+        "    echo 'NOT INSTALLED';\n"
+        "    exit;\n"
+        "}\n"
+        f"{controller}"
+        "if (!is_file($path)) {\n"
+        "    http_response_code(404);\n"
+        "    echo 'Not Found';\n"
+        "    exit;\n"
+        "}\n"
+        "readfile($path);\n"
+    )
+
+
+def test_genericverify_path_traversal_live_needs_setup_commands_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker; se salta si no esta): confirma el gap real que la
+    # investigacion de CVE-2026-65694 (Microweber) expuso -- sin un paso de configuracion real
+    # DESPUES de levantar el contenedor, verify_generic_path_traversal nunca llega al codigo
+    # vulnerable de un objetivo que, como Laravel/Microweber, solo se comporta de verdad tras
+    # una instalacion real. Primero se prueba el objetivo vulnerable SIN setup_commands (el
+    # comportamiento que tenia esta funcion ANTES de este commit) para probar que el gap era
+    # real -- no asumido: debe salir verified=False a pesar de ser realmente vulnerable. Luego,
+    # con setup_commands, el mismo objetivo vulnerable debe dar verified=True, y el objetivo
+    # parcheado (misma instalacion real) debe seguir dando verified=False (control negativo: no
+    # es que el verificador siempre diga que si).
+    import pytest
+    from binoracle.workflows.genericverify import verify_generic_path_traversal
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_generic_gated_install_path_traversal_app(vuln_root, patched=False)
+
+    r_not_installed = verify_generic_path_traversal(
+        str(vuln_root), "/files/x", "GET", {"path": ""}, path_param_hint="path", budget_s=180.0)
+    assert r_not_installed.ok is True, r_not_installed.detail
+    assert r_not_installed.verified is False, (
+        "sin setup_commands, el objetivo nunca sale de la pagina 'no instalado' -- si esto da "
+        "True, el gap ya no es real")
+
+    install_cmd = ["touch /app/installed.flag"]
+
+    r_vuln = verify_generic_path_traversal(
+        str(vuln_root), "/files/x", "GET", {"path": ""}, path_param_hint="path", budget_s=180.0,
+        setup_commands=install_cmd)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+
+    patched_root = tmp_path / "patched"
+    _write_generic_gated_install_path_traversal_app(patched_root, patched=True)
+    r_patched = verify_generic_path_traversal(
+        str(patched_root), "/files/x", "GET", {"path": ""}, path_param_hint="path",
+        budget_s=180.0, setup_commands=install_cmd)
+    assert r_patched.ok is True, r_patched.detail
+    assert r_patched.verified is False, (
+        "falso positivo: el objetivo con el arreglo real de PR #1181 no deberia verificar")
+
+
+def test_genericverify_path_traversal_setup_command_failure_aborts_honestly(monkeypatch, tmp_path):
+    # Si un setup_command falla, hay que abortar con el detalle real en vez de seguir probando
+    # contra un objetivo que sabemos a medio arrancar (falso negativo silencioso).
+    import binoracle.workflows.genericverify as gv
+
+    class _FakeLab:
+        def __init__(self):
+            self.torn_down = False
+        def build_and_run(self, target, timeout_build=600.0, timeout_run=60.0):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+        def running_containers(self):
+            return ["app"]
+        def published_ports(self, container):
+            return ["8000"]
+        def discover_http(self, tries=60, delay=3.0):
+            return ("app", "8000")
+        def logs_tail(self, name, lines=40):
+            return ""
+        def sh(self, *args, timeout=60.0, input_text=None):
+            class _R:
+                returncode = 1
+                stdout = "comando no encontrado"
+                stderr = ""
+            return _R()
+        def teardown(self):
+            self.torn_down = True
+
+    fake_lab = _FakeLab()
+    monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    monkeypatch.setattr(gv, "_GenericLab", lambda tag: fake_lab)
+    monkeypatch.setattr(gv, "_find_build_target",
+                        lambda source_dir: {"kind": "dockerfile", "path": "Dockerfile",
+                                             "context": source_dir})
+
+    res = gv.verify_generic_path_traversal(
+        str(tmp_path), "/files/x", "GET", {"path": ""}, path_param_hint="path",
+        setup_commands=["php artisan microweber:install"])
+
+    assert res.verified is False
+    assert "comando no encontrado" in (res.detail or "")
+    assert fake_lab.torn_down is True

@@ -395,10 +395,21 @@ class _GenericLab:
 
 
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
-                           budget_s: float) -> Optional[tuple]:
+                           budget_s: float, setup_commands: Optional[List[str]] = None) -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
     construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
-    o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`."""
+    o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`.
+
+    `setup_commands` (opcional): comandos de shell reales, ejecutados via `docker exec` DENTRO del
+    contenedor ya arriba, DESPUES de confirmar que responde HTTP pero ANTES de lanzar cualquier
+    ataque -- analogo generico del `extra_setup_script` que drupalverify.py ya tiene para Views
+    que necesitan contenido real. Confirmado como necesario en vivo contra CVE-2026-65694
+    (Microweber): el framework (Laravel) responde HTTP 200 en CUALQUIER ruta mientras la app no
+    esta instalada (migraciones/base de datos), incluida la propia ruta vulnerable -- sin esto,
+    cualquier generico que arranque el objetivo con `docker compose up` a secas prueba contra una
+    app a medio arrancar y nunca llega al codigo real, sea o no vulnerable (falso negativo por
+    entorno, no por el payload). Si CUALQUIER comando falla, se aborta con el detalle real en vez
+    de seguir probando contra un objetivo que sabemos a medias."""
     target = _find_build_target(source_dir)
     if target is None:
         res.detail = ("no se encontro Dockerfile ni docker-compose.yml en el codigo descargado, "
@@ -443,6 +454,18 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     container, port = found_http
     base_url = f"http://{_lab_host()}:{port}"
     step(f"objetivo arriba: {base_url} (contenedor '{container}')")
+
+    for cmd in (setup_commands or []):
+        step(f"ejecutando paso de configuracion real dentro del contenedor: {cmd!r}...")
+        r = lab.sh("exec", container, "sh", "-c", cmd, timeout=180)
+        if r.returncode != 0:
+            res.detail = (f"el paso de configuracion {cmd!r} fallo (codigo {r.returncode}): "
+                          f"{(r.stderr or r.stdout or '')[-500:]}")
+            res.logs.append(f"setup_commands[{cmd!r}] stdout/stderr:\n"
+                            f"{(r.stdout or '')}\n{(r.stderr or '')}")
+            lab.teardown()
+            return None
+
     return (lab, base_url, container)
 
 
@@ -568,13 +591,18 @@ def verify_generic_command_injection(
 def verify_generic_path_traversal(
     source_dir: str, endpoint: str, http_method: str, parameters,
     path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
-    budget_s: float = 900.0,
+    budget_s: float = 900.0, setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
     fuera de cualquier directorio de la app) y prueba las mismas variantes de profundidad/
     codificacion de '../' -- el mecanismo de prueba (leer un fichero del propio sistema de
-    ficheros del contenedor) no depende del stack, asi que vale igual aqui que en WordPress."""
+    ficheros del contenedor) no depende del stack, asi que vale igual aqui que en WordPress.
+
+    `setup_commands` (opcional, ver _bootstrap_generic_lab): comandos reales ejecutados dentro
+    del contenedor DESPUES de arrancar y ANTES de atacar -- necesario para frameworks (Laravel/
+    Microweber confirmado en vivo con CVE-2026-65694) que exigen una instalacion/migracion real
+    antes de que sus rutas se comporten como en produccion."""
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -591,7 +619,7 @@ def verify_generic_path_traversal(
                                "mano (path_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot

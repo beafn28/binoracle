@@ -1086,6 +1086,105 @@ The flagship direction: prove impact end to end.
   needed no new dispatch hint -- `sqli_param_hint="user"` plus the existing generic path was
   enough once the two gaps above were fixed).
 
+- First **path-traversal** CVE worked in this repo (vs. the three SQLi CVEs above): **CVE-2026-
+  65694**, unauthenticated arbitrary file read in **Microweber CMS** <=2.0.20,
+  `ServeStaticFileContoller::serveFromUserfiles()`, CWE-22, CVSS v4.0 8.7. Independently
+  confirmed real via `cveawg.mitre.org`'s own CVE record. Read the real researcher PR
+  (`microweber/microweber#1181`, unmerged at investigation time) and diffed it against the real
+  base commit (`51ac711`, cloned straight from GitHub): the vulnerable code is
+  `$path = $request->path; $path = normalize_path(userfiles_path() . $path, false); return
+  $this->sendResponse($path, $request);` -- `$request->path`, accessed as a PROPERTY (not
+  called as `$request->path()`), resolves via Laravel's own
+  `Illuminate\Http\Request::__get($key) { return Arr::get($this->all(), $key, fn () =>
+  $this->route($key)); }`, i.e. it checks the request's QUERY/POST input FIRST and only falls
+  back to the bound `{path}` route parameter -- so an unauthenticated `?path=../../../../etc/
+  passwd` query string silently overrides the real `{path}` route segment on `GET /userfiles/
+  {path}` (`routes/web.php`, middleware group `api.static` = only `SessionlessMiddleware` +
+  `CheckResponseForModifications`, no auth, no install-check). `normalize_path()`
+  (`App/functions/common.php`) only normalizes path SEPARATORS (`/`/`\` -> `DIRECTORY_SEPARATOR`,
+  collapses doubles) -- it never strips `..`. The real fix (PR #1181): read the bound route
+  segment via `$request->route('path')` instead, then confine with `realpath()` + a prefix check
+  against `realpath(userfiles_path())`.
+  Stood up the REAL, unmodified vulnerable app (not a reproduction): cloned the real repo at
+  `51ac711`, built it with its OWN shipped `docker-compose.yml` (`thecodingmachine/php` +
+  MariaDB) after one test-only infra fix -- the shipped compose pinned
+  `thecodingmachine/php:8.1-v4-apache-node16`, but `composer.lock` requires PHP ~8.2/~8.3
+  (confirmed live: the 8.1 image failed dependency resolution before even reaching the
+  vulnerable code) -- bumped the tag to the `8.2` variant of the SAME image family (no
+  application code touched). Installed Microweber for real via its own unattended CLI installer
+  (`php artisan microweber:install --db-host=mariadb ...`), confirmed necessary live: an
+  uninstalled Microweber returns HTTP 200 with its own "Installation" page on EVERY route,
+  including the vulnerable one, so testing against a merely-booted-but-uninstalled instance is a
+  guaranteed false negative, not evidence of anything. One more real, concrete gap found and
+  fixed along the way (narrower than Microweber's own install flakiness, see below): the
+  project's shipped `.htaccess` has an unconditional `RewriteCond %{REQUEST_URI} ^/userfiles/.*$
+  [NC,OR] ... RewriteRule . - [PT,L]` that intercepts EVERY `/userfiles/*` request at the Apache
+  layer before Laravel's router ever runs, for both existing files (served directly, fine) and
+  non-existing ones (Apache's own `ErrorDocument 404`, confirmed live via the exact "Not Found"
+  Apache signature vs. Laravel's own 404 view) -- an Apache-specific accidental partial
+  mitigation that a standard nginx `try_files $uri $uri/ /index.php?$query_string;` deployment of
+  this same app does NOT have. Disabled that one rewrite block (test-only, clearly commented,
+  never touching the vulnerable PHP) to test the REAL vulnerable-code behavior rather than an
+  Apache config artifact.
+  Confirmed end-to-end for real, by hand with `curl` against the real installed app: `GET
+  /userfiles/x?path=../../../../../../../../etc/passwd` returned the real `/etc/passwd` from
+  inside the container; the same technique against `?path=../.env` returned the real `APP_KEY`/
+  `DB_PASSWORD` (matching PR #1181's own stated impact); a planted random canary at
+  `/tmp/binoracle_canary2.txt` came back verbatim too. Negative control: applied the REAL PR
+  #1181 patch to the same running app (live-reloaded, no container rebuild needed since PHP is
+  interpreted) -- both the `/etc/passwd` and canary reads then 404'd, while the legitimate
+  `/userfiles/modules/microweber/default.css` asset kept working (no regression from the
+  patch).
+  While getting this real app running long enough to drive the ACTUAL `genericverify.py`
+  function (not a hand-rolled script) against it, found and fixed one genuine, concrete,
+  generalizable gap: `_bootstrap_generic_lab`/`verify_generic_path_traversal` had no way to run
+  anything inside the container AFTER it starts responding to HTTP but BEFORE the attack begins
+  -- exactly the Microweber "always-200-until-installed" problem above, which is not
+  Microweber-specific (any framework needing a real install/migration step before its routes
+  behave like production -- Drupal's Views needed the analogous thing, fixed in
+  `drupalverify.py`'s `extra_setup_script` by `1b59422`). Added `setup_commands` (a list of real
+  shell commands run via `docker exec` right after `discover_http()` succeeds, before any
+  attack payload is sent; any failing command aborts with the real stdout/stderr instead of
+  silently probing a half-booted target) to both `_bootstrap_generic_lab` and
+  `verify_generic_path_traversal`. Shipped as a repeatable test (skips cleanly without Docker),
+  `test_genericverify_path_traversal_live_needs_setup_commands_and_negative_control` in
+  `tests/test_tools_and_config.py`, against a SYNTHETIC gated-install PHP app (never a real
+  third-party source) reproducing the identical shape (always-200-until-a-flag-file-exists, plus
+  the same `?path=` query-overrides-route-segment pattern as the real CVE): first proves the gap
+  was real by running the vulnerable app WITHOUT `setup_commands` (`verified=False` despite being
+  genuinely vulnerable -- the "not installed" page masks it), then WITH `setup_commands`
+  (`verified=True`), then the patched app with the same `setup_commands` as a negative control
+  (`verified=False`). A second unit test,
+  `test_genericverify_path_traversal_setup_command_failure_aborts_honestly`, confirms a failing
+  setup command aborts with the real error instead of continuing. Full genericverify-related
+  suite: 69/70 passed (both new tests included); the 1 failure
+  (`test_genericverify_xss_blocked_without_build_target`) is the same pre-existing, unrelated
+  Playwright-missing-sandbox gap already documented in `09e1daf`/`1b59422`/the CVE-2026-9469
+  entry above. `ruff` clean on both changed files.
+  Honestly incomplete, flagged rather than forced: the actual LIVE, automated
+  `verify_generic_path_traversal()` run against the real Microweber app (as opposed to the
+  by-hand `curl` confirmation above, which IS complete and conclusive) could not be completed in
+  this environment. Root cause is NOT a genericverify.py bug: Microweber's own `composer
+  install` (run by its shipped `docker-compose.yml` on every fresh container) triggers, as a
+  `post-autoload-dump` side effect of `artisan package:discover`, an EAGER database read
+  (`ModuleRepository::getSystemLicenses()`, `SELECT * FROM system_licenses`) during its OWN
+  first-boot bootstrap, BEFORE any migration has created that table -- this crashed the
+  container with an uncaught `QueryException` on 2 of 3 attempts (including after adding a real
+  `depends_on: condition: service_healthy` MariaDB healthcheck plus a 15s buffer, AND on a fully
+  fresh `composer install` with no cached `vendor/`), but NOT on the very first attempt, which
+  installed and booted cleanly end-to-end (that is the run the by-hand `curl` confirmation above
+  used). This looks like non-determinism inside Microweber's own first-boot sequence (plausibly
+  tied to Composer's own autoload/class-discovery ordering, which this investigation did not
+  chase further) rather than a timing race this project's tooling can reliably paper over --
+  documented here rather than forced, same standard as the Joomla-3-web-installer gap in
+  `ec3f98b`. The new `setup_commands` mechanism and `verify_generic_path_traversal`'s own attack
+  logic ARE confirmed correct and sufficient for this exact CVE shape (query-param-overrides-
+  route-segment, `../` depth up to 12) via the synthetic live test above, which deterministically
+  exercises the identical mechanism without Microweber's own flaky boot sequence in the way.
+  Whoever revisits Microweber specifically should pin the install step with a retry loop around
+  `docker compose up` (observed to self-resolve on retry) rather than trying to fix Microweber's
+  package-discovery ordering from the outside.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
