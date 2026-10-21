@@ -975,6 +975,18 @@ def test_cve_exploit_plan():
     assert classify_cve("use-after-free in the handler") == "uaf"
     assert classify_cve("uncontrolled format string (%n)") == "format-string"
     assert classify_cve("nothing recognizable here") is None
+    # plan de stack overflow con NX+PIE+canary -> fases de leak + control + ROP
+    pl = plan("stack buffer overflow via strcpy", {"nx": True, "pie": True, "canary": True, "relro": "full"},
+              cve="CVE-2024-1", lang="es")
+    assert pl.vuln_class == "stack-overflow" and pl.cve == "CVE-2024-1"
+    names = " ".join(ph.name.lower() for ph in pl.phases)
+    assert "canary" in names and "pie" in names and "rop" in names and "objetivo" in names
+    assert any("Full RELRO" in m for m in pl.mitigations)
+    assert "ret2win" in pl.kb_refs
+    md = render_plan(pl, "es")
+    assert "Esquema de explotacion" in md and "Primitiva" in md
+    # sin clase reconocida -> plan vacio con nota
+    assert plan("blah blah", {}, lang="es").ok is False
 
 
 def test_cli_parse_params_accepts_name_equals_value_for_gating_parameters():
@@ -989,18 +1001,6 @@ def test_cli_parse_params_accepts_name_equals_value_for_gating_parameters():
     assert _parse_cli_params("submit=Upload File,ftp_file") == {
         "submit": "Upload File", "ftp_file": "1"}
     assert _parse_cli_params("user_id=5,email=a@b.com") == {"user_id": "5", "email": "a@b.com"}
-    # plan de stack overflow con NX+PIE+canary -> fases de leak + control + ROP
-    pl = plan("stack buffer overflow via strcpy", {"nx": True, "pie": True, "canary": True, "relro": "full"},
-              cve="CVE-2024-1", lang="es")
-    assert pl.vuln_class == "stack-overflow" and pl.cve == "CVE-2024-1"
-    names = " ".join(ph.name.lower() for ph in pl.phases)
-    assert "canary" in names and "pie" in names and "rop" in names and "objetivo" in names
-    assert any("Full RELRO" in m for m in pl.mitigations)
-    assert "ret2win" in pl.kb_refs
-    md = render_plan(pl, "es")
-    assert "Esquema de explotacion" in md and "Primitiva" in md
-    # sin clase reconocida -> plan vacio con nota
-    assert plan("blah blah", {}, lang="es").ok is False
 
 
 def test_cveplan_script_from_proof():
