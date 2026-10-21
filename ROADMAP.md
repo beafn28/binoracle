@@ -781,6 +781,83 @@ The flagship direction: prove impact end to end.
   `verify_generic_idor`'s "known difference, not a generic oracle" shape than to the
   time-based/canary-file verifiers.
 
+- Dynamic n-day verification for a Joomla extension whose own PHP code is too OLD to run inside
+  this project's Joomla lab at all -- grounded in a real, current CVE: CVE-2025-40636
+  (`mod_vvisit_counter` 2.0.4j3 / "Vinaora Visitors Counter", INCIBE-2025-0540, CVSS v4.0 9.3,
+  unauthenticated SQLi via the `cip_vvisitcounter` cookie). Found and downloaded the real
+  module source (no GitHub/SourceForge mirror exists; the Joomla Extensions Directory listing
+  and the old `joomlacode.org` project page are both gone) via an Internet Archive snapshot of
+  the original author's own download page (`mmajunke.de`), exact version `2.0.4j3`. Read the
+  real `helper.php`: `modVisitCounterHelper::init()` computes the cookie name as
+  `"cip_" . $this->s_createtableName_raw` (default `vvisitcounter` -> exactly
+  `cip_vvisitcounter`, matching the advisory), `base64_decode()`s it with ZERO sanitization into
+  `$this->callerIP`, then builds `"... WHERE ip=UNHEX(SHA1('$ip')) AND (...)"` and
+  `"INSERT INTO ... VALUES ( ..., UNHEX(SHA1('$ip')), ... )"` by raw string concatenation --
+  confirmed exactly where INCIBE's advisory said it would be, reachable with the module's
+  factory-default settings (locktime>0, cookies on, not read-only) on every page it renders.
+  First tried the obvious path -- install the real extension into `joomlaverify.py`'s existing
+  Joomla 5 + MySQL 8 lab via the official `extension:install --path=<zip>` CLI, the same call
+  the image's own entrypoint uses for `JOOMLA_EXTENSIONS_PATHS` -- and this closes a real open
+  question the module's own docstring had been carrying since it was written: `extension:install`
+  worked perfectly against this real third-party extension (manifest installed, `#__extensions`
+  row created and already enabled). But the extension itself never got to execute its SQL: its
+  `helper.php` calls `$db->query()`, `$db->Quote()`, `$db->getErrorNum()`, `$db->getErrorMsg()` --
+  the legacy `JDatabaseDriver` API from Joomla <4.0 -- and the `joomla/database` Composer package
+  that BOTH Joomla 4 and Joomla 5 ship removed every one of those method names (confirmed by
+  grepping their own `DatabaseDriver.php`: only `execute()`/`quote()`, lowercase, remain). The
+  module fatals with "Call to undefined method" on its very first database touch
+  (`CREATE TABLE IF NOT EXISTS`), before the vulnerable `SELECT`/`INSERT` ever run. The
+  Joomla version this module WAS built for (3.x, per its own install manifest) can't fill the
+  gap either: its official Docker image's `entrypoint.sh` only wires up DB connectivity, it
+  never calls any installer -- Joomla 3 has no CLI-driven unattended install at all, only a
+  multi-step, session-stateful web wizard, which this project has no automation for and isn't
+  building speculatively for one CVE.
+  Rather than stop at "can't verify" or force a fragile Joomla-3-web-wizard scripting effort,
+  shipped a genuinely new (and tested) path: `verify_joomla_legacy_module_sqli_cookie()` in
+  `joomlaverify.py` skips the Joomla container entirely. It spins up only MySQL + a bare
+  `php:8.3-cli` container (with `mysqli` installed at boot), copies the extension's real,
+  UNMODIFIED source into it via `docker cp`, and runs it through a ~150-line stub environment
+  (`_LEGACY_STUBS_PHP`) that does exactly one job: puts back the handful of `JFactory`/
+  `JDatabaseDriver`/`JURI`/`JError`/`JLanguage*` method NAMES Joomla 4/5 deleted. Every stub
+  either no-ops (UI/doc helpers) or passes the SQL straight to `mysqli_query()` with zero
+  escaping or rewriting -- faithfully reproducing what the real Joomla 3 driver did, so the
+  vulnerability executes exactly as shipped, not as reinterpreted. This is a genuinely different
+  verification shape than every other `verify_joomla_*`/`verify_wordpress_*` function (which all
+  hit a live, fully-rendered CMS over HTTP) -- it directly instantiates the extension's own
+  helper class and times its constructor, the same time-based-blind-SQLi oracle
+  `verify_generic_sqli_blind` already uses (median of 2 control runs as baseline,
+  `verified=True` only if 2 INDEPENDENT repeats of the same payload both clear baseline + half
+  the requested `SLEEP`), but with deeper closing-paren contexts
+  (`_LEGACY_SQLI_CONTEXTS` includes `'))`/`')))` variants) than `genericverify.py`'s own list
+  carries, because Joomla-legacy SQL typically nests the tainted value inside function calls
+  (`UNHEX(SHA1('$val'))`, confirmed live against this exact CVE needing precisely 2 closing
+  parens) rather than a bare `WHERE col='$val'`. (`genericverify.py`'s shared `_SQLI_CONTEXTS`
+  was deliberately left untouched here -- the same nested-paren gap likely applies there too,
+  but that constant is exercised by its own existing test suite against different assumptions,
+  and fixing it blind without re-running that suite against something concrete would be the
+  kind of unverified change this project doesn't ship.)
+  Confirmed end-to-end for real, twice: first by hand, directly against the real downloaded
+  `2.0.4j3` source (never committed -- policy), with timings that scale EXACTLY with the
+  requested delay against a real, disposable MySQL (`SLEEP(0)` -> ~0.02s noise, `SLEEP(2)` ->
+  ~2.03s twice independently, `SLEEP(5)` -> ~5.03s twice independently, against a ~0.02s
+  benign-cookie baseline) -- proof it's the attacker-controlled cookie value actually being
+  interpreted as SQL, not a fixed timeout artifact. Then shipped as a real, repeatable test,
+  `test_joomlaverify_legacy_sqli_live_confirms_and_negative_control` in
+  `tests/test_tools_and_config.py` (skipped without Docker): a SYNTHETIC module written to
+  reproduce the identical vulnerability shape (never the real third-party zip, which the
+  project doesn't distribute) gives `verified=True`, and the exact same module with the one
+  real fix (`$db->Quote($this->callerIP)` instead of raw interpolation) gives `verified=False`
+  -- not a verifier that always says yes.
+  Deliberately NOT done in this session, flagged honestly rather than forced: (1) not wired
+  into `cve_agent.py`'s automatic `investigate_cve` dispatch (which only knows
+  `verify_joomla_account_takeover`/`verify_joomla_deserialization` for Joomla) -- this needed a
+  second real CVE of this exact "legacy-extension-can't-even-boot" shape to generalize the
+  dispatch hint correctly, and inventing that hint off a sample size of one would be guessing;
+  (2) no automated Joomla 3 lab exists or was built for the "run the real extension inside an
+  actual Joomla 3 frontend" version of this confirmation -- the web-installer-wizard automation
+  that would require is real, scoped work of its own, not something to bolt on speculatively
+  here.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

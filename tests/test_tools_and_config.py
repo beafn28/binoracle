@@ -6372,6 +6372,124 @@ def test_joomlaverify_deserialization_blocked_without_gadget(monkeypatch, tmp_pa
     assert res.limitations
 
 
+def test_joomlaverify_legacy_sqli_validates_inputs(monkeypatch, tmp_path):
+    import binoracle.workflows.joomlaverify as jv
+    monkeypatch.setattr(jv, "_docker_daemon_ok", lambda timeout=8.0: True)
+    ext = tmp_path / "myext"
+    ext.mkdir()
+    (ext / "helper.php").write_text("<?php\nclass MyHelper { public function __construct(&$p) {} }\n")
+
+    res_missing = jv.verify_joomla_legacy_module_sqli_cookie(str(tmp_path), "myext", "nope.php",
+                                                             "MyHelper", "cip_x")
+    assert res_missing.verified is False and "no se encuentra" in res_missing.detail
+
+    res_bad_class = jv.verify_joomla_legacy_module_sqli_cookie(str(tmp_path), "myext", "helper.php",
+                                                               "Not Valid", "cip_x")
+    assert res_bad_class.verified is False and "class_name invalido" in res_bad_class.detail
+
+    res_bad_cookie = jv.verify_joomla_legacy_module_sqli_cookie(str(tmp_path), "myext", "helper.php",
+                                                                "MyHelper", "bad cookie")
+    assert res_bad_cookie.verified is False and "cookie_name invalido" in res_bad_cookie.detail
+
+    res_bad_enc = jv.verify_joomla_legacy_module_sqli_cookie(str(tmp_path), "myext", "helper.php",
+                                                             "MyHelper", "cip_x",
+                                                             cookie_encoding="url")
+    assert res_bad_enc.verified is False and "cookie_encoding invalido" in res_bad_enc.detail
+
+
+def _write_legacy_vvisit_style_module(root, escape_with_quote):
+    # Reproduce la MISMA forma que mod_vvisit_counter 2.0.4j3 / CVE-2025-40636 (cookie
+    # base64 -> $ip sin escapar dentro de "UNHEX(SHA1('$ip'))", via el API legacy de
+    # JDatabaseDriver que Joomla 4/5 borraron) -- nunca el .zip real descargado (no se
+    # commitea, por politica del proyecto), sino una extension SINTETICA que un analista
+    # escribio a mano con la misma forma de vulnerabilidad, para poder tener este test en
+    # el repo sin distribuir software de terceros.
+    mod = root / "mod_synth_counter"
+    mod.mkdir(parents=True)
+    if escape_with_quote:
+        ip_expr = "$this->db->Quote($this->callerIP)"
+        sql_ip = "$ip"
+    else:
+        ip_expr = None
+        sql_ip = "'$ip'"
+    body = (
+        "<?php\n"
+        "defined('_JEXEC') or die('Restricted access');\n\n"
+        "class SyntheticVisitHelper {\n"
+        "    private $db = null;\n"
+        "    private $callerIP = \"\";\n\n"
+        "    public function __construct(&$params) {\n"
+        "        $cookie_name = \"cip_synth\";\n"
+        "        $cookie_ip = null;\n"
+        "        if (isset($_COOKIE[$cookie_name])) { $cookie_ip = $_COOKIE[$cookie_name]; }\n"
+        "        if (empty($cookie_ip)) {\n"
+        "            $this->callerIP = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '0.0.0.0';\n"
+        "        } else {\n"
+        "            $this->callerIP = base64_decode($cookie_ip);\n"
+        "        }\n"
+        "        $this->db = JFactory::getDBO();\n"
+        "        $query = \"CREATE TABLE IF NOT EXISTS #__synth(id int(11) unsigned NOT NULL auto_increment, tm int not null, ip BINARY(20) not null, PRIMARY KEY (id)) ENGINE=MyISAM AUTO_INCREMENT=1\";\n"
+        "        $this->db->setQuery($query);\n"
+        "        $this->db->query();\n"
+        "        $ip = $this->callerIP;\n"
+    )
+    if escape_with_quote:
+        body += "        $ip = $this->db->Quote($this->callerIP);\n"
+        body += "        $query = \"SELECT COUNT(*) FROM #__synth WHERE ip=UNHEX(SHA1($ip))\";\n"
+        insert_values = "UNHEX(SHA1($ip))"
+    else:
+        body += "        $query = \"SELECT COUNT(*) FROM #__synth WHERE ip=UNHEX(SHA1('$ip'))\";\n"
+        insert_values = "UNHEX(SHA1('$ip'))"
+    body += (
+        "        $this->db->setQuery($query);\n"
+        "        $items = $this->db->loadResult();\n"
+        "        if (empty($items)) {\n"
+        f"            $query = \"INSERT INTO #__synth ( tm, ip ) VALUES ( unix_timestamp(NOW()), {insert_values} )\";\n"
+        "            $this->db->setQuery($query);\n"
+        "            $this->db->query();\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    (mod / "helper.php").write_text(body)
+
+
+def test_joomlaverify_legacy_sqli_live_confirms_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): reproduce la
+    # forma EXACTA de CVE-2025-40636 (mod_vvisit_counter 2.0.4j3 / Vinaora Visitors Counter,
+    # INCIBE-2025-0540) en una extension sintetica -- cookie base64 -> $ip sin escapar dentro
+    # de UNHEX(SHA1('$ip')), via el API legacy de JDatabaseDriver que Joomla 4/5 borraron -- y
+    # confirma la SQLi ciega por tiempo via cookie contra el codigo real SIN MODIFICAR,
+    # ejecutado fuera del CMS (ver el docstring de verify_joomla_legacy_module_sqli_cookie).
+    # Control negativo: la MISMA extension pero escapando con $db->Quote() (el arreglo real) no
+    # debe dar un falso positivo. Pesado (pull de imagenes + instalar mysqli + ~10-20 peticiones
+    # de prueba); se salta sin Docker.
+    import pytest
+    from binoracle.workflows.joomlaverify import (verify_joomla_legacy_module_sqli_cookie,
+                                                   _docker_daemon_ok)
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_legacy_vvisit_style_module(vuln_root, escape_with_quote=False)
+    fixed_root = tmp_path / "fixed"
+    _write_legacy_vvisit_style_module(fixed_root, escape_with_quote=True)
+
+    r_vuln = verify_joomla_legacy_module_sqli_cookie(
+        str(vuln_root), "mod_synth_counter", "helper.php", "SyntheticVisitHelper",
+        "cip_synth", cookie_encoding="base64", budget_s=240.0)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert "SLEEP" in r_vuln.evidence.get("payload_ganador_crudo", "")
+
+    r_fixed = verify_joomla_legacy_module_sqli_cookie(
+        str(fixed_root), "mod_synth_counter", "helper.php", "SyntheticVisitHelper",
+        "cip_synth", cookie_encoding="base64", budget_s=240.0)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: la version con $db->Quote() no deberia verificar"
+
+
 def test_cve_agent_deterministic_hints_recognizes_wp_rest_route(tmp_path):
     from binoracle.workflows.cve_agent import _deterministic_web_hints_from_source
     (tmp_path / "rest-plugin.php").write_text(
