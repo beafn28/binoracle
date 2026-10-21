@@ -1009,6 +1009,83 @@ The flagship direction: prove impact end to end.
   only reference is a bare vendor homepage -- the latter is a strong signal that no public
   technical detail or source will exist, no matter how real the CVE itself is.
 
+- Investigated a real, current, non-CMS CVE to exercise `genericverify.py`'s own
+  (un-CMS-specific) lab bootstrap for the first time against a real target: **CVE-2026-9469**
+  (`yashpokharna2555/StudentManagementSystem`, GitHub, plain PHP, commit
+  `cb2f558ddf8d19396de0f92abf2d224d46a0a203`), unauthenticated SQLi in `/success.php` via the
+  `user` POST parameter, CWE-89, independently confirmed real via `cveawg.mitre.org`'s own CVE
+  record. Cloned the real repo at the exact commit and read the real vulnerable code: `success.php`
+  builds `"SELECT * FROM \`admin\` WHERE \`user\` = '" .$user. "' AND \`password\` = '" . $h_pass . "' "`
+  from `trim($_POST['user'])` with zero escaping, then `$db->query($sql)` (`connection.php`:
+  `mysqli_connect('localhost', 'root', '')` against database `studinfosystem`) -- confirmed
+  exactly where the CVE record's `/success.php` + `User` parameter said, with a real seed dump
+  (`studinfosystem (8).sql`) providing the `admin` table and a real admin account.
+  Found and fixed two genuine, concrete gaps in `genericverify.py`, each reproduced live against
+  the OLD code first (per this project's own standard) before fixing:
+  1. `_STACK_SIGNALS`/`_detect_and_write_auto_dockerfile` checked `package.json` BEFORE
+     `composer.json`/bare-PHP detection, with no check that it actually declared a runnable Node
+     app. This real repo's `package.json` is the one bundled with the "SB Admin" Bootstrap
+     template (gulp/sass/jquery front-end tooling only, no `main`, no `scripts` at all) -- the
+     OLD code misdetected it as a Node stack (confirmed live: `_find_build_target` on the real
+     repo returned `stack_detectado: "package.json"`, generating a Dockerfile whose
+     `npm start || node index.js || ...` never reaches anything real), which would have left the
+     actual PHP app -- and the real SQLi -- unreachable. Fixed with
+     `_package_json_has_runnable_entry()`: a `package.json` only counts as a Node signal if it
+     declares a `main` or a non-empty `scripts`; otherwise detection falls through to
+     composer.json/bare-PHP as before (confirmed live, same repo, same function: now returns
+     `stack_detectado: "*.php (sin composer.json)"`).
+  2. `verify_generic_sqli_blind` only ever tried `"<val> AND <sleep>"`. That requires the
+     ORIGINAL parameter value to already match a real row -- true for CMS-specific verifiers
+     that already know a valid identity, false for a generic login form probed without known
+     credentials (the most common real case). Confirmed live against the real admin table (6
+     rows): 45/45 AND-based context/dialect/comment combinations gave exactly 0.0s, despite the
+     injection being real and independently confirmable with `curl` using `OR`. Raw `"<val> OR
+     <sleep>"` does fire without needing a matching row, but `SLEEP()` inside an `OR` is
+     evaluated once per row SCANNED, not once per query (confirmed live: `OR SLEEP(4)` against
+     the same 6-row table took ~24s, not ~4s) -- a delay that grows unboundedly with table size
+     and risks exceeding the request timeout on a larger table. Fixed by adding `OR` as a second
+     boolean combinator (`_SQLI_BOOLEAN_OPS`), wrapping its sleep expression in a non-correlated
+     derived subquery (`(SELECT 1 FROM (SELECT SLEEP(n)) x)`, `_sqli_sleep_clause`) that MySQL
+     materializes once per query instead of once per row -- confirmed live, same real table:
+     `~4.01s`/`~4.01s` across 2 independent repeats. Ran the ACTUAL extended
+     `verify_generic_sqli_blind()` (not a hand-rolled script) against the real app, with a
+     purpose-built lab Dockerfile (PHP + a local MariaDB server in the SAME container, needed
+     because `connection.php` hardcodes `'localhost'` -- a separate compose `db` service would
+     never be reachable by the real, unmodified source; never committed): `verified=True`, winning
+     payload `user="nope' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -"`,
+     `~4.0s` vs a `~0.07s` baseline, 2 independent repeats. Negative control: the same real app
+     with `success.php`'s query switched to a bound `mysqli` prepared statement (`?`/
+     `bind_param`) gave `verified=False` across 81 combinations tried -- not a verifier that
+     always says yes.
+  Shipped two repeatable tests in `tests/test_tools_and_config.py` (skip cleanly without
+  Docker): `test_genericverify_package_json_without_main_or_scripts_is_not_a_node_signal` (+ a
+  positive-control sibling for a `package.json` that DOES declare `scripts.start`), and
+  `test_genericverify_sqli_blind_live_confirms_or_combinator_login_no_match_and_negative_control`
+  -- a SYNTHETIC Flask + real MySQL (via `docker-compose.yml`, never the real third-party PHP
+  source) fixture reproducing the identical login-form/no-matching-row shape, confirmed
+  `verified=True` (OR-based payload) against the vulnerable version and `verified=False` against
+  the same fixture with a parameterized query. Ran the full genericverify-related suite: 55/56
+  passed (including both new tests); the 1 failure
+  (`test_genericverify_xss_blocked_without_build_target`) is the same pre-existing, unrelated
+  Playwright-missing-sandbox gap `09e1daf`/`1b59422` already documented, confirmed by reproducing
+  it identically against the pre-fix code. `ruff` clean on both changed regions (pre-existing
+  findings elsewhere in the test file, untouched, same as prior commits). `mypy` errors on
+  `genericverify.py`: the exact same pre-existing 11, confirmed by diff, just shifted by line
+  number.
+  Honestly incomplete, flagged rather than forced: SQLite does NOT execute the non-correlated
+  derived-subquery form the same way MySQL does -- confirmed separately, by hand, while
+  designing the test fixture: SQLite's query planner folds
+  `(SELECT 1 FROM (SELECT SLEEP(n)))` to a constant WITHOUT ever invoking the registered
+  `SLEEP()` function at all (returns instantly, no delay), unlike MySQL/MariaDB which
+  materializes it exactly once. This only risks a missed detection on SQLite targets using this
+  specific OR-bounded shape, never a false positive (consistent with this function's own stated
+  tolerance for imperfect per-engine generalization) -- not fixed further here, since it wasn't
+  needed for the real CVE (MySQL/MariaDB) and over-generalizing a SQLite-specific workaround
+  without a second real CVE needing it would be guessing. Also not done: not wired into
+  `cve_agent.py`'s automatic dispatch beyond what already existed for generic SQLi (this CVE
+  needed no new dispatch hint -- `sqli_param_hint="user"` plus the existing generic path was
+  enough once the two gaps above were fixed).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

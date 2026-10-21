@@ -9052,6 +9052,147 @@ def test_genericverify_sqli_blind_live_confirms_nested_paren_and_negative_contro
     assert r_fixed.verified is False, "falso positivo: la query parametrizada no deberia verificar"
 
 
+def _write_generic_login_no_match_sqli_app(root, parameterized):
+    # Reproduce la MISMA forma real que CVE-2026-9469 (StudentManagementSystem /success.php:
+    # "SELECT * FROM admin WHERE user='$user' AND password='$hash'") en un objetivo HTTP
+    # generico (Flask + MySQL real via docker-compose, sin CMS alguno) -- un formulario de
+    # login probado SIN credenciales validas (el caso mas comun: nadie conoce ya una cuenta real
+    # de antemano). Confirmado en vivo contra el repo real descargado en el commit que agrego
+    # este test: el bucle viejo de verify_generic_sqli_blind SOLO probaba "<val> AND <sleep>",
+    # que MySQL cortocircuita por fila sin evaluar SLEEP() nunca cuando <val> no machea ninguna
+    # fila (0.0s en 45/45 combinaciones AND contra la tabla `admin` real, 6 filas) -- la
+    # inyeccion es real pero no se detectaba. Usa MySQL real (no SQLite): SQLite pliega la
+    # subquery derivada ("SELECT 1 FROM (SELECT SLEEP(n))") como constante SIN LLEGAR A LLAMAR
+    # la funcion registrada (confirmado aparte, a mano, al disenar este fixture) -- un
+    # comportamiento propio de su optimizador que no reproduce el de MySQL/MariaDB, el motor
+    # real de esta CVE.
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "docker-compose.yml").write_text(
+        "services:\n"
+        "  app:\n"
+        "    build: .\n"
+        '    ports:\n'
+        '      - "5000"\n'
+        "    depends_on:\n"
+        "      - db\n"
+        "  db:\n"
+        "    image: mysql:8.0\n"
+        "    environment:\n"
+        '      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"\n'
+        "      MYSQL_DATABASE: appdb\n"
+    )
+    (root / "Dockerfile").write_text(
+        "FROM python:3.11-slim\n"
+        "WORKDIR /app\n"
+        "COPY requirements.txt .\n"
+        "RUN pip install --no-cache-dir -r requirements.txt\n"
+        "COPY app.py .\n"
+        "EXPOSE 5000\n"
+        'CMD ["python", "app.py"]\n'
+    )
+    (root / "requirements.txt").write_text("flask\npymysql\n")
+    if parameterized:
+        query_lines = ('    sql = "SELECT * FROM users WHERE user=%s AND pass=%s"\n'
+                       "    cur.execute(sql, (user, pw))\n")
+    else:
+        query_lines = ('    sql = "SELECT * FROM users WHERE user=\'%s\' AND pass=\'%s\'" '
+                       '% (user, pw)\n'
+                       "    cur.execute(sql)\n")
+    (root / "app.py").write_text(
+        "import time\n"
+        "from flask import Flask, request, jsonify\n"
+        "import pymysql\n\n"
+        "app = Flask(__name__)\n\n\n"
+        "def get_conn():\n"
+        "    last_err = None\n"
+        "    for _ in range(40):\n"
+        "        try:\n"
+        '            return pymysql.connect(host="db", user="root", password="",\n'
+        '                                    database="appdb", autocommit=True)\n'
+        "        except Exception as e:\n"
+        "            last_err = e\n"
+        "            time.sleep(1)\n"
+        "    raise last_err\n\n\n"
+        "def init_db():\n"
+        "    conn = get_conn()\n"
+        "    cur = conn.cursor()\n"
+        '    cur.execute("CREATE TABLE IF NOT EXISTS users (user VARCHAR(255), '
+        'pass VARCHAR(255))")\n'
+        '    cur.execute("DELETE FROM users")\n'
+        '    seed = [("alice", "x"), ("bob", "x"), ("carol", "x"), ("dave", "x"), '
+        '("erin", "x")]\n'
+        '    cur.executemany("INSERT INTO users (user, pass) VALUES (%s, %s)", seed)\n'
+        "    conn.close()\n\n\n"
+        "init_db()\n\n\n"
+        '@app.route("/")\n'
+        "def root():\n"
+        '    return "OK"\n\n\n'
+        '@app.route("/login", methods=["POST"])\n'
+        "def login():\n"
+        '    user = request.form.get("user", "")\n'
+        '    pw = request.form.get("pass", "")\n'
+        "    conn = get_conn()\n"
+        "    cur = conn.cursor()\n"
+        f"{query_lines}"
+        "    rows = cur.fetchall()\n"
+        "    conn.close()\n"
+        '    return jsonify({"rows": rows})\n\n\n'
+        'if __name__ == "__main__":\n'
+        '    app.run(host="0.0.0.0", port=5000)\n'
+    )
+
+
+def test_genericverify_sqli_blind_live_confirms_or_combinator_login_no_match_and_negative_control(
+        tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): cierra el gap
+    # confirmado en vivo contra CVE-2026-9469 (StudentManagementSystem real, /success.php,
+    # parametro `User`/`user`) -- verify_generic_sqli_blind SOLO probaba "<val> AND <sleep>",
+    # que requiere que <val> YA machee una fila real. Un formulario de login generico probado
+    # SIN credenciales validas (el caso mas comun) nunca la machea, y MySQL cortocircuita el AND
+    # por fila sin evaluar SLEEP() -- confirmado en vivo contra el repo real descargado: 45/45
+    # combinaciones AND, 0.0s cada una, pese a que la inyeccion es real y confirmable por fuera
+    # (success.php real, con y=curl manual, con "OR" si retraso la respuesta).
+    #
+    # "OR <sleep>" en bruto si fuerza la evaluacion sin necesitar fila que machee, pero SLEEP()
+    # se evalua UNA VEZ POR FILA escaneada (no cortocircuita -- SLEEP() siempre devuelve
+    # 0/falso) -- confirmado en vivo contra la tabla `admin` real (6 filas): "OR SLEEP(4)" tardo
+    # ~24s, no ~4s, un retraso que crece sin limite con el tamano de la tabla y arriesga superar
+    # el timeout de la peticion. Envolver el SLEEP en una subquery derivada sin correlacion
+    # ("OR (SELECT 1 FROM (SELECT SLEEP(n)) x)") la fuerza a materializarse una sola vez por
+    # consulta -- confirmado en vivo, mismo "OR" contra la misma tabla real: ~4.0s.
+    #
+    # Fixture: Flask + MySQL real via docker-compose (nunca el codigo real de
+    # StudentManagementSystem, que no se commitea, por politica del proyecto) reproduciendo la
+    # MISMA forma (login WHERE user='$user' AND pass='$hash', tabla con 5 filas, ninguna machea
+    # el valor base de prueba) -- confirma verified=True con el payload "OR" ganador contra la
+    # version vulnerable, y verified=False (negativo, no falso positivo) contra la misma app con
+    # la query parametrizada (el arreglo real).
+    import pytest
+    from binoracle.workflows.genericverify import verify_generic_sqli_blind
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_generic_login_no_match_sqli_app(vuln_root, parameterized=False)
+    fixed_root = tmp_path / "fixed"
+    _write_generic_login_no_match_sqli_app(fixed_root, parameterized=True)
+
+    r_vuln = verify_generic_sqli_blind(str(vuln_root), "/login", "POST",
+                                       {"user": "nope", "pass": "nope"},
+                                       sqli_param_hint="user", budget_s=400.0)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert " OR " in r_vuln.evidence.get("payload_ganador", "")
+
+    r_fixed = verify_generic_sqli_blind(str(fixed_root), "/login", "POST",
+                                        {"user": "nope", "pass": "nope"},
+                                        sqli_param_hint="user", budget_s=400.0)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: la query parametrizada no deberia verificar"
+
+
 def test_cve_agent_dispatches_generic_sqli_for_unrecognized_source(monkeypatch, tmp_path):
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify
@@ -9287,6 +9428,45 @@ def test_genericverify_sqli_blind_includes_mssql_waitfor_dialect():
     from binoracle.workflows import genericverify
     src = inspect.getsource(genericverify.verify_generic_sqli_blind)
     assert "WAITFOR DELAY" in src
+
+
+def test_genericverify_package_json_without_main_or_scripts_is_not_a_node_signal(tmp_path):
+    # Confirmado en vivo contra CVE-2026-9469 (StudentManagementSystem, PHP real): su
+    # package.json es el de la plantilla front-end Bootstrap "SB Admin" -- solo
+    # dependencies/devDependencies de gulp/sass/jquery para su pipeline de assets, SIN "main" NI
+    # "scripts" en absoluto. _STACK_SIGNALS probaba package.json ANTES que composer.json/PHP
+    # suelto y lo detectaba como stack Node por error (generando un Dockerfile que nunca arranca
+    # nada real: "npm start || node index.js || ..." -- ninguno existe en un PoC de un solo
+    # tema de plantilla), dejando el PHP real (y la SQLi real) sin alcanzar nunca.
+    import json
+    from binoracle.workflows.genericverify import _find_build_target
+
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "startbootstrap-sb-admin", "version": "5.0.2",
+        "dependencies": {"bootstrap": "4.1.3", "jquery": "3.3.1"},
+        "devDependencies": {"gulp": "^3.9.1"},
+    }))
+    (tmp_path / "success.php").write_text("<?php echo 'real php app'; ?>\n")
+
+    target = _find_build_target(str(tmp_path))
+    assert target is not None
+    assert target["stack_detectado"] == "*.php (sin composer.json)"
+
+
+def test_genericverify_package_json_with_scripts_start_is_still_a_node_signal(tmp_path):
+    # Control negativo del fix de arriba: un package.json que SI declara como arrancarse
+    # (scripts.start) sigue detectandose como stack Node -- el fix solo excluye los que no
+    # declaran ninguna forma de arranque, no package.json en general.
+    import json
+    from binoracle.workflows.genericverify import _find_build_target
+
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "a-real-node-app", "scripts": {"start": "node server.js"},
+    }))
+
+    target = _find_build_target(str(tmp_path))
+    assert target is not None
+    assert target["stack_detectado"] == "package.json"
 
 
 # --- payload_kb.py: carga en tiempo de ejecucion de las wordlists reales de
