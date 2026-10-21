@@ -8647,6 +8647,114 @@ def test_genericverify_sqli_blind_blocked_without_docker(monkeypatch, tmp_path):
     assert res.verified is False
 
 
+def _write_generic_nested_paren_sqli_app(root, parameterized):
+    # Reproduce la MISMA forma que CVE-2025-40636 (ver _write_legacy_vvisit_style_module /
+    # joomlaverify.py mas arriba: WHERE ip=UNHEX(SHA1('$ip')), payload ganador real con
+    # exactamente DOS parentesis de cierre) pero en un objetivo HTTP generico (Flask + sqlite,
+    # sin CMS alguno) para probar genericverify.py's propio _SQLI_CONTEXTS -- el valor
+    # contaminado se nida DOS niveles dentro de llamadas a funcion (ABS(('<val>'))), igual que
+    # el UNHEX(SHA1(...)) real, en vez de un simple WHERE col='$val'. SQLite no trae SLEEP()
+    # propio -- se registra como funcion SQL propia (create_function), tal como el comentario de
+    # _SQLI_SLEEP_EXPRS en genericverify.py ya anticipa ("SQLite con create_function propio").
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "requirements.txt").write_text("flask\n")
+    (root / "Dockerfile").write_text(
+        "FROM python:3.11-slim\n"
+        "WORKDIR /app\n"
+        "COPY requirements.txt .\n"
+        "RUN pip install --no-cache-dir -r requirements.txt\n"
+        "COPY app.py .\n"
+        "EXPOSE 5000\n"
+        'CMD ["python", "app.py"]\n'
+    )
+    if parameterized:
+        query_line = '    query = "SELECT * FROM items WHERE id=ABS((?))"\n'
+        exec_line = "        cur = conn.execute(query, (item_id,))\n"
+    else:
+        query_line = '    query = "SELECT * FROM items WHERE id=ABS((\'%s\'))" % item_id\n'
+        exec_line = "        cur = conn.execute(query)\n"
+    (root / "app.py").write_text(
+        "import sqlite3\n"
+        "import time\n"
+        "from flask import Flask, request, jsonify\n\n"
+        "app = Flask(__name__)\n"
+        'DB_PATH = "/tmp/items.db"\n\n\n'
+        "def _sql_sleep(seconds):\n"
+        "    time.sleep(float(seconds))\n"
+        "    return 0\n\n\n"
+        "def get_conn():\n"
+        "    conn = sqlite3.connect(DB_PATH)\n"
+        '    conn.create_function("SLEEP", 1, _sql_sleep)\n'
+        "    return conn\n\n\n"
+        "def init_db():\n"
+        "    conn = get_conn()\n"
+        '    conn.execute("CREATE TABLE IF NOT EXISTS items (id INTEGER, name TEXT)")\n'
+        '    conn.execute("DELETE FROM items")\n'
+        '    conn.execute("INSERT INTO items (id, name) VALUES (1, \'widget\')")\n'
+        "    conn.commit()\n"
+        "    conn.close()\n\n\n"
+        "init_db()\n\n\n"
+        '@app.route("/item")\n'
+        "def item():\n"
+        '    item_id = request.args.get("id", "1")\n'
+        "    conn = get_conn()\n"
+        f"{query_line}"
+        "    try:\n"
+        f"{exec_line}"
+        "        rows = cur.fetchall()\n"
+        "    except Exception as e:\n"
+        '        return jsonify({"error": str(e)}), 500\n'
+        "    finally:\n"
+        "        conn.close()\n"
+        '    return jsonify({"rows": rows})\n\n\n'
+        'if __name__ == "__main__":\n'
+        '    app.run(host="0.0.0.0", port=5000)\n'
+    )
+
+
+def test_genericverify_sqli_blind_live_confirms_nested_paren_and_negative_control(tmp_path):
+    # Prueba EN VIVO (requiere Docker con daemon arriba; se salta si no esta): cierra el gap que
+    # ec3f98b (joomlaverify.py) dejo documentado a proposito en ROADMAP.md -- _SQLI_CONTEXTS en
+    # genericverify.py solo cerraba UN nivel de parentesis, pero SQL real frecuentemente nida el
+    # valor contaminado dentro de llamadas a funcion (confirmado en vivo contra CVE-2025-40636:
+    # UNHEX(SHA1('$ip')), payload ganador real con exactamente DOS parentesis de cierre).
+    #
+    # Levanta un objetivo HTTP generico sintetico (Flask + sqlite, SIN ningun CMS) cuya query
+    # nida el parametro DOS niveles dentro de funciones (ABS(('<val>'))) -- analoga en forma a
+    # UNHEX(SHA1(...)) pero generica -- y confirma que verify_generic_sqli_blind con la lista
+    # YA ampliada detecta la SQLi ciega por tiempo real (verified=True, con el payload ganador
+    # necesitando "'))" para cuadrar los parentesis). Control negativo: el mismo objetivo con la
+    # query parametrizada (sqlite3 placeholder "?", el arreglo real) no debe dar un falso
+    # positivo (verified=False).
+    #
+    # Antes de este cambio (lista vieja sin variantes anidadas), se corrio manualmente este mismo
+    # objetivo vulnerable contra verify_generic_sqli_blind y NO detecto la inyeccion (24
+    # combinaciones probadas, ninguna cuadraba los parentesis) -- prueba de que el gap era real,
+    # no asumido; ver el commit que agrego este test para los detalles de esa corrida.
+    import pytest
+    from binoracle.workflows.genericverify import verify_generic_sqli_blind
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    vuln_root = tmp_path / "vuln"
+    _write_generic_nested_paren_sqli_app(vuln_root, parameterized=False)
+    fixed_root = tmp_path / "fixed"
+    _write_generic_nested_paren_sqli_app(fixed_root, parameterized=True)
+
+    r_vuln = verify_generic_sqli_blind(str(vuln_root), "/item", "GET", {"id": "1"},
+                                       sqli_param_hint="id", budget_s=240.0)
+    assert r_vuln.ok is True, r_vuln.detail
+    assert r_vuln.verified is True, r_vuln.detail
+    assert "))" in r_vuln.evidence.get("payload_ganador", "")
+
+    r_fixed = verify_generic_sqli_blind(str(fixed_root), "/item", "GET", {"id": "1"},
+                                        sqli_param_hint="id", budget_s=240.0)
+    assert r_fixed.ok is True, r_fixed.detail
+    assert r_fixed.verified is False, "falso positivo: la query parametrizada no deberia verificar"
+
+
 def test_cve_agent_dispatches_generic_sqli_for_unrecognized_source(monkeypatch, tmp_path):
     from binoracle.workflows.cve_agent import Investigation, _run_web_investigation
     from binoracle.workflows import websource, genericverify

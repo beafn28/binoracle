@@ -1112,7 +1112,13 @@ def verify_generic_ssrf(
 # nada y la peticion tarda lo normal (no es un falso positivo).
 _SQLI_SLEEP_SECONDS = 4.0
 _SQLI_SLEEP_EXPRS = (f"SLEEP({_SQLI_SLEEP_SECONDS:.0f})", f"pg_sleep({_SQLI_SLEEP_SECONDS:.0f})")
-_SQLI_CONTEXTS = ("", "'", '"', "')", '")')
+# _LEGACY_SQLI_CONTEXTS en joomlaverify.py probo en vivo (CVE-2025-40636, mod_vvisit_counter
+# 2.0.4j3: WHERE ip=UNHEX(SHA1('$ip')), payload ganador real necesito exactamente DOS parentesis
+# de cierre) que el SQL real nido con frecuencia el valor contaminado dentro de llamadas a
+# funcion, no solo un simple WHERE col='$val'. Ese mismo gap aplicaba aqui: esta lista solo
+# cerraba UN nivel de parentesis -- se amplia con las mismas variantes de DOS y TRES niveles ya
+# probadas, para ambos estilos de comilla.
+_SQLI_CONTEXTS = ("", "'", "')", "'))", "')))", '"', '")', '"))', '")))')
 _SQLI_COMMENTS = ("-- -", "#")
 
 
@@ -1223,7 +1229,7 @@ def verify_generic_sqli_blind(
         # dentro de una condicion AND/OR).
         if not found:
             waitfor_secs = f"0:0:{_SQLI_SLEEP_SECONDS:.0f}"
-            for ctx in ("", "'", "')", '")'):
+            for ctx in _SQLI_CONTEXTS:
                 if found:
                     break
                 payload_val = f"{orig_value}{ctx};WAITFOR DELAY '{waitfor_secs}'--"
