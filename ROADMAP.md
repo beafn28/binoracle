@@ -747,6 +747,39 @@ The flagship direction: prove impact end to end.
   activate` under WP-CLI; worked around with a one-line `use` import added to the LOCAL
   downloaded copy only, purely to stand the lab up, the same spirit as this session's earlier
   vendor-pip-install workarounds -- never touches anything binoracle ships.)
+- Audited (not applied): dynamic n-day verification for SQL injection via ORM KEYWORD-NAME
+  injection through dict expansion -- a fourth SQLi shape, distinct from the one
+  `genericverify.py` already covers (`verify_generic_sqli_blind`: time-based, injects into the
+  VALUE of a named parameter). Investigated against a real, current, framework-level CVE rather
+  than guessing a shape: CVE-2025-64459 (Django, `QuerySet.filter()`/`.exclude()`/`.get()` and
+  `Q()`, fixed in 5.2.8/5.1.14/4.2.26) -- `Q.__init__`'s `_connector` kwarg went straight into
+  `WhereNode.connector` with zero validation before the fix (confirmed by diffing the real
+  5.1.14 vs. 5.1.7 source, cloned from the official django/django repo), and
+  `WhereNode.as_sql()` interpolates that connector RAW into the SQL text (`conn = " %s " %
+  self.connector`, `where.py`) -- never parameterized, since it is structural glue between
+  clauses, not a value. Any app using the documented-as-risky-but-real pattern
+  `Model.objects.filter(**request.GET.dict())` (or any dict built from unvalidated request data)
+  lets an attacker add a `_connector` key with a value like `") OR 1=1 OR ("` and bypass the
+  entire WHERE clause. Reproduced for real, locally and disposably (two isolated venvs, real
+  `pip install Django==5.1.0` and `Django==5.1.14`, a from-scratch minimal Django app/view
+  written for this investigation using exactly that real-world pattern -- not a copy of the
+  public PoC repo found while researching this, which was read for the confirmed payload shape
+  but never executed): a baseline request for a nonexistent, non-admin user correctly returns
+  nothing; the identical request plus `_connector=") OR 1=1 OR ("` against the real vulnerable
+  5.1.0 dumps every row including the admin's `secret_token` field; the same request against the
+  real patched 5.1.14 is rejected outright (`"The following kwargs are invalid: '_connector'"`).
+  Deliberately NOT built into genericverify.py: the injection point is a dict KEY name reachable
+  only via kwarg-unpacking into an ORM call, not an HTTP parameter VALUE reaching a SQL string --
+  existing verifiers inject candidate SQL fragments into a value and look for a generic side
+  channel (a canary file, a timing delay); this CVE's proof instead requires knowing which
+  response rows are supposed to be absent for a given filter (an app-specific canary, not a
+  generic file/timing oracle), and the vulnerability itself lives in the Django FRAMEWORK, not
+  in a one-off third-party plugin -- the shape `investigate_cve`'s architecture (fetch a
+  plugin/module's source, install it, attack it) is built around. A future verifier for this
+  shape would need its own narrow contract: an endpoint, a baseline filter expected to match
+  nothing, and a canary value expected to appear only on bypass -- closer to
+  `verify_generic_idor`'s "known difference, not a generic oracle" shape than to the
+  time-based/canary-file verifiers.
 
 ## Explicitly out of scope
 
