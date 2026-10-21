@@ -941,6 +941,74 @@ The flagship direction: prove impact end to end.
   of this JSON-envelope-nested-key shape is needed before generalizing the dispatch hint
   correctly.
 
+- Attempted second real-CVE generalization test for `verify_joomla_legacy_module_sqli_cookie()`
+  (the reusable harness `ec3f98b` shipped and explicitly flagged as needing "a second real CVE
+  of this exact legacy-extension-can't-even-boot shape" before trusting it as generic) --
+  **could not be run, for an honest reason outside this project's control, not a code
+  problem.** Target: **CVE-2025-26855** (`mod_articles_calendar` / "Articles Calendar",
+  `joomcar.net`, 1.0.0-1.0.1.0007, CWE-89, CVSS 9.8), independently confirmed real via
+  `cveawg.mitre.org`'s own CVE record. Unlike CVE-2025-40636 (the `mod_vvisit_counter` CVE this
+  harness was built against), which had a real INCIBE advisory naming the exact cookie and
+  helper method, this CVE's own CNA record (`providerMetadata.shortName: "Joomla"`) carries
+  ONLY the boilerplate description ("A SQL injection ... allows attackers to execute arbitrary
+  SQL commands") and a single reference -- the vendor homepage, nothing product-specific. No
+  CWE location, no parameter, no file, no PoC anywhere.
+  Tried every legitimate channel this project used successfully for the two prior Joomla/
+  WordPress-class CVEs, and each came up empty:
+  - `joomcar.net` itself: the live site no longer sells/serves the vulnerable 1.0.0-1.0.1.0007
+    line at all. Its only "Articles Calendar" product today is **"Articles Calendar 2," built
+    for Joomla 6** (a different major version than the CVE's affected range) -- and even that
+    is gated behind a MetaMask/crypto-only payment flow (`payment_ajax=1&task=serveDownload`,
+    confirmed by reading the page's own JS), not a free download. No changelog, no version
+    history, no archived download link anywhere on the current site.
+  - Internet Archive Wayback Machine: queried the CDX API for the whole `joomcar.net` domain
+    (2000+ captures, 2011-2026) AND specifically for `/articles-calendar*` -- zero captures of
+    any Articles Calendar product page EVER existed. The domain's actual archived history
+    (2011-2020) is a completely unrelated Joomla K2/car-catalog demo site; the "Articles
+    Calendar" storefront is a later, unarchived addition. `archive.ph` also has no snapshot.
+  - Joomla Extensions Directory (JED): a real listing exists
+    (`extensions.joomla.org/extension/calendars-a-events/time/articles-calendar`, found via a
+    third-party aggregator, CommonNinja, that still links to it) but it is **unpublished**,
+    marked `PE1` ("Under Investigation" -- "The JED team has received one or more user
+    reports," can stay in this state indefinitely per JED's own knowledgebase) -- no vendor
+    link, no download link, no description are shown on the live page. Searching JED's public
+    Vulnerable/Resolved lists (both the browse pages and the title-filter query param) for
+    "Articles Calendar" or "joomcar" returned nothing, consistent with PE1 (investigation) being
+    a separate, earlier stage than the public VEL listing (UR3).
+  - GitHub: no source mirror found anywhere. The one GitHub artifact that exists,
+    `GHSA-qg92-5gwc-2jxx`, is an auto-generated advisory that only restates the NVD record --
+    zero additional technical content.
+  - MITRE/NVD/GCVE/`cve.imfht.com`/`cvelogic.com`/`mysites.guru`/INCIBE's own early-warning
+    mirror: all independently re-publish the SAME one-line boilerplate description and the
+    SAME single vendor-homepage reference; none names a parameter, file, or line, and none
+    links a PoC or vendor advisory. (Contrast with INCIBE's CVE-2025-40636 page, which named the
+    exact cookie and helper method -- confirmed by direct comparison.)
+  - The credited finders (Kamil Szczurowski, Robert Kruczek) are real Polish security
+    researchers, but their public work in this period (a DEF CON 2026 talk on scanning Poland's
+    public-facing web en masse) is consistent with a bulk/automated extension-scanning campaign
+    feeding Joomla's VEL/CNA pipeline directly, not a per-target technical write-up -- which
+    matches this CVE record's complete absence of disclosed detail.
+  No source code, no PoC, no advisory, no archived snapshot: **step 1 of this investigation
+  (get the real vulnerable source and read the actual injection point) could not be completed
+  by any available legitimate channel**, so steps 2-6 (confirm the injection shape, decide
+  whether to reuse `verify_joomla_legacy_module_sqli_cookie()` vs. build something new, attempt
+  live dynamic verification) could not honestly be attempted either. Deliberately did NOT: (a)
+  guess at the injection point and write a "plausible" synthetic module as if it were a
+  confirmed reproduction of this CVE's real shape -- every prior synthetic-module test in this
+  project (`09e1daf`, the two entries above) was built only AFTER reading real vulnerable code
+  first, to reproduce a shape that was actually confirmed, not invented; doing that here would
+  be exactly the kind of unverified claim this project's own standard forbids; (b) use a piracy/
+  "nulled extension" mirror to obtain the zip even though some likely exist, since that's outside
+  this project's authorized-research scope regardless of the CVE being real.
+  Net honest result: `verify_joomla_legacy_module_sqli_cookie()`'s generalization to a second
+  real CVE remains UNTESTED -- not because it failed, but because no second real CVE candidate
+  of this shape with actual public technical detail and obtainable source has been found yet.
+  The concrete, reusable lesson for whoever picks this up next: prefer CVEs with a real vendor/
+  CERT advisory naming the injection point (like CVE-2025-40636's INCIBE page) or an open-source
+  target (like CVE-2026-15081's GPL Drupal module) over a Joomla-VEL/bulk-scan-sourced CVE whose
+  only reference is a bare vendor homepage -- the latter is a strong signal that no public
+  technical detail or source will exist, no matter how real the CVE itself is.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
