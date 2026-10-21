@@ -989,6 +989,10 @@ def test_cli_parse_params_accepts_name_equals_value_for_gating_parameters():
     assert _parse_cli_params("submit=Upload File,ftp_file") == {
         "submit": "Upload File", "ftp_file": "1"}
     assert _parse_cli_params("user_id=5,email=a@b.com") == {"user_id": "5", "email": "a@b.com"}
+
+
+def test_cve_exploit_plan():
+    from binoracle.workflows.cveplan import plan, render_plan
     # plan de stack overflow con NX+PIE+canary -> fases de leak + control + ROP
     pl = plan("stack buffer overflow via strcpy", {"nx": True, "pie": True, "canary": True, "relro": "full"},
               cve="CVE-2024-1", lang="es")
