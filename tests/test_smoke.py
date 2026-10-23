@@ -1219,6 +1219,57 @@ def test_android_audit_resilience_absence_flagged_when_no_defenses_present(tmp_p
         assert f.severity == "info" and f.verdict == "grounded" and f.cwe == ""
 
 
+def test_android_audit_java_patterns_cover_masvs_auth(tmp_path):
+    # Legacy FingerprintManager usage and an explicit setInvalidatedByBiometricEnrollment(false)
+    # opt-out must both be tagged with their real MASWE-AUTH IDs.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "Auth.java").write_text(
+        'package com.app;\nclass Auth {\n'
+        '  FingerprintManager fm;\n'
+        '  void setup(KeyGenParameterSpec.Builder b){ b.setInvalidatedByBiometricEnrollment(false); }\n'
+        '}\n')
+    findings = AA._scan_java(str(root), Finding)
+    fp = next(f for f in findings if "FingerprintManager" in f.title)
+    assert fp.owasp == "MASWE-0020" and fp.cwe == "CWE-477"
+    inv = next(f for f in findings if "invalidada" in f.title)
+    assert inv.owasp == "MASWE-0022" and inv.cwe == ""
+
+
+def test_android_audit_detects_event_based_biometric_without_cryptoobject(tmp_path):
+    # Biometric success callback with no CryptoObject anywhere in the file: the classic
+    # "UI-only" biometric auth that a Frida hook on onAuthenticationSucceeded bypasses outright.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "WeakBio.java").write_text(
+        'package com.app;\nclass WeakBio extends BiometricPrompt.AuthenticationCallback {\n'
+        '  public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult r){ unlock(); }\n'
+        '  void unlock(){}\n'
+        '}\n')
+    findings = AA._auth_findings(str(root), Finding)
+    assert len(findings) == 1
+    assert findings[0].owasp == "MASWE-0020" and findings[0].cwe == "CWE-304"
+    assert findings[0].severity == "high" and "WeakBio" in findings[0].evidence
+
+
+def test_android_audit_crypto_backed_biometric_not_flagged(tmp_path):
+    # Same callback, but tied to a real CryptoObject in the same file: the strong variant.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "StrongBio.java").write_text(
+        'package com.app;\nclass StrongBio extends BiometricPrompt.AuthenticationCallback {\n'
+        '  public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult r){\n'
+        '    BiometricPrompt.CryptoObject co = r.getCryptoObject(); use(co);\n'
+        '  }\n  void use(BiometricPrompt.CryptoObject c){}\n}\n')
+    assert AA._auth_findings(str(root), Finding) == []
+
+
 def test_android_audit_resilience_not_flagged_when_defenses_present(tmp_path):
     # Each known defensive signal (one per category) suppresses its corresponding finding.
     from binoracle.store.session import Finding

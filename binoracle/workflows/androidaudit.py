@@ -83,6 +83,17 @@ _PATTERNS = [
      "Carga de URL por HTTP en claro", "medium",
      "Usa HTTPS; el trafico en claro es interceptable/manipulable.",
      "MASWE-0026", "CWE-319"),
+    (re.compile(r'\bFingerprintManager\b'),
+     "API FingerprintManager obsoleta (en vez de BiometricPrompt/BiometricManager)", "medium",
+     "Migra a BiometricPrompt/BiometricManager: FingerprintManager esta deprecada desde API 28 "
+     "y no fuerza por si misma el uso de un CryptoObject vinculado a la clave.",
+     "MASWE-0020", "CWE-477"),
+    (re.compile(r'setInvalidatedByBiometricEnrollment\s*\(\s*false\s*\)'),
+     "Clave no invalidada al inscribir una nueva huella/biometria", "medium",
+     "No desactives setInvalidatedByBiometricEnrollment: por defecto (true) invalida la clave "
+     "si se inscribe una biometria nueva, evitando que una huella añadida por un atacante con "
+     "acceso fisico breve siga pudiendo usar la clave.",
+     "MASWE-0022", ""),
 ]
 
 _MAX_PER_CAT = 8       # evidencias por categoria
@@ -272,6 +283,50 @@ def _resilience_findings(root: str, Finding):
     return out, nfiles
 
 
+def _auth_findings(root: str, Finding):
+    """MASVS-AUTH: autenticacion biometrica 'event-based' (solo el callback de exito, sin
+    CryptoObject) -- la distincion clasica de MASTG entre biometria vinculada a crypto (el
+    resultado es inutilizable sin pasar por el Keystore) y biometria solo-UI (un hook de Frida
+    sobre onAuthenticationSucceeded la salta por completo, sin tocar ninguna clave). Deteccion
+    por fichero: si aparece el callback de exito pero nunca CryptoObject/Cipher en el mismo
+    fichero, es la variante debil. Un solo Finding agregando los ficheros afectados."""
+    try:
+        from .androidquery import _iter_java, _classname
+    except Exception:
+        return []
+    rx_cb = re.compile(r'onAuthenticationSucceeded\s*\(')
+    rx_crypto = re.compile(r'CryptoObject|BiometricPrompt\.CryptoObject')
+    hits = []
+    nfiles = 0
+    for jpath in _iter_java(root):
+        nfiles += 1
+        if nfiles > _MAX_FILES:
+            break
+        if len(hits) >= _MAX_PER_CAT:
+            break
+        try:
+            with open(jpath, "r", encoding="utf-8", errors="replace") as f:
+                code = f.read(_MAX_BYTES)
+        except Exception:
+            continue
+        if rx_cb.search(code) and not rx_crypto.search(code):
+            hits.append(_classname(root, jpath))
+    if not hits:
+        return []
+    ev = "\n".join(f"- {c}: onAuthenticationSucceeded sin CryptoObject" for c in hits)
+    return [Finding(
+        title="Autenticacion biometrica sin vincular a una clave criptografica (CryptoObject)",
+        severity="high", verdict="grounded", evidence=ev, location=hits[0],
+        rationale="onAuthenticationSucceeded() se usa como la unica señal de exito sin un "
+                  "CryptoObject/Cipher asociado: el resultado es una llamada de callback que "
+                  "un hook de Frida/Xposed puede invocar directamente, sin pasar por el "
+                  "Keystore ni por ninguna comprobacion criptografica.",
+        recommendation="Vincula la biometria a una operacion criptografica real (BiometricPrompt."
+                       "CryptoObject sobre una clave con setUserAuthenticationRequired(true)): "
+                       "sin esa clave, saltarse el callback no basta para obtener nada util.",
+        owasp="MASWE-0020", cwe="CWE-304")]
+
+
 def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None):
     """Auditoria Android fundamentada. Devuelve un AgentResult (como el audit nativo) para que la
     web/CLI lo rendericen igual. No ejecuta la app; no popea nada: los veredictos son 'grounded'."""
@@ -324,6 +379,8 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
             limits.append("las ausencias MASVS-RESILIENCE son heuristicas sobre Java decompilado: "
                            "una proteccion solo en codigo nativo (JNI) o fuertemente ofuscada/"
                            "renombrada no se detectaria y aparece aqui como falso 'no implementada'.")
+        emit(step := step + 1, "MASVS-AUTH: autenticacion biometrica event-based sin CryptoObject")
+        findings += _auth_findings(root, Finding)
     else:
         limits.append(f"escaneo de codigo omitido (jadx no disponible: {reason}); instala jadx.")
 

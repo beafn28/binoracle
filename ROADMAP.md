@@ -1340,6 +1340,27 @@ The flagship direction: prove impact end to end.
   directly against `_resilience_findings` (no jadx needed, same as the owasp/cwe-tagging tests
   above). Verified: `pytest -k "android or sarif or render or html_report or finding or
   session"` all green (57 passed); `ruff check`/`py_compile` clean.
+- **MASVS-AUTH detection for the Android static audit** (`workflows/androidaudit.py`). Three
+  checks, all mapped to real MASWE IDs confirmed live against `mas.owasp.org/MASVS/controls`:
+  (1) legacy `FingerprintManager` usage (deprecated since API 28, superseded by BiometricPrompt/
+  BiometricManager) -> `MASWE-0020`/`CWE-477` (`Use of Obsolete Function`, MITRE mapping
+  ALLOWED -- confirmed via WebSearch, unlike the Pillar-level CWEs rejected elsewhere in this
+  phase); (2) an explicit `setInvalidatedByBiometricEnrollment(false)` opt-out (the secure
+  default is `true` on API 24+, so only the explicit opt-out is flagged -- mere absence of the
+  call is NOT a finding, that would be a false positive against the default-safe case) ->
+  `MASWE-0022`, `cwe=""` (no existing CWE maps precisely to "crypto key not invalidated on
+  biometric re-enrollment"; forcing one would repeat the mistake corrected earlier this phase);
+  (3) new `_auth_findings`: the classic MASTG crypto-backed-vs-event-based biometric
+  distinction -- a file with `onAuthenticationSucceeded()` but no `CryptoObject`/`Cipher`
+  anywhere in it is "UI-only" biometric auth, bypassable outright by a Frida/Xposed hook on the
+  callback without touching the Keystore -> `MASWE-0020`/`CWE-304` (`Missing Critical Step in
+  Authentication`, a Base-level weakness, mapping ALLOWED -- confirmed via WebSearch; fits
+  precisely, unlike the broader `CWE-287`/`CWE-693` which MITRE marks DISCOURAGED and which
+  this phase deliberately avoided throughout). Four new tests cover all three checks plus the
+  negative case (a `CryptoObject`-backed callback in the same file is correctly NOT flagged).
+  Verified: `pytest -k "android or sarif or render or html_report or finding or session"` all
+  green (60 passed); `ruff check`/`py_compile` clean. This completes all three OWASP/APK
+  priorities requested in this phase (tag existing findings, MASVS-RESILIENCE, MASVS-AUTH).
 
 ## Explicitly out of scope
 
