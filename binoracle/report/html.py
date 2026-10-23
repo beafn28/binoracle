@@ -2458,6 +2458,10 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     for f in sorted(findings, key=lambda x: _SEV.index(_effective_severity(x)) if _effective_severity(x) in _SEV else 9):
         cvbadge, cvbody = _cvss_html(f, lang)
         esev = _effective_severity(f)
+        owasp = getattr(f, "owasp", "") or ""
+        cwe = getattr(f, "cwe", "") or ""
+        taxo = " · ".join(x for x in (owasp, (f"CWE-{cwe}" if cwe and not cwe.upper().startswith("CWE") else cwe)) if x)
+        taxbadge = _badge(taxo, "#555") if taxo else ""
         # <details> nativo: cada hallazgo se DESPLIEGA al pulsar, tambien como fichero estatico.
         cards += f'''
         <details class="card" data-sev="{_esc(esev)}">
@@ -2465,6 +2469,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
             {_badge(esev.upper(), _SEV_COLOR.get(esev,'#666'))}
             {_badge(f.verdict, _VERDICT_COLOR.get(f.verdict,'#666'))}
             {cvbadge}
+            {taxbadge}
             <span class="title">{_esc(f.title)}</span>
             <span class="loc">{_esc(f.location)}</span>
             <span class="chev">&#9656;</span>

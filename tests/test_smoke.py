@@ -1146,6 +1146,61 @@ def test_android_query_degrades_without_jadx(monkeypatch):
         os.environ["PATH"] = old
 
 
+def test_android_audit_java_patterns_tagged_with_owasp_cwe(tmp_path):
+    # _scan_java's findings must carry the real MASVS/MASWE + CWE IDs assigned to each pattern
+    # (androidaudit._PATTERNS), not just a title/severity/recommendation.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "Secrets.java").write_text(
+        'package com.app;\nclass Secrets {\n'
+        '  String apiKey = "sk_live_abcdef123456";\n'
+        '  byte[] h = MessageDigest.getInstance("MD5").digest(x);\n'
+        '}\n')
+    findings = AA._scan_java(str(root), Finding)
+    by_title = {f.title: f for f in findings}
+    secret = next(f for f in findings if "secreto" in f.title.lower())
+    assert secret.owasp == "MASWE-0004" and secret.cwe == "CWE-798"
+    md5 = next(f for f in findings if "hash debil" in f.title.lower() or "MD5" in f.evidence)
+    assert md5.owasp == "MASWE-0008" and md5.cwe == "CWE-328"
+    assert len(by_title) == 2
+    for f in findings:
+        assert f.verdict == "grounded" and f.evidence and f.recommendation
+
+
+def test_android_audit_manifest_flags_and_exported_tagged_with_owasp_cwe(tmp_path, monkeypatch):
+    # Manifest flags (debuggable/allowBackup/usesCleartextTraffic) and the exported-components
+    # finding must carry their assigned OWASP MASVS/MASWE + CWE IDs.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    from binoracle.workflows import androidmanifest as AM
+    xml = ('<?xml version="1.0"?>\n'
+           '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.demo">\n'
+           ' <application android:debuggable="true" android:allowBackup="true"'
+           ' android:usesCleartextTraffic="true">\n'
+           '  <activity android:name=".MainActivity" android:exported="true">\n'
+           '   <intent-filter><action android:name="android.intent.action.MAIN"/></intent-filter>\n'
+           '  </activity>\n'
+           ' </application>\n</manifest>\n')
+    out = tmp_path / "decoded"
+    out.mkdir()
+    (out / "AndroidManifest.xml").write_text(xml)
+    monkeypatch.setattr(AM, "_apktool_decode", lambda apk, timeout=240: (str(out), None))
+    findings, meta, limitation = AA._manifest_findings("x.apk", Finding)
+    assert limitation is None and meta["package"] == "com.demo"
+    tagged = {f.title: (f.owasp, f.cwe) for f in findings}
+    debug_f = next(f for f in findings if "debuggable" in f.title)
+    assert debug_f.owasp == "MASWE-0063" and debug_f.cwe == "CWE-489"
+    backup_f = next(f for f in findings if "allowBackup" in f.title)
+    assert backup_f.owasp == "MASWE-0006" and backup_f.cwe == "CWE-530"
+    cleartext_f = next(f for f in findings if "usesCleartextTraffic" in f.title)
+    assert cleartext_f.owasp == "MASWE-0026" and cleartext_f.cwe == "CWE-319"
+    exported_f = next(f for f in findings if "exportado" in f.title)
+    assert exported_f.owasp == "MASWE-0018" and exported_f.cwe == "CWE-926"
+    assert len(tagged) == 4
+
+
 def test_native_connectors_degrade():
     # IDA/Hopper connectors: pure degrade when no endpoint is configured (no network).
     import os

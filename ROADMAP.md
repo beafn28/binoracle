@@ -1286,6 +1286,36 @@ The flagship direction: prove impact end to end.
   top flips it to the expected Dockerfile message. This was CI's last real failure as of run
   #189 (down from 15 -> 4 -> 1 across tonight's fixes) -- with this, nothing concrete remains
   known-failing.
+- **OWASP MASVS/MASWE + CWE tagging for the Android static audit** (`workflows/androidaudit.py`).
+  Status check before this: the module's 14 Java patterns, the 3 manifest-flag checks and the
+  exported-components finding all had a title/severity/recommendation but ZERO formal taxonomy
+  anywhere in the project -- no MASVS/MASWE control, no CWE. Fixed: `store/session.py`'s shared
+  `Finding` dataclass gained `owasp`/`cwe` fields (plus a `PRAGMA table_info`-based migration
+  for existing `.db` files, since `CREATE TABLE IF NOT EXISTS` never retroactively adds columns);
+  every pattern/flag/finding in `androidaudit.py` was tagged one by one with real IDs confirmed
+  live against `mas.owasp.org/MASVS/controls` (MASWE catalog) and MITRE's own CWE definitions --
+  never guessed (e.g. hardcoded secret -> `MASWE-0004`/`CWE-798`, SQL-by-concatenation ->
+  `MASWE-0050`/`CWE-89`, `addJavascriptInterface` -> `MASWE-0033`/`CWE-749`, weak hash (MD5/SHA-1)
+  -> `MASWE-0008`/`CWE-328`, `debuggable=true` -> `MASWE-0063`/`CWE-489`, `allowBackup=true` ->
+  `MASWE-0006`/`CWE-530`, cleartext traffic -> `MASWE-0026`/`CWE-319`, exported components ->
+  `MASWE-0018`/`CWE-926`; a couple of patterns -- JS-enabled WebView, static-IV heuristic -- got
+  a MASWE control but deliberately NO CWE, since no existing CWE ID fit with enough precision
+  and forcing one would be worse than leaving it blank). Also wired the new fields through to
+  where a human/tool actually reads a finding: the HTML report now shows a small taxonomy badge
+  (`MASWE-xxxx · CWE-yyy`) on each finding card; the SARIF exporter adds `external/cwe/cwe-N` and
+  `external/owasp/...` rule tags plus `owasp`/`cwe` result properties; the JSON export
+  (`findings_to_json`) includes both fields. `androidaudit.py` had zero direct test coverage
+  before this (confirmed via `grep -rln "androidaudit\|_scan_java\|_manifest_findings"
+  tests/*.py` returning empty) -- added two tests exercising `_scan_java` and
+  `_manifest_findings` directly against synthetic Java/manifest fixtures (no jadx/apktool
+  needed, since both functions take an already-decompiled/decoded tree), asserting the exact
+  owasp/cwe values landed on the right findings. Verified: migration tested against a simulated
+  pre-migration DB (old rows backfill to `owasp=''`/`cwe=''`, new rows persist correctly);
+  `pytest -k "android_audit or sarif or render or html_report or finding or session"` all green;
+  `ruff check` clean on every touched file. Still open, not started in this pass: MASVS-RESILIENCE
+  detection (root/jailbreak/emulator/debugger detection, obfuscation absence) and MASVS-AUTH
+  detection (biometric/local-auth bypass) -- both need their own grounded, real API/pattern
+  research before any code, same bar as everything above.
 
 ## Explicitly out of scope
 

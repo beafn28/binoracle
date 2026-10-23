@@ -30,6 +30,13 @@ class Finding:
     location: str = ""       # function / address
     rationale: str = ""
     recommendation: str = ""
+    # Taxonomia opcional (vacia por defecto en todo el proyecto salvo que un oracle/workflow
+    # concreto la rellene a mano con un ID real, nunca inventado -- ver androidaudit.py, el
+    # primer caso que la usa). owasp: un control MASVS v2 ("MASVS-STORAGE-1") o una debilidad
+    # MASWE concreta ("MASWE-0004"), segun lo que el patron detecte realmente. cwe: el ID CWE
+    # correspondiente ("CWE-798"), sin el prefijo "CWE-" repetido dos veces.
+    owasp: str = ""
+    cwe: str = ""
     # Version en el otro idioma (opcional, solo para el informe; NO se persiste). rationale/
     # recommendation son el idioma primario; estos, el ingles si el primario es ES (o viceversa).
     rationale_en: str = ""
@@ -62,6 +69,8 @@ CREATE TABLE IF NOT EXISTS findings (
     location TEXT,
     rationale TEXT,
     recommendation TEXT,
+    owasp TEXT,
+    cwe TEXT,
     created_at REAL
 );
 CREATE TABLE IF NOT EXISTS annotations (
@@ -100,6 +109,18 @@ CREATE TABLE IF NOT EXISTS exploit_skill (
 """
 
 
+def _migrate_findings_table(conn: sqlite3.Connection) -> None:
+    """`CREATE TABLE IF NOT EXISTS` no anade columnas a una tabla `findings` que ya existia de
+    una sesion anterior (un .db real de un analisis previo, no uno nuevo) -- las dos columnas de
+    taxonomia (owasp/cwe) solo aparecen en tablas creadas desde cero con el SCHEMA de arriba.
+    Anade las que falten, sin tocar filas existentes (quedan con owasp/cwe vacio, que es
+    exactamente su default para cualquier Finding que nunca las rellenara)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(findings)").fetchall()}
+    for col in ("owasp", "cwe"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE findings ADD COLUMN {col} TEXT")
+
+
 class SessionStore:
     def __init__(self, db_path: Path, binary: str):
         self.db_path = Path(db_path)
@@ -107,6 +128,7 @@ class SessionStore:
         self.bin_id = binary_id(binary)
         self._conn = sqlite3.connect(self.db_path)
         self._conn.executescript(SCHEMA)
+        _migrate_findings_table(self._conn)
         self._conn.execute(
             "INSERT OR IGNORE INTO binaries(bin_id, path, first_seen) VALUES (?,?,?)",
             (self.bin_id, str(Path(binary).resolve()), time.time()),
@@ -130,17 +152,18 @@ class SessionStore:
         if row:
             self._conn.execute(
                 """UPDATE findings SET severity=?, verdict=?, evidence=?, rationale=?,
-                       recommendation=? WHERE id=?""",
-                (f.severity, f.verdict, f.evidence, f.rationale, f.recommendation, row[0]),
+                       recommendation=?, owasp=?, cwe=? WHERE id=?""",
+                (f.severity, f.verdict, f.evidence, f.rationale, f.recommendation,
+                 f.owasp, f.cwe, row[0]),
             )
             self._conn.commit()
             return row[0]
         cur = self._conn.execute(
             """INSERT INTO findings(bin_id, title, severity, verdict, evidence, location,
-                                    rationale, recommendation, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                                    rationale, recommendation, owasp, cwe, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (self.bin_id, f.title, f.severity, f.verdict, f.evidence, f.location,
-             f.rationale, f.recommendation, time.time()),
+             f.rationale, f.recommendation, f.owasp, f.cwe, time.time()),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -148,7 +171,7 @@ class SessionStore:
     def findings(self) -> List[Finding]:
         rows = self._conn.execute(
             """SELECT id, title, severity, verdict, evidence, location, rationale,
-                      recommendation, created_at
+                      recommendation, owasp, cwe, created_at
                FROM findings WHERE bin_id=? ORDER BY id""",
             (self.bin_id,),
         ).fetchall()
@@ -156,7 +179,8 @@ class SessionStore:
         for r in rows:
             out.append(Finding(
                 id=r[0], title=r[1], severity=r[2], verdict=r[3], evidence=r[4],
-                location=r[5], rationale=r[6], recommendation=r[7], created_at=r[8],
+                location=r[5], rationale=r[6], recommendation=r[7],
+                owasp=r[8] or "", cwe=r[9] or "", created_at=r[10],
             ))
         return out
 

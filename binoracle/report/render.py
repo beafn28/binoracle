@@ -183,6 +183,10 @@ def findings_to_sarif(binary: str, findings, ledger=None) -> str:
         cv = cvss_for(f) if cvss_for else None
         if rule_id not in rules:
             props = {"tags": ["binoracle", "reverse-engineering"]}
+            if getattr(f, "cwe", ""):
+                props["tags"].append(f"external/cwe/cwe-{f.cwe}")
+            if getattr(f, "owasp", ""):
+                props["tags"].append(f"external/owasp/{f.owasp.lower()}")
             if cv and cv.base is not None:
                 props["security-severity"] = f"{cv.base:.1f}"
             rules[rule_id] = {
@@ -208,6 +212,10 @@ def findings_to_sarif(binary: str, findings, ledger=None) -> str:
                 "recommendation": f.recommendation,
             },
         }
+        if getattr(f, "owasp", ""):
+            result["properties"]["owasp"] = f.owasp
+        if getattr(f, "cwe", ""):
+            result["properties"]["cwe"] = f"CWE-{f.cwe}"
         if cv:
             result["properties"]["cvss_v4_vector"] = cv.vector
             if cv.base is not None:
@@ -248,6 +256,7 @@ def findings_to_json(binary: str, findings, ledger=None) -> str:
                 "title": f.title, "severity": f.severity, "verdict": f.verdict,
                 "location": f.location, "rationale": f.rationale,
                 "evidence": f.evidence, "recommendation": f.recommendation,
+                "owasp": getattr(f, "owasp", ""), "cwe": getattr(f, "cwe", ""),
             } for f in (findings or [])
         ],
         "sources_consulted": ledger.sources() if ledger is not None else [],

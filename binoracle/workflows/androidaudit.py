@@ -20,51 +20,69 @@ from __future__ import annotations
 import os
 import re
 
-# (regex, titulo, severidad, recomendacion). Patrones deterministas sobre el Java decompilado.
+# (regex, titulo, severidad, recomendacion, owasp, cwe). Patrones deterministas sobre el Java
+# decompilado. owasp/cwe: IDs reales de OWASP MASVS v2/MASWE (mas.owasp.org/MASVS/controls,
+# confirmado en vivo -- ver ROADMAP.md) y CWE (cwe.mitre.org, confirmados uno a uno, nunca
+# inventados); "" cuando ningun CWE existente encaja con suficiente precision, mejor dejarlo
+# vacio que forzar uno equivocado.
 _PATTERNS = [
     (re.compile(r'(?i)(password|passwd|pwd|secret|api[_-]?key|apikey|token|auth)\s*=\s*"[^"]{3,}"'),
      "Credencial/secreto hardcodeado en codigo", "high",
-     "No embebas secretos en el APK (es trivial de extraer); usa el Keystore/servidor y rota lo filtrado."),
+     "No embebas secretos en el APK (es trivial de extraer); usa el Keystore/servidor y rota lo filtrado.",
+     "MASWE-0004", "CWE-798"),
     (re.compile(r'rawQuery\s*\([^;]*\+|execSQL\s*\([^;]*\+|db\.(query|update|delete)\s*\([^;]*\+'),
      "SQL construido por concatenacion (SQL injection)", "high",
-     "Usa consultas parametrizadas (selectionArgs / placeholders '?'), nunca concatenes entrada."),
+     "Usa consultas parametrizadas (selectionArgs / placeholders '?'), nunca concatenes entrada.",
+     "MASWE-0050", "CWE-89"),
     (re.compile(r'addJavascriptInterface\s*\('),
      "WebView.addJavascriptInterface (puente JS->Java)", "high",
-     "Evitalo o restringe a @JavascriptInterface con minSdk>=17 y contenido de confianza."),
+     "Evitalo o restringe a @JavascriptInterface con minSdk>=17 y contenido de confianza.",
+     "MASWE-0033", "CWE-749"),
     (re.compile(r'setJavaScriptEnabled\s*\(\s*true\s*\)'),
      "WebView con JavaScript habilitado", "medium",
-     "Habilita JS solo si es imprescindible; no cargues contenido/urls no confiables."),
+     "Habilita JS solo si es imprescindible; no cargues contenido/urls no confiables.",
+     "MASWE-0035", ""),
     (re.compile(r'setAllowFileAccess\s*\(\s*true\s*\)|setAllowUniversalAccessFromFileURLs\s*\(\s*true\s*\)'),
      "WebView con acceso a file:// amplio", "high",
-     "Deshabilita file access / universal access from file URLs salvo necesidad real."),
+     "Deshabilita file access / universal access from file URLs salvo necesidad real.",
+     "MASWE-0034", ""),
     (re.compile(r'MODE_WORLD_READABLE|MODE_WORLD_WRITEABLE|MODE_WORLD_WRITABLE'),
      "Almacenamiento world-readable/writeable", "high",
-     "Usa MODE_PRIVATE; otros apps pueden leer/escribir esos ficheros."),
+     "Usa MODE_PRIVATE; otros apps pueden leer/escribir esos ficheros.",
+     "MASWE-0002", "CWE-276"),
     (re.compile(r'getExternalStorage|getExternalFilesDir|Environment\.getExternalStoragePublicDirectory'),
      "Datos en almacenamiento externo", "medium",
-     "El almacenamiento externo es legible por otras apps; no guardes ahi datos sensibles."),
+     "El almacenamiento externo es legible por otras apps; no guardes ahi datos sensibles.",
+     "MASWE-0002", "CWE-922"),
     (re.compile(r'"DES"|"DESede"|/ECB/|"RC4"|Cipher\.getInstance\(\s*"AES"\s*\)'),
      "Criptografia debil (DES/ECB/RC4/AES modo por defecto)", "medium",
-     "Usa AES/GCM (o AES/CBC con IV aleatorio y HMAC); nunca ECB ni DES/RC4."),
+     "Usa AES/GCM (o AES/CBC con IV aleatorio y HMAC); nunca ECB ni DES/RC4.",
+     "MASWE-0007", "CWE-327"),
     (re.compile(r'MessageDigest\.getInstance\(\s*"(MD5|SHA-?1)"\s*\)'),
      "Hash debil (MD5/SHA-1)", "low",
-     "Para integridad/firmas usa SHA-256+; para contrasenas, bcrypt/scrypt/Argon2."),
+     "Para integridad/firmas usa SHA-256+; para contrasenas, bcrypt/scrypt/Argon2.",
+     "MASWE-0008", "CWE-328"),
     (re.compile(r'IvParameterSpec\s*\(\s*(?:"|new byte\[\]\s*\{|[A-Za-z_]+\.getBytes)'),
      "IV/clave criptografica estatica (posible)", "medium",
-     "Genera IV aleatorio por mensaje; no reutilices IV/claves fijas en codigo."),
+     "Genera IV aleatorio por mensaje; no reutilices IV/claves fijas en codigo.",
+     "MASWE-0012", "CWE-329"),
     (re.compile(r'checkServerTrusted\s*\([^)]*\)\s*\{\s*\}|ALLOW_ALL_HOSTNAME_VERIFIER|'
                 r'return\s+true;\s*//?\s*verify|X509TrustManager\(\s*\)\s*\{'),
      "TLS inseguro: trust-all / hostname verifier permisivo", "high",
-     "No desactives la validacion de certificados; usa el TrustManager por defecto y pinning si procede."),
+     "No desactives la validacion de certificados; usa el TrustManager por defecto y pinning si procede.",
+     "MASWE-0027", "CWE-295"),
     (re.compile(r'Log\.[dviwe]\s*\('),
      "Logging (posible fuga de datos sensibles)", "low",
-     "No registres secretos/PII; retira los Log de depuracion en release (ProGuard/R8)."),
+     "No registres secretos/PII; retira los Log de depuracion en release (ProGuard/R8).",
+     "MASWE-0005", "CWE-532"),
     (re.compile(r'Runtime\.getRuntime\(\)\.exec\s*\(|ProcessBuilder\s*\('),
      "Ejecucion de comandos del sistema", "medium",
-     "Evita exec con entrada del usuario; valida/escapa y prefiere APIs nativas."),
+     "Evita exec con entrada del usuario; valida/escapa y prefiere APIs nativas.",
+     "MASWE-0050", "CWE-78"),
     (re.compile(r'loadUrl\s*\(\s*"http://'),
      "Carga de URL por HTTP en claro", "medium",
-     "Usa HTTPS; el trafico en claro es interceptable/manipulable."),
+     "Usa HTTPS; el trafico en claro es interceptable/manipulable.",
+     "MASWE-0026", "CWE-319"),
 ]
 
 _MAX_PER_CAT = 8       # evidencias por categoria
@@ -92,21 +110,26 @@ def _manifest_findings(apk: str, Finding):
     m = parse_manifest_xml(xml)
     meta = {"package": m.get("package"), "permissions": m.get("permissions", []),
             "components": m.get("components", [])}
-    # flags de la etiqueta <application>
+    # flags de la etiqueta <application>. owasp/cwe: ver el comentario sobre _PATTERNS mas
+    # arriba -- mismos IDs reales de MASVS v2/MASWE y CWE, confirmados uno a uno.
     flags = [
         (r'android:debuggable\s*=\s*"true"', "application android:debuggable=true", "high",
-         "Nunca publiques con debuggable=true: permite depurar y extraer datos del proceso."),
+         "Nunca publiques con debuggable=true: permite depurar y extraer datos del proceso.",
+         "MASWE-0063", "CWE-489"),
         (r'android:allowBackup\s*=\s*"true"', "application android:allowBackup=true", "medium",
-         "Desactiva allowBackup o excluye datos sensibles: adb backup puede exfiltrarlos."),
+         "Desactiva allowBackup o excluye datos sensibles: adb backup puede exfiltrarlos.",
+         "MASWE-0006", "CWE-530"),
         (r'android:usesCleartextTraffic\s*=\s*"true"', "usesCleartextTraffic=true (HTTP en claro)", "medium",
-         "Prohibe trafico en claro (network_security_config / usesCleartextTraffic=false)."),
+         "Prohibe trafico en claro (network_security_config / usesCleartextTraffic=false).",
+         "MASWE-0026", "CWE-319"),
     ]
-    for rx, title, sev, rec in flags:
+    for rx, title, sev, rec, owasp, cwe in flags:
         if re.search(rx, xml):
             out.append(Finding(title=title, severity=sev, verdict="grounded",
                                evidence=f"AndroidManifest.xml: coincide /{rx}/",
                                location="AndroidManifest.xml", recommendation=rec,
-                               rationale="Bandera insegura declarada en el manifest (apktool)."))
+                               rationale="Bandera insegura declarada en el manifest (apktool).",
+                               owasp=owasp, cwe=cwe))
     # componentes exportados (superficie de ataque entre apps)
     exported = [c for c in m.get("components", []) if c.get("exported")]
     if exported:
@@ -119,7 +142,8 @@ def _manifest_findings(apk: str, Finding):
             rationale="Componentes con exported=true (o con intent-filter) son invocables por "
                       "cualquier app; cada uno es superficie de ataque (intents, provider URIs).",
             recommendation="Marca exported=false lo que no deba ser publico; protege el resto con "
-                           "permisos de firma y valida/filtra los intents y las URIs de los providers."))
+                           "permisos de firma y valida/filtra los intents y las URIs de los providers.",
+            owasp="MASWE-0018", cwe="CWE-926"))
     return out, meta, None
 
 
@@ -152,13 +176,13 @@ def _scan_java(root: str, Finding):
                     break
     out = []
     for i, matches in sorted(hits.items()):
-        rx, title, sev, rec = _PATTERNS[i]
+        rx, title, sev, rec, owasp, cwe = _PATTERNS[i]
         ev = "\n".join(f"- {c}:{ln}: {txt}" for c, ln, txt in matches)
         out.append(Finding(title=title, severity=sev, verdict="grounded", evidence=ev,
                            location=matches[0][0] if matches else "",
                            rationale="Patron inseguro encontrado en el Java decompilado (jadx). "
                                      "Estatico/heuristico: confirma la explotabilidad en contexto.",
-                           recommendation=rec))
+                           recommendation=rec, owasp=owasp, cwe=cwe))
     return out
 
 
