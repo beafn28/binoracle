@@ -1263,6 +1263,29 @@ The flagship direction: prove impact end to end.
   ever will from this module alone -- if/when php.net publishes real technical detail this
   afternoon, a FOLLOW-UP CVE-specific verifier (grounded in the real advisory, not this guess-free
   placeholder) would be the next real step, not a change to this file.
+- Correction to the "Playwright-missing-sandbox gap" repeatedly cited across several earlier
+  entries (`09e1daf`/`1b59422`/the CVE-2026-9469/CVE-2026-65694 entries) as a pre-existing,
+  accepted CI limitation: it was never that. Confirmed live by actually reading CI run #188/#189's
+  logs and reproducing locally: `verify_generic_xss`/`verify_wordpress_xss`/`verify_drupal_xss`
+  all check Playwright's availability BEFORE attempting `_bootstrap_lab`/
+  `_bootstrap_generic_lab` -- a deliberate, consistent fail-fast design (don't spend time
+  standing up a Docker lab that would be useless without a browser anyway), confirmed identical
+  across all three. `test_genericverify_xss_blocked_without_build_target` genuinely tests a
+  DIFFERENT thing (a target with no Dockerfile at all) but, because of that check order, only
+  ever reaches the Dockerfile-missing code path in an environment that ALSO happens to have
+  Playwright installed -- which this development sandbox did (confirmed: `pip show playwright`
+  -> 1.64.0), but a bare `ubuntu-latest` CI runner never does. The test was silently depending on
+  an environment property it never declared or controlled, not on a real CI-only limitation.
+  Fixed the test itself (not the production code, whose check order is correct and shared by
+  three other verifiers): injects a fake `playwright`/`playwright.sync_api` into `sys.modules`
+  (the mirror-image of the existing `test_wpverify_xss_degrades_honestly_without_playwright`
+  pattern, which forces ABSENCE -- this forces PRESENCE) so the test isolates exactly what its
+  name promises. Verified both directions by hand before touching the test: with Playwright
+  genuinely absent (`sys.modules["playwright"] = None`), the OLD test logic reproduces the exact
+  CI failure (`limitations[0]` is the Playwright message); applying the fake-module injection on
+  top flips it to the expected Dockerfile message. This was CI's last real failure as of run
+  #189 (down from 15 -> 4 -> 1 across tonight's fixes) -- with this, nothing concrete remains
+  known-failing.
 
 ## Explicitly out of scope
 

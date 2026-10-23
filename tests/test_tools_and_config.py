@@ -9502,6 +9502,27 @@ def test_genericverify_xss_blocked_without_param(monkeypatch, tmp_path):
 
 
 def test_genericverify_xss_blocked_without_build_target(monkeypatch, tmp_path):
+    # Bug real de aislamiento del test (no del codigo): verify_generic_xss comprueba Playwright
+    # ANTES de intentar el bootstrap del laboratorio (mismo orden deliberado y consistente que
+    # verify_wordpress_xss/verify_drupal_xss -- fallar rapido en una clase entera no verificable
+    # antes de gastar tiempo levantando un Docker que de nada serviria sin Playwright). En un
+    # entorno SIN Playwright instalado (confirmado en vivo: el runner real de CI no lo trae, solo
+    # este sandbox de desarrollo lo tenia por casualidad) ese chequeo gana siempre y
+    # "Dockerfile" nunca aparece en limitations[0] -- el test, tal cual estaba, dependia
+    # silenciosamente de que Playwright SI estuviera instalado donde se ejecutara. Se inyecta un
+    # `playwright.sync_api` falso en sys.modules (patron inverso al ya usado en
+    # test_wpverify_xss_degrades_honestly_without_playwright, que fuerza su AUSENCIA) para que
+    # este test aisle de verdad lo que su nombre promete: el bloqueo por falta de Dockerfile, no
+    # por falta de Playwright.
+    import sys
+    import types
+    fake_sync_api = types.ModuleType("playwright.sync_api")
+    fake_sync_api.sync_playwright = lambda: None
+    fake_playwright = types.ModuleType("playwright")
+    fake_playwright.sync_api = fake_sync_api
+    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
+
     import binoracle.workflows.genericverify as gv
     monkeypatch.setattr(gv, "_docker_daemon_ok", lambda timeout=8.0: True)
     (tmp_path / "README.md").write_text("no docker here\n")
