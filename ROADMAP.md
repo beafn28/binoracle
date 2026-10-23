@@ -1361,6 +1361,25 @@ The flagship direction: prove impact end to end.
   Verified: `pytest -k "android or sarif or render or html_report or finding or session"` all
   green (60 passed); `ruff check`/`py_compile` clean. This completes all three OWASP/APK
   priorities requested in this phase (tag existing findings, MASVS-RESILIENCE, MASVS-AUTH).
+- **Full local suite run (815 tests) after this phase: 4 failures, all a sandbox-only Docker
+  networking artifact, NOT a code bug.** `test_drupalverify_sqli_json_key_envelope_live_...`,
+  both `test_genericverify_sqli_blind_live_confirms_..._and_negative_control` tests, and
+  `test_genericverify_path_traversal_live_needs_setup_commands_...` (all pre-existing, unrelated
+  to this phase's Android changes) failed with Docker build errors inside this dev sandbox: a
+  `pip install` inside a container's `RUN` step hit `SSLError: self-signed certificate in
+  certificate chain` against pypi.org, and one run separately hit a transient Docker Hub `429
+  Too Many Requests` pulling a base image. Reproduced by hand with a minimal
+  `FROM python:3.11-slim` + `pip install flask` Dockerfile -- same SSL error, confirming it is
+  not test-specific. Root cause confirmed against this session's own proxy docs
+  (`/root/.ccr/README.md`, "docker build / docker run" section): this sandbox's outbound HTTPS
+  is intercepted by a local TLS-terminating proxy whose CA is trusted on the HOST, but
+  "processes inside containers cannot reach 127.0.0.1:37587 and do not trust the CA" -- a
+  documented, intentional limitation of the sandbox's own network policy, not something
+  binoracle's Dockerfiles should be changed to work around (that would mean baking a
+  sandbox-specific CA install into fixtures real users and CI never need). Confirmed
+  definitively by triggering a real GitHub Actions run (run #191, commit 24be71f, the latest
+  commit in this phase) on genuine unrestricted-internet runners: `conclusion: success`, same
+  commit, same tests. These 4 are sandbox-local only; nothing to fix in the code.
 
 ## Explicitly out of scope
 
