@@ -1201,6 +1201,43 @@ def test_android_audit_manifest_flags_and_exported_tagged_with_owasp_cwe(tmp_pat
     assert len(tagged) == 4
 
 
+def test_android_audit_resilience_absence_flagged_when_no_defenses_present(tmp_path):
+    # With no root/debugger/emulator/anti-hooking signal anywhere in the decompiled tree, all 4
+    # MASVS-RESILIENCE checks must fire as "Not Implemented" findings (info severity, grounded,
+    # no CWE -- CWE-693 is MITRE-discouraged for mapping, see the comment above _RESILIENCE_CHECKS).
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "MainActivity.java").write_text(
+        "package com.app;\nclass MainActivity {\n public void onCreate(){ doStuff(); }\n}\n")
+    findings, nfiles = AA._resilience_findings(str(root), Finding)
+    assert nfiles == 1
+    owasp_ids = {f.owasp for f in findings}
+    assert owasp_ids == {"MASWE-0051", "MASWE-0064", "MASWE-0053", "MASWE-0065"}
+    for f in findings:
+        assert f.severity == "info" and f.verdict == "grounded" and f.cwe == ""
+
+
+def test_android_audit_resilience_not_flagged_when_defenses_present(tmp_path):
+    # Each known defensive signal (one per category) suppresses its corresponding finding.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "Security.java").write_text(
+        'package com.app;\nimport com.scottyab.rootbeer.RootBeer;\nclass Security {\n'
+        ' boolean rooted(){ return new RootBeer(null).isRooted(); }\n'
+        ' boolean dbg(){ return Debug.isDebuggerConnected(); }\n'
+        ' boolean emu(){ return Build.FINGERPRINT.contains("generic"); }\n'
+        ' boolean hooked(){ return readTracerPid() > 0; }\n'
+        ' int readTracerPid(){ return 0; }\n'
+        '}\n')
+    findings, nfiles = AA._resilience_findings(str(root), Finding)
+    assert nfiles == 1
+    assert findings == []
+
+
 def test_native_connectors_degrade():
     # IDA/Hopper connectors: pure degrade when no endpoint is configured (no network).
     import os

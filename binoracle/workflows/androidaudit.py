@@ -186,6 +186,92 @@ def _scan_java(root: str, Finding):
     return out
 
 
+# MASVS-RESILIENCE (mas.owasp.org/MASVS/controls, confirmado en vivo): a diferencia de
+# _PATTERNS (una vulnerabilidad SI el patron esta presente), aqui el hallazgo es la AUSENCIA de
+# una tecnica de defensa conocida en TODO el arbol decompilado -- un unico escaneo, no por
+# fichero. Son heuristicas de hardening (firmas de APIs/strings publicas y bien documentadas:
+# RootBeer, paquetes de root conocidos, Debug.isDebuggerConnected, Build.FINGERPRINT=generic,
+# TracerPid/Frida/Xposed), no una prueba formal de que la proteccion no existe -- codigo nativo
+# (JNI) o una implementacion fuertemente ofuscada/renombrada escaparian a este escaneo sobre
+# Java decompilado; se indica siempre en el limitation del hallazgo. cwe: deliberadamente vacio
+# en los 4 -- CWE-693 "Protection Mechanism Failure" seria el unico pillar remotamente
+# relacionado, pero MITRE lo marca "Vulnerability Mapping: DISCOURAGED" (confirmado via
+# WebSearch), asi que no se fuerza.
+_RESILIENCE_CHECKS = [
+    ("MASWE-0051", "Deteccion de root/jailbreak no implementada",
+     [r'RootBeer', r'\bisRooted\b', r'checkRootMethod|checkForRoot',
+      r'/system/bin/su|/system/xbin/su|/sbin/su|/system/app/Superuser\.apk',
+      r'com\.noshufou\.android\.su|com\.koushikdutta\.superuser|eu\.chainfire\.supersu|'
+      r'com\.topjohnwu\.magisk|com\.devadvance\.rootcloak',
+      r'Build\.TAGS[^;]{0,40}test-keys'],
+     "Ningun indicador conocido de deteccion de root (libreria RootBeer, rutas de binario su, "
+     "paquetes de apps de root conocidas, Build.TAGS=test-keys) aparece en el Java decompilado.",
+     "Anade una capa de deteccion de root (p.ej. RootBeer) como señal adicional de riesgo, no "
+     "como unico control -- es evadible y no sustituye la validacion del lado del servidor."),
+    ("MASWE-0064", "Deteccion de depurador no implementada",
+     [r'Debug\.isDebuggerConnected\s*\(\)', r'ApplicationInfo\.FLAG_DEBUGGABLE',
+      r'Debug\.waitingForDebugger\s*\(\)'],
+     "Ningun indicador conocido de deteccion de depurador (Debug.isDebuggerConnected, "
+     "FLAG_DEBUGGABLE, Debug.waitingForDebugger) aparece en el Java decompilado.",
+     "Comprueba Debug.isDebuggerConnected()/FLAG_DEBUGGABLE en rutas sensibles; combinalo con "
+     "deteccion nativa (TracerPid) ya que esta via es trivial de parchear/evitar."),
+    ("MASWE-0053", "Deteccion de emulador/dispositivo virtual no implementada",
+     [r'Build\.FINGERPRINT[^;]{0,40}generic', r'Build\.HARDWARE[^;]{0,40}(goldfish|ranchu)',
+      r'Build\.PRODUCT[^;]{0,40}sdk', r'Build\.MODEL[^;]{0,40}(sdk|Emulator|Android SDK)',
+      r'\bisEmulator\b'],
+     "Ningun indicador conocido de deteccion de emulador (Build.FINGERPRINT/HARDWARE/PRODUCT/"
+     "MODEL tipicos de AVD/goldfish/ranchu) aparece en el Java decompilado.",
+     "Si la app maneja datos sensibles, anade deteccion de emulador como señal adicional de "
+     "riesgo (no como bloqueo absoluto: falsos positivos en dispositivos reales clonados)."),
+    ("MASWE-0065", "Deteccion de herramientas de analisis dinamico no implementada",
+     [r'frida-server|frida_server', r'\bXposed\b|de\.robv\.android\.xposed', r'TracerPid',
+      r'\bobjection\b', r'LSPosed'],
+     "Ningun indicador conocido de deteccion de Frida/Xposed/LSPosed/objection (strings del "
+     "proceso Frida, paquete Xposed, campo TracerPid) aparece en el Java decompilado.",
+     "Anade deteccion de frameworks de hooking (TracerPid, puertos/sockets de Frida, Xposed "
+     "cargado) junto con otras capas -- cualquier deteccion client-side es evadible por un "
+     "atacante con control del dispositivo."),
+]
+
+
+def _resilience_findings(root: str, Finding):
+    """Un unico escaneo del arbol decompilado para las 4 categorias MASVS-RESILIENCE de arriba.
+    Devuelve (findings, nclasses) -- un Finding 'Not Implemented' por categoria ausente."""
+    try:
+        from .androidquery import _iter_java
+    except Exception:
+        return [], 0
+    compiled = [(owasp, title, [re.compile(rx) for rx in rxs], rationale, rec)
+                for owasp, title, rxs, rationale, rec in _RESILIENCE_CHECKS]
+    found = [False] * len(compiled)
+    nfiles = 0
+    for jpath in _iter_java(root):
+        nfiles += 1
+        if nfiles > _MAX_FILES:
+            break
+        if all(found):
+            break
+        try:
+            with open(jpath, "r", encoding="utf-8", errors="replace") as f:
+                code = f.read(_MAX_BYTES)
+        except Exception:
+            continue
+        for i, (_owasp, _title, rxs, _rat, _rec) in enumerate(compiled):
+            if found[i]:
+                continue
+            if any(rx.search(code) for rx in rxs):
+                found[i] = True
+    out = []
+    for i, (owasp, title, _rxs, rationale, rec) in enumerate(compiled):
+        if found[i]:
+            continue
+        out.append(Finding(title=title, severity="info", verdict="grounded",
+                           evidence=f"escaneados {nfiles} fichero(s) .java; sin coincidencias.",
+                           location="", rationale=rationale, recommendation=rec,
+                           owasp=owasp, cwe=""))
+    return out, nfiles
+
+
 def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None):
     """Auditoria Android fundamentada. Devuelve un AgentResult (como el audit nativo) para que la
     web/CLI lo rendericen igual. No ejecuta la app; no popea nada: los veredictos son 'grounded'."""
@@ -231,6 +317,13 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
         root, reason = "", str(e)
     if root:
         findings += _scan_java(root, Finding)
+        emit(step := step + 1, "MASVS-RESILIENCE: deteccion de root/depurador/emulador/herramientas de analisis")
+        rfindings, _nclasses = _resilience_findings(root, Finding)
+        findings += rfindings
+        if rfindings:
+            limits.append("las ausencias MASVS-RESILIENCE son heuristicas sobre Java decompilado: "
+                           "una proteccion solo en codigo nativo (JNI) o fuertemente ofuscada/"
+                           "renombrada no se detectaria y aparece aqui como falso 'no implementada'.")
     else:
         limits.append(f"escaneo de codigo omitido (jadx no disponible: {reason}); instala jadx.")
 

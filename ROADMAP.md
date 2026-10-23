@@ -1316,6 +1316,30 @@ The flagship direction: prove impact end to end.
   detection (root/jailbreak/emulator/debugger detection, obfuscation absence) and MASVS-AUTH
   detection (biometric/local-auth bypass) -- both need their own grounded, real API/pattern
   research before any code, same bar as everything above.
+- **MASVS-RESILIENCE detection for the Android static audit** (`workflows/androidaudit.py`,
+  `_resilience_findings`/`_RESILIENCE_CHECKS`). Different shape from every other check in this
+  module: the finding is the ABSENCE of a known hardening technique across the WHOLE decompiled
+  tree (one scan, not per-file evidence), not a vulnerable pattern's presence. Covers 4 real
+  MASWE-0051..0065 weaknesses confirmed live against `mas.owasp.org/MASVS/controls`: root/
+  jailbreak detection (RootBeer, known su paths, known root-app packages, `Build.TAGS=test-keys`),
+  debugger detection (`Debug.isDebuggerConnected`, `FLAG_DEBUGGABLE`, `waitingForDebugger`),
+  emulator detection (`Build.FINGERPRINT/HARDWARE/PRODUCT/MODEL` AVD signatures), and
+  hooking-framework detection (Frida/Xposed/LSPosed/objection/`TracerPid`) -- all well-documented,
+  stable, public API/string signatures (RootBeer and the su-path/root-package list are the same
+  ones MASTG itself and the open-source RootBeer library use), never invented. Severity is
+  `info` (a missing optional hardening layer, not an active flaw) and `cwe` is deliberately left
+  blank on all 4: the only remotely-related CWE, CWE-693 "Protection Mechanism Failure", is a
+  Pillar-level weakness MITRE itself marks `Vulnerability Mapping: DISCOURAGED` (confirmed via
+  WebSearch against the live MITRE page) -- forcing it would violate this project's own
+  never-force-an-imprecise-ID rule. Honestly scoped: this is a Java-decompiled-source heuristic,
+  so a protection implemented ONLY in native/JNI code, or renamed/obfuscated beyond these
+  signatures, reads as a false "not implemented" -- stated explicitly in the audit's own
+  `limits` list whenever any resilience finding fires, not buried in code comments only. Two
+  new tests (`test_android_audit_resilience_absence_flagged_when_no_defenses_present`,
+  `test_android_audit_resilience_not_flagged_when_defenses_present`) cover both directions
+  directly against `_resilience_findings` (no jadx needed, same as the owasp/cwe-tagging tests
+  above). Verified: `pytest -k "android or sarif or render or html_report or finding or
+  session"` all green (57 passed); `ruff check`/`py_compile` clean.
 
 ## Explicitly out of scope
 
