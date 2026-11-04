@@ -237,7 +237,40 @@ The flagship direction: prove impact end to end.
   honestly reports `verified=False` (not a guess) when the traced return address doesn't
   depend on stdin at all. Known cost: gdb single-stepping the whole real run (including libc
   startup) is slow -- budget generously (60-150s is typical for a small CTF binary). Still
-  open: indirect call/jump hijacks, heap-pointer-controlled crashes, and PIE binaries.
+  open: indirect call/jump hijacks and heap-pointer-controlled crashes.
+  **PIE support closed (real gap, confirmed and fixed live).** `_block_trace` indexed `.text`
+  by subtracting the ELF's STATIC `sh_addr` from each trace address -- for a non-PIE binary
+  (`ET_EXEC`) that address IS the runtime address, so it worked by accident; for PIE (`ET_DYN`)
+  the runtime addresses gdb captures (e.g. `0x5555555550a0`) are nowhere near the static ones
+  (`0x10a0`), so `insn_len()` returned `None` for every single address and NOTHING ever
+  collapsed to a block -- `block_trace == trace` verbatim. Confirmed live against
+  `samples/bin/ret2win_pie` (already in the practice corpus, unused by this oracle until now)
+  before touching any code: `_block_trace` on a real PIE trace returned every address
+  unchanged, and feeding that to `angr.Project`'s own default PIE base (which never matches
+  gdb's real, ASLR-disabled load base either) desynced the `Tracer` immediately. Fixed by (1)
+  propagating the real load base gdb already computes for its own `lo <= pc < hi` trace filter
+  (`info proc mappings`, ASLR off) out of `_capture_trace` -- it was being thrown away after one
+  use; (2) `_block_trace` subtracts that base before indexing `.text` (0 for non-PIE, so the
+  existing non-PIE path is provably unchanged); (3) `angr.Project(..., main_opts={'base_addr':
+  runtime_base})` for PIE, so the Tracer replay walks the exact same addresses as the real
+  trace. Verified the runtime base really does match: readelf/gdb's own `info proc mappings`
+  confirmed `file offset 0 -> runtime 0x555555554000` on this build, i.e. `runtime_addr =
+  static_vaddr + lo` exactly, before relying on it. `target_addr` keeps the existing calling
+  convention (the binary's STATIC address, same as `find_win()`/nm/readelf elsewhere in this
+  project) -- translated to the real runtime address internally, reported back in
+  `meta["target_addr_runtime"]` for transparency. One more real bug caught while wiring this
+  through: the gdb-timeout early return in `_capture_trace` still returned the OLD 2-tuple
+  shape after the signature changed to 3 values (`trace, runtime_base, err`) -- would have
+  raised `ValueError: not enough values to unpack` on every timeout; caught by actually running
+  the non-PIE regression test (not just the new PIE one) after the change, not assumed safe.
+  New test `test_concolic_solves_rip_control_against_real_trace_pie` (end-to-end, real gdb +
+  angr + a separate real breakpoint verification, same rigor as the existing non-PIE test) --
+  both it and the two pre-existing concolic tests (non-PIE positive + honest-negative) pass
+  (3 passed, ~160s). Different design, deliberately, from `symbolic_angr.py`'s own PIE handling
+  (`_reachable_impl` lets angr pick its OWN default base and rebases the TARGET into it): that
+  module does free symbolic exploration with no real execution to match, so any consistent base
+  works; this module replays a REAL gdb trace address-for-address, so angr has to be forced onto
+  gdb's actual (ASLR-off) runtime base instead -- not an inconsistency, two different problems.
 - **[M] Windows PE dynamic + symbolic.** Dynamic half shipped: `workflows/autopoc_pe.py` --
   the direct PE analogue of `autopoc.py`'s ELF ret2win, run under Wine and verified by
   execution, not inferred. `pwntools`' `ELF()`/`ROP()` don't load PE, so the win()-like symbol

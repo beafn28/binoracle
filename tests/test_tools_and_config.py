@@ -13859,6 +13859,54 @@ def test_concolic_solves_rip_control_against_real_trace():
     assert r.meta["target_addr"] == hex(win_addr)
 
 
+def test_concolic_solves_rip_control_against_real_trace_pie():
+    # Gap real encontrado y cerrado en esta sesion: la primera version de este oraculo asumia
+    # una direccion de carga FIJA (comentada explicitamente como "PIE binaries" en Still open
+    # del ROADMAP) -- para un binario PIE, _block_trace indexaba .text con la direccion REAL de
+    # runtime contra el sh_addr ESTATICO del ELF (un desfase enorme), asi que CADA direccion del
+    # trace se trataba como un "bloque" nuevo (ninguna se colapsaba) y el angr.Project cargaba en
+    # SU PROPIA base PIE por defecto -- Tracer desincronizaba de inmediato. Confirmado en vivo
+    # antes del fix (angr "no pudo reproducir el camino real" / nunca colapsaba el trace).
+    #
+    # Fix: _capture_trace ahora tambien devuelve la base de carga REAL (runtime_base, de "info
+    # proc mappings" con ASLR desactivado -- el propio script de gdb ya lo capturaba, solo
+    # faltaba propagarlo); _block_trace la resta antes de indexar .text, y angr.Project recibe
+    # main_opts={'base_addr': runtime_base} para cargar en la MISMA base que el trace real.
+    # target_addr sigue dandose como la direccion ESTATICA del ELF (misma convencion que
+    # find_win()/nm/readelf en el resto del proyecto); el tool traduce internamente al sumar
+    # runtime_base antes de resolver/verificar, y lo reporta en meta["target_addr_runtime"].
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/ret2win_pie"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample ret2win_pie o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    assert oc.available() is True
+    tool = oc.tools()[0]
+
+    win_addr = 0x1189   # direccion ESTATICA de win() en este build PIE (readelf -s), NO runtime
+    seed = b"A" * 80 + b"\n"
+    r = tool.run(stdin_text=seed, target_addr=hex(win_addr), budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True, r.data
+    assert r.meta["controlled_offsets"] == [72, 73, 74, 75, 76, 77, 78, 79]
+    assert r.meta["target_addr"] == hex(win_addr)
+    assert r.meta["pie"] is True
+    # la direccion runtime real (base ASLR-off + offset estatico) debe ser distinta de la
+    # estatica -- si coincidieran, el bias no se habria aplicado y la verificacion real de
+    # arriba habria fallado en vez de dar verified=True.
+    assert int(r.meta["target_addr_runtime"], 16) != win_addr
+    assert int(r.meta["target_addr_runtime"], 16) % 0x1000 == win_addr % 0x1000
+
+
 def test_concolic_honest_negative_without_rip_control():
     # Un stdin que no desborda nada no debe "inventarse" un payload: la direccion de retorno
     # real en ese punto no depende del stdin, y el tool debe decirlo honestamente (no un
