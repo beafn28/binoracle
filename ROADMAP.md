@@ -209,10 +209,42 @@ The flagship direction: prove impact end to end.
   letting the instrumented thread continue, guaranteeing the host has the event before the
   process can abort. Verified end-to-end against `samples/bin/heapbug` (positive: real
   double-free, cross-confirmed by glibc's own abort; negative: no double-free with other
-  input), plus a clean binary with no heap bugs. Still open: a UAF-watchpoint equivalent (Frida's
-  `MemoryAccessMonitor` API is the cross-platform counterpart to the gdb hardware watchpoint
-  `heap_confirm_uaf` uses) and actually exercising this on macOS/Windows (only verified on
-  Linux so far, even though the mechanism itself is documented cross-platform).
+  input), plus a clean binary with no heap bugs. Still open: actually exercising this on
+  macOS/Windows (only verified on Linux so far, even though the mechanism itself is documented
+  cross-platform).
+  **UAF-watchpoint equivalent closed (second increment, `frida_confirm_uaf`).** Uses Frida's
+  `MemoryAccessMonitor` API (watches a page-granular range, not a byte-exact hardware
+  watchpoint like gdb's `heap_confirm_uaf` -- `onAccess` always reports `details.address`, so
+  real hits are the ones landing exactly on the freed chunk's first 8 bytes, same scope as the
+  gdb branch) to re-implement the exact same mechanism: free() arms a watch, a later
+  malloc-family return matching that address disarms it (legitimate reuse), and a touch is
+  filtered against which MODULE the accessing instruction (`details.from`) belongs to. One real
+  API difference found live (not assumed): `Process.findModuleByAddress()` NEVER returns null
+  -- it resolves the MAIN executable too, unlike `gdb.solib_name()` which returns `None`
+  specifically for the main binary -- so the filter here compares the module NAME against the
+  target binary's own basename, not against null. Reused `heap_dynamic._parse_uaf_log`
+  unchanged (same log line format emitted from the JS agent) instead of writing a second
+  parser. Second real quirk found live while building the negative-control test: unlike gdb's
+  `run < INFILE` (real EOF once the file is exhausted, which `samples/src/uaf.c`'s own
+  `if (read(0,b,7)<=0) exit(0);` relies on to exit cleanly), Frida's `Device.input()` writes to
+  a pipe that is NEVER closed -- a later `read()` in the target just blocks waiting for more
+  data instead of seeing EOF, until `budget_s` expires. Not a detection bug (the log captured up
+  to that point was already correct); fixed by giving the negative-control test its own
+  explicit exit command at the end instead of relying on stdin exhaustion, and documented the
+  difference in the module docstring so it isn't mistaken for a hang next time. Verified
+  end-to-end against `samples/bin/uaf`, all 3 of `heap_dynamic.py`'s own UAF scenarios mirrored
+  exactly (positive: `UAF_TOUCH`/`verified=True`, same addr/pc shape; negative reallocation:
+  `UAF_TOUCH_IGNORED` on the glibc tcache touch, then `WATCH_DISARMED`, `verified=False`; clean
+  binary with no heap bugs: `verified=False`). Honest scope note added (not assumed, documented):
+  only one freed chunk watched at a time -- the single-object pattern `autouaf.py` actually
+  explodes, matching what `heap_confirm_uaf`'s own existing test matrix covers; whether a
+  SECOND concurrent `MemoryAccessMonitor.enable()` call on a genuinely different, still-live
+  address adds to or replaces the watched set was not confirmed live (an attempt to probe it
+  with Frida-allocated (`Memory.alloc`) memory crashed the session outright, a separate,
+  unexplained quirk not worth chasing for a scope this tool doesn't claim to cover anyway). 5
+  new tests (3 for `frida_confirm_uaf`'s own behavior, 2 lines added to the existing
+  registration-gating test) all pass, alongside the 2 pre-existing `frida_confirm_double_free`
+  tests (6 passed total) and all 8 `heap_dynamic.py` tests (no regression, shared imports only).
 - **[L] Concolic loop.** First increment shipped: `oracles/concolic.py` --
   `concolic_solve_rip_control`. `symbolic_angr.py`'s existing `angr_reachable` explores BLINDLY
   from `main()` (its own docstring already documents having to fork a child process with a

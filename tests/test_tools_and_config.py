@@ -13810,6 +13810,74 @@ def test_frida_dynamic_no_false_positive_on_binary_without_heap_bugs():
     assert r.meta["verified"] is False
 
 
+def test_frida_dynamic_confirms_real_uaf_funcptr_hijack():
+    # Equivalente cross-platform de test_heap_dynamic_confirms_real_uaf_funcptr_hijack, via
+    # Frida (MemoryAccessMonitor) en vez del watchpoint hardware de gdb -- mismo fixture
+    # (samples/bin/uaf: 1=new, 2=free SIN limpiar el puntero, 3=run -- lee el function-pointer
+    # del chunk YA LIBERADO) y mismo veredicto esperado.
+    import os
+    try:
+        import frida  # noqa: F401
+    except Exception:
+        return
+    from binoracle.oracles.frida_dynamic import FridaDynamicOracle
+    b = "samples/bin/uaf"
+    if not os.path.exists(b):
+        return
+
+    oc = FridaDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["frida_confirm_uaf"]
+    r = tool.run(stdin_text=_heap_pad(1) + _heap_pad(2) + _heap_pad(3), budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True
+    assert r.meta["uaf_addr"], "debe reportar la direccion exacta tocada tras liberarla"
+    assert "USE-AFTER-FREE" in r.data
+
+
+def test_frida_dynamic_uaf_no_false_positive_on_legitimate_reallocation():
+    # Equivalente cross-platform de test_heap_dynamic_uaf_no_false_positive_on_legitimate_reallocation.
+    # Quirk real encontrado en vivo construyendo esto (documentado en el docstring del modulo):
+    # a diferencia de gdb (`run < INFILE`, EOF real al agotarse el fichero), el pipe de stdin de
+    # Frida (Device.input()) NO se cierra tras el ultimo byte escrito -- sin un comando de
+    # salida EXPLICITO al final, el read() del programa bloquea esperando mas datos hasta que
+    # budget_s expira, en vez de recibir EOF y salir solo (como SI hace gdb). Por eso esta
+    # secuencia anade un "0" final (menu() por defecto hace return 0) -- la secuencia equivalente
+    # de heap_dynamic.py no lo necesita porque confia en el EOF del fichero.
+    import os
+    try:
+        import frida  # noqa: F401
+    except Exception:
+        return
+    from binoracle.oracles.frida_dynamic import FridaDynamicOracle
+    b = "samples/bin/uaf"
+    if not os.path.exists(b):
+        return
+
+    oc = FridaDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["frida_confirm_uaf"]
+    r = tool.run(stdin_text=_heap_pad(1) + _heap_pad(2) + _heap_pad(1) + _heap_pad(3) + _heap_pad(0),
+                 budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+
+
+def test_frida_dynamic_uaf_no_false_positive_on_binary_without_heap_bugs():
+    import os
+    try:
+        import frida  # noqa: F401
+    except Exception:
+        return
+    from binoracle.oracles.frida_dynamic import FridaDynamicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        return
+    oc = FridaDynamicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["frida_confirm_uaf"]
+    r = tool.run(stdin_text="hola\n", budget_s=15)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+
+
 def test_frida_dynamic_registered_only_when_dynamic_enabled():
     from binoracle.oracles import build_registry
     import os as _os
@@ -13818,10 +13886,12 @@ def test_frida_dynamic_registered_only_when_dynamic_enabled():
         return
     names_static = [t.name for t in build_registry(b).available_tools()]
     assert "frida_confirm_double_free" not in names_static
+    assert "frida_confirm_uaf" not in names_static
     names_dynamic = [t.name for t in build_registry(b, enable_dynamic=True).available_tools()]
     try:
         import frida  # noqa: F401
         assert "frida_confirm_double_free" in names_dynamic
+        assert "frida_confirm_uaf" in names_dynamic
     except Exception:
         pass  # sin frida instalado, la tool simplemente no se registra (available()=False)
 
