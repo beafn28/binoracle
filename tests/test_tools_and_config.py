@@ -14002,6 +14002,119 @@ def test_concolic_honest_negative_without_rip_control():
     assert "no depende del stdin" in r.meta.get("note", "").lower()
 
 
+def test_concolic_solves_indirect_call_hijack():
+    # Gap real cerrado en esta sesion (ROADMAP "[L] Concolic loop", Still open: indirect
+    # call/jump hijacks): un overflow lineal que sobreescribe un PUNTERO A FUNCION LOCAL
+    # llamado directamente (`fp();`), no la direccion de retorno de un `ret` -- un primitivo
+    # distinto del que concolic_solve_rip_control cubre. samples/src/callhijack.c: buf[64] +
+    # un `void (*fp)()` inicializado a benign(), desbordado via gets() y luego llamado
+    # (`call rax` en este build, confirmado con gdb/objdump antes de escribir nada de codigo).
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/callhijack"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample callhijack o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["concolic_solve_indirect_control"]
+
+    win_addr = 0x401166   # direccion real de win() en este build (no-PIE, estable)
+    seed = b"A" * 72 + b"B" * 8 + b"\n"   # 64 (buf) + 8 (padding) = 72 hasta fp; 8 bytes = fp
+    r = tool.run(stdin_text=seed, target_addr=hex(win_addr), budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True, r.data
+    assert r.meta["controlled_offsets"] == [72, 73, 74, 75, 76, 77, 78, 79]
+    assert r.meta["target_addr"] == hex(win_addr)
+    assert r.meta["branch_reg"] == "rax"
+
+
+def test_concolic_solves_indirect_call_hijack_pie():
+    # Mismo primitivo que el test anterior, pero PIE -- confirma que la traduccion
+    # estatica->runtime (ya verificada para concolic_solve_rip_control) tambien funciona en el
+    # camino, totalmente separado en el codigo, de busqueda de la call/jmp indirecta y de la
+    # construccion de angr.Project para este segundo tool.
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/callhijack_pie"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample callhijack_pie o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["concolic_solve_indirect_control"]
+
+    win_addr = 0x1179   # direccion ESTATICA de win() en este build PIE (readelf -s)
+    seed = b"A" * 72 + b"B" * 8 + b"\n"
+    r = tool.run(stdin_text=seed, target_addr=hex(win_addr), budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True, r.data
+    assert r.meta["controlled_offsets"] == [72, 73, 74, 75, 76, 77, 78, 79]
+    assert r.meta["pie"] is True
+    assert int(r.meta["target_addr_runtime"], 16) != win_addr
+
+
+def test_concolic_indirect_hijack_honest_negative_without_control():
+    # Un stdin que no desborda nada no debe inventar un payload: el registro que alimenta la
+    # call/jmp real no depende del stdin, y el tool debe decirlo honestamente.
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/callhijack"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample callhijack o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["concolic_solve_indirect_control"]
+    r = tool.run(stdin_text=b"hola\n", target_addr="0x401166", budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+    assert "no depende del stdin" in r.meta.get("note", "").lower()
+
+
+def test_concolic_indirect_hijack_honest_negative_no_branch_found():
+    # samples/bin/ret2win no tiene ninguna call/jmp POR REGISTRO (sus unicos saltos indirectos
+    # son los jmp [rip+off] de la PLT, via MEMORIA, fuera del alcance de este tool) -- debe
+    # reportarlo honestamente, no inventar ni confundirse con un stub de la PLT.
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("sample ret2win o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    tool = {t.name: t for t in oc.tools()}["concolic_solve_indirect_control"]
+    r = tool.run(stdin_text=b"A" * 80, target_addr="0x401176", budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is False
+    assert "no se encontro ninguna call/jmp" in r.meta.get("note", "").lower()
+
+
 def test_regression_dashboard_classifies_new_fixed_reintroduced():
     # ROADMAP v0.5 "[M] Regression dashboard" -- la parte que faltaba (SessionStore ya trackea
     # el estado ACTUAL persistente de un target; esto agrega la HISTORIA de estados pasados y

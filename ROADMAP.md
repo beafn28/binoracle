@@ -277,7 +277,7 @@ The flagship direction: prove impact end to end.
   honestly reports `verified=False` (not a guess) when the traced return address doesn't
   depend on stdin at all. Known cost: gdb single-stepping the whole real run (including libc
   startup) is slow -- budget generously (60-150s is typical for a small CTF binary). Still
-  open: indirect call/jump hijacks and heap-pointer-controlled crashes.
+  open: heap-pointer-controlled crashes.
   **PIE support closed (real gap, confirmed and fixed live).** `_block_trace` indexed `.text`
   by subtracting the ELF's STATIC `sh_addr` from each trace address -- for a non-PIE binary
   (`ET_EXEC`) that address IS the runtime address, so it worked by accident; for PIE (`ET_DYN`)
@@ -311,6 +311,33 @@ The flagship direction: prove impact end to end.
   module does free symbolic exploration with no real execution to match, so any consistent base
   works; this module replays a REAL gdb trace address-for-address, so angr has to be forced onto
   gdb's actual (ASLR-off) runtime base instead -- not an inconsistency, two different problems.
+  **Indirect call/jump hijacks closed (third increment, `concolic_solve_indirect_control`).**
+  A different primitive from the ret-based tool: a linear overflow that overwrites a LOCAL
+  function pointer, called DIRECTLY (`call reg`) mid-function -- control is hijacked well
+  before any `ret` executes, so reading `rsp` at the trace's end (the ret-based tool's
+  technique) doesn't apply. New sample binary `samples/src/callhijack.c` (added to
+  `samples/build.sh`, non-PIE and PIE variants) built the scenario for real, confirmed with
+  gdb/capstone BEFORE writing any solver code: `fp()` compiles to `mov rax,[rbp-8]; call rax` --
+  a REGISTER-indirect call (capstone `CS_OP_REG`), not memory-indirect. New
+  `_find_last_indirect_reg_branch` scans the real per-instruction trace (not the already-
+  collapsed `block_trace` -- the branch may not land on a block boundary) for the LAST `call
+  reg`/`jmp reg`, then TRUNCATES the trace right there before building `block_trace` and
+  replaying with angr's `Tracer`, so the resulting state sits exactly at the branch instruction
+  (confirmed live: `state.pc == branch_addr`, with the target register still symbolic, derived
+  from the correct stdin bytes 72-79 -- same offset as `ret2win`, confirmed independently via
+  gdb, not assumed from the other binary). From there it's the SAME constraint-solving ->
+  real-breakpoint-verification pipeline as the ret-based tool (`_verify_real` is reused
+  UNCHANGED: a breakpoint at an absolute address behaves identically whether control arrives
+  there via `ret` or `call`). PIE handled with the exact same `runtime_base`/`main_opts`
+  machinery as the ret-based fix above -- verified against `callhijack_pie` too, not assumed to
+  carry over. Negative control confirmed two ways, not one: a non-overflowing input (register
+  doesn't depend on stdin) AND a binary with no register-indirect branch at all
+  (`samples/bin/ret2win` -- its only indirect jumps are PLT stubs, `jmp [rip+off]`, MEMORY-
+  indirect, correctly excluded by the `CS_OP_REG`-only filter rather than misdetected). Scope,
+  stated honestly: register-indirect only -- `call [mem]`/`jmp [mem]` is out of this increment.
+  5 new tests (positive non-PIE, positive PIE, both negative-control shapes) plus the 2
+  pre-existing ret-based tests all pass (7 passed, ~6 minutes -- these are real gdb+angr runs,
+  not mocked).
 - **[M] Windows PE dynamic + symbolic.** Dynamic half shipped: `workflows/autopoc_pe.py` --
   the direct PE analogue of `autopoc.py`'s ELF ret2win, run under Wine and verified by
   execution, not inferred. `pwntools`' `ELF()`/`ROP()` don't load PE, so the win()-like symbol
