@@ -83,6 +83,48 @@ except Exception:
     _HAVE_ELFTOOLS = False
 
 
+_SHF_EXECINSTR = 0x4  # ELF section flag (elf.h): la seccion contiene instrucciones
+
+
+def _exec_sections(elf):
+    """Todas las secciones EJECUTABLES del ELF (SHF_EXECINSTR), no solo `.text`. Gap real
+    encontrado probando esta herramienta contra un binario de verdad (ROP Emporium ret2win,
+    no uno de los fixtures sinteticos de este proyecto): el trace real de una ejecucion
+    dinamicamente enlazada pasa por `.init` (el chequeo de `__gmon_start__`) y `.plt`/`.plt.sec`
+    (los stubs de resolucion perezosa) con total normalidad -- CUALQUIER binario dinamico lo
+    hace -- pero esas direcciones caen FUERA de `.text` (`.init`/`.plt` SIEMPRE preceden a
+    `.text` en el layout estandar de un ELF). Indexar solo `.text` (como hacia esta funcion
+    antes) hace que `insn_len()` devuelva None para cada una de esas direcciones, y con
+    `expected=None` CADA instruccion ahi se trata como un "bloque nuevo" -- confirmado en vivo:
+    el trace real por `_init` (`sub $8,%rsp; mov ...; test ...; je ...; add $8,%rsp; ret`, 6
+    instrucciones consecutivas sin ningun salto de verdad) se devolvia como 4 entradas de
+    bloque separadas, y angr (que SI colapsa `_init` correctamente, sin la misma limitacion)
+    desincronizaba de inmediato ("Oops! angr did not follow the trace") en cuanto esa seccion
+    aparecia en el trace. Los fixtures propios de este proyecto (ret2win.c, callhijack.c...)
+    nunca lo exponian porque sus caminos trazados no pasan por `.init`/`.plt` de esta forma."""
+    out = []
+    for sec in elf.iter_sections():
+        try:
+            if sec["sh_flags"] & _SHF_EXECINSTR and sec["sh_addr"]:
+                out.append((sec["sh_addr"], sec.data()))
+        except Exception:
+            continue
+    return out
+
+
+def _disasm_at(sections, md, bias, addr):
+    """Desensambla UNA instruccion en `addr` (direccion real, ya con el sesgo PIE restado por
+    el llamador) buscando en TODAS las secciones ejecutables (ver `_exec_sections`), no solo
+    en una. Devuelve el objeto capstone, o None si `addr` no cae en ninguna."""
+    for base, data in sections:
+        off = addr - bias - base
+        if 0 <= off < len(data):
+            for ins in md.disasm(data[off:off + 16], addr):
+                return ins
+            return None
+    return None
+
+
 _GDB_TRACE_SCRIPT = r'''\
 import gdb
 
@@ -285,23 +327,18 @@ class ConcolicOracle(Oracle):
         with open(self.binary, "rb") as f:
             elf = ELFFile(f)
             is_pie = elf.header["e_type"] == "ET_DYN"
-            text = elf.get_section_by_name(".text")
-            data = text.data()
-            base = text["sh_addr"]
+            sections = _exec_sections(elf)
         # para PIE, las direcciones del trace (reales, en runtime) llevan sumado el sesgo de
         # carga (runtime_base, capturado de "info proc mappings" con ASLR desactivado) sobre la
-        # direccion ESTATICA del ELF (sh_addr) -- hay que restarlo antes de indexar en .text. Para
-        # no-PIE el ELF ya fija su propia direccion de carga y el sesgo es 0 (sin cambios).
+        # direccion ESTATICA del ELF (sh_addr) -- hay que restarlo antes de indexar las
+        # secciones ejecutables. Para no-PIE el ELF ya fija su propia direccion de carga y el
+        # sesgo es 0 (sin cambios).
         bias = runtime_base if (is_pie and runtime_base is not None) else 0
         md = Cs(CS_ARCH_X86, CS_MODE_64)
 
         def insn_len(addr):
-            off = addr - bias - base
-            if off < 0 or off >= len(data):
-                return None
-            for ins in md.disasm(data[off:off + 16], addr):
-                return ins.size
-            return None
+            ins = _disasm_at(sections, md, bias, addr)
+            return ins.size if ins else None
 
         block_trace = [trace[0]]
         for i in range(1, len(trace)):
@@ -456,23 +493,19 @@ class ConcolicOracle(Oracle):
         with open(self.binary, "rb") as f:
             elf = ELFFile(f)
             is_pie = elf.header["e_type"] == "ET_DYN"
-            text = elf.get_section_by_name(".text")
-            data = text.data()
-            base = text["sh_addr"]
+            sections = _exec_sections(elf)
         bias = runtime_base if (is_pie and runtime_base is not None) else 0
         md = Cs(CS_ARCH_X86, CS_MODE_64)
         md.detail = True
         found = (None, None, None)
         for idx, addr in enumerate(trace):
-            off = addr - bias - base
-            if off < 0 or off >= len(data):
+            insn = _disasm_at(sections, md, bias, addr)
+            if insn is None:
                 continue
-            for insn in md.disasm(data[off:off + 16], addr):
-                if (insn.mnemonic in ("call", "jmp") and len(insn.operands) == 1
-                        and insn.operands[0].type == CS_OP_REG):
-                    reg_name = insn.reg_name(insn.operands[0].reg)
-                    found = (idx, addr, reg_name)
-                break
+            if (insn.mnemonic in ("call", "jmp") and len(insn.operands) == 1
+                    and insn.operands[0].type == CS_OP_REG):
+                reg_name = insn.reg_name(insn.operands[0].reg)
+                found = (idx, addr, reg_name)
         return found
 
     def _solve_indirect(self, stdin_text, target_addr, budget_s=60) -> ToolResult:

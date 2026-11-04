@@ -14115,6 +14115,53 @@ def test_concolic_indirect_hijack_honest_negative_no_branch_found():
     assert "no se encontro ninguna call/jmp" in r.meta.get("note", "").lower()
 
 
+def test_concolic_block_trace_collapses_init_section_not_just_text():
+    # Gap real encontrado y confirmado probando concolic.py contra un binario REAL de fuera de
+    # este proyecto (el ret2win de ROP Emporium, un reto de CTF autentico, no uno de los
+    # fixtures sinteticos propios): _block_trace indexaba SOLO la seccion .text para calcular
+    # la longitud de cada instruccion -- pero CUALQUIER binario dinamicamente enlazado ejecuta
+    # tambien .init (el chequeo de __gmon_start__) y .plt (resolucion perezosa), que en el
+    # layout ELF estandar van ANTES de .text, en direcciones fuera de su rango. Para esas
+    # direcciones insn_len() devolvia None, asi que CADA instruccion de .init se trataba como
+    # un "bloque nuevo" en vez de colapsarse -- confirmado en vivo que esto desincronizaba a
+    # angr.Tracer ("Oops! angr did not follow the trace") en el ret2win real de ROP Emporium
+    # (su _init tiene 6 instrucciones rectas con UN salto condicional real; el bug devolvia 7
+    # entradas de bloque en vez de las 2 reales). El mismo patron de .init YA estaba presente
+    # en samples/bin/ret2win (este mismo proyecto) pero nunca causaba un fallo VISIBLE ahi --
+    # confirmado que el bug era el mismo, solo que angr lo toleraba por suerte en ese caso
+    # concreto, no porque no existiera.
+    import os
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle, _exec_sections
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado (samples/build.sh)")
+    try:
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+        from capstone import Cs  # noqa: F401
+    except Exception:
+        pytest.skip("capstone/pyelftools no instalados (dependencias opcionales)")
+
+    with open(b, "rb") as f:
+        elf = ELFFile(f)
+        sections = _exec_sections(elf)
+    # .init, .plt, .text, .fini -- las 4 secciones ejecutables reales de este binario (readelf
+    # -S confirma sus direcciones exactas), no solo .text.
+    assert len(sections) >= 3, "deberia encontrar .init/.plt/.text (y .fini) por separado"
+    addrs = {hex(a) for a, _d in sections}
+    assert "0x401000" in addrs and "0x401090" in addrs, ".init y .text deben estar ambas"
+
+    oc = ConcolicOracle(b)
+    # Trace REAL por instruccion a traves de _init (confirmado con objdump: endbr64/sub/mov/
+    # test/je(TOMADO, __gmon_start__==0)/add/ret), seguido de una direccion real de .text.
+    trace = [0x401000, 0x401004, 0x401008, 0x40100f, 0x401012, 0x401016, 0x40101a, 0x401090]
+    block_trace = oc._block_trace(trace, None)
+    # Colapsado correcto: solo 2 bloques reales dentro de _init (el de antes del salto
+    # tomado, y el de despues) mas la direccion final de .text -- NO 7+ entradas espurias
+    # (una por cada instruccion de _init, el bug que esto corrige).
+    assert block_trace == [0x401000, 0x401016, 0x401090]
+
+
 def test_regression_dashboard_classifies_new_fixed_reintroduced():
     # ROADMAP v0.5 "[M] Regression dashboard" -- la parte que faltaba (SessionStore ya trackea
     # el estado ACTUAL persistente de un target; esto agrega la HISTORIA de estados pasados y

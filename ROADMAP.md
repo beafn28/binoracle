@@ -353,6 +353,43 @@ The flagship direction: prove impact end to end.
   5 new tests (positive non-PIE, positive PIE, both negative-control shapes) plus the 2
   pre-existing ret-based tests all pass (7 passed, ~6 minutes -- these are real gdb+angr runs,
   not mocked).
+  **Real bug found and fixed testing this against a genuine third-party CTF binary (ROP
+  Emporium's actual `ret2win`, not one of this project's own synthetic samples).**
+  `_block_trace` (and `_find_last_indirect_reg_branch`, same code shape) indexed ONLY the
+  `.text` section when computing each instruction's length -- but any dynamically-linked ELF
+  also executes `.init` (the `__gmon_start__` check) and `.plt` (lazy-binding stubs), which in
+  the standard ELF layout sit BEFORE `.text`, outside its address range. For any address in
+  those sections, `insn_len()` returned `None`, so EVERY instruction there got treated as its
+  own spurious "new block" instead of collapsing -- confirmed live: ROP Emporium's `ret2win`
+  (6 straight-line instructions in `.init`, one real conditional branch) produced 7 block
+  entries instead of the real 2, and this desynced `angr.Tracer` outright ("Oops! angr did not
+  follow the trace"). The exact same latent bug was ALREADY present in this project's own
+  `samples/bin/ret2win` (confirmed: `.init`/`.plt`/`.text` are three separate sections there
+  too) -- it just never caused a VISIBLE failure in any test tonight, by luck of how `Tracer`
+  happened to tolerate the spurious entries for that specific binary's shape, not because the
+  bug wasn't there. Fixed with new `_exec_sections()` (every `SHF_EXECINSTR` section, not just
+  `.text`) and `_disasm_at()` (searches all of them), shared by both call sites. New test
+  `test_concolic_block_trace_collapses_init_section_not_just_text` -- fully self-contained
+  using this project's own already-committed `samples/bin/ret2win` (no external binary
+  needed) -- asserts the exact collapsed sequence directly; all 8 concolic tests pass.
+
+  **Separate, deeper issue found in the same investigation, NOT fixed tonight -- documented
+  honestly rather than forced.** Even after the `.init`/`.plt` fix, ROP Emporium's `ret2win`
+  still doesn't verify end-to-end: `Tracer` now desyncs later, at `__libc_csu_init`'s
+  `.init_array` dispatch loop (`call *(%r12,%rbx,8)`, an indirect call through a function-
+  pointer TABLE populated by the dynamic linker, not a fixed `.text` address). Confirmed what
+  `0x700000` (the earlier desync point, now resolved) actually was, not guessed: angr's own
+  `cle##externs` hook address for its generic `__libc_start_main` SimProcedure (`auto_load_libs
+  =False` means libc itself is never loaded, so angr hooks every external symbol with a
+  built-in model instead) -- `Tracer` already tolerates that hop transparently, so it was never
+  the real problem. The actual remaining gap is runtime-populated function-pointer data
+  (`.init_array`'s contents), which this project's OWN fixtures never happen to exercise in a
+  way that trips `Tracer`, but a real, differently-built binary does. Out of scope to chase
+  further tonight -- recorded here so it isn't silently rediscovered: if a future increment
+  wants full support for arbitrary real-world binaries (not just this project's own, or
+  carefully shaped ones), `.init_array`/`.fini_array` dispatch is the next concrete limitation
+  to investigate, not angr nondeterminism or anything PIE/ABI-version related (both were
+  checked and ruled out first).
 - **[M] Windows PE dynamic + symbolic.** Dynamic half shipped: `workflows/autopoc_pe.py` --
   the direct PE analogue of `autopoc.py`'s ELF ret2win, run under Wine and verified by
   execution, not inferred. `pwntools`' `ELF()`/`ROP()` don't load PE, so the win()-like symbol
