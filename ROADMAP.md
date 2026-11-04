@@ -253,6 +253,21 @@ The flagship direction: prove impact end to end.
   Added both extras. Reproduced the exact install command locally first (no dependency
   conflicts; capstone stays pinned at 5.0.9, not re-bumped to the 6.x alpha the earlier fix in
   this same file already closed).
+  **Validated against real GitHub reference exploits, not just this project's own synthetic
+  samples.** Cloned `shellphish/how2heap` (the canonical, widely-cited heap-exploitation
+  technique reference used across the CTF/security community) and ran all four heap-oracle
+  combinations against its actual `glibc_2.39/` examples (matching this host's own glibc,
+  compiled fresh, never committed to this repo): `heap_confirm_double_free` (gdb) and
+  `frida_confirm_double_free` both independently reported `verified: True` against
+  `fastbin_dup.c`'s real double-free (`free(a); free(b); free(a);`); `heap_confirm_uaf` (gdb)
+  and `frida_confirm_uaf` both reported `verified: True` against `tcache_poisoning.c` --
+  worth noting precisely, not just logging as a pass: that file's actual technique is
+  deliberate tcache-metadata corruption (overwriting a freed chunk's `fd` pointer to redirect
+  a later `malloc()`), not an accidental read of stale data, but it still counts as "the
+  program touches freed memory directly" under this detector's own honest, narrow definition
+  (see `heap_dynamic.py`'s module docstring) -- a correct, informative result, not a
+  misclassification, and a useful data point on exactly what "UAF confirmed" does and doesn't
+  claim.
 - **[L] Concolic loop.** First increment shipped: `oracles/concolic.py` --
   `concolic_solve_rip_control`. `symbolic_angr.py`'s existing `angr_reachable` explores BLINDLY
   from `main()` (its own docstring already documents having to fork a child process with a
