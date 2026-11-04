@@ -19,7 +19,16 @@ jobs:
         # tools (heap_confirm_double_free and friends) gate their own registration on
         # `shutil.which("gdb")`, so test_heap_dynamic_registered_only_when_dynamic_enabled
         # failed on a bare runner for a real, concrete reason, not flakiness.
-        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential gdb
+        #
+        # wine added here too -- another real gap, not local noise: workflows/autopoc_pe.py's
+        # dynamic ret2win-over-PE verification (and test_autopoc_pe_verifies_ret2win_under_wine)
+        # had never actually run on CI (wine_available() was always False on a bare runner, so
+        # the test always skipped) -- confirmed live outside CI, where it surfaced a real bug
+        # now fixed (autopoc_pe._ensure_wine_ready: a cold Wine prefix's one-time ~55s init ate
+        # the FIRST offset attempt's own budget_s, so the one offset that was actually correct
+        # always timed out before the rest of the (wrong) offsets were tried -- guaranteed
+        # false negative on any fresh environment, CI included, until that first run warmed it).
+        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential gdb wine
       - name: Install binoracle (+ optional oracles, dev tools)
         # pwntools (the 'pwn' extra) was missing here -- real gap, not local noise: confirmed
         # live by reproducing this exact install command and test run outside CI. Several

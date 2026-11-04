@@ -162,6 +162,37 @@ def test_autopoc_pe_verifies_ret2win_under_wine():
     assert "off=72" in r.get("detail", "")
 
 
+def test_autopoc_pe_warms_wine_prefix_before_the_timed_sweep(tmp_path, monkeypatch):
+    # Gap real encontrado y confirmado en vivo construyendo el test anterior sobre un prefix
+    # Wine genuinamente frio (sin ~/.wine previo, el caso de CUALQUIER runner de CI o
+    # contenedor recien creado): la primera invocacion de wine tarda ~55s inicializando
+    # registro/dosdevices/RPC -- nada que ver con el overflow -- y SIN pre-calentar, ese coste
+    # se comia el budget_s del PRIMER offset probado (72, el que de verdad es correcto),
+    # dejando el sweep probando offsets que por construccion nunca iban a disparar win():
+    # falso 'no verificado' garantizado en cualquier entorno nuevo, no una casualidad. Aqui se
+    # prueba el cacheo de _ensure_wine_ready en aislamiento (sin pagar los ~55s reales en cada
+    # corrida de test): con system.reg ausente debe invocar `wine wineboot --init` una vez; con
+    # system.reg ya presente, no debe invocar nada.
+    import subprocess
+    from binoracle.workflows import autopoc_pe as m
+
+    monkeypatch.setattr(m.shutil, "which", lambda name: "/usr/bin/wine" if "wine" in name else None)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a) or
+                        subprocess.CompletedProcess(a, 0))
+
+    cold = tmp_path / "cold"
+    cold.mkdir()
+    monkeypatch.setattr(m.os.environ, "get", lambda k, d=None: str(cold) if k == "WINEPREFIX" else d)
+    m._ensure_wine_ready(timeout_s=5)
+    assert len(calls) == 1 and calls[0][0][1:] == ["wineboot", "--init"]
+
+    (cold / "system.reg").write_text("")
+    calls.clear()
+    m._ensure_wine_ready(timeout_s=5)
+    assert calls == [], "no debe re-invocar wine si system.reg ya existe (prefix ya inicializado)"
+
+
 def test_autopoc_pe_degrades_cleanly_on_non_pe():
     from binoracle.workflows.autopoc_pe import autopoc_pe
     r = autopoc_pe("samples/bin/ret2win")

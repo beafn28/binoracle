@@ -16,6 +16,7 @@ SimProcedures so it actually resolves calls on a PE without crashing into unmode
 is NOT part of this increment -- see ROADMAP.md."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import struct
@@ -39,6 +40,37 @@ def is_pe(binary: str) -> bool:
 
 def wine_available() -> bool:
     return bool(shutil.which("wine") or shutil.which("wine64"))
+
+
+def _wine_prefix_dir() -> str:
+    return os.environ.get("WINEPREFIX") or os.path.join(os.path.expanduser("~"), ".wine")
+
+
+def _ensure_wine_ready(timeout_s: int = 120) -> None:
+    """Gap real encontrado y confirmado en vivo: la PRIMERA invocacion de Wine en un prefix
+    nuevo (ningun `~/.wine` previo -- el caso de CUALQUIER runner de CI o contenedor recien
+    creado) inicializa registro/dosdevices/RPC desde cero y tarda ~55s -- nada que ver con el
+    overflow que se esta probando. Sin esto, el PRIMER offset del sweep de abajo (72, el que
+    de verdad es correcto para este patron) se comia ese coste de arranque entero dentro de SU
+    PROPIO budget_s (15s por defecto), el subprocess se mataba por timeout antes de que win()
+    llegara a imprimir nada, y el sweep pasaba a probar el resto de offsets -- que por
+    construccion NUNCA iban a disparar win() -- dando un falso 'no verificado' siempre, no a
+    veces. Confirmado con cronometraje real: `wine <win_chall.exe>` en un prefix frio, 55s;
+    `wine wineboot --init` solo (mismo coste de inicializacion, sin cargar el PE del reto),
+    ~6.5s; el MISMO `wine <win_chall.exe>` inmediatamente despues, 0.46s. Por eso este
+    pre-calentamiento corre ANTES del sweep, con su propio timeout generoso, en vez de
+    repartir ese coste entre los intentos cronometrados. Se cachea comprobando `system.reg`
+    (el fichero que `wineboot` escribe solo al completar la inicializacion, no solo que el
+    directorio exista) para no re-pagar el coste en invocaciones posteriores."""
+    if os.path.exists(os.path.join(_wine_prefix_dir(), "system.reg")):
+        return
+    exe = shutil.which("wine") or shutil.which("wine64")
+    if not exe:
+        return
+    try:
+        subprocess.run([exe, "wineboot", "--init"], capture_output=True, timeout=timeout_s)
+    except Exception:
+        pass
 
 
 def find_win_pe(binary: str) -> Optional[int]:
@@ -106,6 +138,7 @@ def autopoc_pe(binary: str, run: bool = True, budget_s: int = 15) -> dict:
         return {"ok": True, "verified": False, "detail": f"win={hex(win_addr)}",
                "note": f"win() encontrado en {hex(win_addr)}; run=False, no se ejecuta"}
 
+    _ensure_wine_ready()
     p64 = lambda x: struct.pack("<Q", x)
     for off in _OFFS:
         payload = b"A" * off + p64(win_addr) + b"\n"

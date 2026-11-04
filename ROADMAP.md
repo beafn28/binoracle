@@ -359,6 +359,27 @@ The flagship direction: prove impact end to end.
   which OS it's targeting) redirects to `win()`, which prints its marker and spawns `cmd.exe`
   under Wine. Scope: no ASLR/DEP bypass, no SEH-based hijack, no canary handling -- this is
   the ret2win case only.
+  **Real bug found and fixed tonight: a cold Wine prefix always produced a false negative.**
+  `test_autopoc_pe_verifies_ret2win_under_wine` had NEVER actually run on CI (`wine` was never
+  installed there, so `wine_available()` was always False and the test always skipped) --
+  confirmed live outside CI, on a genuinely fresh Wine prefix: it FAILED, `verified: False`,
+  "ningun offset probado disparo win()" -- despite the binary being exactly as vulnerable as
+  the ELF version. Root-caused with real timing, not guessed: the FIRST wine invocation ever
+  in a prefix initializes its registry/dosdevices/RPC from scratch and takes ~55s, which ate
+  the first (and only correct) offset attempt's own `budget_s=15` entirely -- the subprocess
+  got killed by timeout before `win()` ever printed, and the sweep moved on to offsets that,
+  by construction, could never trigger it. Confirmed the fix with the same timing rigor:
+  `wine wineboot --init` alone (same one-time init cost, without loading the target PE) took
+  ~6.5s; the SAME `wine win_chall.exe` run immediately after took 0.46s. Fixed by adding
+  `_ensure_wine_ready()` -- runs that one-time `wineboot --init` BEFORE the timed sweep starts
+  (so setup cost never competes with an exploit attempt's own budget), cached by checking
+  `system.reg` (the file `wineboot` writes only once initialization actually completes, not
+  just that `~/.wine` exists). Verified end-to-end from a truly cold prefix (`rm -rf ~/.wine`
+  first): `verified: True, off=72` in ~17s total. New test
+  `test_autopoc_pe_warms_wine_prefix_before_the_timed_sweep` covers the caching logic itself
+  (mocked, so it doesn't pay the real ~55s on every run); all 4 PE/Wine tests pass. Also added
+  `wine` to `ci.yml`'s install line -- the same silent-skip pattern as the `angr`/`frida` gap
+  fixed earlier tonight, closed the same way.
 
   Symbolic half ALSO shipped now: `oracles/symbolic_angr.py` -- `_hook_mingw_io`, a custom
   `fgets`/`gets` `SimProcedure` applied automatically when the target is a PE. Root cause found
