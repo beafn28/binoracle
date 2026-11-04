@@ -28,7 +28,19 @@ jobs:
         # the FIRST offset attempt's own budget_s, so the one offset that was actually correct
         # always timed out before the rest of the (wrong) offsets were tried -- guaranteed
         # false negative on any fresh environment, CI included, until that first run warmed it).
-        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential gdb wine
+        #
+        # gcc-mingw-w64-x86-64 added here too, for a DIFFERENT real gap confirmed in vivo:
+        # samples/build.sh's win_chall.exe step always preferred Docker (debian:12's own
+        # gcc-mingw-w64-x86-64, GCC 12) over the host's mingw whenever Docker was available --
+        # this runner has Docker, so it always took that branch, building win_chall.exe with a
+        # DIFFERENT major GCC version than every local verification run tonight (Ubuntu's own
+        # package is GCC 13). That toolchain difference -- not angr nondeterminism, not Python
+        # version, not CPU count, all ruled out first -- is the confirmed cause of
+        # test_symbolic_angr_reachable_works_on_pe_via_mingw_simprocedures failing on CI 3/3
+        # while passing locally 18+/18+: a binarily different win_chall.exe, built without
+        # anyone noticing. Installing it here flips samples/build.sh's (now host-first) branch
+        # to use the SAME toolchain already verified repeatedly, instead of Docker's.
+        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential gdb wine gcc-mingw-w64-x86-64
       - name: Install binoracle (+ optional oracles, dev tools)
         # pwntools (the 'pwn' extra) was missing here -- real gap, not local noise: confirmed
         # live by reproducing this exact install command and test run outside CI. Several

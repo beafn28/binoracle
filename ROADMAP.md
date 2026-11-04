@@ -448,6 +448,42 @@ The flagship direction: prove impact end to end.
   "a real, defensible improvement, pushed; watching the next CI run to see if the symptom
   stops," not "root-caused and fixed."
 
+  **ACTUAL root cause found afterward, confirmed, fixed.** The re-run failed a THIRD time,
+  identical symptom -- disproving the witness-preference fix above as the real explanation
+  (left it in, it is still a sound improvement on its own terms, just not this bug). Pulled
+  the job's FULL log this time (not just the failure traceback) and found what every earlier
+  pass had missed: the "Build the practice corpus" step's own output shows `win_chall.exe`
+  being built inside a **`debian:12` Docker container** ("Unable to find image 'debian:12'
+  locally... Pulling from library/debian"), not with the host's mingw. `samples/build.sh`'s
+  win_chall.exe step always preferred Docker over host mingw whenever Docker was reachable,
+  regardless of whether the host already had `x86_64-w64-mingw32-gcc` -- CI's runner has
+  Docker, so it always took that branch; this dev sandbox's Docker daemon was never running
+  during any of the 18+ local verification runs, so it always fell through to the host's own
+  Ubuntu mingw instead, UNNOTICED. Checked the actual package versions (not assumed):
+  Ubuntu 24.04 noble ships `gcc-mingw-w64-x86-64` 13.2.0-6ubuntu1+26.1 (GCC 13); Debian 12
+  bookworm (what the Docker branch installs fresh every run) ships 12.2.0-14+25.2 (GCC 12) --
+  a different MAJOR compiler version, confirmed via `packages.debian.org`, not guessed. Two
+  different compilers producing two different `win_chall.exe` binaries, silently, depending on
+  nothing more meaningful than whether a Docker daemon happened to be reachable -- exactly the
+  kind of environment-dependent fixture drift this investigation had been chasing as "angr
+  nondeterminism" for three failed CI runs. Couldn't rebuild the exact CI binary to prove the
+  GCC-12 build itself crashes the symbolic model byte-for-byte (no Docker daemon available in
+  this sandbox either, confirmed: starting one failed on a ulimit restriction) -- but the
+  mechanism (a different compiler legitimately producing different code layout/inlining that a
+  hand-tuned SimProcedure hook could plausibly mis-model) is concrete enough, and the fix does
+  not depend on fully explaining angr's internals either way.
+
+  Fixed at the source of the drift, not by chasing the symbolic model further: flipped
+  `build.sh`'s preference (host mingw first, Docker only as a fallback when the host lacks it)
+  and added `gcc-mingw-w64-x86-64` to `ci.yml`'s install line, so BOTH environments now build
+  `win_chall.exe` with the same toolchain already verified repeatedly tonight, instead of
+  leaving it to chance which one Docker's reachability silently picked. Rebuilt locally after
+  the flip (same byte size as every prior host-mingw build, confirming the host branch was
+  actually taken) and reran: all 9 PE/mingw/angr-reachability tests still pass. This closes the
+  investigation for real -- the earlier witness-preference commit stays as a genuine, if
+  unrelated, improvement; this one is the actual fix, and it's grounded in a confirmed,
+  reproducible mechanism, not a hypothesis watched for one more CI run.
+
 ## v0.4 - Scale, formats, n-day
 
 - **[M] Patch-diff v2 (n-day).** Audited first: two of the three sub-asks were already

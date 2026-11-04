@@ -149,12 +149,26 @@ run "gcc -fno-stack-protector -no-pie -static -w -o bin/mprotectshell src/mprote
 echo "[*] leakchain (x86-64, no-PIE, dinamico: OOB read filtra puntero libc real -> OOB write hijacka callback -> system('/bin/sh'), infoleak chaining)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/leakchain src/leakchain.c"
 echo "[*] win_chall.exe (Windows PE via mingw)"
-if [ "$have_docker" = "1" ]; then
+# Real gap encontrado y confirmado en vivo: este build SIEMPRE prefirio Docker (debian:12)
+# sobre el mingw del host cuando Docker estaba disponible, sin importar que el host YA
+# tuviera x86_64-w64-mingw32-gcc instalado -- en este sandbox de desarrollo (sin daemon de
+# Docker corriendo) el mingw del HOST (Ubuntu noble: gcc-mingw-w64-x86-64 13.2.0-6ubuntu1+26.1)
+# se usaba sin darse cuenta, pero un runner de CI con Docker disponible tomaba SIEMPRE la rama
+# debian:12 (gcc-mingw-w64-x86-64 12.2.0-14+25.2 -- GCC 12, version mayor distinta, confirmado
+# comparando ambos paquetes). Esa diferencia de toolchain produce un win_chall.exe
+# BINARIAMENTE DISTINTO entre ambos entornos -- causa confirmada de que
+# test_symbolic_angr_reachable_works_on_pe_via_mingw_simprocedures fallara en CI (3/3) sin
+# reproducirse nunca en local (18+ veces): no era aleatoriedad de angr, era compilar un
+# binario diferente sin saberlo. Se invierte la prioridad -- host primero, Docker solo si el
+# host no tiene mingw -- para que el mismo toolchain (el que SI se ha verificado en vivo, una
+# y otra vez, esta noche) se use en cualquier entorno, sin depender de si Docker resulta estar
+# corriendo o no.
+if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  ( cd "$here" && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c ) || echo "  (mingw build skipped)"
+elif [ "$have_docker" = "1" ]; then
   docker run --rm --platform linux/amd64 -v "$here":/w -w /w debian:12 bash -c \
     'apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y gcc-mingw-w64-x86-64 >/dev/null 2>&1 && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c' || echo "  (mingw build skipped)"
-elif command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-  ( cd "$here" && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c ) || echo "  (mingw build skipped)"
 else
-  echo "  (mingw build skipped: sin Docker y sin x86_64-w64-mingw32-gcc en el host)"
+  echo "  (mingw build skipped: sin x86_64-w64-mingw32-gcc en el host y sin Docker)"
 fi
 echo "[*] done:"; ls -la "$here/bin"
