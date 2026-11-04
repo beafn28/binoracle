@@ -245,6 +245,14 @@ The flagship direction: prove impact end to end.
   new tests (3 for `frida_confirm_uaf`'s own behavior, 2 lines added to the existing
   registration-gating test) all pass, alongside the 2 pre-existing `frida_confirm_double_free`
   tests (6 passed total) and all 8 `heap_dynamic.py` tests (no regression, shared imports only).
+  **Real CI gap found and fixed while verifying this**: `ci.yml`'s install line
+  (`[elf,dev,web,pwn]`) never included `symbolic` (angr) or `frida` -- confirmed live that
+  `oracles/concolic.py`'s and `oracles/frida_dynamic.py`'s ENTIRE test suites had been silently
+  SKIPPING on every CI run to date (each gates on its own optional import and calls
+  `pytest.skip()` when absent), never actually executed on a real runner, only ever locally.
+  Added both extras. Reproduced the exact install command locally first (no dependency
+  conflicts; capstone stays pinned at 5.0.9, not re-bumped to the 6.x alpha the earlier fix in
+  this same file already closed).
 - **[L] Concolic loop.** First increment shipped: `oracles/concolic.py` --
   `concolic_solve_rip_control`. `symbolic_angr.py`'s existing `angr_reachable` explores BLINDLY
   from `main()` (its own docstring already documents having to fork a child process with a

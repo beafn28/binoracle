@@ -26,9 +26,17 @@ jobs:
         # live-verified exploit-chain tests (ROP/SROP cyclic-pattern offsets, chainanalyzer's
         # execve-syscall driver) depend on pwntools and were silently reporting
         # "pwntools no disponible: No module named 'pwn'" instead of actually verifying.
+        #
+        # 'symbolic' (angr) and 'frida' were ALSO missing -- another real gap, not deliberate:
+        # confirmed live that oracles/concolic.py's and oracles/frida_dynamic.py's entire test
+        # suites (symbolic replay/constraint-solving against a real gdb trace, cross-platform
+        # double-free/UAF confirmation) were silently SKIPPING on every CI run to date (each
+        # import-guards its own optional dependency and calls pytest.skip() when absent) --
+        # never actually executed here, only ever locally. Added both so these oracles are
+        # actually exercised on CI, not just locally.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[elf,dev,web,pwn]" r2pipe cvss olefile
+          pip install -e ".[elf,dev,web,pwn,symbolic,frida]" r2pipe cvss olefile
       - name: Build the practice corpus (samples/bin -- gitignored, never checked in)
         # samples/build.sh falls back to the host gcc on Linux when the gcc:13 Docker image
         # isn't already present (which it isn't on a fresh runner) -- build-essential above
