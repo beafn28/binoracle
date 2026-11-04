@@ -378,6 +378,32 @@ The flagship direction: prove impact end to end.
   in ~2.5s and solves the EXACT secret string (`sup3rs3cr3t\n`) by real constraint-solving;
   confirmed the hook is a no-op on ELF targets (unchanged behavior, separate test). This closes
   v0.3 completely.
+  **CI gap found tonight, one real failure surfaced, investigated but NOT conclusively root-
+  caused -- reported honestly rather than forced.** This test (and `symbolic_angr.py`'s whole
+  suite) had been silently skipping on every CI run (the `angr`/`frida` extras were missing --
+  see the `ci.yml` fix earlier in this file); the FIRST real CI run that ever installed `angr`
+  failed here: `reachable: True` but `concrete stdin that reaches it: b''` (empty) instead of
+  containing the solved secret. Investigated rather than dismissed or blindly "fixed": (1) NOT
+  reproducible locally -- 13 isolated runs of this exact test, same OS (confirmed CI's
+  `ubuntu-latest` and this sandbox are both Ubuntu 24.04.5 "noble"), all passed; (2) a newer
+  angr (10.0.5) was available on PyPI since this sandbox's 10.0.4.post1 install -- plausible
+  since `angr>=9.2` has no ceiling (same unpinned-floor shape as the capstone bug fixed
+  earlier) -- upgraded locally and retested 8 more times: still 13/13 passed, ruling out a pure
+  version-drift explanation; (3) traced the `_SimpleMingwRead` hook's actual read-length `n`
+  directly (not guessed): concrete, non-symbolic, 256 bytes every time locally -- rules out an
+  "empty/degenerate read" path being silently reachable; (4) confirmed `_reachable`'s child
+  process uses `multiprocessing.get_context("fork")`, and pytest's own `DeprecationWarning`
+  ("this process is multi-threaded, use of fork() may lead to deadlocks in the child") during
+  this exact test confirms a live, real fork-with-threads hazard (pytest-timeout's own
+  thread-based watchdog, per this project's `pyproject.toml`) -- a known class of bug whose
+  symptoms are inherently timing/load-sensitive and hard to reproduce on a fast, idle sandbox.
+  This is the most plausible lead, not a confirmed cause. Re-triggered CI (same commit, no
+  code change) to see whether it reproduces -- a one-off versus a repeat result is itself
+  evidence. Deliberately did NOT ship a speculative fix for an unconfirmed cause; follow up
+  once the re-run's result is in (pin `angr` defensively either way, matching the capstone
+  precedent, if a second failure or more investigation points at version-sensitivity; harden
+  the fork call -- `gc.collect()`/thread-quiescing before `ctx.Process(...).start()`, or switch
+  this one call to `spawn` -- if it points at the fork hazard instead).
 
 ## v0.4 - Scale, formats, n-day
 
