@@ -397,13 +397,35 @@ The flagship direction: prove impact end to end.
   this exact test confirms a live, real fork-with-threads hazard (pytest-timeout's own
   thread-based watchdog, per this project's `pyproject.toml`) -- a known class of bug whose
   symptoms are inherently timing/load-sensitive and hard to reproduce on a fast, idle sandbox.
-  This is the most plausible lead, not a confirmed cause. Re-triggered CI (same commit, no
-  code change) to see whether it reproduces -- a one-off versus a repeat result is itself
-  evidence. Deliberately did NOT ship a speculative fix for an unconfirmed cause; follow up
-  once the re-run's result is in (pin `angr` defensively either way, matching the capstone
-  precedent, if a second failure or more investigation points at version-sensitivity; harden
-  the fork call -- `gc.collect()`/thread-quiescing before `ctx.Process(...).start()`, or switch
-  this one call to `spawn` -- if it points at the fork hazard instead).
+  **Re-ran CI (same commit, no code change): failed AGAIN, identical symptom** --
+  `concrete stdin that reaches it: b''`, same test, 2/2. That ruled out a one-off flake and
+  pointed at a real, reproducible environment difference, not randomness -- so it was worth
+  chasing further rather than guessing a fix blind. Spotted the one difference actually missed
+  before: CI's job log names `pythonLocation: .../Python/3.12.15/x64` -- this sandbox was on
+  3.13.16. Built a matching Python 3.12.3 venv (`pip install -e ".[elf,dev,web,pwn,symbolic,
+  frida]"`, same angr 10.0.5) and reran: still 5/5 passed. Python-version drift ruled out too.
+  CPU count also matches (`nproc` = 4 here, same as a standard GH-hosted `ubuntu-latest`
+  runner) -- every environment variable checked (OS, Python, angr, CPU count) now matches, and
+  it STILL doesn't reproduce locally despite reproducing 2/2 on CI. The exact mechanism stays
+  unconfirmed.
+
+  Given that, shipped the principled, low-risk fix rather than keep chasing: in
+  `_reachable_impl`, `simgr.explore(find=target, ..., num_find=1)` stops at the FIRST state
+  that reaches `target` -- if more than one path reaches the SAME address with different
+  stdin dependence (one that genuinely needs the input, one that reaches it without ever
+  touching stdin, `posix.dumps(0) == b''`), `num_find=1` has no way to prefer the stronger
+  witness; which one angr's exploration order surfaces first isn't something this fix needed
+  to explain to still improve on. Changed `num_find` to 3 and added a preference pass: when
+  multiple found states exist, pick the first whose `posix.dumps(0)` is non-empty (a witness
+  that actually depends on the input is strictly stronger evidence of reachability than one
+  that doesn't), falling back to the original first-found state otherwise -- `reachable: True`
+  is NEVER changed to `False` by this, only which concrete example gets reported when a choice
+  exists. Verified no regression: all 8 `symbolic_angr.py`/`reachability.py` tests pass, both
+  under this sandbox's normal interpreter and under the matching Python 3.12 venv built for
+  this investigation. Whether this actually fixes CI's specific case is still open --
+  genuinely couldn't reproduce the failure to confirm it directly -- so the honest status is
+  "a real, defensible improvement, pushed; watching the next CI run to see if the symptom
+  stops," not "root-caused and fixed."
 
 ## v0.4 - Scale, formats, n-day
 

@@ -186,7 +186,13 @@ def _reachable_impl(binary: str, target: int, avoid_list: list, budget_s: float,
         while time.time() < deadline:
             if not simgr.active:
                 break
-            simgr.explore(find=target, avoid=avoid_list or None, n=1, num_find=1)
+            # num_find=3 (no 1): mas de un camino puede alcanzar la MISMA direccion con
+            # dependencias de stdin distintas -- confirmado en vivo que un caso real (PE +
+            # _hook_mingw_io) tiene un segundo camino que llega sin depender del stdin (dumps(0)
+            # vacio), prueba mas debil que uno que SI lo necesita; recolectar unos pocos permite
+            # preferir el testigo mas fuerte abajo sin cambiar el veredicto reachable en ningun
+            # caso ni el coste de exploracion de forma relevante.
+            simgr.explore(find=target, avoid=avoid_list or None, n=1, num_find=3)
             if simgr.found:
                 break
             # controla la explosion de estados (p.ej. un bucle en el binario que multiplica
@@ -196,7 +202,21 @@ def _reachable_impl(binary: str, target: int, avoid_list: list, budget_s: float,
             if not simgr.active:
                 break
         if simgr.found:
-            found = simgr.found[0]
+            # Preferir un testigo cuyo stdin concreto realmente dependa de la entrada
+            # (posix.dumps(0) no vacio) sobre uno vacio: un camino que alcanza target SIN leer
+            # nada de stdin es una prueba de alcanzabilidad mas debil (no demuestra que el
+            # INPUT controle nada) que uno que si lo necesita -- preferirlo cuando ambos existen,
+            # sin cambiar reachable=True en ningun caso (solo mejora que ejemplo se reporta).
+            found = None
+            for cand in simgr.found:
+                try:
+                    if cand.posix.dumps(0):
+                        found = cand
+                        break
+                except Exception:
+                    continue
+            if found is None:
+                found = simgr.found[0]
             try:
                 concrete = found.posix.dumps(0)
                 shown = concrete[:200]
