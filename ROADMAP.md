@@ -1855,6 +1855,21 @@ The flagship direction: prove impact end to end.
   `..._degrades_cleanly_with_a_single_gift_function`); full `autopoc`/`autopwn`/`autorop`/
   `chainanalyzer`/`autocsu`/`autopivot`/`autocallme` subset (28 tests) passes clean.
 
+- **CI flake diagnosed and fixed: `test_autocanary_verifies_leakable_sample` (run #202, commit
+  `bbfe407`).** Root-caused, not assumed flaky: that commit's own diff touches only
+  `autopoc.py`/`tests/test_smoke.py`, nothing in `autocanary.py` or `samples/`; the test passed
+  3/3 on a clean local re-run; and it passed in every OTHER CI run tonight before and after this
+  one. The likely trigger: three `workflow_dispatch` runs (#201/#202/#203) were fired back to
+  back without waiting for each to finish, landing concurrently on GitHub's shared runner pool --
+  resource contention under that is a well-known source of exactly this symptom (a real
+  subprocess I/O `recv()` with a tight, hardcoded `timeout=2` just missing its window on a loaded
+  box, not a logic bug). Fixed defensively regardless of the exact trigger: bumped the leak read's
+  two `timeout=2` calls to `timeout=4` (comfortably above the driver's own `context.timeout = 3`
+  default) -- cheap insurance against the next loaded run, at worst +2s per one of the up to 78
+  bufsz/rbpgap/align combinations this driver sweeps (only on combinations that were going to
+  fail anyway). Going forward: don't fire overlapping `workflow_dispatch` runs back to back --
+  wait for one to land before triggering the next.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

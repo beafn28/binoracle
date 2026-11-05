@@ -47,8 +47,14 @@ for bufsz in (72, 64, 56, 88, 40, 48, 80, 96, 104, 112, 120, 128, 32):
                 # following %s keeps going into the upper 7 canary bytes.
                 io.send(b"A" * bufsz + b"B")
                 try:
-                    io.recvuntil(b"B", timeout=2)            # up to the LSB byte we planted
-                    leaked = io.recv(7, timeout=2)           # the 7 upper canary bytes
+                    # 2s -> 4s: real CI flake seen once under concurrent-run resource contention
+                    # (3 CI runs triggered back to back landed on the shared runner pool at once)
+                    # -- this exact test passed in every prior/later run and 3/3 locally, so the
+                    # logic itself is sound; the margin on a real subprocess I/O read just wasn't
+                    # generous enough for a loaded box. Still well under the 78-attempt sweep's
+                    # total budget even in the worst case (every bufsz/rbpgap/align combo missing).
+                    io.recvuntil(b"B", timeout=4)            # up to the LSB byte we planted
+                    leaked = io.recv(7, timeout=4)           # the 7 upper canary bytes
                 except Exception:
                     leaked = b""
                 if len(leaked) < 7:
