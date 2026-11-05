@@ -279,14 +279,20 @@ def test_autopwn_why_covers_ret2csu_and_pivot_combos():
 
 def test_autocsu_applicable_checks_symbols_cheaply():
     # _csu_applicable es el pre-filtro barato (sin sandbox) que autopwn usa antes de gastar una
-    # tanda de ejecucion: necesita win+fnptr (strategy A) o retptr (strategy B).
+    # tanda de ejecucion: necesita win+fnptr (strategy A), retptr (strategy B), o cualquier
+    # funcion 'regalo' reconocible -- local o importada de una shared lib (strategy C, generica,
+    # anadida tras probar esto contra el ret2csu REAL de ROP Emporium; ver docstring del modulo).
+    # ret2win.c tambien tiene 'win' (candidato de strategy C) asi que ahora SI es "aplicable" --
+    # un pre-filtro deliberadamente mas amplio, no un falso positivo: el filtro real (si los
+    # gadgets __libc_csu_init de verdad existen en ese binario) vive en el driver, igual que para
+    # A/B. leakchain.c no tiene NINGUN nombre 'regalo' ni fnptr/retptr -- negativo honesto.
     import os
     import pytest
-    if not os.path.exists("samples/bin/ret2csu") or not os.path.exists("samples/bin/ret2win"):
-        pytest.skip("samples ret2csu/ret2win no compilados")
+    if not os.path.exists("samples/bin/ret2csu") or not os.path.exists("samples/bin/leakchain"):
+        pytest.skip("samples ret2csu/leakchain no compilados")
     from binoracle.workflows.autocsu import _csu_applicable
     assert _csu_applicable("samples/bin/ret2csu") is True
-    assert _csu_applicable("samples/bin/ret2win") is False
+    assert _csu_applicable("samples/bin/leakchain") is False
 
 
 def test_autopivot_applicable_checks_symbols_cheaply():
@@ -2202,6 +2208,59 @@ def test_autocsu_verifies_ret2csu():
     r = autocsu(binp)
     assert r.get("ok") and r.get("verified"), f"ret2csu no verificado: {r.get('note')}"
     assert "align=" in (r.get("detail") or "")   # proves the 16B ret-slide was applied
+
+
+def test_autocsu_strategy_c_verifies_real_ropemporium_ret2csu():
+    # Verificacion POSITIVA de la "strategy C" generica (ver docstring de autocsu.py) contra el
+    # ret2csu REAL de ROP Emporium, no el fixture sintetico de este proyecto: su ret2win() no
+    # tiene 'fnptr' ni 'retptr' (esos nombres solo existen en samples/bin/ret2csu, inventados
+    # para demostrar el primitivo) y vive en una shared lib separada (libret2csu.so), reachada
+    # via el PLT del binario principal -- exactamente el patron real que las strategies A/B no
+    # podian cubrir. Prueba que: el target se encuentra por nombre (local o importado), sus 3
+    # valores de argumento exactos (0xdeadbeefdeadbeef/0xcafebabecafebabe/0xd00df00dd00df00d) se
+    # recuperan por desensamblado real del cuerpo de ret2win() -- sin NINGUN conocimiento previo
+    # del reto -- y DT_FINI sirve de puntero "seguro de llamar" sin necesitar un simbolo
+    # inventado. La flag real se captura en 'detail' (misma brecha de deteccion de exito que
+    # autopoc.py, cerrada aqui tambien: esta gift function imprime la flag y sale, no abre shell).
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/7-ret2csu/ret2csu"
+    if not os.path.exists(binp) or not os.path.exists(os.path.join(os.path.dirname(binp), "libret2csu.so")):
+        pytest.skip("binario externo ret2csu (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autocsu import autocsu, _strategy_c_args
+    args = _strategy_c_args(binp)
+    assert args == ("ret2win", 0xdeadbeefdeadbeef, 0xcafebabecafebabe, 0xd00df00dd00df00d), args
+    r = autocsu(binp)
+    assert r.get("ok") and r.get("verified"), f"ret2csu (strategy C, real) no verificado: {r.get('note')}"
+    assert "mode=generic" in (r.get("detail") or "")
+    assert "ROPE{" in (r.get("detail") or ""), "la flag real no se capturo en el detalle"
+
+
+def test_autocsu_strategy_c_degrades_cleanly_without_a_gift_symbol():
+    # Control negativo: leakchain.c no tiene ningun nombre 'regalo' (ni win/shell/flag/backdoor)
+    # ni fnptr/retptr -- ninguna de las 3 estrategias debe inventarse un target; NOT_APPLICABLE
+    # honesto, nunca un falso "verified".
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "samples/bin/leakchain"
+    if not os.path.exists(binp):
+        pytest.skip("sample leakchain no compilado (samples/build.sh)")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autocsu import autocsu, _strategy_c_args
+    assert _strategy_c_args(binp) is None
+    r = autocsu(binp)
+    assert r.get("ok") is False
+    assert r.get("verified") is not True
 
 
 def test_csu_gadget_detection_on_sample():

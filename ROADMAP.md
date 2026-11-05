@@ -1689,6 +1689,62 @@ The flagship direction: prove impact end to end.
   fix, not a regression from this change (confirmed: this fix touches a completely different
   file/code path).
 
+- **`workflows/autocsu.py`'s ret2csu verifier generalized to work against a REAL ret2csu CTF
+  binary, not just this project's own synthetic fixture.** Continuing the same real-world
+  validation pass (ROP Emporium's binaries, cloned via the GitHub mirror
+  `0xSoEasY/ROPemporium`): `chainanalyzer.analyze_chains(verify=True)` already correctly
+  detected a feasible `ret2csu` chain against the real `7-ret2csu/ret2csu` binary (gadgets
+  found, score=100), but its EXECUTION-verification layer (`autocsu.autocsu` -> strategy A)
+  reported "no aplicable (falta win+fnptr o retptr)" -- `_csu_applicable`'s gate (and strategy
+  A's own gadget2 target) hard-required symbols named `win`/`fnptr` (or `retptr` for strategy
+  B's execve path), which only ever exist in `samples/bin/ret2csu` (this project's own fixture,
+  invented specifically to demonstrate the primitive) -- never in a real binary. The real
+  challenge is a textbook ret2csu target (gadget-poor for rsi/rdx, needs `ret2csu_init`'s
+  universal gadgets to call `ret2win(rdi,rsi,rdx)` with 3 EXACT 64-bit values), yet had no path
+  to verification. Added a third, generic strategy that drops both symbol dependencies:
+  1. the csu call's indirect-call pointer (`r12`) no longer needs a named global -- `DT_FINI`'s
+     own `d_un` field (an `Elf64_Dyn` entry inside `.dynamic`, present in every dynamically
+     linked ELF) already points at a pointer safe to call with garbage register state (the
+     CRT's own `_fini` stub, a no-op `sub rsp,8; add rsp,8; ret` with nothing in
+     `.fini_array`) -- the SAME technique ROP Emporium's own published `solve.py` uses
+     (confirmed byte-for-byte: `0x600E48`/`0x4006B4` match this code's own computation exactly).
+  2. the real target function is found by NAME among BOTH locally-defined symbols and
+     PLT-imported ones (reusing `autopoc.find_win`'s gift-keyword heuristic instead of
+     reinventing it) -- the real challenge's `ret2win` lives in a *separate* shared library
+     (`libret2csu.so`), reached through the main binary's PLT like any other imported libc
+     function, something no existing strategy looked for. Its expected EXACT argument values
+     are recovered by disassembling its own prologue with capstone (`mov [rbp-N], <argreg>` to
+     map a stack slot to its register, then `movabs <reg>, imm64` + `cmp [rbp-N], <reg>` for the
+     checked value) -- confirmed live: recovers
+     `0xdeadbeefdeadbeef`/`0xcafebabecafebabe`/`0xd00df00dd00df00d` from the real `.so`, byte
+     for byte, with ZERO hardcoded knowledge of the challenge; falls back to small sentinels
+     when no such check exists (a `win()` that doesn't validate args, same as strategy A).
+  3. `edi` (gadget2's `mov edi, r13d`) only ever gives the LOWER 32 bits of a 64-bit rdi --
+     invisible on this project's own fixture (sentinels fit in 32 bits by design) but fatal
+     against the real challenge's full-64-bit first argument. Fixed with a trailing
+     `pop rdi; ret` after the csu tail's own epilogue, right before the final jump.
+  A SEPARATE real bug surfaced testing this end to end: the shared `run()` helper (used by all
+  3 strategies) sent a payload, then ALWAYS tried `io.sendline("echo MARK; id")` assuming a
+  shell was spawned -- but this real `ret2win()` prints the flag and calls `exit()` itself
+  (same "no shell, just a flag" pattern as the `autopoc.py` fix above, hit independently here),
+  so the process had already exited by the time that followup command was sent; the resulting
+  `EOFError`, caught by ONE try/except wrapping the whole function, discarded the ALREADY
+  CAPTURED output -- flag included -- reporting "no verificado" for an exploit that had, in
+  fact, worked. Fixed by narrowing the try/except to each individual I/O step so a failed
+  followup never discards output already read, and by checking that output for a CTF-flag
+  pattern (not just a shell marker) before giving up. Verified live end to end against the real
+  binary: offset=40 (correct) -> `verified: True`, real flag `ROPE{Un1v3rs4l_R0P_w1th_ret2csu}`
+  captured in `detail`; offsets 32/48/56 (deliberately wrong) and deliberately wrong argument
+  values both -> `NOT_VERIFIED`, no false positive. `_csu_applicable`'s cheap pre-filter also
+  broadened to recognize a generic gift-symbol candidate (not just `win`+`fnptr`/`retptr`) --
+  updated `test_autocsu_applicable_checks_symbols_cheaply`'s negative control accordingly
+  (`samples/bin/ret2win` now legitimately counts as "applicable" via the new strategy; the
+  real negative is `samples/bin/leakchain`, which has no gift-named symbol and no fnptr/retptr).
+  Two new regression tests
+  (`test_autocsu_strategy_c_verifies_real_ropemporium_ret2csu`,
+  `..._degrades_cleanly_without_a_gift_symbol`); full `autocsu`/`chainanalyzer`/`autopwn`/
+  `autopivot` subset (16 tests) passes.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
