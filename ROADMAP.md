@@ -1870,6 +1870,38 @@ The flagship direction: prove impact end to end.
   fail anyway). Going forward: don't fire overlapping `workflow_dispatch` runs back to back --
   wait for one to land before triggering the next.
 
+- **New primitive: `workflows/autowrite4.py` (write-what-where + call), found continuing the
+  same real-world ROP Emporium validation pass.** `chainanalyzer.analyze_chains()` found NO
+  feasible chain at all for the real `write4` binary (score 0 across every existing kind) -- a
+  genuine missing primitive, not a verification-layer gap like `ret2csu`/`pivot`/`callme`: this
+  binary has no useful pre-existing string and no gift function reachable by jumping anywhere,
+  but it DOES expose a `pop r14; pop r15; ret` + `mov [r14], r15; ret` gadget pair, enough to
+  write 8 attacker-chosen bytes to any address and repeat for a longer string. New module:
+  1. gadgets found by byte pattern (like `autocsu.py`'s csu gadgets), starting with the
+     confirmed-live r14/r15 pair (extensible to more pairs without touching the rest of the
+     module).
+  2. the staging address needs no named symbol or hardcoded `.data` offset -- `ELF.bss()`
+     (pwntools) already gives a safe, writable address for free.
+  3. the target (`print_file`) matches no gift keyword and validates no fixed argument -- found
+     STRUCTURALLY instead: disassemble every candidate function (local, or if none, imported
+     from a linked `.so` like `autocsu.py`'s strategy C) with capstone and check whether it
+     forwards its own first argument into a call to `fopen`/`open`, the same shape ANY
+     "read-and-print-a-file-by-path" function has, confirmed live to find exactly `print_file`
+     (which lives in `libwrite4.so`, not the executable) and nothing else.
+  4. since there's no leak to recover the real filename from, a short list of common CTF
+     flag-file names is tried (`flag.txt`, `flag`, `/flag.txt`, `/flag`), each chunked into
+     8-byte writes and NUL-padded to the next multiple of 8 -- a wrong guess just fails to
+     verify, never a false positive.
+  Verified live end to end against the real `write4` binary: writes `flag.txt` to a fresh `.bss`
+  address, calls the real `print_file` with it, and returns the real flag
+  `ROPE{WR1t34_in_x64_data_section}`; a binary with no write-gadget pair (`ret2win.c`) correctly
+  finds nothing. Wired into `autopwn()`'s combo orchestrator (`want("write4")`, tried after
+  `callme`) and into `_why()`. Two new regression tests
+  (`test_autowrite4_verifies_real_ropemporium_write4`,
+  `..._degrades_cleanly_without_the_write_gadget_pair`); full `autopoc`/`autopwn`/`autorop`/
+  `chainanalyzer`/`autocsu`/`autopivot`/`autocallme`/`autowrite4`/`autocanary` subset (31 tests,
+  1 skipped for a missing 32-bit multilib sample) passes clean.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

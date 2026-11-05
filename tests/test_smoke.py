@@ -2177,6 +2177,53 @@ def test_autocallme_degrades_cleanly_with_a_single_gift_function():
     assert _callme_applicable(binp) is False
 
 
+def test_autowrite4_verifies_real_ropemporium_write4():
+    # Verificacion POSITIVA de autowrite4.py (nuevo primitivo: write-what-where + llamada) contra
+    # el write4 REAL de ROP Emporium: chainanalyzer.analyze_chains() no detecta NINGUNA cadena
+    # factible para este binario (ningun tipo existente modela "escribe luego llama"), y su
+    # target real (`print_file`) no matchea ningun nombre 'regalo' conocido ni tiene argumentos
+    # fijos que validar -- se encuentra por ESTRUCTURA (toma rdi y lo reenvia sin modificar a
+    # fopen()), vive en libwrite4.so (no en el ejecutable), y el string a escribir ("flag.txt")
+    # se adivina de una lista corta de nombres de flag habituales, no se lee de ningun sitio.
+    # Prueba que: los gadgets pop-2-regs (r14/r15) + mov-a-memoria se encuentran por patron de
+    # bytes, el target se encuentra por estructura, y la flag real se captura cuando print_file()
+    # imprime-y-sale sin abrir shell (misma brecha de deteccion de exito ya cerrada esta noche en
+    # autocsu.py/autopivot.py/autorop()).
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/3-write4/write4"
+    if not os.path.exists(binp) or not os.path.exists(os.path.join(os.path.dirname(binp), "libwrite4.so")):
+        pytest.skip("binario externo write4 (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autowrite4 import autowrite4, _find_write_gadgets, _find_write_target
+    pop_addr, write_addr = _find_write_gadgets(binp)
+    assert (pop_addr, write_addr) == (0x400690, 0x400628), (pop_addr, write_addr)
+    assert _find_write_target(binp) == ("print_file", None)
+    r = autowrite4(binp)
+    assert r.get("ok") and r.get("verified"), f"write4 (real) no verificado: {r.get('note')}"
+    assert "target=print_file" in (r.get("detail") or "")
+    assert "ROPE{" in (r.get("detail") or ""), "la flag real no se capturo en el detalle"
+
+
+def test_autowrite4_degrades_cleanly_without_the_write_gadget_pair():
+    # Control negativo: ret2win.c no tiene ningun gadget pop-2-regs + mov-a-memoria -- no debe
+    # inventarse nada.
+    import os
+    from binoracle.workflows.autowrite4 import _find_write_gadgets, _write4_applicable
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample ret2win no compilado")
+    assert _find_write_gadgets(binp) == (None, None)
+    assert _write4_applicable(binp) is False
+
+
 def test_autoropmprotect_verifies_nx_bypass():
     # Verificacion POSITIVA del tercer sub-item de "[M] ROP builder v2" (ROADMAP) por EJECUCION:
     # mprotectshell.c hace un primer read() que deja shellcode en un buffer .bss fijo conocido

