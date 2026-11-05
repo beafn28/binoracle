@@ -1815,6 +1815,46 @@ The flagship direction: prove impact end to end.
   `..._negative_control_wrong_offset_real_split`); full `autopoc`/`autopwn`/`autorop`/
   `chainanalyzer` subset (16 tests) passes.
 
+- **New primitive: `workflows/autocallme.py`, a distinct shape from everything above, found
+  continuing the same real-world ROP Emporium validation pass.** Its `callme` challenge doesn't
+  fit `autocsu.py` (gadget-poor, needs the csu trick) or `autopoc.py`/`autorop()` (one gift
+  target): the binary is gadget-RICH (a plain `pop rdi; pop rsi; pop rdx; ret` exists), but the
+  gift is split across THREE functions (`callme_one`/`two`/`three`, each validating its own
+  fixed 3 arguments, each living in a separate shared library like `autocsu.py`'s ret2csu
+  target), and -- confirmed live -- calling them in the WRONG order (alphabetical: one, three,
+  two) silently corrupts the resulting flag instead of failing cleanly; there's no reliable
+  name-based rule to infer the right order generically ("one/two/three" is this one challenge's
+  own convention). New module tries every ORDERING of the discovered targets (cheap: 3 is 6
+  permutations, capped at 4 targets / 24 permutations) instead of guessing one. Target discovery
+  has two levels: by gift-keyword name first (same heuristic `autopoc.py`/`autocsu.py` already
+  use), then, since `callme_one/two/three` match NONE of those keywords at all, by STRUCTURE --
+  any function whose own body `autocsu._infer_fixed_args` recognizes as "validates registers
+  against fixed constants," with no naming assumption whatsoever.
+  Building the structural fallback surfaced a real, SHARED latent bug in
+  `autocsu._infer_fixed_args` itself (used by both `autocsu.py` and this new module): it
+  disassembled a fixed 0x300-byte window from each candidate's address with no bound on the
+  function's own size, so scanning EVERY function in `libcallme.so` produced 4 false positives
+  (`deregister_tm_clones`/`register_tm_clones`/`__do_global_dtors_aux`/`frame_dummy` -- tiny CRT
+  boilerplate, none of which actually check anything) all "recognized" as checking the exact
+  same 3 values as the real `callme_one`, which sits only 10 bytes after `frame_dummy` -- the
+  disassembly simply ran past the tiny function's own `ret` into its neighbor's bytes and
+  attributed them to the wrong symbol. This was invisible on `autocsu.py`'s own single-target
+  use (`ret2win` there is large enough that 0x300 bytes never reaches a neighbor) but a real
+  correctness bug for a function meant to be reused across arbitrary candidates. Fixed by adding
+  an optional `size` parameter (the symbol's own `st_size`) that bounds the disassembly window
+  to the function's real body; the existing single-target call site is untouched (doesn't pass
+  `size`, same behavior as before, confirmed by the full existing `autocsu` suite still passing).
+  Verified live end to end against the real `callme` binary: exactly the 3 real functions found
+  (no CRT false positives), the brute-forced ordering search lands on the correct one (one, two,
+  three) and returns the real flag `ROPE{C4ll1ng_w1th_params_1n_x64}`; a binary with only one
+  gift function (`ret2win.c`) correctly finds nothing and reports NOT_APPLICABLE, not a forced
+  match. Wired into `autopwn()`'s combo orchestrator (`want("callme")`, tried after the
+  single-target strategies, same pattern as `ret2csu`/`pivot`) and into `_why()`'s rationale
+  strings. Two new regression tests
+  (`test_autocallme_verifies_real_ropemporium_callme_with_correct_order`,
+  `..._degrades_cleanly_with_a_single_gift_function`); full `autopoc`/`autopwn`/`autorop`/
+  `chainanalyzer`/`autocsu`/`autopivot`/`autocallme` subset (28 tests) passes clean.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

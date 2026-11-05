@@ -2128,6 +2128,55 @@ def test_autopivot_strategy_b_degrades_cleanly_without_a_cross_lib_target():
     assert _find_anchor_target_offset(binp) == (None, None, None)
 
 
+def test_autocallme_verifies_real_ropemporium_callme_with_correct_order():
+    # Verificacion POSITIVA de autocallme.py (nuevo primitivo: VARIAS funciones 'regalo', cada
+    # una con sus propios argumentos exactos, llamadas EN EL ORDEN CORRECTO) contra el callme
+    # REAL de ROP Emporium: callme_one/two/three ni siquiera matchean ningun nombre 'regalo'
+    # conocido (win/shell/flag/backdoor/give) -- se encuentran por su PROPIA estructura (cada
+    # una valida los mismos 3 argumentos via movabs+cmp, igual que autocsu.py's ret2win real) y
+    # viven en una shared lib separada (libcallme.so), no en el ejecutable. Prueba que: se
+    # encuentran las 3 (y solo esas 3 -- sin falsos positivos de funciones de arranque de la CRT
+    # como frame_dummy/register_tm_clones, que esta justo al lado en memoria -- un bug real
+    # encontrado y cerrado en el mismo pase anadiendo el acotado por st_size a
+    # autocsu._infer_fixed_args), y que probar todos los ORDENES posibles encuentra el correcto
+    # (one, two, three) sin necesitar ninguna convencion de nombres para inferirlo.
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/2-callme/callme"
+    if not os.path.exists(binp) or not os.path.exists(os.path.join(os.path.dirname(binp), "libcallme.so")):
+        pytest.skip("binario externo callme (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autocallme import autocallme, _find_call_targets
+    targets = _find_call_targets(binp)
+    assert sorted(t[0] for t in targets) == ["callme_one", "callme_three", "callme_two"], targets
+    for _, _, vals in targets:
+        assert vals == (0xdeadbeefdeadbeef, 0xcafebabecafebabe, 0xd00df00dd00df00d), vals
+    r = autocallme(binp)
+    assert r.get("ok") and r.get("verified"), f"callme (real) no verificado: {r.get('note')}"
+    assert "order=callme_one,callme_two,callme_three" in (r.get("detail") or "")
+    assert "ROPE{" in (r.get("detail") or ""), "la flag real no se capturo en el detalle"
+
+
+def test_autocallme_degrades_cleanly_with_a_single_gift_function():
+    # Control negativo: ret2win.c tiene UN solo target 'regalo' -- este primitivo es
+    # especificamente para VARIOS targets encadenados, asi que no debe inventarse nada con solo
+    # uno (autopoc.py/autocsu.py ya cubren ese caso mejor).
+    import os
+    from binoracle.workflows.autocallme import _find_call_targets, _callme_applicable
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample ret2win no compilado")
+    assert _find_call_targets(binp) == []
+    assert _callme_applicable(binp) is False
+
+
 def test_autoropmprotect_verifies_nx_bypass():
     # Verificacion POSITIVA del tercer sub-item de "[M] ROP builder v2" (ROADMAP) por EJECUCION:
     # mprotectshell.c hace un primer read() que deja shellcode en un buffer .bss fijo conocido

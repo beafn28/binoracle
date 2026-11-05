@@ -305,7 +305,7 @@ def _symbol_addr(path: str, name: str):
     return None
 
 
-def _infer_fixed_args(path: str, func_addr: int, window: int = 0x300) -> dict:
+def _infer_fixed_args(path: str, func_addr: int, window: int = 0x300, size: int = 0) -> dict:
     """Desensambla el cuerpo de la funcion en `func_addr` (dentro del ELF en `path`, que puede
     ser el binario principal o una shared lib enlazada) y recupera, por patron, los valores
     EXACTOS de argumento contra los que compara cada registro: `mov [rbp-N], <argreg>` mapea un
@@ -314,7 +314,18 @@ def _infer_fixed_args(path: str, func_addr: int, window: int = 0x300) -> dict:
     Emporium's ret2csu (vive en libret2csu.so): recupera los 3 valores exactos
     (0xdeadbeefdeadbeef / 0xcafebabecafebabe / 0xd00df00dd00df00d) byte a byte, sin ningun
     conocimiento previo del reto. Devuelve {} si no hay patron de comparacion (un win() que no
-    valida argumentos) -- el llamador cae entonces a sentinelas pequenas."""
+    valida argumentos) -- el llamador cae entonces a sentinelas pequenas.
+
+    `size` (st_size del simbolo, si se conoce) ACOTA la ventana de desensamblado al cuerpo real
+    de la funcion -- real bug encontrado reusando esto para escanear TODAS las funciones de un
+    binario (autocallme.py): sin acotar, una funcion diminuta de la CRT (p.ej. `frame_dummy`,
+    pocos bytes) seguida de cerca por otra que SI valida argumentos (p.ej. `callme_one`) hacia
+    que el desensamblado, al no parar en el `ret` de la primera, siguiera linealmente dentro de
+    la segunda y le atribuyera FALSAMENTE sus valores -- 4 falsos positivos confirmados en vivo
+    (deregister_tm_clones/register_tm_clones/__do_global_dtors_aux/frame_dummy, los 4 "viendo"
+    los mismos 3 valores de `callme_one`, que esta a solo 10 bytes de `frame_dummy`)."""
+    if size:
+        window = min(window, size)
     try:
         from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_OP_REG, CS_OP_MEM, CS_OP_IMM  # type: ignore
     except Exception:

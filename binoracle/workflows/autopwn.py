@@ -220,6 +220,25 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("pivot", False, str(e)))
 
+    # combo A5: callme -- a distinct shape from ret2csu/ret2win: the binary is GADGET-RICH (has a
+    # plain `pop rdi; pop rsi; pop rdx; ret`), so there's no csu trick needed, but the gift is
+    # split across SEVERAL functions, each validating its OWN fixed arguments, that must be
+    # called in the right order. Tried after the single-target strategies above, which never find
+    # this (there's no single win()-style target to jump to).
+    if want("callme") and not res.win_exploit:
+        try:
+            from .autocallme import autocallme, _callme_applicable
+            if _callme_applicable(binary):
+                log("[combo] callme: varias funciones con argumentos validados (sandbox)...")
+                rcm = autocallme(binary)
+                verdict = True if rcm.get("verified") else (None if rcm.get("ok") else False)
+                res.attempts.append(("callme", verdict, rcm.get("detail") or rcm.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rcm.get("verified"))
+                log(f"[combo] callme -> {'SHELL VERIFICADA' if rcm.get('verified') else 'no verificado'}")
+                learn(f"callme verified={rcm.get('verified')} {rcm.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("callme", False, str(e)))
+
     # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
     # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
     # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
@@ -506,6 +525,8 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
         return "sin pop rsi/pop rdx propios -> los dos gadgets universales de __libc_csu_init fijan rdi/rsi/rdx y hacen una llamada indirecta"
     if "pivot" in t:
         return "overflow demasiado corto para una cadena completa (solo alcanza saved rbp/rip) -> `leave; ret` migra RSP a un buffer .bss ya escalonado con la cadena real"
+    if "callme" in t:
+        return "gadget `pop rdi; pop rsi; pop rdx; ret` disponible pero el regalo esta repartido en varias funciones -> se llaman todas, cada una con sus propios argumentos, probando el orden correcto"
     if "rop" in t:
         return ("sin win()/system directo -> cadena ROP execve por syscall"
                 + (" (PIE: base resuelta en sandbox)" if pie else ""))
