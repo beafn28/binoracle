@@ -2224,6 +2224,52 @@ def test_autowrite4_degrades_cleanly_without_the_write_gadget_pair():
     assert _write4_applicable(binp) is False
 
 
+def test_autobadchars_verifies_real_ropemporium_badchars():
+    # Verificacion POSITIVA de autobadchars.py (nuevo primitivo: write-what-where PASANDO un
+    # filtro de bytes de entrada) contra el badchars REAL de ROP Emporium: el filtro bloquea
+    # 'x','g','a','.' (los bytes de "flag.txt" en si) en TODO el input, direcciones de gadget
+    # incluidas -- no solo en el string objetivo. Prueba que: el conjunto de bytes prohibidos se
+    # lee del simbolo real `badcharacters` (sin ningun conocimiento previo del reto, recupera
+    # exactamente b"xga."), el cuarteto de gadgets (pop4/pop2/mov/xor) se encuentra por patron de
+    # bytes, TODAS las direcciones usadas en la cadena se comprueban libres de bytes prohibidos,
+    # la clave XOR se elige por fuerza bruta (coincide con la clave=2 del solve.py oficial,
+    # redescubierta de forma independiente), y la flag real se captura cuando print_file()
+    # imprime-y-sale sin abrir shell.
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/4-badchars/badchars"
+    if not os.path.exists(binp) or not os.path.exists(os.path.join(os.path.dirname(binp), "libbadchars.so")):
+        pytest.skip("binario externo badchars (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autobadchars import autobadchars, _find_badchars, _find_badchars_gadgets
+    assert _find_badchars(binp) == b"xga."
+    gadgets = _find_badchars_gadgets(binp)
+    assert gadgets == {"pop4": 0x40069c, "pop2": 0x4006a0, "movw": 0x400634, "xorb": 0x400628}, gadgets
+    r = autobadchars(binp)
+    assert r.get("ok") and r.get("verified"), f"badchars (real) no verificado: {r.get('note')}"
+    assert "target=print_file" in (r.get("detail") or "")
+    assert "ROPE{" in (r.get("detail") or ""), "la flag real no se capturo en el detalle"
+
+
+def test_autobadchars_degrades_cleanly_without_a_badchars_symbol():
+    # Control negativo: ret2win.c no tiene ningun simbolo de bytes prohibidos -- no debe
+    # inventarse nada.
+    import os
+    from binoracle.workflows.autobadchars import _find_badchars, _badchars_applicable
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample ret2win no compilado")
+    assert _find_badchars(binp) is None
+    assert _badchars_applicable(binp) is False
+
+
 def test_autoropmprotect_verifies_nx_bypass():
     # Verificacion POSITIVA del tercer sub-item de "[M] ROP builder v2" (ROADMAP) por EJECUCION:
     # mprotectshell.c hace un primer read() que deja shellcode en un buffer .bss fijo conocido

@@ -1902,6 +1902,36 @@ The flagship direction: prove impact end to end.
   `chainanalyzer`/`autocsu`/`autopivot`/`autocallme`/`autowrite4`/`autocanary` subset (31 tests,
   1 skipped for a missing 32-bit multilib sample) passes clean.
 
+- **New primitive: `workflows/autobadchars.py` (write-what-where PAST an input byte filter),
+  found continuing the same real-world ROP Emporium validation pass -- the last and hardest step
+  up from `autowrite4.py` in this series.** The real `badchars` binary filters the ENTIRE input
+  for 4 forbidden bytes (confirmed live: exactly `b"xga."`, read straight from the binary's own
+  `badcharacters` data symbol with zero prior knowledge, matching ROP Emporium's own published
+  solve.py byte for byte) before processing it -- not just the string being written, EVERY byte
+  of the payload, gadget addresses included, with any match silently replaced. `autowrite4.py`
+  would get its raw string write corrupted here (its target string's own bytes -- "flag.txt" --
+  are exactly the forbidden set, by design: the challenge's whole point is that you CAN'T write
+  it raw). Solved by XOR-encoding: pick a key (brute-forced over 1..255, not guessed) that keeps
+  both the key byte and every byte of the encoded string out of the forbidden set, write the
+  ENCODED bytes (which the filter lets through untouched, since none of them match), then
+  XOR-decode each byte back to its real value IN PLACE using a `xor [r15], r14b; ret` gadget --
+  the filter only ever runs on the incoming payload, never on the target's own memory afterward.
+  A real correctness requirement surfaced building this that's easy to miss: since the filter
+  covers the WHOLE payload, every address the chain places on the stack (every gadget, the
+  staging address, the target function) has to be checked byte-by-byte against the forbidden set
+  too, not just the string -- an address that happened to contain a forbidden byte would get
+  silently corrupted mid-chain with no obvious symptom besides "didn't work." Reused
+  `autowrite4.py`'s structural target-finding (`print_file`, same function, same shape) and
+  filename-guessing list unchanged. Verified live end to end: auto-discovers the forbidden-byte
+  set, the gadget quartet (`pop r12/r13/r14/r15`, `pop r14/r15`, `mov [r13],r12`,
+  `xor [r15],r14b`, all by byte pattern), and a key (2, independently rediscovering ROP
+  Emporium's own solve.py's choice) that encodes "flag.txt" past the filter, then decodes and
+  prints it for the real flag `ROPE{XORing_1n_d4ta_s3ct10n_x64}`; a binary with no forbidden-byte
+  symbol (`ret2win.c`) correctly finds nothing. Wired into `autopwn()`'s combo orchestrator
+  (`want("badchars")`, tried after `write4`) and into `_why()`. Two new regression tests
+  (`test_autobadchars_verifies_real_ropemporium_badchars`,
+  `..._degrades_cleanly_without_a_badchars_symbol`).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

