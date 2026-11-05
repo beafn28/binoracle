@@ -1937,3 +1937,13 @@ The flagship direction: prove impact end to end.
 - Weaponization against real third-party systems. Everything stays for authorized software,
   CTF challenges, lab malware, and authorized engagements.
 - Turn-key malware payload kits.
+- A dedicated primitive for ROP Emporium's `fluff` challenge (the last of this series left
+  untouched after `ret2win`/`ret2csu`/`pivot`/`callme`/`ret2libc`/`write4`/`badchars`, all now
+  covered). Looked at it and deliberately passed: it decodes "flag.txt" one byte at a time with
+  `bextr`+`xlat`+`stosb`, where the FIRST byte's decode depends on whatever happened to be left
+  in `AL` by an earlier library call (`puts()`'s return count, in the real binary) -- a genuinely
+  runtime-dependent detail with no clean static recovery, only a 256-way brute force or
+  hardcoding this one binary's own behavior. Unlike every primitive added above, it isn't a
+  pattern that generalizes to real-world exploitation -- it's a deliberately exotic "look what
+  weird gadgets can do" teaching gimmick specific to this one challenge. Lower value for the
+  implementation cost; not pursued.
