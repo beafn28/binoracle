@@ -3481,6 +3481,57 @@ def test_autopoc_find_pc_offset_respects_wall_clock_budget():
     assert elapsed < 30, f"find_pc_offset tardo {elapsed:.1f}s con budget_s=5 -- el limite no corta"
 
 
+def test_autopoc_check_success_recognizes_a_ctf_flag_without_a_known_marker():
+    # Gap real encontrado probando autopwn()/autopoc() contra un CTF real de verdad (el
+    # ret2win de ROP Emporium, github.com/0xSoEasY/ROPemporium, no un fixture propio): su
+    # gift function no abre un shell interactivo ni imprime ninguno de los marcadores que
+    # _check_success conocia ("win reached"/"you win"/"win()") -- hace
+    # puts("Well done! Here's your flag:") y system("/bin/cat flag.txt"), el patron que TODA
+    # la serie de retos de ROP Emporium usa. El exploit SI funcionaba de verdad (offset y
+    # direccion correctos, confirmado con objdump) y la flag real SI aparecia en la salida
+    # capturada -- pero se reportaba verified=False porque el patron de flag solo se miraba
+    # DESPUES de que alguno de los otros marcadores ya hubiera disparado el exito, y nunca se
+    # llegaba a esa linea. La salida de abajo es la REAL, capturada en vivo contra el binario
+    # real (incluida literalmente, no resumida) para que esta prueba no dependa de tener el
+    # binario externo disponible.
+    from binoracle.workflows.autopoc import _check_success, PoCResult
+    real_output = (
+        "ret2win by ROP Emporium\n"
+        "x86_64\n\n"
+        "For my first trick, I will attempt to fit 56 bytes of user input into 32 bytes of "
+        "stack buffer!\nWhat could possibly go wrong?\nYou there, may I have your input "
+        "please? And don't worry about null bytes, we're using read()!\n\n"
+        "> Thank you!\n"
+        "Well done! Here's your flag:\n"
+        "ROPE{ret2win_in_x64_rip_save}\n"
+    )
+    r = PoCResult(ok=True, stage="built", offset=40, win=0x400756)
+    _check_success(real_output, r)
+    assert r.verified is True
+    assert r.flag == "ROPE{ret2win_in_x64_rip_save}"
+
+
+def test_autopoc_check_success_negative_control_wrong_offset_no_flag():
+    # Mismo binario real, pero la salida REAL capturada con un offset INCORRECTO (20, no 40):
+    # el overflow no llega a win(), el programa imprime "Exiting" y termina limpio -- sin
+    # marcador conocido, SIN flag, y sin shell. Control negativo: confirma que el nuevo
+    # chequeo de patron de flag no da un falso positivo con salida real de un intento fallido.
+    from binoracle.workflows.autopoc import _check_success, PoCResult
+    real_output_wrong_offset = (
+        "ret2win by ROP Emporium\n"
+        "x86_64\n\n"
+        "For my first trick, I will attempt to fit 56 bytes of user input into 32 bytes of "
+        "stack buffer!\nWhat could possibly go wrong?\nYou there, may I have your input "
+        "please? And don't worry about null bytes, we're using read()!\n\n"
+        "> Thank you!\n\n"
+        "Exiting\n"
+    )
+    r = PoCResult(ok=True, stage="built", offset=20, win=0x400756)
+    _check_success(real_output_wrong_offset, r)
+    assert r.verified is False
+    assert r.flag == ""
+
+
 def test_symbolic_angr_rebases_pie_addresses_for_auto_verify():
     # Regresion CRITICA (misma familia que reachability.py, aqui en el oraculo angr_reachable que
     # usa auto_verify para promocionar hallazgos de 'grounded' a 'verified' en el informe de

@@ -340,16 +340,32 @@ def _offset_candidates(binary: str, offset: Optional[int]) -> list:
 
 
 def _check_success(output: str, r: PoCResult) -> None:
+    # Gap real encontrado probando esto contra un CTF real de verdad (el ret2win de ROP
+    # Emporium, github.com/0xSoEasY/ROPemporium): su gift function NO imprime ninguno de los
+    # marcadores de abajo ni abre un shell interactivo -- hace puts("Well done! Here's your
+    # flag:") y luego system("/bin/cat flag.txt"), un patron MUY comun en CTFs reales (toda la
+    # serie de retos de ROP Emporium lo usa igual). El payload SI llegaba a win() con el
+    # offset/direccion correctos y la flag real (confirmada contra flag.txt) SI aparecia en la
+    # salida capturada -- pero el patron de flag solo se buscaba DESPUES de que alguno de los
+    # otros marcadores ya hubiera disparado verified=True, asi que nunca se llegaba a mirar: un
+    # ret2win que de verdad funciono se reportaba como "no verificado". Arreglado tratando el
+    # patron de flag como señal de exito INDEPENDIENTE, no solo como extra una vez ya
+    # verificado por otra via.
     low = (output or "").lower()
     shelled = "___poc_shell___" in low or "uid=" in low
-    if any(m in low for m in ("win reached", "you win", "win()")) or shelled:
+    import re as _re
+    fm = _re.search(r"[A-Za-z0-9_]+\{[^}\n]{1,80}\}", output or "")
+    if any(m in low for m in ("win reached", "you win", "win()")) or shelled or fm:
         r.verified = True
         r.stage = "verified"
-        r.notes.append("PoC ejecutado en sandbox: " +
-                       ("shell obtenida (ejecuto comandos tras el ret2win)." if shelled
-                        else "objetivo alcanzado (win)."))
-        import re as _re
-        fm = _re.search(r"[A-Za-z0-9_]+\{[^}\n]{1,80}\}", output or "")
+        if shelled:
+            r.notes.append("PoC ejecutado en sandbox: shell obtenida (ejecuto comandos tras el ret2win).")
+        elif fm:
+            r.notes.append("PoC ejecutado en sandbox: patron de flag CTF detectado en la salida "
+                           "(la gift function no abrio shell ni imprimio un marcador conocido, "
+                           "pero SI imprimio algo con forma de flag).")
+        else:
+            r.notes.append("PoC ejecutado en sandbox: objetivo alcanzado (win).")
         if fm:
             r.flag = fm.group(0)
             r.notes.append("FLAG capturada: " + r.flag)

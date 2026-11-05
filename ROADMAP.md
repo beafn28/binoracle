@@ -1660,6 +1660,34 @@ The flagship direction: prove impact end to end.
   definitively by triggering a real GitHub Actions run (run #191, commit 24be71f, the latest
   commit in this phase) on genuine unrestricted-internet runners: `conclusion: success`, same
   commit, same tests. These 4 are sandbox-local only; nothing to fix in the code.
+- **Real bug found running the FULL `autopwn()` orchestrator (not just `concolic.py`
+  directly) against ROP Emporium's real `ret2win` CTF binary.** `autopwn()`'s own `ret2win`
+  combo (`workflows/autopoc.py`, separate infrastructure from `concolic.py` -- Docker-sandboxed
+  real execution + output-string matching, not angr) found the EXACT correct offset (40) and
+  `win()` address, built and ran the real payload, and still reported `verified: False`.
+  Root-caused with the real captured output, not guessed: ROP Emporium's `ret2win()` gift
+  function does `puts("Well done! Here's your flag:")` then `system("/bin/cat flag.txt")` --
+  no interactive shell, no "win reached"/"you win"/"win()" string -- a pattern the ENTIRE ROP
+  Emporium challenge series uses, and `_check_success()`'s known-marker list didn't cover it.
+  The real flag (`ROPE{ret2win_in_x64_rip_save}`, confirmed byte-for-byte against the
+  challenge's own `flag.txt`) WAS right there in the captured output the whole time -- the
+  function already had a flag-pattern regex, but only ever checked it AFTER one of the other
+  markers had already set `verified=True`, so a working exploit with this exact (common) gift
+  function shape was reported as failed. Fixed by making the flag pattern an INDEPENDENT
+  success signal, not a bonus extracted after the fact. Verified the fix doesn't introduce
+  false positives: fed the SAME binary's REAL captured output from a deliberately WRONG offset
+  (20, not 40) -- the program prints "Exiting" and returns cleanly, no flag, correctly stays
+  `verified: False`. Two new regression tests
+  (`test_autopoc_check_success_recognizes_a_ctf_flag_without_a_known_marker`,
+  `..._negative_control_wrong_offset_no_flag`) use the REAL captured output verbatim (both the
+  working and the failing run), not synthetic strings -- `_check_success`/`autopoc()` had
+  ZERO existing test coverage of this success-detection logic before tonight, confirmed via
+  grep. `autopoc`/`autopwn` test subset (18 tests) passes; one unrelated flaky failure on a
+  Wine test (`test_autopoc_pe_verifies_ret2win_under_wine`) seen once in a larger batch run
+  did not reproduce on retry (18/18 clean) -- almost certainly leftover state from this same
+  session's earlier manual `wine`/`wineboot` invocations while debugging the cold-prefix
+  fix, not a regression from this change (confirmed: this fix touches a completely different
+  file/code path).
 
 ## Explicitly out of scope
 
