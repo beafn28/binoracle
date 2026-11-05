@@ -2356,6 +2356,59 @@ def test_autorop_verifies_32bit_ret2libc():
     assert "ret2libc" in (r.get("strategy") or ""), f"estrategia inesperada: {r.get('strategy')}"
 
 
+def test_autorop_verifies_real_ropemporium_split_with_non_binsh_string():
+    # Verificacion POSITIVA de autorop() contra el ret2libc REAL de ROP Emporium (split), no un
+    # fixture sintetico: su string ya-presente no es "/bin/sh" sino "/bin/cat flag.txt" (el
+    # binario tambien referencia un "/bin/ls" senuelo en otro sitio) -- antes de este fix,
+    # `binsh = elf.search(b"/bin/sh\x00")` nunca encontraba nada ahi y NINGUNA estrategia
+    # construia cadena ("no se pudo construir cadena automatica") pese a tener system() en el
+    # PLT y un string de comando perfectamente valido ya en .data. Prueba que: se elige el string
+    # correcto (no el senuelo), se usa su DIRECCION YA EXISTENTE (no un bytes nuevo escalonado --
+    # mas fragil), y la flag real se captura cuando system() imprime-y-sale sin abrir shell
+    # (misma brecha de deteccion de exito ya cerrada esta noche en autocsu.py/autopivot.py).
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/1-split/split"
+    if not os.path.exists(binp):
+        pytest.skip("binario externo split (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autopoc import autorop, _find_shell_cmd_strings
+    from pwn import ELF, context
+    context.log_level = "error"
+    elf = ELF(binp, checksec=False)
+    cmds = _find_shell_cmd_strings(elf)
+    assert cmds and cmds[0][1] == b"/bin/cat flag.txt\x00", cmds
+    r = autorop(binp, run=True)
+    assert r.get("ok") and r.get("verified"), f"ret2libc (split, real) no verificado: {r.get('note')}"
+    assert r.get("offset") == 40, r.get("offset")
+    assert "cat flag.txt" in (r.get("strategy") or "")
+    assert r.get("flag") == "ROPE{split_ret2libc_in_x64}", r.get("flag")
+
+
+def test_autorop_negative_control_wrong_offset_real_split():
+    # Control negativo con el MISMO binario real: un offset deliberadamente incorrecto no debe
+    # verificar -- sin falso positivo.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/1-split/split"
+    if not os.path.exists(binp):
+        pytest.skip("binario externo split (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autopoc import autorop
+    r = autorop(binp, offset=20, run=True)
+    assert r.get("ok") is True
+    assert r.get("verified") is False
+
+
 def test_autocanary_verifies_format_string_leak():
     # Verificacion POSITIVA de la 2a estrategia (fuga del canary por FORMAT-STRING %p, la mas
     # comun en CTF): en `canfmt` el bypass obtiene shell de verdad. Se auto-salta donde el sandbox

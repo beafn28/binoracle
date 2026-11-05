@@ -1781,6 +1781,40 @@ The flagship direction: prove impact end to end.
   mid-batch -- `test_autopwn_routes_pe_binaries_to_wine_ret2win`, same pre-existing flakiness
   already documented above -- did not reproduce in isolation or on a clean full re-run).
 
+- **`workflows/autopoc.py`'s `autorop()` ret2libc engine generalized the same way, tested
+  against ROP Emporium's real `split` binary.** Continuing the same real-world validation pass:
+  `autorop()` hard-required the literal string `/bin/sh\x00` (`binsh = next(elf.search(b"/bin/sh\x00"), ...)`)
+  before trying ANY ret2libc strategy -- but the real challenge's already-present command string
+  is `/bin/cat flag.txt\x00` (the real pattern this entire CTF series teaches: give the
+  exploit-writer `system()` in the PLT and a ready-made command string, no staging needed), so
+  `binsh` was always `None` and every strategy failed, reporting "no se pudo construir cadena
+  automatica" against a binary that trivially has everything a ret2libc chain needs. Added
+  `_find_shell_cmd_strings()`: scans the binary for ANY NUL-terminated `/bin/...` string
+  (confirmed live: finds both the real `/bin/cat flag.txt` AND a decoy `/bin/ls` the same binary
+  references elsewhere, for an unrelated feature), prioritizing an exact `/bin/sh` match first
+  (existing behavior preserved byte-for-byte), then any string mentioning `cat`/`flag` (the real
+  pattern), then the rest -- and tries ALL of them during verification, not just the first one
+  that happens to build a chain. A second, more subtle bug surfaced building this: the first
+  attempt passed the candidate STRING ITSELF (`bytes`) to `rop.call(sysaddr, [cmd])`, which makes
+  pwntools STAGE a brand-new copy of it onto the end of the payload (an `AppendedArgument`) --
+  fragile for a plain stack-overflow-over-stdin exploit, since pwntools can't know the real
+  runtime stack address the appended bytes land at without more context than this driver gives
+  it (confirmed live: the chain built fine but never verified -- the staged pointer just didn't
+  point where the string actually ended up). Fixed by using the string's OWN EXISTING address
+  (found via the same `elf.search()` used to confirm it's there), exactly like the original code
+  already did correctly for literal `/bin/sh` -- no staging, no fragility. A THIRD, already-
+  familiar bug (same class fixed tonight in `autocsu.py`/`autopivot.py`): the verification loop
+  only checked for a shell marker echoed back over the SAME stdin pipe, but `system()` here runs
+  once and the program exits right after -- nothing ever reads that trailing "echo MARK", so a
+  working exploit was silently invisible to the check. Fixed by also matching a CTF-flag pattern
+  in the captured output. Verified live end to end against the real `split` binary: the correct
+  string is picked over the decoy, offset=40 (found by the engine's own dynamic search, no
+  hint given) -> `verified: True`, real flag `ROPE{split_ret2libc_in_x64}` captured; a
+  deliberately wrong offset (20) -> `verified: False`, no false positive. Two new regression
+  tests (`test_autorop_verifies_real_ropemporium_split_with_non_binsh_string`,
+  `..._negative_control_wrong_offset_real_split`); full `autopoc`/`autopwn`/`autorop`/
+  `chainanalyzer` subset (16 tests) passes.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

