@@ -2084,6 +2084,50 @@ def test_autopivot_verifies_stack_migration():
     assert "leave_ret=" in (r.get("detail") or "")
 
 
+def test_autopivot_strategy_b_verifies_real_ropemporium_pivot():
+    # Verificacion POSITIVA de la "strategy B" generica (ver docstring de autopivot.py) contra el
+    # pivot REAL de ROP Emporium, no el fixture sintetico: su overflow corto usa `xchg rsp, rax`
+    # (no `leave; ret`), su buffer de escalonado se reporta EN TIEMPO DE EJECUCION (no un simbolo
+    # .bss nombrado), y su ret2win() NI SIQUIERA esta importado por el binario principal -- vive
+    # solo en libpivot.so, alcanzado via un anchor (`foothold_function`, encontrado por
+    # INTERSECCION -- "lo que el binario importa" x "lo que la lib exporta" -- sin ningun
+    # conocimiento previo de ese nombre) cuyo GOT se filtra dentro de la propia cadena ROP y se
+    # le suma un offset fijo (0x117, leido estaticamente del .so) para alcanzar el target real.
+    # La flag real se captura en 'detail' (misma brecha de deteccion de exito ya cerrada esta
+    # noche en autopoc.py/autocsu.py: esta gift function tampoco abre shell).
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows._sandbox import native_available
+    binp = "/tmp/claude-0/ropemporium/x64/6-pivot/pivot"
+    if not os.path.exists(binp) or not os.path.exists(os.path.join(os.path.dirname(binp), "libpivot.so")):
+        pytest.skip("binario externo pivot (ROP Emporium) no disponible")
+    ok, why = native_available(binp)
+    if not ok:
+        pytest.skip(f"sandbox no disponible: {why}")
+    from binoracle.workflows.autopivot import autopivot, _find_anchor_target_offset
+    anchor, target, offset = _find_anchor_target_offset(binp)
+    assert (anchor, target, offset) == ("foothold_function", "ret2win", 0x117), (anchor, target, offset)
+    r = autopivot(binp)
+    assert r.get("ok") and r.get("verified"), f"pivot (strategy B, real) no verificado: {r.get('note')}"
+    assert "mode=generic" in (r.get("detail") or "")
+    assert "ROPE{" in (r.get("detail") or ""), "la flag real no se capturo en el detalle"
+
+
+def test_autopivot_strategy_b_degrades_cleanly_without_a_cross_lib_target():
+    # Control negativo: ret2win.c no enlaza ninguna shared lib propia con un target 'regalo' --
+    # no hay anchor que cruce a otra libreria, asi que strategy B no debe inventarse nada.
+    import os
+    from binoracle.workflows.autopivot import _find_anchor_target_offset
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        import pytest
+        pytest.skip("sample ret2win no compilado")
+    assert _find_anchor_target_offset(binp) == (None, None, None)
+
+
 def test_autoropmprotect_verifies_nx_bypass():
     # Verificacion POSITIVA del tercer sub-item de "[M] ROP builder v2" (ROADMAP) por EJECUCION:
     # mprotectshell.c hace un primer read() que deja shellcode en un buffer .bss fijo conocido

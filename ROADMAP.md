@@ -1745,6 +1745,42 @@ The flagship direction: prove impact end to end.
   `..._degrades_cleanly_without_a_gift_symbol`); full `autocsu`/`chainanalyzer`/`autopwn`/
   `autopivot` subset (16 tests) passes.
 
+- **`workflows/autopivot.py`'s stack-pivot verifier generalized the same way, tested against
+  ROP Emporium's real `pivot` binary.** Continuing the same real-world validation pass: the
+  existing strategy (`leave; ret` into a NAMED `.bss` buffer, landing in a locally-named `win()`)
+  matched none of the real challenge's shape. Added a generic strategy B:
+  1. pivot gadget: the real overflow is too short even for `leave;ret` to have anything useful
+     to pivot FROM -- it reaches `rbp` itself, which this exploit instead uses to carry the next
+     stage's address via `pop rax; <addr>; xchg rsp, rax` (two real encodings found by byte
+     pattern, like `autocsu.py`'s csu gadgets: the short accumulator form `REX.W 0x94` and the
+     ModRM form `REX.W 0x87 0xc4`, both ending in `ret`).
+  2. staging address: the real challenge allocates its buffer at RUNTIME and prints it
+     ("The Old Gods kindly bestow upon you a place to pivot: 0x...") instead of exposing a fixed
+     `.bss` symbol. Generalized to scan whatever the program prints before the first send for
+     any `0x`-prefixed hex literal and use the last one found, rather than hardcoding that exact
+     wording.
+  3. target resolution: the real `ret2win()` isn't even IMPORTED by the main binary -- it lives
+     alone in `libpivot.so`. Solved with no leak sent back to the attacker at all: find an
+     "anchor" -- any function the main binary DOES import that is ALSO exported by that SAME
+     library (confirmed live: the intersection of "what this binary imports" and "what
+     libpivot.so exports" is exactly `{foothold_function}`, discovered purely by that
+     intersection, zero hardcoded name) -- call the anchor via its own PLT (forces the dynamic
+     linker to resolve its GOT entry for real), then entirely WITHIN the ROP chain: dereference
+     that GOT slot (`mov rax,[rax]`) for the anchor's real runtime address, add the FIXED,
+     ASLR-independent byte offset between the anchor and the target -- read once, statically,
+     straight from both symbols' addresses in the `.so` file on disk (confirmed live:
+     `ret2win` - `foothold_function` = 0x117 in the real library) -- and call the result. Same
+     technique `autolibc.py`/`autoleakchain.py` already use for libc offsets, applied here to an
+     arbitrary linked library instead of libc.
+  Verified live end to end against the real `pivot` binary: offset=40 (rediscovered
+  independently, matching ROP Emporium's own solve script) -> `verified: True`, real flag
+  `ROPE{st4ck_p1v0t1ng_in_x64!!}` captured in `detail`. Two new regression tests
+  (`test_autopivot_strategy_b_verifies_real_ropemporium_pivot`,
+  `..._degrades_cleanly_without_a_cross_lib_target`); full `autopwn`/`chainanalyzer`/`autocsu`/
+  `autopivot` subset (18 tests) passes twice in a row (one unrelated Wine-test flake seen once
+  mid-batch -- `test_autopwn_routes_pe_binaries_to_wine_ret2win`, same pre-existing flakiness
+  already documented above -- did not reproduce in isolation or on a clean full re-run).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
