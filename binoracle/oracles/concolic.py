@@ -349,6 +349,104 @@ class ConcolicOracle(Oracle):
                 block_trace.append(trace[i])
         return block_trace
 
+    def _find_main_addr(self):
+        """Direccion ESTATICA de 'main' via la tabla de simbolos del ELF, o None (binario
+        stripped, o sin ese nombre)."""
+        try:
+            with open(self.binary, "rb") as f:
+                elf = ELFFile(f)
+                for secname in (".symtab", ".dynsym"):
+                    symtab = elf.get_section_by_name(secname)
+                    if symtab is None:
+                        continue
+                    for sym in symtab.iter_symbols():
+                        if sym.name == "main" and sym["st_value"]:
+                            return sym["st_value"]
+        except Exception:
+            pass
+        return None
+
+    def _replay_with_fallback(self, seed, trace, runtime_base, is_pie, main_opts):
+        """Intenta el replay COMPLETO desde `_start` -- el comportamiento ORIGINAL, sin
+        cambios -- y SOLO si eso falla (excepcion de angr, o 'traced' vacio por desync)
+        reintenta anclando en `main()` (ver `_anchor_at_main`). Nunca al reves: cualquier
+        binario que YA verificaba correctamente antes de que existiera el anclaje en main()
+        sigue tomando EXACTAMENTE el mismo camino que antes, sin ningun riesgo de regresion
+        -- real, no hipotetico: anclar SIEMPRE en main() (la primera version de este fix)
+        rompio `test_concolic_honest_negative_without_rip_control` con un "No satisfiable
+        state is available!" en vez del mensaje honesto esperado, porque `blank_state(addr=
+        main_addr)` no reconstruye el mismo estado de pila/registros que una llamada REAL
+        desde `__libc_start_main` -- suficiente para desviar la solucion en un caso que antes
+        funcionaba bien. Devuelve (estado_final_o_None, sym_stdin, sym_bytes,
+        nota_de_error_o_None)."""
+        sym_bytes = [claripy.BVS("stdin_b%d" % i, 8) for i in range(len(seed))]
+        sym_stdin = claripy.Concat(*sym_bytes) if len(sym_bytes) > 1 else sym_bytes[0]
+
+        def attempt(replay_trace, anchor_addr):
+            block_trace = self._block_trace(replay_trace, runtime_base)
+            proj = angr.Project(self.binary, auto_load_libs=False, main_opts=main_opts)
+            sim_stdin = angr.SimFileStream(name="stdin", content=sym_stdin, has_end=True)
+            if anchor_addr is not None:
+                state = proj.factory.blank_state(addr=anchor_addr, stdin=sim_stdin)
+                simgr = proj.factory.simgr(state)
+                simgr.use_technique(Tracer(trace=block_trace, fast_forward_to_entry=False))
+            else:
+                state = proj.factory.entry_state(stdin=sim_stdin)
+                simgr = proj.factory.simgr(state)
+                simgr.use_technique(Tracer(trace=block_trace))
+            simgr.run()
+            traced = simgr.stashes.get("traced") or []
+            return traced[0] if traced else None
+
+        try:
+            st = attempt(trace, None)
+            if st is not None:
+                return st, sym_stdin, sym_bytes, None
+            first_err = "angr no llego al final del trace real (desync)"
+        except Exception as e:
+            first_err = str(e)
+
+        replay_trace, anchor_addr = self._anchor_at_main(trace, runtime_base, is_pie)
+        if anchor_addr is None:
+            return None, sym_stdin, sym_bytes, first_err
+        try:
+            st = attempt(replay_trace, anchor_addr)
+            if st is not None:
+                return st, sym_stdin, sym_bytes, None
+            return (None, sym_stdin, sym_bytes,
+                   f"{first_err}; tampoco anclando en main() (desync igualmente)")
+        except Exception as e:
+            return None, sym_stdin, sym_bytes, f"{first_err}; tampoco anclando en main(): {e}"
+
+    def _anchor_at_main(self, trace, runtime_base, is_pie):
+        """Gap real encontrado probando esta herramienta contra un binario de verdad (el
+        ret2win de ROP Emporium): el arranque CRT completo (`_start` -> `__libc_start_main` ->
+        `__libc_csu_init` -> `.init_array`) no tiene nada que ver con la vulnerabilidad que se
+        esta resolviendo -- es codigo deterministico, identico en cada ejecucion, que NUNCA
+        depende del stdin -- pero `angr.Tracer` puede desincronizar ahi en binarios reales que
+        este proyecto no construyo a mano: confirmado en vivo que el hook generico de
+        `__libc_start_main` (un SimProcedure, ya que `auto_load_libs=False`) no reproduce
+        fielmente el despacho real de `.init_array` via punteros a funcion poblados por el
+        enlazador en tiempo de carga -- probado primero el modo `Permissive` de Tracer para
+        esto (tolera desincronizaciones por SimProcedures), descartado porque su propia
+        documentacion dice que NO es fiable justo para el caso de uso de esta herramienta
+        ("especially when the cause of deviation is related to input that will later be used
+        in exploit generation"). Si se puede resolver 'main' Y aparece en el trace real, se
+        trunca el trace para que el replay empiece AHI en vez de en `_start` -- evita todo ese
+        tramo por completo, sin heuristicas de tolerancia. Degrada al comportamiento original
+        (replay completo desde `_start`, como siempre) si 'main' no se puede resolver (binario
+        stripped) o no aparece en el trace real (caso raro). Devuelve (trace_recortado,
+        direccion_de_anclaje_o_None)."""
+        main_static = self._find_main_addr()
+        if main_static is None:
+            return trace, None
+        main_real = main_static + runtime_base if (is_pie and runtime_base is not None) else main_static
+        try:
+            idx = trace.index(main_real)
+        except ValueError:
+            return trace, None
+        return trace[idx:], main_real
+
     def _verify_real(self, payload: bytes, target_addr: int, budget_s: float) -> bool:
         with tempfile.NamedTemporaryFile(delete=False) as tf:
             tf.write(payload)
@@ -399,44 +497,29 @@ class ConcolicOracle(Oracle):
                               error=None,
                               meta={"verified": False, "note": f"no aplicable: {err}"})
         try:
-            block_trace = self._block_trace(trace, runtime_base)
-        except Exception as e:
-            return ToolResult(False, "concolic: reduccion de trace a bloques", "",
-                              error=f"fallo reduciendo el trace a bloques: {e}")
-
-        try:
             with open(self.binary, "rb") as f:
                 is_pie = ELFFile(f).header["e_type"] == "ET_DYN"
-            # para PIE, angr debe cargar el binario principal EXACTAMENTE en la misma base que
-            # uso el trace real (runtime_base, con ASLR desactivado) -- si no, el Tracer nunca
-            # ve coincidir ninguna direccion del trace con los bloques que angr va pisando con
-            # su propia base PIE por defecto, y desincroniza de inmediato. Para no-PIE, la
-            # direccion de carga ya viene fija en el propio ELF (sin cambios).
-            main_opts = {"base_addr": runtime_base} if (is_pie and runtime_base is not None) else {}
-            # target_addr se da (y se reporta) como la direccion ESTATICA del ELF -- la misma
-            # convencion que find_win()/nm/readelf usan en el resto del proyecto, para que el
-            # llamador no tenga que calcular a mano el sesgo de carga ASLR-off de este binario.
-            # Para PIE se traslada aqui a la direccion REAL (misma base que el trace/angr).
-            ta = static_ta + runtime_base if (is_pie and runtime_base is not None) else static_ta
-            proj = angr.Project(self.binary, auto_load_libs=False, main_opts=main_opts)
-            sym_bytes = [claripy.BVS("stdin_b%d" % i, 8) for i in range(len(seed))]
-            sym_stdin = claripy.Concat(*sym_bytes) if len(sym_bytes) > 1 else sym_bytes[0]
-            state = proj.factory.entry_state(
-                stdin=angr.SimFileStream(name="stdin", content=sym_stdin, has_end=True))
-            simgr = proj.factory.simgr(state)
-            simgr.use_technique(Tracer(trace=block_trace))
-            simgr.run()
         except Exception as e:
-            return ToolResult(True, "concolic: replay del trace real en angr", "",
-                              meta={"verified": False,
-                                   "note": f"angr no pudo reproducir el camino real: {e}"})
+            return ToolResult(False, "concolic: lectura del ELF", "",
+                              error=f"fallo leyendo el ELF: {e}")
+        # para PIE, angr debe cargar el binario principal EXACTAMENTE en la misma base que uso
+        # el trace real (runtime_base, con ASLR desactivado) -- si no, el Tracer nunca ve
+        # coincidir ninguna direccion del trace con los bloques que angr va pisando con su
+        # propia base PIE por defecto, y desincroniza de inmediato. Para no-PIE, la direccion
+        # de carga ya viene fija en el propio ELF (sin cambios).
+        main_opts = {"base_addr": runtime_base} if (is_pie and runtime_base is not None) else {}
+        # target_addr se da (y se reporta) como la direccion ESTATICA del ELF -- la misma
+        # convencion que find_win()/nm/readelf usan en el resto del proyecto, para que el
+        # llamador no tenga que calcular a mano el sesgo de carga ASLR-off de este binario.
+        # Para PIE se traslada aqui a la direccion REAL (misma base que el trace/angr).
+        ta = static_ta + runtime_base if (is_pie and runtime_base is not None) else static_ta
 
-        traced = simgr.stashes.get("traced") or []
-        if not traced:
+        st, sym_stdin, sym_bytes, replay_err = self._replay_with_fallback(
+            seed, trace, runtime_base, is_pie, main_opts)
+        if st is None:
             return ToolResult(True, "concolic: replay del trace real en angr", "",
                               meta={"verified": False,
-                                   "note": "angr no llego al final del trace real (desync)"})
-        st = traced[0]
+                                   "note": f"angr no pudo reproducir el camino real: {replay_err}"})
         retv = st.memory.load(st.regs.rsp, 8, endness=archinfo.Endness.LE)
         if not retv.symbolic:
             return ToolResult(True, "concolic: dependencia simbolica de RIP", "",
@@ -535,35 +618,20 @@ class ConcolicOracle(Oracle):
                                    "note": "no se encontro ninguna call/jmp POR REGISTRO en el "
                                            "trace real (este tool no cubre call/jmp via memoria)"})
         try:
-            block_trace = self._block_trace(trace[:idx + 1], runtime_base)
-        except Exception as e:
-            return ToolResult(False, "concolic: reduccion de trace a bloques", "",
-                              error=f"fallo reduciendo el trace a bloques: {e}")
-
-        try:
             with open(self.binary, "rb") as f:
                 is_pie = ELFFile(f).header["e_type"] == "ET_DYN"
-            main_opts = {"base_addr": runtime_base} if (is_pie and runtime_base is not None) else {}
-            ta = static_ta + runtime_base if (is_pie and runtime_base is not None) else static_ta
-            proj = angr.Project(self.binary, auto_load_libs=False, main_opts=main_opts)
-            sym_bytes = [claripy.BVS("stdin_b%d" % i, 8) for i in range(len(seed))]
-            sym_stdin = claripy.Concat(*sym_bytes) if len(sym_bytes) > 1 else sym_bytes[0]
-            state = proj.factory.entry_state(
-                stdin=angr.SimFileStream(name="stdin", content=sym_stdin, has_end=True))
-            simgr = proj.factory.simgr(state)
-            simgr.use_technique(Tracer(trace=block_trace))
-            simgr.run()
         except Exception as e:
-            return ToolResult(True, "concolic: replay del trace real en angr", "",
-                              meta={"verified": False,
-                                   "note": f"angr no pudo reproducir el camino real: {e}"})
+            return ToolResult(False, "concolic: lectura del ELF", "",
+                              error=f"fallo leyendo el ELF: {e}")
+        main_opts = {"base_addr": runtime_base} if (is_pie and runtime_base is not None) else {}
+        ta = static_ta + runtime_base if (is_pie and runtime_base is not None) else static_ta
 
-        traced = simgr.stashes.get("traced") or []
-        if not traced:
+        st, sym_stdin, sym_bytes, replay_err = self._replay_with_fallback(
+            seed, trace[:idx + 1], runtime_base, is_pie, main_opts)
+        if st is None:
             return ToolResult(True, "concolic: replay del trace real en angr", "",
                               meta={"verified": False,
-                                   "note": "angr no llego al final del trace real (desync)"})
-        st = traced[0]
+                                   "note": f"angr no pudo reproducir el camino real: {replay_err}"})
         regv = getattr(st.regs, reg_name)
         if not regv.symbolic:
             return ToolResult(True, "concolic: dependencia simbolica del registro", "",

@@ -14162,6 +14162,47 @@ def test_concolic_block_trace_collapses_init_section_not_just_text():
     assert block_trace == [0x401000, 0x401016, 0x401090]
 
 
+def test_concolic_anchors_at_main_as_fallback_against_real_ctf_binary():
+    # Gap real encontrado y cerrado probando concolic.py contra el ret2win REAL de ROP
+    # Emporium (reto de CTF autentico, no un fixture propio de este proyecto) incluso despues
+    # del fix de _exec_sections de arriba: angr.Tracer seguia desincronizando mas adelante, en
+    # el despacho de .init_array de __libc_csu_init (una llamada indirecta a traves de una
+    # tabla de punteros a funcion que el enlazador rellena en tiempo de carga -- el hook
+    # generico de __libc_start_main de angr, necesario porque auto_load_libs=False, no
+    # reproduce fielmente ese despacho). Ese arranque CRT completo (_start ->
+    # __libc_start_main -> __libc_csu_init -> .init_array) no tiene nada que ver con la
+    # vulnerabilidad en si -- es codigo deterministico que nunca depende del stdin -- asi que
+    # _anchor_at_main salta todo ese tramo ancladno el replay en main() cuando el intento
+    # normal (desde _start) falla. Probado primero el modo Permissive de angr.Tracer para
+    # esto (tolera desincronizaciones por SimProcedures) -- descartado porque su propia
+    # documentacion dice que no es fiable justo para resolver input de exploit, que es
+    # exactamente el caso de uso de esta herramienta.
+    #
+    # Este binario NO se commitea a este repo (de terceros, ropemporium.com via el mirror
+    # github.com/0xSoEasY/ROPemporium) -- la prueba se salta limpiamente si no esta presente,
+    # el patron ya establecido para dependencias externas opcionales en esta suite.
+    import os
+    import shutil
+    import pytest
+    from binoracle.oracles.concolic import ConcolicOracle
+    b = "/tmp/claude-0/ropemporium/x64/0-ret2win/ret2win"
+    if not os.path.exists(b) or not shutil.which("gdb"):
+        pytest.skip("binario externo ret2win (ROP Emporium) o gdb no disponibles")
+    try:
+        import angr, capstone  # noqa: F401
+        from elftools.elf.elffile import ELFFile  # noqa: F401
+    except Exception:
+        pytest.skip("angr/capstone/pyelftools no instalados (dependencias opcionales)")
+
+    oc = ConcolicOracle(b)
+    win_addr = 0x400756   # direccion real de ret2win() en este binario (readelf -s)
+    seed = b"A" * 40 + b"B" * 8   # offset real confirmado con objdump: pwnme's buf[0x20]+rbp
+    r = oc._solve_rip(seed, win_addr, budget_s=150)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True, r.data
+    assert r.meta["controlled_offsets"] == [40, 41, 42, 43, 44, 45, 46, 47]
+
+
 def test_regression_dashboard_classifies_new_fixed_reintroduced():
     # ROADMAP v0.5 "[M] Regression dashboard" -- la parte que faltaba (SessionStore ya trackea
     # el estado ACTUAL persistente de un target; esto agrega la HISTORIA de estados pasados y

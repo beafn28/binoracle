@@ -384,12 +384,35 @@ The flagship direction: prove impact end to end.
   built-in model instead) -- `Tracer` already tolerates that hop transparently, so it was never
   the real problem. The actual remaining gap is runtime-populated function-pointer data
   (`.init_array`'s contents), which this project's OWN fixtures never happen to exercise in a
-  way that trips `Tracer`, but a real, differently-built binary does. Out of scope to chase
-  further tonight -- recorded here so it isn't silently rediscovered: if a future increment
-  wants full support for arbitrary real-world binaries (not just this project's own, or
-  carefully shaped ones), `.init_array`/`.fini_array` dispatch is the next concrete limitation
-  to investigate, not angr nondeterminism or anything PIE/ABI-version related (both were
-  checked and ruled out first).
+  way that trips `Tracer`, but a real, differently-built binary does.
+  **This WAS picked back up and fixed, same session.** Tried `angr.Tracer`'s own `Permissive`
+  mode first (it exists precisely to tolerate SimProcedure-caused desyncs) -- rejected after
+  actually reading its docstring, not just trying it: it turned "Oops! angr did not follow the
+  trace" into "No satisfiable state is available!" on this exact binary, and its own
+  documentation admits it "does not always work, especially when the cause of deviation is
+  related to input that will later be used in exploit generation" -- precisely this tool's
+  entire purpose, so an unreliable "fix" here would be worse than the honest failure it
+  replaces. The CRT bootstrap (`_start` -> `__libc_start_main` -> `__libc_csu_init` ->
+  `.init_array`) is deterministic and has nothing to do with the vulnerability being solved,
+  so the real fix skips it entirely: new `_find_main_addr()`/`_anchor_at_main()` resolve
+  `main()`'s symbol and, when it's resolvable and appears in the real trace, start the replay
+  THERE (`blank_state(addr=main_addr, ...)` + `Tracer(..., fast_forward_to_entry=False)`)
+  instead of at `_start`. Confirmed working end-to-end against the real ROP Emporium binary:
+  `verified: True`, offsets 40-47 (matching the real stack layout, confirmed with `objdump`,
+  not guessed). Made this a FALLBACK, not the default, after a real regression: anchoring at
+  main() unconditionally broke `test_concolic_honest_negative_without_rip_control` with the
+  same "No satisfiable state is available!" symptom, because `blank_state()` doesn't
+  reconstruct the exact register/stack state a real call from `__libc_start_main` leaves
+  behind -- close enough to work for the crash-triggering case, not close enough to match the
+  existing non-crashing negative-control test's expectations. New shared
+  `_replay_with_fallback()` tries the ORIGINAL full-trace-from-`_start` replay first (so every
+  binary that already verified correctly takes the exact same path as before, zero regression
+  risk) and only retries anchored-at-main if that first attempt errors or desyncs -- used by
+  both `_solve_rip` and `_solve_indirect` now. New test
+  `test_concolic_anchors_at_main_as_fallback_against_real_ctf_binary` (skips cleanly if the
+  external binary isn't present, same convention as this suite's other optional-dependency
+  tests) plus all 8 pre-existing concolic tests pass (9 passed total, ~6 minutes, real gdb+angr
+  runs). This closes the gap for real, not just documents it.
 - **[M] Windows PE dynamic + symbolic.** Dynamic half shipped: `workflows/autopoc_pe.py` --
   the direct PE analogue of `autopoc.py`'s ELF ret2win, run under Wine and verified by
   execution, not inferred. `pwntools`' `ELF()`/`ROP()` don't load PE, so the win()-like symbol
