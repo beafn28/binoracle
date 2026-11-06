@@ -69,7 +69,7 @@ import time
 from typing import List
 
 from .base import Oracle, Tool, ToolParam, ToolResult
-from .heap_dynamic import _ALLOC_FUNCS, _FREE_FUNC, _parse_uaf_log, _replay_events
+from .heap_dynamic import _ALLOC_FUNCS, _FREE_FUNC, _GLIBC_FATAL_ERROR_RE, _parse_uaf_log, _replay_events
 
 try:
     import frida  # type: ignore
@@ -309,8 +309,27 @@ class FridaDynamicOracle(Oracle):
         addr, timeline = _replay_events(log_text)
         verified = addr is not None
         summary = "\n".join(timeline) if timeline else "(ningun malloc/calloc/realloc/free interceptado)"
-        low = out_text.lower()
-        glibc_abort = "double free" in low or "corrupt" in low
+        # Bug real encontrado probando esto contra un binario real (how2heap's
+        # tcache_house_of_spirit.c, glibc 2.39): su propio texto explicativo imprime
+        # literalmente 'double free or corruption' como parte del printf educativo del programa
+        # (describe el concepto en general, no afirma que ocurrio aqui); buscar ese substring
+        # SUELTO en out_text (la salida CAPTURADA DEL PROPIO PROGRAMA) marcaba
+        # glibc_also_aborted=True aunque el proceso siguiera vivo y terminara limpio -- mismo
+        # bug que el fix de heap_dynamic.py (_confirm), encontrado aqui de forma independiente
+        # porque este backend duplica esa logica con su propia fuente de texto.
+        #
+        # Descartado en vivo como arreglo: el `reason`/`crash` de on_detached -- `reason` resulto
+        # ser "process-terminated" para CUALQUIER final de proceso en este entorno (crash real o
+        # salida limpia, confirmado probando ambos), y `crash` sale None incluso para un SIGABRT
+        # real confirmado por separado (el soporte de deteccion de crash de Frida necesita mas
+        # que spawn+resume aqui) -- ninguno de los dos distingue nada fiable en este entorno.
+        #
+        # Arreglo real: el mismo `_GLIBC_FATAL_ERROR_RE` de heap_dynamic.py -- el prefijo EXACTO
+        # con el que SOLO glibc imprime sus propios fatales ("free(): double free detected in
+        # tcache 2"...) a stderr, que `out_text` SI captura (confirmado: la muestra sintetica de
+        # este proyecto imprime ese mensaje real ahi) y que how2heap NUNCA reproduce -- solo
+        # menciona las palabras sueltas como pista de busqueda, sin el prefijo.
+        glibc_abort = bool(_GLIBC_FATAL_ERROR_RE.search(out_text.lower()))
         if verified:
             data_out = (f"DOUBLE-FREE CONFIRMADO en ejecucion real (via Frida): {addr}\n\n"
                        f"Secuencia observada (malloc/free reales, instrumentados con Frida):\n"

@@ -3785,6 +3785,90 @@ def test_heap_dynamic_confirms_real_double_free_in_heapbug():
     assert "DOUBLE-FREE" not in r2.data
 
 
+# Fuente real de shellphish/how2heap (glibc_2.39/tcache_house_of_spirit.c), embebida aqui en vez
+# de depender de un clon externo: es corta, sin dependencias mas alla de libc, y el punto de la
+# prueba es justamente SU PROPIO texto educativo (ver el test que la usa). Comprobado en vivo
+# que compila y corre igual en este sandbox (glibc 2.39 coincide exactamente).
+_HOW2HEAP_TCACHE_HOUSE_OF_SPIRIT_C = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+
+int main()
+{
+	setbuf(stdout, NULL);
+	printf("This file demonstrates the house of spirit attack on tcache.\n");
+	printf("It works in a similar way to original house of spirit but you don't need to create fake chunk after the fake chunk that will be freed.\n");
+	printf("You can see this in malloc.c in function _int_free that tcache_put is called without checking if next chunk's size and prev_inuse are sane.\n");
+	printf("(Search for strings \"invalid next size\" and \"double free or corruption\")\n\n");
+	printf("Ok. Let's start with the example!.\n\n");
+	printf("Calling malloc() once so that it sets up its memory.\n");
+	malloc(1);
+	printf("Let's imagine we will overwrite 1 pointer to point to a fake chunk region.\n");
+	unsigned long long *a;
+	unsigned long long fake_chunks[10] __attribute__((aligned(0x10)));
+	printf("This region contains one fake chunk. It's size field is placed at %p\n", &fake_chunks[1]);
+	fake_chunks[1] = 0x40;
+	printf("Now we will overwrite our pointer with the address of the fake region inside the fake first chunk, %p.\n", &fake_chunks[1]);
+	a = &fake_chunks[2];
+	printf("Freeing the overwritten pointer.\n");
+	free(a);
+	printf("Now the next malloc will return the region of our fake chunk at %p, which will be %p!\n", &fake_chunks[1], &fake_chunks[2]);
+	void *b = malloc(0x30);
+	printf("malloc(0x30): %p\n", b);
+	assert((long)b == (long)&fake_chunks[2]);
+}
+'''
+
+
+def _compile_c_source(tmp_path, src: str, name: str):
+    import subprocess
+    srcfile = tmp_path / f"{name}.c"
+    srcfile.write_text(src)
+    binp = tmp_path / name
+    r = subprocess.run(["gcc", "-g", "-o", str(binp), str(srcfile)], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return str(binp)
+
+
+def test_heap_dynamic_does_not_false_flag_educational_text_as_a_real_glibc_abort(tmp_path):
+    # Bug real encontrado probando esto contra un binario real (how2heap's
+    # tcache_house_of_spirit.c, glibc 2.39, no un fixture sintetico de este proyecto): su propio
+    # texto explicativo imprime literalmente las palabras "double free or corruption" como parte
+    # del printf educativo (describe el concepto EN GENERAL, como pista de busqueda, no afirma
+    # que ocurrio aqui) -- una busqueda de substring suelto ("double free"/"corrupt") sobre TODA
+    # la salida capturada (la del propio programa incluida) marcaba glibc_also_aborted=True
+    # aunque el proceso terminara limpio de verdad (confirmado: sale con exit=0, el assert()
+    # final pasa). Esta tecnica en concreto NO hace que glibc aborte -- malloc() simplemente
+    # devuelve la region fake, sin violar ninguna comprobacion de integridad del propio tcache.
+    #
+    # Arreglado buscando el prefijo EXACTO con el que SOLO glibc imprime sus propios fatales
+    # ("free(): ...", "malloc(): ...") en vez de las palabras sueltas -- how2heap nunca reproduce
+    # ese formato, solo las menciona como pista entre comillas.
+    import shutil
+    if not shutil.which("gdb") or not shutil.which("gcc"):
+        import pytest
+        pytest.skip("gdb o gcc no disponibles en este entorno")
+    from binoracle.oracles.heap_dynamic import HeapDynamicOracle
+    binp = _compile_c_source(tmp_path, _HOW2HEAP_TCACHE_HOUSE_OF_SPIRIT_C, "tcache_house_of_spirit")
+    if not binp:
+        import pytest
+        pytest.skip("no se pudo compilar el fixture (gcc no disponible o fallo)")
+
+    oc = HeapDynamicOracle(binp)
+    assert oc.available() is True
+    tool = oc.tools()[0]
+    r = tool.run(stdin_text="", budget_s=20)
+    assert r.ok, r.error
+    # la tecnica SI funciona (malloc devuelve la region fake) -- esto cuenta como "liberar una
+    # direccion que nunca fue devuelta por malloc", exactamente lo que este tool busca.
+    assert r.meta["verified"] is True
+    assert r.meta.get("glibc_also_aborted") is False, (
+        "glibc_also_aborted no deberia activarse con el texto educativo del programa -- "
+        f"salida real: {r.meta.get('raw_gdb_output', '')!r}")
+
+
 def test_heap_dynamic_no_false_positive_on_binary_without_heap_bugs():
     # Control negativo mas fuerte: ret2win NO llama a malloc/free el mismo (solo libc interna,
     # p.ej. buffers de stdio) -- nunca debe marcar verified=True por mucho que la libc reutilice
@@ -13842,6 +13926,43 @@ def test_frida_dynamic_confirms_real_double_free_in_heapbug():
     r2 = tool.run(stdin_text="x\n", budget_s=20)
     assert r2.ok, r2.error
     assert r2.meta["verified"] is False
+
+
+def test_frida_dynamic_does_not_false_flag_educational_text_as_a_real_glibc_abort(tmp_path):
+    # Mismo bug real que su equivalente en heap_dynamic.py (gdb), encontrado aqui de forma
+    # INDEPENDIENTE porque este backend duplica la misma logica de deteccion con su propia
+    # fuente de texto (`out_text`, la salida capturada del proceso via Frida en vez del log de
+    # gdb): el texto educativo de how2heap's tcache_house_of_spirit.c menciona "double free or
+    # corruption" como pista de busqueda, sin que glibc haya abortado realmente. Dos arreglos
+    # (`reason`/`crash` de on_detached) se probaron y descartaron en vivo: `reason` resulto ser
+    # "process-terminated" para CUALQUIER final de proceso en este entorno (crash real o salida
+    # limpia), y `crash` sale None incluso para un SIGABRT real confirmado por separado -- ninguno
+    # distingue nada aqui. El arreglo real reutiliza el mismo `_GLIBC_FATAL_ERROR_RE` de
+    # heap_dynamic.py sobre `out_text`.
+    import shutil
+    try:
+        import frida  # noqa: F401
+    except Exception:
+        import pytest
+        pytest.skip("frida no instalado en este entorno")
+    if not shutil.which("gcc"):
+        import pytest
+        pytest.skip("gcc no disponible en este entorno")
+    from binoracle.oracles.frida_dynamic import FridaDynamicOracle
+    binp = _compile_c_source(tmp_path, _HOW2HEAP_TCACHE_HOUSE_OF_SPIRIT_C, "tcache_house_of_spirit")
+    if not binp:
+        import pytest
+        pytest.skip("no se pudo compilar el fixture")
+
+    oc = FridaDynamicOracle(binp)
+    assert oc.available() is True
+    tool = oc.tools()[0]
+    r = tool.run(stdin_text="", budget_s=20)
+    assert r.ok, r.error
+    assert r.meta["verified"] is True
+    assert r.meta.get("glibc_also_aborted") is False, (
+        "glibc_also_aborted no deberia activarse con el texto educativo del programa -- "
+        f"salida real: {r.meta.get('raw_output', '')!r}")
 
 
 def test_frida_dynamic_no_false_positive_on_binary_without_heap_bugs():

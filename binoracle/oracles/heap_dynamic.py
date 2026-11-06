@@ -64,6 +64,14 @@ from typing import List
 
 from .base import Oracle, Tool, ToolParam, ToolResult
 
+# El prefijo EXACTO con el que glibc imprime sus propios errores fatales de malloc/free
+# ("free(): double free detected in tcache 2", "malloc(): invalid pointer", "free(): invalid
+# next size (fast)"...) -- nunca "double free or corruption" o "invalid next size" sueltos,
+# que un programa (p.ej. how2heap's propio texto educativo, que los menciona como ejemplo de
+# que buscar) puede imprimir SIN que haya pasado nada. Es la senal real e inequivoca de que la
+# propia glibc aborto, independiente de nuestro propio rastreo de malloc/free.
+_GLIBC_FATAL_ERROR_RE = re.compile(r"\b(?:malloc|free|realloc|calloc)\(\):\s")
+
 _ALLOC_FUNCS = ("malloc", "calloc", "realloc")
 _FREE_FUNC = "free"
 
@@ -596,7 +604,18 @@ class HeapDynamicOracle(Oracle):
             addr, timeline = _replay_events(log_text)
             verified = addr is not None
             summary = "\n".join(timeline) if timeline else "(ningun malloc/calloc/realloc/free interceptado)"
-            glibc_abort = "double free" in low or "corrupt" in low
+            # Bug real encontrado probando esto contra un binario real (how2heap's
+            # tcache_house_of_spirit.c, glibc 2.39): su propio texto explicativo imprime
+            # literalmente 'double free or corruption' como parte del printf educativo del
+            # programa (describiendo el concepto en general, no afirmando que ocurrio aqui) --
+            # ese texto queda en `out.stdout`, que `low` tambien cubre, asi que una busqueda de
+            # substring SUELTO ("double free" / "corrupt") sobre TODO el texto (salida del
+            # programa incluida) marcaba glibc_also_aborted=True aunque el proceso saliera
+            # limpio (confirmado: el log de gdb termina en "[Inferior 1 (process N) exited
+            # normally]", no en un abort real). Arreglado buscando el prefijo EXACTO con el que
+            # SOLO glibc imprime sus propios fatales (`_GLIBC_FATAL_ERROR_RE`) -- how2heap NUNCA
+            # reproduce ese formato exacto, solo menciona las palabras sueltas como pista.
+            glibc_abort = bool(_GLIBC_FATAL_ERROR_RE.search(low))
             if verified:
                 data_out = (f"DOUBLE-FREE CONFIRMADO en ejecucion real: {addr}\n\n"
                            f"Secuencia observada (malloc/free reales, instrumentados con gdb):\n"

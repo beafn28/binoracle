@@ -1932,6 +1932,40 @@ The flagship direction: prove impact end to end.
   (`test_autobadchars_verifies_real_ropemporium_badchars`,
   `..._degrades_cleanly_without_a_badchars_symbol`).
 
+- **Real false-positive bug found in `heap_dynamic.py`'s and `frida_dynamic.py`'s
+  `glibc_also_aborted` double-free confirmation, testing against a real how2heap binary
+  (shellphish/how2heap's `glibc_2.39/tcache_house_of_spirit.c`, not a synthetic fixture of this
+  project).** Both backends' `heap_confirm_double_free` marks the independent-confirmation field
+  `glibc_also_aborted` by searching the captured output for the loose substrings `"double free"`
+  / `"corrupt"`. The real how2heap binary's own EDUCATIONAL printf text literally contains the
+  phrase "double free or corruption" -- as a search hint describing the general concept, not a
+  claim that it happened -- so both backends reported `glibc_also_aborted: True` even though the
+  technique it demonstrates (freeing a forged stack chunk, confirmed independently as a genuine
+  `verified: True` -- "a direccion se libera sin estar viva, nunca asignada en esta ejecucion")
+  does NOT actually make glibc abort: the process exits normally (confirmed live: exit code 0,
+  its own `assert()` passes) and gdb's log ends in "[Inferior 1 (process N) exited normally]",
+  never a real signal. Fixed with a precise regex (`_GLIBC_FATAL_ERROR_RE`, shared between both
+  oracles) matching the EXACT prefix glibc's own malloc/free fatal-error reporter uses
+  ("free(): ", "malloc(): "...) -- a format no ordinary program replicates, confirmed live
+  against both a real abort (a naive double-free: "free(): double free detected in tcache 2",
+  matched) and the how2heap binary (not matched, since it only quotes the bare words as a search
+  hint, never that exact prefixed format). Tried and discarded two other fixes along the way:
+  gdb's "Program received signal SIGABRT" line (worked for the gdb backend, but `frida_dynamic.py`
+  has no equivalent -- it only captures the inferior's own stdout/stderr, never a debugger's own
+  diagnostic text) and Frida's own `on_detached(reason, crash)` callback (confirmed live that
+  `reason` is "process-terminated" for ANY process ending in this environment, crash or clean
+  exit alike, and `crash` stays `None` even for a confirmed real SIGABRT -- neither distinguishes
+  anything here). Verified live end to end on both backends: the real how2heap binary now
+  correctly reports `glibc_also_aborted: False` (still `verified: True` -- the primary
+  determination, from the actual malloc/free interception replay, was never affected); a genuine
+  double-free still correctly reports `True`. Two new regression tests, one per backend
+  (`test_heap_dynamic_does_not_false_flag_educational_text_as_a_real_glibc_abort`,
+  `test_frida_dynamic_...`), embedding the real how2heap source directly (short, dependency-free,
+  so the test needs no external clone); full `heap_dynamic`/`frida_dynamic` subset (16 tests)
+  passes clean, including the two pre-existing tests that already expected `True` for this
+  project's own `samples/bin/heapbug` fixture (confirmed unaffected: that fixture's real crash
+  message passes the new, more precise check too).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
