@@ -5069,3 +5069,33 @@ def test_r2oracle_cmd_timed_degrades_instead_of_hanging_forever():
     out = o._cmd_timed(_HangingR2(), "cualquier comando")
     assert out is None, "un comando colgado debe degradar (None), nunca bloquear indefinidamente"
     assert o._r2 is None and o._analyzed is False, "el pipe colgado debe descartarse para la siguiente llamada"
+
+
+def test_module_invocation_propagates_main_exit_code():
+    # Bug real encontrado corriendo batches de `binoracle ask`/`hunt` contra CTFs reales desde
+    # un script de shell: `python3 -m binoracle.cli ...` SIEMPRE salia con status 0, aunque
+    # `main()` internamente ya devuelve 130/1/2/3/etc. en cada error -- el `if __name__ ==
+    # "__main__": main()` del final nunca envolvia esa llamada en sys.exit(), asi que el valor
+    # de retorno se descartaba. Un run que fallaba (archivo inexistente, excepcion no esperada)
+    # se veia IDENTICO a uno exitoso para el shell que lo invoco (`$?` == 0), rompiendo
+    # silenciosamente cualquier automatizacion que confie en el exit code. El entry point
+    # instalado (`binoracle`, via project.scripts en pyproject.toml) nunca tuvo este bug: el
+    # wrapper que genera setuptools ya hace sys.exit(main()) el solo; esto solo afecta a
+    # `python3 -m binoracle.cli`.
+    import os
+    import subprocess
+    import sys as _sys
+
+    ok = subprocess.run([_sys.executable, "-m", "binoracle.cli", "doctor"],
+                        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        capture_output=True, text=True, timeout=30)
+    assert ok.returncode == 0, "un comando que corre limpio debe salir con status 0"
+
+    bad = subprocess.run([_sys.executable, "-m", "binoracle.cli", "explain",
+                          "/does/not/exist/binary", "main"],
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         capture_output=True, text=True, timeout=30)
+    assert bad.returncode != 0, (
+        "un binario inexistente debe propagar un exit code distinto de cero al shell "
+        f"(stderr: {bad.stderr!r})"
+    )

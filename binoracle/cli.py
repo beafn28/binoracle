@@ -1890,4 +1890,13 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    # `main()` returns an int exit code throughout (130/0/1 here, plus every subcommand's own
+    # sys.exit(N)) -- but a bare SystemExit from one of those already bypasses this module-level
+    # call either way, so the int path only mattered for the generic `except Exception` below.
+    # Without sys.exit(), `python3 -m binoracle.cli ...` always exited 0 regardless of what
+    # main() returned: an unexpected error printed "error inesperado: ..." to stderr but the
+    # process still reported success, silently breaking any script checking $? (confirmed live
+    # running batches of `ask`/`hunt` over real CTF targets -- a crashed run looked identical to
+    # a clean one to the calling shell). The installed `binoracle` console-script entry point
+    # was never affected: setuptools' generated wrapper already does sys.exit(main()) itself.
+    sys.exit(main())
