@@ -1192,12 +1192,15 @@ def _make_fake_apk(path):
 
 def test_cmd_audit_on_apk_never_requires_a_local_model(tmp_path, monkeypatch, capsys):
     # Gap found testing this live against real-world vulnerable APKs (InsecureBankv2, a Trellix
-    # CTF APK): run_android_audit is 100% grounded/static -- it never calls the LLM -- yet
-    # `binoracle audit some.apk` used to exit(3) with "no local model reachable" before it ever
-    # reached that code, because cmd_audit called make_backend(config).available() unconditionally
-    # for EVERY target, native or Android. Confirmed live: with apktool/jadx absent (PATH wiped,
-    # same honest-degradation path exercised by the tests above) and no LLM backend reachable,
-    # `binoracle audit <apk>` now runs to completion instead of refusing to start.
+    # CTF APK): run_android_audit's grounded core (manifest + Java decompiled patterns) never
+    # NEEDS the LLM -- yet `binoracle audit some.apk` used to exit(3) with "no local model
+    # reachable" before it ever reached that code, because cmd_audit required an available
+    # backend unconditionally for EVERY target, native or Android. Confirmed live: with
+    # apktool/jadx absent (PATH wiped, same honest-degradation path exercised by the tests
+    # above) and no LLM backend reachable (available() -> False, not raising -- a real local
+    # model, when reachable, SHOULD still be used downstream to narrate the grounded findings
+    # via enrich_findings/executive_summary, same as the native audit path; only the hard
+    # REQUIREMENT for an APK target is gone), `binoracle audit <apk>` runs to completion.
     import argparse
     import os
     from binoracle import cli as C
@@ -1209,11 +1212,11 @@ def test_cmd_audit_on_apk_never_requires_a_local_model(tmp_path, monkeypatch, ca
     old_path = os.environ.get("PATH", "")
     os.environ["PATH"] = "/nonexistent-empty-dir"
 
-    class _NeverAvailable:
+    class _Unavailable:
         def available(self):
-            raise AssertionError("cmd_audit must not probe the LLM backend for an APK target")
+            return False
 
-    monkeypatch.setattr(C, "make_backend", lambda config: _NeverAvailable())
+    monkeypatch.setattr(C, "make_backend", lambda config: _Unavailable())
     try:
         args = argparse.Namespace(binary=str(apk), output=None, html=None, json=None, sarif=None)
         C.cmd_audit(args, Config())
@@ -1222,6 +1225,43 @@ def test_cmd_audit_on_apk_never_requires_a_local_model(tmp_path, monkeypatch, ca
     out = capsys.readouterr()
     assert "no local model reachable" not in out.err
     assert "android-audit" in out.out or "Auditoria Android" in out.out
+
+
+def test_android_audit_uses_a_reachable_llm_to_narrate_grounded_findings(monkeypatch):
+    # Follow-up to the fix above: skipping the hard LLM REQUIREMENT for Android audits must not
+    # mean the audit never uses a local model when one IS reachable -- run_android_audit should
+    # still call the same enrich_findings/executive_summary layer the native audit path uses
+    # (cmd_view), narrating the grounded findings without ever changing their code-assigned
+    # verdict/severity. Stubs apktool/jadx out (so only the one manifest-style Finding exists)
+    # and supplies a fake-but-available LLM backend to confirm both the per-finding rationale
+    # and the executive summary are actually produced -- not skipped the way they are when no
+    # model is reachable (covered by the test above).
+    from binoracle.workflows import androidaudit as AA
+    from binoracle.store.session import Finding
+
+    one_finding = [Finding(title="application android:debuggable=true", severity="high",
+                           verdict="grounded", evidence="e", location="AndroidManifest.xml",
+                           rationale="original grounded rationale", recommendation="rec",
+                           owasp="MASWE-0063", cwe="CWE-489")]
+    monkeypatch.setattr(AA, "_manifest_findings", lambda apk, Finding: (one_finding, {}, None))
+
+    class _FakeLLM:
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            sys_msg = messages[0].content.lower() if messages else ""
+            if "resumen ejecutivo" in sys_msg or "executive summary" in sys_msg:
+                return "RESUMEN-IA-FALSO"
+            return "**Descripcion:** analisis-IA-falso"
+
+    class _Cfg:
+        lang = "es"
+
+    r = AA.run_android_audit("demo.apk", llm=_FakeLLM(), config=_Cfg())
+    assert r.findings[0].rationale == "**Descripcion:** analisis-IA-falso"
+    assert r.findings[0].severity == "high" and r.findings[0].verdict == "grounded"  # unchanged
+    assert "RESUMEN-IA-FALSO" in r.answer
+    assert "Resumen ejecutivo (IA" in r.answer
 
 
 def test_render_agent_result_skips_desktop_owasp_for_android_and_shows_taxonomy():

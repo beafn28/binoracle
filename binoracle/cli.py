@@ -797,16 +797,18 @@ def cmd_autopwn(args, config):
 def cmd_audit(args, config):
     binary = _require_binary(args.binary)
     store = SessionStore(config.db_path(), binary)
-    # La auditoria Android (APK) es 100% grounded/estatica (manifest + Java decompilado):
-    # nunca llama al LLM, asi que no debe bloquearse por falta de modelo local (a diferencia
-    # del audit nativo ELF/PE/Mach-O, que si lo necesita para razonar sobre primitivas/ROP).
-    if _is_apk(binary):
-        llm = None
-    else:
-        llm = make_backend(config)
-        if not llm.available():
-            _eprint("error: no local model reachable. Run `binoracle doctor`.")
-            sys.exit(3)
+    # La auditoria Android (APK) es grounded/estatica en su nucleo (manifest + Java
+    # decompilado): nunca REQUIERE el LLM, asi que no debe bloquearse por falta de modelo
+    # local (a diferencia del audit nativo ELF/PE/Mach-O, que si lo necesita para razonar
+    # sobre primitivas/ROP). Pero si HAY un modelo local arriba, run_android_audit lo usa
+    # igual que el audit nativo (enrich_findings/executive_summary) para narrar los
+    # hallazgos grounded -- el LLM nunca sustituye el veredicto fijado por el codigo, solo
+    # lo redacta mejor. make_backend() es barato (no abre conexion); solo el .available()
+    # posterior hace la llamada de red, por eso es seguro construirlo siempre aqui.
+    llm = make_backend(config)
+    if not _is_apk(binary) and not llm.available():
+        _eprint("error: no local model reachable. Run `binoracle doctor`.")
+        sys.exit(3)
     res = run_audit(binary, llm, config, store=store, on_step=_step_printer)
     out = render_agent_result(binary, res)
     print(out)

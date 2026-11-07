@@ -389,6 +389,24 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
     findings.sort(key=lambda f: sev_rank.get(f.severity, 5))
     pkg = (meta or {}).get("package") or (facts.get("package") if isinstance(facts, dict) else "") or "?"
     fw = facts.get("framework") if isinstance(facts, dict) else ""
+    lang = getattr(config, "lang", None) or "es"
+
+    # Si HAY un modelo local arriba, usalo para narrar los hallazgos grounded -- misma capa
+    # que el audit nativo (enrich_findings/executive_summary en cmd_view/run_audit), nunca
+    # para cambiar un veredicto o severidad (eso lo fija el codigo mas arriba). Ambas
+    # funciones ya hacen no-op silencioso si llm es None o no esta disponible, asi que esto
+    # degrada exactamente igual que antes cuando no hay modelo reachable.
+    if findings:
+        emit(step := step + 1, "LLM: narrando los hallazgos grounded (si hay modelo local)")
+        try:
+            from .enrich import enrich_findings, executive_summary
+            findings = enrich_findings(llm, findings, lang=lang, store=store)
+            ai_summary = executive_summary(llm, apk, findings, lang=lang)
+        except Exception:
+            ai_summary = ""
+    else:
+        ai_summary = ""
+
     counts = {}
     for f in findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
@@ -396,6 +414,8 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
             f"- paquete: **{pkg}**" + (f"  ·  framework: **{fw}**" if fw else ""),
             "- hallazgos: " + (", ".join(f"{n} {s}" for s, n in sorted(counts.items(),
                                  key=lambda kv: sev_rank.get(kv[0], 9))) or "ninguno") + "\n"]
+    if ai_summary:
+        head.append("## Resumen ejecutivo (IA, sobre hallazgos grounded)\n" + ai_summary + "\n")
     for f in findings[:40]:
         head.append(f"### [{f.severity.upper()}] {f.title}")
         if f.location:
