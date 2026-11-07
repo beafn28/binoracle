@@ -858,6 +858,100 @@ def test_agent_loop_does_not_cap_exploration_tools():
     assert calls["n"] >= 8   # r2_disasm esta exento del cap: se ejecuta las 8 veces
 
 
+def test_agent_loop_evicts_oldest_context_once_budget_exceeded():
+    # Bug real observado en vivo corriendo binoracle contra CTFs reales con un LLM local
+    # (llama.cpp/CPU): un binario con muchas funciones/strings distintos hace crecer
+    # `messages` sin limite -- cada llamada a una tool exenta del cap (r2_disasm) es
+    # legitima (funcion distinta cada vez), asi que nunca activa el anti-repeticion, pero
+    # el tamano acumulado SI supera el context window del servidor local y la peticion
+    # termina en HTTP 400 o con la conexion cortada a mitad de investigacion (cero
+    # hallazgos). `_enforce_context_budget` debe mantener lo que se ENVIA al modelo
+    # acotado, evictando los intercambios mas viejos, sin perder los hechos ya vistos
+    # (siguen en el GroundingLedger).
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    class _Big(Oracle):
+        name = "big"
+        def available(self):
+            return True
+        def tools(self):
+            def run(which):
+                return ToolResult(True, "radare2: pdf", "X" * 4000 + which)
+            return [Tool("r2_disasm", "big", [ToolParam("which", "w")], run, self.name)]
+
+    class _LLM:
+        def __init__(self):
+            self.i = 0
+            self.seen_sizes = []
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            # tamano de todo lo que no es system/task -- lo que `_enforce_context_budget`
+            # debe mantener acotado antes de que esto se mande al backend real.
+            self.seen_sizes.append(sum(len(m.content) for m in messages[2:]))
+            self.i += 1
+            if self.i > 8:
+                return '{"action":"final","answer":"done","findings":[]}'
+            return '{"action":"tool","tool":"r2_disasm","args":{"which":"fn%d"}}' % self.i
+
+    cfg = load_config(); cfg.max_steps = 12; cfg.max_context_chars = 9000
+    llm = _LLM()
+    res = AgentLoop(llm, ToolRegistry([_Big()]), cfg).run("x", mode="ask")
+
+    # sin eviccion, el ultimo chat() habria visto ~8*4000=32000+ caracteres de historial;
+    # con ella, nunca debe superar el presupuesto por mas de un intercambio de margen.
+    assert max(llm.seen_sizes) <= cfg.max_context_chars + 4100, (
+        "el contexto enviado al modelo crecio sin limite: " + str(llm.seen_sizes)
+    )
+    # pero ningun hecho se perdio: el ledger (fuente de verdad del reporte final) conserva
+    # los 8 pasos aunque el historial visible al modelo se haya recortado.
+    assert len(res.ledger.entries) == 8
+
+
+def test_agent_loop_cuts_losses_when_model_ignores_the_forced_final_nudge():
+    # Diseno mas fuerte: una vez que el loop ya le dijo al modelo "STOP investigating,
+    # emite action=final" (tras 3 repeticiones exactas), si el modelo igual insiste en
+    # llamar otra tool en vez de obedecer, el loop NO debe darle otra vuelta completa de
+    # presupuesto -- debe sintetizar YA desde la evidencia ya reunida. Antes de este fix,
+    # un modelo pequeno que ignora el nudge sigue atascado repitiendo hasta agotar
+    # max_steps (o el contexto del servidor), que es exactamente el cuelgue observado en
+    # vivo con jailbreak/key2success/recur.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    calls = {"n": 0}
+
+    class _Echo(Oracle):
+        name = "echo"
+        def available(self):
+            return True
+        def tools(self):
+            def run(value):
+                calls["n"] += 1
+                return ToolResult(True, "echo", f"got {value}")
+            return [Tool("echo_tool", "echo", [ToolParam("value", "v")], run, self.name)]
+
+    class _StubbornLLM:
+        # SIEMPRE pide la misma llamada exacta -- nunca emite final, ni siquiera despues
+        # del nudge forzado.
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            return '{"action":"tool","tool":"echo_tool","args":{"value":"x"}}'
+
+    cfg = load_config(); cfg.max_steps = 24
+    res = AgentLoop(_StubbornLLM(), ToolRegistry([_Echo()]), cfg).run("x", mode="ask")
+
+    assert calls["n"] == 1, "solo la primera llamada (unica no-duplicada) debia ejecutarse"
+    assert res.stopped_reason == "forced_synthesis"
+    assert res.steps < cfg.max_steps, (
+        "debio cortar en cuanto el modelo ignoro el nudge, no agotar el presupuesto completo"
+    )
+
+
 def test_autopie_rop_degrades_cleanly():
     # ROP-PIE se apoya en el sandbox binoracle-pwn; sin docker/imagen debe devolver un dict
     # con ok=False y una nota, nunca lanzar (degradacion elegante como el resto de oraculos).

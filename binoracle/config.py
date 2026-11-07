@@ -37,6 +37,13 @@ class Config:
     # --- agent budget (keeps the loop from running away) ---
     max_steps: int = field(default_factory=lambda: int(_env("BINORACLE_MAX_STEPS", "24")))
     max_tool_output_chars: int = field(default_factory=lambda: int(_env("BINORACLE_MAX_TOOL_CHARS", "6000")))
+    # Hard cap, in characters, on the live conversation handed to the model on each step
+    # (system+task excluded). Protects small/local context windows: once exceeded, the
+    # agent loop evicts the oldest tool exchanges rather than let the backend itself reject
+    # or drop the request once ITS context window fills (observed live as HTTP 400s and
+    # dropped connections on CPU-only local servers). Every evicted fact is still recorded
+    # in the GroundingLedger, so the final report's grounding is unaffected.
+    max_context_chars: int = field(default_factory=lambda: int(_env("BINORACLE_MAX_CONTEXT_CHARS", "16000")))
 
     # --- storage ---
     state_dir: Path = field(default_factory=lambda: Path(_env("BINORACLE_STATE_DIR", ".binoracle")))
