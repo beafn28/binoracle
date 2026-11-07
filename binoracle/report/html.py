@@ -1027,10 +1027,15 @@ def _auto_summary(binary: str, findings, mit: dict, lang: str) -> str:
     return "\n\n".join(p)
 
 
-def _owasp_html(findings, lang: str) -> str:
+def _owasp_html(findings, lang: str, mobile: bool = False) -> str:
     """OWASP Desktop Top 10 coverage table (methodology phase 9): what was found AND what was
-    reviewed with nothing found. Reuses the same conservative mapping as the markdown report."""
-    if not findings:
+    reviewed with nothing found. Reuses the same conservative mapping as the markdown report.
+
+    `mobile=True` (an Android audit -- see report/render.py's identical guard on
+    stopped_reason == "android-audit") skips this entirely: Desktop Top 10 doesn't apply to a
+    mobile APK, and each finding card already shows its own real MASVS/MASWE taxonomy badge
+    (see the `taxo`/`taxbadge` built a few dozen lines above in render_html)."""
+    if not findings or mobile:
         return ""
     from .render import owasp_desktop_coverage
     es = lang != "en"
@@ -2374,7 +2379,7 @@ def render_dataset_page(markdown: str, jsonl_text: str = "", fname: str = "explo
 
 def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = None,
                 ledger=None, answer: str = "", lang: str = "es", embed: bool = False,
-                decompiled=None, cfg=None, chains=None) -> str:
+                decompiled=None, cfg=None, chains=None, mobile: bool = False) -> str:
     findings = findings or []
     ts = datetime.now().isoformat(timespec="seconds")
     mit = _parse_mitigations(triage)
@@ -2550,7 +2555,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     capability_html = _capability_html(_pe_capability_map(triage, binary), lang) if is_pe else (
         _capability_html(_elf_capability_map(triage), lang, categories=_ELF_CAPABILITIES) if is_elf else "")
     attack_chain_html = _attack_chain(findings, mit, lang)
-    owasp_html = _owasp_html(findings, lang)
+    owasp_html = _owasp_html(findings, lang, mobile=mobile)
     # Resumen ejecutivo COHERENTE (deterministico) en vez de la narracion del modelo, que puede
     # contradecirse ("no encontre vuln" + backstop verificado). Profesional y sin la nota de citas.
     summary_txt = _auto_summary(binary, findings, mit, lang)
@@ -2592,14 +2597,20 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
         pdb_leak_html, rich_header_html, elf_rpath_html, elf_debug_leak_html, elf_capabilities_html,
     ], lang)
     # Indice: solo las secciones realmente presentes.
-    _has = {"methodology": True, "summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
+    _has = {"methodology": not mobile, "summary": True, "proof": bool(proof_html), "exploit": bool(exploit_html),
             "dec": bool(decompiled_html), "cfg": bool(cfg_html), "find": True,
             "owasp": bool(owasp_html), "exploitplan": bool(cveplan_html),
             "mit": bool(mit_detail_html), "chain": bool(attack_chain_html),
             "xchain": bool(exploit_graph_html), "checks": bool(checks_html),
             "surface": bool(triage_sections),
             "refs": bool(references_html), "trail": bool(trail)}
-    methodology_html = _methodology_html(is_pe, _has, lang, is_elf=is_elf)
+    # El bloque de metodologia (Fases 0-9) esta pegado a la auditoria PE/ELF nativa (DLL
+    # hijacking, instalador MSI, fuga de PDB, Authenticode...): no tiene sentido para un APK
+    # Android -- confirmado en vivo probando esto contra Fit32.apk, donde salia integro y
+    # confuso ("Fase 9: contraste contra OWASP Desktop...", checklist de MSI/PDB/DLL) en un
+    # informe que ya no mapea ninguna de esas cosas. Se omite entera para mobile=True en vez de
+    # parchear cada fase con un equivalente Android a medio verificar.
+    methodology_html = "" if mobile else _methodology_html(is_pe, _has, lang, is_elf=is_elf)
     toc_html = _toc(lang, _has)
     sev_buttons = "".join(
         f'<button class="fbtn" data-f="{s}" onclick="flt(this)"><i style="background:{_SEV_COLOR[s]}"></i>'

@@ -1259,6 +1259,39 @@ def test_history_click_loads_stored_report_without_rescanning(monkeypatch, tmp_p
     assert not any("hunt" in s.lower() or "sinks y vulnerabilidades" in s.lower() for s in steps)
 
 
+def test_web_audit_command_on_apk_does_not_require_a_local_model(tmp_path, monkeypatch):
+    # Same real gap as cli.py's cmd_audit (fixed earlier), found independently while checking
+    # whether the web UI's "audit" command had the identical bug: both run_command's "audit"
+    # branch and run_streaming's "audit" branch required llm.available() unconditionally,
+    # before ever checking whether the target is an Android APK (which run_android_audit never
+    # needs an LLM for). Confirmed live they did; fixed both the same way as cli.py (_is_apk
+    # check first). This exercises run_command's branch; apktool/jadx absent (PATH wiped) keeps
+    # the audit itself fast/grounded-only.
+    import os
+    import zipfile
+    import binoracle.web as web
+
+    apk = tmp_path / "demo.apk"
+    with zipfile.ZipFile(str(apk), "w") as z:
+        z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00fakeAXML")
+        z.writestr("classes.dex", b"dex\n035\x00")
+
+    class _Unavailable:
+        def available(self):
+            return False
+
+    monkeypatch.setattr(web, "make_backend", lambda config: _Unavailable())
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+    try:
+        r = web.run_command({"command": "audit", "binary": str(apk), "options": {}})
+    finally:
+        os.environ["PATH"] = old_path
+    assert r["ok"] is True
+    assert "no hay modelo local" not in r.get("text", "")
+    assert "OWASP Desktop Top 10" not in r.get("html", "")
+
+
 def test_web_history_delete_command():
     from binoracle.web import run_command
     r = run_command({"command": "history_delete", "options": {"bin_id": ""}})
@@ -2120,6 +2153,32 @@ def test_methodology_html_documents_every_phase_honestly():
     assert "no se pudo decompilar" in html_empty
     assert "no hay suficientes hallazgos" in html_empty
     assert "sin hallazgos que mapear" in html_empty
+
+
+def test_render_html_mobile_skips_desktop_owasp_and_pe_methodology_keeps_taxonomy_badges():
+    # Third place the same real gap showed up (after report/render.py's markdown path and
+    # cmd_audit's LLM gate, both fixed earlier): report/html.py's render_html unconditionally
+    # included the "OWASP Desktop Top 10" coverage table AND the PE/ELF-specific methodology
+    # block (Fases 0-9: DLL hijacking, MSI installer, PDB leaks, Authenticode...) even for an
+    # Android audit -- confirmed live rendering a real APK audit to HTML (Fit32.apk), where the
+    # methodology section talked about MSI/PDB/DLL concepts that don't exist in an APK at all.
+    # render_html(mobile=True) now skips both; the per-finding MASWE/CWE taxonomy badge (built
+    # from Finding.owasp/.cwe, unrelated to the Desktop Top 10 table) must still show.
+    from binoracle.report.html import render_html
+    from binoracle.store.session import Finding
+
+    f = Finding(title="application android:debuggable=true", severity="high",
+               verdict="grounded", evidence="ev", location="AndroidManifest.xml",
+               owasp="MASWE-0063", cwe="CWE-489")
+    out = render_html("demo.apk", findings=[f], lang="es", mobile=True)
+    assert "OWASP Desktop Top 10" not in out
+    assert 'id="sec-methodology"' not in out
+    assert "MASWE-0063" in out
+
+    # el audit nativo (mobile=False, el default) no cambia: sigue mostrando ambas secciones
+    out_native = render_html("demo.bin", findings=[f], lang="es")
+    assert "OWASP Desktop Top 10" in out_native
+    assert 'id="sec-methodology"' in out_native
 
 
 def _mock_tool(ok=True, data="", meta=None):

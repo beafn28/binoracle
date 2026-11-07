@@ -512,9 +512,12 @@ def run_command(payload: dict) -> dict:
         return {"ok": True, "text": generate_skeleton(reg, binary,
                                                       offset=int(off) if off else None)}
     if cmd == "audit":
-        from .workflows.audit import run_audit
+        from .workflows.audit import run_audit, _is_apk
         llm = make_backend(config)
-        if not llm.available():
+        # Mismo fix que cmd_audit en cli.py: una auditoria Android es grounded/estatica en su
+        # nucleo y no REQUIERE el LLM (si hay uno arriba, run_android_audit lo usa igual para
+        # narrar -- ver androidaudit.py), asi que el gate solo aplica al audit nativo.
+        if not _is_apk(binary) and not llm.available():
             return {"ok": False, "text": "no hay modelo local disponible (arranca ollama)"}
         store = SessionStore(config.db_path(), binary)
         res = run_audit(binary, llm, config, store=store)
@@ -522,7 +525,8 @@ def run_command(payload: dict) -> dict:
                            findings=res.findings, ledger=res.ledger,
                            answer=res.answer, lang=config.lang, embed=True,
                            decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None),
-                           chains=getattr(res, 'chains', None))
+                           chains=getattr(res, 'chains', None),
+                           mobile=(getattr(res, "stopped_reason", "") == "android-audit"))
         store.close()
         return {"ok": True, "html": html, "text": res.answer}
     if cmd == "autopwn":
@@ -788,9 +792,10 @@ def run_streaming(command, binary, ai, emit, text="", opts=None):
         return
     try:
         if command == "audit":
-            from .workflows.audit import run_audit
+            from .workflows.audit import run_audit, _is_apk
             llm = make_backend(config)
-            if not llm.available():
+            # Mismo fix que cmd_audit/el otro handler de audit arriba: APK no requiere LLM.
+            if not _is_apk(binary) and not llm.available():
                 emit("step", "no hay modelo local (arranca ollama)")
                 emit("done", "")
                 return
@@ -802,7 +807,8 @@ def run_streaming(command, binary, ai, emit, text="", opts=None):
                                findings=res.findings, ledger=res.ledger,
                                answer=res.answer, lang=config.lang, embed=True,
                            decompiled=getattr(res, 'decompiled', None), cfg=getattr(res, 'cfg', None),
-                           chains=getattr(res, 'chains', None))
+                           chains=getattr(res, 'chains', None),
+                           mobile=(getattr(res, "stopped_reason", "") == "android-audit"))
             store.close()
             emit("step", "auditoria terminada; generando informe...")
             emit("html", html)

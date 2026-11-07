@@ -413,9 +413,9 @@ def cmd_diff(args, config):
 
 
 def _write_html(path, binary, triage=None, findings=None, ledger=None, answer="", open_it=False,
-                lang="es", decompiled=None, cfg=None, chains=None):
+                lang="es", decompiled=None, cfg=None, chains=None, mobile=False):
     html = render_html(binary, triage=triage, findings=findings, ledger=ledger, answer=answer,
-                       lang=lang, decompiled=decompiled, cfg=cfg, chains=chains)
+                       lang=lang, decompiled=decompiled, cfg=cfg, chains=chains, mobile=mobile)
     Path(path).write_text(html)
     _eprint(f"(HTML written to {path})")
     if open_it:
@@ -817,7 +817,8 @@ def cmd_audit(args, config):
         _write_html(args.html, binary, triage=getattr(res, "triage", None), findings=res.findings,
                     ledger=res.ledger, answer=res.answer, lang=config.lang,
                     decompiled=getattr(res, "decompiled", None), cfg=getattr(res, "cfg", None),
-                    chains=getattr(res, "chains", None))
+                    chains=getattr(res, "chains", None),
+                    mobile=(getattr(res, "stopped_reason", "") == "android-audit"))
     if getattr(args, "json", None):
         Path(args.json).write_text(findings_to_json(binary, res.findings, res.ledger)); _eprint(f"(JSON -> {args.json})")
     if getattr(args, "sarif", None):
