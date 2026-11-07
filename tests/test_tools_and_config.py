@@ -709,6 +709,33 @@ def test_sarif_export():
     assert all(res["ruleId"] in rule_ids for res in run["results"])
 
 
+def test_sarif_export_normalizes_cwe_tag_regardless_of_prefix():
+    # Gap found in the same Android/MobSF testing round as the other binoracle fixes today:
+    # androidaudit.py is the only real producer of Finding.owasp/.cwe in this codebase, and it
+    # always stores the CWE field WITH the "CWE-" prefix (e.g. "CWE-489") -- but findings_to_sarif
+    # blindly interpolated it into "external/cwe/cwe-{f.cwe}", producing the malformed, doubled
+    # tag "external/cwe/cwe-CWE-489" instead of the standard "external/cwe/cwe-489" that GitHub
+    # code scanning and other SARIF consumers expect. Fixed by stripping any existing "CWE-"/
+    # "cwe-" prefix before building the tag; covers both the real-world prefixed form and a bare
+    # numeric form so the fix doesn't just special-case the one shape seen today.
+    import json
+    from binoracle.report.render import findings_to_sarif
+    from binoracle.store.session import Finding
+    fs = [
+        Finding(title="debuggable", severity="high", verdict="grounded", location="l",
+                evidence="e1", owasp="MASWE-0063", cwe="CWE-489"),
+        Finding(title="bare cwe", severity="low", verdict="grounded", location="l2",
+                evidence="e2", owasp="MASWE-0005", cwe="532"),
+    ]
+    doc = json.loads(findings_to_sarif("demo.apk", fs))
+    rules = doc["runs"][0]["tool"]["driver"]["rules"]
+    all_tags = [t for r in rules for t in r["properties"]["tags"]]
+    assert "external/cwe/cwe-489" in all_tags
+    assert "external/cwe/cwe-532" in all_tags
+    assert not any("cwe-CWE" in t for t in all_tags)
+    assert "external/owasp/maswe-0063" in all_tags and "external/owasp/maswe-0005" in all_tags
+
+
 def test_chain_verify_proof_plumbing():
     from binoracle.workflows.chainanalyzer import _proof_from_pie, ExploitChain
     # parseo de la linea de autopie

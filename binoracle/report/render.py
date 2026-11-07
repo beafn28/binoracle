@@ -176,6 +176,7 @@ def findings_to_sarif(binary: str, findings, ledger=None) -> str:
     la severidad). Grounded: el veredicto verified/grounded del hallazgo se conserva tal cual."""
     import json
     import os
+    import re
     from datetime import datetime, timezone
     try:
         from .cvss import cvss_for, classify
@@ -192,7 +193,13 @@ def findings_to_sarif(binary: str, findings, ledger=None) -> str:
         if rule_id not in rules:
             props = {"tags": ["binoracle", "reverse-engineering"]}
             if getattr(f, "cwe", ""):
-                props["tags"].append(f"external/cwe/cwe-{f.cwe}")
+                # f.cwe ya viene como "CWE-489" (el unico productor real hoy, androidaudit.py,
+                # siempre incluye el prefijo) -- esto generaba el tag malformado/duplicado
+                # "external/cwe/cwe-CWE-489" en vez del "external/cwe/cwe-489" que exporters
+                # SARIF estandar (GitHub code scanning incluido) esperan. Normaliza quitando
+                # cualquier prefijo "CWE-"/"cwe-" ya presente, acepte o no el campo el prefijo.
+                cwe_num = re.sub(r"(?i)^cwe-?", "", f.cwe.strip())
+                props["tags"].append(f"external/cwe/cwe-{cwe_num}")
             if getattr(f, "owasp", ""):
                 props["tags"].append(f"external/owasp/{f.owasp.lower()}")
             if cv and cv.base is not None:

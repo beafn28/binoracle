@@ -2085,6 +2085,18 @@ The flagship direction: prove impact end to end.
   the pre-existing synthetic-APK test (fake, non-decodable AXML bytes) is unaffected -- apktool
   fails to decode it, so the enrichment silently stays off, exactly as before.
 
+- **Sixth gap from the same Android/MobSF testing round: SARIF export (`findings_to_sarif`,
+  consumed by GitHub code scanning and other SARIF tooling via `binoracle audit --sarif`)
+  built a malformed CWE tag for the only real-world producer of `Finding.cwe` in this
+  codebase.** `androidaudit.py` always stores that field WITH its `"CWE-"` prefix (e.g.
+  `"CWE-489"`), but `findings_to_sarif` blindly interpolated it into
+  `f"external/cwe/cwe-{f.cwe}"`, producing the doubled, non-standard tag
+  `external/cwe/cwe-CWE-489` instead of the `external/cwe/cwe-489` that GitHub code scanning
+  (and SARIF tooling generally) expects. Confirmed live generating real SARIF from an Android
+  audit's own findings. Fixed by stripping any existing `CWE-`/`cwe-` prefix before building the
+  tag -- handles both the real prefixed form and a bare numeric one, so it isn't just special-
+  cased to today's one shape. New test covers both forms in the same export call.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
