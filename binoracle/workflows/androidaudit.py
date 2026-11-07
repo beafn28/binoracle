@@ -327,6 +327,75 @@ def _auth_findings(root: str, Finding):
         owasp="MASWE-0020", cwe="CWE-304")]
 
 
+def _contentprovider_sqli_findings(root: str, Finding):
+    """ContentProvider SQL injection via the `projection` (column list) parameter -- a distinct,
+    well-known Android vector (OWASP MASTG's classic ContentProvider SQLi test) that the flat
+    `rawQuery(...+ / execSQL(...+` string-concatenation patterns above do NOT catch, because the
+    vulnerable call never concatenates a string at all: query()'s own `projection` method
+    parameter -- always attacker-controlled when the provider is reachable, whether via export
+    or a confused-deputy app -- is forwarded verbatim into a nested .query(...) call. A malicious
+    projection entry (not the normal column-name shape) smuggles arbitrary SQL in column position.
+
+    Gap found testing this live against a REAL deliberately-vulnerable app (OWASP InsecureBankv2):
+    its actual TrackUserContentProvider.query() does exactly this (`qb.query(this.db, projection,
+    selection, selectionArgs, ...)`), a vulnerability this app is specifically built to teach --
+    and neither the existing rawQuery/execSQL pattern NOR this session's working MobSF install
+    flagged it for this APK (MobSF's own code-analysis pass returned zero findings here).
+    Detection stays syntactic/per-file (same spirit as the rest of this module): a ContentProvider
+    subclass whose query() override literally forwards its own `projection` parameter into a
+    nested .query(...) call, with no visible length/content check on it first in that file."""
+    try:
+        from .androidquery import _iter_java, _classname
+    except Exception:
+        return []
+    rx_provider = re.compile(r'extends\s+ContentProvider\b')
+    rx_query_sig = re.compile(r'\bquery\s*\([^)]*String\s*\[\]\s*projection\b')
+    rx_forward = re.compile(r'\.query\s*\([^;]*?,\s*projection\s*,')
+    rx_guard = re.compile(r'projection\s*==\s*null|projection\.length|checkProjection|sanitiz')
+    hits = []
+    nfiles = 0
+    for jpath in _iter_java(root):
+        nfiles += 1
+        if nfiles > _MAX_FILES:
+            break
+        if len(hits) >= _MAX_PER_CAT:
+            break
+        try:
+            with open(jpath, "r", encoding="utf-8", errors="replace") as f:
+                code = f.read(_MAX_BYTES)
+        except Exception:
+            continue
+        if not rx_provider.search(code):
+            continue
+        if not rx_query_sig.search(code):
+            continue
+        m = rx_forward.search(code)
+        if not m:
+            continue
+        if rx_guard.search(code):
+            continue
+        line_no = code.count("\n", 0, m.start()) + 1
+        line = code.splitlines()[line_no - 1].strip()
+        hits.append((_classname(root, jpath), line_no, line[:200]))
+    if not hits:
+        return []
+    ev = "\n".join(f"- {c}:{ln}: {txt}" for c, ln, txt in hits)
+    return [Finding(
+        title="ContentProvider vulnerable a SQL injection via el parametro projection",
+        severity="high", verdict="grounded", evidence=ev, location=hits[0][0],
+        rationale="query() reenvia su propio parametro `projection` (siempre controlado por el "
+                  "invocador, exportado o no) directamente a una llamada .query(...) anidada, sin "
+                  "validar que sus entradas sean nombres de columna legitimos. Un projection "
+                  "malicioso (p.ej. 'name)) UNION SELECT ...--') inyecta SQL arbitrario en la "
+                  "posicion de las columnas seleccionadas -- el vector clasico de MASTG de SQLi "
+                  "en ContentProvider, que la concatenacion de strings (rawQuery/execSQL) no cubre.",
+        recommendation="Valida projection contra una lista blanca de columnas conocidas (o ignora "
+                       "el projection del llamador y usa siempre el tuyo) antes de pasarlo a "
+                       "SQLiteQueryBuilder/SQLiteDatabase.query(); no asumas que SQLiteQueryBuilder "
+                       "lo sanea por ti.",
+        owasp="MASWE-0050", cwe="CWE-89")]
+
+
 def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None):
     """Auditoria Android fundamentada. Devuelve un AgentResult (como el audit nativo) para que la
     web/CLI lo rendericen igual. No ejecuta la app; no popea nada: los veredictos son 'grounded'."""
@@ -381,6 +450,8 @@ def run_android_audit(apk: str, llm=None, config=None, store=None, on_step=None)
                            "renombrada no se detectaria y aparece aqui como falso 'no implementada'.")
         emit(step := step + 1, "MASVS-AUTH: autenticacion biometrica event-based sin CryptoObject")
         findings += _auth_findings(root, Finding)
+        emit(step := step + 1, "ContentProvider: SQL injection via el parametro projection")
+        findings += _contentprovider_sqli_findings(root, Finding)
     else:
         limits.append(f"escaneo de codigo omitido (jadx no disponible: {reason}); instala jadx.")
 

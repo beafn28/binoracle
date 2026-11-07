@@ -2098,6 +2098,28 @@ The flagship direction: prove impact end to end.
   the real prefixed form and a bare numeric one, so it isn't just special-cased to today's one
   shape. New test covers both forms, in both places, in the same export call.
 
+- **New Android detector, found by continuing to dig into the same real InsecureBankv2 target
+  rather than just the manifest/crypto patterns already caught: ContentProvider SQL injection
+  via the `projection` (column list) parameter -- the classic OWASP MASTG ContentProvider SQLi
+  test, a genuinely different vector from the existing `rawQuery(...+ / execSQL(...+` string-
+  concatenation pattern (there is no string concatenation in this vulnerability at all).**
+  InsecureBankv2's real `TrackUserContentProvider.query()` forwards its own `projection` method
+  parameter (always attacker-controlled, export or not) straight into a nested
+  `SQLiteQueryBuilder.query(this.db, projection, ...)` call with no validation -- exactly the
+  training vulnerability this app is built to teach. Neither the pre-existing pattern NOR this
+  session's real, fully-working MobSF install (its code-analysis pass returned zero findings for
+  this APK) flagged it. New `_contentprovider_sqli_findings` (same spirit as `_auth_findings`/
+  `_resilience_findings`: a per-file, multi-condition check rather than the flat single-regex
+  `_PATTERNS` list) requires BOTH `extends ContentProvider` AND a `query(..., String[]
+  projection, ...)` override signature AND that same `projection` identifier forwarded into a
+  nested `.query(` call, with no visible guard (`projection == null`, length check, a
+  "sanitize"-named call) in the file -- confirmed live: finds exactly the one real vulnerable
+  provider and line in InsecureBankv2.apk, clean negative on Fit32.apk (no ContentProvider at
+  all) and on a synthetic provider that validates `projection` first. Tagged MASWE-0050/CWE-89
+  (same real OWASP/CWE IDs as the existing SQLi pattern -- it's the same underlying weakness
+  class, just a different injection vector). Two new tests (detects the real vulnerable shape;
+  does not flag a validated provider or an unrelated non-ContentProvider class).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

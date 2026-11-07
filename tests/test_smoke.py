@@ -1413,6 +1413,58 @@ def test_android_audit_crypto_backed_biometric_not_flagged(tmp_path):
     assert AA._auth_findings(str(root), Finding) == []
 
 
+def test_android_audit_detects_contentprovider_projection_sqli(tmp_path):
+    # Gap found testing this live against a REAL deliberately-vulnerable app (OWASP
+    # InsecureBankv2): its real TrackUserContentProvider.query() forwards its own `projection`
+    # method parameter straight into a nested .query(...) call -- the classic OWASP MASTG
+    # ContentProvider SQL injection test, which the flat rawQuery/execSQL string-concatenation
+    # pattern does NOT catch (there's no string concatenation here at all). Neither that
+    # existing pattern nor this session's real, fully-working MobSF install flagged it for this
+    # exact APK. Embeds the real vulnerable method shape (trimmed) as a synthetic fixture.
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "TrackUserContentProvider.java").write_text(
+        'package com.app;\n'
+        'public class TrackUserContentProvider extends ContentProvider {\n'
+        '  public Cursor query(Uri uri, String[] projection, String selection,\n'
+        '                       String[] selectionArgs, String sortOrder) {\n'
+        '    SQLiteQueryBuilder qb = new SQLiteQueryBuilder();\n'
+        '    Cursor c = qb.query(this.db, projection, selection, selectionArgs, null, null, sortOrder);\n'
+        '    return c;\n'
+        '  }\n}\n')
+    findings = AA._contentprovider_sqli_findings(str(root), Finding)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.owasp == "MASWE-0050" and f.cwe == "CWE-89" and f.severity == "high"
+    assert "TrackUserContentProvider" in f.evidence and "projection" in f.evidence
+
+
+def test_android_audit_contentprovider_sqli_not_flagged_when_projection_is_validated(tmp_path):
+    # Same shape, but with a visible guard on `projection` before it's forwarded: not flagged.
+    # Also confirms a non-ContentProvider class with an unrelated .query(x, projection, call
+    # never matches (the extends ContentProvider + query(..., String[] projection) signature
+    # gate matters, not just the literal "projection" identifier appearing near ".query(").
+    from binoracle.store.session import Finding
+    from binoracle.workflows import androidaudit as AA
+    root = tmp_path / "sources"
+    (root / "com" / "app").mkdir(parents=True)
+    (root / "com" / "app" / "SafeProvider.java").write_text(
+        'package com.app;\n'
+        'public class SafeProvider extends ContentProvider {\n'
+        '  public Cursor query(Uri uri, String[] projection, String selection,\n'
+        '                       String[] selectionArgs, String sortOrder) {\n'
+        '    if (projection == null) { projection = DEFAULT_COLUMNS; }\n'
+        '    SQLiteQueryBuilder qb = new SQLiteQueryBuilder();\n'
+        '    return qb.query(this.db, projection, selection, selectionArgs, null, null, sortOrder);\n'
+        '  }\n}\n')
+    (root / "com" / "app" / "NotAProvider.java").write_text(
+        'package com.app;\nclass NotAProvider {\n'
+        '  Cursor query(String[] projection) { return helper.query(db, projection, null); }\n}\n')
+    assert AA._contentprovider_sqli_findings(str(root), Finding) == []
+
+
 def test_android_audit_resilience_not_flagged_when_defenses_present(tmp_path):
     # Each known defensive signal (one per category) suppresses its corresponding finding.
     from binoracle.store.session import Finding
