@@ -230,7 +230,10 @@ def findings_to_sarif(binary: str, findings, ledger=None) -> str:
         if getattr(f, "owasp", ""):
             result["properties"]["owasp"] = f.owasp
         if getattr(f, "cwe", ""):
-            result["properties"]["cwe"] = f"CWE-{f.cwe}"
+            # Mismo bug que el tag de la rule (ver arriba): f.cwe ya trae el prefijo "CWE-" en
+            # el unico productor real (androidaudit.py) -- sin normalizar, esto escribia
+            # "CWE-CWE-489" en vez de "CWE-489".
+            result["properties"]["cwe"] = f"CWE-{re.sub(r'(?i)^cwe-?', '', f.cwe.strip())}"
         if cv:
             result["properties"]["cvss_v4_vector"] = cv.vector
             if cv.base is not None:

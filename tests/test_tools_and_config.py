@@ -728,12 +728,17 @@ def test_sarif_export_normalizes_cwe_tag_regardless_of_prefix():
                 evidence="e2", owasp="MASWE-0005", cwe="532"),
     ]
     doc = json.loads(findings_to_sarif("demo.apk", fs))
-    rules = doc["runs"][0]["tool"]["driver"]["rules"]
+    run = doc["runs"][0]
+    rules = run["tool"]["driver"]["rules"]
     all_tags = [t for r in rules for t in r["properties"]["tags"]]
     assert "external/cwe/cwe-489" in all_tags
     assert "external/cwe/cwe-532" in all_tags
     assert not any("cwe-CWE" in t for t in all_tags)
     assert "external/owasp/maswe-0063" in all_tags and "external/owasp/maswe-0005" in all_tags
+    # mismo bug, segunda ocurrencia: las properties de cada result (no solo el tag de la rule)
+    cwes = {r["properties"]["cwe"] for r in run["results"]}
+    assert cwes == {"CWE-489", "CWE-532"}
+    assert not any("CWE-CWE" in c for c in cwes)
 
 
 def test_chain_verify_proof_plumbing():

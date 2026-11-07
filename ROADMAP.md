@@ -2086,16 +2086,17 @@ The flagship direction: prove impact end to end.
   fails to decode it, so the enrichment silently stays off, exactly as before.
 
 - **Sixth gap from the same Android/MobSF testing round: SARIF export (`findings_to_sarif`,
-  consumed by GitHub code scanning and other SARIF tooling via `binoracle audit --sarif`)
-  built a malformed CWE tag for the only real-world producer of `Finding.cwe` in this
-  codebase.** `androidaudit.py` always stores that field WITH its `"CWE-"` prefix (e.g.
-  `"CWE-489"`), but `findings_to_sarif` blindly interpolated it into
-  `f"external/cwe/cwe-{f.cwe}"`, producing the doubled, non-standard tag
-  `external/cwe/cwe-CWE-489` instead of the `external/cwe/cwe-489` that GitHub code scanning
-  (and SARIF tooling generally) expects. Confirmed live generating real SARIF from an Android
-  audit's own findings. Fixed by stripping any existing `CWE-`/`cwe-` prefix before building the
-  tag -- handles both the real prefixed form and a bare numeric one, so it isn't just special-
-  cased to today's one shape. New test covers both forms in the same export call.
+  consumed by GitHub code scanning and other SARIF tooling via `binoracle audit --sarif`) built
+  a malformed CWE identifier in TWO places for the only real-world producer of `Finding.cwe` in
+  this codebase.** `androidaudit.py` always stores that field WITH its `"CWE-"` prefix (e.g.
+  `"CWE-489"`), but `findings_to_sarif` blindly interpolated it both into the per-rule tag
+  (`f"external/cwe/cwe-{f.cwe}"`) and into the per-result property (`f"CWE-{f.cwe}"`), producing
+  the doubled, non-standard `external/cwe/cwe-CWE-489` and `CWE-CWE-489` instead of the
+  `external/cwe/cwe-489` / `CWE-489` that GitHub code scanning (and SARIF tooling generally)
+  expect. Confirmed live generating real SARIF from an Android audit's own findings. Fixed both
+  by stripping any existing `CWE-`/`cwe-` prefix before rebuilding the identifier -- handles both
+  the real prefixed form and a bare numeric one, so it isn't just special-cased to today's one
+  shape. New test covers both forms, in both places, in the same export call.
 
 ## Explicitly out of scope
 
