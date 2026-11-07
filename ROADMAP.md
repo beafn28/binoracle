@@ -2003,6 +2003,72 @@ The flagship direction: prove impact end to end.
   `test_ioc_scan_finds_real_ctf_flag_in_real_shadowctf_binary`); full `secrets`/`ioc_scan`
   subset (5 tests) passes clean.
 
+- **Real gaps found running binoracle's Android audit (`androidaudit.py`/`workflows/apkinspect.py`/
+  `secrets`) end to end against a REAL, fully-working install of MobSF (Mobile Security Framework,
+  the established open-source mobile pentest tool: cloned upstream, `poetry install`'d with its
+  full dependency set -- androguard, apktool, JADX, frida, mitmproxy, yara... -- migrated and run
+  as a local server) and two genuinely third-party, deliberately-vulnerable Android apps: OWASP's
+  own `InsecureBankv2` (cloned from `dineshshetty/Android-InsecureBankv2`) and `Fit32.apk` (the
+  Trellix "Killer-App" CTF challenge, already in this environment's CTF-writeup mirror). The goal
+  was the question the user actually asked: is binoracle's own Android support any good, measured
+  against a real, independently-maintained tool on real vulnerable targets -- not against a
+  synthetic fixture. Three concrete gaps turned up, all now fixed:
+  1. **`binoracle audit some.apk` refused to even start.** `cmd_audit` called
+     `make_backend(config).available()` and hard-exited(3) with "no local model reachable" for
+     EVERY target before dispatching -- but `run_android_audit` (what `run_audit` routes an APK
+     to) is 100% grounded/static and never touches the LLM at all; the gate made zero sense for
+     Android and, with no local model reachable in this environment (confirmed earlier via
+     `binoracle doctor`), made the entire Android audit path unusable from the CLI, full stop.
+     Fixed: `cmd_audit` now checks `_is_apk(binary)` first and skips the backend probe entirely
+     for APK targets. Confirmed live: `binoracle audit InsecureBankv2.apk` now runs to completion
+     with no model reachable and reports 14 real findings (4 high/5 medium/2 low/3 info) --
+     `android:debuggable=true`, `android:allowBackup=true`, 7 exported components (activities/
+     receiver/provider with no permission), a hardcoded-looking `System.out.println("newpassword="
+     + ...)`, a `rawQuery(... + str ...)` SQL-injection-shaped call, `addJavascriptInterface`/
+     `setJavaScriptEnabled(true)` on a WebView, `Runtime.exec("which su")`, weak MD5/SHA-1 hashing
+     and logging -- which, cross-checked against the SAME app scanned by the real, fully-working
+     MobSF install in this session, is MORE findings than MobSF's own static scan surfaced for
+     the comparable Fit32.apk CTF target (MobSF: 2 manifest + 2 code findings there; binoracle's
+     own `androidaudit.py` already had MASVS-RESILIENCE/biometric-CryptoObject checks MobSF
+     doesn't even attempt).
+  2. **Real OWASP MASVS/MASWE + CWE taxonomy data was computed, attached to every `Finding`,
+     persisted to the DB (`owasp`/`cwe` columns already existed) -- and then silently dropped by
+     `render_findings()`, which never printed those two fields.** Separately, `render_agent_result`
+     unconditionally appended an "OWASP Desktop Top 10" coverage table to EVERY audit report,
+     Android included -- a desktop-app framework, nonsensical for a mobile APK, confusingly
+     layered on top of findings that already carry their own correct MASWE IDs per-finding.
+     Fixed both: `render_findings` now prints a `taxonomy:` line (`MASWE-xxxx · CWE-yyy`) per
+     finding when either is set; `render_agent_result` skips the Desktop Top 10 table when
+     `stopped_reason == "android-audit"` rather than invent a half-verified Mobile-Top-10 mapping
+     to replace it with (a real per-category MASVS/MASWE coverage table is a natural follow-up,
+     deliberately left as a TODO rather than shipped unverified -- the MASWE catalog itself just
+     went through a v1.0.0 renumbering in August 2026, consolidating 119 IDs down to 78, so a
+     coverage table built from today's IDs needs re-checking against that, not a guess).
+  3. **`binoracle secrets`/`iocscan.py` found nothing useful on a real APK.** An APK is a ZIP;
+     `scan_iocs` reads the file's raw bytes and extracts printable strings from THOSE bytes --
+     but a ZIP's actual file contents are DEFLATE-compressed, so a flat strings scan only ever
+     sees the (mostly useless) central-directory filename table. Confirmed live: the real,
+     fully-working MobSF install's own secrets scanner found ~24 high-entropy base64-looking
+     strings (AES keys/IVs embedded in InsecureBankv2's decompiled resources/Java) in the same
+     APK that `binoracle secrets` reported zero useful hits on. Added `_expand_zip`: when the
+     scanned file is a valid ZIP (APK/JAR/AAR/plain .zip), each inner entry's DECOMPRESSED bytes
+     are appended to the scan buffer (bounded: <=4000 entries, <=8MiB/entry, <=64MiB total, so a
+     zip bomb can't make this unboundedly slow or exhaust memory) -- decompressed content FIRST,
+     the outer ZIP's own bytes last, so the central-directory filename-table noise never crowds
+     out real findings. Caught and fixed one own mistake along the way: the `high_entropy`
+     bucket's first-seen-wins 30-item cap meant even with the right scan ORDER, moderate-entropy
+     structured resource-table strings (`@style/...`, `res/layout/...`) that happen to appear
+     before the real secrets in byte order still filled the cap first; switched it to collect a
+     larger pool and keep the top-30 BY ENTROPY instead of by arrival order. Verified live,
+     end to end: `binoracle secrets InsecureBankv2.apk` now surfaces the exact same base64
+     strings MobSF's independent scan reported for this same real app, ranked at the top of the
+     high-entropy bucket. Three new regression tests
+     (`test_cmd_audit_on_apk_never_requires_a_local_model`,
+     `test_render_agent_result_skips_desktop_owasp_for_android_and_shows_taxonomy`,
+     `test_ioc_scan_expands_zip_to_find_secrets_invisible_in_raw_compressed_bytes`,
+     `test_ioc_scan_finds_real_secrets_in_real_vulnerable_apk` -- the last one skips cleanly if
+     the external APK isn't present, same pattern as the existing ShadowCTF regression test).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

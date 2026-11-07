@@ -104,6 +104,54 @@ def _redact(s: str, keep: int = 10) -> str:
     return s[:keep] + "…(" + str(len(s)) + "B)"
 
 
+_ZIP_MAX_ENTRIES = 4000
+_ZIP_MAX_ENTRY_BYTES = 8 * 1024 * 1024
+_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
+
+def _expand_zip(data: bytes) -> bytes:
+    """If `data` is a ZIP (APK/JAR/AAR/.zip...), append each inner entry's DECOMPRESSED bytes so
+    the string/secret scan below sees real file contents instead of just the outer ZIP's
+    (compressed, hence string-opaque) bytes and its central-directory filename table.
+
+    Gap found testing this live against a REAL deliberately-vulnerable Android app
+    (OWASP InsecureBankv2, InsecureBankv2.apk): MobSF's own secrets scanner found ~24
+    high-entropy base64-looking strings (AES keys/IVs embedded in the decompiled
+    resources/Java) in it, while `binoracle secrets` on the raw .apk found NOTHING but
+    'res/layout/...' filename-table noise -- every byte that mattered was DEFLATE-compressed
+    inside the ZIP and therefore invisible to a flat strings scan. Bounded (entries/per-entry/
+    total) so a hostile/huge archive (zip bomb) can't make this unboundedly slow or exhaust
+    memory; degrades silently to the original bytes when `data` isn't a valid ZIP."""
+    import io
+    import zipfile
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        return data
+    # Decompressed content first, outer (compressed) bytes last: the outer ZIP's own bytes are
+    # mostly the central-directory filename table (e.g. hundreds of "res/layout/..." entries) --
+    # real findings live in the inner files, so they must not be crowded out of a capped bucket
+    # (like high_entropy's max_hits) by that filename-table noise being scanned first.
+    chunks = []
+    total = 0
+    for i, info in enumerate(zf.infolist()):
+        if i >= _ZIP_MAX_ENTRIES or total >= _ZIP_MAX_TOTAL_BYTES:
+            break
+        if info.is_dir() or info.file_size == 0 or info.file_size > _ZIP_MAX_ENTRY_BYTES:
+            continue
+        try:
+            inner = zf.read(info)
+        except Exception:
+            continue
+        chunks.append(inner)
+        chunks.append(b"\x00")
+        total += len(inner)
+    if not total:
+        return data
+    chunks.append(data)
+    return b"".join(chunks)
+
+
 def scan_iocs(path: str, max_hits_per_kind: int = 50) -> dict:
     """Scan any file's strings for IOCs/secrets. Returns {ok, findings:{kind:[...]}, hosts, ...}."""
     from ._artifact import read_bounded, ArtifactTooLarge
@@ -113,6 +161,7 @@ def scan_iocs(path: str, max_hits_per_kind: int = 50) -> dict:
         return {"ok": False, "note": str(e)}
     except Exception as e:
         return {"ok": False, "note": f"no se pudo leer: {e}"}
+    data = _expand_zip(data)
     findings = {}
     seen = {}
     hosts = {}
@@ -141,12 +190,22 @@ def scan_iocs(path: str, max_hits_per_kind: int = 50) -> dict:
                     h = urlsplit(val).netloc
                     if h:
                         hosts[h] = hosts.get(h, 0) + 1
-        # standalone high-entropy token flag (possible key material without a labelled context)
+        # standalone high-entropy token flag (possible key material without a labelled context).
+        # Collected into an uncapped-ish pool and ranked by entropy at the end (not first-seen):
+        # with ZIP expansion (see _expand_zip) a real APK's structured resource-table strings
+        # (@style/..., res/layout/...) have moderate entropy too and appear early in scan order,
+        # so capping by arrival order let them crowd out genuinely higher-entropy material
+        # (base64 keys/IVs) found later in the stream -- confirmed live against a real
+        # deliberately-vulnerable app (OWASP InsecureBankv2: MobSF's own scanner surfaced ~24
+        # base64 AES keys/IVs that this bucket was missing before the fix).
         if 24 <= len(s) <= 100 and " " not in s and "/" not in s[:4]:
             e = _entropy(s)
-            if e >= 4.3 and s not in he_seen and len(high_entropy) < 30:
+            if e >= 4.3 and s not in he_seen and len(high_entropy) < 2000:
                 he_seen.add(s)
-                high_entropy.append({"evidence": _redact(s), "entropy": round(e, 2)})
+                high_entropy.append({"evidence": s, "entropy": round(e, 2)})
+    high_entropy.sort(key=lambda h: -h["entropy"])
+    high_entropy = [{"evidence": _redact(h["evidence"]), "entropy": h["entropy"]}
+                    for h in high_entropy[:30]]
     counts = {k: len(v) for k, v in findings.items()}
     secret_kinds = [k for k in findings if k not in ("url", "email", "ipv4", "ctf-flag")]
     return {"ok": True, "size": len(data), "findings": findings, "counts": counts,

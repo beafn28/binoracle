@@ -40,7 +40,7 @@ from .workflows.autofuzz_afl import autofuzz_afl, render_autofuzz_afl
 from .workflows.fmtstring import fmtstring_help
 from .workflows.autopoc import autopoc, render_poc
 from .workflows.autopwn import autopwn, render_autopwn
-from .workflows.audit import run_audit
+from .workflows.audit import run_audit, _is_apk
 from .workflows.regress import run_regress, render_regress, autoregress_test, render_regression_tests
 from .agent.grounding import GroundingLedger
 
@@ -797,10 +797,16 @@ def cmd_autopwn(args, config):
 def cmd_audit(args, config):
     binary = _require_binary(args.binary)
     store = SessionStore(config.db_path(), binary)
-    llm = make_backend(config)
-    if not llm.available():
-        _eprint("error: no local model reachable. Run `binoracle doctor`.")
-        sys.exit(3)
+    # La auditoria Android (APK) es 100% grounded/estatica (manifest + Java decompilado):
+    # nunca llama al LLM, asi que no debe bloquearse por falta de modelo local (a diferencia
+    # del audit nativo ELF/PE/Mach-O, que si lo necesita para razonar sobre primitivas/ROP).
+    if _is_apk(binary):
+        llm = None
+    else:
+        llm = make_backend(config)
+        if not llm.available():
+            _eprint("error: no local model reachable. Run `binoracle doctor`.")
+            sys.exit(3)
     res = run_audit(binary, llm, config, store=store, on_step=_step_printer)
     out = render_agent_result(binary, res)
     print(out)

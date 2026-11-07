@@ -1183,6 +1183,72 @@ def test_android_query_degrades_without_jadx(monkeypatch):
         os.environ["PATH"] = old
 
 
+def _make_fake_apk(path):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00")  # binary AXML magic-ish, content irrelevant
+        z.writestr("classes.dex", b"dex\n035\x00")
+
+
+def test_cmd_audit_on_apk_never_requires_a_local_model(tmp_path, monkeypatch, capsys):
+    # Gap found testing this live against real-world vulnerable APKs (InsecureBankv2, a Trellix
+    # CTF APK): run_android_audit is 100% grounded/static -- it never calls the LLM -- yet
+    # `binoracle audit some.apk` used to exit(3) with "no local model reachable" before it ever
+    # reached that code, because cmd_audit called make_backend(config).available() unconditionally
+    # for EVERY target, native or Android. Confirmed live: with apktool/jadx absent (PATH wiped,
+    # same honest-degradation path exercised by the tests above) and no LLM backend reachable,
+    # `binoracle audit <apk>` now runs to completion instead of refusing to start.
+    import argparse
+    import os
+    from binoracle import cli as C
+    from binoracle.config import Config
+
+    apk = tmp_path / "demo.apk"
+    _make_fake_apk(str(apk))
+
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = "/nonexistent-empty-dir"
+
+    class _NeverAvailable:
+        def available(self):
+            raise AssertionError("cmd_audit must not probe the LLM backend for an APK target")
+
+    monkeypatch.setattr(C, "make_backend", lambda config: _NeverAvailable())
+    try:
+        args = argparse.Namespace(binary=str(apk), output=None, html=None, json=None, sarif=None)
+        C.cmd_audit(args, Config())
+    finally:
+        os.environ["PATH"] = old_path
+    out = capsys.readouterr()
+    assert "no local model reachable" not in out.err
+    assert "android-audit" in out.out or "Auditoria Android" in out.out
+
+
+def test_render_agent_result_skips_desktop_owasp_for_android_and_shows_taxonomy():
+    # Second half of the same gap: even once cmd_audit could reach run_android_audit, the
+    # Finding.owasp/.cwe fields that androidaudit.py carefully attaches (real MASWE-XXXX / CWE
+    # IDs) were computed and persisted but never shown in the rendered report, and the generic
+    # "OWASP Desktop Top 10" coverage table (meant for native ELF/PE audits) was appended anyway
+    # -- confusing framing for a mobile app. Confirmed live against InsecureBankv2.apk's real
+    # findings (see ROADMAP.md): both are fixed.
+    from binoracle.report.render import render_agent_result
+    from binoracle.store.session import Finding
+    from binoracle.agent.grounding import GroundingLedger
+
+    class _Result:
+        answer = "test"
+        findings = [Finding(title="application android:debuggable=true", severity="high",
+                            verdict="grounded", evidence="e", location="AndroidManifest.xml",
+                            rationale="r", recommendation="rec", owasp="MASWE-0063", cwe="CWE-489")]
+        ledger = GroundingLedger()
+        steps = 1
+        stopped_reason = "android-audit"
+
+    out = render_agent_result("demo.apk", _Result())
+    assert "OWASP Desktop Top 10" not in out
+    assert "MASWE-0063" in out and "CWE-489" in out
+
+
 def test_android_audit_java_patterns_tagged_with_owasp_cwe(tmp_path):
     # _scan_java's findings must carry the real MASVS/MASWE + CWE IDs assigned to each pattern
     # (androidaudit._PATTERNS), not just a title/severity/recommendation.
@@ -3604,6 +3670,59 @@ def test_ioc_scan_finds_real_ctf_flag_in_real_shadowctf_binary():
     r = scan_iocs(binp)
     assert r["ok"], r
     assert "{steppingstone}" in (r["findings"].get("ctf-flag") or [])
+
+
+def test_ioc_scan_expands_zip_to_find_secrets_invisible_in_raw_compressed_bytes():
+    # Gap real encontrado probando esto en vivo contra una app Android deliberadamente vulnerable
+    # de verdad (OWASP InsecureBankv2, no un fixture sintetico): MobSF encontro ~24 strings de
+    # alta entropia (claves/IVs AES en base64) en su APK, pero `binoracle secrets` sobre el .apk
+    # crudo no encontraba NADA util -- solo ruido de la tabla de nombres de fichero del ZIP
+    # (res/layout/...), porque el contenido real esta DEFLATE-comprimido dentro del ZIP y una
+    # extraccion de strings plana nunca lo ve. Ademas, una primera version de este fix anadia el
+    # contenido descomprimido DESPUES de los bytes crudos del ZIP, asi que el ruido estructurado
+    # del propio ZIP (que aparece primero) llenaba el cupo de 30 del bucket de alta entropia antes
+    # de llegar al contenido real -- de ahi el ranking por entropia al final en vez de cortar por
+    # orden de aparicion. Este test usa un ZIP sintetico (un secreto de alta entropia DENTRO de un
+    # fichero comprimido, mas ruido estructurado tipo-ZIP que iria primero en el orden de bytes)
+    # para fijar el comportamiento sin depender del fichero externo.
+    import os
+    import tempfile
+    import zipfile
+    from binoracle.workflows.iocscan import scan_iocs
+
+    secret = "Zm9vYmFyMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6QUJDREVGRw=="
+    p = tempfile.mktemp(suffix=".apk")
+    with zipfile.ZipFile(p, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        # ruido repetitivo tipo tabla-de-recursos (compresible, de entropia moderada, para que
+        # el ZIP comprimido tenga algo de contenido ademas del secreto)
+        z.writestr("res/layout/activity_main.xml", "res/layout/" * 50)
+        z.writestr("assets/secret.b64", secret)
+    try:
+        raw = open(p, "rb").read()
+        assert secret.encode() not in raw, "el secreto debe estar comprimido, no visible crudo"
+        r = scan_iocs(p)
+        assert r["ok"], r
+        he = [h["evidence"] for h in r.get("high_entropy", [])]
+        assert any(secret[:10] in e for e in he), he
+    finally:
+        os.remove(p)
+
+
+def test_ioc_scan_finds_real_secrets_in_real_vulnerable_apk():
+    # Mismo hallazgo que el test anterior, contra el APK real (OWASP InsecureBankv2, via
+    # github.com/dineshshetty/Android-InsecureBankv2 -- no se commitea a este repo, de terceros).
+    # Confirma el camino completo: expansion real de un ZIP/APK real, no solo del sintetico.
+    import os
+    import pytest
+    from binoracle.workflows.iocscan import scan_iocs
+    apk = "/home/user/dineshshetty/android-insecurebankv2/InsecureBankv2.apk"
+    if not os.path.exists(apk):
+        pytest.skip("APK externo 'InsecureBankv2.apk' no disponible")
+    r = scan_iocs(apk)
+    assert r["ok"], r
+    he = [h["evidence"] for h in r.get("high_entropy", [])]
+    # mismas claves base64 que MobSF reporta de forma independiente para este APK real
+    assert any("3oIDJEetf" in e or "Fych2TPIS" in e or "2RUillTqy" in e for e in he), he
 
 
 def test_ioc_scan_utf16_strings():

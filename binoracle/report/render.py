@@ -35,10 +35,13 @@ def render_findings(findings: List[Finding]) -> str:
     out = ["## Findings\n"]
     for f in findings:
         badge = SEV_BADGE.get(f.severity, f.severity.upper())
+        taxonomy = " · ".join(t for t in (f.owasp, f.cwe) if t)
+        tax_line = f"- taxonomy: `{taxonomy}`\n" if taxonomy else ""
         out.append(
             f"### [{badge}] {f.title}\n"
             f"- verdict: **{f.verdict}**\n"
-            f"- location: `{f.location or 'n/a'}`\n\n"
+            f"- location: `{f.location or 'n/a'}`\n"
+            f"{tax_line}\n"
             f"**Rationale**\n\n{f.rationale or '(none)'}\n\n"
             f"**Evidence**\n\n```\n{(f.evidence or '(none)').strip()}\n```\n\n"
             f"**Recommendation**\n\n{f.recommendation or '(none)'}\n"
@@ -142,7 +145,12 @@ def render_agent_result(binary: str, result) -> str:
     out = [_hdr(binary), "\n## Answer\n", result.answer, "\n"]
     if result.findings:
         out.append(render_findings(result.findings))
-        out.append("\n" + render_owasp(result.findings))
+        # OWASP Desktop Top 10 asume un binario nativo (ELF/PE/Mach-O); para una auditoria
+        # Android (stopped_reason == "android-audit") no aplica -- cada Finding ya lleva su
+        # propio control real OWASP MASVS/MASWE en el campo `owasp` (visto arriba, por hallazgo),
+        # asi que mostrar ademas una tabla de cobertura "Desktop" confundiria mas que ayudar.
+        if getattr(result, "stopped_reason", "") != "android-audit":
+            out.append("\n" + render_owasp(result.findings))
     out.append("\n" + render_methodology_note())
     out.append("\n" + result.ledger.evidence_trail())
     out.append(f"\n_stopped: {result.stopped_reason} after {result.steps} step(s)._")
