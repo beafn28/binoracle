@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 install llama-cpp-python*)",
+      "Bash(python3 -m llama_cpp.server*)",
+      "Bash(curl -fsSL https://ollama.com/install.sh*)",
+      "Bash(sh ollama_install.sh*)",
+      "Bash(ollama serve*)",
+      "Bash(ollama pull*)",
+      "Bash(ollama run*)"
+    ]
+  }
+}
