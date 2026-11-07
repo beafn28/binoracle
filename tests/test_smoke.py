@@ -3406,6 +3406,53 @@ def test_dotnet_metadata_parser_on_synthetic_root():
     assert r["string_names"] == ["MyModule", "Main", "Program"]
 
 
+def test_dotnet_metadata_parser_extracts_us_heap_string_literals():
+    # Gap found testing this live against a real CTF .NET assembly (RaRCTF 2021's Dotty.exe):
+    # its entire puzzle is a hardcoded string LITERAL (a Morse+Base32-encoded flag), readable
+    # directly from the #US heap -- but parse_metadata only read #Strings (metadata NAMES:
+    # types/methods/fields), never #US (the actual ldstr literals: connection strings,
+    # passwords, embedded flags...). `binoracle dotnet` reported nothing beyond type/method
+    # names for Dotty.exe, forcing a fallback to a raw-file strings scan to find its own puzzle
+    # string -- defeating the point of a .NET-aware inspector. parse_metadata now also reads
+    # #US (same synthetic-root style as the existing test, extended with a #US stream).
+    import struct
+    from binoracle.workflows.dotnetinspect import parse_metadata
+    ver = b"v4.0.30319\x00"
+    ver = ver + b"\x00" * (((len(ver) + 3) & ~3) - len(ver))
+    valid = (1 << 0) | (1 << 6)
+    tilde = struct.pack("<IBBBBQQ", 0, 2, 0, 0, 1, valid, 0) + struct.pack("<II", 1, 3)
+    strings = b"\x00MyModule\x00Main\x00Program\x00"
+    us_text = "Hello, secret flag!"
+    us = b"\x00" + (len(us_text) * 2 + 1).to_bytes(1, "little") + us_text.encode("utf-16-le") + b"\x00"
+    head = struct.pack("<IHHI", 0x424A5342, 1, 1, 0) + struct.pack("<I", len(ver)) + ver
+    head += struct.pack("<H", 0) + struct.pack("<H", 3)
+    sh1, sh2, sh3 = b"#~\x00\x00", b"#Strings\x00\x00\x00\x00", b"#US\x00"
+    hdr_len = len(head) + 8 + len(sh1) + 8 + len(sh2) + 8 + len(sh3)
+    off_t = hdr_len
+    off_s = off_t + len(tilde)
+    off_u = off_s + len(strings)
+    blob = (head + struct.pack("<II", off_t, len(tilde)) + sh1
+            + struct.pack("<II", off_s, len(strings)) + sh2
+            + struct.pack("<II", off_u, len(us)) + sh3
+            + tilde + strings + us)
+    r = parse_metadata(blob)
+    assert any("Hello, secret flag!" in s for s in r.get("user_strings", [])), r.get("user_strings")
+
+
+def test_dotnet_inspect_finds_real_ctf_user_string_in_real_dotnet_assembly():
+    # Same gap, against the real binary. External (RaRCTF 2021's Dotty.exe, via the
+    # Kasimir123/CTFWriteUps mirror) -- not committed to this repo; skips cleanly if absent.
+    import os
+    import pytest
+    from binoracle.workflows.dotnetinspect import inspect_dotnet
+    binp = ("/home/user/kasimir123/ctfwriteups/2021-08-RaRCTF/Dotty/Original-Files/Dotty.exe")
+    if not os.path.exists(binp):
+        pytest.skip("binario externo 'Dotty.exe' (RaRCTF 2021, via CTFWriteUps) no disponible")
+    r = inspect_dotnet(binp)
+    assert r["ok"] and r.get("is_dotnet")
+    assert any(s.startswith("-|....|.|/") for s in r.get("user_strings", []))
+
+
 def test_dotnet_inspect_non_pe():
     import os
     from binoracle.workflows.dotnetinspect import inspect_dotnet, render_dotnet

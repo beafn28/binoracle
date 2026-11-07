@@ -68,6 +68,43 @@ def parse_metadata(md: bytes) -> dict:
         heap = md[ss["offset"]:ss["offset"] + ss["size"]]
         names = [n.decode("utf-8", "replace") for n in heap.split(b"\x00") if n]
         out["string_names"] = names[:60]
+    # #US heap: the actual string LITERALS the IL's `ldstr` opcodes push (connection strings,
+    # hardcoded secrets, embedded flags/puzzle text...) -- a different heap from #Strings (which
+    # only holds metadata NAMES: types/methods/fields). Each entry is ECMA-335's compressed-uint
+    # length prefix + UTF-16LE text (sec. II.24.2.4); rather than re-implement that exact framing
+    # (risk of an off-by-one on the compressed-length encoding corrupting every later offset),
+    # this extracts printable UTF-16LE runs heuristically straight from the heap bytes -- the
+    # same proven approach iocscan.py already uses for UTF-16LE text in raw binaries. Gap found
+    # testing this live against a real CTF .NET assembly (RaRCTF 2021's Dotty.exe): its whole
+    # puzzle is a literal string constant (Morse+Base32 code), readable directly in #US, but
+    # `binoracle dotnet` reported nothing beyond type/method NAMES -- had to fall back to
+    # iocscan's raw-file scan to find it, defeating the point of a .NET-aware inspector.
+    us = by_name.get("#US")
+    if us:
+        heap = md[us["offset"]:us["offset"] + us["size"]]
+        out["user_strings"] = _utf16le_strings(heap)
+    return out
+
+
+def _utf16le_strings(data: bytes, min_len: int = 4, max_hits: int = 200) -> list:
+    """Printable UTF-16LE runs (ASCII range, like iocscan's UTF-16LE extraction): a byte in
+    [0x20,0x7f) followed by a 0x00 byte, repeated. Heuristic, not a length-prefixed walk."""
+    out = []
+    run = bytearray()
+    i, n = 0, len(data) - 1
+    while i < n:
+        if 0x20 <= data[i] < 0x7f and data[i + 1] == 0x00:
+            run.append(data[i])
+            i += 2
+            continue
+        if len(run) >= min_len:
+            out.append(run.decode("ascii"))
+            if len(out) >= max_hits:
+                return out
+        run = bytearray()
+        i += 1
+    if len(run) >= min_len:
+        out.append(run.decode("ascii"))
     return out
 
 
@@ -99,8 +136,11 @@ def inspect_dotnet(path: str) -> dict:
                 "entrypoint_token": entry_tok, "metadata_version": meta.get("version"),
                 "streams": meta.get("streams", []), "tables": meta.get("tables", {}),
                 "string_names": meta.get("string_names", []),
+                "user_strings": meta.get("user_strings", []),
                 "limitations": ["no se desensamblan los cuerpos CIL de los metodos; nombres tomados "
-                                "del heap #Strings (muestra)"]}
+                                "del heap #Strings (muestra); literales de #US extraidos de forma "
+                                "heuristica (runs UTF-16LE), no por el framing exacto de longitudes "
+                                "comprimidas de ECMA-335"]}
     except Exception as e:
         return {"ok": True, "is_pe": True, "is_dotnet": True, "note": f"metadata CLI malformada: {e}"}
     finally:
@@ -131,6 +171,11 @@ def render_dotnet(r: dict) -> str:
     if names:
         out.append(f"\n### Nombres (#Strings, muestra de {len(names)})")
         out.append(", ".join(f"`{n}`" for n in names[:40]))
+    ustrs = r.get("user_strings") or []
+    if ustrs:
+        out.append(f"\n### Literales de string (#US, {len(ustrs)})")
+        for s in ustrs[:40]:
+            out.append(f"- `{s}`")
     for lim in r.get("limitations", []):
         out.append(f"\n_limite: {lim}_")
     return "\n".join(out)

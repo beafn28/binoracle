@@ -2120,6 +2120,23 @@ The flagship direction: prove impact end to end.
   class, just a different injection vector). Two new tests (detects the real vulnerable shape;
   does not flag a validated provider or an unrelated non-ContentProvider class).
 
+- **Gap found solving a real .NET CTF challenge (RaRCTF 2021's Dotty, a Morse+Base32-encoded
+  flag hardcoded as a string literal): `binoracle dotnet`'s metadata parser (`dotnetinspect.py`,
+  a self-contained ECMA-335 reader -- no ilspycmd/monodis needed) read the `#Strings` heap
+  (metadata NAMES: types/methods/fields) but never the `#US` heap -- the one that holds the
+  actual string LITERALS the IL's `ldstr` opcode pushes (hardcoded passwords, connection
+  strings, embedded flags/puzzle text).** For Dotty.exe, the entire challenge is one such
+  literal, readable directly in `#US` -- but `binoracle dotnet` surfaced nothing beyond type/
+  method names, forcing a fallback to a raw-file strings scan (defeating the point of a
+  .NET-aware inspector). Added `#US` heap reading to `parse_metadata`: rather than re-implement
+  ECMA-335's exact compressed-length-prefixed framing for each entry (real risk of an off-by-one
+  corrupting every later offset in the walk), it extracts printable UTF-16LE runs heuristically
+  straight from the heap bytes -- the same proven technique `iocscan.py` already uses for
+  UTF-16LE text in raw binaries, documented as heuristic (not exact ECMA-335 framing) in the
+  result's own limitations. Confirmed live: `binoracle dotnet Dotty.exe` now surfaces the exact
+  Morse-coded puzzle string directly. Two new tests (a synthetic metadata root with a `#US`
+  stream; the real external CTF assembly, skips cleanly if absent).
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
