@@ -1966,6 +1966,43 @@ The flagship direction: prove impact end to end.
   project's own `samples/bin/heapbug` fixture (confirmed unaffected: that fixture's real crash
   message passes the new, more precise check too).
 
+- **Real gap found running binoracle end to end against a genuine, unread public reversing CTF
+  binary -- a different kind of validation than the exploitation-focused ROP Emporium series:
+  this one tests whether binoracle's STATIC/grounded tooling (no exploit, no shell -- just
+  read the binary) actually helps solve a "find the flag" challenge, and it does, but a real
+  gap turned up in one specific tool along the way.** Picked a real competition binary blind
+  (ShadowCTF 2021's "Intro" crackme, via the `Kasimir123/CTFWriteUps` mirror, the solution
+  unread until after solving it independently) and ran `binoracle secrets` (the credential/IOC
+  scanner, `workflows/iocscan.py`, built as REA parity) against it first. It reported "sin
+  credenciales detectadas" -- but the binary's ENTIRE challenge is a flag sitting in plain text
+  among its strings (`{steppingstone}`; the published writeup solves it with nothing more than
+  `strings`). The scanner's patterns are all for REAL credentials (AWS/Stripe/GitHub/Slack
+  keys...) -- there was no pattern at all for the single most common shape a CTF/malware
+  analyst specifically also wants surfaced: a `name{...}` or bare `{...}` flag/marker string.
+  Added `ctf-flag` (two forms, content restricted to alnum/underscore/hyphen so it can't swallow
+  a code or JSON snippet that happens to contain braces) and excluded it from the "secret_kinds"
+  / redaction treatment the real credential kinds get -- a flag is something you want to see in
+  full, not a leak to mask and rotate. Verified live: finds exactly the one real flag in the real
+  binary; finds NOTHING in a second real CTF binary (ROP Emporium's `split`, reused from
+  earlier tonight) whose flag is genuinely absent as plain text (confirming no over-eager false
+  positive); stays clean against `/bin/ls`/`/bin/bash`; a large, unrelated interpreter binary
+  (`/usr/bin/python3.13`, full of embedded bytecode) does produce some noise (~16 candidates,
+  mostly obvious byte-garbage) -- acceptable for an explicitly-heuristic scanner meant to be
+  eyeballed, same as every other pattern in this module, and bounded by the existing
+  `max_hits_per_kind` cap. Separately, confirmed `explain`/`ask`/`hunt`/`primitives`/`chat` all
+  genuinely require a reachable local model (`binoracle doctor` reported none in this
+  environment) -- unlike `triage`/`secrets`/`identify`, they are not "grounded-only with the
+  model as an optional narrator" the way some of the README's phrasing could be read; the actual
+  reversing (recovering the flag via the binary's own disassembly, read directly) still worked
+  using the SAME grounded facts those commands would have handed to a model, just reasoned over
+  directly instead of through that pipeline. A second, harder real challenge from the same
+  mirror (RaRCTF 2021's `verybabyrev`, an in-place XOR-chain cipher, no plaintext flag anywhere)
+  was solved the same way end to end and the recovered flag matched that challenge's own
+  published writeup exactly. Two new regression tests
+  (`test_ioc_scan_finds_ctf_flag_both_prefixed_and_bare`,
+  `test_ioc_scan_finds_real_ctf_flag_in_real_shadowctf_binary`); full `secrets`/`ioc_scan`
+  subset (5 tests) passes clean.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,

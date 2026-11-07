@@ -3,11 +3,28 @@
 Extracts printable strings (ASCII and UTF-16LE) from a file without executing it and scans them for
 indicators a reverse engineer wants surfaced first: embedded URLs and hostnames, IPv4 addresses,
 e-mail addresses, cloud/API credentials (AWS/GCP/Slack/GitHub/Stripe), JWTs, private-key PEM
-headers, and high-entropy tokens that look like keys. Every hit is heuristic and labelled as such;
-values are redacted in the rendered output. This is the cross-cutting companion to the
-format-specific readers -- point it at an ELF, a PE, a firmware blob or a config dump and it tells
-you what secrets and network indicators are baked in. Nothing is executed. Design adapted from REA's
-secret/indicator tooling (morluto/rea, MIT); re-implemented in Python."""
+headers, high-entropy tokens that look like keys, and CTF-style flag strings. Every hit is
+heuristic and labelled as such; secret values are redacted in the rendered output (flags and
+URLs/emails/IPs are shown in full -- redacting them would defeat the point). This is the
+cross-cutting companion to the format-specific readers -- point it at an ELF, a PE, a firmware
+blob or a config dump and it tells you what secrets and network indicators are baked in. Nothing
+is executed. Design adapted from REA's secret/indicator tooling (morluto/rea, MIT);
+re-implemented in Python.
+
+Gap found testing this live against a real reversing CTF binary (ShadowCTF 2021's "Intro"
+warmup, not a synthetic fixture): its flag ("{steppingstone}") sits in plain sight among its
+strings -- the published writeup solves it with nothing more than `strings` -- but this scanner,
+built for REAL credentials (AWS/Stripe/GitHub keys...), had no pattern for the ubiquitous
+`name{...}` / bare `{...}` CTF flag shape, so it reported "sin credenciales detectadas" on a
+binary whose entire challenge WAS the flag sitting in `.rodata`. Added `ctf-flag` (two forms:
+`word{...}` and a bare `{...}`, content restricted to alnum/underscore/hyphen so it doesn't swallow
+code/JSON snippets that happen to contain braces) and confirmed live: finds exactly the one real
+flag in the real binary, finds nothing in a second real CTF binary whose flag is NOT present as
+plain text (ROP Emporium-style XOR-chained, confirming no over-eager false positive), and stays
+clean (zero hits) against /bin/ls and /bin/bash; a large, unrelated interpreter binary
+(/usr/bin/python3.13, full of embedded bytecode) does produce some noise (~16 candidates, mostly
+obvious byte-garbage) -- acceptable for a heuristic explicitly meant to be eyeballed, same as
+every other pattern here, and bounded by the existing max_hits_per_kind cap."""
 from __future__ import annotations
 
 import math
@@ -32,6 +49,9 @@ _PATTERNS = [
     ("secret-assignment", re.compile(
         r"(?i)(?:api[_\-]?key|secret|token|passwd|password|pwd|auth)"
         r"\s*[=:]\s*[\"']?([A-Za-z0-9/+_\-]{12,})"), True),
+    ("ctf-flag", re.compile(
+        r"\b[A-Za-z][A-Za-z0-9_]{2,30}\{[^{}\n]{1,100}\}"
+        r"|(?<![A-Za-z0-9_])\{[A-Za-z][A-Za-z0-9_\-]{2,60}\}"), False),
 ]
 
 # noisy IPv4 hits we never want to report as indicators
@@ -115,7 +135,7 @@ def scan_iocs(path: str, max_hits_per_kind: int = 50) -> dict:
                 if len(bucket) >= max_hits_per_kind:
                     continue
                 bucket.add(val)
-                shown = val if name in ("url", "email", "ipv4") else _redact(val)
+                shown = val if name in ("url", "email", "ipv4", "ctf-flag") else _redact(val)
                 findings.setdefault(name, []).append(shown)
                 if name == "url":
                     h = urlsplit(val).netloc
@@ -128,7 +148,7 @@ def scan_iocs(path: str, max_hits_per_kind: int = 50) -> dict:
                 he_seen.add(s)
                 high_entropy.append({"evidence": _redact(s), "entropy": round(e, 2)})
     counts = {k: len(v) for k, v in findings.items()}
-    secret_kinds = [k for k in findings if k not in ("url", "email", "ipv4")]
+    secret_kinds = [k for k in findings if k not in ("url", "email", "ipv4", "ctf-flag")]
     return {"ok": True, "size": len(data), "findings": findings, "counts": counts,
             "hosts": hosts, "high_entropy": high_entropy,
             "secret_kinds": sorted(secret_kinds),
@@ -148,8 +168,11 @@ def render_iocs(r: dict) -> str:
     else:
         out.append("- sin credenciales de alto riesgo detectadas por la heuristica")
     findings = r.get("findings") or {}
-    order = ["private-key-pem", "aws-access-key", "aws-secret-key", "gcp-api-key", "github-token",
-             "slack-token", "stripe-key", "google-oauth", "jwt", "secret-assignment",
+    flags = findings.get("ctf-flag") or []
+    if flags:
+        out.append(f"- **{len(flags)} posible(s) flag CTF detectada(s) en las strings**")
+    order = ["ctf-flag", "private-key-pem", "aws-access-key", "aws-secret-key", "gcp-api-key",
+             "github-token", "slack-token", "stripe-key", "google-oauth", "jwt", "secret-assignment",
              "url", "email", "ipv4"]
     for kind in order:
         vals = findings.get(kind)

@@ -3551,6 +3551,61 @@ def test_ioc_scan_finds_secrets_and_urls():
         os.remove(p)
 
 
+def test_ioc_scan_finds_ctf_flag_both_prefixed_and_bare():
+    # Gap real encontrado probando esto en vivo contra un binario real de una CTF (ShadowCTF 2021,
+    # el crackme "Intro" -- no un fixture sintetico): su flag ("{steppingstone}") esta a la vista
+    # entre sus strings (el writeup oficial lo resuelve solo con `strings`), pero este escaner
+    # -- pensado para credenciales REALES (AWS/Stripe/GitHub...) -- no tenia ningun patron para
+    # el formato de flag CTF mas comun (`nombre{...}` o un `{...}` suelto), asi que reportaba "sin
+    # credenciales detectadas" en un binario cuyo reto ENTERO era esa flag en .rodata. Prueba las
+    # dos formas (con prefijo tipo competicion, y suelta sin prefijo) y un control negativo
+    # (`if (x) { do(); }`-like) para confirmar que no traga codigo/JSON con llaves.
+    import os
+    import tempfile
+    from binoracle.workflows.iocscan import scan_iocs, render_iocs
+    blob = (b"\x00\x01binary prefix\x00"
+            b"you need patience to get the flag.\x00"
+            b"{steppingstone}\x00"
+            b"rarctf{3v3ry_s1ngl3_b4by_r3v_ch4ll3ng3}\x00"
+            b"if (x) { do_something(); }\x00"
+            b"%s{%d}\x00"
+            b"\xff\xfe random tail \x00")
+    p = tempfile.mktemp()
+    with open(p, "wb") as f:
+        f.write(blob)
+    try:
+        r = scan_iocs(p)
+        assert r["ok"], r
+        flags = r["findings"].get("ctf-flag") or []
+        assert "{steppingstone}" in flags
+        assert "rarctf{3v3ry_s1ngl3_b4by_r3v_ch4ll3ng3}" in flags
+        assert not any("do_something" in fl for fl in flags)
+        assert not any("%s" in fl for fl in flags)
+        assert "ctf-flag" not in r["secret_kinds"], "una flag no es un secreto a remediar"
+        out = render_iocs(r)
+        assert "{steppingstone}" in out and "posible(s) flag CTF" in out
+    finally:
+        os.remove(p)
+
+
+def test_ioc_scan_finds_real_ctf_flag_in_real_shadowctf_binary():
+    # Mismo hallazgo que el test anterior, pero contra el binario real (no un blob sintetico):
+    # el crackme "Intro" de ShadowCTF 2021. Confirma el camino COMPLETO -- extraccion real de
+    # strings (ASCII/UTF-16LE) de un ELF de verdad, no solo el patron sobre un blob construido a
+    # mano. Este binario NO se commitea a este repo (de terceros, via el mirror de writeups
+    # github.com/Kasimir123/CTFWriteUps) -- la prueba se salta limpiamente si no esta presente.
+    import os
+    import pytest
+    from binoracle.workflows.iocscan import scan_iocs
+    binp = ("/home/user/kasimir123/ctfwriteups/2021-01-ShadowCTF/Warm-up-rev/"
+            "Original-Files/Intro")
+    if not os.path.exists(binp):
+        pytest.skip("binario externo 'Intro' (ShadowCTF 2021, via CTFWriteUps) no disponible")
+    r = scan_iocs(binp)
+    assert r["ok"], r
+    assert "{steppingstone}" in (r["findings"].get("ctf-flag") or [])
+
+
 def test_ioc_scan_utf16_strings():
     import os
     import tempfile
