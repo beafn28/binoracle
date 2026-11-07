@@ -3234,6 +3234,45 @@ def test_apk_inspect_on_synthetic_apk():
         os.remove(p)
 
 
+def test_apk_inspect_enriches_with_decoded_manifest_when_apktool_available(tmp_path, monkeypatch):
+    # Gap found testing this live against InsecureBankv2.apk: `binoracle apk` (the "quick
+    # facts" command people reach for first) kept advertising "AndroidManifest.xml is binary:
+    # detected but not decoded" as a blanket limitation even when apktool IS installed and
+    # `binoracle audit`/androidmanifest.py already decode it perfectly -- confusing for anyone
+    # who only runs `apk` and never learns `audit` exists. inspect_apk now opportunistically
+    # calls project_mobile_application_graph (same honest degrade-when-absent pattern as
+    # everywhere else: apktool missing -> original limitation note, unchanged).
+    import os
+    import zipfile
+    from binoracle.workflows import androidmanifest as AM
+    from binoracle.workflows.apkinspect import inspect_apk, render_apk
+
+    p = tmp_path / "demo.apk"
+    with zipfile.ZipFile(str(p), "w") as z:
+        z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00fakeAXML")
+        z.writestr("classes.dex", b"dex\n035\x00")
+
+    decoded = (
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.demo">\n'
+        ' <uses-permission android:name="android.permission.INTERNET"/>\n'
+        ' <application>\n'
+        '  <activity android:name=".Main" android:exported="true"/>\n'
+        '  <service android:name=".Bg" android:exported="false"/>\n'
+        ' </application>\n</manifest>')
+    out_dir = tmp_path / "decoded"
+    out_dir.mkdir()
+    (out_dir / "AndroidManifest.xml").write_text(decoded)
+    monkeypatch.setattr(AM, "_apktool_decode", lambda apk, timeout=240: (str(out_dir), None))
+
+    r = inspect_apk(str(p))
+    assert r["manifest_package"] == "com.demo"
+    assert r["manifest_component_count"] == 2 and r["manifest_exported_count"] == 1
+    assert "android.permission.INTERNET" in r["manifest_permissions"]
+    assert "apktool" not in r["limitations"][0] or "decodificado" in r["limitations"][0]
+    out = render_apk(r)
+    assert "com.demo" in out and "exportados: 1" in out
+
+
 def test_apk_inspect_non_apk():
     import os
     import tempfile

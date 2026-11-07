@@ -57,7 +57,7 @@ def inspect_apk(path: str) -> dict:
         v1 = sorted(n for n in names if n.startswith("META-INF/")
                     and n.upper().endswith((".RSA", ".DSA", ".EC", ".SF")))
         v2v3 = _has_apk_sig_block(path)
-        return {"ok": True, "is_apk": True, "entry_count": len(names),
+        result = {"ok": True, "is_apk": True, "entry_count": len(names),
                 "has_manifest": has_manifest, "dex": dex,
                 "native_abis": sorted(libs_by_abi.keys()),
                 "native_libs": {k: sorted(set(v)) for k, v in libs_by_abi.items()},
@@ -65,6 +65,30 @@ def inspect_apk(path: str) -> dict:
                 "signing": {"v1_jar": v1, "v2_v3_block": v2v3},
                 "limitations": ["AndroidManifest.xml es binario (AXML): se detecta pero no se decodifica "
                                 "a texto (requiere un decodificador AXML/Apktool); no se desensambla DEX"]}
+        # Opcional, sin romper el diseno "puro" (zipfile, nada ejecutado) de este modulo: si
+        # apktool SI esta instalado, apunta a `binoracle audit`/`androidmanifest` para el
+        # desglose completo del manifest, en vez de dejar la nota de arriba sonando a limite
+        # permanente cuando en realidad es solo "esta funcion en concreto no lo hace".
+        # Gap visto probando esto en vivo contra InsecureBankv2.apk: `binoracle apk` (el
+        # comando "rapido") sigue diciendo "no decodifica AXML" incluso con apktool presente
+        # y `binoracle audit` ya decodificandolo perfectamente -- confuso para quien solo
+        # prueba `apk` primero.
+        if has_manifest:
+            try:
+                from .androidmanifest import project_mobile_application_graph
+                g = project_mobile_application_graph(path)
+            except Exception:
+                g = {"ok": False}
+            if g.get("ok"):
+                result["manifest_package"] = g.get("package")
+                result["manifest_permissions"] = g.get("permissions")
+                result["manifest_component_count"] = g.get("component_count")
+                result["manifest_exported_count"] = g.get("exported_count")
+                result["limitations"][0] = ("AndroidManifest.xml decodificado (apktool): paquete/"
+                                            "permisos/componentes abajo; para el desglose completo "
+                                            "(flags debuggable/allowBackup, componentes exportados "
+                                            "con sus intent-filters) usa `binoracle audit`.")
+        return result
     except Exception as e:
         return {"ok": True, "is_apk": True, "note": f"APK malformado: {e}"}
     finally:
@@ -94,6 +118,11 @@ def render_apk(r: dict) -> str:
         out.append(f"- nota: {r['note']}")
     out.append(f"- entradas: {r.get('entry_count')}  |  AndroidManifest.xml: "
                f"{'si' if r.get('has_manifest') else 'no'}  |  DEX: {len(r.get('dex') or [])}")
+    if r.get("manifest_package") is not None:
+        out.append(f"- paquete: **{r.get('manifest_package')}**  |  componentes: "
+                   f"{r.get('manifest_component_count')} (exportados: "
+                   f"{r.get('manifest_exported_count')})  |  permisos: "
+                   f"{len(r.get('manifest_permissions') or [])}")
     if r.get("frameworks"):
         out.append(f"- framework detectado: **{', '.join(r['frameworks'])}**")
     if r.get("native_abis"):

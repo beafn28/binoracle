@@ -2069,6 +2069,22 @@ The flagship direction: prove impact end to end.
      `test_ioc_scan_finds_real_secrets_in_real_vulnerable_apk` -- the last one skips cleanly if
      the external APK isn't present, same pattern as the existing ShadowCTF regression test).
 
+- **Fourth gap from the same Android/MobSF testing round: `binoracle apk` (the "quick facts"
+  command, `apkinspect.py` -- deliberately dependency-free, zipfile only, nothing executed)
+  kept advertising "AndroidManifest.xml is binary: detected but not decoded" as a blanket
+  limitation even on a real target where apktool IS installed and `binoracle audit`
+  (`androidmanifest.py`) already decodes it perfectly** -- confusing for anyone who runs the
+  "quick" command first and never learns `audit` exists. `inspect_apk` now opportunistically
+  calls `project_mobile_application_graph` (same honest degrade-when-apktool-absent pattern used
+  everywhere else in this codebase) and, when it succeeds, surfaces `manifest_package`/
+  `manifest_permissions`/`manifest_component_count`/`manifest_exported_count` and rewrites the
+  limitation note to point at `binoracle audit` for the full breakdown instead of implying the
+  manifest can never be decoded. Confirmed live on InsecureBankv2.apk: `binoracle apk` now shows
+  `paquete: com.android.insecurebankv2 | componentes: 13 (exportados: 7) | permisos: 9` instead of
+  nothing. New test (apktool stubbed, same pattern as the existing `androidmanifest.py` tests);
+  the pre-existing synthetic-APK test (fake, non-decodable AXML bytes) is unaffected -- apktool
+  fails to decode it, so the enrichment silently stays off, exactly as before.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
