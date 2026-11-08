@@ -21,9 +21,9 @@ HUNT_TASK = (
 
 
 def run_hunt(registry: ToolRegistry, binary: str, llm=None, config=None,
-             store=None, on_step=None, lang: str = "es") -> AgentResult:
+             store=None, on_step=None, lang: str = "es", kb_hint: str = "") -> AgentResult:
     if llm is not None and llm.available():
-        loop = AgentLoop(llm, registry, config, store=store, on_step=on_step)
+        loop = AgentLoop(llm, registry, config, store=store, on_step=on_step, kb_hint=kb_hint or None)
         return loop.run(HUNT_TASK, mode="hunt")
     return _heuristic_hunt(registry, store, lang=lang)
 

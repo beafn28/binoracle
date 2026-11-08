@@ -630,3 +630,62 @@ def query_from_facts(facts: dict) -> str:
     if facts.get("category"):
         parts.append(str(facts["category"]))
     return " ".join(parts)
+
+
+def build_kb_hint(reg, store=None) -> str:
+    """Build the RAG hint for a binary: curated cheat sheets selected from its real facts
+    (checksec + sinks + gift funcs) PLUS, if a store is given, facts binoracle has already
+    VERIFIED on similar targets (same arch, overlapping sinks). The curated part is
+    reference; the learned part is prior verified evidence. Never raises -- every caller
+    treats this as optional context for the agent loop, never a hard requirement.
+
+    Was `workflows/audit.py`'s own private `_kb_hint`, wired ONLY into `binoracle audit`.
+    Moved here (same logic, unchanged) so `ask`/`hunt`/`chat`/`primitives` can reuse it too --
+    found live that none of them ever queried the knowledge base at all, despite `AgentLoop`
+    already accepting a `kb_hint` and `binoracle learn` existing specifically to grow it:
+    learned material had no path into a live, non-audit investigation."""
+    try:
+        facts = {"mitigations": {}, "imports": [], "primitives": [], "arch": "", "format": ""}
+        arch = "?"
+        cs = reg.get("r2_checksec")
+        if cs:
+            r = cs.run()
+            if r.ok:
+                arch = r.meta.get("arch", "?")
+                facts["arch"] = arch
+                facts["format"] = r.meta.get("format", "") or r.meta.get("bintype", "")
+                facts["mitigations"] = {
+                    "NX": r.meta.get("nx", "unknown"),
+                    "PIE": r.meta.get("pic", "unknown"),
+                    "Canary": r.meta.get("canary", "unknown"),
+                    "RELRO": r.meta.get("relro", "unknown"),
+                }
+        sinks = []
+        sk = reg.get("r2_sinks")
+        if sk:
+            r = sk.run()
+            if r.ok:
+                sinks = r.meta.get("sinks", [])
+                facts["imports"] = sinks
+        win = reg.get("r2_win")
+        if win:
+            r = win.run()
+            if r.ok and (r.meta.get("win_funcs", 0) > 0 or "/bin/sh" in r.data):
+                facts["primitives"].append("ret2win")
+
+        hint = get_kb().context_for(query_from_facts(facts), k=5, max_chars=2200)
+
+        # Learned layer: verified facts from similar binaries in the local corpus.
+        if store is not None:
+            try:
+                learned = store.relevant_facts(arch, sinks, limit=6)
+            except Exception:
+                learned = []
+            if learned:
+                block = ("\n\n[aprendido / verificado en targets similares (misma arch, "
+                         "sinks solapados): evidencia previa, no del binario actual]\n"
+                         + "\n".join("- " + x for x in learned))
+                hint = (hint + block) if hint else block.lstrip()
+        return hint
+    except Exception:
+        return ""

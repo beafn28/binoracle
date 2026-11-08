@@ -11,56 +11,11 @@ from ..agent.loop import AgentLoop, AgentResult
 
 
 def _kb_hint(reg, store=None) -> str:
-    """Build the RAG hint for this binary: curated exploitation cheat sheets selected from the
-    binary's real facts (checksec + sinks + gift funcs) PLUS, if a store is given, facts
-    binoracle has already VERIFIED on similar targets (same arch, overlapping sinks). The
-    curated part is reference; the learned part is prior verified evidence. Never raises."""
-    try:
-        from ..rag import get_kb, query_from_facts
-        facts = {"mitigations": {}, "imports": [], "primitives": [], "arch": "", "format": ""}
-        arch = "?"
-        cs = reg.get("r2_checksec")
-        if cs:
-            r = cs.run()
-            if r.ok:
-                arch = r.meta.get("arch", "?")
-                facts["arch"] = arch
-                facts["format"] = r.meta.get("format", "") or r.meta.get("bintype", "")
-                facts["mitigations"] = {
-                    "NX": r.meta.get("nx", "unknown"),
-                    "PIE": r.meta.get("pic", "unknown"),
-                    "Canary": r.meta.get("canary", "unknown"),
-                    "RELRO": r.meta.get("relro", "unknown"),
-                }
-        sinks = []
-        sk = reg.get("r2_sinks")
-        if sk:
-            r = sk.run()
-            if r.ok:
-                sinks = r.meta.get("sinks", [])
-                facts["imports"] = sinks
-        win = reg.get("r2_win")
-        if win:
-            r = win.run()
-            if r.ok and (r.meta.get("win_funcs", 0) > 0 or "/bin/sh" in r.data):
-                facts["primitives"].append("ret2win")
-
-        hint = get_kb().context_for(query_from_facts(facts), k=5, max_chars=2200)
-
-        # Learned layer: verified facts from similar binaries in the local corpus.
-        if store is not None:
-            try:
-                learned = store.relevant_facts(arch, sinks, limit=6)
-            except Exception:
-                learned = []
-            if learned:
-                block = ("\n\n[aprendido / verificado en targets similares (misma arch, "
-                         "sinks solapados): evidencia previa, no del binario actual]\n"
-                         + "\n".join("- " + x for x in learned))
-                hint = (hint + block) if hint else block.lstrip()
-        return hint
-    except Exception:
-        return ""
+    """Thin re-export: the real logic now lives in `rag.build_kb_hint` so `ask`/`hunt`/`chat`/
+    `primitives` can reuse it too, not just `audit`. Kept here under its original name since
+    it's called below by position, not by name elsewhere."""
+    from ..rag import build_kb_hint
+    return build_kb_hint(reg, store=store)
 
 AUDIT_TASK = (
     "Audita este binario de principio a fin como un pentester: primero recon (formato, "

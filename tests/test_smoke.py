@@ -5280,3 +5280,63 @@ def test_module_invocation_propagates_main_exit_code():
         "un binario inexistente debe propagar un exit code distinto de cero al shell "
         f"(stderr: {bad.stderr!r})"
     )
+
+
+def test_ask_hunt_chat_now_actually_consult_the_knowledge_base(tmp_path, monkeypatch):
+    # Gap real encontrado en vivo: `rag.build_kb_hint` (la logica real detras de "binoracle
+    # learn hace que binoracle tenga sus propias resoluciones") solo estaba conectada en
+    # `binoracle audit` -- `ask`, `hunt` y `chat` construian su AgentLoop SIN pasarle nunca
+    # `kb_hint`, aunque AgentLoop lo soporta y `binoracle learn`/`train` existen especificamente
+    # para hacer crecer esa base de conocimiento. El material aprendido no tenia ningun camino
+    # hacia una investigacion en vivo que no fuera `audit`. Confirma que los tres ahora
+    # construyen y pasan un kb_hint real al loop (capturado via el mensaje de sistema que el
+    # LLM fake recibe), no solo que `build_kb_hint` funciona de forma aislada.
+    import binoracle.cli as cli_mod
+    from binoracle.config import load_config
+
+    sentinel = "[[SENTINEL-TECHNIQUE-NOTE-FOR-THIS-TEST]]"
+    monkeypatch.setattr(cli_mod, "build_kb_hint", lambda reg, store=None: sentinel)
+
+    class _FakeLLM:
+        def __init__(self):
+            self.system_prompts = []
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False, **kw):
+            self.system_prompts.append(messages[0].content)
+            return '{"action":"final","answer":"ok [src: x]","findings":[]}'
+
+    fake = _FakeLLM()
+    monkeypatch.setattr(cli_mod, "make_backend", lambda config: fake)
+
+    config = load_config()
+    config.state_dir = tmp_path / ".binoracle"
+    binary = "samples/bin/ret2win" if __import__("os").path.exists("samples/bin/ret2win") else __file__
+
+    import argparse
+    args = argparse.Namespace(binary=binary, dynamic=False, output=None, html=None,
+                              json=None, question="what is the flag?", no_verify=True)
+
+    cli_mod.cmd_ask(args, config)
+    assert fake.system_prompts and sentinel in fake.system_prompts[-1], (
+        "cmd_ask no paso el kb_hint real al AgentLoop"
+    )
+
+    fake.system_prompts.clear()
+    cli_mod.cmd_hunt(args, config)
+    assert fake.system_prompts and sentinel in fake.system_prompts[-1], (
+        "cmd_hunt no paso el kb_hint real al AgentLoop"
+    )
+
+    fake.system_prompts.clear()
+    answers = iter(["what is the flag?"])   # una pregunta real, luego EOF para salir del REPL
+    def _fake_input(_prompt=""):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError
+    monkeypatch.setattr("builtins.input", _fake_input)
+    cli_mod.cmd_chat(args, config)
+    assert fake.system_prompts and sentinel in fake.system_prompts[-1], (
+        "cmd_chat no paso el kb_hint real al AgentLoop"
+    )

@@ -43,6 +43,7 @@ from .workflows.autopwn import autopwn, render_autopwn
 from .workflows.audit import run_audit, _is_apk
 from .workflows.regress import run_regress, render_regress, autoregress_test, render_regression_tests
 from .agent.grounding import GroundingLedger
+from .rag import build_kb_hint
 
 
 def _eprint(*a):
@@ -245,7 +246,14 @@ def cmd_hunt(args, config):
     reg = build_registry(binary, enable_dynamic=args.dynamic)
     store = SessionStore(config.db_path(), binary)
     llm = make_backend(config)
-    res = run_hunt(reg, binary, llm=llm, config=config, store=store, on_step=_step_printer, lang=config.lang)
+    # Same RAG context `binoracle audit` already builds for itself (curated cheat sheets
+    # selected from this binary's real facts, plus prior VERIFIED findings on similar
+    # targets) -- found live that `hunt` never consulted the knowledge base at all, despite
+    # `binoracle learn` existing specifically to grow it. Reference only: the agent loop's own
+    # prompt is explicit that this never overrides a tool result.
+    kb_hint = build_kb_hint(reg, store=store)
+    res = run_hunt(reg, binary, llm=llm, config=config, store=store, on_step=_step_printer,
+                  lang=config.lang, kb_hint=kb_hint)
     # deterministic verification pass (angr) unless disabled
     if not args.no_verify:
         res.findings, vnotes = auto_verify(reg, res.findings, store=store)
@@ -277,7 +285,10 @@ def cmd_ask(args, config):
     if not llm.available():
         _eprint("error: no local model reachable. Run `binoracle doctor`.")
         sys.exit(3)
-    loop = AgentLoop(llm, reg, config, store=store, on_step=_step_printer)
+    # See cmd_hunt's comment: same RAG hint `audit` already builds, now also reachable from
+    # `ask`, not just `audit`.
+    kb_hint = build_kb_hint(reg, store=store)
+    loop = AgentLoop(llm, reg, config, store=store, on_step=_step_printer, kb_hint=kb_hint or None)
     res = loop.run(args.question, mode="ask")
     out = render_agent_result(binary, res)
     print(out)
@@ -295,7 +306,10 @@ def cmd_chat(args, config):
     if not llm.available():
         _eprint("error: no local model reachable. Run `binoracle doctor`.")
         sys.exit(3)
-    loop = AgentLoop(llm, reg, config, store=store, on_step=_step_printer)
+    # See cmd_hunt's comment: same RAG hint `audit` already builds, now also reachable from
+    # `chat`, not just `audit`.
+    kb_hint = build_kb_hint(reg, store=store)
+    loop = AgentLoop(llm, reg, config, store=store, on_step=_step_printer, kb_hint=kb_hint or None)
     print(f"binoracle chat on {binary} (empty line or 'quit' to exit)\n")
     while True:
         try:
