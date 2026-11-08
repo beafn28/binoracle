@@ -42,6 +42,13 @@ Rules:
 - NEVER emit a finding whose 'evidence' field is empty. No evidence -> no finding.
 - Do NOT repeat a tool call you already issued with the same arguments; the result will not
   change. If you have nothing new to try, emit action=final immediately.
+- Tools are grouped by oracle, but the CATALOG has every oracle's tools together -- when you
+  need an exact VALUE a pure function computes (a checksum, a transform, a keystream byte)
+  and disassembly alone only shows you the algorithm, not the answer, look past the radare2
+  tools you have already been using for an angr_* tool that can get it directly (e.g.
+  angr_call_function to run the function with concrete arguments; if that itself times out
+  because the function's own cost scales with its argument, angr_extrapolate_recurrence
+  instead) rather than trying to do the arithmetic yourself from the disassembly.
 - A verdict of 'verified' is reserved for reachability proven by angr_reachable or a crash
   observed by dbg_run_input. If you did not run those, the strongest verdict is 'grounded'.
 """
