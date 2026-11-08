@@ -5160,6 +5160,98 @@ def test_r2oracle_cmd_timed_degrades_instead_of_hanging_forever():
     assert o._r2 is None and o._analyzed is False, "el pipe colgado debe descartarse para la siguiente llamada"
 
 
+def test_r2oracle_axt_timeout_latches_and_short_circuits_future_xref_calls():
+    # Bug real encontrado en vivo contra un PE con trucos anti-debug: `axt` se colgaba de
+    # verdad dentro de r2 para TODA la sesion (no solo para un simbolo concreto) -- el timeout
+    # por comando ya existente SI lo atrapaba cada vez, pero `_sinks()`/`_heap()` repiten axt
+    # por cada candidato, asi que varios sinks cada uno pagando el timeout completo convertian
+    # un paso de triage que deberia ser barato en varios minutos. Confirma el mecanismo en si
+    # (sin r2 real, sin depender de encontrar OTRO binario que reproduzca el cuelgue): una vez
+    # que `_cmd_timed` devuelve None para un comando axt, la SIGUIENTE llamada axt debe
+    # degradar al instante (ni abrir el pipe, ni esperar el timeout otra vez).
+    from binoracle.oracles.static_r2 import R2Oracle
+
+    o = R2Oracle(__file__)
+    o.cmd_timeout_s = 1.0
+    calls = {"n": 0}
+
+    def _fake_cmd_timed(r2, cmd):
+        calls["n"] += 1
+        return None   # simula el cuelgue -- cada llamada real "tarda" el timeout completo
+
+    o._cmd_timed = _fake_cmd_timed
+    o._pipe = lambda: object()        # nunca se inspecciona cuando no hay timeout real que simular
+    o._ensure_analyzed_pipe = lambda: None
+    o._analysis_timed_out = False
+
+    first = o._run("axt @ sym.imp.memcpy")
+    assert "timed out" in first
+    assert calls["n"] == 1
+    assert o._xref_timed_out is True
+
+    second = o._run("axt @ 0x401000")
+    assert "already timed out" in second, "la 2a llamada axt debe degradar sin intentar de nuevo"
+    assert calls["n"] == 1, "no debio abrir el pipe ni invocar _cmd_timed una segunda vez"
+
+    # un comando NO-axt (p.ej. 'ii') no esta afectado por el latch -- sigue intentandose normal.
+    third = o._run("ii")
+    assert calls["n"] == 2
+
+
+def test_sinks_degrades_remaining_candidates_once_xref_engine_times_out():
+    # Complementa el test anterior probando el flujo completo de `_sinks()`: una vez que el
+    # primer axt de un sink se cuelga, el sink SIGUIENTE no debe intentar su propio axt (el
+    # latch de `_run` ya lo corta), y el mensaje debe ser honesto, no basura.
+    from binoracle.oracles.static_r2 import R2Oracle
+
+    o = R2Oracle(__file__)
+    real_calls = {"axt": 0}
+
+    def _fake_run(cmd, analyze=True):
+        if cmd == "ii":
+            return ("[Imports]\n1 0x00401000 NONE FUNC KERNEL32.dll memcpy\n"
+                    "2 0x00401010 NONE FUNC KERNEL32.dll printf\n")
+        if cmd.startswith("axt"):
+            if not o._xref_timed_out:
+                real_calls["axt"] += 1
+                o._xref_timed_out = True
+                return "[r2 command timed out after 60s on this session (...) -- degrading]"
+            return "[r2 cross-reference engine (axt//r) already timed out once in this session]"
+        return ""
+
+    o._run = _fake_run
+    res = o._sinks()
+    assert real_calls["axt"] == 1, "solo el primer axt debe parecer un intento real"
+    assert "memcpy" in res.data and "printf" in res.data
+    assert "timed out" in res.data
+    # ninguna de las dos entradas debe colarse como si fuera un caller real resuelto
+    assert "importado; sin llamador" not in res.data
+
+
+def test_heap_reports_timed_out_allocs_cleanly_instead_of_parsing_garbage():
+    # Bug real encontrado arreglando lo de arriba: `_heap()` parseaba CUALQUIER linea no vacia
+    # de la salida de axt como "linea de caller real" -- el texto del degradado (una frase en
+    # ingles, no una linea de r2) se colaba y producia buckets de caller inventados. Confirma
+    # que ahora lo detecta y lo reporta aparte, sin alucinar un caller.
+    from binoracle.oracles.static_r2 import R2Oracle
+
+    o = R2Oracle(__file__)
+
+    def _fake_run(cmd, analyze=True):
+        if cmd == "ii":
+            return "1 0x00401000 NONE FUNC KERNEL32.dll calloc\n2 0x00401010 NONE FUNC KERNEL32.dll free\n"
+        if cmd.startswith("axt"):
+            return "[r2 command timed out after 60s on this session (...) -- degrading]"
+        return ""
+
+    o._run = _fake_run
+    res = o._heap()
+    assert res.meta["xref_timed_out"] is True
+    assert res.meta["candidates"] == [], "no debe inventar un candidato DOUBLE-FREE/UAF de texto degradado"
+    assert "calloc" in res.data and "free" in res.data
+    assert "timed out" in res.data
+
+
 def test_module_invocation_propagates_main_exit_code():
     # Bug real encontrado corriendo batches de `binoracle ask`/`hunt` contra CTFs reales desde
     # un script de shell: `python3 -m binoracle.cli ...` SIEMPRE salia con status 0, aunque

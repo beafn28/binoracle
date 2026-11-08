@@ -62,6 +62,17 @@ class R2Oracle(Oracle):
         # such bound at all, so any future pathology here (not just this one query) could hang
         # the entire pipeline (triage, audit, investigate_cve) forever. Bounded the same way.
         self.cmd_timeout_s = 60.0
+        # Real bug found live against a PE with anti-debug tricks: `axt` (cross-reference
+        # query) genuinely hung inside r2 for THIS session's whole lifetime -- the per-command
+        # timeout above DID catch each individual hang (never an infinite wait), but `_sinks()`
+        # and `_heap()` each retry axt per dangerous-sink candidate, so several candidates each
+        # paying a full cmd_timeout_s before giving up turned a "cheap, no-model" triage step
+        # into several minutes. One confirmed axt/`/r` timeout is strong enough signal that
+        # r2's cross-reference engine is broken for the REST of this session, not just for that
+        # one query -- latched here (same "already tried and failed, don't retry" precedent as
+        # `_analysis_timed_out` above) so every later axt/`/r` call degrades INSTANTLY instead
+        # of repeating a call already known to hang.
+        self._xref_timed_out = False
 
     def available(self) -> bool:
         return _HAVE_R2PIPE or shutil.which("r2") is not None or shutil.which("radare2") is not None
@@ -130,6 +141,14 @@ class R2Oracle(Oracle):
             return None
         return result.get("out")
 
+    @staticmethod
+    def _is_xref_cmd(cmd: str) -> bool:
+        """`axt` (cross-reference query) and `/r` (reference search) are the two command
+        shapes behind the hang class documented on `self._xref_timed_out` -- matched by their
+        command-word prefix so e.g. `axt @ sym.imp.foo` and `/r 0x401000` both match regardless
+        of their argument."""
+        return cmd.startswith("axt") or cmd.startswith("/r ") or cmd == "/r"
+
     def _run(self, cmd: str, analyze: bool = True) -> str:
         """Run one r2 command (with analysis if needed) and return raw text."""
         if _HAVE_R2PIPE:
@@ -139,6 +158,18 @@ class R2Oracle(Oracle):
                 return (f"[r2 analysis ('{self.analysis_cmd}') timed out after "
                         f"{self.analysis_timeout_s:.0f}s -- binary too large/complex or r2 "
                         f"itself stuck; degrading instead of blocking the pipeline]")
+            is_xref = self._is_xref_cmd(cmd)
+            if is_xref and self._xref_timed_out:
+                # ya vimos que axt/`/r` se cuelga en esta sesion -- no repetir el mismo patron
+                # de bloqueo para cada candidato restante (ver el comentario en __init__). Same
+                # "[r2 " prefix as every other degrade message below (and in `_ensure_
+                # analyzed_pipe`'s analysis-timeout branch) -- callers like `_sinks`/`_heap`
+                # detect ANY degrade text by that one shared prefix, so this has to match it
+                # exactly or it silently slips past them as if it were real axt output (caught
+                # live: a first version here used "[r2's ..." -- the apostrophe meant
+                # `startswith("[r2 ")` never matched it).
+                return (f"[r2 cross-reference engine (axt//r) already timed out once in this "
+                        f"session -- degrading '{cmd}' instantly instead of repeating the hang]")
             r2 = self._pipe()
             if analyze:
                 self._ensure_analyzed_pipe()
@@ -148,6 +179,8 @@ class R2Oracle(Oracle):
                             f"itself stuck; degrading instead of blocking the pipeline]")
             out = self._cmd_timed(r2, cmd)
             if out is None:
+                if is_xref:
+                    self._xref_timed_out = True
                 return (f"[r2 command timed out after {self.cmd_timeout_s:.0f}s on this "
                         f"session ('{cmd}') -- degrading instead of blocking the pipeline]")
             return out or ""
@@ -256,18 +289,31 @@ class R2Oracle(Oracle):
         # a real axt caller line carries an address; absence of "0x" means "no xrefs" (robust
         # against caller names that merely start with 'no', e.g. notify_handler / node_read).
         has_callers = lambda t: bool(t) and "0x" in t
+        # `_run()`'s own degrade marker for a per-command timeout (see its final branches) --
+        # every one it ever returns starts with this literal prefix. Once ANY axt call times
+        # out, `_run()` itself latches `self._xref_timed_out` and short-circuits every FUTURE
+        # axt/`/r` call on this instance instantly (see `_run`'s docstring) -- so the two
+        # escalating fallbacks below and every subsequent sink in this loop degrade immediately
+        # instead of each burning another real 60s on a cross-reference engine already known to
+        # be stuck for this session (confirmed live against a PE with anti-debug tricks: before
+        # this fix, 2 dangerous sinks x up to 3 slow calls each could cost 6 minutes).
+        timed_out = lambda t: t.startswith("[r2 ")
         lines, found = [], []
         for fn in dyn:                                   # dynamic (imported) sinks
             xr = self._run(f"axt @ sym.imp.{fn}").strip()
-            if not has_callers(xr):
+            if not timed_out(xr) and not has_callers(xr):
                 va = vaddr.get(fn)
                 if va and va != "----------":
                     xr = self._run(f"axt @ {va}").strip()
-                    if not has_callers(xr):
+                    if not timed_out(xr) and not has_callers(xr):
                         xr = self._run(f"/r {va}").strip()
             found.append(fn)
-            lines.append(f"### sink: {fn}\n{xr}" if has_callers(xr)
-                         else f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
+            if timed_out(xr):
+                lines.append(f"### sink: {fn}\n(r2's cross-reference engine timed out resolving "
+                             "this sink's callers -- degrading instead of blocking the pipeline)")
+            else:
+                lines.append(f"### sink: {fn}\n{xr}" if has_callers(xr)
+                             else f"### sink: {fn}\n(importado; sin llamador resuelto por r2)")
         # static sinks: only for a genuinely static binary. Resolve every DANGEROUS candidate in
         # ONE r2 invocation (a single analysis pass, not one per sink -- the subprocess fallback
         # would otherwise re-run `aa` 10+ times and hang on a glibc binary) and keep the sinks
@@ -542,8 +588,16 @@ class R2Oracle(Oracle):
                               meta={"heap": False})
         # group call sites by caller function
         by_func = {}
+        timed_out_allocs = []
         for fn in present:
             xr = self._run(f"axt @ sym.imp.{fn}")
+            if xr.startswith("[r2"):
+                # Degrade marker from `_run()` (axt timed out, here or earlier this session --
+                # see `self._xref_timed_out`), not a real axt listing. Found live: parsing this
+                # English sentence as caller lines below produced garbage buckets (its words
+                # looked enough like "caller addr" pairs to slip past the blank/"no..." guard).
+                timed_out_allocs.append(fn)
+                continue
             for line in xr.splitlines():
                 line = line.strip()
                 if not line or line[:2].lower() == "no":
@@ -568,11 +622,16 @@ class R2Oracle(Oracle):
                 candidates.append(func)
             out.append(f"### {func} (alloc={d['alloc']}, free={d['free']}){tag}\n" +
                        "\n".join("  " + l for l in d["lines"]))
-        body = "\n\n".join(out)
+        if timed_out_allocs:
+            out.append("### (unresolved)\nr2's cross-reference engine timed out resolving "
+                       f"callers for: {', '.join(timed_out_allocs)} -- degrading instead of "
+                       "blocking the pipeline.")
+        body = "\n\n".join(out) or "(no caller resolved)"
         note = ("\n\nNOTE: these are STATIC heuristics (surface/candidates), not proven UAF/"
                 "double-free. Confirm with dbg_run_input or dynamic analysis.")
         return ToolResult(True, "radare2: heap surface (ii + axt)", body + note,
-                          meta={"heap": True, "candidates": candidates})
+                          meta={"heap": True, "candidates": candidates,
+                                "xref_timed_out": bool(timed_out_allocs)})
 
     def _indirect(self) -> ToolResult:
         """Locate indirect calls/jumps and show the few instructions that set the target,
