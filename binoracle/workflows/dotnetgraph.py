@@ -81,7 +81,7 @@ _SCHEMA = {
 }
 
 # coded index -> (tag_bits, [table_id per tag, None = unused])
-_CODED = {
+_CODED: dict[str, tuple[int, list[int | None]]] = {
     "TypeDefOrRef": (2, [2, 1, 27]),
     "HasConstant": (2, [4, 8, 23]),
     "HasCustomAttribute": (5, [6, 4, 1, 2, 8, 9, 10, 0, 14, 23, 20, 17, 26, 27, 32, 35, 38, 39, 40, 42, 44, 43]),
