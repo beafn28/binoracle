@@ -161,7 +161,26 @@ class AgentLoop:
             # `tools=` is only passed when actually in play (native_tools opted in AND the
             # backend supports it) -- never unconditionally, so a backend/test-double whose
             # chat() predates this parameter (no `tools` kwarg at all) keeps working unchanged.
-            reply = self.llm.chat(messages, json_mode=True, **({"tools": tool_schema} if tool_schema else {}))
+            try:
+                reply = self.llm.chat(messages, json_mode=True, **({"tools": tool_schema} if tool_schema else {}))
+            except Exception as e:
+                # Every OTHER oracle in this codebase degrades on failure instead of crashing
+                # the whole investigation (r2's cmd timeout, angr's hard-killed subprocess) --
+                # the LLM backend itself was the one exception to that rule, confirmed live
+                # against a real local CPU server: an HTTP 400 (context window exceeded) and a
+                # dropped connection (OOM-killed server process) both propagated straight past
+                # this loop, past cmd_ask/cmd_hunt's own try/except, out to the CLI's generic
+                # handler -- the whole run printed "error inesperado: ..." and lost every real
+                # fact already gathered (steps 1-6 of real r2/angr evidence, thrown away for a
+                # step-7 backend hiccup). Synthesizing from the ledger we DO have, same as the
+                # budget-exhausted path below, means a backend failure degrades the answer
+                # instead of destroying it.
+                synth = self._synthesize(
+                    task, ledger,
+                    note=f"(the LLM backend failed mid-investigation: {e}; this is a partial "
+                         "answer from the evidence gathered before that point, not a complete one)",
+                )
+                return AgentResult(ledger.annotate(synth), [], ledger, step, "backend_failure")
             action = extract_action(reply)
 
             # Native tool-calling has no bare "I'm done" signal distinct from "call this tool"
@@ -255,7 +274,7 @@ class AgentLoop:
         synth = self._synthesize(task, ledger)
         return AgentResult(ledger.annotate(synth), [], ledger, budget, "synthesized")
 
-    def _synthesize(self, task: str, ledger: GroundingLedger) -> str:
+    def _synthesize(self, task: str, ledger: GroundingLedger, note: str = "") -> str:
         evidence = ledger.evidence_trail()
         prompt = [
             Message("system",
@@ -265,9 +284,15 @@ class AgentLoop:
             Message("user", f"TASK:\n{task}\n\n{evidence}\n\nWrite the final answer now."),
         ]
         try:
-            return self.llm.chat(prompt)
+            out = self.llm.chat(prompt)
+            return f"{note}\n\n{out}" if note else out
         except Exception:
-            return "(investigation ran out of steps; see the evidence trail below)"
+            # The backend that just failed is also what this synthesis pass needs -- if it's
+            # truly down (not just that one request), there is no model left to summarize
+            # with. Fall back to the raw evidence trail itself rather than nothing: every real
+            # fact gathered is still in `ledger` and gets appended below by `ledger.annotate`.
+            fallback = "(no model response available; see the raw evidence trail below)"
+            return f"{note}\n\n{fallback}" if note else fallback
 
     @staticmethod
     def _parse_findings(raw) -> List[Finding]:

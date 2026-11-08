@@ -952,6 +952,95 @@ def test_agent_loop_cuts_losses_when_model_ignores_the_forced_final_nudge():
     )
 
 
+def test_agent_loop_degrades_instead_of_losing_everything_on_a_backend_crash():
+    # Bug real encontrado en vivo: con un servidor LLM local real (llama.cpp sobre CPU), una
+    # peticion a mitad de una investigacion puede fallar de verdad -- un HTTP 400 (contexto
+    # excedido) o la conexion cortada porque el proceso del servidor murio (confirmado en vivo:
+    # el OOM killer del cgroup mato al servidor mientras procesaba el reto 'recur'). CADA OTRO
+    # oraculo de este codebase degrada ante un fallo (el timeout de r2, el proceso hijo
+    # forzado a terminar de angr) -- el backend LLM era la UNICA excepcion: la excepcion se
+    # propagaba sin capturar a traves de todo el loop y de cmd_ask, perdiendo los hechos reales
+    # YA reunidos (pasos previos con evidencia real de r2/angr) por un fallo del paso 7.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    class _Disasm(Oracle):
+        name = "d"
+        def available(self):
+            return True
+        def tools(self):
+            def run(target):
+                return ToolResult(True, "radare2: pdf", f"disasm {target}")
+            return [Tool("r2_disasm", "d", [ToolParam("target", "t")], run, self.name)]
+
+    class _CrashesThenRecoversLLM:
+        # 1ra llamada: un tool call real y valido (deja evidencia real en el ledger). 2da
+        # llamada (el siguiente paso del loop principal): simula el servidor cayendose a
+        # mitad de peticion. 3ra llamada (la sintesis que el loop intenta DESPUES de
+        # capturar el fallo): el backend ya se recupero y SI responde, citando la evidencia
+        # real ya reunida -- confirma que la sintesis usa el ledger real, no texto inventado.
+        def __init__(self):
+            self.n = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.n += 1
+            if self.n == 1:
+                return '{"action":"tool","tool":"r2_disasm","args":{"target":"sym.main"}}'
+            if self.n == 2:
+                raise ConnectionResetError("Remote end closed connection without response")
+            return "the flag is X [src: radare2: pdf]"
+
+    cfg = load_config(); cfg.max_steps = 24
+    llm = _CrashesThenRecoversLLM()
+    res = AgentLoop(llm, ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
+
+    assert res.stopped_reason == "backend_failure"
+    assert len(res.ledger.entries) == 1, "el hecho real ya reunido antes del fallo no debe perderse"
+    assert "the flag is X" in res.answer
+    assert "LLM backend failed mid-investigation" in res.answer
+
+
+def test_agent_loop_synthesis_falls_back_to_raw_evidence_when_backend_is_truly_down():
+    # Complementa el test anterior: si el backend sigue caido incluso para la PROPIA sintesis
+    # (no fue un fallo de una sola peticion, el servidor realmente no volvio), no debe
+    # propagar una segunda excepcion sin capturar -- debe degradar a un mensaje honesto, y la
+    # evidencia real sigue disponible via `ledger.annotate` en el reporte final.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    class _Disasm(Oracle):
+        name = "d"
+        def available(self):
+            return True
+        def tools(self):
+            def run(target):
+                return ToolResult(True, "radare2: pdf", f"disasm {target}")
+            return [Tool("r2_disasm", "d", [ToolParam("target", "t")], run, self.name)]
+
+    class _AlwaysDownAfterFirstCall:
+        def __init__(self):
+            self.n = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.n += 1
+            if self.n == 1:
+                return '{"action":"tool","tool":"r2_disasm","args":{"target":"sym.main"}}'
+            raise ConnectionResetError("server is gone")
+
+    cfg = load_config(); cfg.max_steps = 24
+    res = AgentLoop(_AlwaysDownAfterFirstCall(), ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
+
+    assert res.stopped_reason == "backend_failure"
+    assert len(res.ledger.entries) == 1
+    assert "no model response available" in res.answer
+    # la evidencia real sigue disponible (el reporte final la saca de aqui, via render_agent_result)
+    assert res.ledger.entries[0].data == "disasm sym.main"
+
+
 def test_autopie_rop_degrades_cleanly():
     # ROP-PIE se apoya en el sandbox binoracle-pwn; sin docker/imagen debe devolver un dict
     # con ok=False y una nota, nunca lanzar (degradacion elegante como el resto de oraculos).
