@@ -3697,6 +3697,155 @@ def test_symbolic_angr_pe_hook_does_not_touch_elf_binaries():
     assert r.ok and r.meta["reachable"] is True
 
 
+def test_angr_call_function_resolves_symbol_name_and_runs_real_function():
+    # Gap encontrado resolviendo un CTF real (recur): la flag se computa con una funcion
+    # recursiva pura (una relacion de recurrencia), y hasta ahora el unico oraculo angr
+    # disponible (`angr_reachable`) solo responde "es alcanzable", nunca "que devuelve esta
+    # funcion con este argumento" -- justo lo que se necesita para keygens/checksums/hashes/
+    # transforms puros en general, no solo para este reto en particular. `angr_call_function`
+    # ejecuta la funcion AISLADA con argumentos enteros concretos via angr.Callable y devuelve
+    # su valor de retorno real. Acepta tanto una direccion como un nombre de simbolo (el que
+    # usa r2, p.ej. "sym.win" o "win") para que el agente pueda pasarle directamente lo que ya
+    # vio en el disasm.
+    import os
+    import pytest
+    try:
+        import angr  # noqa: F401
+    except ImportError:
+        pytest.skip("angr no instalado")
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    from binoracle.oracles.symbolic_angr import AngrOracle
+    oc = AngrOracle(b)
+    tool = oc.tools()[1]
+    assert tool.name == "angr_call_function"
+
+    r_name = tool.run(target="win", args="")
+    assert r_name.ok, r_name.error
+    assert r_name.meta["completed"] is True
+    assert r_name.meta["addr"] == "0x401176"
+
+    r_sym_prefix = tool.run(target="sym.win", args="")
+    assert r_sym_prefix.ok and r_sym_prefix.meta["addr"] == "0x401176"
+
+    r_addr = tool.run(target="0x401176", args="")
+    assert r_addr.ok and r_addr.meta["addr"] == "0x401176"
+
+
+def test_angr_call_function_degrades_honestly_instead_of_a_truncated_value():
+    # El bug que esto evita (encontrado leyendo el propio codigo de angr.Callable mientras se
+    # depuraba por que una llamada a una funcion recursiva real tardaba mas de 2 minutos sin
+    # terminar): el parametro `step_limit` de Callable NO distingue un resultado real de uno
+    # TRUNCADO -- un estado "step_limited" se re-mete en el stash "active" y se usa exactamente
+    # como si hubiera llegado a un return de verdad, asi que una llamada cortada a mitad de
+    # camino devolveria un VALOR FABRICADO sin ninguna senal de que no es real. Por eso esta
+    # tool nunca usa step_limit: la unica proteccion contra una llamada que no termina es el
+    # deadline duro del proceso hijo (igual que angr_reachable), y cuando ese deadline se agota
+    # debe reportarlo HONESTAMENTE (completed=False) en vez de inventar un numero.
+    import time
+    import binoracle.oracles.symbolic_angr as sa
+    if not sa._HAVE_ANGR:
+        return
+
+    def _slow_worker(binary, target, args, budget_s, q):
+        time.sleep(600)   # mucho mas que cualquier budget_s razonable de prueba
+        q.put(sa.ToolResult(True, "angr", "no deberia llegar aqui", meta={"completed": True, "value": 999999}))
+    import unittest.mock as mock
+    with mock.patch.object(sa, "_call_function_worker", _slow_worker):
+        oracle = sa.AngrOracle("fake.bin")
+        t0 = time.time()
+        res = oracle._call_function("recurrence", "729", budget_s=1.0)
+        elapsed = time.time() - t0
+
+    assert elapsed < 40.0, "el proceso hijo debe ser forzado a terminar, no esperarse 600s"
+    assert res.ok
+    assert res.meta.get("completed") is False, "nunca debe reportar un valor fabricado por truncacion"
+    assert "did NOT complete" in res.data
+    assert "999999" not in res.data   # el valor fabricado del worker lento nunca debe aparecer
+
+
+def test_fit_linear_recurrence_rediscovers_a_real_ctf_recurrence_exactly():
+    # El nucleo matematico detras de angr_extrapolate_recurrence, probado sin angr ni binario
+    # (rapido, deterministico): dado un reto real resuelto en esta sesion (recur -- la flag se
+    # computa con R(n)=2*R(n-1)+3*R(n-2), R(0)=3, R(1)=5, y un modelo local de 1.5-7B no pudo
+    # derivar esto por si solo), confirma que _fit_linear_recurrence SI reconstruye exactamente
+    # esos coeficientes a partir de muestras reales, y que _iterate_recurrence extrapola bien
+    # mas alla del rango muestreado (lo que de verdad hace falta: R(729), no R(9)).
+    from fractions import Fraction
+    from binoracle.oracles.symbolic_angr import _fit_linear_recurrence, _iterate_recurrence
+
+    full = {0: 3, 1: 5}
+    for n in range(2, 16):
+        full[n] = 2 * full[n - 1] + 3 * full[n - 2]
+    samples = {k: v for k, v in full.items() if k < 12}   # solo hasta n=11 para ajustar
+
+    coeffs = _fit_linear_recurrence(samples, order=2)
+    assert coeffs == [Fraction(2), Fraction(3)]
+
+    # orden mas bajo (1) no debe "encajar" por accidente -- confirma que NO sobreajusta algo
+    # que es genuinamente de orden 2.
+    assert _fit_linear_recurrence(samples, order=1) is None
+
+    extrapolated = _iterate_recurrence(coeffs, [3, 5], 15)
+    assert extrapolated == full[15]   # coincide con el valor real mas alla del rango muestreado
+
+
+def test_angr_extrapolate_recurrence_declines_rather_than_guess_on_a_degenerate_fit(monkeypatch):
+    # Contraparte honesta del test anterior: cuando el sistema de ecuaciones no determina un
+    # unico coeficiente (encontrado en vivo probando esto contra una funcion real que siempre
+    # devuelve 0 -- cualquier coeficiente satisface 0 = c*0, asi que esta indeterminado), la
+    # herramienta debe decir que NO encontro una recurrencia en vez de inventar un coeficiente
+    # arbitrario y extrapolar un numero sin sentido. Corre contra un angr REAL (no un mock) para
+    # confirmar el camino completo _extrapolate_impl -> _fit_linear_recurrence, sobre un
+    # binario real ya compilado en este repo (ret2win: su funcion `win` ignora su argumento y
+    # siempre devuelve 0).
+    import os
+    import pytest
+    try:
+        import angr  # noqa: F401
+    except ImportError:
+        pytest.skip("angr no instalado")
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    from binoracle.oracles.symbolic_angr import AngrOracle
+    oc = AngrOracle(b)
+    tool = oc.tools()[2]
+    assert tool.name == "angr_extrapolate_recurrence"
+
+    r = tool.run(target="win", n="50")
+    assert r.ok
+    assert r.meta.get("fit_found") is False
+    assert "No linear recurrence" in r.data
+    assert "value" not in r.meta   # nunca debe reportar un valor extrapolado sin un fit real
+
+
+def test_angr_extrapolate_recurrence_degrades_honestly_when_even_sampling_times_out():
+    # Misma proteccion de _call_function (nunca inventar un resultado truncado), aplicada a la
+    # tool nueva: si ni siquiera MUESTREAR la funcion en argumentos chicos termina a tiempo, debe
+    # reportarlo honestamente en vez de colgarse o devolver cualquier cosa.
+    import time
+    import binoracle.oracles.symbolic_angr as sa
+    if not sa._HAVE_ANGR:
+        return
+
+    def _slow_worker(binary, target, n, budget_s, q):
+        time.sleep(600)
+        q.put(sa.ToolResult(True, "angr", "no deberia llegar aqui", meta={"completed": True, "value": 123}))
+    import unittest.mock as mock
+    with mock.patch.object(sa, "_extrapolate_recurrence_worker", _slow_worker):
+        oracle = sa.AngrOracle("fake.bin")
+        t0 = time.time()
+        res = oracle._extrapolate_recurrence("recurrence", "729", budget_s=1.0)
+        elapsed = time.time() - t0
+
+    assert elapsed < 40.0
+    assert res.ok and res.meta.get("completed") is False
+    assert "did NOT complete" in res.data
+    assert "123" not in res.data
+
+
 def test_symbolic_angr_reachable_impl_never_hangs_past_its_budget():
     # Bug real encontrado en vivo probando un binario con un bucle (un menu re-mostrado hasta que
     # el usuario elige salir): la busqueda hacia una UNICA llamada bloqueante `simgr.explore(...)`

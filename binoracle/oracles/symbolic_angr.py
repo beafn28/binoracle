@@ -6,7 +6,8 @@ reaches a target address."""
 from __future__ import annotations
 
 import time
-from typing import List
+from fractions import Fraction
+from typing import Dict, List
 
 from .base import Oracle, Tool, ToolParam, ToolResult
 
@@ -101,7 +102,68 @@ class AngrOracle(Oracle):
                 lambda addr, avoid=None: self._reachable(addr, avoid),
                 self.name,
             ),
+            Tool(
+                "angr_call_function",
+                "Call a function in isolation with concrete integer arguments and return its concrete "
+                "return value -- for a pure function (checksum, hash, transform, keygen routine) you "
+                "need the OUTPUT of, not whether it's reachable. Do NOT use this for a function whose "
+                "own recursion/loop count scales with its argument (e.g. naive unmemoized recursion): "
+                "it will not finish within budget and you will get an honest 'did not complete' "
+                "instead of a value -- for THAT case use angr_extrapolate_recurrence instead.",
+                [ToolParam("target", "function address (e.g. 0x401234) or symbol name (e.g. sym.recurrence or recurrence)"),
+                 ToolParam("args", "comma-separated integer arguments, e.g. 729 or 1,2")],
+                lambda target, args: self._call_function(target, args),
+                self.name,
+            ),
+            Tool(
+                "angr_extrapolate_recurrence",
+                "For a single-integer-argument pure function too EXPENSIVE to call directly for the "
+                "value you need (angr_call_function timed out, or the disassembly shows unmemoized "
+                "recursion / a loop whose trip count scales with the argument -- e.g. a naive "
+                "Fibonacci-style keystream generator, a common CTF trick): samples the function at "
+                "small, cheap arguments, fits the smallest linear recurrence that exactly explains "
+                "every sample, and extrapolates to the large argument you actually need with exact "
+                "arithmetic in O(n) instead of calling the real function. Reports the fitted formula "
+                "so it's auditable. If no small-order linear recurrence fits, says so honestly -- it "
+                "does not guess.",
+                [ToolParam("target", "function address or symbol name"),
+                 ToolParam("n", "the argument value you actually need the result for, e.g. 729")],
+                lambda target, n: self._extrapolate_recurrence(target, n),
+                self.name,
+            ),
         ]
+
+    def _call_function(self, target, args, budget_s: float = 30.0) -> ToolResult:
+        try:
+            parsed_args = [int(a.strip(), 0) for a in str(args).split(",") if a.strip() != ""]
+        except ValueError:
+            return ToolResult(False, "angr", "", error=f"bad args {args!r}: must be comma-separated integers")
+        timeout_msg = ToolResult(
+            True, f"angr: callable({target})({parsed_args})",
+            f"did NOT complete within budget ({budget_s:.0f}s) -- this function likely has "
+            "recursion or a loop whose cost scales with the argument (e.g. unmemoized "
+            "Fibonacci-style recursion). Do not retry with the same argument; try "
+            "angr_extrapolate_recurrence instead, or derive the recurrence yourself and compute "
+            "it iteratively (dynamic programming).",
+            meta={"completed": False},
+        )
+        return _run_forked(_call_function_worker, (self.binary, str(target), parsed_args, budget_s),
+                           budget_s, timeout_msg)
+
+    def _extrapolate_recurrence(self, target, n, budget_s: float = 45.0) -> ToolResult:
+        try:
+            n_int = int(str(n).strip(), 0)
+        except ValueError:
+            return ToolResult(False, "angr", "", error=f"bad n {n!r}: must be an integer")
+        timeout_msg = ToolResult(
+            True, f"angr: extrapolate_recurrence({target}, n={n_int})",
+            f"did NOT complete within budget ({budget_s:.0f}s) -- even sampling this function at "
+            "SMALL arguments is too expensive (it may not be a simple low-order recurrence at "
+            "all). Fall back to reading the disassembly by hand.",
+            meta={"completed": False},
+        )
+        return _run_forked(_extrapolate_recurrence_worker, (self.binary, str(target), n_int, budget_s),
+                           budget_s, timeout_msg)
 
     def _reachable(self, addr, avoid=None, budget_s: float = 45.0, max_active: int = 80) -> ToolResult:
         """Bug real encontrado en vivo: un binario con un bucle (p.ej. un menu re-mostrado hasta
@@ -241,5 +303,197 @@ def _reachable_impl(binary: str, target: int, avoid_list: list, budget_s: float,
 def _reachable_worker(binary, target, avoid_list, budget_s, max_active, q) -> None:
     try:
         q.put(_reachable_impl(binary, target, avoid_list, budget_s, max_active))
+    except Exception as e:
+        q.put(ToolResult(False, "angr", "", error=f"angr error: {e}"))
+
+
+def _run_forked(worker, args: tuple, budget_s: float, timeout_result: "ToolResult") -> "ToolResult":
+    """Shared hard-deadline wrapper for every angr call this oracle can't bound from the
+    inside (a single Callable invocation, or angr_reachable's own explore() loop): angr has
+    no universal cooperative-cancellation hook, so the only way to GUARANTEE the agent loop
+    never blocks past its budget is to run the real work in a forked child process and kill
+    it if it outlives `budget_s` -- confirmed live (angr_reachable's own fork, now reused here
+    for the newer tools instead of copy-pasting the same mechanics a second and third time)."""
+    import multiprocessing as mp
+    try:
+        ctx = mp.get_context("fork")
+    except ValueError:
+        ctx = mp.get_context()
+    q = ctx.Queue()
+    p = ctx.Process(target=worker, args=(*args, q))
+    p.start()
+    p.join(budget_s + 15.0)
+    if p.is_alive():
+        p.terminate()
+        p.join(5.0)
+        if p.is_alive():
+            p.kill()
+            p.join()
+        return timeout_result
+    try:
+        return q.get_nowait()
+    except Exception:
+        return ToolResult(False, "angr", "", error="angr: el proceso termino sin devolver resultado")
+
+
+def _resolve_target(proj, target: str) -> int:
+    s = str(target).strip()
+    try:
+        addr = int(s, 0)
+    except ValueError:
+        name = s[4:] if s.startswith("sym.") else s
+        sym = proj.loader.find_symbol(name)
+        if sym is None:
+            raise ValueError(f"no symbol named {name!r}")
+        return sym.rebased_addr
+    if proj.loader.main_object.pic:
+        base = proj.loader.main_object.mapped_base or 0
+        if addr < base:
+            addr += base
+    return addr
+
+
+def _call_function_impl(binary: str, target: str, args: list, budget_s: float) -> ToolResult:
+    """Runs INSIDE the forked worker (own fresh Project, same reason _reachable_impl does: it
+    can't share the parent's cached self._proj across a fork). Deliberately does NOT pass
+    step_limit to Callable: angr's own step_limit handling silently promotes a truncated,
+    never-actually-returned state into the "result" with no signal that it was cut short
+    (confirmed live: reading angr's Callable.perform_call source -- a step_limited state is
+    just re-stashed as "active" and used exactly like a real deadend). Relying only on this
+    worker's hard wall-clock budget (enforced by the parent killing the whole process) means a
+    truncated call NEVER gets reported as a value -- it just never returns, and the parent's
+    timeout path reports that honestly instead."""
+    try:
+        proj = angr.Project(binary, auto_load_libs=False)
+        addr = _resolve_target(proj, target)
+        cc = proj.factory.callable(addr)
+        result_bv = cc(*args)
+        value = cc.result_state.solver.eval(result_bv)
+        return ToolResult(
+            True, f"angr: callable({hex(addr)})({args})",
+            f"returned {value} (0x{value:x})",
+            meta={"completed": True, "addr": hex(addr), "args": args, "value": value},
+        )
+    except Exception as e:
+        return ToolResult(False, "angr", "", error=f"angr error calling {target}{tuple(args)}: {e}")
+
+
+def _call_function_worker(binary, target, args, budget_s, q) -> None:
+    try:
+        q.put(_call_function_impl(binary, target, args, budget_s))
+    except Exception as e:
+        q.put(ToolResult(False, "angr", "", error=f"angr error: {e}"))
+
+
+def _fit_linear_recurrence(samples: Dict[int, int], order: int):
+    """Finds rational coefficients c_1..c_order such that, for every consecutive window of
+    `order+1` samples present, R(i) = c_1*R(i-1) + ... + c_order*R(i-order) -- EXACTLY, not a
+    least-squares approximation (these come from integer machine arithmetic, so a real
+    low-order linear recurrence fits perfectly or not at all). Solves the first `order`
+    equations with exact Fraction Gaussian elimination, then VERIFIES every other available
+    equation against the fitted coefficients before accepting -- a fit that only explains the
+    equations it was solved from proves nothing (an order-k fit to exactly k equations is
+    always "perfect" by construction). Returns `coeffs` (list[Fraction], length `order`) or
+    None if there aren't enough consecutive samples or the fit doesn't hold everywhere."""
+    xs = sorted(samples)
+    windows = [i for i in xs if all((i - 1 - j) in samples for j in range(order))]
+    if len(windows) < order + 2:   # need `order` to solve + at least 2 more to verify, not 0
+        return None
+    fit_idx = windows[:order]
+    rows = [[Fraction(samples[i - 1 - j]) for j in range(order)] for i in fit_idx]
+    rhs = [Fraction(samples[i]) for i in fit_idx]
+    coeffs = _solve_exact(rows, rhs)
+    if coeffs is None:
+        return None
+    for i in windows[order:]:
+        predicted = sum(c * samples[i - 1 - j] for j, c in enumerate(coeffs))
+        if predicted != samples[i]:
+            return None
+    return coeffs
+
+
+def _solve_exact(rows: List[List[Fraction]], rhs: List[Fraction]):
+    """Tiny exact Gaussian elimination over Fraction for a small (order <= ~6) square system --
+    no numpy/sympy dependency needed for something this size, and exact Fraction arithmetic
+    means no floating-point tolerance guesswork when later VERIFYING the fit against held-out
+    samples (a near-miss from float rounding could silently hide a wrong recurrence)."""
+    n = len(rows)
+    m = [row[:] + [rhs[i]] for i, row in enumerate(rows)]
+    for col in range(n):
+        pivot = next((r for r in range(col, n) if m[r][col] != 0), None)
+        if pivot is None:
+            return None   # singular: this many equations don't pin down `order` unknowns
+        m[col], m[pivot] = m[pivot], m[col]
+        pv = m[col][col]
+        m[col] = [v / pv for v in m[col]]
+        for r in range(n):
+            if r != col and m[r][col] != 0:
+                factor = m[r][col]
+                m[r] = [a - factor * b for a, b in zip(m[r], m[col])]
+    return [m[i][n] for i in range(n)]
+
+
+def _extrapolate_impl(binary: str, target: str, n: int, budget_s: float) -> ToolResult:
+    """Runs inside the forked worker. Samples the target function at small, cheap arguments
+    0..max_order*2+1 within a SINGLE angr Project/state setup (reusing the project across
+    calls, unlike `_call_function` which is a one-shot process -- sampling a dozen small
+    values needs to stay cheap), tries the smallest linear recurrence order first (1 through
+    4 covers every CTF "recursive keystream" pattern seen so far: linear congruential, Fibonacci-
+    style, and small hand-rolled variants), and only extrapolates with a recurrence that is
+    verified against every sample beyond the ones used to fit it."""
+    try:
+        proj = angr.Project(binary, auto_load_libs=False)
+        addr = _resolve_target(proj, target)
+        samples: Dict[int, int] = {}
+        max_order = 4
+        for i in range(0, max_order * 2 + 2):
+            cc = proj.factory.callable(addr)
+            result_bv = cc(i)
+            samples[i] = cc.result_state.solver.eval(result_bv)
+        for order in range(1, max_order + 1):
+            coeffs = _fit_linear_recurrence(samples, order)
+            if coeffs is None:
+                continue
+            initial = [samples[i] for i in range(order)]
+            value = _iterate_recurrence(coeffs, initial, n)
+            terms = " + ".join(f"{c}*R(i-{j + 1})" for j, c in enumerate(coeffs))
+            formula = f"R(i) = {terms}, with R(0..{order - 1}) = {initial}"
+            return ToolResult(
+                True, f"angr: extrapolate_recurrence({target})",
+                f"Fitted and verified order-{order} linear recurrence from real samples of "
+                f"the function: {formula}. Extrapolated R({n}) = {value} (0x{value:x}"
+                f"{', low byte 0x' + format(value & 0xFF, '02x') if value > 0xFF else ''}).",
+                meta={"completed": True, "order": order, "coeffs": [str(c) for c in coeffs],
+                      "initial": initial, "n": n, "value": value},
+            )
+        sampled_str = ", ".join(f"R({i})={v}" for i, v in sorted(samples.items()))
+        return ToolResult(
+            True, f"angr: extrapolate_recurrence({target})",
+            f"No linear recurrence of order 1-{max_order} exactly explains the real samples "
+            f"({sampled_str}) -- this function is not a simple linear recurrence (or needs a "
+            "higher order / is nonlinear). Read the disassembly by hand instead.",
+            meta={"completed": True, "fit_found": False, "samples": samples},
+        )
+    except Exception as e:
+        return ToolResult(False, "angr", "", error=f"angr error extrapolating {target}: {e}")
+
+
+def _iterate_recurrence(coeffs: List[Fraction], initial: List[int], n: int) -> int:
+    """O(n) exact extrapolation -- Python ints never overflow, so this is exact even for the
+    astronomically large intermediate values a fast-growing recurrence produces well before
+    reaching the requested n (confirmed live: R(n) for this session's real CTF recurrence
+    overtakes 64-bit range well before n=100, long before the n=729 actually needed)."""
+    order = len(coeffs)
+    vals = list(initial)
+    for i in range(order, n + 1):
+        nxt = sum(c * vals[i - 1 - j] for j, c in enumerate(coeffs))
+        assert nxt.denominator == 1, "recurrence produced a non-integer -- fit was not exact"
+        vals.append(nxt.numerator)
+    return vals[n]
+
+
+def _extrapolate_recurrence_worker(binary, target, n, budget_s, q) -> None:
+    try:
+        q.put(_extrapolate_impl(binary, target, n, budget_s))
     except Exception as e:
         q.put(ToolResult(False, "angr", "", error=f"angr error: {e}"))
