@@ -344,7 +344,7 @@ def _resolve_target(proj, target: str) -> int:
         name = s[4:] if s.startswith("sym.") else s
         sym = proj.loader.find_symbol(name)
         if sym is None:
-            raise ValueError(f"no symbol named {name!r}")
+            raise ValueError(f"no symbol named {name!r}") from None
         return sym.rebased_addr
     if proj.loader.main_object.pic:
         base = proj.loader.main_object.mapped_base or 0
@@ -429,7 +429,7 @@ def _solve_exact(rows: List[List[Fraction]], rhs: List[Fraction]):
         for r in range(n):
             if r != col and m[r][col] != 0:
                 factor = m[r][col]
-                m[r] = [a - factor * b for a, b in zip(m[r], m[col])]
+                m[r] = [a - factor * b for a, b in zip(m[r], m[col], strict=True)]
     return [m[i][n] for i in range(n)]
 
 
