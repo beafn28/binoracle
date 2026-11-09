@@ -1084,6 +1084,41 @@ def test_html_pwn_script_canary_matches_cveplan_template():
     assert "p64(canary)" in s and "p64(WIN)" in s
 
 
+def test_cveplan_format_string_script_uses_fmtstr_payload_and_io_libc():
+    # Bug real encontrado en vivo contra samples/bin/fmt_got: la cadena "format-string
+    # printf@GOT=system" guarda en "offset" el INDICE %N$p del argumento de printf controlado
+    # (lo que fmtstr_payload necesita), no una distancia de buffer a RIP -- caia en la rama
+    # generica de abajo (flat({OFFSET: rop.chain()})) que no tiene nada que ver con un %n write y
+    # nunca sobreescribe nada util. Ademas, una primera version de este arreglo usaba
+    # elf.libc.symbols['system'] (offset ESTATICO dentro del fichero, con address=0) en vez de
+    # io.libc (direccion REAL del libc ya mapeado en el proceso abierto) -- confirmado en vivo:
+    # con elf.libc el %n escribia basura y el binario moria con SIGSEGV al llamar al resultado.
+    from binoracle.workflows.cveplan import _pwn_script_from_proof
+    proof = {"strategy": "format-string printf@GOT=system", "offset": 6,
+             "got": "0x404010", "system": "0x155555258750"}
+    s = _pwn_script_from_proof(proof, "fmt_got")
+    assert "flat({OFFSET" not in s, "el offset de formato no es una distancia de buffer a RIP"
+    assert "OFFSET = 6" in s and "PRINTF_GOT = 0x404010" in s
+    assert "fmtstr_payload(OFFSET, {PRINTF_GOT: system}" in s
+    assert "libc = io.libc" in s, "debe usar la libc REAL del proceso, no elf.libc (address=0)"
+    assert "libc = elf.libc" not in s
+    assert "io.sendline(b'/bin/sh')" in s
+
+
+def test_html_pwn_script_format_string_matches_cveplan_template():
+    from binoracle.report.html import _pwn_script
+
+    class _C:
+        name = "format-string"
+        target = "system('/bin/sh')"
+        proof = {"strategy": "format-string printf@GOT=system", "offset": 6,
+                 "got": "0x404010", "system": "0x155555258750"}
+    s = _pwn_script(_C())
+    assert "flat({OFFSET" not in s
+    assert "fmtstr_payload(OFFSET, {PRINTF_GOT: system}" in s
+    assert "libc = io.libc" in s and "libc = elf.libc" not in s
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP
