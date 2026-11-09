@@ -3472,6 +3472,20 @@ def test_chainanalyzer_format_string_driver_handles_pie():
     # Misma cadena que arriba pero sobre la variante PIE: confirma que autofmt.py resuelve
     # correctamente la base de printf@GOT y de system() via io.libs() cuando el binario esta
     # cargado a una direccion aleatorizada, sin depender de ninguna direccion fija.
+    #
+    # Flake real investigado a fondo esta sesion, NO resuelto: `autofmt(binary)` (el driver
+    # nativo, misma llamada EXACTA que usa `_verify_chain`) verifica correctamente llamado
+    # solo -- en un script aparte, o incluso importado directamente dentro de este mismo
+    # proceso de pytest -- pero este test especifico, corriendo DENTRO de este archivo bajo
+    # pytest, falla rapido (~3s, demasiado rapido para el intercambio real con la shell) con
+    # "no aplica printf(user) en bucle o timing". Descartado como causa, confirmado uno por
+    # uno: el plugin pytest-timeout (falla igual con -p no:pytest_timeout), las variables de
+    # entorno de conftest.py (puestas a mano en un script aparte, sigue pasando), y el mero
+    # import del modulo test_tools_and_config.py (sigue pasando llamado asi). Sigue sin
+    # identificarse que hace pytest distinto al correr ESTE archivo especificamente. Amplie
+    # el margen de tiempo del driver (autofmt.py: sleep 0.3s->0.8s, recv 2s->5s) por si acaso,
+    # pero confirmado en vivo que NO es la causa de este flake en particular (sigue fallando
+    # igual con el margen ampliado) -- se queda como mejora de robustez honesta, no como fix.
     import os
     import shutil
     b = "samples/bin/fmtstring_pie"
