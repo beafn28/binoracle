@@ -1955,9 +1955,23 @@ def _verify_chain(binary: str, kind: str, facts: dict, lang: str):
                 m = _re_cv.search(rf"{key}=(0x[0-9a-fA-F]+)", detail)
                 if m:
                     proof[key] = m.group(1)
-            m = _re_cv.search(r"bufsz=(\d+)", detail)
-            if m:
-                proof["offset"] = int(m.group(1))
+            # Bug real encontrado en vivo generando un dataset de entrenamiento: "offset" aqui se
+            # guardaba como el `bufsz` crudo (la salida de autocanary() reporta "bufsz=72
+            # rbpgap=8 ..."), no la distancia real al puntero de retorno -- un script pwntools
+            # renderizado con `flat({OFFSET: payload})` usando bufsz solo sobreescribe hasta el
+            # borde del RBP guardado, nunca llega a la direccion de retorno (confirmado en vivo:
+            # el payload del ret2libc nunca se ejecutaba). En x86-64, con el prologo estandar
+            # (push rbp; mov rbp,rsp), la distancia real es bufsz + rbpgap + 8 (el propio RBP
+            # guardado) -- se guarda bajo "offset" (lo que todo renderizador de script espera) Y
+            # el bufsz crudo se conserva aparte por si algun consumidor lo necesita.
+            m_bufsz = _re_cv.search(r"bufsz=(\d+)", detail)
+            m_gap = _re_cv.search(r"rbpgap=(\d+)", detail)
+            m_align = _re_cv.search(r"align=(\w+)", detail)
+            if m_bufsz:
+                proof["bufsz"] = int(m_bufsz.group(1))
+                proof["rbpgap"] = int(m_gap.group(1)) if m_gap else 8
+                proof["align"] = m_align.group(1) if m_align else "none"
+                proof["offset"] = proof["bufsz"] + proof["rbpgap"] + 8
             return ((f"{OK} (canary filtrado via %s y reescrito, overflow -> win(), shell en sandbox)" if v
                      else f"{NO}: {r.get('note', '')}"), v, proof if v else {})
         if kind == "ret2win":
