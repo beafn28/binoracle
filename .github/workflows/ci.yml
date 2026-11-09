@@ -1,0 +1,79 @@
+name: ci
+# CERO gasto: el workflow NO se ejecuta solo (ni en push ni en PR). Solo corre si lo lanzas a mano
+# desde la pestana Actions ("Run workflow"). Asi no consume minutos de GitHub Actions ni sale en rojo.
+# Las pruebas se corren en LOCAL: .venv/bin/python -m pytest tests/ -q
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install radare2
+        # gdb added here too -- real gap, not local noise: confirmed live by reproducing this
+        # exact runner setup (gdb absent, matching a stock ubuntu-latest image, which does NOT
+        # ship it by default) outside CI. oracles/heap_dynamic.py's dynamic double-free/UAF
+        # tools (heap_confirm_double_free and friends) gate their own registration on
+        # `shutil.which("gdb")`, so test_heap_dynamic_registered_only_when_dynamic_enabled
+        # failed on a bare runner for a real, concrete reason, not flakiness.
+        #
+        # wine added here too -- another real gap, not local noise: workflows/autopoc_pe.py's
+        # dynamic ret2win-over-PE verification (and test_autopoc_pe_verifies_ret2win_under_wine)
+        # had never actually run on CI (wine_available() was always False on a bare runner, so
+        # the test always skipped) -- confirmed live outside CI, where it surfaced a real bug
+        # now fixed (autopoc_pe._ensure_wine_ready: a cold Wine prefix's one-time ~55s init ate
+        # the FIRST offset attempt's own budget_s, so the one offset that was actually correct
+        # always timed out before the rest of the (wrong) offsets were tried -- guaranteed
+        # false negative on any fresh environment, CI included, until that first run warmed it).
+        #
+        # gcc-mingw-w64-x86-64 added here too, for a DIFFERENT real gap confirmed in vivo:
+        # samples/build.sh's win_chall.exe step always preferred Docker (debian:12's own
+        # gcc-mingw-w64-x86-64, GCC 12) over the host's mingw whenever Docker was available --
+        # this runner has Docker, so it always took that branch, building win_chall.exe with a
+        # DIFFERENT major GCC version than every local verification run tonight (Ubuntu's own
+        # package is GCC 13). That toolchain difference -- not angr nondeterminism, not Python
+        # version, not CPU count, all ruled out first -- is the confirmed cause of
+        # test_symbolic_angr_reachable_works_on_pe_via_mingw_simprocedures failing on CI 3/3
+        # while passing locally 18+/18+: a binarily different win_chall.exe, built without
+        # anyone noticing. Installing it here flips samples/build.sh's (now host-first) branch
+        # to use the SAME toolchain already verified repeatedly, instead of Docker's.
+        run: sudo apt-get update && sudo apt-get install -y radare2 build-essential gdb wine gcc-mingw-w64-x86-64
+      - name: Install binoracle (+ optional oracles, dev tools)
+        # pwntools (the 'pwn' extra) was missing here -- real gap, not local noise: confirmed
+        # live by reproducing this exact install command and test run outside CI. Several
+        # live-verified exploit-chain tests (ROP/SROP cyclic-pattern offsets, chainanalyzer's
+        # execve-syscall driver) depend on pwntools and were silently reporting
+        # "pwntools no disponible: No module named 'pwn'" instead of actually verifying.
+        #
+        # 'symbolic' (angr) and 'frida' were ALSO missing -- another real gap, not deliberate:
+        # confirmed live that oracles/concolic.py's and oracles/frida_dynamic.py's entire test
+        # suites (symbolic replay/constraint-solving against a real gdb trace, cross-platform
+        # double-free/UAF confirmation) were silently SKIPPING on every CI run to date (each
+        # import-guards its own optional dependency and calls pytest.skip() when absent) --
+        # never actually executed here, only ever locally. Added both so these oracles are
+        # actually exercised on CI, not just locally.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[elf,dev,web,pwn,symbolic,frida]" r2pipe cvss olefile
+      - name: Build the practice corpus (samples/bin -- gitignored, never checked in)
+        # samples/build.sh falls back to the host gcc on Linux when the gcc:13 Docker image
+        # isn't already present (which it isn't on a fresh runner) -- build-essential above
+        # covers it. Several tests (default_corpus, exploit_trainer, chainanalyzer...) need
+        # these real compiled ELFs; without this step they silently find an empty corpus.
+        run: bash samples/build.sh
+      - name: Compile check
+        run: python -m compileall -q binoracle
+      - name: Lint (ruff -- pyflakes correctness checks, hard gate)
+        run: ruff check binoracle
+      - name: Type check (mypy -- advisory for now, see pyproject.toml's [tool.mypy] comment)
+        run: mypy binoracle --ignore-missing-imports || true
+      - name: Run tests with coverage
+        # 20% is a deliberately conservative floor, not an aspiration -- it's the gate's FIRST
+        # value, set before a full-suite coverage measurement finished (the suite is slow: many
+        # tests drive real sandboxes/angr/docker). Raise it to the real measured value (rounded
+        # down a couple points for headroom) once that run completes, then again over time as
+        # coverage grows -- never lower it without a documented reason.
+        run: pytest -q tests/ --cov=binoracle --cov-report=term-missing --cov-fail-under=20

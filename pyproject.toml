@@ -1,0 +1,139 @@
+[project]
+name = "binoracle"
+version = "0.1.0"
+description = "Local LLM copilot for binary reverse engineering and exploitation, grounded on real analysis oracles."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
+authors = [{ name = "beafn28" }]
+keywords = ["reverse-engineering", "exploitation", "llm", "local", "radare2", "angr", "ctf"]
+
+# Core runtime uses ONLY the Python standard library (urllib, sqlite3, argparse).
+# This keeps the tool fully local and installable with zero pip deps for the skeleton.
+dependencies = []
+
+[project.optional-dependencies]
+# Analysis oracles are optional and load lazily. Install what you have/need.
+elf = ["pyelftools>=0.30"]
+pe = ["pefile>=2023.2.7"]
+msi = ["olefile>=0.47"]
+r2 = ["r2pipe>=1.8"]
+symbolic = ["angr>=9.2"]
+# capstone pinned here too (not just in `disasm` below): pwntools' OWN metadata declares
+# `capstone>=3.0.5rc2` -- a floor that is itself a pre-release identifier, which under PEP 440
+# tells pip pre-releases are in scope for this package. With nothing else in an `[elf,dev,web,pwn]`
+# install (no `angr`, which pins an exact `capstone==5.0.9`, and no `disasm`, whose own
+# `capstone>=5.0` below never gets consulted unless that extra is explicitly requested) to pull
+# it back down, pip resolved straight to a `capstone==6.0.0a11` ALPHA -- confirmed live via a
+# real CI run (binoracle==0.1.0 install log: "Collecting capstone>=3.0.5rc2 (from
+# pwntools>=4.11->binoracle==0.1.0)" -> "Successfully installed ... capstone-6.0.0a11 ..."),
+# which broke for real: capstone 6 renamed its ARM64 constants, so
+# `workflows/rawshellcode.py`'s `capstone.CS_ARCH_ARM64` raised AttributeError
+# (test_rawshellcode_identifies_real_execve_shellcode_as_x86_64/_degrades_cleanly_on_empty_input,
+# both genuinely new CI failures, not a pre-existing documented gap). This codebase's capstone
+# usage targets the 5.x API throughout; excluding 6.x here is the fix, not a version bump of the
+# code to match 6.x's renamed constants.
+pwn = ["pwntools>=4.11", "capstone>=5.0,<6"]
+disasm = ["capstone>=5.0,<6"]
+cvss = ["cvss>=3.0"]
+burp = ["mcp>=1.0"]
+frida = ["frida>=16.0"]
+web = ["requests>=2.28"]   # wpverify.py's live HTTP verification (login, plugin setup, probes)
+docs = ["markdown>=3.5"]
+all = ["pyelftools>=0.30", "pefile>=2023.2.7", "olefile>=0.47", "r2pipe>=1.8", "angr>=9.2", "capstone>=5.0,<6", "pwntools>=4.11", "cvss>=3.0", "mcp>=1.0", "frida>=16.0", "requests>=2.28"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5", "pytest-timeout>=2.3", "cvss>=3.0", "pefile>=2023.2.7",
+       "olefile>=0.47", "ruff>=0.17", "mypy>=1.10", "pytest-cov>=5.0", "coverage>=7.0"]
+
+[project.scripts]
+binoracle = "binoracle.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["binoracle*"]
+
+[tool.setuptools.package-data]
+binoracle = ["kb/*.md", "kb/**/*.md", "kb/skills/LICENSE"]
+
+[tool.pytest.ini_options]
+# Real gap found live: a manual GitHub Actions ci.yml run ran for 4+ hours with no sign of
+# finishing (eventually cancelled) with zero per-test safety net -- pytest-timeout was an
+# installed dependency in some environments but was never actually a declared dependency NOR
+# configured anywhere, so a genuinely hanging test (as opposed to a merely slow one) could
+# consume the suite's entire run, and on CI, the whole job (no explicit timeout-minutes there
+# either, so GitHub's own 360-minute default is the only backstop). 300s is set well above the
+# slowest known-legitimate single operation this suite does on purpose (oracles/r2session.py's
+# own internal timeouts: 180s for a fresh `aaa` full analysis, 90s for most individual r2
+# commands) so it should never fire on a test that is merely slow-but-working, only on one that
+# genuinely never returns. thread method (not the default signal-based one): this codebase
+# spawns real subprocesses/threads itself (Docker, r2, angr) and signal-based interruption can't
+# reliably land inside a blocking C-level wait the way a thread-based watchdog can.
+timeout = 300
+timeout_method = "thread"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Deliberately narrow: pyflakes (F) only -- real correctness signals (unused imports, undefined
+# names, unused variables, pointless f-strings), confirmed at zero as of this gate's introduction.
+# The broader style/modernization rulesets (E-series line length & statement style, I001 import
+# sorting, UP00x py3-upgrade rewrites) found thousands of PRE-EXISTING hits across this codebase's
+# history (most of it written before this gate existed) -- enforcing those now would mean either a
+# a mass mechanical reformat with real regression risk (confirmed live: the F401 auto-fix silently
+# deleted two `try: import X` AVAILABILITY PROBES -- oracles/capstone_fallback.py's r2pipe check and
+# workflows/autopoc.py's angr check -- because removing an "unused" import that exists ONLY to be
+# caught by its own ImportError is invisible to a plain unused-import check; both were caught by
+# diffing the fix and restored with a `# noqa: F401` before this gate was added) or ignoring real
+# findings to get there faster. F-only is the honest, zero-regression baseline; broadening it is
+# future "ongoing" work per ROADMAP.md, done rule-by-rule with the same scrutiny.
+#
+# First broadening increment: B (flake8-bugbear) added. Confirmed at zero PRE-EXISTING hits
+# across the whole package once each real finding was fixed by hand (never --fix on this
+# ruleset either -- B007's own autofix is "hidden"/unsafe for the same class of reason F401's
+# was): a genuine duplicate dict/set literal in rag.py's _STOP ("un" listed twice -- harmless in
+# a set, but a real copy-paste residue), a `zip()` over two sequences without `strict=` (already
+# guaranteed equal-length by an earlier length check, so no live bug, but now says so instead of
+# relying on a caller to have checked), and several unused loop-unpack variables (renamed to
+# `_name`, or `enumerate()` dropped entirely where the index was never used at all) in
+# rag.py/report/html.py/workflows/cveplan.py/workflows/dotnetgraph.py/workflows/sqliteinspect.py.
+#
+# Second increment: C4 (flake8-comprehensions) added. 55 hits, all pure equivalence rewrites
+# (a comprehension that is a verbatim no-op wrapper around a builtin -- {k: v for k in X} ->
+# dict.fromkeys(X, v), {x for x in gen} -> set(gen), [x for x in it] -> list(it)) -- reviewed the
+# whole diff by hand before accepting ruff's own --fix for the 52 of them it offered (never
+# --unsafe-fixes): every single hit was dict.fromkeys()-shaped (the same `{p: v for p in
+# parameters}` pattern repeated ~45 times across every wpverify.py/drupalverify.py/
+# genericverify.py/joomlaverify.py verifier that builds a default payload dict) plus a couple of
+# severity-counter dicts in report/html.py/web.py -- none of them had any filtering/
+# transformation logic ruff could have mis-collapsed. The remaining 3 (marked "unsafe" by ruff
+# itself, so fixed by hand instead of forcing them): a set comprehension wrapping a set literal
+# in agent/grounding.py, a list comprehension wrapping len() in oracles/base.py, and a
+# generator-in-set() in workflows/androidquery.py -- same equivalence, just outside ruff's
+# "safe" threshold for its own fixer.
+select = ["F", "B", "C4"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+# Advisory, not a hard gate yet: a first `mypy --ignore-missing-imports` pass over this codebase
+# (written long before this config existed) found ~400 pre-existing errors across ~70 files --
+# real signal (a few are genuine latent bugs worth triaging), but burying a brand-new CI gate
+# under 400 failures on day one would just get it disabled. CI runs mypy and publishes the count
+# so regressions are visible, without blocking the build on the existing backlog; promote files to
+# a hard per-module gate as they're cleaned up, per ROADMAP.md's "ongoing" framing of this item.
+warn_unused_ignores = false
+no_implicit_optional = false

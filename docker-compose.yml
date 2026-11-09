@@ -1,0 +1,80 @@
+# binoracle en local con Docker — TODO en un comando (binoracle + Ollama + modelo).
+#
+#   docker compose up --build      # construye y levanta: web http://127.0.0.1:8080 + IA (Ollama)
+#   docker compose run --rm binoracle binoracle apk /targets/tu.apk   # CLI puntual
+#   docker compose exec binoracle pytest tests/test_smoke.py -v       # verificar exploits
+#
+# Para analizar TUS ficheros: ponlos en ./targets y referencialos como /targets/<fichero>
+# (en la UI web o en el CLI). Nada sale del host: binoracle es local y offline.
+#
+# La IA (audit / ask / CVE->Exploit / narrativa) la sirve el servicio `ollama` de abajo, que
+# descarga el modelo la PRIMERA vez (persiste en el volumen `ollama-models`, no se re-descarga).
+# Si NO quieres IA, arranca solo el analizador:  docker compose up binoracle
+services:
+  binoracle:
+    build: .
+    image: binoracle:latest
+    # linux/amd64 incluso en Mac M1 / ARM: necesario para EJECUTAR los binarios x86-64/x86-32 de
+    # los exploits (en M1 corre por emulacion, mas lento pero funcional). Para solo lectura
+    # estatica (APK/ELF/.NET/Flutter...) puedes quitar esta linea y usar tu arquitectura nativa.
+    platform: linux/amd64
+    ports:
+      - "8080:8080"              # UI web: http://127.0.0.1:8080
+    volumes:
+      - ./targets:/targets       # deja aqui tus APK/binarios -> en la app usa /targets/<fichero>
+      # Socket de Docker del HOST (Docker Desktop en Mac/Windows, daemon nativo en Linux): el
+      # contenedor NO corre su propio dockerd, habla con este. Necesario para wpverify.py
+      # (WordPress+MySQL efimero que confirma CVEs web de verdad) y los sandboxes LD_PRELOAD/heap
+      # que hacen `docker run`. Sin esto degradan honestamente (available=False), nunca fallan mal.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Para que el contenedor pueda llegar a servicios del host si los necesitas.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BINORACLE_LANG: es
+      # La IA habla con el servicio `ollama` de este compose (no con localhost del contenedor).
+      BINORACLE_BASE_URL: http://ollama:11434
+      BINORACLE_MODEL: ${BINORACLE_MODEL:-qwen2.5-coder:7b}
+    depends_on:
+      - ollama
+    # --- Solo para la VERIFICACION DE EXPLOITS por ejecucion (objetivos AUTORIZADOS / CTF) ---
+    # El sandbox usa namespaces de Linux (unshare) y desactiva ASLR (setarch -R); eso requiere
+    # capacidades extra y un seccomp relajado. Si solo vas a hacer analisis ESTATICO, puedes
+    # borrar este bloque entero (la imagen sigue sirviendo la UI y los lectores igual).
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    # mantener el contenedor vivo re-arranca la UI si se cae
+    restart: unless-stopped
+
+  # --- Ollama: el modelo LLM local para las funciones de IA ---
+  # SIN `platform`: corre en la arquitectura nativa del host (en Mac M1 -> arm64 con Metal, rapido;
+  # NO emulado). binoracle le habla por la red interna del compose como http://ollama:11434.
+  # La primera vez descarga BINORACLE_MODEL (por defecto qwen2.5-coder:7b, ~4.7 GB) y lo cachea en
+  # el volumen; los siguientes arranques son inmediatos. Cambia el modelo con la env BINORACLE_MODEL.
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      BINORACLE_MODEL: ${BINORACLE_MODEL:-qwen2.5-coder:7b}
+    # arranca el servidor, espera a que responda y hace `pull` del modelo una sola vez (idempotente).
+    # ($$ escapa el $ para que lo expanda el shell del contenedor, no docker compose.)
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        srv=$$!
+        echo '[ollama] esperando al servidor...'
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        echo "[ollama] descargando modelo $${BINORACLE_MODEL} (solo la primera vez)..."
+        ollama pull "$${BINORACLE_MODEL}" || echo '[ollama] pull fallo; reintenta con: docker compose exec ollama ollama pull '"$${BINORACLE_MODEL}"
+        echo '[ollama] listo.'
+        wait $$srv
+    restart: unless-stopped
+
+volumes:
+  ollama-models:

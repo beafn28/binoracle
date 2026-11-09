@@ -1,0 +1,34 @@
+# byte-compiled / packaging
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# virtualenvs
+.venv/
+venv/
+
+# local runtime state
+.binoracle/
+*.sqlite
+*.sqlite-*
+.pytest_cache/
+
+# compiled practice binaries (sources + builder are versioned; binaries are not)
+samples/bin/
+
+# generated reports / scratch exploits
+binoracle_report.*
+
+# stray core dumps from crashing exploit processes (the `core` fixture is tracked explicitly)
+core.*
+
+# coverage data (pytest-cov / coverage.py; parallel runs under pytest-xdist leave one per worker)
+.coverage
+.coverage.*
+htmlcov/
+coverage.json
+
+# generated docs site (docs/build_site.py); the markdown sources are versioned, the HTML isn't
+docs/site/
