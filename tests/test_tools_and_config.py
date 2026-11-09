@@ -1119,6 +1119,51 @@ def test_html_pwn_script_format_string_matches_cveplan_template():
     assert "libc = io.libc" in s and "libc = elf.libc" not in s
 
 
+def test_cveplan_non_rop_strategies_degrade_honestly_instead_of_fake_rop_script():
+    # Bug real de la misma clase que canary/format-string, mas amplio: CUALQUIER cadena
+    # verificada cuyo mecanismo no es un ROP de pila generico (heap: house-of-*/tcache/fastbin-
+    # dup/unsafe-unlink/largebin; UAF; write-what-where; ret2csu; SROP; ret2dlresolve) caia en
+    # la rama generica final (system()/execve() via flat({OFFSET: rop.chain()})) -- confirmado
+    # en vivo contra samples/bin/ret2csu: un exploit VERIFICADO por ejecucion real (mode=win,
+    # off=72, g1/g2/fnptr) generaba un script con rop.call(system, [binsh]) que no tiene nada
+    # que ver con los gadgets __libc_csu_init reales de la cadena, y ret2csu se elige
+    # precisamente cuando ese gadget simple NO existe. En vez de fabricar una plantilla bespoke
+    # para cada una de estas ~15 tecnicas, se degrada honestamente senalando `binoracle autopwn`.
+    from binoracle.workflows.cveplan import _pwn_script_from_proof
+    cases = [
+        {"strategy": "ret2csu (__libc_csu_init -> call con args controlados)",
+         "offset": 72, "g1": "0x40118a", "g2": "0x401195", "fnptr": "0x404028"},
+        {"strategy": "SROP (sigreturn -> execve)", "offset": 40,
+         "syscall": "0x401050", "binsh": "0x402000"},
+        {"strategy": "ret2dlresolve (shell sin leak de libc)", "offset": 40,
+         "data_addr": "0x404100"},
+        {"strategy": "write-what-where GOT=win", "offset": 3, "table": "0x404040", "win": "0x401176"},
+        {"strategy": "tcache dup GOT=system", "got_symbol": "printf", "got": "0x404018",
+         "system": "0x401200"},
+        {"strategy": "UAF (reutilizacion de chunk) funcptr=win", "win": "0x401176", "size": 32},
+        {"strategy": "house-of-force (top-chunk -> alloc arbitraria -> win)",
+         "win": "0x401166", "handler": "0x404040", "heap": "0x404060"},
+    ]
+    for proof in cases:
+        s = _pwn_script_from_proof(proof, "x")
+        assert "rop.call" not in s and "flat({OFFSET" not in s and "rop.execve" not in s, proof["strategy"]
+        assert "binoracle autopwn" in s, proof["strategy"]
+        assert "VERIFICADA por EJECUCION REAL" in s
+
+
+def test_html_pwn_script_non_rop_strategies_degrade_honestly():
+    from binoracle.report.html import _pwn_script
+
+    class _C:
+        name = "ret2csu"
+        target = "win(a,b,c)"
+        proof = {"strategy": "ret2csu (__libc_csu_init -> call con args controlados)",
+                 "offset": 72, "g1": "0x40118a", "g2": "0x401195", "fnptr": "0x404028"}
+    s = _pwn_script(_C())
+    assert "rop.call" not in s and "flat({OFFSET" not in s
+    assert "binoracle autopwn" in s
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP
