@@ -632,6 +632,49 @@ def query_from_facts(facts: dict) -> str:
     return " ".join(parts)
 
 
+_RECURSION_SKIP_PREFIXES = (
+    "entry", "sym.imp.", "sym.__", "sym._init", "sym._fini",
+    "sym.deregister_tm_clones", "sym.register_tm_clones", "sym.frame_dummy",
+)
+
+
+def _detect_recursive_functions(reg, limit: int = 10) -> list[str]:
+    """Cheap static self-recursion detector: a function whose own disassembly contains a
+    `call` back to itself. Found live missing entirely: `build_kb_hint`'s query was built
+    ONLY from exploit-mitigation facts (checksec/sinks/win-funcs), so a pure computation
+    puzzle with no classic overflow sink and no win function (confirmed live: a real CTF,
+    `recur`, whose flag is XOR'd against an unmemoized Fibonacci-style recursive function)
+    never matched anything -- the retrieval had no feature for "this is a reversing puzzle
+    about a recursive function," only for "this is a pwn target." Bounded to `limit`
+    candidate functions (same spirit as `_indirect`'s own capped scan) so this stays cheap
+    on every ask/hunt/chat/audit call, not just on binaries small enough to not matter."""
+    try:
+        fl = reg.get("r2_functions")
+        disasm = reg.get("r2_disasm")
+        if fl is None or disasm is None:
+            return []
+        r = fl.run()
+        if not r.ok:
+            return []
+        names = []
+        for line in r.data.splitlines():
+            parts = line.split()
+            if len(parts) < 2 or not parts[0].startswith("0x"):
+                continue
+            name = parts[-1]
+            if name == "main" or any(name.startswith(p) for p in _RECURSION_SKIP_PREFIXES):
+                continue
+            names.append(name)
+        found = []
+        for name in names[:limit]:
+            dr = disasm.run(target=name)
+            if dr.ok and re.search(rf"\bcall\s+{re.escape(name)}\b", dr.data):
+                found.append(name)
+        return found
+    except Exception:
+        return []
+
+
 def build_kb_hint(reg, store=None) -> str:
     """Build the RAG hint for a binary: curated cheat sheets selected from its real facts
     (checksec + sinks + gift funcs) PLUS, if a store is given, facts binoracle has already
@@ -672,6 +715,11 @@ def build_kb_hint(reg, store=None) -> str:
             r = win.run()
             if r.ok and (r.meta.get("win_funcs", 0) > 0 or "/bin/sh" in r.data):
                 facts["primitives"].append("ret2win")
+
+        recursive_fns = _detect_recursive_functions(reg)
+        if recursive_fns:
+            facts["category"] = ("recursive function self-call unmemoized exponential "
+                                 "recursion keystream")
 
         hint = get_kb().context_for(query_from_facts(facts), k=5, max_chars=2200)
 

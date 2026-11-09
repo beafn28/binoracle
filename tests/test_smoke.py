@@ -5340,3 +5340,68 @@ def test_ask_hunt_chat_now_actually_consult_the_knowledge_base(tmp_path, monkeyp
     assert fake.system_prompts and sentinel in fake.system_prompts[-1], (
         "cmd_chat no paso el kb_hint real al AgentLoop"
     )
+
+
+def test_build_kb_hint_detects_self_recursion_and_surfaces_the_matching_skill():
+    # Gap real encontrado en vivo resolviendo un CTF real (recur): su flag se computa con una
+    # funcion recursiva sin memoizar (R(n)=2*R(n-1)+3*R(n-2)) XOR'd contra el ciphertext -- un
+    # puzzle de computo puro, SIN sinks de overflow clasicos y SIN funcion win. `build_kb_hint`
+    # solo construia su consulta desde hechos de mitigacion de exploits (checksec/sinks/win),
+    # asi que nunca tenia ninguna senal para este tipo de reto -- la nota de tecnica
+    # 'recurrence-keystreams' (aprendida via `binoracle learn` en un commit anterior) estaba
+    # en la base de conocimiento pero JAMAS se recuperaba para el binario que la necesitaba.
+    # Confirma el detector de auto-recursion contra un binario REAL compilado aqui (no un mock
+    # del oraculo) y que el hint resultante SI incluye esa nota.
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    import pytest
+    from binoracle.oracles import build_registry
+    from binoracle.rag import _detect_recursive_functions, build_kb_hint
+    if not shutil.which("gcc"):
+        pytest.skip("gcc no disponible")
+
+    src = os.path.join(tempfile.mkdtemp(), "fib_recursive.c")
+    binp = src[:-2]
+    with open(src, "w") as f:
+        f.write(
+            "int fib(int n) {\n"
+            "    if (n == 0) return 0;\n"
+            "    if (n == 1) return 1;\n"
+            "    return fib(n - 1) + fib(n - 2);\n"
+            "}\n"
+            "int main(int argc, char **argv) { return fib(argc + 5); }\n"
+        )
+    r = subprocess.run(["gcc", "-O0", "-fno-inline", "-o", binp, src], capture_output=True, timeout=30)
+    if r.returncode != 0 or not os.path.exists(binp):
+        pytest.skip("no se pudo compilar el fixture minimo en este entorno")
+    try:
+        reg = build_registry(binp)
+        rec = _detect_recursive_functions(reg)
+        assert any("fib" in name for name in rec), f"no detecto la auto-recursion real: {rec}"
+
+        hint = build_kb_hint(reg)
+        assert "recurrence-keystreams" in hint or "recurs" in hint.lower(), (
+            "el hint no recupero la nota de tecnica aprendida sobre funciones recursivas "
+            f"(hint: {hint[:300]!r})"
+        )
+    finally:
+        for p in (src, binp):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_detect_recursive_functions_has_no_false_positive_on_a_non_recursive_binary():
+    # Contraparte honesta: un binario sin ninguna funcion que se llame a si misma no debe
+    # reportar nada, confirmado contra un ret2win ya compilado en el repo (ninguna de sus
+    # funciones es recursiva).
+    import os
+    import pytest
+    from binoracle.oracles import build_registry
+    from binoracle.rag import _detect_recursive_functions
+    b = "samples/bin/ret2win"
+    if not os.path.exists(b):
+        pytest.skip("sample ret2win no compilado")
+    reg = build_registry(b)
+    assert _detect_recursive_functions(reg) == []
