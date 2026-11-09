@@ -5043,6 +5043,64 @@ def test_quiet_pwn_has_real_host_process_callers():
     assert _HAVE_PWN is True, "rop.py no detecto pwntools -- revisa que binoracle._quiet_pwn exista"
 
 
+def test_chromium_launch_kwargs_uses_the_preinstalled_binary_when_present(monkeypatch):
+    # Bug real encontrado en vivo: `workflows/dynamic.py`'s `browser_observe` (el comando
+    # `binoracle dynamic browser`) y DOS de los tres sitios de Playwright en
+    # `workflows/wpverify.py` llamaban `chromium.launch(headless=True, ...)` sin mas -- en este
+    # contenedor, el paquete pip de Playwright pide una revision de Chromium
+    # ("chromium_headless_shell-1248") que no coincide con la version pre-instalada
+    # ("...-1194"), asi que Playwright intenta DESCARGAR la que falta y falla sin red de salida
+    # para eso. El UNICO sitio que SI lo hacia bien (`_XssBrowserSession` en wpverify.py, un
+    # fix previo nunca extraido ni reutilizado) pasaba `executable_path` directo al binario pre-
+    # instalado. `binoracle.chromium_launch_kwargs()` centraliza ese fix; confirma que lo usa
+    # cuando el binario conocido esta presente, y que degrada a solo headless+no-sandbox si no.
+    import binoracle
+    monkeypatch.setattr("os.path.exists", lambda p: p == "/opt/pw-browsers/chromium")
+    kw = binoracle.chromium_launch_kwargs()
+    assert kw["executable_path"] == "/opt/pw-browsers/chromium"
+    assert kw["headless"] is True
+    assert "--no-sandbox" in kw["args"]
+
+    monkeypatch.setattr("os.path.exists", lambda p: False)
+    kw2 = binoracle.chromium_launch_kwargs()
+    assert "executable_path" not in kw2
+    assert kw2["headless"] is True
+
+
+def test_dynamic_browser_observe_actually_loads_a_real_local_page():
+    # Confirma el fix de punta a punta (no solo la funcion aislada): `browser_observe` debe
+    # lanzar Chromium de verdad y cargar una pagina real -- sin el fix, esto fallaba en este
+    # contenedor con "Executable doesn't exist at .../chrome-headless-shell..." en vez de
+    # observar nada. Pagina local (http.server en localhost), no una URL externa: no depende
+    # de red saliente ni de un sitio de terceros.
+    import threading
+    import pytest
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from binoracle.workflows.dynamic import browser_observe
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><title>binoracle-test-page</title><body>hi</body></html>")
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    th = threading.Thread(target=server.serve_forever, daemon=True)
+    th.start()
+    try:
+        r = browser_observe(f"http://127.0.0.1:{port}/", timeout_s=10, secret_scan=False)
+    finally:
+        server.shutdown()
+    if not r.get("available"):
+        pytest.skip(f"Playwright no disponible en este entorno: {r.get('note')}")
+    assert r.get("ok") is True, r.get("note")
+    assert r.get("title") == "binoracle-test-page"
+
+
 def test_docs_site_builds_real_valid_html_from_every_source_page():
     # "A docs site with a guided tutorial over the samples/ corpus" del ROADMAP.md. Corre el
     # generador DE VERDAD (docs/build_site.py) contra las fuentes reales del repo (no fixtures

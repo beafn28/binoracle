@@ -686,6 +686,7 @@ def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str
     captura). Devuelve la imagen como PNG codificado en base64, o None."""
     try:
         from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
     except Exception:
         return None
     import base64
@@ -697,7 +698,7 @@ def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str
     os.close(fd)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 900})
                 ctx.add_cookies(cookies)
@@ -725,6 +726,7 @@ def _screenshot_failed_login(base_url: str, user: str, wrong_password: str) -> O
     Mismo patron de degradacion honesta que _screenshot_authenticated: sin Playwright, None."""
     try:
         from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
     except Exception:
         return None
     import base64
@@ -733,7 +735,7 @@ def _screenshot_failed_login(base_url: str, user: str, wrong_password: str) -> O
     os.close(fd)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
                 page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
                 page.goto(base_url + "/wp-login.php", wait_until="load", timeout=15000)
@@ -766,6 +768,7 @@ def _xss_render(base_url: str, endpoint: str, method: str, params: dict, cookies
     (degradacion honesta, igual que _screenshot_authenticated)."""
     try:
         from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
     except Exception:
         return None, None
     import base64
@@ -776,7 +779,7 @@ def _xss_render(base_url: str, endpoint: str, method: str, params: dict, cookies
     os.close(fd)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 900})
                 if cookies:
@@ -822,18 +825,12 @@ class _XssBrowserSession:
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
         self._pw_cm = sync_playwright()
         self._pw = self._pw_cm.__enter__()
-        # el paquete pip de Playwright instalado puede pedir una revision de Chromium distinta
-        # de la que este sandbox trae pre-instalada (confirmado en vivo: "chromium_headless_
-        # shell-1248" no existe, solo la 1194) -- channel/executablePath explicito al binario
-        # 'chromium' completo (no el headless_shell, que es el que falta) evita que Playwright
-        # intente descargar nada.
-        launch_kwargs = {"headless": True, "args": ["--no-sandbox"]}
-        chromium_path = "/opt/pw-browsers/chromium"
-        if os.path.exists(chromium_path):
-            launch_kwargs["executable_path"] = chromium_path
-        self._browser = self._pw.chromium.launch(**launch_kwargs)
+        # el fix de version/ejecutable de Chromium vive en binoracle.chromium_launch_kwargs()
+        # (extraido de aqui: este era el UNICO sitio que lo tenia bien -- ver su docstring).
+        self._browser = self._pw.chromium.launch(**chromium_launch_kwargs())
         return self
 
     def __exit__(self, *exc):

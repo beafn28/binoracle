@@ -39,3 +39,29 @@ def _quiet_angr() -> None:
     _logging.getLogger("angr").setLevel(_logging.ERROR)
     _logging.getLogger("cle").setLevel(_logging.ERROR)
     _logging.getLogger("pyvex").setLevel(_logging.ERROR)
+
+
+def chromium_launch_kwargs() -> dict:
+    """Keyword args for `playwright.sync_api.sync_playwright().chromium.launch(...)`.
+
+    Found live (first fixed, in isolation, inside workflows/wpverify.py's _XssBrowserSession):
+    the pip `playwright` package can request a Chromium revision this environment's
+    pre-installed browser doesn't match (confirmed live: "chromium_headless_shell-1248" asked
+    for, only "...-1194" present) -- plain `chromium.launch(headless=True)` then tries to
+    DOWNLOAD the missing revision instead of using what's already there, and fails outright in
+    a sandboxed container with no outbound access for that download. Passing the pre-installed
+    binary's path directly as `executable_path` sidesteps version matching entirely. Was fixed
+    ONLY in that one call site; every OTHER chromium.launch() in this codebase
+    (workflows/dynamic.py's browser_observe, three more in workflows/wpverify.py itself) still
+    had the bare, unfixed call -- confirmed live against workflows/dynamic.py: it degraded
+    "honestly" with a Playwright-install nag instead of using the browser that was right there.
+    `--no-sandbox` is required too: this process commonly runs as root, where Chromium's own
+    sandbox refuses to start at all. Falls back to plain `headless=True` (letting Playwright's
+    own resolution run) when the known path isn't present, so this stays correct outside this
+    one container image."""
+    kwargs = {"headless": True, "args": ["--no-sandbox"]}
+    chromium_path = "/opt/pw-browsers/chromium"
+    import os as _os
+    if _os.path.exists(chromium_path):
+        kwargs["executable_path"] = chromium_path
+    return kwargs
