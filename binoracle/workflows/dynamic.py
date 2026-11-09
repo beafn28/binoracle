@@ -154,13 +154,14 @@ def browser_observe(url: str, timeout_s: int = 20, screenshot: str = None,
     Chromium is used (no download). Nothing is submitted or clicked."""
     try:
         from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs as _chromium_launch_kwargs
     except Exception as e:
         return {"ok": False, "available": False, "tool": "playwright",
                 "note": f"Playwright no disponible: {e}. pip install playwright"}
     requests, responses, console, scripts, inline_bodies = [], [], [], [], []
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(**_chromium_launch_kwargs())
             try:
                 page = browser.new_context().new_page()
                 page.on("request", lambda req: requests.append(
