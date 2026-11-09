@@ -656,6 +656,28 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
     return _poc_notice + "\n".join(_dev_header(name, tag) + body)
 
 
+# Estrategias de chainanalyzer._verify_chain cuyo mecanismo NO es un ROP de pila generico
+# (heap, UAF, tcache, ret2csu, SROP, ret2dlresolve, write-what-where) -- bug real de la misma
+# clase que el de canary/format-string: antes de las ramas dedicadas de abajo, CUALQUIER
+# estrategia sin una rama propia caia en la rama generica final (system()/execve() via ROP de
+# pila con flat({OFFSET: ...})), que fabrica un script con pinta de funcionar pero
+# estructuralmente incorrecto para estas tecnicas (algunas ni siquiera tienen "offset" como
+# distancia de pila -- confirmado leyendo chainanalyzer.py: los heap exploits no guardan
+# "offset" en absoluto, y csu/srop/dlresolve lo guardan pero el mecanismo real no es
+# flat({OFFSET: rop.chain()}) sino gadgets __libc_csu_init / un frame sigreturn forjado / un
+# resolver dinamico falso -- ninguno de los 3 tiene por que tener un simple "pop rdi; ret",
+# que es precisamente por lo que se eligieron esas tecnicas en vez de un ROP directo). En vez de
+# fabricar una de esas 3 plantillas bespoke (grandes, con multiples sub-estrategias cada una) se
+# degrada honestamente: la cadena SI fue verificada por ejecucion real (ver 'proof'), pero el
+# script reproducible exacto es el propio driver ya verificado de ese modulo, no una
+# aproximacion de ROP de pila.
+_NON_ROP_STRATEGY_HINTS = (
+    "house-of", "largebin attack", "tcache stashing unlink", "unsafe-unlink",
+    "fastbin-dup", "io_file", "fsop", "tcache-poison", "write-what-where",
+    "uaf (reutilizacion", "tcache dup", "ret2csu", "srop (sigreturn", "ret2dlresolve",
+)
+
+
 def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
     """Script pwntools reproducible a partir de la prueba de una cadena verificada."""
     strat = (proof.get("strategy") or "").lower()
@@ -670,6 +692,16 @@ def _pwn_script_from_proof(proof: dict, name: str = "target") -> str:
          f"BINARY = './{name}'",
          "elf = context.binary = ELF(BINARY, checksec=False)",
          "io = process(BINARY)   # o: remote('HOST', PORT)"]
+    if any(kw in strat for kw in _NON_ROP_STRATEGY_HINTS):
+        return "\n".join(H + [
+            "# Esta cadena fue VERIFICADA por EJECUCION REAL en el sandbox (ver 'proof' en el",
+            "# plan) pero su mecanismo no es un ROP de pila generico -- fabricar aqui un script",
+            "# con system()/execve() via ROP de pila seria estructuralmente incorrecto para",
+            "# esta tecnica (y probablemente no funcionaria: estas tecnicas se eligen",
+            "# precisamente cuando NO hay gadgets simples para esa via).",
+            "# Reproduce el exploit EXACTO que verifico esta cadena con:",
+            f"#   python3 -m binoracle autopwn {name}",
+            "# (el driver completo y ya verificado vive en binoracle/workflows/auto<tecnica>.py)"])
     if off is None:
         return "\n".join(H + ["# offset no resuelto"])
     if "ret2win" in strat:

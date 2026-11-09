@@ -3012,6 +3012,16 @@ _XK_COL = {"vuln": "#e5484d", "primitive": "#f5a623", "control": "#4aa3ff",
            "gadget": "#12a594", "target": "#8e4ec6"}
 
 
+# Mismas estrategias de "no es un ROP de pila generico" que cveplan.py's _NON_ROP_STRATEGY_HINTS
+# -- ver ese comentario para el porque. Este renderizador esta DUPLICADO (no comparte codigo con
+# cveplan.py), asi que necesita el mismo arreglo de forma independiente.
+_NON_ROP_STRATEGY_HINTS = (
+    "house-of", "largebin attack", "tcache stashing unlink", "unsafe-unlink",
+    "fastbin-dup", "io_file", "fsop", "tcache-poison", "write-what-where",
+    "uaf (reutilizacion", "tcache dup", "ret2csu", "srop (sigreturn", "ret2dlresolve",
+)
+
+
 def _pwn_script(c) -> str:
     """Script pwntools EJECUTABLE que reproduce la cadena verificada, anclado a la prueba concreta
     (offset/win/base/estrategia). Para laboratorio autorizado. El usuario solo pone la ruta del
@@ -3029,6 +3039,16 @@ def _pwn_script(c) -> str:
          "BINARY = './target'   # <-- pon aqui la ruta a TU binario",
          "elf = context.binary = ELF(BINARY, checksec=False)",
          "io = process(BINARY)   # o: io = remote('HOST', PORT)"]
+    if any(kw in strat for kw in _NON_ROP_STRATEGY_HINTS):
+        return "\n".join(H + [
+            "# Esta cadena fue VERIFICADA por EJECUCION REAL en el sandbox (ver la prueba arriba)",
+            "# pero su mecanismo no es un ROP de pila generico -- fabricar aqui un script con",
+            "# system()/execve() via ROP de pila seria estructuralmente incorrecto para esta",
+            "# tecnica (y probablemente no funcionaria: estas tecnicas se eligen precisamente",
+            "# cuando NO hay gadgets simples para esa via).",
+            "# Reproduce el exploit EXACTO que verifico esta cadena con:",
+            "#   python3 -m binoracle autopwn ./target",
+            "# (el driver completo y ya verificado vive en binoracle/workflows/auto<tecnica>.py)"])
     if off is None:
         return "\n".join(H + ["# offset no resuelto durante la verificacion"])
     if "ret2win" in strat:
