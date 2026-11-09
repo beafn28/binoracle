@@ -1044,6 +1044,46 @@ def test_cveplan_script_from_proof():
     assert _pwn_script_from_proof({"strategy": "ret2win"}, "x").endswith("offset no resuelto")
 
 
+def test_cveplan_canary_script_uses_two_stage_leak_not_generic_template():
+    # Bug real encontrado en vivo generando un dataset de entrenamiento contra samples/bin/canleak:
+    # la estrategia de bypass de canary ("canary leak (%s) -> rewrite -> overflow -> win()")
+    # contiene la palabra "leak", asi que caia en la rama ret2libc-con-fuga-de-puts generica y
+    # producia un script que revienta con KeyError('puts') en binarios que no importan puts (como
+    # canleak). Ademas, incluso enrutado a la rama correcta, un overflow de una sola etapa a
+    # OFFSET dispara "*** stack smashing detected ***": el canary se re-aleatoriza por ejecucion,
+    # asi que el script debe fugarlo y reescribirlo en el MISMO proceso, como el driver verificado
+    # de autocanary.py (confirmado en vivo ejecutando el script generado contra el binario real).
+    from binoracle.workflows.cveplan import _pwn_script_from_proof
+    proof = {"strategy": "canary leak (%s) -> rewrite -> overflow -> win()",
+             "bufsz": 72, "rbpgap": 8, "align": "ret", "offset": 88, "win": "0x401176"}
+    s = _pwn_script_from_proof(proof, "canleak")
+    assert "elf.got['puts']" not in s, "el bypass de canary no debe caer en la plantilla de leak de puts"
+    assert "BUFSZ = 72" in s and "RBPGAP = 8" in s and "0x401176" in s
+    # las dos etapas del leak+rewrite deben estar presentes, en orden, con el recvuntil que marca
+    # exactamente donde terminan los bytes de relleno y empiezan los 7 bytes altos del canary
+    assert "io.send(b'A' * BUFSZ + b'B')" in s
+    assert "io.recvuntil(b'B', timeout=4)" in s
+    assert s.index("io.recvuntil(b'B'") > s.index("io.send(b'A' * BUFSZ + b'B')")
+    assert "canary = u64" in s
+    assert "p64(canary)" in s and "p64(WIN)" in s
+
+
+def test_html_pwn_script_canary_matches_cveplan_template():
+    # report/html.py tiene un renderizador DUPLICADO (_pwn_script) con el mismo bug: debe recibir
+    # el mismo arreglo de forma independiente.
+    from binoracle.report.html import _pwn_script
+
+    class _C:
+        name = "canary bypass"
+        target = "win()"
+        proof = {"strategy": "canary leak (%s) -> rewrite -> overflow -> win()",
+                 "bufsz": 72, "rbpgap": 8, "align": "ret", "offset": 88, "win": "0x401176"}
+    s = _pwn_script(_C())
+    assert "elf.got['puts']" not in s
+    assert "io.send(b'A' * BUFSZ + b'B')" in s and "io.recvuntil(b'B', timeout=4)" in s
+    assert "p64(canary)" in s and "p64(WIN)" in s
+
+
 def test_owasp_all_categories_covered():
     # Tras anadir DA2/DA9/DA10, las 10 categorias OWASP se examinan de verdad (covered=True)
     from binoracle.report.render import _OWASP_DESKTOP

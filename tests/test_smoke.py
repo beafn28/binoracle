@@ -4664,6 +4664,28 @@ def test_chainanalyzer_canary_chain_builds():
     assert c.break_points == [], "el canary no debe ser un break-point para la propia cadena de bypass"
 
 
+def test_chainanalyzer_canary_proof_offset_is_return_address_distance():
+    # Bug real encontrado en vivo generando un dataset de entrenamiento: el "offset" de la cadena
+    # de canary se guardaba como el `bufsz` crudo que reporta autocanary() ("bufsz=72 rbpgap=8
+    # align=ret ..."), no la distancia real hasta la direccion de retorno. Un script pwntools
+    # renderizado con flat({OFFSET: payload}) usando ese bufsz solo llega hasta el borde del RBP
+    # guardado, nunca sobreescribe RIP (confirmado en vivo: el ret2libc generado nunca se
+    # ejecutaba). Con el prologo estandar (push rbp; mov rbp,rsp) la distancia real es
+    # bufsz + rbpgap + 8 (el propio RBP guardado) = 72+8+8 = 88.
+    from unittest.mock import patch
+    from binoracle.workflows.chainanalyzer import _verify_chain
+    detail = "VERIFIED bufsz=72 rbpgap=8 align=ret canary=0x57e3402cab543000 win=0x401176"
+    fake = {"ok": True, "verified": True, "detail": detail, "output": detail + "\n",
+            "note": "canary leak -> overflow -> win (verificado por ejecucion)"}
+    with patch("binoracle.workflows.autocanary.autocanary", return_value=fake):
+        text, verified, proof = _verify_chain("samples/bin/canleak", "canary", {}, "es")
+    assert verified is True
+    assert proof["bufsz"] == 72
+    assert proof["rbpgap"] == 8
+    assert proof["align"] == "ret"
+    assert proof["offset"] == 88, f"offset debe ser bufsz+rbpgap+8=88, no bufsz={proof.get('offset')}"
+
+
 def test_funcid_render_no_crash():
     from binoracle.workflows.funcid import FuncIdResult, FuncMatch, render_funcid
     r = FuncIdResult(ok=True, note="1 funcion recuperada", stripped="s", reference="r",
