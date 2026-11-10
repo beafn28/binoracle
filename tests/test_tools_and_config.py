@@ -1629,6 +1629,55 @@ def test_sft_sample_chat_format():
     assert chat["meta"]["verified"] is True and chat["meta"]["binary"] == "ret2win"
 
 
+def test_build_dataset_excludes_non_rop_verified_chains_as_poisoned_ground_truth():
+    # Bug real encontrado en vivo generando este mismo dataset justo despues del arreglo de
+    # _pwn_script_from_proof para tecnicas no-ROP (heap/UAF/tcache/ret2csu/SROP/ret2dlresolve):
+    # para esas cadenas, verified=True pero el "script" es honestamente un bloque de
+    # comentarios ("corre binoracle autopwn"), no un exploit real -- confirmado en vivo contra
+    # samples/bin/ret2csu, build_dataset() escribia esa muestra al JSONL de entrenamiento
+    # igualmente marcada "verified": true, ensenandole a un modelo fine-tuneado a responder con
+    # un comentario en vez de codigo pwntools. Debe omitirse del dataset (no como plantilla
+    # tampoco: no hay ningun script que usar).
+    import os
+    import pytest
+    from binoracle.workflows import exploit_dataset, exploit_trainer
+    if not (os.path.exists("samples/bin/ret2csu") and os.path.exists("samples/bin/ret2win")):
+        pytest.skip("samples/bin/ret2csu o ret2win no compilados (samples/build.sh)")
+
+    class _FakePlan:
+        def __init__(self, vuln_class, proof, script, verified=True):
+            self.ok = True
+            self.verified = verified
+            self.vuln_class = vuln_class
+            self.concrete = {}
+            self.proof = proof
+            self.script = script
+
+    def fake_plan_with_budget(binary, hint, lang, verify, budget_s, **kw):
+        if "csu" in binary:
+            return _FakePlan("stack-overflow",
+                             {"strategy": "ret2csu (__libc_csu_init -> call con args controlados)"},
+                             "#!/usr/bin/env python3\n# ...\n# python3 -m binoracle autopwn x"), ""
+        return _FakePlan("stack-overflow", {"strategy": "ret2win"},
+                         "#!/usr/bin/env python3\nfrom pwn import *\nio=process('./x')\n"
+                         "io.sendline(flat({72: 0x401156}))\nio.interactive()"), ""
+
+    orig = exploit_trainer.plan_with_budget
+    exploit_trainer.plan_with_budget = fake_plan_with_budget
+    try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "ds.jsonl")
+            rep = exploit_dataset.build_dataset(
+                binaries=["samples/bin/ret2csu", "samples/bin/ret2win"],
+                out_path=out, lang="es", budget_s=5)
+            assert rep.verified == 1, "solo la cadena ret2win (ROP real) debe contar como muestra"
+            assert all("autopwn" not in s.script for s in rep.samples)
+            assert all("ret2csu" not in (s.cls or "") for s in rep.samples)
+    finally:
+        exploit_trainer.plan_with_budget = orig
+
+
 def test_classify_binary_by_indicators():
     # Clasificacion por el binario: format-string (printf con formato variable) vs heap (UAF) vs
     # stack (gets/strcpy). Los que no dan senal concluyente quedan None (decide el control de RIP).
