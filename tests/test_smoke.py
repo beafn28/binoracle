@@ -73,6 +73,37 @@ def test_skeleton_is_valid_python(tmp_path):
     assert "OFFSET = 64" in script
 
 
+def test_skeleton_fills_ret2win_chain_when_primitive_given_and_win_found():
+    # Bug real encontrado en vivo: generate_skeleton() aceptaba un parametro `primitive` (y la
+    # CLI expone --primitive, documentado) pero nunca lo usaba en absoluto -- --primitive
+    # ret2win generaba BYTE A BYTE el mismo script que --primitive auto, con el placeholder
+    # generico de siempre ("# >>> build your chain here <<<"), pese a que ese mismo placeholder
+    # ya sugiere "ret2win: elf.symbols['win']" como si debiera rellenarse solo. Cuando hay una
+    # funcion 'regalo' localizable estaticamente (como en samples/bin/ret2win), ahora SI se
+    # rellena un ret2win concreto -- confirmado en vivo ejecutando el script generado contra el
+    # binario real: logra una shell real.
+    import os
+    import pytest
+    from binoracle.oracles import build_registry
+    from binoracle.workflows.skeleton import generate_skeleton
+    binp = "samples/bin/ret2win"
+    if not os.path.exists(binp):
+        pytest.skip("sample ret2win no compilado (samples/build.sh)")
+    reg = build_registry(binp)
+    s = generate_skeleton(reg, binp, offset=72, primitive="ret2win")
+    assert "ret2win: found statically" in s
+    assert "ret_gadget, 0x" in s
+    assert "build your chain here" not in s
+    import ast
+    ast.parse(s)
+    # 'auto' (el valor por defecto de la CLI) debe comportarse igual cuando hay un win() real
+    s_auto = generate_skeleton(reg, binp, offset=72, primitive="auto")
+    assert "ret2win: found statically" in s_auto
+    # un primitivo explicito que NO sea ret2win/auto no debe activar el relleno automatico
+    s_other = generate_skeleton(reg, binp, offset=72, primitive="ret2libc")
+    assert "build your chain here" in s_other
+
+
 def test_patchdiff_render_no_crash():
     from binoracle.workflows.patchdiff import DiffResult, render_patchdiff
     r = DiffResult(old="a", new="b", changed=["0.5 func x"], raw="raw")

