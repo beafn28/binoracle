@@ -14985,6 +14985,22 @@ def test_all_dev_templates_warn_the_stdin_input_vector_may_not_be_real():
         assert "argv" in s
 
 
+def test_format_string_dev_template_leak_payload_is_valid_python():
+    # Bug real: la plantilla NO VERIFICADA de develop_exploit para la clase "format-string"
+    # construia el payload de fuga con `b'%{}$p'.format(OFFSET)` -- bytes no tiene .format() en
+    # Python 3 (solo str), asi que CUALQUIER binario que cayera en esta plantilla (cualquiera
+    # sin cadena verificada por chainanalyzer) lanzaba AttributeError en la primera linea real
+    # de exploit, antes de llegar siquiera a un TODO que el analista deba completar. Confirmado
+    # en vivo ejecutando el script generado contra samples/bin/fmtstring. Ahora usa el operador
+    # % de str (valido para bytes via .encode()), que SI produce el payload correcto (b'%6$p').
+    from binoracle.workflows.cveplan import develop_exploit
+    s = develop_exploit("format-string", {}, {}, name="x", lang="es")
+    assert ".format(" not in s, "bytes.format() no existe en Python 3 -- AttributeError al correr"
+    ns = {"OFFSET": 6}
+    payload = eval(compile("('%%%d$p' % OFFSET).encode()", "<t>", "eval"), {}, ns)
+    assert payload == b"%6$p"
+
+
 def test_plan_threads_public_exploit_notice_through_to_the_final_script():
     # Confirma el camino completo (no solo develop_exploit en aislamiento): plan() -- lo que
     # investigate_cve llama en la rama SIN binario -- debe propagar has_public_exploit/

