@@ -46,9 +46,21 @@ run(){
     # -fstack-protector-all la sobreescribe). PIE/RELRO ya van explicitos por linea. Tolera que
     # un build individual falle (p.ej. -static sin glibc-static, -m32 sin multilib) para que el
     # resto del corpus se siga construyendo.
+    #
+    # -std=gnu17 fuerza el dialecto PRE-C23: confirmado en vivo que es necesario, no cosmetico.
+    # Varios de estos retos llaman a proposito a funciones "peligrosas" sin declarar
+    # (system() sin <stdlib.h> en canary/canleak/canfmt/fmt_got/oobwrite; gets() -- que C23 ya
+    # ni declara en ningun header -- en toda la familia ret2win/callhijack). Con gcc moderno
+    # (Ubuntu 26.04 en CI) el dialecto por defecto es gnu23, donde una declaracion implicita de
+    # funcion es un ERROR duro (no un warning) -- y '-w' NO lo silencia porque ya no es un
+    # warning, es un error de C23. Confirmado reproduciendo el log real de CI: 9 builds de la
+    # muestra fallaban asi en cada run, dejando 'canary' fuera del corpus. En gcc local
+    # (Ubuntu 24.04, dialecto por defecto gnu17) la misma llamada sin declarar solo advertia y
+    # el build seguia -- por eso nunca se vio localmente. Fijar el dialecto explicito restaura
+    # ese comportamiento en cualquier gcc, sin tocar cada fuente uno por uno.
     local cmd="$1"
     case "$cmd" in
-      gcc\ *) cmd="gcc -fno-stack-protector -fcf-protection=none ${cmd#gcc }" ;;
+      gcc\ *) cmd="gcc -std=gnu17 -fno-stack-protector -fcf-protection=none ${cmd#gcc }" ;;
     esac
     ( cd "$here" && bash -c "$cmd" ) || { echo "  [!] build fallo (host gcc): omitido"; return 0; }
   fi
