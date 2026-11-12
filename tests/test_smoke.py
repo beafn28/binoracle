@@ -837,6 +837,11 @@ def test_make_backend_anthropic_defaults_model_unless_explicitly_set():
 
 
 def test_anthropic_backend_splits_system_message_and_extracts_text():
+    import pytest
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        pytest.skip("paquete 'anthropic' no instalado (extra opcional: pip install binoracle[anthropic])")
     from binoracle.config import load_config
     from binoracle.llm.anthropic_backend import AnthropicBackend
     from binoracle.llm.base import Message
@@ -876,6 +881,11 @@ def test_anthropic_backend_splits_system_message_and_extracts_text():
 
 
 def test_anthropic_backend_converts_native_tool_call_to_portable_json():
+    import pytest
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        pytest.skip("paquete 'anthropic' no instalado (extra opcional: pip install binoracle[anthropic])")
     from binoracle.config import load_config
     from binoracle.agent.tools import extract_action
     from binoracle.llm.anthropic_backend import AnthropicBackend
@@ -922,8 +932,12 @@ def test_anthropic_backend_surfaces_real_error_not_generic_unreachable():
     # Mismo principio que el fix de OpenAICompatBackend: un 400/caida de conexion real debe
     # reportar el detalle real (status + mensaje del body), nunca un mensaje generico que
     # borre la diferencia entre "el servidor rechazo la peticion" y "no hay servidor".
-    import httpx2
-    import anthropic as _anthropic_pkg
+    import pytest
+    try:
+        import httpx2
+        import anthropic as _anthropic_pkg
+    except ImportError:
+        pytest.skip("paquete 'anthropic' no instalado (extra opcional: pip install binoracle[anthropic])")
     from binoracle.config import load_config
     from binoracle.llm.anthropic_backend import AnthropicBackend
     from binoracle.llm.base import Message, LLMUnavailable
