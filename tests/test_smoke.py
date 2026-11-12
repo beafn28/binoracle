@@ -812,6 +812,178 @@ def test_openai_compat_backend_surfaces_http_error_body_not_unreachable():
     assert "context size exceeded" in msg, "el body real del error debe aparecer en el mensaje"
 
 
+def test_make_backend_anthropic_defaults_model_unless_explicitly_set():
+    # binoracle solo tenia backends locales (ollama/openai-compat) -- se agrego un backend
+    # real para la API de Anthropic tras confirmar en vivo el techo de calidad/recursos de los
+    # modelos locales pequenos en un entorno con RAM limitada. Config.model siempre arranca
+    # con el default de estilo ollama ("qwen2.5-coder:7b") sea cual sea el backend elegido --
+    # make_backend debe sustituirlo por un modelo Claude real SOLO cuando el usuario no puso
+    # su propio BINORACLE_MODEL, nunca pisando una eleccion explicita.
+    from binoracle.config import load_config
+    from binoracle.llm import make_backend
+    from binoracle.llm.anthropic_backend import AnthropicBackend
+
+    cfg = load_config()
+    cfg.backend = "anthropic"
+    backend = make_backend(cfg)
+    assert isinstance(backend, AnthropicBackend)
+    assert cfg.model == "claude-sonnet-5-5"
+
+    cfg2 = load_config()
+    cfg2.backend = "anthropic"
+    cfg2.model = "claude-opus-5-5"
+    make_backend(cfg2)
+    assert cfg2.model == "claude-opus-5-5", "una eleccion explicita del usuario no debe pisarse"
+
+
+def test_anthropic_backend_splits_system_message_and_extracts_text():
+    from binoracle.config import load_config
+    from binoracle.llm.anthropic_backend import AnthropicBackend
+    from binoracle.llm.base import Message
+
+    cfg = load_config()
+    cfg.backend = "anthropic"
+    cfg.model = "claude-sonnet-5-5"
+    backend = AnthropicBackend(cfg)
+    assert backend._client is not None, "el paquete anthropic debe estar instalado para este test"
+    captured = {}
+
+    class _TextBlock:
+        type = "text"
+        text = "hola"
+
+    class _FakeResponse:
+        content = [_TextBlock()]
+        stop_reason = "end_turn"
+        stop_details = None
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse()
+
+    class _FakeWithOptions:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    backend._client = type("C", (), {"with_options": lambda self, **kw: _FakeWithOptions()})()
+    out = backend.chat([Message("system", "eres un asistente"), Message("user", "hola")],
+                       json_mode=False)
+    assert out == "hola"
+    assert captured["system"] == "eres un asistente"
+    assert captured["messages"] == [{"role": "user", "content": "hola"}]
+    assert "tools" not in captured
+
+
+def test_anthropic_backend_converts_native_tool_call_to_portable_json():
+    from binoracle.config import load_config
+    from binoracle.agent.tools import extract_action
+    from binoracle.llm.anthropic_backend import AnthropicBackend
+    from binoracle.llm.base import Message
+
+    cfg = load_config()
+    cfg.backend = "anthropic"
+    cfg.model = "claude-sonnet-5-5"
+    cfg.native_tools = True
+    backend = AnthropicBackend(cfg)
+    captured = {}
+
+    class _ToolUseBlock:
+        type = "tool_use"
+        name = "r2_checksec"
+        input = {}
+
+    class _FakeResponse:
+        content = [_ToolUseBlock()]
+        stop_reason = "tool_use"
+        stop_details = None
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse()
+
+    class _FakeWithOptions:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    backend._client = type("C", (), {"with_options": lambda self, **kw: _FakeWithOptions()})()
+    out = backend.chat([Message("system", "s")], json_mode=True,
+                       tools=[{"type": "function", "function": {
+                           "name": "r2_checksec", "description": "d",
+                           "parameters": {"type": "object", "properties": {}}}}])
+    assert captured["tools"] == [{"name": "r2_checksec", "description": "d",
+                                 "input_schema": {"type": "object", "properties": {}}}]
+    assert "response_format" not in captured   # json_mode se ignora junto a native tools
+    assert extract_action(out) == {"action": "tool", "tool": "r2_checksec", "args": {}}
+
+
+def test_anthropic_backend_surfaces_real_error_not_generic_unreachable():
+    # Mismo principio que el fix de OpenAICompatBackend: un 400/caida de conexion real debe
+    # reportar el detalle real (status + mensaje del body), nunca un mensaje generico que
+    # borre la diferencia entre "el servidor rechazo la peticion" y "no hay servidor".
+    import httpx2
+    import anthropic as _anthropic_pkg
+    from binoracle.config import load_config
+    from binoracle.llm.anthropic_backend import AnthropicBackend
+    from binoracle.llm.base import Message, LLMUnavailable
+
+    cfg = load_config()
+    cfg.backend = "anthropic"
+    cfg.model = "claude-sonnet-5-5"
+    backend = AnthropicBackend(cfg)
+    req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    resp = httpx2.Response(400, request=req)
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            raise _anthropic_pkg.APIStatusError(
+                "context_length_exceeded: too many tokens", response=resp, body=None)
+
+    class _FakeWithOptions:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    backend._client = type("C", (), {"with_options": lambda self, **kw: _FakeWithOptions()})()
+    with __import__("pytest").raises(LLMUnavailable) as exc:
+        backend.chat([Message("system", "s"), Message("user", "u")])
+    msg = str(exc.value)
+    assert "400" in msg
+    assert "context_length_exceeded" in msg
+
+
+def test_anthropic_backend_raises_on_refusal_instead_of_returning_empty():
+    from binoracle.config import load_config
+    from binoracle.llm.anthropic_backend import AnthropicBackend
+    from binoracle.llm.base import Message, LLMUnavailable
+
+    cfg = load_config()
+    cfg.backend = "anthropic"
+    cfg.model = "claude-sonnet-5-5"
+    backend = AnthropicBackend(cfg)
+
+    class _StopDetails:
+        category = "cyber"
+
+    class _FakeResponse:
+        content = []
+        stop_reason = "refusal"
+        stop_details = _StopDetails()
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            return _FakeResponse()
+
+    class _FakeWithOptions:
+        def __init__(self):
+            self.messages = _FakeMessages()
+
+    backend._client = type("C", (), {"with_options": lambda self, **kw: _FakeWithOptions()})()
+    with __import__("pytest").raises(LLMUnavailable) as exc:
+        backend.chat([Message("system", "s"), Message("user", "u")])
+    assert "refusal" in str(exc.value) and "cyber" in str(exc.value)
+
+
 def test_gate_allows_verified_with_sandbox_exploit():
     # Un exploit ejecutado y confirmado en sandbox es prueba suficiente para 'verified'
     # (mas fuerte que la alcanzabilidad de angr); no debe degradarse a 'grounded'.
