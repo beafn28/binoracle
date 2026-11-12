@@ -115,6 +115,43 @@ def cmd_cveplan(args, config):
                      (" (sandbox-verified)" if pl.verified else "")))
 
 
+def _docker_sandbox_status() -> tuple:
+    """Chequeo real del sandbox dinamico de docker, para `binoracle doctor`.
+
+    Bug real encontrado en vivo: la version anterior solo miraba si el BINARIO docker esta en
+    el PATH (shutil.which), nunca si el DAEMON responde -- en un entorno con el cliente
+    instalado pero el daemon parado (confirmado en vivo: `docker info` -> "Cannot connect to
+    the Docker daemon"), doctor reportaba "docker: disponible" en verde, y solo la linea de la
+    imagen fallaba con un mensaje que sugiere "docker build ..." como arreglo -- un build
+    tambien falla contra un daemon caido, asi que el usuario solo descubria la causa real (el
+    daemon, no la imagen) despues de un intento de build fallido y confuso.
+    `_sandbox.run_driver()` SI hace el chequeo correcto (via `docker image inspect`, que exige
+    hablar con el daemon) y cae a su runner nativo en consecuencia -- la cadena de exploits en
+    si nunca se enganyaba, solo este diagnostico.
+
+    Devuelve (docker_cli_presente, daemon_responde, imagen_binoracle_pwn_construida, mensaje)."""
+    import shutil
+    docker = shutil.which("docker")
+    daemon_ok = False
+    img = False
+    if docker:
+        try:
+            import subprocess as _sp
+            daemon_ok = _sp.run([docker, "info"], capture_output=True, timeout=10).returncode == 0
+            if daemon_ok:
+                img = _sp.run([docker, "image", "inspect", "binoracle-pwn"],
+                              capture_output=True, timeout=10).returncode == 0
+        except Exception:
+            daemon_ok = False
+    if not docker:
+        msg = "no (instala Docker)"
+    elif not daemon_ok:
+        msg = "binario presente pero el daemon no responde (arranca el servicio docker)"
+    else:
+        msg = "disponible"
+    return bool(docker), daemon_ok, img, msg
+
+
 def cmd_doctor(args, config):
     print("binoracle doctor\n" + "=" * 40)
     llm = make_backend(config)
@@ -161,7 +198,6 @@ def cmd_doctor(args, config):
 def _print_toolchain_status() -> None:
     """Estado de la cadena de reversing aumentada (Ghidra / decai / sandbox / cvss), con la accion
     concreta para activar lo que falte. Best-effort: nunca rompe el doctor."""
-    import shutil
     ok = lambda b: "[ok]  " if b else "[--]  "
     print("Cadena de reversing aumentada:")
     # Ghidra (decompilacion grado Ghidra + auto-arranque headless)
@@ -192,16 +228,9 @@ def _print_toolchain_status() -> None:
     except Exception:
         pass
     # sandbox dinamico (docker) + cvss
-    docker = shutil.which("docker")
-    img = False
-    if docker:
-        try:
-            import subprocess as _sp
-            img = _sp.run([docker, "image", "inspect", "binoracle-pwn"], capture_output=True).returncode == 0
-        except Exception:
-            img = False
-    print(f"  {ok(bool(docker))}docker (sandbox dinamico/exploits): " + ("disponible" if docker else "no (instala Docker)"))
-    if docker:
+    docker, daemon_ok, img, docker_msg = _docker_sandbox_status()
+    print(f"  {ok(docker and daemon_ok)}docker (sandbox dinamico/exploits): {docker_msg}")
+    if docker and daemon_ok:
         print(f"  {ok(img)}imagen binoracle-pwn: " + ("construida" if img else "no construida (docker build -f .docker/Dockerfile.pwn -t binoracle-pwn .)"))
     try:
         import cvss  # noqa: F401
