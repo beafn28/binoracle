@@ -3815,6 +3815,42 @@ def test_apk_inspect_on_synthetic_apk():
         os.remove(p)
 
 
+def test_apk_extract_native_libs_bridges_to_the_existing_elf_pipeline(tmp_path):
+    # Gap real: el analisis de APK solo LISTABA los .so por ABI (inspect_apk), nunca los sacaba
+    # a disco -- sin eso no hay forma de apuntar `binoracle hunt`/`cveplan`/`autopwn` (el
+    # pipeline de exploiting ELF que binoracle ya tiene) contra una libreria nativa real
+    # empaquetada en una app. Un .so dentro de una APK es un ELF normal con la MISMA superficie
+    # de corrupcion de memoria que cualquier otro binario (juegos/codecs/JNI a medida son el
+    # caso tipico). extract_native_libs() es el puente: saca los .so reales a <out>/<abi>/.
+    import os
+    import zipfile
+    from binoracle.workflows.apkinspect import extract_native_libs
+
+    apk = str(tmp_path / "fake.apk")
+    z = zipfile.ZipFile(apk, "w")
+    z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00fakeAXML")
+    z.writestr("classes.dex", b"dex\n035\x00")
+    z.writestr("lib/arm64-v8a/libnative.so", b"\x7fELF" + b"arm64content")
+    z.writestr("lib/x86_64/libnative.so", b"\x7fELF" + b"x86content")
+    z.close()
+
+    out_dir = str(tmp_path / "extracted")
+    paths = extract_native_libs(apk, out_dir)
+    assert len(paths) == 2
+    assert all(os.path.exists(p) for p in paths)
+    arm64_path = next(p for p in paths if "arm64-v8a" in p)
+    with open(arm64_path, "rb") as f:
+        assert f.read() == b"\x7fELFarm64content"
+
+    # filtrado por ABI: solo extrae ese ABI, no los demas
+    out_dir2 = str(tmp_path / "extracted_x86")
+    paths2 = extract_native_libs(apk, out_dir2, abi="x86_64")
+    assert len(paths2) == 1 and "x86_64" in paths2[0]
+
+    # ABI inexistente: lista vacia, no crashea
+    assert extract_native_libs(apk, str(tmp_path / "extracted_none"), abi="mips") == []
+
+
 def test_apk_inspect_enriches_with_decoded_manifest_when_apktool_available(tmp_path, monkeypatch):
     # Gap found testing this live against InsecureBankv2.apk: `binoracle apk` (the "quick
     # facts" command people reach for first) kept advertising "AndroidManifest.xml is binary:

@@ -733,6 +733,17 @@ def cmd_apk(args, config):
     out = render_apk(inspect_apk(binary))
     print(out)
     _write_if(args.output, out)
+    if args.extract_libs:
+        from .workflows.apkinspect import extract_native_libs
+        paths = extract_native_libs(binary, args.extract_libs, abi=args.abi)
+        if not paths:
+            print(f"\n(no se extrajo ninguna libreria nativa{' para abi='+args.abi if args.abi else ''})")
+        else:
+            print(f"\n{len(paths)} libreria(s) nativa(s) extraida(s) a {args.extract_libs}/:")
+            for p in paths:
+                print(f"  {p}")
+            print("\nApunta el pipeline de exploiting existente directamente a cualquiera de estas, p.ej.:")
+            print(f"  binoracle hunt {paths[0]}")
 
 
 def cmd_pe(args, config):
@@ -1549,6 +1560,11 @@ def build_parser() -> argparse.ArgumentParser:
     ak = sub.add_parser("apk", help="inspect an Android APK statically (DEX, native libs, framework, signing)")
     ak.add_argument("binary", help="path to the .apk file")
     ak.add_argument("-o", "--output")
+    ak.add_argument("--extract-libs", metavar="DIR",
+                    help="extract the APK's native .so libraries (real ELF binaries, same "
+                         "memory-corruption surface as any other binary) into DIR/<abi>/, "
+                         "ready to point `binoracle hunt`/`cveplan`/`autopwn` at directly")
+    ak.add_argument("--abi", default="", help="with --extract-libs, only this ABI (e.g. arm64-v8a); default: all")
     ak.set_defaults(func=cmd_apk)
 
     pei = sub.add_parser("pe", help="inspect a Windows PE statically (mitigations, sections, imports, capabilities)")
