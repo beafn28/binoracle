@@ -20,6 +20,44 @@ _FRAMEWORK_MARKERS = {
 }
 
 
+def extract_native_libs(path: str, out_dir: str, abi: str = "") -> list:
+    """Extrae a disco las librerias nativas (.so) de una APK -- son ELF normales (ARM/x86/x86_64),
+    con la MISMA superficie de corrupcion de memoria que cualquier otro binario. Bug/gap real:
+    este modulo (y el resto del analisis de APK) solo LISTA los .so por ABI (via inspect_apk),
+    pero nunca los saca a disco -- sin eso, no hay forma de apuntar el pipeline de exploiting que
+    binoracle ya tiene (`hunt`/`cveplan`/`autopwn`/`chainanalyzer`) contra una libreria nativa real
+    empaquetada en una app (juegos, codecs multimedia, JNI a medida son el caso tipico de un .so
+    vulnerable dentro de una APK). Con `abi` vacio extrae TODAS las ABIs; si se da, solo esa.
+    Devuelve la lista de rutas extraidas (vacia si la APK no tiene .so o el ABI pedido no existe)."""
+    import os
+    import zipfile
+    out = []
+    try:
+        zf = zipfile.ZipFile(path)
+    except Exception:
+        return out
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        for n in zf.namelist():
+            if not (n.startswith("lib/") and n.endswith(".so")):
+                continue
+            parts = n.split("/")
+            if len(parts) < 3:
+                continue
+            lib_abi, soname = parts[1], parts[-1]
+            if abi and lib_abi != abi:
+                continue
+            dest_dir = os.path.join(out_dir, lib_abi)
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = os.path.join(dest_dir, soname)
+            with open(dest, "wb") as f:
+                f.write(zf.read(n))
+            out.append(dest)
+    except Exception:
+        pass
+    return out
+
+
 def inspect_apk(path: str) -> dict:
     """Read an APK (zip). Returns {ok, is_apk, dex, native_libs, frameworks, signing, ...}."""
     import zipfile
