@@ -774,6 +774,44 @@ def test_openai_compat_backend_converts_native_tool_call_to_portable_json():
     assert extract_action(out) == {"action": "tool", "tool": "r2_checksec", "args": {}}
 
 
+def test_openai_compat_backend_surfaces_http_error_body_not_unreachable():
+    # Bug real encontrado en vivo resolviendo un CTF de pwn con el agente contra un servidor
+    # llama.cpp local real: un 400 del servidor (urllib.error.HTTPError, que es SUBCLASE de
+    # URLError) caia en el except generico de abajo y se reportaba como "server unreachable"
+    # -- enganyoso (el servidor SI respondio) y, peor, descartaba el body de la respuesta, que
+    # es justo donde llama.cpp/vLLM/LM Studio explican POR QUE rechazaron la peticion (p.ej.
+    # "context size exceeded"). Sin esto, un 400/500 real del servidor se reportaba igual que
+    # un servidor caido, haciendo imposible diagnosticar la causa real desde el mensaje de
+    # error -- confirmado en vivo: la investigacion se paro con "server unreachable... HTTP
+    # Error 400: Bad Request" y nada mas.
+    import io
+    import urllib.error
+    import urllib.request
+    from binoracle.config import load_config
+    from binoracle.llm.base import LLMUnavailable
+    from binoracle.llm.openai_compat import OpenAICompatBackend
+
+    cfg = load_config()
+    backend = OpenAICompatBackend(cfg)
+
+    def _fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "Bad Request", {},
+            io.BytesIO(b'{"error": {"message": "context size exceeded"}}'))
+
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = _fake_urlopen
+    try:
+        with __import__("pytest").raises(LLMUnavailable) as exc:
+            backend.chat([])
+    finally:
+        urllib.request.urlopen = orig
+    msg = str(exc.value)
+    assert "unreachable" not in msg, "un 400 no es un servidor inalcanzable"
+    assert "400" in msg and "Bad Request" in msg
+    assert "context size exceeded" in msg, "el body real del error debe aparecer en el mensaje"
+
+
 def test_gate_allows_verified_with_sandbox_exploit():
     # Un exploit ejecutado y confirmado en sandbox es prueba suficiente para 'verified'
     # (mas fuerte que la alcanzabilidad de angr); no debe degradarse a 'grounded'.

@@ -61,6 +61,21 @@ class OpenAICompatBackend(LLMBackend):
         try:
             with urllib.request.urlopen(req, timeout=self.config.request_timeout) as resp:
                 out = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Bug real encontrado en vivo: HTTPError es subclase de URLError, asi que caia en
+            # el except de abajo y se reportaba como "server unreachable" (sugiere un problema
+            # de conectividad) descartando el body de la respuesta -- justo donde llama.cpp/
+            # vLLM/LM Studio explican POR QUE rechazaron la peticion (p.ej. "context size
+            # exceeded", un response_format/JSON-schema invalido...). Sin esto, un 400/500 real
+            # del servidor (confirmado en vivo contra un servidor llama.cpp local) se reportaba
+            # igual que un servidor caido, imposibilitando diagnosticar la causa real.
+            try:
+                body = e.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                body = ""
+            raise LLMUnavailable(
+                f"openai-compat server at {self.base} rejected the request "
+                f"(HTTP {e.code} {e.reason}){': ' + body if body else ''}") from e
         except urllib.error.URLError as e:
             raise LLMUnavailable(f"openai-compat server unreachable at {self.base}: {e}") from e
         msg = out["choices"][0]["message"]
