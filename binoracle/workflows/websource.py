@@ -36,6 +36,7 @@ from typing import Callable, List, Optional
 _WP_API = "https://api.wordpress.org/plugins/info/1.0/{slug}.json"
 _WP_DOWNLOAD = "https://downloads.wordpress.org/plugin/{slug}.{version}.zip"
 _WP_DOWNLOAD_LATEST = "https://downloads.wordpress.org/plugin/{slug}.zip"
+_WP_SEARCH = "https://api.wordpress.org/plugins/info/1.2/"
 
 # API de actualizaciones de Drupal.org -- la MISMA que el propio modulo "Update Manager" de
 # Drupal usa para comprobar nuevas versiones; devuelve XML con cada release y su download_link.
@@ -211,10 +212,46 @@ def detect_module_folder(local_path: str, hint: str = "") -> str:
     return detect_plugin_folder(local_path, hint=hint)
 
 
+def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[str]:
+    """Gap real encontrado en vivo (CVE-2026-2991, KiviCare): la hipotesis del LLM a veces trae
+    un slug CASI correcto (una palabra de mas o de menos, p.ej. 'kivicare-clinic-PATIENT-
+    management-system' en vez del real 'kivicare-clinic-management-system') -- la API de info
+    exacta (_WP_API) no tiene tolerancia a eso y da 404 directo, bloqueando TODA la verificacion
+    dinamica en el primer paso aunque el plugin real exista y el analista/LLM tuviera el nombre
+    casi bien. Busca el slug con la API de BUSQUEDA de WordPress.org (la misma que el buscador
+    del directorio usa), usando el propio slug con guiones->espacios como consulta, y solo acepta
+    el primer resultado si comparte al menos la mitad de sus palabras con el slug original
+    (Jaccard sobre el split por '-') -- para no sustituir silenciosamente un plugin NO relacionado
+    que simplemente aparezca primero en una busqueda demasiado generica. None si no hay API
+    disponible, no hay resultados, o el mejor resultado no se parece lo bastante."""
+    try:
+        import json
+        from urllib.parse import urlencode
+        q = wrong_slug.replace("-", " ").replace("_", " ")
+        url = f"{_WP_SEARCH}?{urlencode({'action': 'query_plugins', 'request[search]': q, 'request[per_page]': 3})}"
+        with _urlopen(url, timeout=timeout) as r:
+            data = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
+    except Exception:
+        return None
+    plugins = (data or {}).get("plugins") or []
+    if not plugins:
+        return None
+    candidate = (plugins[0].get("slug") or "").strip().lower()
+    if not candidate or candidate == wrong_slug:
+        return None
+    orig_words = set(wrong_slug.split("-"))
+    cand_words = set(candidate.split("-"))
+    if not orig_words or not cand_words:
+        return None
+    overlap = len(orig_words & cand_words) / len(orig_words | cand_words)
+    return candidate if overlap >= 0.5 else None
+
+
 def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
                            on_step: Optional[Callable[[str], None]] = None,
                            timeout: float = 60.0,
-                           exclusive_upper_bound: bool = False) -> SourceFetchResult:
+                           exclusive_upper_bound: bool = False,
+                           _allow_slug_correction: bool = True) -> SourceFetchResult:
     """Descarga el .zip OFICIAL de un plugin de WordPress.org (el mismo artefacto que `wp plugin
     install` traeria), a una version concreta si se da, o a la ultima estable si no. No lo ejecuta.
 
@@ -246,7 +283,21 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             import json
             info = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
     except Exception as e:
-        # 404 en esta API tiene VARIAS causas reales, no solo "slug mal escrito":
+        # 404 en esta API tiene VARIAS causas reales, no solo "slug mal escrito": intenta
+        # primero corregir un slug CASI correcto via la API de busqueda (ver
+        # _search_wp_plugin_slug -- caso real confirmado hoy con CVE-2026-2991/KiviCare, un slug
+        # con una palabra de mas bloqueaba TODA la verificacion en este primer paso) antes de
+        # asumir que es alguna de las otras dos causas reales de 404 de abajo.
+        if _allow_slug_correction:
+            corrected = _search_wp_plugin_slug(slug, timeout=timeout)
+            if corrected:
+                step(f"'{slug}' no resolvio en WordPress.org -- la busqueda del directorio "
+                     f"sugiere que el slug real es '{corrected}' (suficiente solape de "
+                     f"palabras); reintentando con ese...")
+                return fetch_wordpress_plugin(corrected, version=version, dest_dir=dest_dir,
+                                              on_step=on_step, timeout=timeout,
+                                              exclusive_upper_bound=exclusive_upper_bound,
+                                              _allow_slug_correction=False)
         # 1) plugin COMERCIAL/premium (confirmado en vivo con CVE-2026-5523, Divi Form Builder):
         #    nunca estuvo en el directorio gratuito, se vende directo por el fabricante.
         # 2) plugin CERRADO/retirado del directorio (confirmado en vivo con CVE-2024-43982, Login
