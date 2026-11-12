@@ -7480,6 +7480,40 @@ def test_cli_main_debug_flag_reraises_full_traceback(monkeypatch):
         cli.main(["--debug", "doctor"])
 
 
+def test_docker_sandbox_status_distinguishes_missing_cli_from_dead_daemon():
+    # Bug real encontrado en vivo en este mismo entorno: `binoracle doctor` solo miraba si el
+    # BINARIO docker esta en el PATH (shutil.which), nunca si el DAEMON responde. Con el cliente
+    # instalado pero el daemon parado (confirmado en vivo: `docker info` -> "Cannot connect to
+    # the Docker daemon"), doctor reportaba "docker: disponible" en verde y solo la linea de la
+    # imagen fallaba, con un mensaje ("docker build ...") que no apunta a la causa real (un
+    # build tambien falla contra un daemon caido). _docker_sandbox_status() ahora distingue los
+    # 3 estados: CLI ausente, CLI presente pero daemon caido, o todo ok (con/sin imagen).
+    from binoracle import cli
+    from unittest.mock import patch, MagicMock
+
+    with patch("shutil.which", return_value=None):
+        docker, daemon_ok, img, msg = cli._docker_sandbox_status()
+    assert (docker, daemon_ok, img) == (False, False, False)
+    assert "instala Docker" in msg
+
+    def _fake_run(cmd, **kw):
+        r = MagicMock()
+        r.returncode = 1 if cmd[1] == "info" else 0   # CLI presente, daemon caido
+        return r
+    with patch("shutil.which", return_value="/usr/bin/docker"), \
+         patch("subprocess.run", side_effect=_fake_run):
+        docker, daemon_ok, img, msg = cli._docker_sandbox_status()
+    assert docker is True and daemon_ok is False and img is False
+    assert "daemon no responde" in msg
+    assert "docker build" not in msg   # no sugiere arreglar la imagen cuando el problema es el daemon
+
+    with patch("shutil.which", return_value="/usr/bin/docker"), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0)):
+        docker, daemon_ok, img, msg = cli._docker_sandbox_status()
+    assert (docker, daemon_ok, img) == (True, True, True)
+    assert msg == "disponible"
+
+
 # --- genericverify.py: verificacion dinamica CMS-agnostica (cualquier entorno con su propio
 # Dockerfile/docker-compose.yml) ---
 
