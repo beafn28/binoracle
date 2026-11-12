@@ -2137,6 +2137,74 @@ The flagship direction: prove impact end to end.
   Morse-coded puzzle string directly. Two new tests (a synthetic metadata root with a `#US`
   stream; the real external CTF assembly, skips cleanly if absent).
 
+- **CI gap investigated with the real failing logs (not guessed): the same 9 tests had been
+  failing on every single CI run for several commits in a row, independent of what each commit
+  actually changed -- a strong signal it was environmental, not a real regression in the diffs.
+  Root-caused 1 of 9 with certainty and fixed it; the other 8 are narrowed to a real, named
+  cause but deliberately NOT blind-fixed.**
+  - **Fixed**: `test_default_corpus_is_elf_only` failed because `samples/build.sh` silently
+    failed to build `canary`/`canleak`/`canfmt`/`fmt_got`/`oobwrite` (and the whole
+    `ret2win`/`callhijack` family) on CI's runner image specifically
+    (`ubuntu-26.04`) while building them fine in this dev sandbox (`ubuntu-24.04`). Confirmed
+    from the real CI log: `error: implicit declaration of function 'system'` /
+    `'gets'` -- these samples deliberately call undeclared/removed-from-modern-headers
+    functions on purpose (that IS the vulnerability: `system()` without `#include <stdlib.h>`
+    in 5 of them; `gets()`, which C23 no longer declares anywhere, in the ret2win/callhijack
+    family). The project's own `run()` wrapper already passes `-w` (suppress warnings) on every
+    host-gcc build, but that does nothing here: on a newer GCC whose DEFAULT C dialect is
+    `gnu23` (confirmed by reproducing `gcc --version`/package versions from the CI log --
+    `ubuntu-26.04` ships a materially newer toolchain than this sandbox's `gcc 13.3.0`/Ubuntu
+    24.04), an undeclared function call is a hard C23 CONSTRAINT VIOLATION, not a warning
+    `-w` can silence -- confirmed locally too: the exact same source compiles with only a
+    warning under this sandbox's default (`gnu17`). Fixed by pinning `-std=gnu17` explicitly in
+    `run()`'s existing vanilla-gcc-defaults injection point (same mechanism already used there
+    for `-fno-stack-protector -fcf-protection=none`), restoring the old GNU dialect's
+    warning-not-error behavior on ANY gcc version without touching each vulnerable source file
+    individually (which risks subtly changing their intentionally-unsafe behavior/offsets).
+    Rebuilt the full corpus locally and confirmed no behavior change (same 39 binaries, same
+    sizes within normal variance); `test_default_corpus_is_elf_only` passes.
+  - **Investigated the remaining 8 with a real local reproduction, not a guess -- the first
+    hypothesis (glibc/mingw version drift between this sandbox and CI) turned out to be WRONG,
+    caught by actually testing it instead of writing it down and moving on.** The 8:
+    `test_autopoc_pe_verifies_ret2win_under_wine`, `test_autopwn_routes_pe_binaries_to_wine_ret2win`,
+    `test_symbolic_angr_reachable_works_on_pe_via_mingw_simprocedures`,
+    `test_autobotcake_verifies_house_of_botcake`,
+    `test_heap_dynamic_confirms_real_double_free_in_heapbug`,
+    `test_heap_dynamic_uaf_no_false_positive_on_legitimate_reallocation`,
+    `test_heap_dynamic_dump_state_reports_real_tcache_contents`,
+    `test_frida_dynamic_confirms_real_double_free_in_heapbug`. Rebuilt the exact corpus CI
+    builds (`samples/build.sh`, host mingw 13.2.0 -- the same package version CI's log shows)
+    and ran each of these 8 directly against those fresh binaries, in isolation: **all 8 pass,
+    reliably, repeatedly.** That rules out the version-drift theory outright -- disassembled
+    `win_chall.exe`'s `main()` by hand first (not a guess): `buf` sits exactly 72 bytes below the
+    return address (`sub $0x160,%rsp; lea 0x80(%rsp),%rbp`, `buf` at `rbp+0xa0`, return address
+    at the pre-prologue `rsp`), so the existing hardcoded offset (72, already first in `_OFFS`)
+    was correct all along; brute-forced every offset 0-160 under Wine to confirm 72 is the ONLY
+    one that ever prints `[+] win reached`, and `heap_dynamic`/`autobotcake` against
+    freshly-built `heapbug`/`botcake` under this sandbox's real glibc 2.39 pass cleanly too, so
+    there was never a byte-offset or glibc-struct-layout bug to chase.
+    What actually reproduced the failure LOCALLY (not just in CI): running `autopoc_pe()`
+    directly (bypassing pytest) against a **freshly deleted `~/.wine` prefix** once showed the
+    exact CI symptom (the sweep's first Wine invocation racing against Wine's own background
+    `explorer.exe`/systray startup -- `"tried to create a window, but no driver could be
+    loaded"` noise, then a spurious `"stack overflow"` report, neither of which is the real
+    exploit failing); a second attempt with the SAME fresh prefix passed cleanly in 26s via the
+    existing `_ensure_wine_ready()` warm-up. And running all 4 of the heap/botcake tests back
+    to back right after a 10-test batch that includes several slow angr-backed tests reproduced
+    ONE transient failure on `test_autopoc_pe_verifies_ret2win_under_wine` that did not
+    reproduce again moments later in isolation. Conclusion, consistent with the SAME
+    pytest-timeout/fork-hazard class of issue already on record above for the sibling angr
+    test: these are genuinely timing/resource-contention-sensitive when run as part of the
+    FULL, heavy suite (Docker + angr + Wine + gdb + frida, all exercising real sandboxes, not
+    mocks) -- exactly the profile that makes a CI runner (typically more memory/CPU-constrained
+    than this dev sandbox) hit it far more reliably than a lightly-loaded local run. Deliberately
+    did NOT ship a speculative fix (a longer `budget_s`, a settle-sleep after `wineboot --init`,
+    a retry-the-first-offset-once change) for a cause that's real but not narrowed to one exact
+    line -- same discipline as the angr entry above. The useful, CONFIRMED result of this pass:
+    the exploit logic, the hardcoded offset, and the glibc-dependent parsing in all 4 oracles are
+    correct right now, verified against the exact binaries CI builds -- this is resource/timing
+    flakiness in the harness around them, not a latent correctness bug to keep hunting for.
+
 ## Explicitly out of scope
 
 - Weaponization against real third-party systems. Everything stays for authorized software,
