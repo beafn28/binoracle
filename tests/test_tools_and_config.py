@@ -6194,6 +6194,87 @@ def test_websource_wp_plugin_404_mentions_commercial_plugin_possibility(monkeypa
     assert "--source" in r.note
 
 
+def test_websource_wp_plugin_corrects_a_near_miss_slug_via_search(monkeypatch):
+    # Gap real encontrado en vivo hoy, probando binoracle de punta a punta contra CVE-2026-2991
+    # (KiviCare) SIN pasarle ningun parametro, dejando que su propio LLM local adivinara todo:
+    # adivino el slug con una palabra de mas ('kivicare-clinic-PATIENT-management-system' en vez
+    # del real 'kivicare-clinic-management-system'), la API de info de WordPress.org dio 404
+    # exacto por eso, y TODA la verificacion dinamica se quedo bloqueada ahi mismo -- aunque el
+    # plugin real existe y el LLM tenia el nombre casi bien. Confirmado en vivo contra la API de
+    # busqueda real de WordPress.org que 'kivicare clinic patient management system' SI devuelve
+    # el slug correcto como unico resultado. Aqui, mockeado: un slug casi correcto debe
+    # autocorregirse y completar la descarga con el slug real.
+    import io
+    import json as _json
+    import zipfile
+    import binoracle.workflows.websource as ws
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as z:
+        z.writestr("kivicare-clinic-management-system/kivicare-clinic-management-system.php",
+                  "<?php /* Plugin Name: KiviCare */")
+    zip_data = zip_buf.getvalue()
+
+    class _FakeHTTPResponse:
+        def __init__(self, data):
+            self._data = data
+            self._pos = 0
+        def read(self, n=-1):
+            if n is None or n < 0:
+                chunk = self._data[self._pos:]
+                self._pos = len(self._data)
+            else:
+                chunk = self._data[self._pos:self._pos + n]
+                self._pos += len(chunk)
+            return chunk
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    calls = []
+    def fake_urlopen(url, timeout=30.0):
+        calls.append(url)
+        if "/info/1.2/" in url:   # la API de BUSQUEDA (distinta de la de info exacta)
+            return _FakeHTTPResponse(_json.dumps(
+                {"plugins": [{"slug": "kivicare-clinic-management-system"}]}).encode())
+        if "/info/1.0/kivicare-clinic-patient-management-system.json" in url:
+            raise Exception("HTTP Error 404: Not Found")   # el slug adivinado, no existe
+        if "/info/1.0/kivicare-clinic-management-system.json" in url:
+            info = {"versions": {"4.1.2": "https://downloads.wordpress.org/plugin/"
+                                          "kivicare-clinic-management-system.4.1.2.zip"},
+                    "download_link": "https://downloads.wordpress.org/plugin/"
+                                     "kivicare-clinic-management-system.zip",
+                    "version": "4.1.2"}
+            return _FakeHTTPResponse(_json.dumps(info).encode())
+        return _FakeHTTPResponse(zip_data)   # la descarga del .zip en si
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+
+    r = ws.fetch_wordpress_plugin("kivicare-clinic-patient-management-system", version="4.1.2")
+    assert r.ok is True, r.note
+    assert r.source == "kivicare-clinic-management-system"   # el slug CORREGIDO, no el adivinado
+    assert any("/info/1.2/" in c for c in calls), "debio consultar la API de busqueda"
+
+
+def test_websource_wp_plugin_search_correction_rejects_unrelated_top_result(monkeypatch):
+    # Control negativo del fix de arriba: si la busqueda devuelve algo que NO se parece lo
+    # bastante al slug original (poco solape de palabras), no debe sustituirlo a ciegas --
+    # mismo comportamiento honesto de antes (404 explicado), nunca un plugin equivocado.
+    import binoracle.workflows.websource as ws
+
+    def fake_urlopen(url, timeout=30.0):
+        if "/info/1.2/" in url:
+            return type("R", (), {
+                "read": lambda self, n=-1: b'{"plugins": [{"slug": "totally-unrelated-plugin"}]}',
+                "__enter__": lambda self: self, "__exit__": lambda self, *a: False})()
+        raise Exception("HTTP Error 404: Not Found")
+    monkeypatch.setattr(ws, "_urlopen", fake_urlopen)
+
+    r = ws.fetch_wordpress_plugin("divi-form-builder")
+    assert r.ok is False
+    assert "COMERCIAL" in r.note or "premium" in r.note   # mismo mensaje honesto que antes
+
+
 def test_websource_wp_plugin_404_with_version_tries_direct_download_fallback(monkeypatch):
     # Regresion real encontrada en vivo con CVE-2024-43982 (Login As Users): la API de info de
     # WordPress.org puede dar 404 no porque el plugin sea comercial, sino porque fue CERRADO del
