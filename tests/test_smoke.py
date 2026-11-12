@@ -1071,6 +1071,97 @@ def test_agent_loop_degrades_instead_of_losing_everything_on_a_backend_crash():
     assert "LLM backend failed mid-investigation" in res.answer
 
 
+def test_agent_loop_recovers_from_context_overflow_instead_of_giving_up():
+    # Bug real encontrado en vivo, DOS VECES, resolviendo el mismo CTF real (ret2win de ROP
+    # Emporium) contra un servidor llama.cpp local de 8192 tokens: _enforce_context_budget ya
+    # corria cada paso y no via motivo para recortar (su presupuesto es en CARACTERES, y
+    # desensamblado/hex denso tokeniza mucho peor de lo que esa cuenta asume), asi que la
+    # investigacion llegaba al mismo paso (~18) y moria con el mismo 400 real: "This model's
+    # maximum context length is 8192 tokens. However, you requested 9297 tokens..." -- la
+    # investigacion entera se abortaba (backend_failure) en vez de simplemente recortar MAS y
+    # seguir. Ahora, cuando el error es ESPECIFICAMENTE un rechazo de contexto (no un servidor
+    # caido u otro 400), se recorta al minimo y se reintenta una vez antes de rendirse.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    class _Disasm(Oracle):
+        name = "d"
+        def available(self):
+            return True
+        def tools(self):
+            def run(target):
+                return ToolResult(True, "radare2: pdf", f"disasm {target}")
+            return [Tool("r2_disasm", "d", [ToolParam("target", "t")], run, self.name)]
+
+    class _ContextOverflowThenRecovers:
+        def __init__(self):
+            self.n = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.n += 1
+            if self.n == 1:
+                return '{"action":"tool","tool":"r2_disasm","args":{"target":"sym.main"}}'
+            if self.n == 2:
+                raise RuntimeError(
+                    "openai-compat server at http://127.0.0.1:8711/v1 rejected the request "
+                    '(HTTP 400 Bad Request): {"error": {"message": "This model\'s maximum '
+                    'context length is 8192 tokens. However, you requested 9297 tokens '
+                    '(9297 in the messages, None in the completion).", '
+                    '"type": "invalid_request_error", "code": "context_length_exceeded"}}')
+            return '{"action":"final","answer":"the flag is X [src: radare2: pdf]","findings":[]}'
+
+    cfg = load_config(); cfg.max_steps = 24
+    llm = _ContextOverflowThenRecovers()
+    res = AgentLoop(llm, ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
+
+    assert llm.n == 3, "debio reintentar UNA vez tras el rechazo de contexto, no rendirse"
+    assert res.stopped_reason != "backend_failure", "debio recuperarse en vez de abortar la investigacion"
+    assert "the flag is X" in res.answer
+    assert len(res.ledger.entries) == 1, "la evidencia real ya reunida antes del fallo no debe perderse"
+
+
+def test_agent_loop_gives_up_if_context_overflow_retry_also_fails():
+    # Complementa el test anterior: si el reintento TAMBIEN falla (el contexto recortado al
+    # minimo sigue sin caber, o el servidor cae de verdad en el reintento), debe degradar al
+    # mismo backend_failure de siempre -- un solo reintento, no un bucle.
+    from binoracle.agent.loop import AgentLoop
+    from binoracle.config import load_config
+    from binoracle.oracles.base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+
+    class _Disasm(Oracle):
+        name = "d"
+        def available(self):
+            return True
+        def tools(self):
+            def run(target):
+                return ToolResult(True, "radare2: pdf", f"disasm {target}")
+            return [Tool("r2_disasm", "d", [ToolParam("target", "t")], run, self.name)]
+
+    class _AlwaysContextOverflow:
+        def __init__(self):
+            self.n = 0
+        def available(self):
+            return True
+        def chat(self, messages, *, json_mode=False):
+            self.n += 1
+            if self.n == 1:
+                return '{"action":"tool","tool":"r2_disasm","args":{"target":"sym.main"}}'
+            raise RuntimeError("maximum context length is 8192 tokens, you requested 9999")
+
+    cfg = load_config(); cfg.max_steps = 24
+    llm = _AlwaysContextOverflow()
+    res = AgentLoop(llm, ToolRegistry([_Disasm()]), cfg).run("x", mode="ask")
+
+    # llamada 1: tool call real. llamada 2: intento original (falla). llamada 3: el UNICO
+    # reintento (falla tambien). llamada 4: _synthesize's propia llamada al backend (falla
+    # tambien, capturada por su propio try/except -- ver test de sintesis-realmente-caida).
+    assert llm.n == 4, "exactamente un reintento tras el rechazo de contexto, no un bucle"
+    assert res.stopped_reason == "backend_failure"
+    assert len(res.ledger.entries) == 1
+
+
 def test_agent_loop_synthesis_falls_back_to_raw_evidence_when_backend_is_truly_down():
     # Complementa el test anterior: si el backend sigue caido incluso para la PROPIA sintesis
     # (no fue un fallo de una sola peticion, el servidor realmente no volvio), no debe

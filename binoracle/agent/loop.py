@@ -123,6 +123,40 @@ class AgentLoop:
         while len(messages) - start > 4 and sum(len(m.content) for m in messages[start:]) > budget_chars:
             del messages[start:start + 2]
 
+    _CONTEXT_OVERFLOW_MARKERS = (
+        "context_length_exceeded", "maximum context length", "context window",
+        "reduce the length",
+    )
+
+    @classmethod
+    def _is_context_overflow(cls, exc: Exception) -> bool:
+        """True when `exc` (from self.llm.chat) is the backend's own context-window-exceeded
+        rejection, not some other failure (dead server, OOM, malformed request). Detected from
+        the error text llama.cpp/vLLM/LM Studio actually send back in their 400 body -- real
+        examples confirmed live: "This model's maximum context length is 8192 tokens. However,
+        you requested 9297 tokens..." """
+        return any(m in str(exc).lower() for m in cls._CONTEXT_OVERFLOW_MARKERS)
+
+    def _force_trim_to_minimum(self, messages: List[Message]) -> None:
+        """Bug real encontrado en vivo, dos veces, resolviendo el mismo CTF real contra un
+        servidor local real de 8192 tokens de contexto: `_enforce_context_budget` arriba solo
+        mira `max_context_chars` (en CARACTERES), que para contenido denso en hex/desensamblado
+        tokeniza mucho peor que texto normal -- 16000 caracteres de ese contenido superaron los
+        8192 tokens reales del servidor DOS veces, en el mismo paso (~18), con exactamente el
+        mismo error 400 cada vez. La investigacion entera se abortaba ahi (ver el comentario de
+        `except Exception` en run()) en vez de recuperarse y seguir. Este metodo es el recorte
+        de emergencia que se usa SOLO tras un rechazo de contexto confirmado: tira todo el
+        historial de herramientas salvo el ultimo intercambio (igual que arriba, nunca parte un
+        par accion+observacion), para dar a la siguiente llamada el maximo margen posible antes
+        de reintentar una vez."""
+        has_note = len(messages) > 2 and messages[2].content == self._CONTEXT_TRIMMED_NOTE
+        start = 3 if has_note else 2
+        if not has_note:
+            messages.insert(2, Message("user", self._CONTEXT_TRIMMED_NOTE))
+            start = 3
+        while len(messages) - start > 2:
+            del messages[start:start + 2]
+
     def run(self, task: str, mode: str = "ask") -> AgentResult:
         ledger = GroundingLedger()
         messages: List[Message] = [
@@ -164,23 +198,47 @@ class AgentLoop:
             try:
                 reply = self.llm.chat(messages, json_mode=True, **({"tools": tool_schema} if tool_schema else {}))
             except Exception as e:
-                # Every OTHER oracle in this codebase degrades on failure instead of crashing
-                # the whole investigation (r2's cmd timeout, angr's hard-killed subprocess) --
-                # the LLM backend itself was the one exception to that rule, confirmed live
-                # against a real local CPU server: an HTTP 400 (context window exceeded) and a
-                # dropped connection (OOM-killed server process) both propagated straight past
-                # this loop, past cmd_ask/cmd_hunt's own try/except, out to the CLI's generic
-                # handler -- the whole run printed "error inesperado: ..." and lost every real
-                # fact already gathered (steps 1-6 of real r2/angr evidence, thrown away for a
-                # step-7 backend hiccup). Synthesizing from the ledger we DO have, same as the
-                # budget-exhausted path below, means a backend failure degrades the answer
-                # instead of destroying it.
-                synth = self._synthesize(
-                    task, ledger,
-                    note=f"(the LLM backend failed mid-investigation: {e}; this is a partial "
-                         "answer from the evidence gathered before that point, not a complete one)",
-                )
-                return AgentResult(ledger.annotate(synth), [], ledger, step, "backend_failure")
+                # Bug real encontrado en vivo, dos veces, con el MISMO CTF real contra un
+                # servidor local de 8192 tokens: `_enforce_context_budget` ya corrio este mismo
+                # paso y no vio motivo para recortar (su presupuesto es en caracteres, y
+                # contenido denso en hex/desensamblado tokeniza mucho peor de lo que esa cuenta
+                # de caracteres asume) -- la investigacion entera se abortaba aqui en el mismo
+                # paso (~18) con el mismo 400 "maximum context length... you requested 9297
+                # tokens" cada vez, perdiendo la oportunidad de simplemente recortar MAS y
+                # seguir. Antes de rendirse, si el error es especificamente un rechazo de
+                # contexto (no un servidor caido, OOM, o un 400 por otra causa), se recorta al
+                # minimo con _force_trim_to_minimum y se reintenta UNA vez -- igual de barato
+                # que la sintesis parcial de abajo, pero intenta seguir investigando primero.
+                if self._is_context_overflow(e):
+                    self._force_trim_to_minimum(messages)
+                    try:
+                        reply = self.llm.chat(messages, json_mode=True,
+                                              **({"tools": tool_schema} if tool_schema else {}))
+                    except Exception as e2:
+                        e = e2
+                    else:
+                        # el reintento funciono: `reply` ya tiene la respuesta buena y el flujo
+                        # normal del paso (action = extract_action(reply), justo debajo de este
+                        # bloque) sigue como si nunca hubiera fallado.
+                        e = None
+                if e is not None:
+                    # Every OTHER oracle in this codebase degrades on failure instead of
+                    # crashing the whole investigation (r2's cmd timeout, angr's hard-killed
+                    # subprocess) -- the LLM backend itself was the one exception to that rule,
+                    # confirmed live against a real local CPU server: an HTTP 400 (context
+                    # window exceeded) and a dropped connection (OOM-killed server process) both
+                    # propagated straight past this loop, past cmd_ask/cmd_hunt's own
+                    # try/except, out to the CLI's generic handler -- the whole run printed
+                    # "error inesperado: ..." and lost every real fact already gathered (steps
+                    # 1-6 of real r2/angr evidence, thrown away for a step-7 backend hiccup).
+                    # Synthesizing from the ledger we DO have, same as the budget-exhausted path
+                    # below, means a backend failure degrades the answer instead of destroying it.
+                    synth = self._synthesize(
+                        task, ledger,
+                        note=f"(the LLM backend failed mid-investigation: {e}; this is a partial "
+                             "answer from the evidence gathered before that point, not a complete one)",
+                    )
+                    return AgentResult(ledger.annotate(synth), [], ledger, step, "backend_failure")
             action = extract_action(reply)
 
             # Native tool-calling has no bare "I'm done" signal distinct from "call this tool"
