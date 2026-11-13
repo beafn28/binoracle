@@ -1094,6 +1094,12 @@ def cmd_investigate(args, config):
         hints["unauthenticated_login_bypass"] = True
     if getattr(args, "victim_role", None):
         hints["victim_role"] = args.victim_role
+    if getattr(args, "bypass_header", None):
+        hints["bypass_header"] = args.bypass_header
+    if getattr(args, "bypass_value", None):
+        hints["bypass_value"] = args.bypass_value
+    if getattr(args, "confirm_string", None):
+        hints["confirm_string"] = args.confirm_string
     if getattr(args, "keep_lab_on_failure", False):
         hints["keep_lab_on_failure"] = True
     if getattr(args, "functions", None):
@@ -1819,6 +1825,18 @@ def build_parser() -> argparse.ArgumentParser:
                          "(default: subscriber) -- some plugins gate the endpoint's success "
                          "path on a role THEY define (e.g. a 'patient' role), not any "
                          "logged-in user")
+    ip.add_argument("--bypass-header", default="",
+                    help="nombre de la cabecera HTTP maliciosa para un bypass de autorizacion "
+                         "via cabecera (p.ej. 'x-middleware-subrequest' para CVE-2025-29927). "
+                         "Requiere --bypass-value. Activa verify_generic_header_bypass en "
+                         "cve_agent al combinar con --source de un directorio/repo con Dockerfile.")
+    ip.add_argument("--bypass-value", default="",
+                    help="valor exacto de --bypass-header (p.ej. "
+                         "'middleware:middleware:middleware:middleware:middleware')")
+    ip.add_argument("--confirm-string", default="",
+                    help="cadena que debe aparecer en la respuesta con bypass para "
+                         "confirmar acceso real (vacia = solo se comprueba que el "
+                         "status sea 2xx). Combinada con --bypass-header.")
     ip.add_argument("--functions", help="comma-separated vulnerable function/method names to confirm "
                                         "against the fetched source (e.g. update_user,handle_register_submission)")
     ip.add_argument("--table-name", help="for WordPress deserialization: the plugin's own DB "
