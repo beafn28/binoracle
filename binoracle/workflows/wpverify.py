@@ -922,6 +922,34 @@ def _http_request(method: str, url: str, **kwargs):
     return requests.request(method, url, **kwargs)
 
 
+def _http_request_raw_path(method: str, url: str, timeout: float = 15):
+    """Como _http_request pero SIN normalizar los secuencias percent-encoded en el path de la URL.
+    requests.request() llama a PreparedRequest.prepare_url() que decodifica %2e a '.' antes de
+    enviar la peticion -- exactamente lo que rompe CVE-2021-41773 y CVE-2021-42013 (Apache 2.4.49/
+    2.4.50), cuyo bypass requiere que el servidor vea '.%2e' o '%2e%2e' sin normalizar.
+    urllib.request.urlopen usa http.client que envia el path tal cual, sin tocar el encoding.
+    Solo usable para GET sin body ni cookies -- suficiente para verificacion de path-traversal
+    en URL_PATH mode donde el payload va en el path, no en un parametro POST."""
+    import urllib.request
+    import urllib.error
+
+    class _Resp:
+        def __init__(self, status, text):
+            self.status_code = status
+            self.text = text
+
+    try:
+        req = urllib.request.Request(url, method=method.upper())
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode("utf-8", errors="replace")
+            return _Resp(r.status, body)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return _Resp(e.code, body)
+    except Exception:
+        return _Resp(0, "")
+
+
 def _make_session():
     """Sesion con cookies persistentes entre peticiones -- requests.Session() normal, o (si se
     configuro Burp) BurpSession, que manda cada peticion real a traves de Burp y mantiene las
