@@ -2140,6 +2140,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   inv.vuln_class == "path-traversal" and notes.get("endpoint")):
                 from .genericverify import verify_generic_path_traversal, _pick_param
                 from .wpverify import _PATH_HINTS
+                import re as _re_pt
+                # Normalizar endpoint: LLMs a veces generan notacion de ruta de framework
+                # como '/static/<path:filename>' (Flask) o '/files/{name}' (FastAPI). Esos
+                # patrones impiden que URL_PATH mode se active (el verificador lo activa cuando
+                # el endpoint termina en '/'). Se eliminan los segmentos de parametro al final.
+                _raw_pt_ep = notes.get("endpoint") or ""
+                _pt_ep = _re_pt.sub(r'(?:/<[^>]+>|/\{[^}]+\}|/:[^/]+)+$', '/', _raw_pt_ep)
+                if _pt_ep == _raw_pt_ep:
+                    # patron sin '/' previo (ej. 'files/{id}' al final)
+                    _pt_ep = _re_pt.sub(r'(?:<[^>]+>|\{[^}]+\})$', '', _raw_pt_ep)
                 params = notes.get("parameters") or []
                 path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
@@ -2147,7 +2157,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "attempting GENERIC DYNAMIC verification -- canary file, the target is "
                      "built from its own Dockerfile/compose..."))
                 wr = verify_generic_path_traversal(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
@@ -2160,7 +2170,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
-                    notes.get("endpoint"), path_p, technique_label="path-traversal generico")
+                    _pt_ep, path_p, technique_label="path-traversal generico")
                 _apply_wpverify_result(inv, wr, es, llm)
                 # escalada: path-traversal (clase de la hipotesis) puede en realidad ser LFI-a-
                 # RCE si el parametro INCLUYE el fichero como codigo en vez de solo servirlo --
@@ -2174,7 +2184,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          "propio..." if es else
                          "attempting LFI-to-RCE escalation -- own access-log poisoning..."))
                     wr_rce = verify_generic_lfi_rce(
-                        fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                        fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
                     _apply_wpverify_result(inv, wr_rce, es, llm)
             # "cualquier entorno": fallback generico de IDOR (ver genericverify.py) para cuando
