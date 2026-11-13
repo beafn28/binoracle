@@ -50,28 +50,7 @@ class R2Oracle(Oracle):
         # se arreglo para `pdg` y para AngrOracle._reachable(), aqui en el chequeo de entrada que
         # los precede a todos.
         self.analysis_timeout_s = 180.0
-        # Same bug class, different trigger: a bug found live testing against a REAL CVE binary
-        # (not a small CTF sample) -- sudo 1.8.31 (CVE-2021-3156) has `reallocarray` but no bare
-        # `realloc` import; `_heap()`'s substring check `"realloc" in <ii output text>` false-
-        # positives on `reallocarray` containing that substring, so it asks for `axt @
-        # sym.imp.realloc`, a symbol that doesn't exist. A FRESH r2 process handles that in
-        # <1s ("Invalid address"), but the SAME query on this oracle's own long-lived r2pipe
-        # session hangs indefinitely -- an r2pipe-session-specific pathology, not an r2-the-tool
-        # one. `_ensure_analyzed_pipe` already timeboxes the initial 'aa'/'aaa' analysis for
-        # exactly this kind of real-world r2 misbehavior; ordinary post-analysis commands had no
-        # such bound at all, so any future pathology here (not just this one query) could hang
-        # the entire pipeline (triage, audit, investigate_cve) forever. Bounded the same way.
         self.cmd_timeout_s = 60.0
-        # Real bug found live against a PE with anti-debug tricks: `axt` (cross-reference
-        # query) genuinely hung inside r2 for THIS session's whole lifetime -- the per-command
-        # timeout above DID catch each individual hang (never an infinite wait), but `_sinks()`
-        # and `_heap()` each retry axt per dangerous-sink candidate, so several candidates each
-        # paying a full cmd_timeout_s before giving up turned a "cheap, no-model" triage step
-        # into several minutes. One confirmed axt/`/r` timeout is strong enough signal that
-        # r2's cross-reference engine is broken for the REST of this session, not just for that
-        # one query -- latched here (same "already tried and failed, don't retry" precedent as
-        # `_analysis_timed_out` above) so every later axt/`/r` call degrades INSTANTLY instead
-        # of repeating a call already known to hang.
         self._xref_timed_out = False
 
     def available(self) -> bool:
@@ -116,9 +95,6 @@ class R2Oracle(Oracle):
         self._analyzed = True
 
     def _cmd_timed(self, r2, cmd: str) -> Optional[str]:
-        """Igual que `_ensure_analyzed_pipe`'s guardia de hilo, pero para UN comando cualquiera
-        tras el analisis inicial. Devuelve None (nunca lanza) si el pipe se queda realmente
-        colgado -- el llamador decide el mensaje de degradacion."""
         result: dict = {}
         def _run_cmd():
             try:
@@ -129,9 +105,6 @@ class R2Oracle(Oracle):
         th.start()
         th.join(self.cmd_timeout_s)
         if th.is_alive():
-            # el pipe esta de verdad colgado -- matarlo y descartarlo; la PROXIMA llamada en
-            # esta misma instancia abre uno nuevo y re-analiza desde cero (coste aceptable
-            # frente a quedarse colgado para siempre).
             try:
                 r2.process.kill()
             except Exception:
@@ -143,10 +116,6 @@ class R2Oracle(Oracle):
 
     @staticmethod
     def _is_xref_cmd(cmd: str) -> bool:
-        """`axt` (cross-reference query) and `/r` (reference search) are the two command
-        shapes behind the hang class documented on `self._xref_timed_out` -- matched by their
-        command-word prefix so e.g. `axt @ sym.imp.foo` and `/r 0x401000` both match regardless
-        of their argument."""
         return cmd.startswith("axt") or cmd.startswith("/r ") or cmd == "/r"
 
     def _run(self, cmd: str, analyze: bool = True) -> str:
@@ -160,14 +129,6 @@ class R2Oracle(Oracle):
                         f"itself stuck; degrading instead of blocking the pipeline]")
             is_xref = self._is_xref_cmd(cmd)
             if is_xref and self._xref_timed_out:
-                # ya vimos que axt/`/r` se cuelga en esta sesion -- no repetir el mismo patron
-                # de bloqueo para cada candidato restante (ver el comentario en __init__). Same
-                # "[r2 " prefix as every other degrade message below (and in `_ensure_
-                # analyzed_pipe`'s analysis-timeout branch) -- callers like `_sinks`/`_heap`
-                # detect ANY degrade text by that one shared prefix, so this has to match it
-                # exactly or it silently slips past them as if it were real axt output (caught
-                # live: a first version here used "[r2's ..." -- the apostrophe meant
-                # `startswith("[r2 ")` never matched it).
                 return (f"[r2 cross-reference engine (axt//r) already timed out once in this "
                         f"session -- degrading '{cmd}' instantly instead of repeating the hang]")
             r2 = self._pipe()

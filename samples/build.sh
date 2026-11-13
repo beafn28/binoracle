@@ -13,20 +13,17 @@ img=gcc:13
 
 engine=none
 if command -v docker >/dev/null 2>&1 && docker image inspect "$img" >/dev/null 2>&1; then
-  engine=docker                                   # image already present -> fastest, exact
+  engine=docker
 elif [ "$(uname -s)" = "Linux" ] && command -v gcc >/dev/null 2>&1; then
-  engine=host                                     # no image, but a Linux host gcc emits ELFs
+  engine=host
 elif command -v docker >/dev/null 2>&1; then
-  engine=docker                                   # e.g. macOS: let docker pull gcc:13 as before
+  engine=docker
 fi
 if [ "$engine" = none ]; then
   echo "[!] necesito la imagen Docker '$img' (make pwn-image) o un gcc en un host Linux" >&2
   exit 1
 fi
 echo "[*] motor de compilacion: $engine"
-# have_docker: usado mas abajo solo para el build opcional de win_chall.exe via mingw (necesita
-# un contenedor Debian con gcc-mingw-w64, no el host); independiente de 'engine' porque ese build
-# concreto siempre prefiere Docker si lo hay, sin importar como se compilo el resto del corpus.
 have_docker=0
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   have_docker=1
@@ -35,29 +32,10 @@ run(){
   if [ "$engine" = "docker" ]; then
     docker run --rm --platform linux/amd64 -v "$here":/w -w /w "$img" bash -c "$1"
   else
-    # Host gcc: the official gcc:13 image is VANILLA gcc (stack-protector and cf-protection OFF
-    # by default), but a distro gcc (Ubuntu/Debian) turns BOTH on by default -- which would add
-    # a canary to the "no-canary" samples and endbr64 padding that shifts win()'s address.
-    # Confirmado en vivo: '-fcf-protection=full' por defecto en Ubuntu anade padding endbr64 que
-    # desplaza win() de su direccion esperada, rompiendo find_win()/tests que fijan una direccion
-    # concreta, aunque cada linea ya pase '-fno-stack-protector' explicito (el canary si se
-    # neutraliza, el CET no). Se inyectan los defaults de vainilla justo despues de 'gcc'; los
-    # flags de cada linea van DESPUES y siguen ganando (e.g. la muestra canary's
-    # -fstack-protector-all la sobreescribe). PIE/RELRO ya van explicitos por linea. Tolera que
-    # un build individual falle (p.ej. -static sin glibc-static, -m32 sin multilib) para que el
-    # resto del corpus se siga construyendo.
-    #
-    # -std=gnu17 fuerza el dialecto PRE-C23: confirmado en vivo que es necesario, no cosmetico.
-    # Varios de estos retos llaman a proposito a funciones "peligrosas" sin declarar
-    # (system() sin <stdlib.h> en canary/canleak/canfmt/fmt_got/oobwrite; gets() -- que C23 ya
-    # ni declara en ningun header -- en toda la familia ret2win/callhijack). Con gcc moderno
-    # (Ubuntu 26.04 en CI) el dialecto por defecto es gnu23, donde una declaracion implicita de
-    # funcion es un ERROR duro (no un warning) -- y '-w' NO lo silencia porque ya no es un
-    # warning, es un error de C23. Confirmado reproduciendo el log real de CI: 9 builds de la
-    # muestra fallaban asi en cada run, dejando 'canary' fuera del corpus. En gcc local
-    # (Ubuntu 24.04, dialecto por defecto gnu17) la misma llamada sin declarar solo advertia y
-    # el build seguia -- por eso nunca se vio localmente. Fijar el dialecto explicito restaura
-    # ese comportamiento en cualquier gcc, sin tocar cada fuente uno por uno.
+    # -std=gnu17: confirmado en vivo que es necesario. Con gcc moderno (Ubuntu 26.04, gnu23 por
+    # defecto) una llamada sin declarar es un ERROR duro -- '-w' NO lo silencia porque ya no es
+    # un warning. 9 builds fallaban en CI hasta fijar esto. Tambien -fno-stack-protector y
+    # -fcf-protection=none para que distro gcc no altere las muestras "sin canary/CET".
     local cmd="$1"
     case "$cmd" in
       gcc\ *) cmd="gcc -std=gnu17 -fno-stack-protector -fcf-protection=none ${cmd#gcc }" ;;
@@ -161,20 +139,6 @@ run "gcc -fno-stack-protector -no-pie -static -w -o bin/mprotectshell src/mprote
 echo "[*] leakchain (x86-64, no-PIE, dinamico: OOB read filtra puntero libc real -> OOB write hijacka callback -> system('/bin/sh'), infoleak chaining)"
 run "gcc -fno-stack-protector -no-pie -w -o bin/leakchain src/leakchain.c"
 echo "[*] win_chall.exe (Windows PE via mingw)"
-# Real gap encontrado y confirmado en vivo: este build SIEMPRE prefirio Docker (debian:12)
-# sobre el mingw del host cuando Docker estaba disponible, sin importar que el host YA
-# tuviera x86_64-w64-mingw32-gcc instalado -- en este sandbox de desarrollo (sin daemon de
-# Docker corriendo) el mingw del HOST (Ubuntu noble: gcc-mingw-w64-x86-64 13.2.0-6ubuntu1+26.1)
-# se usaba sin darse cuenta, pero un runner de CI con Docker disponible tomaba SIEMPRE la rama
-# debian:12 (gcc-mingw-w64-x86-64 12.2.0-14+25.2 -- GCC 12, version mayor distinta, confirmado
-# comparando ambos paquetes). Esa diferencia de toolchain produce un win_chall.exe
-# BINARIAMENTE DISTINTO entre ambos entornos -- causa confirmada de que
-# test_symbolic_angr_reachable_works_on_pe_via_mingw_simprocedures fallara en CI (3/3) sin
-# reproducirse nunca en local (18+ veces): no era aleatoriedad de angr, era compilar un
-# binario diferente sin saberlo. Se invierte la prioridad -- host primero, Docker solo si el
-# host no tiene mingw -- para que el mismo toolchain (el que SI se ha verificado en vivo, una
-# y otra vez, esta noche) se use en cualquier entorno, sin depender de si Docker resulta estar
-# corriendo o no.
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   ( cd "$here" && x86_64-w64-mingw32-gcc -w -o bin/win_chall.exe src/winchall.c ) || echo "  (mingw build skipped)"
 elif [ "$have_docker" = "1" ]; then

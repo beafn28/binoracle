@@ -566,13 +566,11 @@ def test_r2session_cmd_timeout_never_hangs_the_pipeline():
 
 def test_r2session_get_never_hangs_on_a_stuck_initial_analysis(monkeypatch):
     # Mismo bug que cmd_timeout() arregla para `pdg`, pero en el ANALISIS INICIAL ('aaa') que
-    # get() dispara antes de poder cachear nada -- bug real encontrado en vivo DOS VECES por
-    # separado: un binario estatico grande del corpus de practica (static-PIE, arrastra la libc
-    # entera) hace que este analisis tarde varios minutos, y si r2 se queda REALMENTE colgado
-    # (confirmado tambien bajo CPU muy limitada con un PIE real, ret2win_pie) no habia ningun
-    # limite que lo parase -- el mismo punto ciego que cmd_timeout() cubre para 'pdg', aqui en el
-    # chequeo de entrada que PRECEDE a cualquier cmd_timeout() y a CUALQUIER workflow que abra un
-    # r2 por primera vez (triage, vulnhunt, chainanalyzer, reachability...).
+    # get() dispara antes de poder cachear nada -- bug real encontrado en vivo: un binario estatico
+    # grande del corpus de practica (static-PIE, arrastra la libc entera) hace que este analisis
+    # tarde varios minutos, y si r2 se queda REALMENTE colgado no habia ningun limite que lo
+    # parase -- el mismo punto ciego que cmd_timeout() cubre para 'pdg', aqui en el chequeo de
+    # entrada que PRECEDE a cualquier cmd_timeout().
     import os
     import time
     import tempfile
@@ -604,11 +602,11 @@ def test_r2session_get_never_hangs_on_a_stuck_initial_analysis(monkeypatch):
     r2session._CACHE.pop(os.path.abspath(b), None)
 
     t0 = time.time()
-    r = r2session.get(b, aaa_timeout=0.2)
+    r = r2session.get(b, analysis_timeout=0.2)
     elapsed = time.time() - t0
 
     assert r is None, "un analisis inicial colgado debe degradar a None, nunca bloquear"
-    assert elapsed < 2.0, "get() no debe esperar mucho mas que aaa_timeout"
+    assert elapsed < 2.0, "get() no debe esperar mucho mas que analysis_timeout"
     assert fake.process.killed
     assert os.path.abspath(b) not in r2session._CACHE, "una sesion que nunca termino de analizarse no se cachea"
 
@@ -623,7 +621,7 @@ def test_r2session_get_never_hangs_on_a_stuck_initial_analysis(monkeypatch):
     fast = _FastR2()
     monkeypatch.setattr(_r2pipe_mod, "open", lambda *a, **kw: fast)
     r2session._CACHE.pop(os.path.abspath(b), None)
-    r2 = r2session.get(b, aaa_timeout=2.0)
+    r2 = r2session.get(b, analysis_timeout=2.0)
     assert r2 is fast
     assert os.path.abspath(b) in r2session._CACHE
     assert not fast.process.killed
@@ -4078,20 +4076,13 @@ def test_symbolic_angr_reachable_impl_never_hangs_past_its_budget():
 
 
 def test_symbolic_angr_reachable_hard_kills_a_subprocess_that_outlives_its_budget(monkeypatch):
-    # Complementa el test anterior: _reachable_impl solo protege contra un bucle de llamadas a
-    # explore() que NUNCA termina -- pero no puede proteger contra una UNICA llamada a explore()
-    # que se bloquea mucho mas de lo normal (resolucion de restricciones dura; confirmado en vivo
-    # bajo throttling de CPU severo, un step que deberia tardar ~1s tardo mas de 2 HORAS). Para
-    # eso AngrOracle._reachable corre la busqueda en un proceso HIJO y lo MATA si sigue vivo
-    # pasado budget_s + margen -- este test lo confirma con un worker real que duerme mucho mas
-    # que el budget pedido, en vez de devolver nunca el control al bucle interno.
     import time
     import binoracle.oracles.symbolic_angr as sa
     if not sa._HAVE_ANGR:
         return
 
     def _slow_worker(binary, target, avoid_list, budget_s, max_active, q):
-        time.sleep(600)   # mucho mas que cualquier budget_s razonable de prueba
+        time.sleep(600)
         q.put(sa.ToolResult(True, "angr", "no deberia llegar aqui"))
     monkeypatch.setattr(sa, "_reachable_worker", _slow_worker)
 
@@ -4103,6 +4094,7 @@ def test_symbolic_angr_reachable_hard_kills_a_subprocess_that_outlives_its_budge
     assert elapsed < 40.0, "el proceso hijo debe ser forzado a terminar, no esperarse 600s"
     assert res.ok and res.meta.get("reachable") is False
     assert "forzado a terminar" in res.data or "NOT reachable" in res.data
+
 
 
 def test_capstone_oracle_disassembles_a_real_elf_without_r2(monkeypatch):
@@ -4565,6 +4557,8 @@ def test_heap_dynamic_dump_state_no_false_positive_without_frees():
     # ret2win no libera nada explicitamente: ninguna snapshot debe reportar chunks en tcache
     for snap in r.meta["snapshots"]:
         assert snap["tcache"] == {}
+
+
 
 
 def test_reachability_rebases_pie_addresses_for_angr():
