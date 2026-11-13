@@ -7779,6 +7779,42 @@ def test_genericverify_auto_detects_bare_flask_script_without_requirements_txt(t
     assert "pip install" in content and "flask" in content
 
 
+def test_genericverify_auto_dockerfile_trusts_a_corporate_proxy_ca_when_configured(
+        tmp_path, monkeypatch):
+    # Gap real encontrado en vivo investigando CVE-2025-57633 (FTP-Flask-python): el Dockerfile
+    # minimo de arriba hace `RUN pip install flask` dentro del `docker build`, y en este propio
+    # sandbox de desarrollo (detras de un proxy saliente con re-terminacion TLS) eso falla con
+    # "self-signed certificate in certificate chain" -- bloqueando TODA investigacion de un
+    # objetivo generico Python/Node/PHP sin Dockerfile propio, sin que sea un fallo real del
+    # objetivo. Sin BINORACLE_DOCKER_BUILD_CA_CERT fijada (el caso normal, sin este proxy
+    # concreto), el Dockerfile generado debe quedar EXACTAMENTE igual que antes.
+    from binoracle.workflows.genericverify import _find_build_target
+
+    (tmp_path / "ftp_app.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\n"
+        "if __name__ == '__main__':\n    app.run(debug=True)\n")
+
+    target_sin_proxy = _find_build_target(str(tmp_path))
+    content_sin_proxy = open(target_sin_proxy["path"]).read()
+    assert "NODE_EXTRA_CA_CERTS" not in content_sin_proxy
+    assert not (tmp_path / ".binoracle_proxy_ca.crt").exists()
+
+    ca_file = tmp_path.parent / "fake-ca.crt"
+    ca_file.write_text("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+    monkeypatch.setenv("BINORACLE_DOCKER_BUILD_CA_CERT", str(ca_file))
+
+    target_con_proxy = _find_build_target(str(tmp_path))
+    content_con_proxy = open(target_con_proxy["path"]).read()
+    assert "ENV HTTPS_PROXY=$HTTPS_PROXY" in content_con_proxy
+    assert "COPY .binoracle_proxy_ca.crt /tmp/binoracle-ca.crt" in content_con_proxy
+    assert "NODE_EXTRA_CA_CERTS=/tmp/binoracle-ca.crt" in content_con_proxy
+    assert "PIP_CERT=/tmp/binoracle-ca.crt" in content_con_proxy
+    # las lineas de proxy van ANTES del paso de instalacion real (pip install), para que ese
+    # paso de verdad vea el CA/proxy ya configurados
+    assert content_con_proxy.index("PIP_CERT") < content_con_proxy.index("pip install")
+    assert (tmp_path / ".binoracle_proxy_ca.crt").read_text() == ca_file.read_text()
+
+
 def test_genericverify_prefers_dockerfile_compose_over_auto_detection(tmp_path):
     # si el repo SI trae su propio Dockerfile/compose, nunca se genera uno propio por encima --
     # el del autor del PoC siempre gana.

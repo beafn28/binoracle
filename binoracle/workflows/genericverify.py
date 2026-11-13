@@ -130,6 +130,42 @@ def _package_json_has_runnable_entry(path: str) -> bool:
     return bool(scripts) and isinstance(scripts, dict)
 
 
+_PROXY_CA_FILENAME = ".binoracle_proxy_ca.crt"
+
+
+def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
+    """Gap real encontrado en vivo investigando CVE-2025-57633 (FTP-Flask-python): el Dockerfile
+    minimo auto-generado de arriba hace `RUN pip install flask` (o el equivalente npm/composer)
+    dentro del `docker build`, pero un despliegue real de binoracle detras de un proxy saliente
+    corporativo con re-terminacion TLS (exactamente la situacion de este propio sandbox de
+    desarrollo) hace que ese paso falle con 'self-signed certificate in certificate chain' --
+    el build nunca llega a arrancar nada, bloqueando CUALQUIER investigacion de un objetivo
+    generico Python/Node/PHP sin Dockerfile propio, sin que sea un fallo real del objetivo.
+
+    Cuando BINORACLE_DOCKER_BUILD_CA_CERT (ruta a un bundle CA) esta fijada, copia ese cert AL
+    CONTEXTO de build (unico sitio desde el que un `COPY` del Dockerfile puede verlo) y devuelve
+    las lineas a insertar justo despues del `FROM` -- antes de cualquier RUN de instalacion --
+    para que pip/npm confien en el mismo proxy/CA que el resto de este proceso ya usa
+    (HTTPS_PROXY se propaga via ARG/ENV, no solo al build sino tambien a los RUN posteriores).
+    Vacio si la variable no esta fijada: ningun despliegue sin este proxy corporativo concreto
+    se ve afectado."""
+    ca_src = os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "")
+    if not ca_src or not os.path.isfile(ca_src):
+        return []
+    try:
+        import shutil as _shutil
+        _shutil.copy(ca_src, os.path.join(source_dir, _PROXY_CA_FILENAME))
+    except OSError:
+        return []
+    return [
+        "ARG HTTPS_PROXY",
+        "ENV HTTPS_PROXY=$HTTPS_PROXY",
+        f"COPY {_PROXY_CA_FILENAME} /tmp/binoracle-ca.crt",
+        "ENV NODE_EXTRA_CA_CERTS=/tmp/binoracle-ca.crt PIP_CERT=/tmp/binoracle-ca.crt "
+        "NPM_CONFIG_CAFILE=/tmp/binoracle-ca.crt",
+    ]
+
+
 def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
@@ -144,7 +180,7 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
             continue
         if signal_file == "package.json" and not _package_json_has_runnable_entry(signal_path):
             continue
-        lines = [f"FROM {base_image}"] + run_lines + [f"EXPOSE {port}"]
+        lines = [f"FROM {base_image}"] + _proxy_dockerfile_lines(source_dir) + run_lines + [f"EXPOSE {port}"]
         path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -152,11 +188,12 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
                "auto_generado": True, "stack_detectado": signal_file}
     flask_module = _detect_bare_flask_entry(source_dir)
     if flask_module:
-        lines = ["FROM python:3.11-slim", "WORKDIR /app", "COPY . .",
+        lines = (["FROM python:3.11-slim"] + _proxy_dockerfile_lines(source_dir) +
+                ["WORKDIR /app", "COPY . .",
                  "RUN pip install --no-cache-dir flask",
                  f"ENV FLASK_APP={flask_module}",
                  'CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]',
-                 "EXPOSE 5000"]
+                 "EXPOSE 5000"])
         path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -174,7 +211,8 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
                 has_bare_php = True
                 break
     if has_bare_php:
-        lines = ["FROM php:8.2-cli"] + _PHP_BARE_DOCKERFILE + ["EXPOSE 8000"]
+        lines = (["FROM php:8.2-cli"] + _proxy_dockerfile_lines(source_dir) +
+                _PHP_BARE_DOCKERFILE + ["EXPOSE 8000"])
         path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
         with open(path, "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -246,8 +284,18 @@ class _GenericLab:
     def build_and_run(self, target: dict, timeout_build=600.0, timeout_run=60.0):
         self.kind = target["kind"]
         if self.kind == "dockerfile":
-            r = self.sh("build", "-t", self.image, "-f", target["path"], target["context"],
-                       timeout=timeout_build)
+            # --network host (en el build en si, no solo en el contenedor final) + el proxy
+            # saliente como --build-arg: el ENV HTTPS_PROXY que _proxy_dockerfile_lines() mete
+            # en el Dockerfile no tiene efecto si el daemon de build no puede alcanzar siquiera
+            # ese proxy -- ver _proxy_dockerfile_lines() para el porque completo. Sin
+            # BINORACLE_DOCKER_BUILD_CA_CERT fijada, esto es un no-op (misma invocacion que
+            # siempre, ningun despliegue sin este proxy concreto se ve afectado).
+            proxy_build_args: List[str] = []
+            if os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT"):
+                proxy_build_args = ["--network", "host", "--build-arg",
+                                   f"HTTPS_PROXY={os.environ.get('HTTPS_PROXY', '')}"]
+            r = self.sh("build", "-t", self.image, *proxy_build_args, "-f", target["path"],
+                       target["context"], timeout=timeout_build)
             if r.returncode != 0:
                 return r
             self.sh("network", "create", self.net, timeout=30)
