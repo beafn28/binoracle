@@ -1081,6 +1081,15 @@ def cmd_investigate(args, config):
         hints["cli_setup_cmd"] = args.cli_setup_cmd
     if getattr(args, "cli_run_cmd", None):
         hints["cli_run_cmd"] = args.cli_run_cmd
+    if getattr(args, "cli_argv_image", None):
+        hints["cli_argv_image"] = args.cli_argv_image
+    if getattr(args, "cli_argv_setup", None):
+        hints["cli_argv_setup"] = args.cli_argv_setup
+    if getattr(args, "cli_argv", None):
+        import json as _json
+        hints["cli_argv"] = _json.loads(args.cli_argv)
+    if getattr(args, "cli_payload_index", None) is not None:
+        hints["cli_payload_index"] = args.cli_payload_index
     if getattr(args, "unauthenticated_login_bypass", False):
         hints["unauthenticated_login_bypass"] = True
     if getattr(args, "victim_role", None):
@@ -1779,6 +1788,21 @@ def build_parser() -> argparse.ArgumentParser:
                                           "after planting a file whose NAME is the payload; "
                                           "verified if a canary file appears in the work dir "
                                           "(see cliverify.py)")
+    ip.add_argument("--cli-argv-image", help="for a CVE where the payload is the VALUE of a CLI "
+                                            "argument (not a filename): the Docker image to run "
+                                            "the tool in, e.g. 'node:20-slim' (see "
+                                            "cliverify.verify_cli_argv_command_injection)")
+    ip.add_argument("--cli-argv-setup", help="paired with --cli-argv-image: shell command run "
+                                            "once (with network) to install the exact version "
+                                            "to check, e.g. 'npm install "
+                                            "@cyclonedx/cyclonedx-npm@4.0.0'")
+    ip.add_argument("--cli-argv", help="paired with --cli-argv-image/--cli-payload-index: the "
+                                      "full argv to run the tool with, as a JSON array, e.g. "
+                                      "'[\"node\", \"node_modules/.bin/cyclonedx-npm\", "
+                                      "\"--workspace\", \"PLACEHOLDER\"]' -- the element at "
+                                      "--cli-payload-index is replaced with the real payload")
+    ip.add_argument("--cli-payload-index", type=int,
+                    help="index into --cli-argv whose value is the injectable argument")
     ip.add_argument("--unauthenticated-login-bypass", action="store_true",
                     help="WordPress missing-authorization/idor only: the endpoint needs NO "
                          "prior session at all (fully public/unauthenticated) and lets an "

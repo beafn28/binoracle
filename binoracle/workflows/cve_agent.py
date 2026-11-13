@@ -1601,6 +1601,25 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             notes["cli_setup_cmd"], notes["cli_run_cmd"], on_step=step, budget_s=budget_s)
         _apply_wpverify_result(inv, wr, es, llm)
         return
+    # SEGUNDA forma de CVE de herramienta CLI local: el payload va en el VALOR de un argumento
+    # (no en un nombre de fichero) -- ver cliverify.verify_cli_argv_command_injection,
+    # confirmado en vivo con CVE-2026-55849 (@cyclonedx/cyclonedx-npm). Gate explicito propio
+    # (cli_argv_image/cli_argv/cli_payload_index), nunca adivinado de la forma de --params: un
+    # analista que conoce el aviso es quien sabe que el vector es un argumento, no un fichero.
+    if (inv.vuln_class in ("command-injection", "os-command-injection")
+            and notes.get("cli_argv_image") and notes.get("cli_argv_setup")
+            and notes.get("cli_argv") and notes.get("cli_payload_index") is not None):
+        from .cliverify import verify_cli_argv_command_injection
+        step(("intentando verificacion DINAMICA (Docker aislado, --network none) de una "
+             "herramienta CLI cuyo vector es el VALOR de un argumento..." if es else
+             "attempting DYNAMIC verification (isolated Docker, --network none) of a CLI tool "
+             "whose vector is an argument's VALUE..."))
+        wr = verify_cli_argv_command_injection(
+            notes["cli_argv_image"], notes["cli_argv_setup"], list(notes["cli_argv"]),
+            int(notes["cli_payload_index"]), on_step=step, budget_s=budget_s,
+            setup_docker_args=notes.get("cli_argv_setup_docker_args"))
+        _apply_wpverify_result(inv, wr, es, llm)
+        return
     source = (notes.get("source_url") or "").strip()
     version_raw = (notes.get("affected_version") or "").strip()
     version = _clean_affected_version(version_raw)
