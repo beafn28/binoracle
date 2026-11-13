@@ -2150,6 +2150,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 if _pt_ep == _raw_pt_ep:
                     # patron sin '/' previo (ej. 'files/{id}' al final)
                     _pt_ep = _re_pt.sub(r'(?:<[^>]+>|\{[^}]+\})$', '', _raw_pt_ep)
+                # Si el endpoint viene de un PoC y ya lleva el payload de traversal incrustado
+                # (ej. '/cgi-bin/.%2e/.%2e/.%2e/.%2e/etc/passwd' o
+                # '/icons/.%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd'), extraer solo la base path.
+                # El verificador construye sus propios payloads -- el endpoint base (terminado
+                # en '/') es lo que necesita para activar URL_PATH mode.
+                if not _pt_ep.endswith('/'):
+                    _trav_m = _re_pt.search(r'(?i)(?:/\.%2e|/%2e%2e|/\.\./)', _pt_ep)
+                    if _trav_m:
+                        _pt_ep = _pt_ep[:_trav_m.start() + 1]
+                # Endpoints adicionales a probar cuando el LLM saco el endpoint de un PoC con
+                # traversal incrustado (cgi-bin es el path tipico de CVE-2021-41773 y similares;
+                # el PoC puede usar /icons/ o /static/ pero /cgi-bin/ es el que funciona en
+                # configuraciones Apache por defecto que habiliten mod_cgi).
+                _extra_pt_eps = []
+                if _pt_ep.endswith('/') and _pt_ep != '/cgi-bin/' and _raw_pt_ep != _pt_ep:
+                    _extra_pt_eps = ['/cgi-bin/']
                 params = notes.get("parameters") or []
                 path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
@@ -2171,6 +2187,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
                     _pt_ep, path_p, technique_label="path-traversal generico")
+                # Si no se verifico todavia, probar los endpoints adicionales (p.ej. /cgi-bin/
+                # cuando el endpoint del PoC era /icons/ -- CVE-2021-41773 / Apache httpd).
+                for _ep_extra in _extra_pt_eps:
+                    if wr.verified:
+                        break
+                    step((f"probando endpoint alternativo {_ep_extra!r} (el PoC usaba "
+                         f"{_pt_ep!r})..." if es else
+                         f"trying alternative endpoint {_ep_extra!r} (PoC used "
+                         f"{_pt_ep!r})..."))
+                    _wr_extra = verify_generic_path_traversal(
+                        fr.local_path, _ep_extra, notes.get("http_method") or "GET",
+                        params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
+                    if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
+                        wr = _wr_extra
                 _apply_wpverify_result(inv, wr, es, llm)
                 # escalada: path-traversal (clase de la hipotesis) puede en realidad ser LFI-a-
                 # RCE si el parametro INCLUYE el fichero como codigo en vez de solo servirlo --
@@ -3328,6 +3358,20 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                          f"the PoC gave its own repo ({dropped_source}) as source_url -- that's not "
                          f"the plugin's code, dropping it")
                 inv.poc_source_used = github_ref.url if github_ref else ""
+                # El PoC puede reportar 'rce' como vuln_class (la consecuencia) cuando la
+                # causa raiz es 'path-traversal', 'sqli', etc. -- no dejar que eso pise la
+                # clase inicial del LLM: el dispatcher de _run_web_investigation necesita la
+                # clase de la causa raiz para elegir el verificador correcto.
+                _existing_vc = inv.llm_notes.get("vuln_class", "")
+                _poc_vc = poc_hints.get("vuln_class", "")
+                _CAUSE_ROOT_CLASSES = {
+                    "path-traversal", "sqli", "xss", "ssrf", "ssti", "xxe",
+                    "open-redirect", "file-upload", "idor", "missing-authorization",
+                    "auth-bypass", "csrf", "command-injection",
+                }
+                if (_existing_vc in _CAUSE_ROOT_CLASSES and
+                        _poc_vc not in _CAUSE_ROOT_CLASSES and _poc_vc):
+                    poc_hints = {k: v for k, v in poc_hints.items() if k != "vuln_class"}
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}
                 step((f"PoC real leido -- endpoint={poc_hints.get('endpoint', '?')}, "
                      f"parameters={poc_hints.get('parameters', '?')}" if es else
@@ -3368,8 +3412,11 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                  + ", ".join(f"{k}={v}" for k, v in given.items()))
 
     # 3) clasifica + desarrolla la plantilla (grounded, deterministico)
-    inv.vuln_class = (classify_cve(inv.description) or
-                      classify_cve(inv.llm_notes.get("vuln_class", "")) or "")
+    # El LLM analizo la causa raiz especifica (p.ej. "path-traversal"); la descripcion puede
+    # mencionar la CONSECUENCIA (p.ej. "remote code execution"). La hipotesis del LLM gana
+    # sobre la clasificacion por keyword en la descripcion cuando el LLM fue consultado.
+    inv.vuln_class = (classify_cve(inv.llm_notes.get("vuln_class", "")) or
+                      classify_cve(inv.description) or "")
     has_bin = bool(binary and os.path.exists(binary))
 
     if is_web_class(inv.vuln_class):
