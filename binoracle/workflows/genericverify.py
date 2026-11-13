@@ -23,7 +23,8 @@ from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HINTS, _PATH_HINTS,
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
-                       _XssBrowserSession, _docker_daemon_ok, _http_request, _lab_host,
+                       _XssBrowserSession, _docker_daemon_ok, _http_request,
+                       _http_request_raw_path, _lab_host,
                        _pick_param, _redirect_location_is_external, _run, _token,
                        configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
@@ -724,7 +725,16 @@ def verify_generic_path_traversal(
                 if _url_path_mode:
                     # el payload va concatenado al path de la URL (CVE-2024-23334 / aiohttp etc.)
                     target_url = base_url + endpoint + payload_value
-                    resp = _http_request(m, target_url, timeout=15)
+                    # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente lo
+                    # que rompe bypasses como '.%2e/' (CVE-2021-41773 Apache 2.4.49): el
+                    # servidor necesita ver el caracter sin normalizar. Para payloads con
+                    # secuencias percent-encoded de punto (.%2e, %2e%2e) se usa urllib directo
+                    # que envia el path tal cual, sin tocar el encoding.
+                    _has_pct_dot = "%2e" in payload_value.lower() or "%2f" in payload_value.lower()
+                    if _has_pct_dot and m.upper() == "GET":
+                        resp = _http_request_raw_path(m, target_url, timeout=15)
+                    else:
+                        resp = _http_request(m, target_url, timeout=15)
                     payload_desc = f"URL_PATH={payload_value!r}"
                 else:
                     payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
