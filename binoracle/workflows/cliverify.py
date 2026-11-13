@@ -23,7 +23,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from .wpverify import WpVerifyResult, _token
 
@@ -101,6 +101,112 @@ def verify_cli_filename_command_injection(
                           f"canario '{canary_name}' nunca aparecio -- no se confirmo command "
                           f"injection (puede que esta version ya este parcheada, o que la "
                           f"herramienta no pase nombres de fichero a una shell sin escapar)")
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step(f"limpiando el directorio de trabajo descartable {work_dir}...")
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def verify_cli_argv_command_injection(
+    image: str, setup_cmd: str, argv_template: List[str], payload_index: int,
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 300.0,
+    setup_docker_args: Optional[List[str]] = None,
+) -> WpVerifyResult:
+    """SEGUNDA forma real de command injection via CLI, distinta de la de arriba (nombre de
+    fichero): el payload va en el VALOR DE UN ARGUMENTO que la herramienta concatena a una shell
+    interna sin escapar -- exactamente la extension que el docstring del modulo ya anticipaba
+    ("si aparece otra forma real confirmada... se amplia entonces"). Confirmado en vivo con
+    CVE-2026-55849 (@cyclonedx/cyclonedx-npm, GHSA-v75r-vx73-82pj): cuando la variable de entorno
+    npm_execpath NO esta fijada, `NpmRunner` hace `execSync('npm ' + args.join(' '))` -- una
+    CONCATENACION de texto, no un array -- y el valor de `--workspace <valor>` se mete ahi sin
+    ningun escapado (confirmado leyendo dist/npmRunner.js y dist/builders.js del paquete real
+    descargado de npm, no adivinado de la descripcion del aviso).
+
+    Aislamiento REAL en Docker (a diferencia de la funcion de arriba, que corre nativo en un
+    tmpdir): dos `docker run` desechables, nunca un contenedor persistente. El primero (con red,
+    deliberadamente SIN --network none: necesita npm install) ejecuta `setup_cmd` -- confiado,
+    lo escribe el analista, no es el vector de inyeccion. El segundo (con --network none, la
+    misma disciplina de aislamiento que el resto del proyecto) invoca la herramienta pasando
+    `argv_template` como ARGV DIRECTO a `docker run` (nunca via `sh -c`), con el elemento en
+    `payload_index` sustituido por un valor que contiene un comando de canario
+    (`; touch <canario>;`) -- asi el array de argv llega intacto al proceso Node (sin que el `sh`
+    EXTERNO de docker lo reinterprete primero), y solo la shell INTERNA que la propia
+    herramienta vulnerable invoca (su propio execSync) lo ejecuta. El volumen compartido hace que
+    el canario, si aparece, se vea en el host tras que el contenedor desechable termine.
+
+    setup_docker_args: flags EXTRA de `docker run` solo para el paso de preparacion (el que
+    necesita red para el `npm install`) -- p.ej. para pasar un proxy saliente/CA corporativos
+    (`--network host`, `-e HTTPS_PROXY=...`, `-e NODE_EXTRA_CA_CERTS=...`) en un entorno que lo
+    requiera. Deliberadamente NUNCA incluido por defecto: son datos del entorno de quien llama,
+    no algo que esta funcion deba adivinar o imponer; el paso de explotacion en si (el segundo
+    `docker run`, el que SI importa que este aislado) sigue siempre con `--network none` fijo,
+    sin excepcion, independientemente de lo que se pase aqui."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not shutil.which("docker"):
+        res.detail = "docker no disponible -- este verificador necesita aislamiento real"
+        return res
+    if setup_docker_args is None:
+        # Fallback generico (no solo de este sandbox): un despliegue real de binoracle detras
+        # de un proxy saliente corporativo tambien necesita pasar flags extra al `docker run` de
+        # preparacion para que el `npm install` tenga salida real -- BINORACLE_DOCKER_SETUP_ARGS
+        # (JSON de una lista de argumentos) evita forzar a cada llamador a conocer este detalle.
+        import json as _json
+        env_args = os.environ.get("BINORACLE_DOCKER_SETUP_ARGS", "")
+        if env_args:
+            try:
+                setup_docker_args = _json.loads(env_args)
+            except Exception:
+                setup_docker_args = None
+    work_dir = tempfile.mkdtemp(prefix="binoracle_cliverify_argv_")
+    try:
+        step(f"preparando entorno descartable en Docker ({image}), red disponible: {setup_cmd}")
+        setup = subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{work_dir}:/work", "-w", "/work",
+             *(setup_docker_args or []), image, "sh", "-c", setup_cmd],
+            capture_output=True, text=True, timeout=min(budget_s, 240.0))
+        res.evidence.update({"setup_cmd": setup_cmd, "setup_returncode": setup.returncode})
+        if setup.returncode != 0:
+            res.detail = (f"el comando de preparacion fallo (codigo {setup.returncode}): "
+                          f"{(setup.stderr or setup.stdout or '')[:500]}")
+            res.limitations.append("verificacion no intentada: la preparacion del entorno fallo")
+            return res
+
+        canary_name = f"binoracle_cli_canary_{_token()}"
+        payload = f"x; touch {canary_name};"
+        argv = list(argv_template)
+        argv[payload_index] = payload
+        res.evidence.update({"argv": argv, "canary_name": canary_name})
+
+        step(f"ejecutando la herramienta en un contenedor AISLADO (--network none) con el valor "
+             f"del argumento #{payload_index} como payload: {argv}")
+        run = subprocess.run(
+            ["docker", "run", "--rm", "--network", "none", "-v", f"{work_dir}:/work",
+             "-w", "/work", image, *argv],
+            capture_output=True, text=True, timeout=min(budget_s, 120.0))
+        res.evidence["run_returncode"] = run.returncode
+        res.evidence["run_stdout_recorte"] = (run.stdout or "")[:500]
+
+        canary_present = os.path.exists(os.path.join(work_dir, canary_name))
+        res.evidence["canario_presente"] = canary_present
+        res.ok = True
+        if canary_present:
+            res.verified = True
+            res.detail = (f"COMMAND INJECTION confirmada: el fichero canario '{canary_name}' "
+                          f"aparecio en el volumen compartido tras ejecutar la herramienta con "
+                          f"el payload en el VALOR de un argumento (argv[{payload_index}]) -- "
+                          f"prueba inequivoca de que la herramienta concatena ese valor a una "
+                          f"shell interna sin escapar")
+            step(f"VERIFICADO: {canary_name} aparecio en {work_dir} -- el comando se ejecuto de "
+                 f"verdad, en un contenedor aislado.")
+        else:
+            res.detail = (f"se ejecuto la herramienta con el payload en argv[{payload_index}] "
+                          f"pero el canario '{canary_name}' nunca aparecio -- no se confirmo "
+                          f"command injection (puede que esta version ya este parcheada, o que "
+                          f"la herramienta no concatene ese argumento a una shell)")
         return res
     except Exception as e:
         res.detail = f"error inesperado: {e}"

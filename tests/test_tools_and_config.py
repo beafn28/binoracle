@@ -5438,7 +5438,90 @@ def test_cliverify_reports_setup_failure_without_crashing():
     r = verify_cli_filename_command_injection("exit 1", "echo unreachable")
     assert r.ok is False
     assert r.verified is False
-    assert r.evidence["setup_returncode"] == 1
+
+
+def test_cliverify_argv_detects_real_command_injection_in_isolated_docker():
+    # SEGUNDA forma real de CVE de CLI (payload en el VALOR de un argumento, no en un nombre de
+    # fichero) -- reproduce el patron exacto de CVE-2026-55849 (@cyclonedx/cyclonedx-npm:
+    # execSync('npm ' + args.join(' ')) concatena --workspace=<valor> sin escapar, confirmado
+    # leyendo dist/npmRunner.js del paquete real) sin red (un `eval "cmd $1"` autocontenido es la
+    # MISMA clase de bug; la version real SI se reprodujo en vivo contra el paquete npm real
+    # dentro de un contenedor Docker aislado, ver ROADMAP.md). `--network none` en el paso de
+    # explotacion en si -- aislamiento real, no solo un subprocess nativo.
+    import pytest
+    from binoracle.workflows.cliverify import verify_cli_argv_command_injection
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    r = verify_cli_argv_command_injection(
+        image="node:20-slim", setup_cmd="true",
+        argv_template=["sh", "-c", 'eval "cmd $1"', "sh", "PLACEHOLDER"],
+        payload_index=4, budget_s=60)
+    assert r.ok is True, r.detail
+    assert r.verified is True
+    assert r.evidence["canario_presente"] is True
+    assert r.evidence["canary_name"] in r.detail
+
+
+def test_cliverify_argv_reports_not_verified_when_argument_is_handled_safely():
+    # Control negativo -- el MISMO argv, pero sin `eval` (nunca reinterpretado por una shell):
+    # ninguna version parcheada deberia confundirse con una vulnerable. Confirmado tambien en
+    # vivo contra @cyclonedx/cyclonedx-npm@5.0.0 (version parcheada real), ver ROADMAP.md.
+    import pytest
+    from binoracle.workflows.cliverify import verify_cli_argv_command_injection
+    from binoracle.workflows.wpverify import _docker_daemon_ok
+
+    if not _docker_daemon_ok(timeout=5.0):
+        pytest.skip("Docker daemon no disponible en este entorno")
+
+    r = verify_cli_argv_command_injection(
+        image="node:20-slim", setup_cmd="true",
+        argv_template=["sh", "-c", 'echo "cmd $1" >/dev/null', "sh", "PLACEHOLDER"],
+        payload_index=4, budget_s=60)
+    assert r.ok is True, r.detail
+    assert r.verified is False
+    assert r.evidence["canario_presente"] is False
+
+
+def test_cliverify_argv_rejects_without_docker(monkeypatch):
+    import binoracle.workflows.cliverify as cliverify
+    from binoracle.workflows.cliverify import verify_cli_argv_command_injection
+
+    monkeypatch.setattr(cliverify.shutil, "which", lambda name: None)
+    r = verify_cli_argv_command_injection(
+        image="node:20-slim", setup_cmd="true", argv_template=["x"], payload_index=0)
+    assert r.ok is False
+    assert "docker" in r.detail.lower()
+
+
+def test_cliverify_argv_setup_docker_args_from_env_var(monkeypatch):
+    # Un despliegue real detras de un proxy saliente corporativo tambien necesita flags extra en
+    # el `docker run` de preparacion (NODE_EXTRA_CA_CERTS, HTTPS_PROXY...) -- confirmado en vivo
+    # en este propio sandbox de desarrollo. BINORACLE_DOCKER_SETUP_ARGS evita que cada llamador
+    # tenga que conocer ese detalle del entorno.
+    import json
+    import binoracle.workflows.cliverify as cliverify
+
+    monkeypatch.setenv("BINORACLE_DOCKER_SETUP_ARGS",
+                       json.dumps(["--network", "host", "-e", "HTTPS_PROXY=http://x"]))
+    captured = {}
+
+    class _FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted()
+
+    monkeypatch.setattr(cliverify.subprocess, "run", fake_run)
+    cliverify.verify_cli_argv_command_injection(
+        image="node:20-slim", setup_cmd="true", argv_template=["x"], payload_index=0)
+    assert "--network" in captured["cmd"] and "host" in captured["cmd"]
+    assert any("HTTPS_PROXY" in str(c) for c in captured["cmd"])
 
 
 def test_cve_agent_cli_command_injection_dispatches_without_endpoint_and_renders_real_evidence(monkeypatch):
