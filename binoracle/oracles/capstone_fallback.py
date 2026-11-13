@@ -32,7 +32,7 @@ except Exception:
     _HAVE_PYELF = False
 
 try:
-    import r2pipe  # type: ignore  # noqa: F401 -- presence probe, not referenced by name
+    import r2pipe  # type: ignore
     _HAVE_R2PIPE = True
 except Exception:
     _HAVE_R2PIPE = False
@@ -125,7 +125,7 @@ class CapstoneOracle(Oracle):
                 continue
             lo, hi = seg["p_vaddr"], seg["p_vaddr"] + seg["p_filesz"]
             if lo <= vaddr < hi:
-                seg["p_offset"] + (vaddr - lo)
+                off = seg["p_offset"] + (vaddr - lo)
                 avail = hi - vaddr
                 data = seg.data()
                 rel = vaddr - lo

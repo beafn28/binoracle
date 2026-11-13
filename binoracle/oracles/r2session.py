@@ -18,22 +18,19 @@ from typing import Optional
 _CACHE: dict = {}   # abspath -> (r2_handle, mtime)
 
 
-def get(binary: str, aaa_timeout: float = 180.0):
+def get(binary: str, analysis_timeout: float = 180.0):
     """Devuelve una sesion r2 con `aaa` ya hecho para `binary`, cacheada. None si no hay r2pipe.
 
-    Bug real encontrado en vivo DOS VECES por separado (mismo patron que ya motivo `cmd_timeout`
-    para `pdg`, documentado abajo, pero aqui en el propio `aaa` -- el analisis completo que CASI
-    todo workflow dispara al abrir cualquier binario por primera vez, directo o via esta cache
-    compartida): `aaa` no tenia NINGUN limite de tiempo. En un binario estatico grande (p.ej. una
-    muestra static-PIE del corpus de practica: arrastra la libc entera, miles de funciones) el
-    analisis completo puede tardar varios minutos; si se queda realmente colgado (CPU muy
-    limitada, o un bug del propio r2 en un binario raro), bloquea indefinidamente a quien sea que
-    llamo a `get()` -- a diferencia de `pdg`, que solo afecta al decompilador, esto afecta a
-    CUALQUIER workflow que abra un r2 por primera vez (triage, vulnhunt, cfg, chainanalyzer,
-    decompile, backdoors, reachability...). Mismo remedio: el `aaa` corre en un hilo daemon con
-    `join(aaa_timeout)`; si no vuelve a tiempo, se mata el proceso r2 y se devuelve None (el
-    llamador ya sabe caer a su propia apertura, por contrato previo de `get()`) en vez de
-    colgarse para siempre."""
+    Bug real encontrado en vivo (mismo patron que cmd_timeout() mas abajo, para el `pdg` del
+    decompilador): el propio `aaa` inicial -- que PRACTICAMENTE todo oraculo basado en r2
+    dispara tarde o temprano, directo o via esta cache compartida -- no tenia NINGUN limite de
+    tiempo. En un binario estatico grande (p.ej. una muestra static-PIE del corpus de practica:
+    arrastra la libc entera, miles de funciones) el analisis completo puede tardar varios
+    minutos; si se queda realmente colgado (p.ej. un bug del propio r2 en un binario raro), el
+    pipeline entero esperaba para siempre sin ningun aviso -- el mismo fallo que ya se arreglo
+    para `pdg` (ver cmd_timeout) pero en el chequeo de entrada que lo precede a TODOS. Acotado
+    con el mismo patron de hilo+join: si no vuelve a tiempo, se mata el proceso r2 colgado y se
+    devuelve None (el llamador cae a su propio oraculo/degrada), nunca se bloquea sin limite."""
     try:
         import r2pipe
     except Exception:
@@ -52,17 +49,17 @@ def get(binary: str, aaa_timeout: float = 180.0):
         r = r2pipe.open(key, flags=["-2"])
     except Exception:
         return None
-    done: dict = {}
-    def _run_aaa():
+    result: dict = {}
+    def _run():
         try:
             r.cmd("aaa")
-            done["ok"] = True
+            result["ok"] = True
         except Exception:
-            done["ok"] = False
-    th = threading.Thread(target=_run_aaa, daemon=True)
+            result["ok"] = False
+    th = threading.Thread(target=_run, daemon=True)
     th.start()
-    th.join(aaa_timeout)
-    if th.is_alive() or not done.get("ok"):
+    th.join(analysis_timeout)
+    if th.is_alive() or not result.get("ok"):
         try:
             r.process.kill()
         except Exception:
