@@ -9,7 +9,8 @@ noviembre de 2026. Nada aquí es una plantilla rellenada a mano ni una simulaci�
 Son los drivers de explotación (`_DRIVER`) que `binoracle/workflows/auto*.py` usa
 internamente para verificar cada técnica por ejecución real (pwntools, proceso nativo),
 extraídos tal cual y confirmados de nuevo ejecutándolos de forma independiente.
-Los `.sh` son los PoCs HTTP/CLI reales usados contra los dos CVEs públicos.
+Los `.sh` son los PoCs HTTP/CLI reales usados contra los tres CVEs públicos (KiviCare,
+glob, cyclonedx-npm).
 
 ## `reports/` — informes completos generados por binoracle
 
