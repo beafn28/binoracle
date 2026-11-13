@@ -770,6 +770,20 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         return fetch_zip_url(target, on_step=on_step, timeout=timeout)
     if looks_like_git_url(target):
         return fetch_git_source(target, ref=version, on_step=on_step, timeout=timeout)
+    # Gap confirmado con CVE-2024-23334: un directorio LOCAL (ya clonado/preparado por el analista)
+    # caia en el camino de "ni URL git ni zip" y se rechazaba como "slug no reconocido". Se trata
+    # directamente como fuente lista para usar: local_path apunta al directorio tal cual.
+    # plugin_dir se deja vacio a proposito: un directorio local generico NO es un plugin de CMS;
+    # detect_plugin_folder devolveria la unica subcarpeta (p.ej. "static/" en un servidor aiohttp)
+    # por la heuristica de "1 entrada = es esa", lo que haria que not plugin_dir == False en
+    # cve_agent.py y bloquearia la rama de verificacion generica de path-traversal (linea 2139).
+    if os.path.isdir(target):
+        step = on_step or (lambda _m: None)
+        step(f"fuente local (directorio): {target}")
+        res = SourceFetchResult(kind="local-dir", source=target)
+        res.ok = True
+        res.local_path = target
+        return res
     # confirmado en vivo: la hipotesis del LLM a veces trae la URL de la PAGINA del directorio
     # (https://wordpress.org/plugins/ultimate-member/), no el slug desnudo que el resto de este
     # despacho espera -- se reconoce aparte y se extrae el slug, en vez de rechazarla entera.
