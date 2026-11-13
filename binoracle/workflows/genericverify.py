@@ -1919,3 +1919,114 @@ def verify_generic_ssti(
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
         lab.teardown()
+
+
+def verify_generic_header_bypass(
+    source_dir: str, endpoint: str, http_method: str,
+    bypass_header: str, bypass_value: str,
+    confirm_string: str = "",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Verifica un bypass de autorizacion via CABECERA HTTP (p.ej. CVE-2025-29927, Next.js).
+
+    Mecanismo:
+    1) Levanta el lab efimero con el Dockerfile/compose del codigo descargado.
+    2) Envia la peticion SIN la cabecera de bypass: espera que el servidor responda con un
+       codigo de redireccion (3xx) o con un 401/403 (bloqueado).
+    3) Envia la misma peticion CON la cabecera de bypass: si el servidor responde 2xx y
+       (si se proporciona) el cuerpo contiene `confirm_string`, la vulnerabilidad queda
+       VERIFICADA.
+
+    `bypass_header`: nombre de la cabecera maliciosa (p.ej. "x-middleware-subrequest").
+    `bypass_value`: valor exacto de la cabecera (p.ej. "middleware:middleware:...").
+    `confirm_string`: cadena que debe aparecer en la respuesta con bypass para confirmar
+                      acceso real (vacia = solo se comprueba que el status sea 2xx).
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    if not bypass_header or not bypass_value:
+        res.detail = "se necesita bypass_header y bypass_value para la verificacion"
+        res.limitations.append("la verificacion de header bypass necesita el nombre y valor "
+                               "exactos de la cabecera maliciosa")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        m = http_method.upper() if http_method else "GET"
+        url = base_url + endpoint
+        step(f"probando SIN cabecera de bypass: {m} {url}")
+        try:
+            # allow_redirects=False: necesitamos el status REAL del servidor (3xx/401/403),
+            # no el de la pagina de login/error a la que redirige -- igual que open_redirect.
+            r_normal = _http_request(m, url, timeout=15, allow_redirects=False)
+            status_normal = r_normal.status_code
+        except Exception as e:
+            status_normal = -1
+            step(f"error en peticion normal: {e}")
+
+        step(f"probando CON cabecera '{bypass_header}: {bypass_value}'")
+        try:
+            r_bypass = _http_request(m, url, timeout=15, allow_redirects=False,
+                                     headers={bypass_header: bypass_value})
+            status_bypass = r_bypass.status_code
+            body_bypass = r_bypass.text or ""
+        except Exception as e:
+            status_bypass = -1
+            body_bypass = ""
+            step(f"error en peticion con bypass: {e}")
+
+        res.evidence = {
+            "base_url": base_url,
+            "contenedor": container,
+            "endpoint": endpoint,
+            "metodo": m,
+            "bypass_header": bypass_header,
+            "bypass_value": bypass_value,
+            "status_sin_bypass": status_normal,
+            "status_con_bypass": status_bypass,
+            "confirm_string": confirm_string,
+            "confirm_string_presente": bool(confirm_string and confirm_string in body_bypass),
+            "respuesta_cuerpo_recorte": body_bypass[:500],
+        }
+
+        blocked_normally = status_normal not in range(200, 300)
+        bypassed = status_bypass in range(200, 300)
+        string_ok = (not confirm_string) or (confirm_string in body_bypass)
+
+        if blocked_normally and bypassed and string_ok:
+            res.verified = True
+            res.ok = True
+            res.detail = (
+                f"HEADER BYPASS confirmado: sin '{bypass_header}' el servidor responde "
+                f"{status_normal}; con '{bypass_header}: {bypass_value}' responde "
+                f"{status_bypass}" +
+                (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "") +
+                " -- el control de autorizacion fue eludido"
+            )
+        else:
+            res.ok = True
+            res.detail = (
+                f"header bypass no confirmado: status_sin_bypass={status_normal}, "
+                f"status_con_bypass={status_bypass}" +
+                (f", confirm_string_presente={string_ok}" if confirm_string else "")
+            )
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico (contenedores/red/imagen)...")
+        lab.teardown()

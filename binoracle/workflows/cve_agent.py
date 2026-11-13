@@ -2198,6 +2198,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, id_param_hint=id_p or "", on_step=step, budget_s=budget_s)
                 _apply_wpverify_result(inv, wr, es, llm)
+            # "cualquier entorno": bypass de autorizacion via CABECERA HTTP (p.ej.
+            # CVE-2025-29927, Next.js x-middleware-subrequest). El analista pasa la cabecera
+            # y el valor exacto via --bypass-header y --bypass-value (o el LLM los propone
+            # en bypass_header/bypass_value de la hipotesis). La prueba es simple: sin la
+            # cabecera el servidor responde 3xx/401/403; con ella, 2xx.
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("missing-authorization", "auth-bypass", "idor") and
+                  notes.get("endpoint") and notes.get("bypass_header")):
+                from .genericverify import verify_generic_header_bypass
+                step(("intentando verificacion DINAMICA GENERICA -- bypass de autorizacion "
+                     "via cabecera HTTP, el objetivo se construye desde su propio "
+                     "Dockerfile/compose..." if es else
+                     "attempting GENERIC DYNAMIC verification -- authorization bypass via "
+                     "HTTP header, the target is built from its own Dockerfile/compose..."))
+                wr = verify_generic_header_bypass(
+                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
+                    bypass_header=notes["bypass_header"],
+                    bypass_value=notes.get("bypass_value", ""),
+                    confirm_string=notes.get("confirm_string", ""),
+                    on_step=step, budget_s=budget_s)
+                _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
             elif (is_drupal and fr.kind in ("drupal-module", "local-zip", "zip-url") and plugin_dir
