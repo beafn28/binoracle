@@ -1517,7 +1517,7 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "os.makedirs(STATIC_ROOT, exist_ok=True)\n"
                 "open(os.path.join(STATIC_ROOT, 'index.html'), 'w').write('<html>OK</html>')\n\n"
                 "app = web.Application()\n"
-                "app.router.add_static('/static', STATIC_ROOT, show_index=True)\n\n"
+                "app.router.add_static('/static', STATIC_ROOT, show_index=True, follow_symlinks=True)\n\n"
                 "if __name__ == '__main__':\n"
                 "    web.run_app(app, host='0.0.0.0', port=5000)\n"
             )
@@ -1743,6 +1743,22 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
     """Punto de entrada unificado: detecta si es un paquete pip/npm por el target_binary
     o por la descripcion, y delega al scaffolder correspondiente. Devuelve la ruta del
     laboratorio o None si no se pudo inferir el paquete."""
+    # Correccion critica: si la descripcion dice "Version X.Y.Z fixes this issue", el LLM
+    # puede devolver X.Y.Z como affected_version, pero esa es la version PARCHEADA.
+    # Confirmado en vivo con CVE-2024-23334 (aiohttp): descripcion dice "Version 3.9.2 fixes
+    # this issue" -> LLM retorna affected_version=3.9.2 -> lab instala aiohttp==3.9.2 (la
+    # version ya parcheada) -> el traversal no funciona nunca porque ya tiene la validacion.
+    # Solucion: detectar el patron y decrementar al ultimo patch vulnerable (3.9.1).
+    if version and description:
+        _m = _FIXES_THIS_VERSION_RE.search(description)
+        if _m and _m.group(1) == version:
+            corrected = _decrement_patch_version(version)
+            if corrected != version:
+                on_step((f"corrigiendo version: '{version}' es la version PARCHEADA segun la "
+                         f"descripcion del CVE ('{_m.group(0)}') -- instalando "
+                         f"'{corrected}' (ultima vulnerable)"))
+                version = corrected
+
     candidate = (target_binary or "").strip().lower()
     # Si el LLM dijo target_binary, intenta directamente
     if candidate:
@@ -1827,6 +1843,26 @@ def _clean_affected_version(raw: str) -> str:
 
 
 _EXCLUSIVE_BOUND_RE = re.compile(r"\bbefore\b|\bprior\s+to\b|<(?!=)", re.IGNORECASE)
+
+# Pattern: "Version 3.9.2 fixes this issue" → LLM puede devolver 3.9.2 como affected_version
+# pero esa es la version PARCHEADA -- el lab debe instalar 3.9.1 (la ultima vulnerable).
+_FIXES_THIS_VERSION_RE = re.compile(
+    r"[Vv]ersion\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
+)
+
+
+def _decrement_patch_version(version: str) -> str:
+    """'3.9.2' -> '3.9.1': decrementa el componente mas a la derecha que sea > 0."""
+    parts = version.split(".")
+    for i in range(len(parts) - 1, -1, -1):
+        try:
+            n = int(parts[i])
+            if n > 0:
+                parts[i] = str(n - 1)
+                return ".".join(parts)
+        except ValueError:
+            break
+    return version
 
 
 def _affected_version_is_exclusive(raw: str) -> bool:
