@@ -2135,9 +2135,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
             # "cualquier entorno": fallback generico de path-traversal (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
-            # docker-compose.yml.
-            elif (not plugin_dir and fr.local_path and
-                  inv.vuln_class == "path-traversal" and notes.get("endpoint")):
+            # docker-compose.yml. Acepta source_dir aunque el LLM no haya dado endpoint: el
+            # verificador escanea el codigo fuente para descubrir rutas (Rack::Static, Sinatra,
+            # Flask) de forma autonoma (ver _scan_web_routes en genericverify.py).
+            elif (not plugin_dir and fr.local_path and inv.vuln_class == "path-traversal" and
+                  (notes.get("endpoint") or os.path.isdir(str(fr.local_path)))):
                 from .genericverify import verify_generic_path_traversal, _pick_param
                 from .wpverify import _PATH_HINTS
                 import re as _re_pt
@@ -2791,8 +2793,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         technique_label="SSTI WordPress", on_suggestion=_on_ssti_wp_suggestion))
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de SSTI (ver genericverify.py).
-            elif (not plugin_dir and fr.local_path and
-                  inv.vuln_class == "ssti" and notes.get("endpoint")):
+            # La condicion acepta source_dir aunque el LLM no haya dado endpoint: el verificador
+            # escanea el codigo fuente para descubrir rutas Flask/Sinatra de forma autonoma
+            # (ver _scan_web_routes en genericverify.py).
+            elif (not plugin_dir and fr.local_path and inv.vuln_class == "ssti" and
+                  (notes.get("endpoint") or os.path.isdir(str(fr.local_path)))):
                 from .genericverify import verify_generic_ssti, _pick_param
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []

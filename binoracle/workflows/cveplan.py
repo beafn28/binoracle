@@ -99,7 +99,8 @@ _CLASSES = [
      "deserializa datos del atacante -> instancia objetos/gadget chain controlados", []),
     ("xxe", ("xml external entity", "xxe"),
      "procesa un DTD/entidad externa en XML -> lectura de fichero/SSRF", []),
-    ("ssti", ("server-side template injection", "ssti", "template injection"),
+    ("ssti", ("server-side template injection", "ssti", "template injection",
+              "template engine", "templating engine"),
      "el motor de plantillas evalua entrada del atacante como codigo", []),
     ("csrf", ("cross-site request forgery", "csrf"),
      "fuerza una accion autenticada desde un origen ajeno (sin interaccion directa con la sesion)", []),
@@ -137,7 +138,8 @@ def classify_cve(text: str) -> Optional[str]:
         return "stack-overflow"
     if has("use", "after", "free") or "use-after-free" in t:
         return "uaf"
-    if has("format", "string"):
+    if has("uncontrolled", "format", "string") or has("format", "string", "printf") or \
+            "%n" in t or "printf(" in t:
         return "format-string"
     if has("out-of-bounds", "write") or has("out of bounds", "write"):
         return "oob-write"
