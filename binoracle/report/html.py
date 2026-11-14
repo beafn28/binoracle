@@ -2317,46 +2317,125 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     `poc_kind` ajusta etiqueta/extension/mimetype del boton: 'pwntools' (memoria, .py), 'http' (PoC
     web en bash/curl, .sh), 'html' (PoC CSRF: una pagina HTML, NUNCA .py/text-python). Autocontenida
     (CSS y capturas de pantalla embebidas en base64): un solo fichero que se abre, se comparte o se
-    imprime como PDF desde el propio navegador sin depender de nada mas."""
+    imprime como PDF desde el propio navegador sin depender de nada mas.
+
+    Sin emojis: iconos Unicode (◈ ◉ ◆ ▶ ■ ≡ ◎ ◇ ✔ ✖ ⚠) en lugar de pictogramas."""
     import base64
     import re as _re
     from datetime import datetime, timezone
     es = lang == "es"
     title = _esc(cve or ("informe" if es else "report"))
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    banner = (
-        f'<div class="invhdr">'
-        f'<div class="invhdr-title">{title}</div>'
-        f'<div class="invhdr-meta">'
-        f'{"Generado" if es else "Generated"}: {generated} &middot; binoracle'
-        f'<br>{"Uso exclusivo para objetivos autorizados (pentest / CTF / investigacion de seguridad)." if es else "For authorized targets only (pentest / CTF / security research)."}'
-        f'</div></div>'
+
+    _INV_CSS = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--fg:#e6edf3;--mut:#8b949e;--line:#30363d;--acc:#58a6ff;
+  --red:#f85149;--grn:#3fb950;--yel:#d29922;--code:#0d1117;--codefg:#e6edf3;
+  --banner-bg:#3d1a1a;--banner-fg:#ff6b6b;color-scheme:dark}
+:root[data-theme=light]{--bg:#ffffff;--panel:#f6f8fa;--fg:#24292f;--mut:#57606a;--line:#d0d7de;
+  --acc:#0969da;--red:#cf222e;--grn:#1a7f37;--yel:#9a6700;--code:#f6f8fa;--codefg:#24292f;
+  --banner-bg:#fff1ee;--banner-fg:#cf222e;color-scheme:light}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:'Inter',system-ui,sans-serif;
+  font-size:14px;line-height:1.6}
+code,pre,kbd{font-family:'JetBrains Mono',ui-monospace,monospace}
+.inv-topbar{position:sticky;top:0;z-index:100;background:var(--panel);
+  border-bottom:1px solid var(--line);display:flex;align-items:center;
+  gap:12px;padding:10px 20px;flex-wrap:wrap}
+.inv-brand{font-weight:800;font-size:15px;letter-spacing:.3px;display:flex;
+  align-items:center;gap:8px}
+.inv-brand .dot{width:8px;height:8px;border-radius:50%;background:var(--acc)}
+.inv-cve{font-family:'JetBrains Mono',monospace;font-size:12px;
+  background:var(--code);border:1px solid var(--line);border-radius:5px;
+  padding:2px 8px;color:var(--acc)}
+.inv-meta{flex:1;color:var(--mut);font-size:11px;text-align:right}
+.inv-toggle{background:var(--panel);border:1px solid var(--line);color:var(--fg);
+  border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;font-family:inherit}
+.inv-toggle:hover{border-color:var(--acc)}
+.confid-banner{background:var(--banner-bg);color:var(--banner-fg);
+  font-size:12px;font-weight:600;text-align:center;padding:6px 20px;
+  letter-spacing:.03em;border-bottom:1px solid color-mix(in srgb,var(--banner-fg) 30%,transparent)}
+main.invreport{max-width:960px;margin:0 auto;padding:24px 20px 80px}
+main.invreport h3{font-size:18px;font-weight:800;margin:28px 0 10px;
+  padding-bottom:8px;border-bottom:2px solid var(--line)}
+main.invreport h4{font-size:13px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--mut);margin:20px 0 6px}
+main.invreport h5{font-size:14px;font-weight:600;margin:14px 0 5px;color:var(--acc)}
+main.invreport p{margin:8px 0}
+main.invreport blockquote{border-left:3px solid var(--acc);background:var(--panel);
+  padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:13px}
+main.invreport pre{background:var(--code);border:1px solid var(--line);border-radius:8px;
+  padding:14px;overflow-x:auto;font-size:12px;line-height:1.5;white-space:pre}
+main.invreport code{background:var(--code);padding:2px 6px;border-radius:4px;
+  font-size:12px;border:1px solid var(--line)}
+main.invreport pre code{background:none;border:none;padding:0}
+main.invreport table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+main.invreport th{background:var(--panel);border:1px solid var(--line);
+  padding:8px 12px;text-align:left;font-weight:600;font-size:11px;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+main.invreport td{border:1px solid var(--line);padding:8px 12px;vertical-align:top}
+main.invreport tr:nth-child(even) td{background:color-mix(in srgb,var(--panel) 50%,transparent)}
+main.invreport img{max-width:100%;border:1px solid var(--line);border-radius:8px;
+  display:block;margin:12px 0}
+main.invreport ul,main.invreport ol{padding-left:20px;margin:8px 0}
+main.invreport li{margin:3px 0}
+.dlbtn{display:inline-flex;align-items:center;gap:6px;background:var(--acc);
+  color:#fff;border-radius:8px;padding:8px 16px;text-decoration:none;
+  font-weight:600;font-size:13px;margin:12px 0;border:none;cursor:pointer}
+.dlbtn:hover{opacity:.88}
+@media print{.inv-topbar,.confid-banner,.dlbtn{display:none!important}
+  body{background:#fff;color:#000}main.invreport{max-width:none}}
+@media(max-width:600px){main.invreport{padding:16px 12px 60px}
+  .inv-meta{display:none}}
+</style>"""
+
+    theme_js = """<script>
+(function(){var t=localStorage.getItem('inv-theme')||'dark';
+document.documentElement.setAttribute('data-theme',t)})();
+function toggleInvTheme(){var r=document.documentElement;
+var n=r.getAttribute('data-theme')==='dark'?'light':'dark';
+r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
+</script>"""
+
+    confid = (
+        f'<div class="confid-banner">&#9632; '
+        f'{"CONFIDENCIAL &mdash; SOLO PARA OBJETIVOS AUTORIZADOS (PENTEST / CTF / LABORATORIO)" if es else "CONFIDENTIAL &mdash; AUTHORIZED TARGETS ONLY (PENTEST / CTF / LABORATORY)"}'
+        f' &mdash; BINORACLE</div>'
     )
-    print_css = ("<style>@media print{.dlbtn{display:none !important}"
-                "body{background:#fff !important}.invhdr{border-bottom:2px solid #000}}</style>")
-    head = (f"<!doctype html><html lang='{lang}'><head>"
-            f"<meta charset='utf-8'><title>{title}</title>"
-            f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            f"<style>{_CSS}</style>{print_css}"
-            f"<style>.invhdr{{padding:18px 16px 14px;border-bottom:1px solid var(--line,#1e2632);"
-            f"margin-bottom:6px}}.invhdr-title{{font-size:20px;font-weight:800;letter-spacing:.2px}}"
-            f".invhdr-meta{{color:var(--mut,#7b8794);font-size:12px;margin-top:4px;line-height:1.5}}"
-            f"</style></head><body>{banner}<main class='md invreport' style='padding:16px'>")
+    topbar = (
+        f'<div class="inv-topbar">'
+        f'<div class="inv-brand"><span class="dot"></span>binoracle</div>'
+        f'<span class="inv-cve">{_esc(cve or "")}</span>'
+        f'<div class="inv-meta">{"Generado" if es else "Generated"}: {generated}</div>'
+        f'<button class="inv-toggle" onclick="toggleInvTheme()">&#9711; {"Tema" if es else "Theme"}</button>'
+        f'</div>'
+    )
+
     dl = ""
     if script:
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
         safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", cve or "target")
         if poc_kind == "html":
-            label = "Descargar PoC (HTML, CSRF)" if es else "Download PoC (HTML, CSRF)"
+            label = "&#8681; Descargar PoC (HTML, CSRF)" if es else "&#8681; Download PoC (HTML, CSRF)"
             fname, mime = f"poc_{safe}.html", "text/html"
         elif poc_kind == "http":
-            label = "Descargar PoC (HTTP/curl)" if es else "Download PoC (HTTP/curl)"
+            label = "&#8681; Descargar PoC (HTTP / curl)" if es else "&#8681; Download PoC (HTTP / curl)"
             fname, mime = f"poc_{safe}.sh", "text/x-shellscript"
         else:
-            label = "Descargar exploit (pwntools)" if es else "Download exploit (pwntools)"
+            label = "&#8681; Descargar exploit (pwntools)" if es else "&#8681; Download exploit (pwntools)"
             fname, mime = f"exploit_{safe}.py", "text/x-python"
         dl = (f'<p><a class="dlbtn" download="{fname}" '
-              f'href="data:{mime};base64,{b64}">&#8681; {label}</a></p>')
+              f'href="data:{mime};base64,{b64}">{label}</a></p>')
+
+    head = (f"<!doctype html><html lang='{lang}' data-theme='dark'><head>"
+            f"<meta charset='utf-8'><title>{_esc(cve or 'binoracle')} &mdash; binoracle</title>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"{_INV_CSS}{theme_js}"
+            f"</head><body>{confid}{topbar}"
+            f"<main class='invreport'>")
     return head + dl + _md_rich(markdown or "") + "</main></body></html>"
 
 
