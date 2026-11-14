@@ -295,15 +295,15 @@ class _GenericLab:
             if os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT"):
                 proxy_build_args = ["--network", "host", "--build-arg",
                                    f"HTTPS_PROXY={os.environ.get('HTTPS_PROXY', '')}"]
-            r = self.sh("build", "-t", self.image, *proxy_build_args, "-f", target["path"],
-                       target["context"], timeout=timeout_build)
+            r = self.sh("build", "--platform", "linux/amd64", "-t", self.image, *proxy_build_args,
+                       "-f", target["path"], target["context"], timeout=timeout_build)
             if r.returncode != 0:
                 return r
             self.sh("network", "create", self.net, timeout=30)
             self._created.append(("network", self.net))
             self._created.append(("image", self.image))
-            r = self.sh("run", "-d", "--name", self.container, "--network", self.net, "-P",
-                       self.image, timeout=timeout_run)
+            r = self.sh("run", "-d", "--platform", "linux/amd64", "--name", self.container,
+                       "--network", self.net, "-P", self.image, timeout=timeout_run)
             if r.returncode == 0:
                 self._created.append(("container", self.container))
             return r
