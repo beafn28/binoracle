@@ -2535,13 +2535,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "pg_sleep), el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- time-based blind "
                      "(SLEEP/pg_sleep), the target is built from its own Dockerfile/compose..."))
+                id_table_hint = notes.get("sqli_identifier_table_hint", "")
                 wr = verify_generic_sqli_blind(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s)
+                    params, sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
+                    sqli_identifier_table_hint=id_table_hint)
                 def _attempt_sqli_blind_generic(ep, pr):
                     return verify_generic_sqli_blind(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        sqli_identifier_table_hint=id_table_hint)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_blind_generic, wr, notes.get("endpoint"), sqli_p,

