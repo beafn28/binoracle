@@ -35,7 +35,7 @@ _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "c
 
 
 def _screenshot_response(url: str, method: str, status: int, body: str,
-                         highlight: str = "") -> Optional[str]:
+                         highlight: str = "", lang: str = "es") -> Optional[str]:
     """Genera una captura de pantalla de tipo 'visor HTTP' con el cuerpo de respuesta
     ya obtenido (no reintenta la peticion). Destaca visualmente `highlight` si se
     pasa (p.ej. el secreto plantado o el resultado calculado). Usa una pagina HTML
@@ -58,6 +58,7 @@ def _screenshot_response(url: str, method: str, status: int, body: str,
             f'<mark class="hl">{hl_safe}</mark>')
 
     st_color = "#4caf50" if 200 <= status < 300 else "#f44336"
+    lbl_text = "binoracle · evidencia HTTP" if lang == "es" else "binoracle · HTTP evidence"
     page_src = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
 *{{box-sizing:border-box;margin:0;padding:0}}
@@ -71,7 +72,7 @@ body{{font:13px/1.6 'Courier New',monospace;background:#1e1e1e;color:#d4d4d4;min
 mark.hl{{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-weight:700}}
 </style></head><body>
 <div class="bar">
-  <span class="lbl">binoracle evidence</span>
+  <span class="lbl">{_html.escape(lbl_text)}</span>
   <span class="meth">{_html.escape(method)}</span>
   <span class="url" title="{_html.escape(url[:300])}">{_html.escape(url[:200])}</span>
   <span class="st">HTTP {status}</span>
