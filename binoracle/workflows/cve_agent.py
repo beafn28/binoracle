@@ -3420,8 +3420,17 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # El LLM analizo la causa raiz especifica (p.ej. "path-traversal"); la descripcion puede
     # mencionar la CONSECUENCIA (p.ej. "remote code execution"). La hipotesis del LLM gana
     # sobre la clasificacion por keyword en la descripcion cuando el LLM fue consultado.
-    inv.vuln_class = (classify_cve(inv.llm_notes.get("vuln_class", "")) or
-                      classify_cve(inv.description) or "")
+    _llm_class = classify_cve(inv.llm_notes.get("vuln_class", ""))
+    _desc_class = classify_cve(inv.description)
+    # "file-upload" es un VECTOR de entrega, no el impacto final. Si la descripcion identifica
+    # un mecanismo de impacto mas especifico (ssti, path-traversal, command-injection, xxe...),
+    # ese gana sobre el "file-upload" del LLM -- e.g. CVE-2026-27641: LLM dice "file-upload"
+    # pero la descripcion dice "server-side template injection (SSTI)".
+    _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
+    if _llm_class == "file-upload" and _desc_class in _UPLOAD_OVERRIDE:
+        inv.vuln_class = _desc_class
+    else:
+        inv.vuln_class = _llm_class or _desc_class or ""
     has_bin = bool(binary and os.path.exists(binary))
 
     if is_web_class(inv.vuln_class):
