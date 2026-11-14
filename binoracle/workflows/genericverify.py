@@ -33,6 +33,76 @@ import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
+
+def _screenshot_response(url: str, method: str, status: int, body: str,
+                         highlight: str = "") -> Optional[str]:
+    """Genera una captura de pantalla de tipo 'visor HTTP' con el cuerpo de respuesta
+    ya obtenido (no reintenta la peticion). Destaca visualmente `highlight` si se
+    pasa (p.ej. el secreto plantado o el resultado calculado). Usa una pagina HTML
+    sintetica en memoria -- no hay normalizacion de URL ni proxy de por medio.
+    Devuelve PNG codificado en base64, o None si Playwright no esta disponible."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
+    except Exception:
+        return None
+    import base64
+    import html as _html
+    import tempfile
+
+    body_disp = body[:4000]
+    body_escaped = _html.escape(body_disp)
+    if highlight:
+        hl_safe = _html.escape(highlight)
+        body_escaped = body_escaped.replace(hl_safe,
+            f'<mark class="hl">{hl_safe}</mark>')
+
+    st_color = "#4caf50" if 200 <= status < 300 else "#f44336"
+    page_src = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font:13px/1.6 'Courier New',monospace;background:#1e1e1e;color:#d4d4d4;min-height:100vh}}
+.bar{{background:#252526;padding:10px 16px;border-bottom:2px solid #007acc;display:flex;gap:12px;align-items:center}}
+.meth{{color:#4ec9b0;font-weight:700;font-size:14px;white-space:nowrap}}
+.url{{color:#9cdcfe;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
+.st{{color:{st_color};font-weight:700;font-size:13px;white-space:nowrap}}
+.lbl{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}}
+.body{{padding:14px 16px;white-space:pre-wrap;word-break:break-word;font-size:13px}}
+mark.hl{{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-weight:700}}
+</style></head><body>
+<div class="bar">
+  <span class="lbl">binoracle evidence</span>
+  <span class="meth">{_html.escape(method)}</span>
+  <span class="url" title="{_html.escape(url[:300])}">{_html.escape(url[:200])}</span>
+  <span class="st">HTTP {status}</span>
+</div>
+<div class="body">{body_escaped}</div>
+</body></html>"""
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1200, "height": 800},
+                    device_scale_factor=2,
+                ).new_page()
+                page.set_content(page_src, wait_until="domcontentloaded")
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
 # configure_burp_mcp/_http_request viven en wpverify.py (ver ahi) -- UN SOLO estado compartido
 # por TODOS los verificadores (genericos y CMS-especificos), no una copia por modulo. Se
 # reexportan aqui (import de arriba) para no romper el `from .genericverify import
@@ -925,6 +995,20 @@ def verify_generic_path_traversal(
                     res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                     step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
                          f"{payload_desc}.")
+                    _shot_url = (base_url + cand_ep + payload_value) if cand_up else (base_url + cand_ep)
+                    _png = _screenshot_response(
+                        url=_shot_url, method=cand_meth, status=resp.status_code,
+                        body=(resp.text or "")[:4000], highlight=secret,
+                    )
+                    if _png:
+                        res.evidence.setdefault("screenshots", []).append({
+                            "png_b64": _png, "url": _shot_url,
+                            "caption_es": (f"Respuesta HTTP real: el fichero canario ({canary_path}) "
+                                           f"servido por el servidor -- el secreto plantado (amarillo) "
+                                           f"confirma el path traversal."),
+                            "caption_en": (f"Real HTTP response: canary file ({canary_path}) served "
+                                           f"by server -- planted secret (highlighted) confirms path traversal."),
+                        })
                     break
             tried_all.extend(tried)
             if found:
@@ -993,6 +1077,21 @@ def verify_generic_path_traversal(
                                 step(f"VERIFICADO (prefix bypass): canario en {_rc_path} accesible "
                                      f"via URL_PATH={bp!r} -- el middleware sirve ficheros fuera "
                                      f"del prefijo URL configurado.")
+                                _bp_url = target_url
+                                _bp_png = _screenshot_response(
+                                    url=_bp_url, method="GET", status=resp.status_code,
+                                    body=(resp.text or "")[:4000], highlight=secret2,
+                                )
+                                if _bp_png:
+                                    res.evidence.setdefault("screenshots", []).append({
+                                        "png_b64": _bp_png, "url": _bp_url,
+                                        "caption_es": (f"Bypass de prefijo URL confirmado: "
+                                                       f"{_rc_path} accesible fuera del prefijo "
+                                                       f"configurado (secreto en amarillo)."),
+                                        "caption_en": (f"URL-prefix bypass confirmed: "
+                                                       f"{_rc_path} accessible outside the "
+                                                       f"configured prefix (secret highlighted)."),
+                                    })
                                 break
                         except Exception as e:
                             tried_all.append({"payload": f"[bypass]{bp}", "error": str(e)})
@@ -2177,6 +2276,21 @@ def verify_generic_xss(
                     res.evidence["payload_ganador"] = payload_value
                     step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
                          f"cambio exactamente a '{marker}'.")
+                    _, _xss_png = xb.render(base_url, endpoint, m, params, [], capture=True)
+                    if _xss_png:
+                        from urllib.parse import urlencode
+                        _xss_url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
+                        res.evidence.setdefault("screenshots", []).append({
+                            "png_b64": _xss_png, "url": _xss_url,
+                            "caption_es": (f"XSS confirmado: el navegador Chromium headless "
+                                           f"ejecuto el script inyectado en '{xss_param}' -- "
+                                           f"document.title cambio a '{marker}' (prueba de "
+                                           f"ejecucion JS real, no solo reflexion de texto)."),
+                            "caption_en": (f"XSS confirmed: headless Chromium executed the "
+                                           f"injected script in '{xss_param}' -- document.title "
+                                           f"changed to '{marker}' (proof of real JS execution, "
+                                           f"not just text reflection)."),
+                        })
                     break
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "xss_param": xss_param, "token": token, "metodo": m,
@@ -2333,6 +2447,22 @@ def verify_generic_ssti(
                     res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                     step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
                          f"motor de plantillas -- ese numero no aparece en el payload enviado.")
+                    _ssti_url = base_url + ep_path
+                    _ssti_png = _screenshot_response(
+                        url=_ssti_url, method=cand_meth, status=resp.status_code,
+                        body=(resp.text or "")[:4000], highlight=str(payload_expected),
+                    )
+                    if _ssti_png:
+                        res.evidence.setdefault("screenshots", []).append({
+                            "png_b64": _ssti_png, "url": _ssti_url,
+                            "caption_es": (f"SSTI confirmado: el motor de plantillas evaluo "
+                                           f"'{payload_value}' y devolvio {payload_expected} "
+                                           f"(resultado en amarillo) -- ese numero no estaba "
+                                           f"en el payload enviado."),
+                            "caption_en": (f"SSTI confirmed: template engine evaluated "
+                                           f"'{payload_value}' and returned {payload_expected} "
+                                           f"(highlighted) -- that number was not in the payload."),
+                        })
                     break
             tried_all.extend(tried)
             if found:
@@ -2412,6 +2542,22 @@ def verify_generic_ssti(
                                             _rend_resp.text or "")[:500]
                                         step(f"VERIFICADO (multi-step): upload {_nc!r} + render "
                                              f"{_rend_url!r} devolvio {expected}.")
+                                        _ms_png = _screenshot_response(
+                                            url=_rend_url, method="GET",
+                                            status=_rend_resp.status_code,
+                                            body=(_rend_resp.text or "")[:4000],
+                                            highlight=str(expected),
+                                        )
+                                        if _ms_png:
+                                            res.evidence.setdefault("screenshots", []).append({
+                                                "png_b64": _ms_png, "url": _rend_url,
+                                                "caption_es": (f"SSTI multi-step: plantilla renderizada "
+                                                               f"tras upload traversal -- el motor evaluo "
+                                                               f"'{_ssti_pl}' y devolvio {expected} (amarillo)."),
+                                                "caption_en": (f"Multi-step SSTI: template rendered "
+                                                               f"after upload traversal -- engine evaluated "
+                                                               f"'{_ssti_pl}' and returned {expected} (highlighted)."),
+                                            })
                                         break
                             except Exception:
                                 pass
