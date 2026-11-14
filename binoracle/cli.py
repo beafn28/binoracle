@@ -1041,6 +1041,170 @@ def _parse_cli_params(raw_arg: str):
     return raw
 
 
+def _make_cve_step_printer():
+    """Rich on_step callback for 'binoracle cve': timestamps, phase headers, verdict box."""
+    import time as _time
+    import re as _re
+
+    _t0 = _time.time()
+    _last_phase = [None]
+
+    _PHASES = [
+        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD"),
+        (r"hipot|llm|modelo|analiz|clasificar|propone|hypothesis", "HIPÓTESIS LLM"),
+        (r"grounded|codigo fuente|source|funcion|function|encontr", "ANÁLISIS DE CÓDIGO"),
+        (r"endpoi|url|route|ruta|parame", "ENDPOINT"),
+        (r"docker|lab|contenedor|container|arran|start|build|construy", "LABORATORIO DOCKER"),
+        (r"baseline|control|mediana|linea base", "BASELINE"),
+        (r"payload|intento|sleep|sqli|inject|fuzz|verif|probando|confirm", "VERIFICACIÓN"),
+        (r"informe|report|html|escrito|resultado|resultado final|verified", "RESULTADO"),
+    ]
+
+    def _phase_for(msg: str) -> str:
+        ml = msg.lower()
+        for pat, name in _PHASES:
+            if _re.search(pat, ml):
+                return name
+        return ""
+
+    def _print_phase_header(phase: str) -> None:
+        from . import colorlog as _cl
+        import sys as _sys
+        stream = _sys.stdout
+        bar = "─" * 56
+        if _cl._use_color(stream):
+            print(f"\n\033[1;34m┌{bar}┐\033[0m")
+            print(f"\033[1;34m│\033[0m  \033[1m{phase:<54}\033[0m\033[1;34m│\033[0m")
+            print(f"\033[1;34m└{bar}┘\033[0m")
+        else:
+            print(f"\n┌{bar}┐")
+            print(f"│  {phase:<54}│")
+            print(f"└{bar}┘")
+
+    def on_step(msg: str) -> None:
+        from . import colorlog as _cl
+        import sys as _sys
+        elapsed = _time.time() - _t0
+        ts = f"{elapsed:>7.1f}s"
+        phase = _phase_for(msg)
+        if phase and phase != _last_phase[0]:
+            _print_phase_header(phase)
+            _last_phase[0] = phase
+        stream = _sys.stdout
+        level = _cl.classify(msg)
+        label = _cl._LABEL.get(level, level.upper())
+        if _cl._use_color(stream):
+            tc = "\033[2m"  # dim timestamp
+            lc = _cl._COLOR.get(level, "")
+            reset = _cl._RESET
+            bold = _cl._BOLD
+            print(f"  {tc}{ts}{reset}  {lc}{bold}[{label}]{reset}{lc} {msg}{reset}")
+        else:
+            print(f"  {ts}  [{label}] {msg}")
+
+    return on_step
+
+
+def cmd_cve(args, config):
+    """Shortcut: binoracle cve <CVE-ID> — investigacion completa con logs estructurados."""
+    import time as _time
+    import sys as _sys
+    from .workflows.cve_agent import investigate_cve, render_investigation
+    from . import colorlog
+
+    cve_id = args.cve.upper()
+    hints: dict = {}
+    if getattr(args, "source", None):
+        hints["source_url"] = args.source
+    if getattr(args, "endpoint", None):
+        hints["endpoint"] = args.endpoint
+    if getattr(args, "method", None):
+        hints["http_method"] = args.method
+    if getattr(args, "params", None):
+        hints["parameters"] = _parse_cli_params(args.params)
+    if getattr(args, "vuln_class", None):
+        hints["vuln_class"] = args.vuln_class
+
+    # Banner
+    import sys as _sys
+    _use_col = colorlog._use_color(_sys.stdout)
+    _r = colorlog._RESET if _use_col else ""
+    _b = colorlog._BOLD if _use_col else ""
+    _ac = "\033[1;36m" if _use_col else ""
+    _gc = "\033[32m" if _use_col else ""
+    bar = "═" * 60
+    print(f"\n{_ac}{bar}{_r}")
+    print(f"{_ac}  binoracle{_r}  {_b}{cve_id}{_r}  —  investigación autónoma")
+    print(f"{_ac}{bar}{_r}\n")
+
+    t_start = _time.time()
+    on_step = _make_cve_step_printer()
+
+    inv = investigate_cve(
+        cve_id,
+        config=config,
+        on_step=on_step,
+        lang=config.lang,
+        budget_s=float(getattr(args, "budget", 600) or 600),
+        hints=hints or None,
+        use_cache=not getattr(args, "no_cache", False),
+    )
+
+    elapsed_total = _time.time() - t_start
+
+    # Verdict box
+    if inv.verified:
+        vc = "\033[1;32m" if _use_col else ""
+        icon = "✔ VERIFICADO"
+    else:
+        vc = "\033[1;33m" if _use_col else ""
+        icon = "✖ NO CONFIRMADO"
+
+    bar2 = "═" * 60
+    print(f"\n{vc}{bar2}{_r}")
+    print(f"{vc}  {icon:^58}{_r}")
+    print(f"{vc}{bar2}{_r}")
+
+    ve = getattr(inv, "verified_evidence", None) or {}
+    if isinstance(ve, dict):
+        payload = ve.get("payload_ganador", "")
+        t1 = ve.get("tiempo_1_ganador_s", "")
+        t2 = ve.get("tiempo_2_ganador_s", "")
+        base = ve.get("tiempo_base_mediana_s", "")
+        strategy = ve.get("estrategia", "")
+        if payload:
+            print(f"\n  {_b}Payload ganador{_r}:  {payload}")
+        if t1:
+            print(f"  {_b}Tiempo 1{_r}:          {t1}s   {_b}Tiempo 2{_r}: {t2}s   "
+                  f"{_b}Baseline{_r}: {base}s")
+        if strategy:
+            print(f"  {_b}Estrategia{_r}:        {strategy}")
+    detail = getattr(inv, "verified_detail", "") or ""
+    if detail:
+        print(f"\n  {detail}")
+
+    print(f"\n  {_b}Tiempo total{_r}: {elapsed_total:.1f}s")
+    print()
+
+    print(render_investigation(inv, config.lang, embed_images=False))
+
+    if getattr(args, "html", None):
+        from .report.html import render_investigation_page
+        from pathlib import Path as _Path
+        md_full = render_investigation(inv, config.lang)
+        _Path(args.html).write_text(
+            render_investigation_page(md_full, script=inv.developed_script,
+                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind))
+        colorlog.ok(f"informe HTML escrito en {args.html}")
+
+    if getattr(args, "json_out", None):
+        from dataclasses import asdict as _asdict
+        import json as _json
+        from pathlib import Path as _Path
+        _Path(args.json_out).write_text(_json.dumps(_asdict(inv), indent=2, ensure_ascii=False))
+        colorlog.ok(f"evidencia JSON escrita en {args.json_out}")
+
+
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
@@ -1748,6 +1912,21 @@ def build_parser() -> argparse.ArgumentParser:
     pep.add_argument("--json", help="also write machine-readable findings to this path")
     pep.add_argument("--output", help="also write the rendered findings to this path")
     pep.set_defaults(func=cmd_phpestate)
+
+    cv = sub.add_parser("cve", help="SHORTCUT: binoracle cve <CVE-ID> — full autonomous investigation "
+                                   "with structured real-time logs (timestamps, phase headers, verdict box)")
+    cv.add_argument("cve", help="CVE id (e.g. CVE-2025-59681)")
+    cv.add_argument("--source", help="source dir / plugin slug / git URL for the vulnerable code")
+    cv.add_argument("--endpoint", help="vulnerable HTTP endpoint")
+    cv.add_argument("--method", default="GET", help="HTTP method (default GET)")
+    cv.add_argument("--params", help="comma-separated request parameters (name or name=value)")
+    cv.add_argument("--vuln-class", help="known vuln class (sqli, rce, xxe, missing-authorization...)")
+    cv.add_argument("--budget", type=float, default=600,
+                    help="verification budget in seconds (default 600)")
+    cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
+    cv.add_argument("-o", "--html", help="export full HTML report (with screenshots) to this path")
+    cv.add_argument("--json", dest="json_out", help="dump full evidence JSON to this path")
+    cv.set_defaults(func=cmd_cve)
 
     ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "
                                             "reason + develop + (with --binary) verify in sandbox")
