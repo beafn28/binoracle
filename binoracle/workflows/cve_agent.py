@@ -1822,9 +1822,10 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
         if _m:
             _patched_ver_candidates.add(_m.group(1))
         for _pm in _PRIOR_TO_VERSION_RE.finditer(description):
-            _v = next((g for g in _pm.groups() if g), None)
-            if _v:
-                _patched_ver_candidates.add(_v)
+            _clause = next((g for g in _pm.groups() if g), None)
+            if _clause:
+                for _vtoken in _VERSION_TOKENS_RE.findall(_clause):
+                    _patched_ver_candidates.add(_vtoken)
         if version in _patched_ver_candidates:
             corrected = _decrement_patch_version(version)
             if corrected != version:
@@ -1944,10 +1945,13 @@ _FIXES_THIS_VERSION_RE = re.compile(
     r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
 )
 _PRIOR_TO_VERSION_RE = re.compile(
-    r"(?:[Pp]rior\s+to|[Bb]efore)\s+version[s]?\s+v?([0-9]+(?:\.[0-9]+){1,4})"
-    r"|version[s]?\s+prior\s+to\s+v?([0-9]+(?:\.[0-9]+){1,4})",
+    r"(?:[Pp]rior\s+to|[Bb]efore)\s+version[s]?\s+"
+    r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)"
+    r"|version[s]?\s+prior\s+to\s+"
+    r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)",
     re.IGNORECASE
 )
+_VERSION_TOKENS_RE = re.compile(r'v?([0-9]+(?:\.[0-9]+){1,4})')
 
 
 def _decrement_patch_version(version: str) -> str:
