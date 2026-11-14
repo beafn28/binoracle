@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -131,13 +133,33 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
     if not _CVE_RE.fullmatch(cid):
         info.note = "identificador CVE no valido (formato CVE-AAAA-NNNN)"
         return info
-    try:
-        req = urllib.request.Request(NVD_API + cid, headers={"User-Agent": "binoracle/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-    except Exception as e:
-        info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
+    # Reintentos con backoff para errores transitorios (503 rate-limit NVD, 429, 500).
+    # Confirmado en vivo: NVD devuelve 503 en picos de carga y en CVEs muy recientes que aun
+    # no estan indexados -- sin reintentos, un 503 puntual hace que el LLM trabaje sin datos
+    # y el informe final queda casi vacio. Con 2 reintentos (1s + 2s) se recupera en la practica.
+    _last_exc: Optional[Exception] = None
+    _data: Optional[dict] = None
+    for _attempt in range(3):
+        try:
+            req = urllib.request.Request(NVD_API + cid, headers={"User-Agent": "binoracle/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                _data = json.loads(r.read().decode("utf-8", "replace"))
+            _last_exc = None
+            break
+        except urllib.error.HTTPError as e:
+            _last_exc = e
+            if e.code in (429, 500, 503) and _attempt < 2:
+                time.sleep(2 ** _attempt)
+                continue
+            info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
+            return info
+        except Exception as e:
+            info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
+            return info
+    if _last_exc is not None or _data is None:
+        info.note = (f"no se pudo consultar la NVD (sin internet o rate-limit): {_last_exc}")
         return info
+    data = _data
     vulns = data.get("vulnerabilities") or []
     if not vulns:
         info.note = "la NVD no devolvio datos para esa CVE"

@@ -499,6 +499,22 @@ def _scan_web_routes(source_dir: str) -> list:
         if cur_ep is not None:
             routes.append((cur_ep, dict(cur_params), cur_meth))
 
+    # --- aiohttp (Python): add_static('/prefix', root, follow_symlinks=...) ---
+    # Confirmado en vivo con CVE-2024-23334: el LLM propone endpoint '/static/<path:path>'
+    # (con sintaxis de plantilla) que no se detecta como URL_PATH y falla la URL construction.
+    # Escaneando add_static() directamente se obtiene el prefijo limpio '/static/' como URL_PATH.
+    for py_file in _glob.glob(os.path.join(source_dir, "**", "*.py"), recursive=True):
+        try:
+            content = open(py_file).read()
+        except Exception:
+            continue
+        for m_as in re.finditer(
+            r'(?:app|router)(?:\.router)?\.add_static\s*\(\s*["\']([^"\']+)["\']',
+            content
+        ):
+            prefix = m_as.group(1).rstrip("/") + "/"
+            routes.append((prefix, {"URL_PATH": ""}, "GET"))
+
     # --- Sinatra / plain Rack (Ruby) --- includes config.ru (*.ru) and *.rb
     _rb_files = (_glob.glob(os.path.join(source_dir, "**", "*.rb"), recursive=True) +
                  _glob.glob(os.path.join(source_dir, "**", "*.ru"), recursive=True))
@@ -783,8 +799,20 @@ def verify_generic_path_traversal(
                 (isinstance(params, dict) and any(k.upper() in ("URL_PATH", "URLPATH") for k in params)) or
                 (isinstance(params, (list, tuple)) and any(str(p).upper() in ("URL_PATH", "URLPATH") for p in params)))
 
+    # Normalizar endpoint: strip sintaxis de plantilla de ruta (Flask/aiohttp).
+    # Confirmado en vivo con CVE-2024-23334: LLM propone '/static/<path:path>'.
+    # '<path:path>' no es parte de la URL real -- hay que eliminarlo Y activar URL_PATH mode.
+    if endpoint and '<' in endpoint:
+        # Recorta desde el primer '<': '/static/<path:path>' -> '/static/'
+        endpoint = re.sub(r'/<[^>]+>.*', '/', endpoint)
+        if not endpoint.endswith('/'):
+            endpoint = endpoint.rstrip('/') + '/'
+        _url_path_mode_from_template = True
+    else:
+        _url_path_mode_from_template = False
+
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
-    _url_path_mode = _is_url_path_mode(parameters)
+    _url_path_mode = _is_url_path_mode(parameters) or _url_path_mode_from_template
 
     # Gap real (confirmado con CVE-2024-23334 / aiohttp): muchos path-traversal inyectan el
     # payload en el PATH de la URL, no en un query-param -- e.g. GET /static/../../etc/passwd.
