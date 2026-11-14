@@ -1857,7 +1857,8 @@ def verify_generic_ssti(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    ssti_param = ssti_param_hint or _pick_param(parameters, _XSS_HINTS)
+    _params_list_ssti = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
+    ssti_param = ssti_param_hint or _pick_param(parameters, _XSS_HINTS) or (_params_list_ssti[0] if _params_list_ssti else "")
     if not ssti_param:
         res.detail = "no se identifico el parametro que llega al motor de plantillas"
         res.limitations.append("la verificacion de SSTI necesita saber que parametro llega a la "

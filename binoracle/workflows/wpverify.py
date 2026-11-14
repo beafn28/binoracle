@@ -106,7 +106,8 @@ _PLUGIN_DIRECTORY_CPT = {
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
-             "value", "q", "search", "body")
+             "value", "q", "search", "body",
+             "template", "tpl", "render", "expr", "input", "tmpl")
 _XML_HINTS = ("xml", "feed", "data", "content", "body", "payload", "import")
 _REDIRECT_HINTS = ("redirect", "url", "return", "next", "target", "dest", "destination",
                    "continue", "go", "out", "location")
