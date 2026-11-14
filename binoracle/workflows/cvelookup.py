@@ -13,6 +13,7 @@ investigacion / objetivos autorizados.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -119,43 +120,74 @@ def search_searchsploit(cve_id: str, timeout: float = 8.0) -> List[ExploitRef]:
     return refs
 
 
+_NVD_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "binoracle", "nvd")
+_NVD_CACHE_TTL = 86400 * 7   # 7 días — suficiente para runs repetidos, no tan largo que quede obsoleto
+
+
+def _nvd_cache_path(cve_id: str) -> str:
+    return os.path.join(_NVD_CACHE_DIR, f"{cve_id}.json")
+
+
+def _nvd_cache_load(cve_id: str) -> Optional[dict]:
+    """Devuelve la respuesta NVD cacheada si existe y no ha expirado, o None."""
+    path = _nvd_cache_path(cve_id)
+    try:
+        stat = os.stat(path)
+        if time.time() - stat.st_mtime > _NVD_CACHE_TTL:
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _nvd_cache_save(cve_id: str, data: dict) -> None:
+    try:
+        os.makedirs(_NVD_CACHE_DIR, exist_ok=True)
+        with open(_nvd_cache_path(cve_id), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+
+
 def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInfo:
     """Descarga la CVE de la NVD y, si `enrich`, cruza con PoCs de GitHub + Exploit-DB (searchsploit)
     para una deteccion de exploit publico mas completa. No lanza: ante error de red -> ok=False.
 
-    Confirmado en vivo: con los 8s originales, una consulta real a la NVD (sin API key, rate-limit
-    publico de 5 peticiones/30s) timeouteaba con "The read operation timed out" tras varias
-    investigaciones seguidas en la misma sesion -- la NVD responde bien pero a veces tarda mas de
-    eso bajo ese limite, no es que este caida. Subido con margen generoso; sigue siendo best-effort
-    (si de verdad no hay red, el error llega igual, solo que mas tarde)."""
+    Las respuestas NVD se cachean en ~/.cache/binoracle/nvd/ durante 7 dias para evitar el
+    rate-limit publico (5 req/30s) en runs repetidos de la misma CVE -- confirmado en vivo con
+    503 en la segunda ejecucion de CVE-2025-27610 inmediatamente despues de la primera."""
     cid = (cve_id or "").upper().strip()
     info = CVEInfo(cve_id=cid)
     if not _CVE_RE.fullmatch(cid):
         info.note = "identificador CVE no valido (formato CVE-AAAA-NNNN)"
         return info
+    # Caché de disco: evita repetir la llamada NVD en runs de la misma sesion/dia
+    _data = _nvd_cache_load(cid)
     # Reintentos con backoff para errores transitorios (503 rate-limit NVD, 429, 500).
     # Confirmado en vivo: NVD devuelve 503 en picos de carga y en CVEs muy recientes que aun
     # no estan indexados -- sin reintentos, un 503 puntual hace que el LLM trabaje sin datos
     # y el informe final queda casi vacio. Con 2 reintentos (1s + 2s) se recupera en la practica.
     _last_exc: Optional[Exception] = None
-    _data: Optional[dict] = None
-    for _attempt in range(3):
-        try:
-            req = urllib.request.Request(NVD_API + cid, headers={"User-Agent": "binoracle/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                _data = json.loads(r.read().decode("utf-8", "replace"))
-            _last_exc = None
-            break
-        except urllib.error.HTTPError as e:
-            _last_exc = e
-            if e.code in (429, 500, 503) and _attempt < 2:
-                time.sleep(2 ** _attempt)
-                continue
-            info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
-            return info
-        except Exception as e:
-            info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
-            return info
+    if _data is None:
+        for _attempt in range(3):
+            try:
+                req = urllib.request.Request(NVD_API + cid, headers={"User-Agent": "binoracle/1.0"})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    _data = json.loads(r.read().decode("utf-8", "replace"))
+                _nvd_cache_save(cid, _data)
+                _last_exc = None
+                break
+            except urllib.error.HTTPError as e:
+                _last_exc = e
+                if e.code in (429, 500, 503) and _attempt < 2:
+                    time.sleep(2 ** _attempt)
+                    continue
+                info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
+                return info
+            except Exception as e:
+                info.note = f"no se pudo consultar la NVD (sin internet o rate-limit): {e}"
+                return info
     if _last_exc is not None or _data is None:
         info.note = (f"no se pudo consultar la NVD (sin internet o rate-limit): {_last_exc}")
         return info
