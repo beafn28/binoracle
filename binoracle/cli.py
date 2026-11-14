@@ -1072,18 +1072,18 @@ def _make_cve_step_printer():
              "error": f"{RED}✖{R}", "verified": f"{BGN}★{R}"}
 
     _PHASES = [
-        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD",        "🌐"),
+        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD",        "◉"),
         (r"hipot|llm|modelo|analiz|clasificar|propone|hypothesis",
-                                             "HIPÓTESIS LLM",       "🧠"),
+                                             "HIPÓTESIS LLM",       "◈"),
         (r"grounded|codigo fuente|source|funcion|function|encontr",
-                                             "ANÁLISIS DE CÓDIGO",  "🔎"),
-        (r"endpoi|url|route|ruta|parame",   "ENDPOINT",             "🔗"),
+                                             "ANÁLISIS DE CÓDIGO",  "◆"),
+        (r"endpoi|url|route|ruta|parame",   "ENDPOINT",             "▶"),
         (r"docker|lab|contenedor|container|arran|start|build|construy|scaffold",
-                                             "LABORATORIO DOCKER",  "🐳"),
-        (r"baseline|control|mediana|linea base", "BASELINE",        "📊"),
+                                             "LABORATORIO DOCKER",  "■"),
+        (r"baseline|control|mediana|linea base", "BASELINE",        "≡"),
         (r"payload|intento|sleep|sqli|inject|fuzz|verif|probando|confirm|canario|canary",
-                                             "VERIFICACIÓN",        "🎯"),
-        (r"informe|report|html|escrito|resultado final|verified",   "RESULTADO", "📋"),
+                                             "VERIFICACIÓN",        "◎"),
+        (r"informe|report|html|escrito|resultado final|verified",   "RESULTADO", "◇"),
     ]
 
     def _phase_for(msg: str):
@@ -1238,7 +1238,7 @@ def cmd_cve(args, config):
     _gc = "\033[1;32m" if _use_col else ""   # verde → OK
     bar = "═" * 62
     print(f"\n{_ac}╔{bar}╗{_r}")
-    print(f"{_ac}║{_r}  {_d}🔍{_r} {_b}BINORACLE{_r}  {_d}·{_r}  {_mc}{_b}{cve_id}{_r}"
+    print(f"{_ac}║{_r}  {_d}◈{_r} {_b}BINORACLE{_r}  {_d}·{_r}  {_mc}{_b}{cve_id}{_r}"
           f"  {_d}·{_r}  {_d}investigación autónoma{_r}")
     print(f"{_ac}╚{bar}╝{_r}\n")
 

@@ -1010,6 +1010,7 @@ def verify_generic_path_traversal(
                             "caption_en": (f"Real HTTP response: canary file ({canary_path}) served "
                                            f"by server -- planted secret (highlighted) confirms path traversal."),
                         })
+                        step("captura web guardada -- usa --html/-o para verla en el informe.")
                     break
             tried_all.extend(tried)
             if found:
@@ -1093,6 +1094,7 @@ def verify_generic_path_traversal(
                                                        f"{_rc_path} accessible outside the "
                                                        f"configured prefix (secret highlighted)."),
                                     })
+                                    step("captura web guardada -- usa --html/-o para verla en el informe.")
                                 break
                         except Exception as e:
                             tried_all.append({"payload": f"[bypass]{bp}", "error": str(e)})
@@ -2464,6 +2466,7 @@ def verify_generic_ssti(
                                            f"'{payload_value}' and returned {payload_expected} "
                                            f"(highlighted) -- that number was not in the payload."),
                         })
+                        step("captura web guardada -- usa --html/-o para verla en el informe.")
                     break
             tried_all.extend(tried)
             if found:
