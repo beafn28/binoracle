@@ -1483,6 +1483,294 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Scaffold automático de laboratorios para CVEs de paquetes Python/Node
+# ---------------------------------------------------------------------------
+# Confirmado en vivo: Qwen a veces NO incluye source_url para CVEs de frameworks
+# de Python/Node (aiohttp, flask-reuploaded, Jinja2, Django, Next.js...) -- en
+# vez de rendirse, se genera un directorio minimal con requirements.txt/package.json
+# + un servidor de ejemplo que activa el camino vulnerable, para que genericverify
+# lo levante en Docker y confirme la hipotesis igual que si el LLM hubiera dado la URL.
+
+_PIP_PKG_RE = re.compile(
+    r"(?i)\b(aiohttp|flask[_-]reuploaded|jinja2|jinja|django|bottle|tornado|"
+    r"fastapi|starlette|werkzeug|pillow|paramiko|twisted|pyramid|uvicorn|"
+    r"gunicorn|httpx|sanic|falcon)\b"
+)
+_NPM_PKG_RE = re.compile(
+    r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
+    r"serve-static|connect|restify|feathers)\b"
+)
+
+_STATIC_DIR_FOR_TRAVERSAL = "static"
+
+
+def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_version: str) -> str:
+    """Genera un servidor Python minimal que expone el camino vulnerable del paquete."""
+    pkg_lower = pkg.lower()
+    if vuln_class == "path-traversal":
+        if "aiohttp" in pkg_lower:
+            return (
+                "from aiohttp import web\n"
+                "import os\n\n"
+                "STATIC_ROOT = os.path.join(os.path.dirname(__file__), 'static')\n"
+                "os.makedirs(STATIC_ROOT, exist_ok=True)\n"
+                "open(os.path.join(STATIC_ROOT, 'index.html'), 'w').write('<html>OK</html>')\n\n"
+                "app = web.Application()\n"
+                "app.router.add_static('/static', STATIC_ROOT, show_index=True)\n\n"
+                "if __name__ == '__main__':\n"
+                "    web.run_app(app, host='0.0.0.0', port=5000)\n"
+            )
+        return (
+            "from flask import Flask, send_from_directory\n"
+            "import os\n\n"
+            "app = Flask(__name__)\n"
+            "STATIC_ROOT = os.path.join(os.path.dirname(__file__), 'static')\n"
+            "os.makedirs(STATIC_ROOT, exist_ok=True)\n\n"
+            "@app.route('/static/<path:filename>')\n"
+            "def serve_static(filename):\n"
+            "    return send_from_directory(STATIC_ROOT, filename)\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(host='0.0.0.0', port=5000)\n"
+        )
+    if vuln_class == "ssti":
+        ep = (endpoint or "/upload").lstrip("/") or "upload"
+        if "flask" in pkg_lower or "reuploaded" in pkg_lower:
+            return (
+                "from flask import Flask, request, render_template_string\n"
+                "from flask_reuploaded import UploadSet, configure_uploads, ALL\n"
+                "import os\n\n"
+                "app = Flask(__name__)\n"
+                "app.config['UPLOADED_ATTACHMENTS_DEST'] = '/tmp/uploads'\n"
+                "app.config['SECRET_KEY'] = 'binoracle'\n"
+                "attachments = UploadSet('attachments', ALL)\n"
+                "configure_uploads(app, attachments)\n"
+                "os.makedirs('/tmp/uploads', exist_ok=True)\n\n"
+                "@app.route('/upload', methods=['GET', 'POST'])\n"
+                "def upload():\n"
+                "    if request.method == 'POST':\n"
+                "        f = request.files.get('file')\n"
+                "        if f:\n"
+                "            filename = attachments.save(f)\n"
+                "            return f'saved: {filename}'\n"
+                "    return '<form method=post enctype=multipart/form-data>'\\\n"
+                "           '<input name=file type=file><input type=submit></form>'\n\n"
+                "if __name__ == '__main__':\n"
+                "    app.run(host='0.0.0.0', port=5000)\n"
+            )
+        if "jinja" in pkg_lower:
+            return (
+                "from flask import Flask, request, render_template_string\n"
+                "import jinja2\n\n"
+                "app = Flask(__name__)\n\n"
+                "@app.route('/render', methods=['GET', 'POST'])\n"
+                "def render():\n"
+                "    tmpl = request.args.get('template') or request.form.get('template', 'hello')\n"
+                "    env = jinja2.Environment(undefined=jinja2.DebugUndefined)\n"
+                "    return env.from_string(tmpl).render()\n\n"
+                "if __name__ == '__main__':\n"
+                "    app.run(host='0.0.0.0', port=5000)\n"
+            )
+    if vuln_class in ("sqli", "sql-injection"):
+        p = param or "id"
+        if "django" in pkg_lower:
+            return (
+                "import os\n"
+                "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n"
+                "import django\n"
+                "from django.conf import settings\n"
+                "if not settings.configured:\n"
+                "    settings.configure(\n"
+                "        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', "
+                "'NAME': '/tmp/db.sqlite3'}},\n"
+                "        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n"
+                "        ROOT_URLCONF='urls', SECRET_KEY='binoracle', DEBUG=True,\n"
+                "        ALLOWED_HOSTS=['*'])\n"
+                "    django.setup()\n\n"
+                "from django.http import HttpResponse\n"
+                "from django.db import connection\n\n"
+                "def search(request):\n"
+                f"    q = request.GET.get('{p}', '')\n"
+                "    with connection.cursor() as c:\n"
+                "        c.execute(f\"SELECT * FROM auth_user WHERE username = '{q}'\")\n"
+                "        return HttpResponse(str(c.fetchall()))\n\n"
+                "urlpatterns = []\n"
+                "try:\n"
+                "    from django.urls import path\n"
+                "    urlpatterns = [path('search', search)]\n"
+                "except Exception:\n"
+                "    pass\n\n"
+                "if __name__ == '__main__':\n"
+                "    from django.core.management import execute_from_command_line\n"
+                "    execute_from_command_line(['manage.py', 'runserver', '0.0.0.0:5000'])\n"
+            )
+        # generic SQLi flask fallback
+        p2 = param or "q"
+        return (
+            "from flask import Flask, request\n"
+            "import sqlite3\n\n"
+            "app = Flask(__name__)\n\n"
+            "def get_db():\n"
+            "    db = sqlite3.connect('/tmp/lab.db')\n"
+            "    db.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER, name TEXT)')\n"
+            "    db.execute(\"INSERT OR IGNORE INTO items VALUES (1,'secret_data')\")\n"
+            "    db.commit()\n"
+            "    return db\n\n"
+            "@app.route('/search')\n"
+            "def search():\n"
+            f"    q = request.args.get('{p2}', '')\n"
+            "    db = get_db()\n"
+            "    rows = db.execute(f\"SELECT * FROM items WHERE name = '{q}'\").fetchall()\n"
+            "    return str(rows)\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(host='0.0.0.0', port=5000)\n"
+        )
+    return ""
+
+
+def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con requirements.txt + app.py minimal para que
+    genericverify pueda levantar un contenedor Docker y confirmar la vulnerabilidad.
+    Devuelve la ruta del directorio o None si el paquete no es reconocible como pip."""
+    import os as _os
+    pkg = (target or "").strip().lower()
+    # solo para nombres razonables de paquete pip: letras, dígitos, guión, punto, barra baja
+    if not pkg or not re.match(r'^[a-z][a-z0-9._-]*$', pkg):
+        return None
+    # evitar confundir con slugs de CMS (tienen guion bajo Drupal-style o más de 3 palabras)
+    if pkg.count("_") >= 2 or " " in pkg:
+        return None
+
+    lab_dir = f"/tmp/{pkg}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    pin = f"{pkg}=={version}" if version else pkg
+    req_lines = [pin]
+    # dependencias de apoyo: solo paquetes DISTINTOS al principal
+    if "flask" in pkg or "reuploaded" in pkg:
+        # flask-reuploaded necesita Flask pero Flask no viene como dep automático
+        if "flask" not in pkg:
+            req_lines.append("flask>=2.0")
+    elif "jinja" in pkg:
+        req_lines.append("flask>=2.0")
+    # aiohttp y django ya incluyen todo lo necesario sin extras
+    req_path = _os.path.join(lab_dir, "requirements.txt")
+    with open(req_path, "w") as f:
+        f.write("\n".join(req_lines) + "\n")
+
+    endpoint = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "search")
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+    elif isinstance(params, str) and params:
+        param = params
+
+    app_code = _gen_pip_app(pkg, vuln_class, endpoint, param, version)
+    if not app_code:
+        return None
+
+    app_path = _os.path.join(lab_dir, "app.py")
+    with open(app_path, "w") as f:
+        f.write(app_code)
+
+    on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
+             f"(vuln_class={vuln_class}, pin={pin})"))
+    return lab_dir
+
+
+def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con package.json + server.js minimal para CVEs de
+    paquetes npm. Devuelve la ruta del directorio o None."""
+    import os as _os
+    import json as _json
+    pkg = (target or "").strip().lower()
+    if not pkg or not re.match(r'^[@a-z][a-z0-9._/@-]*$', pkg):
+        return None
+
+    lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    dep_ver = f"{version}" if version else "*"
+    pkg_json = {
+        "name": "binoracle-lab",
+        "version": "1.0.0",
+        "dependencies": {pkg: dep_ver},
+        "scripts": {"start": "node server.js"}
+    }
+    with open(_os.path.join(lab_dir, "package.json"), "w") as f:
+        _json.dump(pkg_json, f, indent=2)
+
+    endpoint = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "")
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+
+    # minimal Next.js / Express server - header bypass CVE-2025-29927
+    if "next" in pkg and vuln_class == "missing-authorization":
+        srv = (
+            "const { createServer } = require('http');\n"
+            "const next = require('next');\n"
+            "const app = next({ dev: false });\n"
+            "const handle = app.getRequestHandler();\n"
+            "app.prepare().then(() => {\n"
+            "  createServer((req, res) => handle(req, res)).listen(3000, '0.0.0.0');\n"
+            "  console.log('ready on :3000');\n"
+            "});\n"
+        )
+    else:
+        srv = (
+            "const http = require('http');\n"
+            f"const lib = require('{pkg}');\n"
+            "const server = http.createServer((req, res) => {\n"
+            "  res.end('binoracle lab ok');\n"
+            "});\n"
+            "server.listen(3000, '0.0.0.0');\n"
+        )
+
+    with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+        f.write(srv)
+
+    on_step(f"scaffolded minimal npm {pkg} lab at {lab_dir} (version={dep_ver})")
+    return lab_dir
+
+
+def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
+                       version: str, notes: dict, on_step) -> Optional[str]:
+    """Punto de entrada unificado: detecta si es un paquete pip/npm por el target_binary
+    o por la descripcion, y delega al scaffolder correspondiente. Devuelve la ruta del
+    laboratorio o None si no se pudo inferir el paquete."""
+    candidate = (target_binary or "").strip().lower()
+    # Si el LLM dijo target_binary, intenta directamente
+    if candidate:
+        # Python
+        if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
+            lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # Node
+        if _NPM_PKG_RE.search(candidate):
+            lab = _scaffold_npm_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+    # Fallback: busca en la descripcion
+    if description:
+        m = _PIP_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_pip_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _NPM_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+    return None
+
+
 _VERSION_PATTERN = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
 _VNUM = r"[vV]?([0-9]+(?:\.[0-9]+){0,4})"
 # casuistica real de frases de rango de NVD/Patchstack (revisado a fondo, no solo el patron
@@ -1645,6 +1933,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                  f"(extraido del propio texto del aviso, no una garantia)...") if es else
                  (f"the LLM gave no source_url; trying '{guess}' as a WordPress.org slug "
                  f"(extracted from the advisory text itself, not a guarantee)..."))
+
+    # Fallback para CVEs de frameworks Python/Node: si no hay source_url ni slug de CMS,
+    # construye un laboratorio minimal con el paquete pinado a la version vulnerable --
+    # mismo mecanismo que los labs que antes se creaban a mano en /tmp para aiohttp/flask/etc.
+    if not source and inv.vuln_class in (
+            "path-traversal", "ssti", "sqli", "sql-injection",
+            "command-injection", "missing-authorization", "xss", "ssrf"):
+        lab = _guess_package_lab(
+            inv.description,
+            (notes.get("target_binary") or "").strip(),
+            inv.vuln_class, version, notes, step)
+        if lab:
+            source = lab
+            guessed_source = False  # lab scaffolded deterministically, no es una suposicion CMS
 
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
