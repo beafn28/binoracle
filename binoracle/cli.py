@@ -1042,63 +1042,166 @@ def _parse_cli_params(raw_arg: str):
 
 
 def _make_cve_step_printer():
-    """Rich on_step callback for 'binoracle cve': timestamps, phase headers, verdict box."""
+    """Rich on_step callback para 'binoracle cve': colores, iconos, fases, paneles de datos."""
     import time as _time
     import re as _re
+    import sys as _sys
+    from . import colorlog as _cl
 
     _t0 = _time.time()
     _last_phase = [None]
+    _col = _cl._use_color(_sys.stdout)
+
+    # ── Paleta de colores ──────────────────────────────────────────────────────
+    R   = "\033[0m"   if _col else ""   # reset
+    B   = "\033[1m"   if _col else ""   # bold
+    DIM = "\033[2m"   if _col else ""   # dim
+    CYN = "\033[36m"  if _col else ""   # cyan  → INFO
+    GRN = "\033[32m"  if _col else ""   # verde → OK / VERIFICADO
+    YLW = "\033[33m"  if _col else ""   # amarillo → WARN
+    RED = "\033[31m"  if _col else ""   # rojo  → ERROR
+    BLU = "\033[34m"  if _col else ""   # azul  → fase header
+    MAG = "\033[35m"  if _col else ""   # magenta → highlight
+    WHT = "\033[97m"  if _col else ""   # blanco → texto prominente
+    BGN = "\033[1;32m" if _col else ""  # verde bold → VERIFICADO final
+    BRD = "\033[1;31m" if _col else ""  # rojo bold  → ERROR grave
+    BAC = "\033[1;33m" if _col else ""  # amarillo bold → NO CONFIRMADO
+
+    # Iconos por nivel
+    _ICON = {"info": f"{CYN}●{R}", "ok": f"{GRN}✔{R}", "warn": f"{YLW}⚠{R}",
+             "error": f"{RED}✖{R}", "verified": f"{BGN}★{R}"}
 
     _PHASES = [
-        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD"),
-        (r"hipot|llm|modelo|analiz|clasificar|propone|hypothesis", "HIPÓTESIS LLM"),
-        (r"grounded|codigo fuente|source|funcion|function|encontr", "ANÁLISIS DE CÓDIGO"),
-        (r"endpoi|url|route|ruta|parame", "ENDPOINT"),
-        (r"docker|lab|contenedor|container|arran|start|build|construy", "LABORATORIO DOCKER"),
-        (r"baseline|control|mediana|linea base", "BASELINE"),
-        (r"payload|intento|sleep|sqli|inject|fuzz|verif|probando|confirm", "VERIFICACIÓN"),
-        (r"informe|report|html|escrito|resultado|resultado final|verified", "RESULTADO"),
+        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD",        "🌐"),
+        (r"hipot|llm|modelo|analiz|clasificar|propone|hypothesis",
+                                             "HIPÓTESIS LLM",       "🧠"),
+        (r"grounded|codigo fuente|source|funcion|function|encontr",
+                                             "ANÁLISIS DE CÓDIGO",  "🔎"),
+        (r"endpoi|url|route|ruta|parame",   "ENDPOINT",             "🔗"),
+        (r"docker|lab|contenedor|container|arran|start|build|construy|scaffold",
+                                             "LABORATORIO DOCKER",  "🐳"),
+        (r"baseline|control|mediana|linea base", "BASELINE",        "📊"),
+        (r"payload|intento|sleep|sqli|inject|fuzz|verif|probando|confirm|canario|canary",
+                                             "VERIFICACIÓN",        "🎯"),
+        (r"informe|report|html|escrito|resultado final|verified",   "RESULTADO", "📋"),
     ]
 
-    def _phase_for(msg: str) -> str:
+    def _phase_for(msg: str):
         ml = msg.lower()
-        for pat, name in _PHASES:
+        for pat, name, icon in _PHASES:
             if _re.search(pat, ml):
-                return name
-        return ""
+                return name, icon
+        return "", ""
 
-    def _print_phase_header(phase: str) -> None:
-        from . import colorlog as _cl
-        import sys as _sys
-        stream = _sys.stdout
-        bar = "─" * 56
-        if _cl._use_color(stream):
-            print(f"\n\033[1;34m┌{bar}┐\033[0m")
-            print(f"\033[1;34m│\033[0m  \033[1m{phase:<54}\033[0m\033[1;34m│\033[0m")
-            print(f"\033[1;34m└{bar}┘\033[0m")
+    def _print_phase_header(phase: str, icon: str) -> None:
+        label = f"  {icon}  {phase}"
+        pad = 58 - len(phase) - 5
+        if _col:
+            print(f"\n{BLU}{B}{'─' * 2} {icon}  {phase} {'─' * max(2, pad)}{R}")
         else:
-            print(f"\n┌{bar}┐")
-            print(f"│  {phase:<54}│")
-            print(f"└{bar}┘")
+            print(f"\n── {phase} {'─' * max(2, pad + 4)}")
+
+    # ── Extrae datos importantes de mensajes clave ──────────────────────────
+    def _highlight(msg: str, level: str) -> str:
+        """Resalta fragmentos importantes en el mensaje."""
+        if not _col:
+            return msg
+        # URLs y puertos
+        msg = _re.sub(r'(https?://\S+)', f"{MAG}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        # versiones: v1.2.3 o ==1.2.3
+        msg = _re.sub(r'(==?[0-9]+\.[0-9]+(?:\.[0-9]+)?)',
+                      f"{WHT}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        # CVE IDs
+        msg = _re.sub(r'(CVE-\d{4}-\d+)',
+                      f"{B}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        # 'VERIFICADO' y 'confirmado'
+        msg = _re.sub(r'(?i)(VERIFICADO|confirmad[oa])',
+                      f"{BGN}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        return msg
+
+    def _print_data_panel(lines: list[str], color: str = "") -> None:
+        """Imprime un panel de datos con borde lateral."""
+        c = color if _col else ""
+        bar = "│" if _col else "|"
+        for ln in lines:
+            print(f"  {c}{bar}{R}  {ln}")
 
     def on_step(msg: str) -> None:
-        from . import colorlog as _cl
-        import sys as _sys
         elapsed = _time.time() - _t0
         ts = f"{elapsed:>7.1f}s"
-        phase = _phase_for(msg)
+
+        phase, icon = _phase_for(msg)
         if phase and phase != _last_phase[0]:
-            _print_phase_header(phase)
+            _print_phase_header(phase, icon)
             _last_phase[0] = phase
-        stream = _sys.stdout
+
         level = _cl.classify(msg)
-        label = _cl._LABEL.get(level, level.upper())
-        if _cl._use_color(stream):
-            tc = "\033[2m"  # dim timestamp
-            lc = _cl._COLOR.get(level, "")
-            reset = _cl._RESET
-            bold = _cl._BOLD
-            print(f"  {tc}{ts}{reset}  {lc}{bold}[{label}]{reset}{lc} {msg}{reset}")
+        ico   = _ICON.get(level, _ICON["info"])
+        lc    = _cl._COLOR.get(level, "")
+        label = _cl._LABEL.get(level, "INFO")
+
+        # Mensajes de dato importante → panel destacado
+        # "objetivo arriba: http://..." → panel verde con URL
+        m_up = _re.search(r"objetivo arriba[:\s]+(https?://\S+)[^(]*\(contenedor\s+'([^']+)'",
+                           msg)
+        if m_up:
+            url, ctr = m_up.group(1), m_up.group(2)
+            if _col:
+                print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
+                print(f"\n  {GRN}{'┌' + '─'*50 + '┐'}{R}")
+                print(f"  {GRN}│{R}  {B}URL:{R}        {MAG}{url}{R}")
+                print(f"  {GRN}│{R}  {B}Contenedor:{R} {WHT}{ctr}{R}")
+                print(f"  {GRN}{'└' + '─'*50 + '┘'}{R}\n")
+            else:
+                print(f"  {ts}  [{label}] {msg}")
+                print(f"  URL: {url}  Contenedor: {ctr}")
+            return
+
+        # "hipotesis del LLM: clase=X, disparador=Y" → panel azul con clase
+        m_hyp = _re.search(r"hipot[^:]*:[^=]*(clase|class)\s*=\s*(\S+)", msg, _re.I)
+        if m_hyp:
+            vuln_cls = m_hyp.group(2).rstrip(",")
+            if _col:
+                print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
+                print(f"\n  {BLU}{'╌'*52}{R}")
+                print(f"  {BLU}»{R} {B}Clase:{R}  {MAG}{vuln_cls.upper()}{R}")
+                print(f"  {BLU}{'╌'*52}{R}\n")
+            else:
+                print(f"  {ts}  [{label}] {msg}")
+            return
+
+        # "scaffolded minimal X lab at /tmp/..." → resaltar pin
+        m_sc = _re.search(r"scaffold[^(]+\(vuln_class=(\S+),\s*pin=(\S+)\)", msg)
+        if m_sc:
+            if _col:
+                vc, pin = m_sc.group(1), m_sc.group(2)
+                print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
+                print(f"  {DIM}        pin: {WHT}{pin}{R}{DIM}  ·  clase: {WHT}{vc}{R}")
+            else:
+                print(f"  {ts}  [{label}] {msg}")
+            return
+
+        # "corrigiendo version: '3.9.2' es la version PARCHEADA" → resaltar en amarillo
+        if _re.search(r"corrigiendo version|PARCHEADA|ultima vulnerable", msg, _re.I):
+            if _col:
+                print(f"  {DIM}{ts}{R}  {YLW}⚡{R} {YLW}{B}[CORR]{R}{YLW} {msg}{R}")
+            else:
+                print(f"  {ts}  [CORR] {msg}")
+            return
+
+        # "VERIFICADO: el secreto plantado" → banner verde brillante
+        if _re.search(r"VERIFICADO[:\s]", msg, _re.I):
+            if _col:
+                print(f"\n  {BGN}{'━'*54}{R}")
+                print(f"  {BGN}★  {msg}{R}")
+                print(f"  {BGN}{'━'*54}{R}\n")
+            else:
+                print(f"  *** VERIFICADO: {msg} ***")
+            return
+
+        # línea estándar
+        if _col:
+            print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
         else:
             print(f"  {ts}  [{label}] {msg}")
 
@@ -1125,17 +1228,19 @@ def cmd_cve(args, config):
     if getattr(args, "vuln_class", None):
         hints["vuln_class"] = args.vuln_class
 
-    # Banner
-    import sys as _sys
+    # ── Banner ────────────────────────────────────────────────────────────────
     _use_col = colorlog._use_color(_sys.stdout)
-    _r = colorlog._RESET if _use_col else ""
-    _b = colorlog._BOLD if _use_col else ""
-    _ac = "\033[1;36m" if _use_col else ""
-    _gc = "\033[32m" if _use_col else ""
-    bar = "═" * 60
-    print(f"\n{_ac}{bar}{_r}")
-    print(f"{_ac}  binoracle{_r}  {_b}{cve_id}{_r}  —  investigación autónoma")
-    print(f"{_ac}{bar}{_r}\n")
+    _r  = colorlog._RESET if _use_col else ""
+    _b  = colorlog._BOLD  if _use_col else ""
+    _d  = "\033[2m"    if _use_col else ""
+    _ac = "\033[1;96m" if _use_col else ""   # cyan brillante
+    _mc = "\033[1;35m" if _use_col else ""   # magenta → CVE ID
+    _gc = "\033[1;32m" if _use_col else ""   # verde → OK
+    bar = "═" * 62
+    print(f"\n{_ac}╔{bar}╗{_r}")
+    print(f"{_ac}║{_r}  {_d}🔍{_r} {_b}BINORACLE{_r}  {_d}·{_r}  {_mc}{_b}{cve_id}{_r}"
+          f"  {_d}·{_r}  {_d}investigación autónoma{_r}")
+    print(f"{_ac}╚{bar}╝{_r}\n")
 
     t_start = _time.time()
     on_step = _make_cve_step_printer()
@@ -1152,38 +1257,77 @@ def cmd_cve(args, config):
 
     elapsed_total = _time.time() - t_start
 
-    # Verdict box
+    # ── Verdict box ───────────────────────────────────────────────────────────
     if inv.verified:
-        vc = "\033[1;32m" if _use_col else ""
-        icon = "✔ VERIFICADO"
+        vc   = "\033[1;32m" if _use_col else ""  # verde
+        icon = "★  VERIFICADO"
+        bch  = "╔╗╚╝" if _use_col else "++++"
     else:
-        vc = "\033[1;33m" if _use_col else ""
-        icon = "✖ NO CONFIRMADO"
+        vc   = "\033[1;33m" if _use_col else ""  # amarillo
+        icon = "✖  NO CONFIRMADO"
+        bch  = "╔╗╚╝" if _use_col else "++++"
 
-    bar2 = "═" * 60
-    print(f"\n{vc}{bar2}{_r}")
-    print(f"{vc}  {icon:^58}{_r}")
-    print(f"{vc}{bar2}{_r}")
+    bar2 = "═" * 62
+    print(f"\n{vc}╔{bar2}╗{_r}")
+    print(f"{vc}║{_r}  {vc}{_b}{icon:^60}{_r}{vc}║{_r}")
+    print(f"{vc}╚{bar2}╝{_r}")
 
+    # Detalles de evidencia
     ve = getattr(inv, "verified_evidence", None) or {}
     if isinstance(ve, dict):
-        payload = ve.get("payload_ganador", "")
-        t1 = ve.get("tiempo_1_ganador_s", "")
-        t2 = ve.get("tiempo_2_ganador_s", "")
-        base = ve.get("tiempo_base_mediana_s", "")
+        payload  = ve.get("payload_ganador", "")
+        t1       = ve.get("tiempo_1_ganador_s", "")
+        t2       = ve.get("tiempo_2_ganador_s", "")
+        base     = ve.get("tiempo_base_mediana_s", "")
         strategy = ve.get("estrategia", "")
-        if payload:
-            print(f"\n  {_b}Payload ganador{_r}:  {payload}")
-        if t1:
-            print(f"  {_b}Tiempo 1{_r}:          {t1}s   {_b}Tiempo 2{_r}: {t2}s   "
-                  f"{_b}Baseline{_r}: {base}s")
-        if strategy:
-            print(f"  {_b}Estrategia{_r}:        {strategy}")
+        ctr      = ve.get("contenedor", "")
+        endpoint = ve.get("endpoint", "")
+        _mc2 = "\033[35m" if _use_col else ""
+        _wh  = "\033[97m" if _use_col else ""
+        if payload or ctr or endpoint:
+            print()
+            if ctr:
+                print(f"  {_b}Contenedor{_r}:       {_wh}{ctr}{_r}")
+            if endpoint:
+                print(f"  {_b}Endpoint{_r}:         {_wh}{endpoint}{_r}")
+            if payload:
+                print(f"  {_b}Payload ganador{_r}:  {_mc2}{payload}{_r}")
+            if t1:
+                print(f"  {_b}Tiempo 1{_r}: {_wh}{t1}s{_r}  "
+                      f"{_b}Tiempo 2{_r}: {_wh}{t2}s{_r}  "
+                      f"{_b}Baseline{_r}: {_wh}{base}s{_r}")
+            if strategy:
+                print(f"  {_b}Estrategia{_r}:       {strategy}")
     detail = getattr(inv, "verified_detail", "") or ""
     if detail:
         print(f"\n  {detail}")
 
-    print(f"\n  {_b}Tiempo total{_r}: {elapsed_total:.1f}s")
+    _tm_c = "\033[36m" if _use_col else ""
+    # Resumen final de bloqueadores si no verificado
+    if not inv.verified:
+        blockers = getattr(inv, "blockers", []) or []
+        if blockers:
+            print(f"\n  {_b}Bloqueadores:{_r}")
+            for bl in blockers[:3]:
+                print(f"    {vc}▸{_r} {bl[:100]}")
+
+    print(f"\n  {_b}Tiempo total{_r}: {_tm_c}{elapsed_total:.1f}s{_r}")
+    # Resumen rápido de clase + CVSS
+    _notes = getattr(inv, "llm_notes", {}) or {}
+    _cls   = getattr(inv, "vuln_class", "") or _notes.get("vuln_class", "")
+    _cvss  = getattr(inv, "cvss_score", None)
+    _sev   = getattr(inv, "cvss_severity", "") or ""
+    _yc = "\033[33m" if _use_col else ""
+    if _cls or _cvss:
+        parts = []
+        if _cvss:
+            parts.append(f"CVSS {_cvss} {_sev}")
+        if _cls:
+            parts.append(f"clase: {_cls}")
+        poc_k = getattr(inv, "poc_kind", "") or ""
+        if poc_k:
+            parts.append(f"PoC: {poc_k}")
+        print(f"  {_d}{' · '.join(parts)}{_r}")
     print()
 
     print(render_investigation(inv, config.lang, embed_images=False))
