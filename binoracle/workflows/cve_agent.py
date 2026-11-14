@@ -1501,6 +1501,12 @@ _NPM_PKG_RE = re.compile(
     r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
     r"serve-static|connect|restify|feathers)\b"
 )
+# Gemas Ruby conocidas que aparecen en CVEs web -- se chequean ANTES que pip porque
+# nombres como "rack" coinciden también con el regex genérico de paquetes pip.
+_RUBY_GEM_RE = re.compile(
+    r"(?i)\b(rack|rails|sinatra|hanami|padrino|grape|omniauth|devise|"
+    r"nokogiri|puma|actionpack|activesupport|actionview|sprockets|capybara)\b"
+)
 
 _STATIC_DIR_FOR_TRAVERSAL = "static"
 
@@ -1626,6 +1632,58 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
             "    app.run(host='0.0.0.0', port=5000)\n"
         )
     return ""
+
+
+def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
+    """Genera el config.ru Ruby/Rack minimal que expone el camino vulnerable."""
+    if vuln_class == "path-traversal" and "rack" in pkg.lower():
+        # CVE-2025-27610: Rack::Static sirve ficheros bajo root: aunque no estén bajo urls:
+        # cuando el atacante usa rutas traversal codificadas.  root: apunta a /app (el directorio
+        # del propio proceso), urls: sólo permite /static -- la combinación vulnerable canónica.
+        return (
+            "require 'rack'\n"
+            "require 'fileutils'\n\n"
+            "# Crea /app/static/ con un fichero dummy para que Rack::Static arranque sin error\n"
+            "FileUtils.mkdir_p(File.join(__dir__, 'static'))\n"
+            "File.write(File.join(__dir__, 'static', 'index.html'), '<html>rack lab ok</html>')\n\n"
+            "# Configuracion vulnerable (CVE-2025-27610): root apunta al directorio de la app;\n"
+            "# urls restringe a /static pero Rack::Static no valida traversal codificado.\n"
+            "use Rack::Static,\n"
+            "  root: __dir__,\n"
+            "  urls: ['/static']\n\n"
+            "run lambda { |env| [200, {'Content-Type' => 'text/plain'}, ['rack lab ok']] }\n"
+        )
+    return ""
+
+
+def _scaffold_gem_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con Gemfile + config.ru minimal para gemas Ruby.
+    Devuelve la ruta del directorio o None si el paquete no es una gema reconocida."""
+    import os as _os
+    pkg = (target or "").strip().lower()
+    if not pkg or not re.match(r'^[a-z][a-z0-9._-]*$', pkg):
+        return None
+    if not _RUBY_GEM_RE.search(pkg):
+        return None
+
+    lab_dir = f"/tmp/{pkg}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    ver_pin = f", '= {version}'" if version else ""
+    gemfile = f"source 'https://rubygems.org'\ngem '{pkg}'{ver_pin}\n"
+    with open(_os.path.join(lab_dir, "Gemfile"), "w") as f:
+        f.write(gemfile)
+
+    app_code = _gen_gem_app(pkg, vuln_class, version)
+    if not app_code:
+        return None
+    with open(_os.path.join(lab_dir, "config.ru"), "w") as f:
+        f.write(app_code)
+
+    pin = f"{pkg} (={version})" if version else pkg
+    on_step(f"scaffolded minimal {pkg} lab at {lab_dir} (vuln_class={vuln_class}, pin={pin})")
+    return lab_dir
 
 
 def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
@@ -1760,8 +1818,14 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                 version = corrected
 
     candidate = (target_binary or "").strip().lower()
-    # Si el LLM dijo target_binary, intenta directamente
+    # Si el LLM dijo target_binary, intenta directamente.
+    # Ruby se chequea ANTES que pip: "rack" y otras gemas coinciden con el regex genérico pip.
     if candidate:
+        # Ruby
+        if _RUBY_GEM_RE.search(candidate):
+            lab = _scaffold_gem_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
         # Python
         if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
             lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
@@ -1774,6 +1838,11 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                 return lab
     # Fallback: busca en la descripcion
     if description:
+        m = _RUBY_GEM_RE.search(description)
+        if m:
+            lab = _scaffold_gem_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
         m = _PIP_PKG_RE.search(description)
         if m:
             lab = _scaffold_pip_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
