@@ -88,6 +88,11 @@ _CLASSES = [
      "inyeccion de script en el contexto del navegador de la victima", []),
     ("ssrf", ("server-side request forgery", "ssrf"),
      "el servidor hace una peticion a una URL controlada por el atacante (red interna/metadata)", []),
+    # ssti antes de rce: "server-side template injection (SSTI) and arbitrary code execution"
+    # debe clasificarse como ssti (mecanismo especifico), no rce (impacto generico).
+    ("ssti", ("server-side template injection", "ssti", "template injection",
+              "template engine", "templating engine"),
+     "el motor de plantillas evalua entrada del atacante como codigo", []),
     ("rce", ("remote code execution", "arbitrary code execution", "ejecucion remota de codigo"),
      "ejecucion de codigo arbitrario en el servidor", []),
     ("path-traversal", ("path traversal", "directory traversal", "local file inclusion", "lfi"),
@@ -99,9 +104,6 @@ _CLASSES = [
      "deserializa datos del atacante -> instancia objetos/gadget chain controlados", []),
     ("xxe", ("xml external entity", "xxe"),
      "procesa un DTD/entidad externa en XML -> lectura de fichero/SSRF", []),
-    ("ssti", ("server-side template injection", "ssti", "template injection",
-              "template engine", "templating engine"),
-     "el motor de plantillas evalua entrada del atacante como codigo", []),
     ("csrf", ("cross-site request forgery", "csrf"),
      "fuerza una accion autenticada desde un origen ajeno (sin interaccion directa con la sesion)", []),
     ("open-redirect", ("open redirect", "unvalidated redirect"),

