@@ -1640,14 +1640,20 @@ def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
         # CVE-2025-27610: Rack::Static sirve ficheros bajo root: aunque no estén bajo urls:
         # cuando el atacante usa rutas traversal codificadas.  root: apunta a /app (el directorio
         # del propio proceso), urls: sólo permite /static -- la combinación vulnerable canónica.
+        # config.ru con dos partes:
+        #   1. /app/static/index.html  → Rack::Static lo sirve normalmente
+        #   2. /app/secret_app.txt     → NO debe ser accesible por /static/,
+        #      pero con rack < 2.2.13 un traversal codificado (/static/%2e%2e%2fsecret_app.txt)
+        #      sí lo sirve.  genericverify planta su canario en /tmp/ y usa depth ≥ 4 para
+        #      salir del contenedor, pero este fichero sirve como prueba adicional de depth 1.
         return (
             "require 'rack'\n"
             "require 'fileutils'\n\n"
-            "# Crea /app/static/ con un fichero dummy para que Rack::Static arranque sin error\n"
             "FileUtils.mkdir_p(File.join(__dir__, 'static'))\n"
-            "File.write(File.join(__dir__, 'static', 'index.html'), '<html>rack lab ok</html>')\n\n"
-            "# Configuracion vulnerable (CVE-2025-27610): root apunta al directorio de la app;\n"
-            "# urls restringe a /static pero Rack::Static no valida traversal codificado.\n"
+            "File.write(File.join(__dir__, 'static', 'index.html'), '<html>rack lab ok</html>')\n"
+            "# Fichero fuera de /static/: accesible con traversal en versiones vulnerables\n"
+            "File.write(File.join(__dir__, 'secret_app.txt'), "
+            "\"BINORACLE_RACK_TRAVERSAL_SECRET\\n\")\n\n"
             "use Rack::Static,\n"
             "  root: __dir__,\n"
             "  urls: ['/static']\n\n"
@@ -1808,12 +1814,25 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
     # version ya parcheada) -> el traversal no funciona nunca porque ya tiene la validacion.
     # Solucion: detectar el patron y decrementar al ultimo patch vulnerable (3.9.1).
     if version and description:
+        # Recoge todas las versiones que la descripción NVD marca como "primera parcheada":
+        # (a) "Version X.Y.Z fixes…" / "Versions X.Y.Z fixes…"
+        # (b) "Prior to versions X.Y.Z" / "before version X.Y.Z" / "versions prior to X.Y.Z"
+        _patched_ver_candidates: set = set()
         _m = _FIXES_THIS_VERSION_RE.search(description)
-        if _m and _m.group(1) == version:
+        if _m:
+            _patched_ver_candidates.add(_m.group(1))
+        for _pm in _PRIOR_TO_VERSION_RE.finditer(description):
+            _v = next((g for g in _pm.groups() if g), None)
+            if _v:
+                _patched_ver_candidates.add(_v)
+        if version in _patched_ver_candidates:
             corrected = _decrement_patch_version(version)
             if corrected != version:
+                _hint = next((m.group(0) for m in _PRIOR_TO_VERSION_RE.finditer(description)
+                              if next((g for g in m.groups() if g), None) == version),
+                             None) or (_m.group(0) if _m else description[:60])
                 on_step((f"corrigiendo version: '{version}' es la version PARCHEADA segun la "
-                         f"descripcion del CVE ('{_m.group(0)}') -- instalando "
+                         f"descripcion del CVE ('{_hint}') -- instalando "
                          f"'{corrected}' (ultima vulnerable)"))
                 version = corrected
 
@@ -1913,10 +1932,21 @@ def _clean_affected_version(raw: str) -> str:
 
 _EXCLUSIVE_BOUND_RE = re.compile(r"\bbefore\b|\bprior\s+to\b|<(?!=)", re.IGNORECASE)
 
-# Pattern: "Version 3.9.2 fixes this issue" → LLM puede devolver 3.9.2 como affected_version
-# pero esa es la version PARCHEADA -- el lab debe instalar 3.9.1 (la ultima vulnerable).
+# Patrones NVD que indican que X.Y.Z es la PRIMERA versión PARCHEADA (no la vulnerable).
+# El LLM suele copiar ese número tal cual como affected_version → hay que decrementar al
+# último patch vulnerable (X.Y.Z-1).
+# Casos reales confirmados:
+#   "Version 3.9.2 fixes this issue"       (aiohttp, CVE-2024-23334)
+#   "Prior to versions 2.2.13, 3.0.14, …"  (rack, CVE-2025-27610)
+#   "before version 1.26"                  (phrasing clásica de NVD)
+#   "versions prior to 5.1.0"              (variante de NVD/advisories)
 _FIXES_THIS_VERSION_RE = re.compile(
-    r"[Vv]ersion\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
+    r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
+)
+_PRIOR_TO_VERSION_RE = re.compile(
+    r"(?:[Pp]rior\s+to|[Bb]efore)\s+version[s]?\s+v?([0-9]+(?:\.[0-9]+){1,4})"
+    r"|version[s]?\s+prior\s+to\s+v?([0-9]+(?:\.[0-9]+){1,4})",
+    re.IGNORECASE
 )
 
 

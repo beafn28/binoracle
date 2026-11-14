@@ -240,7 +240,8 @@ def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
         "ENV HTTPS_PROXY=$HTTPS_PROXY",
         f"COPY {_PROXY_CA_FILENAME} /tmp/binoracle-ca.crt",
         "ENV NODE_EXTRA_CA_CERTS=/tmp/binoracle-ca.crt PIP_CERT=/tmp/binoracle-ca.crt "
-        "NPM_CONFIG_CAFILE=/tmp/binoracle-ca.crt",
+        "NPM_CONFIG_CAFILE=/tmp/binoracle-ca.crt "
+        "SSL_CERT_FILE=/tmp/binoracle-ca.crt BUNDLE_SSL_CA_CERT=/tmp/binoracle-ca.crt",
     ]
 
 
@@ -612,10 +613,14 @@ def _scan_web_routes(source_dir: str) -> list:
             # Extract root: (optional, for prefix-bypass canary planting)
             rack_root = ""
             m_root_str = re.search(r'root\s*:\s*["\']([^"\']+)["\']', block)
+            m_root_dir = re.search(r'root\s*:\s*__dir__', block)
             m_root_join = re.search(
                 r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block)
             if m_root_str:
                 rack_root = m_root_str.group(1)
+            elif m_root_dir:
+                # root: __dir__ → el root es el propio WORKDIR del contenedor
+                rack_root = "WORKDIR/"
             elif m_root_join:
                 rack_root = "WORKDIR/" + m_root_join.group(1)
             urls_str = m_urls.group(1)
@@ -1039,14 +1044,19 @@ def verify_generic_path_traversal(
             for _ep2, _p2, _m2, _up2, _fs2 in candidates:
                 if isinstance(_p2, dict):
                     _rsr = _p2.get("RACK_STATIC_ROOT", "")
-                    if _rsr and not _rsr.startswith("WORKDIR/"):
-                        root_cands = [_rsr] + root_cands
+                    if _rsr:
+                        if not _rsr.startswith("WORKDIR/"):
+                            root_cands = [_rsr] + root_cands
+                        # "WORKDIR/" solo → se expande a WORKDIR puro después de detectar $PWD
             # Detectar WORKDIR del contenedor para expandir rutas relativas y priorizarlo
             try:
                 _wd = lab.sh("exec", container, "sh", "-c", "echo $PWD").stdout.strip()
                 if _wd and _wd != "/":
-                    # Sustituir WORKDIR/ en root_cands
-                    root_cands = [rc.replace("WORKDIR/", _wd + "/") for rc in root_cands]
+                    # Sustituir WORKDIR/ → "<wd>/" y "WORKDIR/" puro (trailing slash) → "<wd>"
+                    def _sub_wd(rc: str) -> str:
+                        s = rc.replace("WORKDIR/", _wd + "/")
+                        return s.rstrip("/") if s != _wd + "/" else _wd
+                    root_cands = [_sub_wd(rc) for rc in root_cands]
                     root_cands = [_wd + "/public", _wd + "/www", _wd + "/static", _wd] + root_cands
             except Exception:
                 pass
