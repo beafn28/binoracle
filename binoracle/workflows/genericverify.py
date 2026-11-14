@@ -125,6 +125,12 @@ _STACK_SIGNALS = (
     ("package.json", "node:20-alpine", 3000,
      ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
       'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
+    # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
+    ("Gemfile", "ruby:3.1-slim", 9292,
+     ["WORKDIR /app", "COPY Gemfile* ./",
+      "RUN gem install bundler --no-document && bundle install || true",
+      "COPY . .",
+      'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
     ("requirements.txt", "python:3.11-slim", 5000,
      ["WORKDIR /app", "COPY . .",
       "RUN pip install --no-cache-dir -r requirements.txt || true",
@@ -241,8 +247,8 @@ def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
 def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
-    un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a Node/Python/PHP sin
-    framework (los 3 casos mas comunes en PoCs publicos), no un intento de adivinar cualquier
+    un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a Node/Ruby/Python/PHP sin
+    framework (los casos mas comunes en PoCs publicos), no un intento de adivinar cualquier
     stack posible. El Dockerfile generado queda guardado en el propio directorio del codigo
     (_AUTO_DOCKERFILE_NAME) para que quede constancia de que NO es el del autor del PoC -- el
     `step()` del caller debe dejarlo igual de explicito en el informe."""
