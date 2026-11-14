@@ -1,8 +1,8 @@
 {
-  "cve_id": "CVE-2024-57610",
-  "description": "SQL injection vulnerability in a Python Flask web application. The /search endpoint accepts a 'q' GET parameter that is inserted directly into a MySQL query without sanitization: SELECT * FROM products WHERE name = '<user_input>'. An unauthenticated attacker can inject SQL commands via the q parameter. Time-based blind SQL injection is possible using MySQL SLEEP() function: q=' OR SLEEP(4)-- - causes the server to delay 4 seconds. No authentication is required. CVSS 9.8 Critical.",
+  "cve_id": "BINORACLE-LAB-SQLI-001",
+  "description": "Escenario de laboratorio de demostración: SQL injection time-based blind en una aplicación Python Flask con backend MySQL. El endpoint /search acepta el parámetro 'q' que se inserta directamente en la consulta SQL sin sanitización mediante interpolación de cadenas (f-string). Un atacante puede inyectar comandos SQL vía el parámetro q; la inyección time-based blind es posible con MySQL SLEEP(): q=1' OR (SELECT 1 FROM (SELECT SLEEP(4)) t)-- - provoca un retraso de 4 segundos. No se requiere autenticación. Demuestra la capacidad de binoracle para detectar y verificar esta clase de vulnerabilidad de forma completamente autónoma.",
   "lookup_ok": true,
-  "lookup_note": "",
+  "lookup_note": "Identificador de laboratorio de demostración (no es un CVE NVD). El CVE-2024-57610 real corresponde a Sylius v2.0.2 rate-limiting — no relacionado. Este lab demuestra la clase de vulnerabilidad SQLi time-based blind en Flask+MySQL.",
   "is_gap": true,
   "cvss_score": 9.8,
   "cvss_severity": "CRITICAL",
