@@ -746,6 +746,73 @@ mark.hl{{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-we
             pass
 
 
+def _screenshot_terminal_step(title: str, content: str, highlight: str = "",
+                              lang: str = "es") -> Optional[str]:
+    """Genera una captura de estilo terminal (fondo negro, texto verde, monospace) mostrando
+    un paso de la investigacion. Util para evidenciar pasos que no son peticiones HTTP.
+    Devuelve PNG en base64, o None si Playwright no esta disponible."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
+    except Exception:
+        return None
+    import base64
+    import html as _html
+    import tempfile
+
+    title_safe = _html.escape(title)
+    if highlight:
+        hl_safe = _html.escape(highlight)
+        content_safe = _html.escape(content).replace(
+            hl_safe, f'<mark class="hl">{hl_safe}</mark>')
+    else:
+        content_safe = _html.escape(content)
+
+    lbl = "binoracle · evidencia" if lang == "es" else "binoracle · evidence"
+    page_src = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font:13px/1.6 'Courier New',monospace;background:#0d1117;color:#c9d1d9;min-height:100vh}}
+.bar{{background:#161b22;padding:8px 14px;border-bottom:2px solid #238636;display:flex;gap:10px;align-items:center}}
+.lbl{{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.05em}}
+.title{{color:#58a6ff;font-weight:700;font-size:13px;flex:1}}
+.prompt{{color:#3fb950;padding:10px 14px 4px;font-weight:700}}
+.content{{padding:4px 14px 14px;white-space:pre-wrap;word-break:break-word;color:#c9d1d9}}
+mark.hl{{background:#bb8009;color:#fff;padding:1px 3px;border-radius:2px;font-weight:700}}
+</style></head><body>
+<div class="bar">
+  <span class="lbl">{_html.escape(lbl)}</span>
+  <span class="title">{title_safe}</span>
+</div>
+<div class="prompt">$ binoracle</div>
+<div class="content">{content_safe}</div>
+</body></html>"""
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1200, "height": 600},
+                    device_scale_factor=2,
+                ).new_page()
+                page.set_content(page_src, wait_until="domcontentloaded")
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str]:
     """Reusa las cookies de una requests.Session YA autenticada (via _wp_login) para abrir esa
     misma sesion en un Chromium headless (Playwright) y capturar una foto REAL de la pagina --

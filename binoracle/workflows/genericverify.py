@@ -26,6 +26,7 @@ from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HI
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
                        _http_request_raw_path, _lab_host,
                        _pick_param, _redirect_location_is_external, _run, _screenshot_response,
+                       _screenshot_terminal_step,
                        _token, configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
                          load_ssti_arithmetic_payloads, load_xss_payloads)
@@ -752,6 +753,10 @@ def verify_generic_command_injection(
         m = (http_method or "POST").upper()
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "canary_path": canary_path, "canary_secret": secret})
+        # Captura: servidor arrancado, antes del ataque
+        _shot_srv = _screenshot_response("GET", base_url + "/", timeout=10)
+        if _shot_srv:
+            res.evidence.setdefault("screenshots", []).append(_shot_srv)
 
         # separadores reales de command injection (sh/bash/dash/ash) -- casuistica de
         # Command Injection/Intruder/command_exec.txt en PayloadsAllTheThings: los separadores
@@ -939,6 +944,10 @@ def verify_generic_path_traversal(
     try:
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        # Captura: servidor arrancado, antes del ataque
+        _shot_srv = _screenshot_response("GET", base_url + "/", timeout=10)
+        if _shot_srv:
+            res.evidence.setdefault("screenshots", []).append(_shot_srv)
         step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
              f"propio contenedor del objetivo)...")
         if not lab.write_canary(container, canary_path, secret):
