@@ -1574,7 +1574,6 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
             "    app.run(host='0.0.0.0', port=5000)\n"
         )
     if vuln_class == "ssti":
-        ep = (endpoint or "/upload").lstrip("/") or "upload"
         if "flask" in pkg_lower or "reuploaded" in pkg_lower:
             return (
                 "from flask import Flask, request, render_template_string\n"
@@ -1838,12 +1837,6 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     with open(_os.path.join(lab_dir, "package.json"), "w") as f:
         _json.dump(pkg_json, f, indent=2)
 
-    endpoint = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "")
-    param = ""
-    params = notes.get("parameters")
-    if isinstance(params, list) and params:
-        param = str(params[0])
-
     # Next.js auth-bypass lab: CVE-2025-29927 (x-middleware-subrequest header bypass).
     # The lab needs:
     #   middleware.js  — blocks access to /api/secret unless a valid auth token is present
@@ -1992,7 +1985,6 @@ def _scaffold_maven_lab(target: str, version: str, vuln_class: str,
     para CVEs de bibliotecas Java. Soporta Spring, Log4j, Struts, Jackson-databind, Netty, etc.
     Devuelve la ruta del laboratorio o None si no se detecta un artefacto Java conocido."""
     import os as _os
-    import json as _json
     pkg = (target or "").strip().lower()
     if not pkg or not _MAVEN_PKG_RE.search(pkg):
         return None

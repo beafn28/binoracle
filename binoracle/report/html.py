@@ -2324,7 +2324,6 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     import re as _re
     from datetime import datetime, timezone
     es = lang == "es"
-    title = _esc(cve or ("informe" if es else "report"))
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     _INV_CSS = """
