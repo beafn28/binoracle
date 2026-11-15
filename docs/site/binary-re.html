@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Binary RE — binoracle</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="binoracle binary reverse engineering engine: 50+ verified exploit families, 15+ binary formats, MCP server.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .family-table td:last-child { font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a class="nav-brand" href="index.html">
+    <span class="nav-dot"></span>binoracle
+  </a>
+  <ul class="nav-links">
+    <li><a href="index.html">Home</a></li>
+    <li><a href="cve-engine.html">CVE Engine</a></li>
+    <li><a href="binary-re.html" class="active">Binary RE</a></li>
+    <li><a href="architecture.html">Architecture</a></li>
+    <li><a href="https://github.com/beafn28/binoracle" target="_blank">GitHub ↗</a></li>
+  </ul>
+</nav>
+
+<div class="container" style="padding-top:48px;padding-bottom:80px;">
+
+  <div class="mb-8">
+    <h4>Documentation</h4>
+    <h1 class="mt-2">Binary Reverse Engineering</h1>
+    <p class="text-muted mt-4" style="font-size:17px;max-width:650px;">
+      Static readers for 15+ binary formats and 50+ execution-verified exploit families.
+      Full REA parity. 100% offline.
+    </p>
+  </div>
+
+  <!-- Quick reference -->
+  <div class="code-block mb-8">
+    <div class="code-block-header">
+      <div class="code-block-dots"><span class="dot-red"></span><span class="dot-yellow"></span><span class="dot-green"></span></div>
+      <span>Quick reference</span>
+    </div>
+    <pre><span style="color:var(--green)"># Auto-detect format and analyze</span>
+binoracle identify ./binary
+
+<span style="color:var(--green)"># Full exploit campaign: try all families, verify which work</span>
+binoracle autopwn ./challenge
+
+<span style="color:var(--green)"># Single-shot ret2win with offset finding</span>
+binoracle autopoc ./challenge
+
+<span style="color:var(--green)"># LLM-driven audit (Qwen 2.5 drives the agent loop)</span>
+binoracle audit ./challenge
+
+<span style="color:var(--green)"># Specific formats</span>
+binoracle elf ./firmware.elf       <span style="color:var(--muted)"># ELF: headers, mitigations, symbols</span>
+binoracle apk ./app.apk            <span style="color:var(--muted)"># APK: manifest, DEX, signing</span>
+binoracle pe ./malware.exe         <span style="color:var(--muted)"># PE: headers, imports, sections</span>
+binoracle dotnet ./assembly.dll    <span style="color:var(--muted)"># .NET: metadata, CIL</span>
+binoracle wasm ./module.wasm       <span style="color:var(--muted)"># WASM: WAT disassembly</span>
+binoracle js ./bundle.js           <span style="color:var(--muted)"># JS: source recovery, imports</span>
+
+<span style="color:var(--green)"># ROP / gadgets</span>
+binoracle gadgets ./binary         <span style="color:var(--muted)"># find ROP gadgets</span>
+binoracle rop ./binary             <span style="color:var(--muted)"># build ROP chain</span>
+binoracle analyze ./binary         <span style="color:var(--muted)"># chain analyzer + ROP arsenal</span></pre>
+  </div>
+
+  <!-- Static readers -->
+  <h2 class="mb-4">Static Readers</h2>
+  <p class="text-muted mb-4">Static readers <strong>never execute</strong> the target binary. All analysis is deterministic and offline.</p>
+  <table class="mb-8">
+    <thead>
+      <tr>
+        <th>Area</th>
+        <th>Formats</th>
+        <th>What you get</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Native</strong></td>
+        <td>ELF, Mach-O, PE/COFF, Go, WASM, core dumps</td>
+        <td>Headers, mitigations (NX/PIE/RELRO/canary), symbols, sections, imports, ROP gadgets, mitigations summary</td>
+      </tr>
+      <tr>
+        <td><strong>Mobile</strong></td>
+        <td>APK, DEX, AndroidManifest</td>
+        <td>Manifest permissions, DEX classes/methods, signing certificate, native ABIs, JADX decompilation (optional)</td>
+      </tr>
+      <tr>
+        <td><strong>Flutter / Dart</strong></td>
+        <td>AOT snapshots, libflutter.so, AssetManifest</td>
+        <td>Snapshot hash/features, engine fingerprint, asset manifest (StandardMessageCodec)</td>
+      </tr>
+      <tr>
+        <td><strong>Managed</strong></td>
+        <td>.NET/CLI assemblies (EXE, DLL)</td>
+        <td>ECMA-335 metadata tables, CIL disassembly, type graph by token, managed/native boundary</td>
+      </tr>
+      <tr>
+        <td><strong>Web / JS</strong></td>
+        <td>JS bundles, .asar (Electron), HAR</td>
+        <td>Source map recovery, module imports, Electron app structure, HTTP archive analysis</td>
+      </tr>
+      <tr>
+        <td><strong>Data</strong></td>
+        <td>SQLite, EVM, JAR/class, plist</td>
+        <td>SQLite schema + queries, EVM opcodes/selectors, Java class structure, plist decode</td>
+      </tr>
+      <tr>
+        <td><strong>Secrets</strong></td>
+        <td>Any binary</td>
+        <td>Hardcoded secrets, API keys, certificates, IOCs — pattern-based + entropy analysis</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Exploit families -->
+  <h2 id="exploit-families" class="mb-4">Exploit Families</h2>
+  <p class="text-muted mb-4">
+    Every family is verified by executing a real shell in an isolated sandbox (no network, resource limits, ASLR off).
+    Shell confirmation: unique marker echoed from the spawned shell.
+    Samples in <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;">samples/src/*.c</code>.
+  </p>
+
+  <h3 class="mb-4" style="margin-top:32px;">Stack / ROP / Control Flow</h3>
+  <table class="mb-8 family-table">
+    <thead>
+      <tr>
+        <th>Family</th>
+        <th>Mitigations handled</th>
+        <th>Verification method</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2win</strong> (stripped, 32-bit)</td>
+        <td>overflow + gift function</td>
+        <td>Jumps to win() in sandbox, offset found symbolically or by scan</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2win on PIE</strong></td>
+        <td>NX + PIE</td>
+        <td>Resolves PIE base (ASLR off), jumps to win()</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2libc with leak</strong></td>
+        <td>NX + ASLR (dynamic)</td>
+        <td>Leaks puts@GOT, computes libc base, system('/bin/sh')</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2csu</strong></td>
+        <td>NX, gadget-poor no-PIE, x86-64</td>
+        <td>__libc_csu_init gadgets set rdi/rsi/rdx, indirect call</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2csu → execve</strong></td>
+        <td>NX, no pop rsi/rdx, x86-64</td>
+        <td>CSU sets rsi=0/rdx=0, pop rdi=&'/bin/sh', syscall → execve</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>SROP x86-64</strong></td>
+        <td>NX, gadget-poor no-PIE</td>
+        <td>One sigreturn → forged register frame → execve</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>SROP x86-32</strong></td>
+        <td>NX, gadget-poor no-PIE</td>
+        <td>Same via int 0x80 / pop eax gadget</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-yellow">⚠</span> <strong>SROP aarch64</strong></td>
+        <td>NX, gadget-poor</td>
+        <td>Degrades honestly if no aarch64 environment</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2dlresolve x64</strong></td>
+        <td>NX, Partial RELRO, no libc leak</td>
+        <td>Forges linker resolver structures → system('/bin/sh')</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>ret2dlresolve 32-bit</strong></td>
+        <td>NX, Partial RELRO, no libc leak</td>
+        <td>Same via 32-bit link_map / reloc structures</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>format-string Partial RELRO</strong></td>
+        <td>NX + printf@GOT</td>
+        <td>Overwrites printf@GOT with system → system('/bin/sh')</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>format-string Full RELRO</strong></td>
+        <td>NX + PIE + Full RELRO</td>
+        <td>GOT read-only → ret2system via printf saved return on stack</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>stack canary bypass</strong></td>
+        <td>NX + stack canary</td>
+        <td>Leaks canary via %s echo or format string, rewrites in-place</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>stack pivot (migration)</strong></td>
+        <td>NX, short overflow</td>
+        <td>saved RBP=&bss buffer, RIP=leave;ret → pivot to full chain</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>write-what-where</strong></td>
+        <td>NX</td>
+        <td>Unchecked index → GOT entry = win()</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>one_gadget</strong></td>
+        <td>dynamic libc</td>
+        <td>Magic gadget offsets (one_gadget gem required, degrades if absent)</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>shellcode</strong></td>
+        <td>NX off</td>
+        <td>Inject x86-64 / x86-32 shellcode directly</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 class="mb-4" style="margin-top:32px;">Heap (glibc)</h3>
+  <table class="mb-8 family-table">
+    <thead>
+      <tr>
+        <th>Family</th>
+        <th>glibc target</th>
+        <th>Verification method</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>tcache poisoning</strong></td>
+        <td>≥ 2.32 (safe-linking)</td>
+        <td>Leaks safe-linking key from empty bin, free@GOT = win</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>UAF funcptr-hijack</strong></td>
+        <td>any</td>
+        <td>realloc recycles freed struct, function pointer → win()</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>house-of-force</strong></td>
+        <td>pre-2.29 (in-binary)</td>
+        <td>top-chunk size overwrite → wrapping malloc → arbitrary write</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>house-of-spirit</strong></td>
+        <td>2.39</td>
+        <td>Fake chunk freed into tcache → malloc returns over funcptr</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>house-of-einherjar</strong></td>
+        <td>any</td>
+        <td>forged prev_size + cleared PREV_INUSE → backward consolidation</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>house-of-botcake</strong></td>
+        <td>2.39</td>
+        <td>Double-free via unsorted bin bypasses tcache key</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>largebin attack</strong></td>
+        <td>≥ 2.30</td>
+        <td>Arbitrary write via large bin insertion</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>tcache stashing unlink</strong></td>
+        <td>≥ 2.29</td>
+        <td>Stash in tcache via smallbin → arbitrary alloc</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>house-of-corrosion</strong></td>
+        <td>≥ 2.27</td>
+        <td>Large bin index manipulation</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>unsafe-unlink</strong></td>
+        <td>pre-2.29</td>
+        <td>Classic unlink exploit</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>fastbin dup</strong></td>
+        <td>≥ 2.27</td>
+        <td>Double-free in fastbin → arbitrary alloc</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>house-of-mind</strong></td>
+        <td>any</td>
+        <td>Corrupt heap arena → arbitrary write</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>IO_FILE / FSOP</strong></td>
+        <td>≥ 2.24</td>
+        <td>Corrupt _IO_FILE structure vtable → arbitrary call</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>tcache dup (double-free)</strong></td>
+        <td>2.39</td>
+        <td>Double-free → malloc returns aligned GOT entry, free@GOT = system</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">✓</span> <strong>heap → shell</strong></td>
+        <td>menu-driven UAF</td>
+        <td>safe-linking key leak → tcache poison → alloc over free@GOT</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ROP Arsenal -->
+  <h2 class="mb-4">ROP Arsenal</h2>
+  <p class="text-muted mb-4">
+    <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;">binoracle analyze ./binary</code> produces a chain analyzer report with:
+  </p>
+  <div class="grid grid-2 mb-8">
+    <div class="card">
+      <h3>Gadget coverage</h3>
+      <ul style="margin-top:12px;padding-left:20px;color:var(--muted);line-height:2;">
+        <li>Best gadget per argument register (rdi/rsi/rdx/rcx/r8/r9/rax)</li>
+        <li>Syscall gadget</li>
+        <li>Least-noisy stack pivot</li>
+        <li>Write-what-where gadgets</li>
+        <li>Register-to-register move gadgets</li>
+        <li>execve-by-syscall coverage check</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Chain detection</h3>
+      <ul style="margin-top:12px;padding-left:20px;color:var(--muted);line-height:2;">
+        <li>ret2csu universal gadgets</li>
+        <li>one_gadget magic offsets (statically-linked)</li>
+        <li>Heap chain analyzer: ExploitChain per applicable family</li>
+        <li>Automatic dispatch to verify_chain</li>
+        <li>HTML report with chain graph</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- MCP tools -->
+  <h2 class="mb-4">MCP Server Tools</h2>
+  <p class="text-muted mb-4">
+    Start with <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;">binoracle mcp</code> (JSON-RPC over stdio) to connect to Claude Desktop or any MCP client.
+  </p>
+  <div class="grid grid-3 mb-8">
+    <div class="card">
+      <h3>Inspection</h3>
+      <div class="text-muted mt-2" style="font-size:13px;font-family:'JetBrains Mono',monospace;line-height:2;">
+        inspect_apk<br>
+        inspect_flutter<br>
+        inspect_dotnet_assembly<br>
+        inspect_elf_layout<br>
+        inspect_pe_headers<br>
+        inspect_wasm
+      </div>
+    </div>
+    <div class="card">
+      <h3>Exploitation</h3>
+      <div class="text-muted mt-2" style="font-size:13px;font-family:'JetBrains Mono',monospace;line-height:2;">
+        autopwn<br>
+        analyze_chains<br>
+        one_gadget<br>
+        rop_arsenal<br>
+        try_ret2win<br>
+        try_rop<br>
+        try_ret2libc<br>
+        try_fmt
+      </div>
+    </div>
+    <div class="card">
+      <h3>Native query</h3>
+      <div class="text-muted mt-2" style="font-size:13px;font-family:'JetBrains Mono',monospace;line-height:2;">
+        analyze_function<br>
+        get_call_graph<br>
+        open_binary<br>
+        get_xrefs<br>
+        decompile_native<br>
+        apk_manifest<br>
+        apk_decompile
+      </div>
+    </div>
+    <div class="card">
+      <h3>Dynamic</h3>
+      <div class="text-muted mt-2" style="font-size:13px;font-family:'JetBrains Mono',monospace;line-height:2;">
+        dynamic_frida<br>
+        dynamic_adb<br>
+        dynamic_browser
+      </div>
+    </div>
+    <div class="card">
+      <h3>Evidence</h3>
+      <div class="text-muted mt-2" style="font-size:13px;font-family:'JetBrains Mono',monospace;line-height:2;">
+        record_evidence<br>
+        export_evidence_bundle<br>
+        ledger<br>
+        proccapture
+      </div>
+    </div>
+    <div class="card">
+      <h3>Caller-supplied</h3>
+      <div class="text-muted mt-2" style="font-size:13px;font-family:'JetBrains Mono',monospace;line-height:2;">
+        wasm_to_wat<br>
+        pcap_summary<br>
+        firmware_scan<br>
+        decompile_native (Ghidra)
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <div class="footer-inner">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:8px;">
+        <span class="nav-dot"></span>binoracle
+      </div>
+      <div class="text-muted">Binary RE Documentation</div>
+    </div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;">
+      <a href="index.html">Home</a>
+      <a href="cve-engine.html">CVE Engine</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="https://github.com/beafn28/binoracle">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
