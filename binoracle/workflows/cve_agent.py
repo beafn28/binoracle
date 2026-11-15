@@ -1227,29 +1227,24 @@ _POC_MAX_TOTAL_BYTES = 60_000
 
 
 def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -> Optional[str]:
-    """Clona el PRIMER repo de GitHub de `exploit_refs` (el PoC YA PUBLICADO por su autor, no uno
-    que desarrollemos nosotros -- viene de cvelookup.fetch_cve()/search_github_poc()) y devuelve el
-    contenido concatenado de sus ficheros de texto (scripts/README), acotado en numero de ficheros
-    y bytes. Confirmado en vivo (CVE-2024-1071): cuando "ya tiene exploit publico" solo se usaba
-    para decidir si desarrollar uno desde cero, nunca para leer el que YA EXISTE -- el autor del
-    PoC ya resolvio como dispararlo de verdad (endpoint exacto, payload exacto, precondiciones que
-    documenta), informacion que una hipotesis generada solo desde el resumen de la CVE no tiene.
-    None si no hay ningun ref de GitHub, git no esta disponible, o el clone falla -- best-effort,
-    nunca lanza (exploit-db no se clona por git; su PoC, cuando lo haya, llega via el texto crudo
-    que ya devuelve search_searchsploit si 'searchsploit' esta instalado, no por aqui)."""
+    """Intenta obtener el texto del PoC publico desde TODAS las fuentes en `exploit_refs`,
+    en orden de prioridad: GitHub (clone git) → Exploit-DB (fetch HTML) → otros HTTP.
+    Devuelve el contenido del primer PoC que devuelva texto util, o None si todos fallan.
+    Best-effort: nunca lanza."""
     step = on_step or (lambda _m: None)
-    github_refs = [r for r in (exploit_refs or []) if getattr(r, "source", "") == "github"]
-    if not github_refs:
+    refs = list(exploit_refs or [])
+    if not refs:
         return None
-    from .websource import fetch_git_source
-    for ref in github_refs[:2]:    # como mucho 2 repos, evita tardar mucho si el primero no sirve
-        step(f"clonando el PoC publico real ({ref.url})...")
+
+    # -- helpers internos ---------------------------------------------------
+    def _read_git_ref(ref) -> Optional[str]:
+        from .websource import fetch_git_source
+        step(f"clonando PoC ({ref.url})...")
         fr = fetch_git_source(ref.url, timeout=timeout)
         if not fr.ok or not fr.local_path:
-            continue
-        chunks = []
-        total = 0
-        count = 0
+            step(f"  fallo git clone {ref.url}: {getattr(fr, 'error', 'error desconocido')}")
+            return None
+        chunks, total, count = [], 0, 0
         for dirpath, _dirs, files in os.walk(fr.local_path):
             if "/.git" in dirpath:
                 continue
@@ -1262,8 +1257,8 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
                     continue
                 fp = os.path.join(dirpath, fn)
                 try:
-                    with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                        text = f.read(_POC_MAX_BYTES_PER_FILE)
+                    with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                        text = fh.read(_POC_MAX_BYTES_PER_FILE)
                 except OSError:
                     continue
                 if not text.strip():
@@ -1275,6 +1270,81 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
         if chunks:
             step(f"PoC publico leido: {count} fichero(s) de {ref.url}")
             return "\n\n".join(chunks)
+        step(f"  repo vacio/sin ficheros de texto: {ref.url}")
+        return None
+
+    def _read_http_ref(ref) -> Optional[str]:
+        """Descarga una pagina web del PoC (Exploit-DB, PacketStorm, otro) y extrae texto."""
+        import urllib.request as _ur
+        url = ref.url
+        step(f"descargando PoC HTTP ({url})...")
+        try:
+            req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=min(timeout, 30)) as resp:
+                raw = resp.read(200_000)
+        except Exception as e:
+            step(f"  fallo descarga {url}: {e}")
+            return None
+        # Intentar decodificar
+        try:
+            text = raw.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        # Exploit-DB: extraer el bloque de codigo entre <pre id="codeBlock"> o similar
+        import re as _re
+        for pat in (
+            r'<pre[^>]*id=["\']?codeBlock["\']?[^>]*>(.*?)</pre>',
+            r'<div[^>]*class=["\'][^"\']*code[^"\']*["\'][^>]*><pre[^>]*>(.*?)</pre>',
+            r'<pre[^>]*class=["\'][^"\']*highlight[^"\']*["\'][^>]*>(.*?)</pre>',
+        ):
+            m = _re.search(pat, text, _re.DOTALL | _re.IGNORECASE)
+            if m:
+                import html as _html
+                code = _html.unescape(_re.sub(r'<[^>]+>', '', m.group(1))).strip()
+                if len(code) > 50:
+                    step(f"PoC extraido de pagina HTML: {url}")
+                    return f"# PoC de {url}\n{code}"
+        # Fallback: si la respuesta es texto plano (script Python/bash/etc.)
+        if text.strip().startswith(("#!", "#!/", "import ", "#!/usr/bin", "curl ", "python")):
+            step(f"PoC texto plano: {url}")
+            return f"# PoC de {url}\n{text[:_POC_MAX_BYTES_PER_FILE]}"
+        step(f"  no se pudo extraer codigo util de {url}")
+        return None
+
+    # -- iterar todas las fuentes en orden de fiabilidad -------------------
+    # 1) GitHub primero (clone completo, contenido mas rico)
+    github_tried = 0
+    for ref in refs:
+        if getattr(ref, "source", "") != "github":
+            continue
+        result = _read_git_ref(ref)
+        github_tried += 1
+        if result:
+            return result
+        if github_tried >= 3:   # max 3 repos GitHub para no tardar demasiado
+            break
+
+    # 2) Exploit-DB y PacketStorm (fetch HTTP)
+    for ref in refs:
+        src = getattr(ref, "source", "")
+        if src not in ("exploit-db", "packetstorm"):
+            continue
+        result = _read_http_ref(ref)
+        if result:
+            return result
+
+    # 3) Resto de URLs HTTP no clasificadas
+    for ref in refs:
+        src = getattr(ref, "source", "")
+        if src in ("github", "exploit-db", "packetstorm"):
+            continue
+        url = getattr(ref, "url", "")
+        if url.startswith("http"):
+            result = _read_http_ref(ref)
+            if result:
+                return result
+
+    step("ninguna fuente publica de PoC devolvio contenido util -- el LLM razonara desde el CVE")
     return None
 
 
@@ -1987,18 +2057,28 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             _proxy_lines = _pdl(lab_dir)
         except Exception:
             _proxy_lines = []
+        # pages/index.js minimal — Next.js 15 needs at least one page to initialise
+        pages_dir = _os.path.join(lab_dir, "pages")
+        _os.makedirs(pages_dir, exist_ok=True)
+        idx_js = _os.path.join(pages_dir, "index.js")
+        if not _os.path.exists(idx_js):
+            with open(idx_js, "w") as f:
+                f.write("export default function Home() { return <p>bin0racle lab</p>; }\n")
         dockerfile = (
             "FROM node:20-alpine\n"
             + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
             + "WORKDIR /app\n"
             "COPY package.json .\n"
-            "RUN npm install --legacy-peer-deps || true\n"
-            # Clear the proxy after install so the runtime server never tries
-            # to reach a build-time-only localhost proxy endpoint.
+            # Sin '|| true': si npm install falla el build falla con un error claro
+            # en vez de generar un contenedor roto que peta en arranque con
+            # node:internal/modules/cjs/loader.
+            "RUN npm install --legacy-peer-deps\n"
+            # Limpiar proxy tras install para que el servidor en runtime no lo use.
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
             "EXPOSE 3000\n"
-            # Use the locally installed binary to avoid npx network lookup
+            # next dev compila al primer request (~30-60s en 15.x) pero el middleware
+            # funciona exactamente igual que en produccion para el bypass que probamos.
             'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
