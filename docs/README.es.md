@@ -12,7 +12,7 @@
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20local-F97316?style=for-the-badge)](https://ollama.com)
 [![Docker](https://img.shields.io/badge/labs-Docker%20efimero-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
 
-[English](../README.md) &middot; [Espanol](README.es.md) &middot; [Documentacion](https://beafn28.github.io/binoracle/) &middot; [Arquitectura](assets/architecture.svg)
+[English](../README.md) &middot; [Español](README.es.md) &middot; [Documentación](https://beafn28.github.io/binoracle/) &middot; [Arquitectura](assets/architecture.svg)
 
 </div>
 
@@ -20,7 +20,7 @@
 
 > **Aviso legal** &mdash; binoracle es una herramienta de investigación y educación.
 > Todos los laboratorios CVE se ejecutan contra contenedores Docker que tu mismo aprovisionas localmente.
-> No la uses contra sistemas que no sean tuyos o para los que no tengas autorizacion escrita explicita.
+> No la uses contra sistemas que no sean tuyos o para los que no tengas autorización escrita explícita.
 
 ---
 
@@ -79,8 +79,8 @@ binoracle hardening ./binario
 ![Flujo del motor CVE](assets/cve-flow.svg)
 
 ```
-NVD  -->  LLM local  -->  hipotesis  -->  lab Docker  -->  PoC  -->  informe HTML
-          Qwen 2.5      sin pistas     entorno efimero  Playwright   solo en disco
+NVD  -->  LLM local  -->  hipótesis  -->  lab Docker  -->  PoC  -->  informe HTML
+          Qwen 2.5      sin pistas     entorno efímero  Playwright   solo en disco
 ```
 
 El LLM recibe únicamente la descripción cruda de NVD. Todas las hipótesis de exploit se generan a partir de esa descripción, sin ninguna pista ni guía externa.
@@ -92,18 +92,18 @@ El LLM recibe únicamente la descripción cruda de NVD. Todas las hipótesis de 
 | SSTI | Jinja2, Twig, Smarty | si |
 | SQLi (GET / POST / JSON / cabecera) | Python, Ruby, PHP, Java | si |
 | Path traversal / LFI | Python, Ruby, Node, httpd | si |
-| RCE / inyeccion de comandos | Python, Ruby, Node | si |
+| RCE / inyección de comandos | Python, Ruby, Node | si |
 | XSS (reflejado / almacenado) | Python, Node | si |
 | SSRF | Python, Node | si |
 | XXE | Java / Maven | si |
-| Deserializacion | Java, Ruby (Marshal) | si |
-| Bypass de autenticacion / IDOR | Python, Ruby, Node | si |
+| Deserialización | Java, Ruby (Marshal) | si |
+| Bypass de autenticación / IDOR | Python, Ruby, Node | si |
 | Subida de ficheros / webshell | Python | si |
-| Redireccion abierta | Python, Ruby, Node | si |
+| Redirección abierta | Python, Ruby, Node | si |
 | CSRF | Python, Ruby | si |
 | Plugins WordPress (100+) | WP Docker | si |
 | Extensiones Joomla | Joomla Docker | si |
-| Modulos Drupal | Drupal Docker | si |
+| Módulos Drupal | Drupal Docker | si |
 | Apache httpd | httpd Docker | si |
 | Spring / Struts / Log4j | Maven | si |
 | Paquetes PHP Composer | PHP Docker | si |
@@ -134,9 +134,9 @@ El LLM recibe únicamente la descripción cruda de NVD. Todas las hipótesis de 
 | Mach-O (macOS / iOS) | LIEF, radare2 |
 | APK / DEX (Android) | apktool, jadx, androguard |
 | Ensamblados .NET | dnlib, ILSpy |
-| Binarios Go | go-dis, recuperacion de simbolos |
-| Binarios Rust | LIEF + demangling de simbolos |
-| Modulos WASM | wabt, binaryen |
+| Binarios Go | go-dis, recuperación de símbolos |
+| Binarios Rust | LIEF + demangling de símbolos |
+| Módulos WASM | wabt, binaryen |
 | Bytecode EVM | pyevmasm |
 | SQLite | volcado de esquema + datos |
 
@@ -146,13 +146,13 @@ El LLM recibe únicamente la descripción cruda de NVD. Todas las hipótesis de 
 
 Cada investigación CVE y cada análisis binario genera un informe HTML autocontenido:
 
-| Seccion | Contenido |
+| Sección | Contenido |
 |---------|-----------|
-| Resumen ejecutivo | Puntuacion CVSS, severidad, componente afectado |
-| Hipotesis | Cadena de razonamiento completa del LLM |
+| Resumen ejecutivo | Puntuación CVSS, severidad, componente afectado |
+| Hipótesis | Cadena de razonamiento completa del LLM |
 | Laboratorio | Especificación Docker Compose, versiones de servicios |
-| Evidencia | Capturas de pantalla Playwright en cada paso de verificacion |
-| PoC | Codigo completo curl / Python / pwntools |
+| Evidencia | Capturas de pantalla Playwright en cada paso de verificación |
+| PoC | Código completo curl / Python / pwntools |
 | Remediación | Guía de corrección específica con ejemplos de código |
 
 ```bash
@@ -193,32 +193,32 @@ binoracle mcp-server
 
 ## Referencia de comandos
 
-| Comando | Descripcion |
+| Comando | Descripción |
 |---------|-------------|
-| `triage` | Mitigaciones, simbolos, importaciones, secciones |
-| `decompile` | Ghidra / radare2 / angr / pwndbg + anotacion LLM |
+| `triage` | Mitigaciones, símbolos, importaciones, secciones |
+| `decompile` | Ghidra / radare2 / angr / pwndbg + anotación LLM |
 | `pwn` | Cadena de exploit completa, técnica seleccionada automáticamente |
-| `rop` | Busqueda de gadgets ROP y sintesis de cadenas |
-| `chain` | Enumeracion de gadgets + script pwntools |
+| `rop` | Búsqueda de gadgets ROP y síntesis de cadenas |
+| `chain` | Enumeración de gadgets + script pwntools |
 | `heap` | Primitivas de exploit heap (tcache / fastbin / UAF / House-of-X) |
-| `fmt` | Explotacion de format string |
+| `fmt` | Explotación de format string |
 | `srop` | Generador de cadenas SROP |
 | `shellcode` | Shellcode con filtrado de bad-chars |
-| `fuzz` | Fuzzer simple e inteligente (integracion AFL) |
-| `dynamic` | strace / ltrace / automatizacion gdb |
-| `hardening` | Auditoria de mitigaciones con notas de bypass |
+| `fuzz` | Fuzzer simple e inteligente (integración AFL) |
+| `dynamic` | strace / ltrace / automatización gdb |
+| `hardening` | Auditoría de mitigaciones con notas de bypass |
 | `cve` | Pipeline CVE completo: obtener -> lab -> PoC -> informe |
 | `cve-batch` | Pipeline CVE por lotes, paralelizado |
 | `vuln-hunt` | Análisis de taint estático (sinks, sources) |
-| `ioc-scan` | Escaner de IOC e indicadores de malware |
-| `audit` | Todos los oraculos + sintesis LLM |
+| `ioc-scan` | Escáner de IOC e indicadores de malware |
+| `audit` | Todos los oráculos + síntesis LLM |
 | `reachability` | Alcanzabilidad source-to-sink |
 | `diff` | Diff de parche y análisis N-day |
-| `apk` | Auditoria completa de APK Android |
-| `dotnet` | Inspeccion de ensamblados .NET |
-| `wasm` | Inspeccion de modulos WASM |
-| `sqlite` | Auditoria de esquema y datos SQLite |
-| `evm` | Inspeccion de bytecode EVM |
+| `apk` | Auditoría completa de APK Android |
+| `dotnet` | Inspección de ensamblados .NET |
+| `wasm` | Inspección de módulos WASM |
+| `sqlite` | Auditoría de esquema y datos SQLite |
+| `evm` | Inspección de bytecode EVM |
 | `mcp-server` | Iniciar servidor MCP |
 | `web` | Iniciar interfaz web local |
 
@@ -232,7 +232,7 @@ binoracle mcp-server
 
 ## Corpus de práctica
 
-40+ binarios vulnerables para practicar explotacion local:
+40+ binarios vulnerables para practicar explotación local:
 
 ```bash
 samples/build.sh                                # compilar con Docker o gcc
@@ -290,18 +290,18 @@ pip install binoracle[all]         # todo
 
 | Capacidad | binoracle | REA |
 |-----------|:---------:|:---:|
-| Pipeline autonomo CVE (NVD -> lab -> PoC) | si | no |
+| Pipeline autónomo CVE (NVD -> lab -> PoC) | si | no |
 | LLM local via Ollama | si | no |
-| Laboratorios Docker efimeros por CVE | si | no |
+| Laboratorios Docker efímeros por CVE | si | no |
 | Evidencia Playwright en los informes | si | no |
 | Scaffolding WordPress / Joomla / Drupal | si | no |
 | Servidor MCP (~100 herramientas) | si | no |
 | Análisis APK / .NET / WASM / EVM | si | parcial |
-| Operacion 100 % offline | si | parcial |
+| Operación 100 % offline | si | parcial |
 | Cadenas de exploit stack / heap / format string / SROP | si | si |
-| Sintesis de cadenas ROP | si | si |
-| Decompilacion multi-backend | si | si |
-| Corpus de practica | si | si |
+| Síntesis de cadenas ROP | si | si |
+| Decompilación multi-backend | si | si |
+| Corpus de práctica | si | si |
 
 ---
 
@@ -311,7 +311,7 @@ pip install binoracle[all]         # todo
 - [ ] Análisis de firmware (UEFI, Linux embebido)
 - [ ] Corpus LibFuzzer sembrado desde PoC de CVE
 - [ ] Cadenas multi-CVE (RCE web -> escalada de privilegios local)
-- [ ] Puntuacion CVSS v4
+- [ ] Puntuación CVSS v4
 - [ ] Puente Burp Suite MCP
 - [ ] Decompilador JEB (Android nativo)
 - [ ] Modelo ajustado para generación de hipótesis de exploit
@@ -325,7 +325,7 @@ git clone https://github.com/beafn28/binoracle
 cd binoracle && pip install -e ".[all]" && pre-commit install
 ```
 
-Consulta [CONTRIBUTING.md](../CONTRIBUTING.md) para las directrices de contribucion.
+Consulta [CONTRIBUTING.md](../CONTRIBUTING.md) para las directrices de contribución.
 
 ---
 
@@ -337,6 +337,6 @@ MIT &copy; 2026 Beatriz Fresno Naumova
 
 <div align="center">
 
-[Documentacion](https://beafn28.github.io/binoracle/) &middot; [Issues](https://github.com/beafn28/binoracle/issues) &middot; [English](../README.md)
+[Documentación](https://beafn28.github.io/binoracle/) &middot; [Issues](https://github.com/beafn28/binoracle/issues) &middot; [English](../README.md)
 
 </div>
