@@ -1064,8 +1064,6 @@ def _make_cve_step_printer():
     MAG = "\033[35m"  if _col else ""   # magenta → highlight
     WHT = "\033[97m"  if _col else ""   # blanco → texto prominente
     BGN = "\033[1;32m" if _col else ""  # verde bold → VERIFICADO final
-    BRD = "\033[1;31m" if _col else ""  # rojo bold  → ERROR grave
-    BAC = "\033[1;33m" if _col else ""  # amarillo bold → NO CONFIRMADO
 
     # Iconos por nivel
     _ICON = {"info": f"{CYN}●{R}", "ok": f"{GRN}✔{R}", "warn": f"{YLW}⚠{R}",
@@ -1094,7 +1092,6 @@ def _make_cve_step_printer():
         return "", ""
 
     def _print_phase_header(phase: str, icon: str) -> None:
-        label = f"  {icon}  {phase}"
         pad = 58 - len(phase) - 5
         if _col:
             print(f"\n{BLU}{B}{'─' * 2} {icon}  {phase} {'─' * max(2, pad)}{R}")
@@ -1261,11 +1258,9 @@ def cmd_cve(args, config):
     if inv.verified:
         vc   = "\033[1;32m" if _use_col else ""  # verde
         icon = "★  VERIFICADO"
-        bch  = "╔╗╚╝" if _use_col else "++++"
     else:
         vc   = "\033[1;33m" if _use_col else ""  # amarillo
         icon = "✖  NO CONFIRMADO"
-        bch  = "╔╗╚╝" if _use_col else "++++"
 
     bar2 = "═" * 62
     print(f"\n{vc}╔{bar2}╗{_r}")
