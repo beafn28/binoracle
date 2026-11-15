@@ -72,7 +72,7 @@ The engine is fully autonomous: the local LLM receives only the NVD description 
 ### Supported vulnerability classes
 
 | Class | Scaffolders | Automated PoC |
-|-------|------------|__|
+|-------|-------------|---------------|
 | SSTI (Jinja2, Twig, Smarty) | pip / gem | yes |
 | SQLi (GET / POST / JSON / header) | pip / gem / php / maven | yes |
 | Path traversal / LFI | pip / gem / npm / httpd | yes |
@@ -116,7 +116,7 @@ binoracle pwn ./binary
 ### Exploit families
 
 | Family | Techniques |
-|--------|-----------|
+|--------|------------|
 | Stack | ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64 / x86-32 / aarch64), stack pivot, ROP chains |
 | Heap | tcache dup, fastbin dup, UAF, double-free, House-of-Force, House-of-Spirit, House-of-Orange, House-of-Mind, large-bin attack, unsafe-unlink, Botcake |
 | Format string | %n arbitrary write, GOT overwrite, canary leak, PIE leak |
@@ -137,7 +137,7 @@ binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI, shadow 
 ### Supported formats
 
 | Format | Analysis backends |
-|--------|_________________|
+|--------|------------------|
 | ELF (x86-64 / x86 / ARM / MIPS / RISC-V) | radare2, pyelftools, pwntools, angr, pwndbg |
 | PE / PE+ (Windows) | pefile, LIEF, radare2 |
 | Mach-O (macOS / iOS) | LIEF, radare2 |
@@ -283,7 +283,7 @@ pip install binoracle[all]         # all of the above
 **System requirements:**
 
 | Dependency | Minimum | Recommended |
-|-----------|---------|-------------|
+|------------|---------|-------------|
 | Python | 3.10 | 3.12 |
 | RAM | 8 GB | 16 GB |
 | Docker | 20.x | 25.x |
