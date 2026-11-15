@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
 [![Docs](https://img.shields.io/badge/docs-gh--pages-blueviolet)](https://beafn28.github.io/binoracle/)
 
-[English](../README.md) · [Español](README.es.md) · [Docs](https://beafn28.github.io/binoracle/) · [Arquitectura](assets/architecture.svg) · [Tutorial](TUTORIAL.md)
+[English](../README.md) · [Español](README.es.md) · [Docs](https://beafn28.github.io/binoracle/) · [Arquitectura](assets/architecture.svg)
 
 </div>
 
