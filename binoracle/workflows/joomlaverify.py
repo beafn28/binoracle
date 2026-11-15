@@ -57,11 +57,11 @@ import subprocess
 import tempfile
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
 from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
-                       _token, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
+                       _screenshot_response, _token, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS)
 
 _MYSQL_IMAGE = "mysql:8.0"           # Joomla 5 exige >=8.0.13 -- confirmado en vivo, 5.7 no vale
 _JOOMLA_IMAGE = "joomla:5-apache"
@@ -274,6 +274,7 @@ class _JoomlaLabSession:
     sub_pass: str
     sub_sess: object
     admin_sess: object
+    shots: list = field(default_factory=list)
 
 
 def _bootstrap_joomla_lab(lab: "_Lab", ext_source_dir: str, slug: str, step,
@@ -358,7 +359,8 @@ def _bootstrap_joomla_lab(lab: "_Lab", ext_source_dir: str, slug: str, step,
 
     return _JoomlaLabSession(lab=lab, base_url=base_url, admin_user=admin_user,
                              admin_pass=admin_pass, admin_id=admin_id, sub_user=sub_user,
-                             sub_pass=sub_pass, sub_sess=sub_sess, admin_sess=admin_sess)
+                             sub_pass=sub_pass, sub_sess=sub_sess, admin_sess=admin_sess,
+                             shots=[])
 
 
 def verify_joomla_account_takeover(
@@ -418,6 +420,9 @@ def verify_joomla_account_takeover(
                                data=payload if m != "GET" else None,
                                params=payload if m == "GET" else None, timeout=20)
             res.evidence["status_code_respuesta"] = resp.status_code
+            boot.shots.append(_screenshot_response(
+                boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                "petición atacante → endpoint (account takeover Joomla)", lang="es"))
         except Exception as e:
             res.detail = f"la peticion fallo: {e}"
             return res
@@ -445,11 +450,16 @@ def verify_joomla_account_takeover(
                           f"(id={boot.admin_id}) -- confirmado por un SEGUNDO login/lectura "
                           f"independiente, no por el codigo de la respuesta")
             step("VERIFICADO: account takeover confirmado en Joomla.")
+            boot.shots.append(_screenshot_response(
+                boot.base_url + endpoint, m, 200,
+                "account takeover confirmado en Joomla",
+                "VERIFICADO — account takeover Joomla confirmado", lang="es"))
         else:
             res.ok = True
             res.detail = ("se envio la peticion pero el efecto no se confirmo -- el account "
                           "takeover no se confirmo (puede que el endpoint/parametro no sean los "
                           "reales, o que el controlador si compruebe el id contra la sesion)")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -519,12 +529,18 @@ def verify_joomla_deserialization(
 
         tried = []
         found = False
+        first_jdeser_sent = []
 
         def try_send(label, **kwargs):
             nonlocal found
             step(f"probando {m} {endpoint} ({label})...")
             try:
-                boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
+                resp_d = boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
+                if not first_jdeser_sent:
+                    first_jdeser_sent.append(True)
+                    boot.shots.append(_screenshot_response(
+                        boot.base_url + endpoint, m, resp_d.status_code, resp_d.text or "",
+                        f"petición deserialización Joomla — {label}", lang="es"))
             except Exception as e:
                 tried.append({"modo": label, "error": str(e)})
                 return
@@ -539,6 +555,11 @@ def verify_joomla_deserialization(
                 res.evidence["contenido_fichero"] = content[:500]
                 step(f"VERIFICADO: el fichero {canary_path} contiene el secreto exacto -- "
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
+                boot.shots.append(_screenshot_response(
+                    boot.base_url + endpoint, m, 200,
+                    f"canary: {content[:300]}",
+                    f"VERIFICADO — deserialization Joomla, gadget={gadget.full_class_name}",
+                    highlight=secret, lang="es"))
 
         if serial_param:
             payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -563,6 +584,7 @@ def verify_joomla_deserialization(
                           f"ninguna forma de mandarlo ({len(tried)} probadas) hizo que el "
                           f"fichero canario apareciera con el secreto -- la deserializacion no "
                           f"se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1055,9 +1077,20 @@ def verify_joomla_legacy_module_sqli_cookie(
                     break
 
         res.evidence["intentos"] = tried
+        shots: list = []
         if found:
             res.verified = True
             res.ok = True
+            t1_w = res.evidence.get("tiempo_1_ganador_s", 0)
+            t2_w = res.evidence.get("tiempo_2_ganador_s", 0)
+            body = (f"cookie: {cookie_name}={res.evidence['payload_ganador_crudo']}\n"
+                    f"linea_base: {round(base_median, 3)}s\n"
+                    f"tiempo_1: {t1_w}s  tiempo_2: {t2_w}s\n"
+                    f"threshold: {round(threshold, 3)}s")
+            shots.append(_screenshot_response(
+                f"php-cli://{slug}/{entry_relpath}", "PHP-CLI", 0, body,
+                f"VERIFICADO — SQLi ciega por tiempo (cookie), payload={res.evidence['payload_ganador_crudo']!r}",
+                lang="es"))
             res.detail = (f"SQLI CIEGA POR TIEMPO (via cookie) confirmada: la cookie "
                           f"{cookie_name} con valor crudo {res.evidence['payload_ganador_crudo']!r} "
                           f"retraso la ejecucion real del codigo fuente SIN MODIFICAR de forma "
@@ -1065,9 +1098,15 @@ def verify_joomla_legacy_module_sqli_cookie(
                           f"linea base + la mitad del retraso pedido")
         else:
             res.ok = True
+            body = (f"linea_base: {round(base_median, 3)}s  threshold: {round(threshold, 3)}s\n"
+                    f"intentos: {len(tried)}")
+            shots.append(_screenshot_response(
+                f"php-cli://{slug}/{entry_relpath}", "PHP-CLI", 0, body,
+                "SQLi ciega cookie no confirmada — línea base y resultados", lang="es"))
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/comentario y "
                           f"ninguna retraso la ejecucion de forma consistente -- la SQLi ciega "
                           f"via cookie no se confirmo")
+        res.evidence["screenshots"] = shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"

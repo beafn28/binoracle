@@ -45,6 +45,15 @@ _DRUPAL_DRUSH_IMAGE = "binoracle-drupal-drush:10"
 _DRUPAL_DOCKERFILE_DIR = os.path.join(os.path.dirname(__file__), "drupal_lab")
 
 
+def _add_shot(boot, url: str, method: str, status: int, body: str,
+              caption_es: str, caption_en: str = "", highlight: str = "") -> None:
+    """Captura HTTP screenshot y lo añade a boot.shots si Playwright tiene exito."""
+    png = _screenshot_response(url, method, status, (body or "")[:2000], highlight=highlight)
+    if png:
+        boot.shots.append({"png_b64": png, "caption_es": caption_es,
+                           "caption_en": caption_en or caption_es, "url": url})
+
+
 def _run(cmd: List[str], timeout: float = 60.0, input_text=None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=input_text)
 
@@ -578,9 +587,8 @@ def verify_drupal_path_traversal(
                 # mismo fix aplicado aqui).
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
-                boot.shots.append(_screenshot_response(
-                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
-                    "petición de control — path traversal", lang="es"))
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "petición de control — path traversal", highlight="")
             tried.append({"payload": payload_value, "status": resp.status_code,
                           "secret_presente": secret in (resp.text or "")})
             if secret in (resp.text or ""):
@@ -590,10 +598,8 @@ def verify_drupal_path_traversal(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
                      f"{path_param}={payload_value!r}.")
-                boot.shots.append(_screenshot_response(
-                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
-                    f"VERIFICADO — secreto filtrado con {path_param}={payload_value!r}",
-                    highlight=secret, lang="es"))
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "VERIFICADO — secreto filtrado con {path_param}={payload_value!r}", highlight=secret)
                 break
         res.evidence["intentos"] = tried
         if found:
@@ -691,9 +697,8 @@ def verify_drupal_command_injection(
             if not first_resp_captured:
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
-                boot.shots.append(_screenshot_response(
-                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
-                    "petición de control — command injection", lang="es"))
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "petición de control — command injection", highlight="")
             matched = bool(pattern.search(resp.text or ""))
             tried.append({"payload": payload_value, "status": resp.status_code, "suma_presente": matched})
             if matched:
@@ -703,10 +708,8 @@ def verify_drupal_command_injection(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: la respuesta contiene {expected} (={a}+{b}), calculado por un "
                      f"shell remoto -- ese numero no aparece en el payload enviado.")
-                boot.shots.append(_screenshot_response(
-                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
-                    f"VERIFICADO — suma {expected} en respuesta (RCE)", highlight=str(expected),
-                    lang="es"))
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                          f"VERIFICADO — RCE: suma {expected} en respuesta", highlight=str(expected))
                 break
         res.evidence["intentos"] = tried
 
@@ -915,6 +918,13 @@ def verify_drupal_sqli(
         # aprendizaje-y-reintento del LLM cuando ninguna tecnica confirma nada (mismo patron que
         # verify_wordpress_sqli).
         res.evidence["respuesta_control_recorte"] = (base_resp.text or "")[:500]
+        step("capturando pantalla: petición de control SQLi (sin inyección, respuesta base)...")
+        _ctrl_png = _screenshot_response(boot.base_url + endpoint, m, base_resp.status_code, (base_resp.text or "")[:2000])
+        if _ctrl_png:
+            boot.shots.append({"png_b64": _ctrl_png,
+                               "caption_es": f"Petición de control SQLi ({m} {endpoint}) — sin inyección, respuesta base",
+                               "caption_en": f"SQLi control request ({m} {endpoint}) — no injection, baseline",
+                               "url": boot.base_url + endpoint})
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
         contexts = ["'", '"', "", "')", '")']
         comments = ["-- -", "#"]
@@ -955,6 +965,14 @@ def verify_drupal_sqli(
             res.detail = (f"SQLI confirmada (error-based): el mensaje de error incluyo la "
                           f"version real de la base de datos ({mysql_version})")
             step(f"VERIFICADO (error-based): version real del motor filtrada: {mysql_version}")
+            step("capturando pantalla: SQLi error-based verificado...")
+            _eb_png = _screenshot_response(boot.base_url + endpoint, m, r.status_code, (r.text or "")[:2000], highlight=mysql_version)
+            if _eb_png:
+                boot.shots.append({"png_b64": _eb_png,
+                                   "caption_es": f"VERIFICADO — SQLi error-based, versión BD filtrada: {mysql_version}",
+                                   "caption_en": f"VERIFIED — SQLi error-based, DB version leaked: {mysql_version}",
+                                   "url": boot.base_url + endpoint})
+            res.evidence["screenshots"] = boot.shots
             return res
         res.evidence["error_based_intentos_resumen"] = (f"{len(error_tried)} combinaciones "
                                                          f"probadas, ninguna filtro version()")
@@ -1000,6 +1018,9 @@ def verify_drupal_sqli(
             res.detail = (f"SQLI confirmada (UNION-based): la base de datos devolvio su "
                           f"version real ({mysql_version}) dentro de la respuesta")
             step(f"VERIFICADO (UNION-based): version real del motor filtrada: {mysql_version}")
+            _add_shot(boot, boot.base_url + endpoint, m, r.status_code, r.text or "",
+                       "VERIFICADO — SQLi UNION-based, version={mysql_version}", highlight=mysql_version)
+            res.evidence["screenshots"] = boot.shots
             return res
         res.evidence["union_intentos_resumen"] = (f"{len(union_tried)} combinaciones probadas, "
                                                    f"ninguna filtro version()")
@@ -1040,6 +1061,9 @@ def verify_drupal_sqli(
                           f"{len(pairs)} pares TRUE/FALSE mostraron una diferencia consistente")
             step(f"VERIFICADO (boolean-blind): {consistent_diffs}/{len(pairs)} pares mostraron "
                  f"diferencia consistente")
+            _add_shot(boot, boot.base_url + endpoint, m, 200, f"boolean-blind: {consistent_diffs}/{len(pairs)} pares con diferencia",
+                       "VERIFICADO — SQLi boolean-blind diferencial", highlight="")
+            res.evidence["screenshots"] = boot.shots
             return res
 
         step("boolean-blind no mostro diferencia; probando time-based blind (SLEEP)...")
@@ -1116,6 +1140,7 @@ def verify_drupal_sqli(
                           f"time-based blind de los {len(timing_pairs)} probados retraso la "
                           f"respuesta de forma consistente en 2 repeticiones independientes -- "
                           f"la inyeccion SQL no se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1200,6 +1225,8 @@ def verify_drupal_ssrf(
                 if not first_resp_captured:
                     res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                     first_resp_captured = True
+                    _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "petición de control — SSRF", highlight="")
             except Exception as e:
                 entry["peticion_error"] = str(e)
             time.sleep(2)
@@ -1211,6 +1238,8 @@ def verify_drupal_ssrf(
                 res.evidence["callback_url_ganadora"] = attempt_url
                 res.evidence["token_ganador"] = token
                 res.evidence["listener_log_recorte"] = log[:1000]
+                _add_shot(boot, boot.base_url + endpoint, m, 200, f"listener recibio token: {token}\n{log[:300]}",
+                       "VERIFICADO — SSRF, callback con token={token}", highlight="")
                 break
 
         res.evidence.update({
@@ -1232,6 +1261,7 @@ def verify_drupal_ssrf(
             res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion y ninguna "
                           f"hizo que el token llegara al listener interno -- el SSRF no se "
                           f"confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1330,6 +1360,8 @@ def verify_drupal_xss(
             res.ok = True
             res.detail = (f"XSS confirmado: el navegador real EJECUTO el script inyectado en "
                           f"{xss_param} -- document.title cambio exactamente a '{marker}'")
+            _add_shot(boot, boot.base_url + endpoint, m, 200, f"XSS ejecutado: document.title='{marker}'",
+                       "VERIFICADO — XSS en {xss_param}", highlight="")
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
@@ -1342,8 +1374,11 @@ def verify_drupal_xss(
                     data=sample_params if m != "GET" else None,
                     params=sample_params if m == "GET" else None, timeout=15)
                 res.evidence["respuesta_cuerpo_recorte"] = (sample_resp.text or "")[:500]
+                _add_shot(boot, boot.base_url + endpoint, m, sample_resp.status_code, sample_resp.text or "",
+                       "muestra de respuesta — XSS no confirmado", highlight="")
             except Exception:
                 pass
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1423,6 +1458,8 @@ def verify_drupal_ssti(
             if not first_resp_captured:
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "petición de control — SSTI", highlight="")
             matched = bool(pattern.search(resp.text or ""))
             tried.append({"payload": payload_value, "status": resp.status_code,
                          "producto_presente": matched})
@@ -1433,6 +1470,8 @@ def verify_drupal_ssti(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: la respuesta contiene {expected} (={a}*{b}), calculado por el "
                      f"motor de plantillas.")
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                          f"VERIFICADO — SSTI: producto {expected}={a}*{b} en respuesta", highlight=str(expected))
                 break
         res.evidence["intentos"] = tried
         if found:
@@ -1446,6 +1485,7 @@ def verify_drupal_ssti(
             res.detail = (f"se probaron {len(tried)} sintaxis de plantilla para {ssti_param} y "
                           f"ninguna produjo el producto esperado ({a}*{b}={expected}) -- el "
                           f"SSTI no se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1520,6 +1560,8 @@ def verify_drupal_xxe(
             if not first_resp_captured:
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "petición de control — XXE", highlight="")
             present = secret in (resp.text or "")
             tried.append({"modo": label, "status": resp.status_code, "secreto_presente": present})
             if present and not found:
@@ -1529,6 +1571,8 @@ def verify_drupal_xxe(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta "
                      f"({label}).")
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "VERIFICADO — XXE, secreto filtrado ({label})", highlight=secret)
 
         for label, xml_body in xml_variants:
             if found:
@@ -1592,6 +1636,7 @@ def verify_drupal_xxe(
             res.ok = True
             res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa y el "
                           f"intento OOB, y ninguna confirmo nada -- el XXE no se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1680,6 +1725,11 @@ def verify_drupal_open_redirect(
             "metodo": m, "endpoint": endpoint, "intentos": tried,
         })
 
+        if tried:
+            first_e = tried[0]
+            first_body = f"status={first_e.get('status')} location={first_e.get('location','')}"
+            _add_shot(boot, boot.base_url + endpoint, m, first_e.get("status", 0) or 0, first_body,
+                      "Petición de control — open redirect (respuesta base)")
         if confirmed_entry:
             res.verified = True
             res.ok = True
@@ -1690,6 +1740,8 @@ def verify_drupal_open_redirect(
                           f"{confirmed_entry['target']!r} produjo un {confirmed_entry['status']} "
                           f"con Location={confirmed_entry['location']!r}")
             step("VERIFICADO: Location contiene el dominio externo enviado.")
+            _add_shot(boot, boot.base_url + endpoint, m, confirmed_entry["status"], f"Location: {confirmed_entry['location']}",
+                       "VERIFICADO — open redirect a {evil_host}", highlight=evil_host)
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de bypass para {redirect_param} y "
@@ -1698,6 +1750,7 @@ def verify_drupal_open_redirect(
                 first = tried[0]
                 res.evidence["respuesta_cuerpo_recorte"] = (
                     f"status={first.get('status')} location={first.get('location')!r}")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1785,6 +1838,8 @@ def verify_drupal_file_upload(
             if not first_resp_captured:
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
+                _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                       "petición subida de fichero — control", highlight="")
             found_path = lab.find_in_webroot(token)
             entry = {"filename": fname, "status_subida": resp.status_code,
                     "encontrado_en_contenedor": found_path}
@@ -1816,6 +1871,8 @@ def verify_drupal_file_upload(
                 res.evidence["respuesta_cuerpo_recorte"] = (r2.text or "")[:500]
                 step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- el fichero "
                      f"subido se EJECUTA como PHP.")
+                _add_shot(boot, candidate_url, "GET", r2.status_code, r2.text or "",
+                          f"VERIFICADO — webshell ejecutada en {fname}, suma={expected}", highlight=str(expected))
                 break
         res.evidence["intentos"] = tried
         if found:
@@ -1829,6 +1886,7 @@ def verify_drupal_file_upload(
             res.detail = (f"se probaron {len(tried)} variantes de nombre/extension/magic-bytes y "
                           f"ninguna produjo un fichero que se ejecutara como PHP -- el "
                           f"file-upload no se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -1941,12 +1999,19 @@ def verify_drupal_csrf(
             except Exception as e:
                 delivery_tried.append({"modo": label, "error": str(e)})
                 continue
+            if not boot.shots:
+                _add_shot(boot, boot.base_url + endpoint, m, status,
+                          resp.text if hasattr(resp, "text") else "",
+                          f"petición CSRF forjada — {label}")
             ok_effect = check_effect()
             delivery_tried.append({"modo": label, "status": status, "efecto_confirmado": ok_effect})
             if ok_effect:
                 confirmed = True
                 res.evidence["modo_entrega_ganador"] = label
                 res.evidence["status_code_respuesta"] = status
+                _add_shot(boot, boot.base_url + endpoint, m, status,
+                          f"CSRF confirmado — efecto real tras peticion sin token",
+                          f"VERIFICADO — CSRF ({label})")
                 break
         res.evidence["intentos_entrega"] = delivery_tried
         if new_pass:
@@ -1965,6 +2030,7 @@ def verify_drupal_csrf(
             res.ok = True
             res.detail = (f"se probaron {len(delivery_tried)} formas de entrega y en ninguna se "
                           f"confirmo el efecto -- el CSRF no se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -2036,11 +2102,18 @@ def verify_drupal_deserialization(
         tried = []
         found = False
 
+        first_deser_sent = []
+
         def try_send(label, **kwargs):
             nonlocal found
             step(f"probando {m} {endpoint} ({label})...")
             try:
-                boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
+                resp_d = boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
+                if not first_deser_sent:
+                    first_deser_sent.append((resp_d.status_code, resp_d.text or ""))
+                    boot.shots.append(_screenshot_response(
+                        boot.base_url + endpoint, m, resp_d.status_code, resp_d.text or "",
+                        f"petición deserialización — {label}", lang="es"))
             except Exception as e:
                 tried.append({"modo": label, "error": str(e)})
                 return
@@ -2055,6 +2128,11 @@ def verify_drupal_deserialization(
                 res.evidence["contenido_fichero"] = content[:500]
                 step(f"VERIFICADO: el fichero {canary_path} contiene el secreto exacto -- "
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
+                boot.shots.append(_screenshot_response(
+                    boot.base_url + endpoint, m, 200,
+                    f"canary: {content[:300]}",
+                    f"VERIFICADO — deserialization, gadget={gadget.full_class_name}",
+                    highlight=secret, lang="es"))
 
         if serial_param:
             payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -2079,6 +2157,7 @@ def verify_drupal_deserialization(
                           f"ninguna forma de mandarlo ({len(tried)} probadas) hizo que el "
                           f"fichero canario apareciera con el secreto -- la deserializacion no "
                           f"se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
