@@ -1432,6 +1432,47 @@ def cmd_cve(args, config):
         if poc_k:
             parts.append(f"PoC: {poc_k}")
         print(f"  {_d}{' · '.join(parts)}{_r}")
+
+    # Capturas disponibles: mostrar inline en iTerm2/Kitty; en otros terminales solo el contador
+    _vshots = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
+    _ashots = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
+    _all_terminal_shots = list(_vshots) + [s for s in _ashots if s not in _vshots]
+    if _all_terminal_shots:
+        import base64 as _b64mod
+        import os as _os
+        _term = _os.environ.get("TERM_PROGRAM", "") or _os.environ.get("TERM", "")
+        _iterm2 = "iterm" in _term.lower() or _os.environ.get("ITERM_SESSION_ID", "")
+        _kitty  = _os.environ.get("KITTY_WINDOW_ID", "") or "kitty" in _term.lower()
+        _gc = "\033[32m" if _use_col else ""
+        print(f"\n  {_gc}◈ Capturas paso a paso ({len(_all_terminal_shots)} imágen{'es' if len(_all_terminal_shots)!=1 else ''}):{_r}")
+        for i, _sh in enumerate(_all_terminal_shots):
+            _png = _sh.get("png_b64")
+            _cap = _sh.get("caption_es" if getattr(config, "lang", "es") == "es" else "caption_en") or ""
+            _url = _sh.get("url") or ""
+            print(f"    {_d}Paso {i+1}:{_r} {_cap[:90]}")
+            if _url:
+                print(f"      {_d}URL:{_r} {_url[:80]}")
+            if _png:
+                if _iterm2:
+                    # Protocolo iTerm2: imagen inline en terminal
+                    _raw = _b64mod.b64decode(_png)
+                    _enc = _b64mod.b64encode(_raw).decode("ascii")
+                    print(f"\033]1337;File=inline=1;width=80;height=20;preserveAspectRatio=1:{_enc}\a")
+                elif _kitty:
+                    # Protocolo Kitty: icat
+                    try:
+                        import subprocess as _sp, tempfile as _tf
+                        with _tf.NamedTemporaryFile(suffix=".png", delete=False) as _tmp:
+                            _tmp.write(_b64mod.b64decode(_png))
+                            _tmp_path = _tmp.name
+                        _sp.run(["kitty", "+kitten", "icat", "--align=left", _tmp_path],
+                                check=False, timeout=5)
+                        _os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+                else:
+                    _kb = len(_png) * 3 // 4 // 1024
+                    print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
     # Solo imprime el markdown completo en terminal si no hay salida HTML/JSON
@@ -1544,6 +1585,41 @@ def cmd_investigate(args, config):
     # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
     # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
     # SI usa embed_images=True (el default), esas son las que de verdad se pintan como <img>.
+    # Capturas inline en iTerm2/Kitty si las hay
+    _vshots2 = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
+    _ashots2 = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
+    _term_shots2 = list(_vshots2) + [s for s in _ashots2 if s not in _vshots2]
+    if _term_shots2:
+        import base64 as _b64m2, os as _os2
+        _tp2 = _os2.environ.get("TERM_PROGRAM", "") or _os2.environ.get("TERM", "")
+        _iterm22 = "iterm" in _tp2.lower() or _os2.environ.get("ITERM_SESSION_ID", "")
+        _kitty2 = _os2.environ.get("KITTY_WINDOW_ID", "") or "kitty" in _tp2.lower()
+        print(f"\n  Capturas paso a paso ({len(_term_shots2)}):")
+        for i2, _sh2 in enumerate(_term_shots2):
+            _png2 = _sh2.get("png_b64")
+            _cap2 = _sh2.get("caption_es" if config.lang == "es" else "caption_en") or ""
+            print(f"    Paso {i2+1}: {_cap2[:90]}")
+            if _sh2.get("url"):
+                print(f"      URL: {_sh2['url'][:80]}")
+            if _png2:
+                if _iterm22:
+                    _raw2 = _b64m2.b64decode(_png2)
+                    _enc2 = _b64m2.b64encode(_raw2).decode("ascii")
+                    print(f"\033]1337;File=inline=1;width=80;height=20;preserveAspectRatio=1:{_enc2}\a")
+                elif _kitty2:
+                    try:
+                        import subprocess as _sp2, tempfile as _tf2
+                        with _tf2.NamedTemporaryFile(suffix=".png", delete=False) as _tmp2:
+                            _tmp2.write(_b64m2.b64decode(_png2))
+                            _tp2n = _tmp2.name
+                        _sp2.run(["kitty", "+kitten", "icat", "--align=left", _tp2n],
+                                 check=False, timeout=5)
+                        _os2.unlink(_tp2n)
+                    except Exception:
+                        pass
+                else:
+                    _kb2 = len(_png2) * 3 // 4 // 1024
+                    print(f"      [~{_kb2} KB — usa -o report.html para ver la imagen]")
     if not getattr(args, "html", None) and not getattr(args, "json", None):
         print("\n" + render_investigation(inv, config.lang, embed_images=False))
     if getattr(args, "html", None):

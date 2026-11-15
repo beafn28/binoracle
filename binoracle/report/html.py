@@ -2511,6 +2511,16 @@ main{max-width:960px;margin:0 auto;padding:32px 24px 80px}
 .mc-val{font-size:14px;font-weight:500;color:var(--fg)}
 /* Separador de seccion */
 .sec-sep{border:none;border-top:1px solid var(--brd);margin:28px 0}
+/* Galeria de capturas paso a paso */
+.shots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:16px;margin-bottom:28px}
+.shot-card{background:var(--surf);border:1px solid var(--brd);border-radius:10px;overflow:hidden}
+.shot-img{width:100%;display:block;border-bottom:1px solid var(--brd)}
+.shot-meta{padding:10px 14px}
+.shot-step{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--acc);margin-bottom:4px}
+.shot-caption{font-size:12px;color:var(--fg);line-height:1.4}
+.shot-url{font-size:11px;color:var(--mut);font-family:ui-monospace,monospace;
+  margin-top:5px;word-break:break-all}
 /* Boton descarga */
 .dlbtn{display:inline-flex;align-items:center;gap:7px;background:var(--acc);color:#fff;
   border-radius:8px;padding:9px 18px;text-decoration:none;font-weight:600;
@@ -2569,6 +2579,42 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
                        "VULNERABILITY REPORT — BINORACLE · " + generated_long.upper())
     exec_summary_hd = "RESUMEN EJECUTIVO" if es else "EXECUTIVE SUMMARY"
     tech_desc_hd = "DESCRIPCIÓN TÉCNICA Y HALLAZGOS" if es else "TECHNICAL DESCRIPTION &amp; FINDINGS"
+    shots_hd = "CAPTURAS DE EVIDENCIA — PASO A PASO" if es else "EVIDENCE SCREENSHOTS — STEP BY STEP"
+
+    # --- Extraer screenshots de inv para galeria prominente ---
+    _all_shots = []
+    if inv is not None:
+        _vshots = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
+        _ashots = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
+        _all_shots = list(_vshots) + [s for s in _ashots if s not in _vshots]
+
+    shots_section = ""
+    if _all_shots:
+        cards = []
+        for i, sh in enumerate(_all_shots):
+            png = sh.get("png_b64")
+            if not png:
+                continue
+            cap = _esc(sh.get("caption_es" if es else "caption_en") or "")
+            url_txt = _esc(sh.get("url") or "")
+            step_label = f"PASO {i + 1}" if es else f"STEP {i + 1}"
+            img_tag = f'<img class="shot-img" src="data:image/png;base64,{png}" alt="{cap}" loading="lazy">'
+            cards.append(
+                f'<div class="shot-card">'
+                f'{img_tag}'
+                f'<div class="shot-meta">'
+                f'<div class="shot-step">{step_label}</div>'
+                + (f'<div class="shot-caption">{cap}</div>' if cap else "")
+                + (f'<div class="shot-url">{url_txt}</div>' if url_txt else "")
+                + '</div></div>'
+            )
+        if cards:
+            shots_section = (
+                f'<section style="margin-top:28px">'
+                f'<div class="section-hd">{shots_hd}</div>'
+                f'<div class="shots-grid">{"".join(cards)}</div>'
+                '</section>'
+            )
 
     head = (
         "<!doctype html>"
@@ -2620,6 +2666,7 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
         topbar + conf_banner + hero +
         '<main>'
         + summary_section
+        + shots_section
         + tech_section_hd
         + (dl + "\n" if dl else "")
         + '<div class="md-body">'
