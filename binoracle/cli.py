@@ -459,7 +459,7 @@ def _write_html(path, binary, triage=None, findings=None, ledger=None, answer=""
                 lang="es", decompiled=None, cfg=None, chains=None, mobile=False):
     html = render_html(binary, triage=triage, findings=findings, ledger=ledger, answer=answer,
                        lang=lang, decompiled=decompiled, cfg=cfg, chains=chains, mobile=mobile)
-    Path(path).write_text(html)
+    Path(path).write_text(html, encoding="utf-8")
     _eprint(f"(HTML written to {path})")
     if open_it:
         import subprocess, sys as _sys
@@ -1194,7 +1194,8 @@ def cmd_cve(args, config):
         md_full = render_investigation(inv, config.lang)
         _Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script,
-                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind))
+                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind),
+            encoding="utf-8")
         colorlog.ok(f"informe HTML escrito en {args.html}")
 
     if getattr(args, "json_out", None):
@@ -1297,7 +1298,8 @@ def cmd_investigate(args, config):
         md_full = render_investigation(inv, config.lang)
         Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script, cve=args.cve,
-                                      lang=config.lang, poc_kind=inv.poc_kind))
+                                      lang=config.lang, poc_kind=inv.poc_kind),
+            encoding="utf-8")
         _eprint(f"(HTML written to {args.html})")
     if getattr(args, "json", None):
         # el markdown/HTML SIEMPRE recorta los cuerpos de respuesta reales a unos cientos de
@@ -1372,7 +1374,8 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
             (html_dir / f"{it.cve_id}.html").write_text(
                 render_investigation_page(md_full, script=it.investigation.developed_script,
                                           cve=it.cve_id, lang=config.lang,
-                                          poc_kind=it.investigation.poc_kind))
+                                          poc_kind=it.investigation.poc_kind),
+                encoding="utf-8")
 
     print("\n" + render_batch_summary(items, config.lang))
     colorlog.info(f"informes individuales en {out_dir}/" +
