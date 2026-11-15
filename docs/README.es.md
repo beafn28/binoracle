@@ -331,7 +331,7 @@ Consulta [CONTRIBUTING.md](../CONTRIBUTING.md) para las directrices de contribuc
 
 ## Licencia
 
-MIT &copy; 2024&ndash;2026 Beatriz Fresno Naumova
+MIT &copy; 2026 Beatriz Fresno Naumova
 
 ---
 
