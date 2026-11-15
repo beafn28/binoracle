@@ -1314,6 +1314,50 @@ def _make_cve_step_printer():
     return on_step
 
 
+def _md_to_plain(text: str) -> str:
+    """Convierte markdown a texto plano legible en terminal.
+    Elimina: cabeceras (##/###), separadores de tabla (|---|), backticks,
+    negrita/cursiva (**/__), y convierte enlaces [texto](url) a 'texto (url)'."""
+    import re as _re
+    lines = []
+    for line in text.splitlines():
+        # Cabeceras: ## Titulo -> TITULO, ### Titulo -> Titulo
+        m = _re.match(r'^(#{1,6})\s+(.*)', line)
+        if m:
+            level = len(m.group(1))
+            title = m.group(2).strip()
+            if level <= 2:
+                lines.append("")
+                lines.append(title.upper())
+                lines.append("─" * min(len(title), 60))
+            else:
+                lines.append("")
+                lines.append(title)
+            continue
+        # Separadores de tabla |---|---|  → omitir
+        if _re.match(r'^\|[-| :]+\|', line):
+            continue
+        # Filas de tabla | a | b | → quitar pipes extremos, separar con espacios
+        if line.startswith("|") and line.endswith("|"):
+            cells = [c.strip() for c in line[1:-1].split("|")]
+            lines.append("  " + "   ".join(cells))
+            continue
+        # Blockquote > texto → texto indentado
+        line = _re.sub(r'^>\s*', '  ', line)
+        # Negrita/cursiva **texto** o __texto__
+        line = _re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', line)
+        line = _re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', line)
+        # Backticks `code` → code
+        line = _re.sub(r'`([^`]*)`', r'\1', line)
+        # Bloques ``` → omitir la linea de apertura/cierre
+        if _re.match(r'^```', line):
+            continue
+        # Enlaces [texto](url) → texto
+        line = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def cmd_cve(args, config):
     """Shortcut: binoracle cve <CVE-ID> — investigacion completa con logs estructurados."""
     import time as _time
@@ -1475,8 +1519,9 @@ def cmd_cve(args, config):
                     print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
-    # Siempre imprime el resumen en terminal (sin imágenes base64)
-    print(render_investigation(inv, config.lang, embed_images=False))
+    # Imprime el resumen en terminal convirtiendo markdown a texto plano
+    # (sin ####/pipes de tabla/backticks -- el markdown crudo es ilegible en terminal).
+    print(_md_to_plain(render_investigation(inv, config.lang, embed_images=False)))
 
     if getattr(args, "html", None):
         from .report.html import render_investigation_page

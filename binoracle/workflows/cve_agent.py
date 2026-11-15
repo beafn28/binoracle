@@ -2656,21 +2656,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                  (f"the LLM gave no source_url; trying '{guess}' as a WordPress.org slug "
                  f"(extracted from the advisory text itself, not a guarantee)..."))
 
-    # Apache httpd path-traversal: siempre construye el lab minimal aunque el LLM haya dado
-    # source_url -- el LLM suele poner "https://github.com/apache/httpd" (el repo del codigo
-    # fuente, sin Dockerfile), y fetch_source lo clona pero genericverify falla al no encontrar
-    # Dockerfile/compose. El lab minimal scaffolded ES el objetivo desplegable; el repo del
-    # codigo fuente no lo es. Confirmado en vivo con CVE-2021-41773 con LLM disponible.
-    if inv.vuln_class == "path-traversal" and _APACHE_HTTPD_RE.search(inv.description or ""):
-        _httpd_lab = _scaffold_httpd_lab(version, notes, step)
-        if _httpd_lab:
-            source = _httpd_lab
-            guessed_source = False
-
-    # Fallback para CVEs de frameworks Python/Node: si no hay source_url ni slug de CMS,
-    # construye un laboratorio minimal con el paquete pinado a la version vulnerable --
-    # mismo mecanismo que los labs que antes se creaban a mano en /tmp para aiohttp/flask/etc.
-    if not source and inv.vuln_class in (
+    # Construye el lab minimal SIEMPRE que _guess_package_lab lo detecte, incluso cuando el LLM
+    # ya dio source_url. Patron confirmado roto en vivo (CVE-2021-41773 con LLM): el LLM pone
+    # "https://github.com/apache/httpd" como source_url (repo de codigo C, sin Dockerfile);
+    # fetch_source lo clona pero genericverify falla: "no se encontro Dockerfile". El mismo
+    # patron ocurre con cualquier servidor o libreria cuyo repo upstream no tiene Dockerfile:
+    # nginx, openssl, libexpat, etc. La fix especifica solo para httpd no escalaba.
+    #
+    # Solucion general: llamar a _guess_package_lab SIN la guarda "if not source". La funcion
+    # ya tiene su propia logica de deteccion y devuelve None para CMS (WordPress/Drupal/Joomla)
+    # -- en ese caso source_url se conserva sin cambios. Solo devuelve un lab cuando detecta
+    # un servidor o paquete con scaffolding disponible (httpd, pip, npm, gem, maven, php).
+    if inv.vuln_class in (
             "path-traversal", "ssti", "sqli", "sql-injection",
             "command-injection", "missing-authorization", "xss", "ssrf"):
         lab = _guess_package_lab(
@@ -2679,7 +2676,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             inv.vuln_class, version, notes, step)
         if lab:
             source = lab
-            guessed_source = False  # lab scaffolded deterministically, no es una suposicion CMS
+            guessed_source = False
 
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
