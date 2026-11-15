@@ -269,7 +269,7 @@ binoracle ships 40+ intentionally vulnerable binaries for local practice:
 # Compile the full corpus (requires Docker or gcc)
 samples/build.sh
 
-# Start practising
+# Run against the corpus
 binoracle triage samples/bin/ret2win
 binoracle pwn   samples/bin/ret2libc
 binoracle pwn   samples/bin/format_string
@@ -278,8 +278,6 @@ binoracle pwn   samples/bin/house_of_orange
 ```
 
 Techniques covered: ret2win &middot; ret2libc &middot; SROP &middot; tcache dup &middot; fastbin dup &middot; UAF &middot; format string GOT overwrite &middot; canary leak &middot; PIE leak &middot; CSU chain &middot; DL-resolve &middot; heap botcake &middot; house-of-orange &middot; unsafe-unlink &middot; stack pivot &middot; IO_FILE &middot; callhijack &middot; dlresolve32
-
-See [docs/TUTORIAL.md](docs/TUTORIAL.md) for the full guided walkthrough.
 
 ---
 
@@ -389,7 +387,7 @@ Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution g
 
 ## License
 
-MIT &copy; 2024&ndash;2025 Beatriz Fresno Naumova
+MIT &copy; 2024&ndash;2026 Beatriz Fresno Naumova
 
 ---
 
