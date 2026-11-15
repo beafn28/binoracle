@@ -83,30 +83,53 @@ body {
 .nav-links a:hover, .nav-links a.active { color: var(--tx); }
 .nav-gh { display: flex; align-items: center; gap: .4rem; padding: .35rem .85rem; background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px; color: var(--tx); text-decoration: none; font-size: .85rem; transition: border-color .15s; }
 .nav-gh:hover { border-color: var(--acc); }
-.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; }
-.nav-lang span { padding: .3rem .6rem; background: var(--surf2); color: var(--tx); }
-.nav-lang a { padding: .3rem .6rem; color: var(--muted); text-decoration: none; transition: all .15s; }
-.nav-lang a:hover { color: var(--tx); background: var(--surf); }
-.nav-search { position: relative; display: flex; align-items: center; }
-.nav-search input {
-  background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px;
-  color: var(--tx); font-size: .82rem; padding: .3rem .7rem .3rem 2rem;
-  outline: none; width: 180px; transition: border-color .15s, width .2s;
+.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; flex-shrink: 0; }
+.nav-lang span { padding: .3rem .7rem; background: var(--acc2); color: #fff; }
+.nav-lang a { padding: .3rem .7rem; color: var(--muted); text-decoration: none; transition: all .15s; }
+.nav-lang a:hover { color: var(--tx); background: var(--surf2); }
+/* search wrap — always in nav, outside collapsible links */
+.nav-search-wrap { position: relative; display: flex; align-items: center; flex-shrink: 0; }
+.nav-search-wrap input {
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 8px;
+  color: var(--tx); font-size: .85rem; padding: .38rem 2.6rem .38rem 2.1rem;
+  outline: none; width: 220px; transition: border-color .2s, width .25s, box-shadow .2s;
   font-family: inherit;
 }
-.nav-search input::placeholder { color: var(--muted); }
-.nav-search input:focus { border-color: var(--acc); width: 240px; }
-.nav-search .search-icon { position: absolute; left: .5rem; color: var(--muted); pointer-events: none; }
-#search-results {
-  display: none; position: absolute; top: calc(100% + 6px); left: 0;
-  background: var(--surf); border: 1px solid var(--brd); border-radius: 8px;
-  min-width: 300px; max-height: 320px; overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 200; padding: .4rem 0;
+.nav-search-wrap input::placeholder { color: var(--muted); }
+.nav-search-wrap input:focus { border-color: var(--acc); width: 300px; box-shadow: 0 0 0 3px rgba(88,166,255,.15); }
+.nav-search-wrap .s-ico { position: absolute; left: .6rem; color: var(--muted); pointer-events: none; display: flex; }
+.nav-search-wrap .s-kbd {
+  position: absolute; right: .55rem; display: flex; gap: 2px; pointer-events: none;
+  font-size: .68rem; color: var(--muted); font-family: ui-monospace, monospace;
 }
-#search-results a { display: block; padding: .45rem 1rem; color: var(--muted); text-decoration: none; font-size: .88rem; border-radius: 0; }
-#search-results a:hover { background: var(--surf2); color: var(--tx); }
-#search-results .sr-page { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--acc); padding: .3rem 1rem .1rem; }
+.nav-search-wrap .s-kbd kbd {
+  background: var(--surf); border: 1px solid var(--brd); border-radius: 3px;
+  padding: 1px 4px; font-size: .68rem; line-height: 1.4;
+}
+.nav-search-wrap input:focus + .s-kbd { opacity: 0; }
+#search-results {
+  display: none; position: absolute; top: calc(100% + 8px); left: 0;
+  background: var(--surf); border: 1px solid var(--brd); border-radius: 10px;
+  min-width: 360px; max-height: 400px; overflow-y: auto;
+  box-shadow: 0 12px 32px rgba(0,0,0,.45); z-index: 300; padding: .5rem 0;
+}
 #search-results.open { display: block; }
+.sr-header { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--acc); padding: .5rem 1rem .25rem; }
+.sr-item { display: flex; align-items: center; gap: .65rem; padding: .5rem 1rem;
+  color: var(--tx); text-decoration: none; font-size: .88rem; cursor: pointer; transition: background .1s; }
+.sr-item:hover, .sr-item.active { background: var(--surf2); }
+.sr-item .sr-icon { flex-shrink: 0; color: var(--acc); opacity: .7; display: flex; }
+.sr-item .sr-title { flex: 1; font-weight: 500; }
+.sr-item .sr-title mark { background: none; color: var(--acc); font-weight: 700; }
+.sr-item .sr-tags { font-size: .75rem; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sr-item .sr-enter { font-size: .7rem; color: var(--muted); background: var(--surf2); border: 1px solid var(--brd);
+  border-radius: 3px; padding: 1px 5px; opacity: 0; }
+.sr-item.active .sr-enter { opacity: 1; }
+.sr-empty { padding: .7rem 1rem; color: var(--muted); font-size: .88rem; }
+.sr-footer { padding: .4rem 1rem; border-top: 1px solid var(--brd); display: flex; gap: 1rem; margin-top: .3rem; }
+.sr-footer span { font-size: .7rem; color: var(--muted); display: flex; align-items: center; gap: 3px; }
+.sr-footer kbd { background: var(--surf2); border: 1px solid var(--brd); border-radius: 3px; padding: 1px 4px; font-size: .65rem; }
 
 /* HERO */
 .hero {
@@ -388,10 +411,35 @@ def nav(current="index", lang_other=None):
         alt_label, alt_href = lang_other
         cur_label = "ES" if alt_label == "EN" else "EN"
         lang_html = f'<div class="nav-lang"><span>{cur_label}</span><a href="{alt_href}">{alt_label}</a></div>'
+    # Page icons per category
+    page_icons = {
+        "index.html": "zap", "index-es.html": "book", "tutorial.html": "terminal",
+        "tutorial-es.html": "terminal", "roadmap.html": "layers",
+        "architecture.html": "cpu", "cve-chains.html": "shield",
+        "firmware.html": "package", "kernel-exploits.html": "lock",
+        "finetune.html": "cpu", "mcp-tools.html": "server",
+    }
+    # Page descriptions
+    page_desc = {
+        "index.html": "Overview, install, quick start",
+        "index-es.html": "Inicio, instalación, motor CVE",
+        "tutorial.html": "Step-by-step guide — CVE to exploit",
+        "tutorial-es.html": "Guía paso a paso — CVE al exploit",
+        "roadmap.html": "v0.2–v0.5 planned features",
+        "architecture.html": "Components, oracles, MCP, workflows",
+        "cve-chains.html": "Multi-CVE chaining, exploit chains",
+        "firmware.html": "IoT firmware extraction & analysis",
+        "kernel-exploits.html": "Kernel LPE, ret2usr, SMEP bypass",
+        "finetune.html": "LoRA fine-tuning on security data",
+        "mcp-tools.html": "Claude Desktop / VS Code MCP tools",
+    }
     search_items_js = ""
     for title, href, keywords in SEARCH_INDEX:
         kw_js = ", ".join(f'"{k}"' for k in keywords)
-        search_items_js += f'  {{title:"{title}",href:"{href}",kw:[{kw_js}]}},\n'
+        icon = page_icons.get(href, "book")
+        desc = page_desc.get(href, "")
+        search_items_js += f'  {{title:"{title}",href:"{href}",kw:[{kw_js}],icon:"{icon}",desc:"{desc}"}},\n'
+    s_ico_svg = ico('search','').replace('width="20" height="20"','width="15" height="15"')
     return f"""
 <nav class="nav">
   <a class="nav-brand" href="index.html">
@@ -400,38 +448,107 @@ def nav(current="index", lang_other=None):
   </a>
   <div class="nav-links">
     {items}
-    <div class="nav-search" id="nav-search-wrap">
-      <span class="search-icon">{ico('search','').replace('width="20" height="20"','width="14" height="14"')}</span>
-      <input type="search" id="nav-search-input" placeholder="Search docs..." autocomplete="off" aria-label="Search">
-      <div id="search-results"></div>
-    </div>
-    {lang_html}
-    <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
-      {ico('github')} GitHub
-    </a>
   </div>
+  <div class="nav-search-wrap" id="nav-search-wrap">
+    <span class="s-ico">{s_ico_svg}</span>
+    <input type="search" id="nav-search-input" placeholder="Search docs..." autocomplete="off" aria-label="Search docs" spellcheck="false">
+    <span class="s-kbd"><kbd>⌘</kbd><kbd>K</kbd></span>
+    <div id="search-results"></div>
+  </div>
+  {lang_html}
+  <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
+    {ico('github')} GitHub
+  </a>
 </nav>
 <script>
 (function(){{
+var ICONS={{}};
+{chr(10).join(f"ICONS['{k}']='{v.replace(chr(39), chr(92)+chr(39))}'" for k,v in {
+    'zap': ico('zap','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'book': ico('book','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'terminal': ico('terminal','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'layers': ico('layers','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'cpu': ico('cpu','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'shield': ico('shield','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'package': ico('package','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'lock': ico('lock','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+    'server': ico('server','sr-icon').replace('width="20" height="20"','width="16" height="16"'),
+}.items())}
 var idx=[
 {search_items_js}];
 var inp=document.getElementById('nav-search-input');
 var box=document.getElementById('search-results');
+var cur=-1;
 if(!inp)return;
-function esc(s){{return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}}
+function esc(s){{return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}}
+function hi(text,q){{
+  if(!q)return esc(text);
+  var i=text.toLowerCase().indexOf(q.toLowerCase());
+  if(i<0)return esc(text);
+  return esc(text.slice(0,i))+'<mark>'+esc(text.slice(i,i+q.length))+'</mark>'+esc(text.slice(i+q.length));
+}}
+function render(hits,q){{
+  if(!hits.length){{
+    box.innerHTML='<div class="sr-empty">No results for <strong>'+esc(q)+'</strong></div>';
+    box.classList.add('open');cur=-1;return;
+  }}
+  var html='<div class="sr-header">Pages — '+hits.length+' found</div>';
+  hits.forEach(function(e,i){{
+    var icon=ICONS[e.icon]||ICONS['book'];
+    html+='<a class="sr-item" href="'+e.href+'" data-idx="'+i+'">'
+      +'<span class="sr-icon">'+icon+'</span>'
+      +'<span style="flex:1;min-width:0"><div class="sr-title">'+hi(e.title,q)+'</div>'
+      +(e.desc?'<div class="sr-tags">'+esc(e.desc)+'</div>':'')
+      +'</span>'
+      +'<span class="sr-enter">↩</span>'
+      +'</a>';
+  }});
+  html+='<div class="sr-footer">'
+    +'<span><kbd>↑</kbd><kbd>↓</kbd> navegar</span>'
+    +'<span><kbd>↩</kbd> abrir</span>'
+    +'<span><kbd>Esc</kbd> cerrar</span>'
+    +'</div>';
+  box.innerHTML=html;
+  box.classList.add('open');
+  cur=-1;
+}}
+function setActive(n){{
+  var items=box.querySelectorAll('.sr-item');
+  if(!items.length)return;
+  if(cur>=0&&cur<items.length)items[cur].classList.remove('active');
+  cur=(n+items.length)%items.length;
+  items[cur].classList.add('active');
+  items[cur].scrollIntoView({{block:'nearest'}});
+}}
 inp.addEventListener('input',function(){{
   var q=inp.value.trim().toLowerCase();
-  if(!q){{box.innerHTML='';box.classList.remove('open');return;}}
+  if(!q){{box.innerHTML='';box.classList.remove('open');cur=-1;return;}}
   var hits=idx.filter(function(e){{
     return e.title.toLowerCase().includes(q)||e.kw.some(function(k){{return k.includes(q);}});
   }});
-  if(!hits.length){{box.innerHTML='<div style="padding:.6rem 1rem;color:var(--muted);font-size:.85rem">No results</div>';box.classList.add('open');return;}}
-  box.innerHTML=hits.map(function(e){{return'<a href="'+e.href+'">'+esc(e.title)+'</a>';}}).join('');
-  box.classList.add('open');
+  render(hits,q);
+}});
+inp.addEventListener('focus',function(){{
+  if(!inp.value.trim()&&!box.classList.contains('open')){{
+    render(idx,'');
+  }}
+}});
+inp.addEventListener('keydown',function(e){{
+  if(!box.classList.contains('open'))return;
+  if(e.key==='ArrowDown'){{e.preventDefault();setActive(cur+1);}}
+  else if(e.key==='ArrowUp'){{e.preventDefault();setActive(cur-1);}}
+  else if(e.key==='Enter'){{
+    var items=box.querySelectorAll('.sr-item');
+    if(cur>=0&&cur<items.length){{e.preventDefault();location.href=items[cur].href;}}
+  }}
+  else if(e.key==='Escape'){{box.classList.remove('open');inp.blur();cur=-1;}}
+}});
+document.addEventListener('keydown',function(e){{
+  if((e.metaKey||e.ctrlKey)&&e.key==='k'){{e.preventDefault();inp.focus();inp.select();}}
 }});
 document.addEventListener('click',function(e){{
   if(!document.getElementById('nav-search-wrap').contains(e.target)){{
-    box.classList.remove('open');
+    box.classList.remove('open');cur=-1;
   }}
 }});
 }})();
