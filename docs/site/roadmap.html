@@ -278,6 +278,27 @@ body {
 .doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
 .doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
 .page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
+.doc-callout{border-radius:var(--r);padding:.75rem 1.1rem;margin:1.1rem 0;border-left:3px solid var(--acc);background:rgba(88,166,255,.07);font-size:.9rem}
+.doc-callout.warn{border-color:var(--yel);background:rgba(210,153,34,.07)}
+.doc-callout.tip{border-color:var(--grn);background:rgba(63,185,80,.07)}
+.doc-callout.danger{border-color:var(--red);background:rgba(248,81,73,.07)}
+.doc-callout strong{color:inherit}
+.doc-pipeline{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem 1.5rem;margin:1rem 0;overflow-x:auto;font-family:'Courier New',monospace;font-size:.82rem;line-height:1.8;color:var(--code);white-space:pre}
+.cmp-yes{color:var(--grn);font-weight:600}
+.cmp-partial{color:var(--yel);font-weight:600}
+.cmp-no{color:var(--muted)}
+.doc-metrics{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0 1.5rem}
+.doc-metric{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:.9rem 1.25rem;text-align:center;min-width:120px}
+.doc-metric .metric-value{font-size:1.8rem;font-weight:800;color:var(--acc);line-height:1.1}
+.doc-metric .metric-label{font-size:.75rem;color:var(--muted);margin-top:.25rem}
+.doc-two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1rem 0}
+.doc-two-col>div{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem}
+.doc-two-col h4{font-size:.85rem;font-weight:700;color:var(--acc);margin-bottom:.75rem;padding-bottom:.4rem;border-bottom:1px solid var(--brd);text-transform:uppercase;letter-spacing:.06em}
+.doc-badge{display:inline-block;font-size:.72rem;font-weight:700;padding:.2rem .55rem;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;margin:.1rem}
+.doc-badge.green{background:rgba(63,185,80,.15);color:var(--grn);border:1px solid rgba(63,185,80,.3)}
+.doc-badge.blue{background:rgba(88,166,255,.15);color:var(--acc);border:1px solid rgba(88,166,255,.3)}
+.doc-badge.yellow{background:rgba(210,153,34,.15);color:var(--yel);border:1px solid rgba(210,153,34,.3)}
+@media(max-width:700px){{.doc-two-col{{grid-template-columns:1fr}}.doc-metrics{{gap:.6rem}}}}
 </style>
 </head>
 <body>

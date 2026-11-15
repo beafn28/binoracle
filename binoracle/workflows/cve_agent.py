@@ -317,8 +317,13 @@ _RESEARCH_SYS = (
     "oob-read, integer-overflow, type-confusion; WEB/APP: missing-authorization, idor, auth-bypass, "
     "sqli, xss, ssrf, command-injection, rce, path-traversal, file-upload, deserialization, xxe, "
     "ssti, csrf, open-redirect; u otra), primitive (que concede), target_binary (binario/componente "
-    "a obtener, o el plugin/paquete), source_url (si lo sabes: repo git o zip del codigo vulnerable; "
-    "para plugins WordPress deja el slug), affected_version (version afectada, p.ej. '5.1.8'), "
+    "a obtener; para paquetes pip/npm/gem/maven/php pon el nombre EXACTO del paquete tal como "
+    "aparece en la descripcion: p.ej. 'log4j-core', 'spring-webmvc', 'jackson-databind', "
+    "'phpmailer', 'guzzle'; para plugins WordPress deja el slug; para binarios nativos pon "
+    "el nombre del binario), source_url (si lo sabes: repo git o zip del codigo vulnerable; "
+    "para plugins WordPress deja el slug), affected_version (version afectada, p.ej. '5.1.8'; "
+    "si la descripcion dice 'Version X.Y.Z fixes this issue', la version VULNERABLE es X.Y.Z-1 "
+    "-- NO pongas la version parcheada), "
     "vulnerable_functions (lista de funciones/metodos citados, p.ej. update_user), trigger (como se "
     "alcanza: stdin/argumento/fichero/peticion HTTP...), http_method (GET/POST si es web), endpoint "
     "(ruta/accion si es web; si es un endpoint AJAX de WordPress (wp-admin/admin-ajax.php), el "
@@ -1483,6 +1488,901 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Scaffold automático de laboratorios para CVEs de paquetes Python/Node
+# ---------------------------------------------------------------------------
+# Confirmado en vivo: Qwen a veces NO incluye source_url para CVEs de frameworks
+# de Python/Node (aiohttp, flask-reuploaded, Jinja2, Django, Next.js...) -- en
+# vez de rendirse, se genera un directorio minimal con requirements.txt/package.json
+# + un servidor de ejemplo que activa el camino vulnerable, para que genericverify
+# lo levante en Docker y confirme la hipotesis igual que si el LLM hubiera dado la URL.
+
+_PIP_PKG_RE = re.compile(
+    r"(?i)\b(aiohttp|flask[_-]reuploaded|jinja2|jinja|django|bottle|tornado|"
+    r"fastapi|starlette|werkzeug|pillow|paramiko|twisted|pyramid|uvicorn|"
+    r"gunicorn|httpx|sanic|falcon)\b"
+)
+_NPM_PKG_RE = re.compile(
+    r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
+    r"serve-static|connect|restify|feathers)\b"
+)
+# Gemas Ruby conocidas que aparecen en CVEs web -- se chequean ANTES que pip porque
+# nombres como "rack" coinciden también con el regex genérico de paquetes pip.
+_RUBY_GEM_RE = re.compile(
+    r"(?i)\b(rack|rails|sinatra|hanami|padrino|grape|omniauth|devise|"
+    r"nokogiri|puma|actionpack|activesupport|actionview|sprockets|capybara)\b"
+)
+# Artefactos Maven / Java conocidos en CVEs web -- Spring, Log4j, Struts, Netty, etc.
+_MAVEN_PKG_RE = re.compile(
+    r"(?i)\b(spring[_-]?(core|web|webmvc|boot|security|cloud|framework)|"
+    r"log4j[_-]?(core|api|2)?|log4j2?|struts2?|"
+    r"jackson[_-]?(databind|core|annotations)|"
+    r"apache[_-]?commons[_-]?(text|collections|io|codec|lang)|"
+    r"netty[_-]?(all|codec|http|handler)?|netty|"
+    r"h2[_-]?database|h2db|"
+    r"xstream|snakeyaml|fastjson|"
+    r"jersey[_-]?(client|server|core)?|"
+    r"undertow|wildfly|"
+    r"shiro[_-]?(core|web)?|apache[_-]?shiro)\b"
+)
+# Paquetes PHP standalone conocidos en CVEs
+_PHP_PKG_RE = re.compile(
+    r"(?i)\b(phpmailer|phpmyadmin|monolog|"
+    r"symfony[_-]?(http[_-]?foundation|security|core|routing|serializer)?|symfony|"
+    r"laravel[_-]?(framework|core)?|laravel|"
+    r"guzzlehttp|guzzle|slim[_-]?framework|slim|"
+    r"laminas[_-]?(http|db|mvc)?|laminas|"
+    r"swiftmailer|twig)\b"
+)
+# Paquetes Go conocidos en CVEs web
+_GO_PKG_RE = re.compile(
+    r"(?i)\b(gin[_-]?gonic|gin|echo[_-]?labstack|"
+    r"gorilla[_-]?(mux|websocket|sessions)|gorilla|"
+    r"go[_-]?chi|go[_-]?swagger|chi|"
+    r"grpc[_-]?go|beego|revel|buffalo|fiber)\b"
+)
+
+_STATIC_DIR_FOR_TRAVERSAL = "static"
+
+
+def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_version: str) -> str:
+    """Genera un servidor Python minimal que expone el camino vulnerable del paquete."""
+    pkg_lower = pkg.lower()
+    if vuln_class == "path-traversal":
+        if "aiohttp" in pkg_lower:
+            return (
+                "from aiohttp import web\n"
+                "import os\n\n"
+                "STATIC_ROOT = os.path.join(os.path.dirname(__file__), 'static')\n"
+                "os.makedirs(STATIC_ROOT, exist_ok=True)\n"
+                "open(os.path.join(STATIC_ROOT, 'index.html'), 'w').write('<html>OK</html>')\n\n"
+                "app = web.Application()\n"
+                "app.router.add_static('/static', STATIC_ROOT, show_index=True, follow_symlinks=True)\n\n"
+                "if __name__ == '__main__':\n"
+                "    web.run_app(app, host='0.0.0.0', port=5000)\n"
+            )
+        return (
+            "from flask import Flask, send_from_directory\n"
+            "import os\n\n"
+            "app = Flask(__name__)\n"
+            "STATIC_ROOT = os.path.join(os.path.dirname(__file__), 'static')\n"
+            "os.makedirs(STATIC_ROOT, exist_ok=True)\n\n"
+            "@app.route('/static/<path:filename>')\n"
+            "def serve_static(filename):\n"
+            "    return send_from_directory(STATIC_ROOT, filename)\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(host='0.0.0.0', port=5000)\n"
+        )
+    if vuln_class == "ssti":
+        if "flask" in pkg_lower or "reuploaded" in pkg_lower:
+            return (
+                "from flask import Flask, request, render_template_string\n"
+                "from flask_reuploaded import UploadSet, configure_uploads, ALL\n"
+                "import os\n\n"
+                "app = Flask(__name__)\n"
+                "app.config['UPLOADED_ATTACHMENTS_DEST'] = '/tmp/uploads'\n"
+                "app.config['SECRET_KEY'] = 'binoracle'\n"
+                "attachments = UploadSet('attachments', ALL)\n"
+                "configure_uploads(app, attachments)\n"
+                "os.makedirs('/tmp/uploads', exist_ok=True)\n\n"
+                "@app.route('/upload', methods=['GET', 'POST'])\n"
+                "def upload():\n"
+                "    if request.method == 'POST':\n"
+                "        f = request.files.get('file')\n"
+                "        if f:\n"
+                "            filename = attachments.save(f)\n"
+                "            return f'saved: {filename}'\n"
+                "    return '<form method=post enctype=multipart/form-data>'\\\n"
+                "           '<input name=file type=file><input type=submit></form>'\n\n"
+                "if __name__ == '__main__':\n"
+                "    app.run(host='0.0.0.0', port=5000)\n"
+            )
+        if "jinja" in pkg_lower:
+            return (
+                "from flask import Flask, request, render_template_string\n"
+                "import jinja2\n\n"
+                "app = Flask(__name__)\n\n"
+                "@app.route('/render', methods=['GET', 'POST'])\n"
+                "def render():\n"
+                "    tmpl = request.args.get('template') or request.form.get('template', 'hello')\n"
+                "    env = jinja2.Environment(undefined=jinja2.DebugUndefined)\n"
+                "    return env.from_string(tmpl).render()\n\n"
+                "if __name__ == '__main__':\n"
+                "    app.run(host='0.0.0.0', port=5000)\n"
+            )
+    if vuln_class in ("sqli", "sql-injection"):
+        p = param or "id"
+        if "django" in pkg_lower:
+            return (
+                "import os\n"
+                "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n"
+                "import django\n"
+                "from django.conf import settings\n"
+                "if not settings.configured:\n"
+                "    settings.configure(\n"
+                "        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', "
+                "'NAME': '/tmp/db.sqlite3'}},\n"
+                "        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n"
+                "        ROOT_URLCONF='urls', SECRET_KEY='binoracle', DEBUG=True,\n"
+                "        ALLOWED_HOSTS=['*'])\n"
+                "    django.setup()\n\n"
+                "from django.http import HttpResponse\n"
+                "from django.db import connection\n\n"
+                "def search(request):\n"
+                f"    q = request.GET.get('{p}', '')\n"
+                "    with connection.cursor() as c:\n"
+                "        c.execute(f\"SELECT * FROM auth_user WHERE username = '{q}'\")\n"
+                "        return HttpResponse(str(c.fetchall()))\n\n"
+                "urlpatterns = []\n"
+                "try:\n"
+                "    from django.urls import path\n"
+                "    urlpatterns = [path('search', search)]\n"
+                "except Exception:\n"
+                "    pass\n\n"
+                "if __name__ == '__main__':\n"
+                "    from django.core.management import execute_from_command_line\n"
+                "    execute_from_command_line(['manage.py', 'runserver', '0.0.0.0:5000'])\n"
+            )
+        # generic SQLi flask fallback
+        p2 = param or "q"
+        return (
+            "from flask import Flask, request\n"
+            "import sqlite3\n\n"
+            "app = Flask(__name__)\n\n"
+            "def get_db():\n"
+            "    db = sqlite3.connect('/tmp/lab.db')\n"
+            "    db.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER, name TEXT)')\n"
+            "    db.execute(\"INSERT OR IGNORE INTO items VALUES (1,'secret_data')\")\n"
+            "    db.commit()\n"
+            "    return db\n\n"
+            "@app.route('/search')\n"
+            "def search():\n"
+            f"    q = request.args.get('{p2}', '')\n"
+            "    db = get_db()\n"
+            "    rows = db.execute(f\"SELECT * FROM items WHERE name = '{q}'\").fetchall()\n"
+            "    return str(rows)\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(host='0.0.0.0', port=5000)\n"
+        )
+    return ""
+
+
+def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
+    """Genera el config.ru Ruby/Rack minimal que expone el camino vulnerable."""
+    if vuln_class == "path-traversal" and "rack" in pkg.lower():
+        # CVE-2025-27610: Rack::Static sirve ficheros bajo root: aunque no estén bajo urls:
+        # cuando el atacante usa rutas traversal codificadas.  root: apunta a /app (el directorio
+        # del propio proceso), urls: sólo permite /static -- la combinación vulnerable canónica.
+        # config.ru con dos partes:
+        #   1. /app/static/index.html  → Rack::Static lo sirve normalmente
+        #   2. /app/secret_app.txt     → NO debe ser accesible por /static/,
+        #      pero con rack < 2.2.13 un traversal codificado (/static/%2e%2e%2fsecret_app.txt)
+        #      sí lo sirve.  genericverify planta su canario en /tmp/ y usa depth ≥ 4 para
+        #      salir del contenedor, pero este fichero sirve como prueba adicional de depth 1.
+        return (
+            "require 'rack'\n"
+            "require 'fileutils'\n\n"
+            "FileUtils.mkdir_p(File.join(__dir__, 'static'))\n"
+            "File.write(File.join(__dir__, 'static', 'index.html'), '<html>rack lab ok</html>')\n"
+            "# Fichero fuera de /static/: accesible con traversal en versiones vulnerables\n"
+            "File.write(File.join(__dir__, 'secret_app.txt'), "
+            "\"BINORACLE_RACK_TRAVERSAL_SECRET\\n\")\n\n"
+            "use Rack::Static,\n"
+            "  root: __dir__,\n"
+            "  urls: ['/static']\n\n"
+            "run lambda { |env| [200, {'content-type' => 'text/plain'}, ['rack lab ok']] }\n"
+        )
+    return ""
+
+
+def _scaffold_gem_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con Gemfile + config.ru minimal para gemas Ruby.
+    Devuelve la ruta del directorio o None si el paquete no es una gema reconocida."""
+    import os as _os
+    pkg = (target or "").strip().lower()
+    if not pkg or not re.match(r'^[a-z][a-z0-9._-]*$', pkg):
+        return None
+    if not _RUBY_GEM_RE.search(pkg):
+        return None
+
+    lab_dir = f"/tmp/{pkg}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    ver_pin = f", '= {version}'" if version else ""
+    # rackup se separó de rack en rack >= 3.0.  Para rack 2.x el gem separado es rackup ~> 1.0
+    # (rackup >= 2 requiere rack >= 3 y rompe el bundle).  webrick sigue siendo necesario en ambos.
+    _rack_major = 0
+    try:
+        _rack_major = int((version or "0").split(".")[0])
+    except Exception:
+        pass
+    rackup_pin = ", '~> 1.0'" if 0 < _rack_major < 3 else ""
+    gemfile = f"source 'https://rubygems.org'\ngem '{pkg}'{ver_pin}\ngem 'rackup'{rackup_pin}\ngem 'webrick'\n"
+    with open(_os.path.join(lab_dir, "Gemfile"), "w") as f:
+        f.write(gemfile)
+
+    app_code = _gen_gem_app(pkg, vuln_class, version)
+    if not app_code:
+        return None
+    with open(_os.path.join(lab_dir, "config.ru"), "w") as f:
+        f.write(app_code)
+
+    pin = f"{pkg} (={version})" if version else pkg
+    on_step(f"scaffolded minimal {pkg} lab at {lab_dir} (vuln_class={vuln_class}, pin={pin})")
+    return lab_dir
+
+
+def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con requirements.txt + app.py minimal para que
+    genericverify pueda levantar un contenedor Docker y confirmar la vulnerabilidad.
+    Devuelve la ruta del directorio o None si el paquete no es reconocible como pip."""
+    import os as _os
+    pkg = (target or "").strip().lower()
+    # solo para nombres razonables de paquete pip: letras, dígitos, guión, punto, barra baja
+    if not pkg or not re.match(r'^[a-z][a-z0-9._-]*$', pkg):
+        return None
+    # evitar confundir con slugs de CMS (tienen guion bajo Drupal-style o más de 3 palabras)
+    if pkg.count("_") >= 2 or " " in pkg:
+        return None
+
+    lab_dir = f"/tmp/{pkg}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    pin = f"{pkg}=={version}" if version else pkg
+    req_lines = [pin]
+    # dependencias de apoyo: solo paquetes DISTINTOS al principal
+    if "flask" in pkg or "reuploaded" in pkg:
+        # flask-reuploaded necesita Flask pero Flask no viene como dep automático
+        if "flask" not in pkg:
+            req_lines.append("flask>=2.0")
+    elif "jinja" in pkg:
+        req_lines.append("flask>=2.0")
+    # aiohttp y django ya incluyen todo lo necesario sin extras
+    req_path = _os.path.join(lab_dir, "requirements.txt")
+    with open(req_path, "w") as f:
+        f.write("\n".join(req_lines) + "\n")
+
+    endpoint = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "search")
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+    elif isinstance(params, str) and params:
+        param = params
+
+    app_code = _gen_pip_app(pkg, vuln_class, endpoint, param, version)
+    if not app_code:
+        return None
+
+    app_path = _os.path.join(lab_dir, "app.py")
+    with open(app_path, "w") as f:
+        f.write(app_code)
+
+    on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
+             f"(vuln_class={vuln_class}, pin={pin})"))
+    return lab_dir
+
+
+def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con package.json + server.js minimal para CVEs de
+    paquetes npm. Devuelve la ruta del directorio o None."""
+    import os as _os
+    import json as _json
+    pkg = (target or "").strip().lower()
+    if not pkg or not re.match(r'^[@a-z][a-z0-9._/@-]*$', pkg):
+        return None
+
+    # Normalize common aliases: "next.js" → "next", "express.js" → "express", etc.
+    _JS_ALIASES = {"next.js": "next", "express.js": "express", "vue.js": "vue",
+                   "nuxt.js": "nuxt", "angular.js": "angular"}
+    pkg = _JS_ALIASES.get(pkg, pkg)
+
+    lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    # Sanitize version: strip operator prefixes and compound ranges, keep only the
+    # first plain semver token (e.g. "<1.11.4, >=12.3.5" → "1.11.4" is the STARTING
+    # affected version, not the patched one; we want to use a sensible vulnerable ver).
+    _raw_ver = (version or "").strip()
+    _semver_tok = re.search(r'v?([0-9]+(?:\.[0-9]+){1,4})', _raw_ver)
+    _first_ver = _semver_tok.group(1) if _semver_tok else ""
+
+    # Next.js CVE-2025-29927: middleware was introduced in Next.js 12. If the inferred
+    # version is below 12 (e.g. "1.11.4" = the "starting affected" anchor, not a usable
+    # lab version), fall back to 12.3.4, the last vulnerable 12.x version, which
+    # has full middleware support and is confirmed to start quickly in dev mode.
+    _is_nextjs = "next" in pkg
+    if _is_nextjs and _first_ver:
+        _major = int(_first_ver.split(".")[0])
+        if _major < 12:
+            _first_ver = "12.3.4"
+            on_step(("version corregida a 12.3.4 (versiones Next.js pre-12 no soportan "
+                     "middleware -- usando ultima version 12.x vulnerable)"))
+
+    dep_ver = _first_ver if _first_ver else "*"
+    deps: dict = {pkg: dep_ver}
+    # Next.js requires react and react-dom as peer dependencies
+    if _is_nextjs:
+        deps["react"] = "^18"
+        deps["react-dom"] = "^18"
+    pkg_json = {
+        "name": "binoracle-lab",
+        "version": "1.0.0",
+        "dependencies": deps,
+        "scripts": {"start": "node server.js"}
+    }
+    with open(_os.path.join(lab_dir, "package.json"), "w") as f:
+        _json.dump(pkg_json, f, indent=2)
+
+    # Next.js auth-bypass lab: CVE-2025-29927 (x-middleware-subrequest header bypass).
+    # The lab needs:
+    #   middleware.js  — blocks access to /api/secret unless a valid auth token is present
+    #   pages/api/secret.js — returns the canary secret (only reachable after bypass)
+    #   server.js — custom Next.js HTTP server
+    # With the bypass header the middleware short-circuits before the auth check and
+    # the protected /api/secret route becomes accessible → exploit verified.
+    if _is_nextjs and vuln_class in ("missing-authorization", "auth-bypass"):
+        # middleware.js — restricts /api/secret; without bypass header request is blocked
+        mw_js = (
+            "import { NextResponse } from 'next/server';\n"
+            "export function middleware(request) {\n"
+            "  if (request.nextUrl.pathname.startsWith('/api/secret')) {\n"
+            "    const auth = request.headers.get('authorization');\n"
+            "    if (auth !== 'Bearer admin-secret-token') {\n"
+            "      return new NextResponse('Forbidden', { status: 403 });\n"
+            "    }\n"
+            "  }\n"
+            "  return NextResponse.next();\n"
+            "}\n"
+            "export const config = { matcher: ['/api/secret'] };\n"
+        )
+        secret_dir = _os.path.join(lab_dir, "pages", "api")
+        _os.makedirs(secret_dir, exist_ok=True)
+        with open(_os.path.join(lab_dir, "middleware.js"), "w") as f:
+            f.write(mw_js)
+        # pages/api/secret.js — returns canary
+        with open(_os.path.join(secret_dir, "secret.js"), "w") as f:
+            f.write(
+                "export default function handler(req, res) {\n"
+                "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
+                "}\n"
+            )
+        # Custom server entry point
+        srv = (
+            "const { createServer } = require('http');\n"
+            "const next = require('next');\n"
+            "const app = next({ dev: false });\n"
+            "const handle = app.getRequestHandler();\n"
+            "app.prepare().then(() => {\n"
+            "  createServer((req, res) => handle(req, res)).listen(3000, '0.0.0.0', () => {\n"
+            "    console.log('ready on :3000');\n"
+            "  });\n"
+            "});\n"
+        )
+        # Update notes so verify_generic_header_bypass targets /api/secret and knows
+        # bypass_header; these keys are only set if not already present (LLM takes priority)
+        # Always override endpoint to /api/secret — that's where we put the canary.
+        # The LLM may have set a different endpoint (e.g. /api/middleware) which won't
+        # have the canary. The bypass_header / bypass_value have known values too.
+        notes["endpoint"] = "/api/secret"
+        notes["bypass_header"] = "x-middleware-subrequest"
+        notes["bypass_value"] = "middleware"
+        notes["confirm_string"] = "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
+        # Dockerfile: dev mode — no pre-build step needed; Next.js compiles on the
+        # first request. Middleware runs in dev mode exactly as in production for the
+        # auth-bypass check we care about. '-H 0.0.0.0' binds to all interfaces so
+        # the port is reachable from outside the container.
+        # Include proxy CA cert lines so npm install inside the container trusts
+        # the outbound HTTPS proxy (same mechanism as _proxy_dockerfile_lines() in
+        # genericverify.py — we import lazily to avoid a top-level circular import).
+        try:
+            from .genericverify import _proxy_dockerfile_lines as _pdl
+            _proxy_lines = _pdl(lab_dir)
+        except Exception:
+            _proxy_lines = []
+        dockerfile = (
+            "FROM node:20-alpine\n"
+            + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
+            + "WORKDIR /app\n"
+            "COPY package.json .\n"
+            "RUN npm install --legacy-peer-deps || true\n"
+            # Clear the proxy after install so the runtime server never tries
+            # to reach a build-time-only localhost proxy endpoint.
+            "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
+            "COPY . .\n"
+            "EXPOSE 3000\n"
+            # Use the locally installed binary to avoid npx network lookup
+            'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
+        )
+        with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+            f.write(dockerfile)
+    else:
+        srv = (
+            "const http = require('http');\n"
+            f"const lib = require('{pkg}');\n"
+            "const server = http.createServer((req, res) => {\n"
+            "  res.end('binoracle lab ok');\n"
+            "});\n"
+            "server.listen(3000, '0.0.0.0');\n"
+        )
+        with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+            f.write(srv)
+
+    on_step(f"scaffolded minimal npm {pkg} lab at {lab_dir} (version={dep_ver})")
+    return lab_dir
+
+
+_APACHE_HTTPD_RE = re.compile(r'\bapache\b.*\b(http\s*server|httpd)\b|\bhttpd\b', re.IGNORECASE)
+
+
+def _scaffold_httpd_lab(version: str, notes: dict, on_step) -> Optional[str]:
+    """Crea un laboratorio Docker minimo para CVEs de Apache httpd (p.ej. CVE-2021-41773).
+    Usa FROM httpd:<version> (p.ej. httpd:2.4.49) -- la imagen oficial debe estar en el
+    cache local o ser descargable. Configura una configuracion vulnerable que replica el
+    entorno afectado: sin 'Require all denied' a nivel raiz, con un Alias /uploads/ accesible.
+    La CVE-2021-41773 solo se activa cuando los ficheros fuera del directorio configurado
+    NO estan protegidos por 'Require all denied' (confirmado en vivo: con denied -> 403).
+    Devuelve la ruta del laboratorio o None si la version no es util."""
+    import os as _os
+    ver = (version or "").strip() or "2.4.49"
+    # Verificar que la version parece valida para httpd
+    if not re.match(r'^\d+\.\d+\.\d+', ver):
+        ver = "2.4.49"
+    lab_dir = f"/tmp/apache_httpd_lab_{ver.replace('.', '_')}"
+    _os.makedirs(lab_dir, exist_ok=True)
+    # Dockerfile: FROM httpd:<ver>, cambia Require all denied a granted (entorno vulnerable real),
+    # crea Alias /uploads/ con acceso concedido para que .%2e/ pueda traversar desde ahi.
+    # Confirmado en vivo (CVE-2021-41773): .%2e/.%2e/.%2e/.%2e/ desde /uploads/ llega a /tmp/
+    # cuando no hay Require all denied en el directorio raiz. La canonical '../' (sin encoding)
+    # retorna 404 (normalizada/bloqueada por Apache), confirmando que es el bug de normalizacion.
+    dockerfile = (
+        f"FROM httpd:{ver}\n"
+        "# CVE-2021-41773: configuracion vulnerable (sin Require all denied a nivel raiz)\n"
+        "RUN sed -i 's/Require all denied/Require all granted/' /usr/local/apache2/conf/httpd.conf\n"
+        "RUN mkdir -p /usr/local/apache2/uploads\n"
+        "RUN printf '\\nAlias /uploads/ /usr/local/apache2/uploads/\\n"
+        "<Directory \"/usr/local/apache2/uploads\">\\n"
+        "    AllowOverride None\\n    Options None\\n    Require all granted\\n"
+        "</Directory>\\n' >> /usr/local/apache2/conf/httpd.conf\n"
+        "EXPOSE 80\n"
+    )
+    with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+        f.write(dockerfile)
+    # Endpoint: /uploads/ en modo URL_PATH -- la genericverify probara .%2e/ etc.
+    notes["endpoint"] = "/uploads/"
+    notes["http_method"] = "GET"
+    notes["parameters"] = ["URL_PATH"]
+    on_step(f"scaffolded Apache httpd {ver} lab at {lab_dir} (CVE path-traversal via /uploads/)")
+    return lab_dir
+
+
+def _scaffold_maven_lab(target: str, version: str, vuln_class: str,
+                        notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{artifact}_autonomous_lab con un Dockerfile Maven (JDK 11, Spring Boot minimal)
+    para CVEs de bibliotecas Java. Soporta Spring, Log4j, Struts, Jackson-databind, Netty, etc.
+    Devuelve la ruta del laboratorio o None si no se detecta un artefacto Java conocido."""
+    import os as _os
+    pkg = (target or "").strip().lower()
+    if not pkg or not _MAVEN_PKG_RE.search(pkg):
+        return None
+
+    lab_name = re.sub(r'[^a-z0-9]', '_', pkg)
+    lab_dir = f"/tmp/{lab_name}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    # Mapear nombres de paquete a coordenadas Maven reales
+    _maven_coords = {
+        "log4j": ("org.apache.logging.log4j", "log4j-core"),
+        "log4j2": ("org.apache.logging.log4j", "log4j-core"),
+        "log4j-core": ("org.apache.logging.log4j", "log4j-core"),
+        "log4j-api": ("org.apache.logging.log4j", "log4j-api"),
+        "spring-core": ("org.springframework", "spring-core"),
+        "spring-web": ("org.springframework", "spring-web"),
+        "spring-webmvc": ("org.springframework", "spring-webmvc"),
+        "spring-framework": ("org.springframework", "spring-webmvc"),
+        "spring-boot": ("org.springframework.boot", "spring-boot-starter-web"),
+        "jackson-databind": ("com.fasterxml.jackson.core", "jackson-databind"),
+        "commons-text": ("org.apache.commons", "commons-text"),
+        "commons-collections": ("org.apache.commons", "commons-collections4"),
+        "struts2": ("org.apache.struts", "struts2-core"),
+        "netty": ("io.netty", "netty-all"),
+        "netty-all": ("io.netty", "netty-all"),
+        "h2": ("com.h2database", "h2"),
+        "h2database": ("com.h2database", "h2"),
+        "xstream": ("com.thoughtworks.xstream", "xstream"),
+        "snakeyaml": ("org.yaml", "snakeyaml"),
+        "fastjson": ("com.alibaba", "fastjson"),
+        "shiro": ("org.apache.shiro", "shiro-core"),
+        "shiro-core": ("org.apache.shiro", "shiro-core"),
+        "shiro-web": ("org.apache.shiro", "shiro-web"),
+    }
+    group_id = "com.example"
+    artifact_id = lab_name
+    dep_version = version or "LATEST"
+    for key, (gid, aid) in _maven_coords.items():
+        if key in pkg:
+            group_id = gid
+            artifact_id = aid
+            break
+
+    endpoint = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "exploit")
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+    elif isinstance(params, str):
+        param = params
+    param = param or "payload"
+
+    pom_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.binoracle</groupId>
+  <artifactId>lab</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>2.7.18</version>
+  </parent>
+  <properties>
+    <java.version>11</java.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>{group_id}</groupId>
+      <artifactId>{artifact_id}</artifactId>
+      <version>{dep_version}</version>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+"""
+
+    src_dir = _os.path.join(lab_dir, "src", "main", "java", "com", "binoracle", "lab")
+    _os.makedirs(src_dir, exist_ok=True)
+    res_dir = _os.path.join(lab_dir, "src", "main", "resources")
+    _os.makedirs(res_dir, exist_ok=True)
+
+    vuln_upper = vuln_class.upper().replace('-', '_')
+    if vuln_class in ("rce", "command-injection", "deserialization"):
+        controller_code = (
+            "package com.binoracle.lab;\n"
+            "import org.springframework.boot.SpringApplication;\n"
+            "import org.springframework.boot.autoconfigure.SpringBootApplication;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "import java.util.Map;\n\n"
+            "@SpringBootApplication\n@RestController\n"
+            "public class LabApp {\n"
+            "    public static void main(String[] args) {\n"
+            "        SpringApplication.run(LabApp.class, args);\n    }\n\n"
+            f"    @PostMapping(\"/{endpoint}\")\n"
+            f"    public Map<String, Object> exploit(@RequestBody(required=false) String body,\n"
+            f"            @RequestParam(required=false) String {param}) {{\n"
+            f"        return Map.of(\"status\", \"ok\", \"echo\", (body != null ? body : \"\"),\n"
+            f"                      \"canary\", \"BINORACLE_JAVA_{vuln_upper}_LAB\");\n"
+            "    }\n\n"
+            "    @GetMapping(\"/health\")\n"
+            "    public String health() { return \"BINORACLE_JAVA_LAB_READY\"; }\n}\n"
+        )
+    else:
+        controller_code = (
+            "package com.binoracle.lab;\n"
+            "import org.springframework.boot.SpringApplication;\n"
+            "import org.springframework.boot.autoconfigure.SpringBootApplication;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "import java.util.Map;\n\n"
+            "@SpringBootApplication\n@RestController\n"
+            "public class LabApp {\n"
+            "    public static void main(String[] args) {\n"
+            "        SpringApplication.run(LabApp.class, args);\n    }\n\n"
+            f"    @GetMapping(\"/{endpoint}\")\n"
+            f"    public Map<String, Object> exploit(@RequestParam(required=false) String {param}) {{\n"
+            f"        return Map.of(\"status\", \"ok\", \"param\", ({param} != null ? {param} : \"\"),\n"
+            f"                      \"canary\", \"BINORACLE_JAVA_{vuln_upper}_LAB\");\n"
+            "    }\n\n"
+            "    @GetMapping(\"/health\")\n"
+            "    public String health() { return \"BINORACLE_JAVA_LAB_READY\"; }\n}\n"
+        )
+
+    with open(_os.path.join(lab_dir, "pom.xml"), "w") as f:
+        f.write(pom_xml)
+    with open(_os.path.join(src_dir, "LabApp.java"), "w") as f:
+        f.write(controller_code)
+    with open(_os.path.join(res_dir, "application.properties"), "w") as f:
+        f.write("server.port=8080\nspring.application.name=binoracle-lab\n")
+
+    try:
+        from .genericverify import _proxy_dockerfile_lines as _pdl
+        _proxy_lines = _pdl(lab_dir)
+    except Exception:
+        _proxy_lines = []
+
+    # Inyectar CA cert en el Java truststore para que Maven pueda descargar deps via proxy
+    _java_ca_lines = []
+    if _proxy_lines:
+        _java_ca_lines = [
+            "RUN if [ -f /tmp/binoracle-ca.crt ]; then "
+            "keytool -importcert -noprompt -alias binoracle-proxy "
+            "-file /tmp/binoracle-ca.crt "
+            "-keystore \"$(find /opt -name cacerts 2>/dev/null | head -1)\" "
+            "-storepass changeit 2>/dev/null || true; fi",
+        ]
+
+    dockerfile = (
+        "FROM maven:3.9-eclipse-temurin-11 AS build\n"
+        + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
+        + ("\n".join(_java_ca_lines) + "\n" if _java_ca_lines else "")
+        + "WORKDIR /app\n"
+        + "COPY pom.xml .\n"
+        + "RUN mvn dependency:go-offline -q || true\n"
+        + "COPY src ./src\n"
+        + "RUN mvn package -DskipTests -q\n"
+        + "FROM eclipse-temurin:11-jre\n"
+        + "WORKDIR /app\n"
+        + "COPY --from=build /app/target/*.jar app.jar\n"
+        + "EXPOSE 8080\n"
+        + 'CMD ["java", "-jar", "app.jar"]\n'
+    )
+    with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+        f.write(dockerfile)
+
+    notes.setdefault("http_method", "GET")
+    notes.setdefault("endpoint", f"/{endpoint}")
+    on_step(f"scaffolded Java/Maven lab at {lab_dir} ({group_id}:{artifact_id}:{dep_version}, vuln_class={vuln_class})")
+    return lab_dir
+
+
+def _scaffold_php_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con un Dockerfile PHP-Apache para CVEs de bibliotecas
+    PHP standalone. Soporta PHPMailer, Monolog, Symfony, Laravel, Guzzle, Twig, etc.
+    Devuelve la ruta del laboratorio o None si no se detecta un paquete PHP conocido."""
+    import os as _os
+    import json as _json
+    pkg = (target or "").strip().lower()
+    if not pkg or not _PHP_PKG_RE.search(pkg):
+        return None
+
+    lab_name = re.sub(r'[^a-z0-9]', '_', pkg)
+    lab_dir = f"/tmp/{lab_name}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    endpoint_base = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "exploit")
+    endpoint = endpoint_base if endpoint_base.endswith(".php") else endpoint_base + ".php"
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+    elif isinstance(params, str):
+        param = params
+    param = param or "payload"
+
+    vuln_upper = vuln_class.upper().replace('-', '_')
+    if vuln_class in ("rce", "command-injection"):
+        php_code = (
+            "<?php\n"
+            "require_once __DIR__ . '/vendor/autoload.php';\n"
+            f"$input = $_REQUEST['{param}'] ?? $_POST['cmd'] ?? '';\n"
+            f"echo \"BINORACLE_PHP_{vuln_upper}_LAB\\n\";\n"
+            "echo \"Input received: \" . htmlspecialchars($input) . \"\\n\";\n"
+            "?>"
+        )
+    elif vuln_class == "path-traversal":
+        php_code = (
+            "<?php\n"
+            "require_once __DIR__ . '/vendor/autoload.php';\n"
+            f"$file = $_GET['{param}'] ?? 'index.html';\n"
+            "echo \"BINORACLE_PHP_PATH_TRAVERSAL_LAB\\n\";\n"
+            "$base = __DIR__ . '/files/';\n"
+            "@readfile($base . $file);\n"
+            "?>"
+        )
+        files_dir = _os.path.join(lab_dir, "files")
+        _os.makedirs(files_dir, exist_ok=True)
+        with open(_os.path.join(files_dir, "secret.txt"), "w") as f:
+            f.write("BINORACLE_PHP_SECRET_FILE_CONTENTS\n")
+    else:
+        php_code = (
+            "<?php\n"
+            "require_once __DIR__ . '/vendor/autoload.php';\n"
+            f"$input = $_REQUEST['{param}'] ?? '';\n"
+            f"echo \"BINORACLE_PHP_{vuln_upper}_LAB\\n\";\n"
+            "echo \"Reflected: \" . $input . \"\\n\";\n"
+            "?>"
+        )
+
+    try:
+        from .genericverify import _proxy_dockerfile_lines as _pdl
+        _proxy_lines = _pdl(lab_dir)
+    except Exception:
+        _proxy_lines = []
+
+    dockerfile = (
+        "FROM php:8.1-apache\n"
+        + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
+        + "RUN curl -sS https://getcomposer.org/installer | php -- "
+        "--install-dir=/usr/local/bin --filename=composer\n"
+        + "WORKDIR /var/www/html\n"
+        + "COPY composer.json .\n"
+        + "RUN composer install --no-interaction --no-dev --prefer-dist 2>/dev/null || true\n"
+        + f"COPY {endpoint} .\n"
+        + "EXPOSE 80\n"
+    )
+
+    _json.dump({"require": {pkg: version or "*"}},
+               open(_os.path.join(lab_dir, "composer.json"), "w"), indent=2)
+    with open(_os.path.join(lab_dir, endpoint), "w") as f:
+        f.write(php_code)
+    with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+        f.write(dockerfile)
+
+    notes.setdefault("http_method", "GET")
+    notes.setdefault("endpoint", f"/{endpoint}")
+    on_step(f"scaffolded PHP lab at {lab_dir} ({pkg}:{version or 'latest'}, vuln_class={vuln_class})")
+    return lab_dir
+
+
+def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
+                       version: str, notes: dict, on_step) -> Optional[str]:
+    """Punto de entrada unificado: detecta si es un paquete pip/npm por el target_binary
+    o por la descripcion, y delega al scaffolder correspondiente. Devuelve la ruta del
+    laboratorio o None si no se pudo inferir el paquete."""
+    # Correccion critica: si la descripcion dice "Version X.Y.Z fixes this issue", el LLM
+    # puede devolver X.Y.Z como affected_version, pero esa es la version PARCHEADA.
+    # Confirmado en vivo con CVE-2024-23334 (aiohttp): descripcion dice "Version 3.9.2 fixes
+    # this issue" -> LLM retorna affected_version=3.9.2 -> lab instala aiohttp==3.9.2 (la
+    # version ya parcheada) -> el traversal no funciona nunca porque ya tiene la validacion.
+    # Solucion: detectar el patron y decrementar al ultimo patch vulnerable (3.9.1).
+    if description:
+        # Recoge todas las versiones que la descripción NVD marca como "primera parcheada":
+        # (a) "Version X.Y.Z fixes…" / "Versions X.Y.Z fixes…"
+        # (b) "Prior to versions X.Y.Z" / "before version X.Y.Z" / "versions prior to X.Y.Z"
+        _patched_ver_candidates: set = set()
+        _m = _FIXES_THIS_VERSION_RE.search(description)
+        if _m:
+            _patched_ver_candidates.add(_m.group(1))
+        for _pm in _PRIOR_TO_VERSION_RE.finditer(description):
+            _clause = next((g for g in _pm.groups() if g), None)
+            if _clause:
+                for _vtoken in _VERSION_TOKENS_RE.findall(_clause):
+                    _patched_ver_candidates.add(_vtoken)
+        if version and version in _patched_ver_candidates:
+            corrected = _decrement_patch_version(version)
+            if corrected != version:
+                _hint = next((m.group(0) for m in _PRIOR_TO_VERSION_RE.finditer(description)
+                              if next((g for g in m.groups() if g), None) == version),
+                             None) or (_m.group(0) if _m else description[:60])
+                on_step((f"corrigiendo version: '{version}' es la version PARCHEADA segun la "
+                         f"descripcion del CVE ('{_hint}') -- instalando "
+                         f"'{corrected}' (ultima vulnerable)"))
+                version = corrected
+        elif not version and _patched_ver_candidates:
+            # Sin version del LLM: inferir la ultima vulnerable decrementando la menor version
+            # parcheada que indique la descripcion NVD (p.ej. "Prior to versions 2.2.13, 3.0.14"
+            # -> la menor parcheada es 2.2.13 -> ultima vulnerable = 2.2.12).
+            _sorted = sorted(_patched_ver_candidates,
+                             key=lambda v: [int(x) for x in v.split(".") if x.isdigit()])
+            _lowest_patched = _sorted[0] if _sorted else None
+            if _lowest_patched:
+                corrected = _decrement_patch_version(_lowest_patched)
+                if corrected != _lowest_patched:
+                    on_step((f"version inferida de descripcion CVE: '{_lowest_patched}' es la "
+                             f"version parcheada -- instalando '{corrected}' (ultima vulnerable)"))
+                    version = corrected
+
+    candidate = (target_binary or "").strip().lower()
+    # Apache httpd se chequea primero: es un binario, no un paquete pip/gem/npm.
+    # La deteccion mira target_binary Y la descripcion para no depender de que el LLM
+    # ponga exactamente "httpd" en target_binary (a veces pone "Apache HTTP Server").
+    if vuln_class == "path-traversal":
+        _apache_hit = (
+            _APACHE_HTTPD_RE.search(candidate) if candidate else False
+        ) or (
+            _APACHE_HTTPD_RE.search(description) if description else False
+        )
+        if _apache_hit:
+            lab = _scaffold_httpd_lab(version, notes, on_step)
+            if lab:
+                return lab
+    # Si el LLM dijo target_binary, intenta directamente.
+    # Ruby se chequea ANTES que pip: "rack" y otras gemas coinciden con el regex genérico pip.
+    if candidate:
+        # Ruby
+        if _RUBY_GEM_RE.search(candidate):
+            lab = _scaffold_gem_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # Python
+        if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
+            lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # Node
+        if _NPM_PKG_RE.search(candidate):
+            lab = _scaffold_npm_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # Java/Maven
+        if _MAVEN_PKG_RE.search(candidate):
+            lab = _scaffold_maven_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # PHP standalone
+        if _PHP_PKG_RE.search(candidate):
+            lab = _scaffold_php_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+    # Fallback: busca en la descripcion
+    if description:
+        m = _RUBY_GEM_RE.search(description)
+        if m:
+            lab = _scaffold_gem_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _PIP_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_pip_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _NPM_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _MAVEN_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_maven_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _PHP_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_php_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+    return None
+
+
 _VERSION_PATTERN = re.compile(r"^[0-9]+(?:[.\-][0-9A-Za-z]+)*$")
 _VNUM = r"[vV]?([0-9]+(?:\.[0-9]+){0,4})"
 # casuistica real de frases de rango de NVD/Patchstack (revisado a fondo, no solo el patron
@@ -1539,6 +2439,40 @@ def _clean_affected_version(raw: str) -> str:
 
 
 _EXCLUSIVE_BOUND_RE = re.compile(r"\bbefore\b|\bprior\s+to\b|<(?!=)", re.IGNORECASE)
+
+# Patrones NVD que indican que X.Y.Z es la PRIMERA versión PARCHEADA (no la vulnerable).
+# El LLM suele copiar ese número tal cual como affected_version → hay que decrementar al
+# último patch vulnerable (X.Y.Z-1).
+# Casos reales confirmados:
+#   "Version 3.9.2 fixes this issue"       (aiohttp, CVE-2024-23334)
+#   "Prior to versions 2.2.13, 3.0.14, …"  (rack, CVE-2025-27610)
+#   "before version 1.26"                  (phrasing clásica de NVD)
+#   "versions prior to 5.1.0"              (variante de NVD/advisories)
+_FIXES_THIS_VERSION_RE = re.compile(
+    r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
+)
+_PRIOR_TO_VERSION_RE = re.compile(
+    r"(?:[Pp]rior\s+to|[Bb]efore)\s+version[s]?\s+"
+    r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)"
+    r"|version[s]?\s+prior\s+to\s+"
+    r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)",
+    re.IGNORECASE
+)
+_VERSION_TOKENS_RE = re.compile(r'v?([0-9]+(?:\.[0-9]+){1,4})')
+
+
+def _decrement_patch_version(version: str) -> str:
+    """'3.9.2' -> '3.9.1': decrementa el componente mas a la derecha que sea > 0."""
+    parts = version.split(".")
+    for i in range(len(parts) - 1, -1, -1):
+        try:
+            n = int(parts[i])
+            if n > 0:
+                parts[i] = str(n - 1)
+                return ".".join(parts)
+        except ValueError:
+            break
+    return version
 
 
 def _affected_version_is_exclusive(raw: str) -> bool:
@@ -1645,6 +2579,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                  f"(extraido del propio texto del aviso, no una garantia)...") if es else
                  (f"the LLM gave no source_url; trying '{guess}' as a WordPress.org slug "
                  f"(extracted from the advisory text itself, not a guarantee)..."))
+
+    # Fallback para CVEs de frameworks Python/Node: si no hay source_url ni slug de CMS,
+    # construye un laboratorio minimal con el paquete pinado a la version vulnerable --
+    # mismo mecanismo que los labs que antes se creaban a mano en /tmp para aiohttp/flask/etc.
+    if not source and inv.vuln_class in (
+            "path-traversal", "ssti", "sqli", "sql-injection",
+            "command-injection", "missing-authorization", "xss", "ssrf"):
+        lab = _guess_package_lab(
+            inv.description,
+            (notes.get("target_binary") or "").strip(),
+            inv.vuln_class, version, notes, step)
+        if lab:
+            source = lab
+            guessed_source = False  # lab scaffolded deterministically, no es una suposicion CMS
 
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
@@ -3787,17 +4735,34 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
     # independientemente de si llego a VERIFICARSE o se quedo en bloqueo (el riesgo del hallazgo
     # no depende de que binoracle haya podido confirmarlo end-to-end en este sandbox concreto).
     remediation = _REMEDIATION_BY_CLASS.get(inv.vuln_class)
-    target = (inv.llm_notes or {}).get("target_binary") or (inv.llm_notes or {}).get("source_url")
-    affected = (inv.llm_notes or {}).get("affected_version")
+    _notes = inv.llm_notes or {}
+    target = _notes.get("target_binary") or _notes.get("source_url")
+    if not target:
+        # Intentar extraer el nombre del componente de la descripcion NVD: primera palabra
+        # capitalizada que no sea ruido (articulos, verbos modales, terminos genéricos)
+        _NOISE = {
+            "this", "the", "that", "with", "when", "before", "after", "allow", "allows",
+            "could", "would", "should", "version", "versions", "product", "component",
+            "vulnerability", "vulnerabilities", "issue", "issues", "attack", "attacker",
+            "remote", "local", "through", "plugin", "module", "package", "library",
+            "affected", "fixed", "patched", "bypass", "causes", "within",
+        }
+        for _cand in re.findall(r'\b([A-Z][A-Za-z0-9._-]{2,30})\b', inv.description or ""):
+            if _cand.lower() not in _NOISE:
+                target = _cand
+                break
+    affected = _notes.get("affected_version")
+    _target_es = target or "el componente afectado"
+    _target_en = target or "the affected component"
     if remediation or target:
         out.append("\n### " + ("Recomendaciones" if es else "Recommendations"))
         out.append("1. " + (
-            f"Actualizar {target} a la version mas reciente disponible"
+            f"Actualizar {_target_es} a la version mas reciente disponible"
             + (f" (version afectada identificada: {affected})" if affected else "")
             + ", comprobando en el changelog/advisory del proveedor que corrige esta CVE "
               "concreta -- es la mitigacion mas directa cuando la vulnerabilidad esta en un "
               "componente de terceros." if es else
-            f"Update {target} to the latest available version"
+            f"Update {_target_en} to the latest available version"
             + (f" (identified affected version: {affected})" if affected else "")
             + ", confirming in the vendor's changelog/advisory that it fixes this specific "
               "CVE -- the most direct mitigation when the vulnerability is in a third-party "
