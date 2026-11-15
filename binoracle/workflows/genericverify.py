@@ -2740,10 +2740,42 @@ def verify_generic_header_bypass(
             )
         else:
             res.ok = True
+            # Diagnostico automatico: razona por que fallo el bypass
+            _diag = []
+            if status_normal in range(200, 300):
+                _diag.append(
+                    f"el endpoint responde {status_normal} SIN el bypass -- el middleware "
+                    f"no esta bloqueando la ruta; revisa que el middleware cubra '{endpoint}'"
+                )
+            elif status_normal == -1:
+                _diag.append(f"error de red al probar sin bypass -- el servidor no responde en {endpoint}")
+            else:
+                # Middleware SI bloquea (correcto). Analiza por que el bypass no funciono.
+                if status_bypass == status_normal:
+                    _diag.append(
+                        f"el bypass NO cambio el status ({status_normal} → {status_bypass}) -- "
+                        f"el header '{bypass_header}: {bypass_value}' no fue procesado; "
+                        f"posibles causas: (1) version del servidor incorrecta para esta CVE, "
+                        f"(2) valor del bypass incorrecto (prueba variantes: 'src/middleware', "
+                        f"'pages/_middleware', 'middleware:middleware'), "
+                        f"(3) el middleware no lee ese header internamente"
+                    )
+                elif status_bypass in range(200, 300) and confirm_string and not string_ok:
+                    _diag.append(
+                        f"bypass llego al endpoint (status {status_bypass}) pero confirm_string "
+                        f"'{confirm_string}' no aparece en la respuesta -- el lab puede no estar "
+                        f"sirviendo el recurso esperado en '{endpoint}'"
+                    )
+                elif status_bypass not in range(200, 300):
+                    _diag.append(
+                        f"bypass no dio 2xx (status {status_bypass}) -- el servidor sigue "
+                        f"bloqueando incluso con el header; prueba variantes del valor del bypass"
+                    )
             res.detail = (
                 f"header bypass no confirmado: status_sin_bypass={status_normal}, "
                 f"status_con_bypass={status_bypass}" +
-                (f", confirm_string_presente={string_ok}" if confirm_string else "")
+                (f", confirm_string_presente={string_ok}" if confirm_string else "") +
+                (f" -- DIAGNOSTICO: {'; '.join(_diag)}" if _diag else "")
             )
         return res
     except subprocess.TimeoutExpired as e:
