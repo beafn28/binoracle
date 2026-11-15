@@ -1212,6 +1212,29 @@ def _h_libfuzzer_corpus(args):
     return render_corpus(corpus, wrote_to=wrote_to)
 
 
+@_tool("finetune_dataset",
+       "Exporta las investigaciones de CVE de la sesion como un dataset JSONL de instrucciones "
+       "para hacer fine-tuning LoRA de un modelo de lenguaje (Qwen-2.5-Coder, Mistral, etc.). "
+       "Genera train.jsonl, val.jsonl y un script run_lora.py listo para ejecutar con PEFT+TRL. "
+       "SOLO USO AUTORIZADO.",
+       {"reports_dir": {"type": "string",
+                        "description": "directorio de archivos JSON de binoracle para incluir en el dataset"},
+        "model_id":    {"type": "string",
+                        "description": "modelo base de HuggingFace (default: Qwen/Qwen2.5-Coder-7B-Instruct)"},
+        "out_dir":     {"type": "string",
+                        "description": "directorio de salida para los archivos generados (default: .)"}},
+       [])
+def _h_finetune_dataset(args):
+    from .workflows.finetune import build_finetune_dataset, render_finetune
+    a = args or {}
+    ds = build_finetune_dataset(
+        reports_dir=a.get("reports_dir") or "",
+        model_id=a.get("model_id") or "Qwen/Qwen2.5-Coder-7B-Instruct",
+        out_dir=a.get("out_dir") or ".",
+    )
+    return render_finetune(ds)
+
+
 @_tool("kernel_exploit_chain",
        "Genera una cadena de exploit de kernel: ret2usr, UAF en driver, heap spray, ROP chain, "
        "modprobe_path overwrite, dirty-pipe, io_uring, msg_msg, seq_operations. "

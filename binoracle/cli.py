@@ -587,6 +587,27 @@ def cmd_cve_corpus(args, config):
     print(render_corpus(corpus, wrote_to=wrote_to))
 
 
+def cmd_finetune(args, config):
+    from binoracle.workflows.finetune import build_finetune_dataset, render_finetune
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    print(f"\n  {_b}binoracle finetune{_r}\n")
+    store = None
+    try:
+        from binoracle.store import load_store
+        store = load_store(config)
+    except Exception:
+        pass
+    ds = build_finetune_dataset(
+        store=store,
+        reports_dir=getattr(args, "reports_dir", "") or "",
+        model_id=getattr(args, "model_id", "Qwen/Qwen2.5-Coder-7B-Instruct"),
+        out_dir=getattr(args, "out_dir", ".") or ".",
+    )
+    print(render_finetune(ds))
+
+
 def cmd_kernel_exploit(args, config):
     from binoracle.workflows.kernel_exploit import build_kernel_exploit, render_kernel_exploit
     from binoracle.workflows.cvelookup import fetch_cve
@@ -1883,6 +1904,16 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--poc", default="", dest="poc_file",
                     help="path to a file containing the PoC text (optional)")
     cv.set_defaults(func=cmd_cve_corpus)
+
+    ft = sub.add_parser("finetune",
+                        help="export CVE investigations as a LoRA fine-tuning dataset for exploit hypothesis generation")
+    ft.add_argument("--reports-dir", default="", dest="reports_dir",
+                    help="directory of binoracle JSON report files to include")
+    ft.add_argument("--model", default="Qwen/Qwen2.5-Coder-7B-Instruct", dest="model_id",
+                    help="HuggingFace model ID for the LoRA script")
+    ft.add_argument("--out", default=".", dest="out_dir",
+                    help="output directory for train.jsonl, val.jsonl, run_lora.py")
+    ft.set_defaults(func=cmd_finetune)
 
     ke = sub.add_parser("kernel-exploit",
                         help="generate a kernel exploit chain skeleton (ret2usr, UAF, ROP, dirty-pipe, ...)")
