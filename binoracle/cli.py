@@ -1445,7 +1445,8 @@ def cmd_cve(args, config):
         md_full = render_investigation(inv, config.lang)
         _Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script,
-                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind),
+                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind,
+                                      inv=inv),
             encoding="utf-8")
         colorlog.ok(f"informe HTML escrito en {args.html}")
 
@@ -1543,13 +1544,14 @@ def cmd_investigate(args, config):
     # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
     # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
     # SI usa embed_images=True (el default), esas son las que de verdad se pintan como <img>.
-    print("\n" + render_investigation(inv, config.lang, embed_images=False))
+    if not getattr(args, "html", None) and not getattr(args, "json", None):
+        print("\n" + render_investigation(inv, config.lang, embed_images=False))
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
         md_full = render_investigation(inv, config.lang)
         Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script, cve=args.cve,
-                                      lang=config.lang, poc_kind=inv.poc_kind),
+                                      lang=config.lang, poc_kind=inv.poc_kind, inv=inv),
             encoding="utf-8")
         _eprint(f"(HTML written to {args.html})")
     if getattr(args, "json", None):
