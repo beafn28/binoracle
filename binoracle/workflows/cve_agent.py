@@ -4404,17 +4404,34 @@ def render_investigation(inv: Investigation, lang: str = "es", embed_images: boo
     # independientemente de si llego a VERIFICARSE o se quedo en bloqueo (el riesgo del hallazgo
     # no depende de que binoracle haya podido confirmarlo end-to-end en este sandbox concreto).
     remediation = _REMEDIATION_BY_CLASS.get(inv.vuln_class)
-    target = (inv.llm_notes or {}).get("target_binary") or (inv.llm_notes or {}).get("source_url")
-    affected = (inv.llm_notes or {}).get("affected_version")
+    _notes = inv.llm_notes or {}
+    target = _notes.get("target_binary") or _notes.get("source_url")
+    if not target:
+        # Intentar extraer el nombre del componente de la descripcion NVD: primera palabra
+        # capitalizada que no sea ruido (articulos, verbos modales, terminos genéricos)
+        _NOISE = {
+            "this", "the", "that", "with", "when", "before", "after", "allow", "allows",
+            "could", "would", "should", "version", "versions", "product", "component",
+            "vulnerability", "vulnerabilities", "issue", "issues", "attack", "attacker",
+            "remote", "local", "through", "plugin", "module", "package", "library",
+            "affected", "fixed", "patched", "bypass", "causes", "within",
+        }
+        for _cand in re.findall(r'\b([A-Z][A-Za-z0-9._-]{2,30})\b', inv.description or ""):
+            if _cand.lower() not in _NOISE:
+                target = _cand
+                break
+    affected = _notes.get("affected_version")
+    _target_es = target or "el componente afectado"
+    _target_en = target or "the affected component"
     if remediation or target:
         out.append("\n### " + ("Recomendaciones" if es else "Recommendations"))
         out.append("1. " + (
-            f"Actualizar {target} a la version mas reciente disponible"
+            f"Actualizar {_target_es} a la version mas reciente disponible"
             + (f" (version afectada identificada: {affected})" if affected else "")
             + ", comprobando en el changelog/advisory del proveedor que corrige esta CVE "
               "concreta -- es la mitigacion mas directa cuando la vulnerabilidad esta en un "
               "componente de terceros." if es else
-            f"Update {target} to the latest available version"
+            f"Update {_target_en} to the latest available version"
             + (f" (identified affected version: {affected})" if affected else "")
             + ", confirming in the vendor's changelog/advisory that it fixes this specific "
               "CVE -- the most direct mitigation when the vulnerability is in a third-party "

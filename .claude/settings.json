@@ -9,5 +9,10 @@
       "Bash(ollama pull*)",
       "Bash(ollama run*)"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
   }
 }
