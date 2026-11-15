@@ -53,6 +53,26 @@ body {
 .nav-lang span { padding: .3rem .6rem; background: var(--surf2); color: var(--tx); }
 .nav-lang a { padding: .3rem .6rem; color: var(--muted); text-decoration: none; transition: all .15s; }
 .nav-lang a:hover { color: var(--tx); background: var(--surf); }
+.nav-search { position: relative; display: flex; align-items: center; }
+.nav-search input {
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px;
+  color: var(--tx); font-size: .82rem; padding: .3rem .7rem .3rem 2rem;
+  outline: none; width: 180px; transition: border-color .15s, width .2s;
+  font-family: inherit;
+}
+.nav-search input::placeholder { color: var(--muted); }
+.nav-search input:focus { border-color: var(--acc); width: 240px; }
+.nav-search .search-icon { position: absolute; left: .5rem; color: var(--muted); pointer-events: none; }
+#search-results {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  background: var(--surf); border: 1px solid var(--brd); border-radius: 8px;
+  min-width: 300px; max-height: 320px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 200; padding: .4rem 0;
+}
+#search-results a { display: block; padding: .45rem 1rem; color: var(--muted); text-decoration: none; font-size: .88rem; border-radius: 0; }
+#search-results a:hover { background: var(--surf2); color: var(--tx); }
+#search-results .sr-page { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--acc); padding: .3rem 1rem .1rem; }
+#search-results.open { display: block; }
 
 /* HERO */
 .hero {
@@ -278,6 +298,27 @@ body {
 .doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
 .doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
 .page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
+.doc-callout{border-radius:var(--r);padding:.75rem 1.1rem;margin:1.1rem 0;border-left:3px solid var(--acc);background:rgba(88,166,255,.07);font-size:.9rem}
+.doc-callout.warn{border-color:var(--yel);background:rgba(210,153,34,.07)}
+.doc-callout.tip{border-color:var(--grn);background:rgba(63,185,80,.07)}
+.doc-callout.danger{border-color:var(--red);background:rgba(248,81,73,.07)}
+.doc-callout strong{color:inherit}
+.doc-pipeline{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem 1.5rem;margin:1rem 0;overflow-x:auto;font-family:'Courier New',monospace;font-size:.82rem;line-height:1.8;color:var(--code);white-space:pre}
+.cmp-yes{color:var(--grn);font-weight:600}
+.cmp-partial{color:var(--yel);font-weight:600}
+.cmp-no{color:var(--muted)}
+.doc-metrics{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0 1.5rem}
+.doc-metric{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:.9rem 1.25rem;text-align:center;min-width:120px}
+.doc-metric .metric-value{font-size:1.8rem;font-weight:800;color:var(--acc);line-height:1.1}
+.doc-metric .metric-label{font-size:.75rem;color:var(--muted);margin-top:.25rem}
+.doc-two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1rem 0}
+.doc-two-col>div{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem}
+.doc-two-col h4{font-size:.85rem;font-weight:700;color:var(--acc);margin-bottom:.75rem;padding-bottom:.4rem;border-bottom:1px solid var(--brd);text-transform:uppercase;letter-spacing:.06em}
+.doc-badge{display:inline-block;font-size:.72rem;font-weight:700;padding:.2rem .55rem;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;margin:.1rem}
+.doc-badge.green{background:rgba(63,185,80,.15);color:var(--grn);border:1px solid rgba(63,185,80,.3)}
+.doc-badge.blue{background:rgba(88,166,255,.15);color:var(--acc);border:1px solid rgba(88,166,255,.3)}
+.doc-badge.yellow{background:rgba(210,153,34,.15);color:var(--yel);border:1px solid rgba(210,153,34,.3)}
+@media(max-width:700px){{.doc-two-col{{grid-template-columns:1fr}}.doc-metrics{{gap:.6rem}}}}
 </style>
 </head>
 <body>
@@ -293,30 +334,81 @@ body {
 <a href="tutorial.html">Tutorial</a>
 <a href="roadmap.html">Roadmap</a>
 
+    <div class="nav-search" id="nav-search-wrap">
+      <span class="search-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+      <input type="search" id="nav-search-input" placeholder="Search docs..." autocomplete="off" aria-label="Search">
+      <div id="search-results"></div>
+    </div>
     <div class="nav-lang"><span>EN</span><a href="index-es.html">ES</a></div>
     <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg> GitHub
     </a>
   </div>
 </nav>
+<script>
+(function(){
+var idx=[
+  {title:"Home",href:"index.html",kw:["cve", "binary", "re", "exploit", "install", "quick start", "pipeline", "overview"]},
+  {title:"Docs (ES)",href:"index-es.html",kw:["instalacion", "motor cve", "binario", "informes", "mcp", "configuracion"]},
+  {title:"Tutorial (EN)",href:"tutorial.html",kw:["tutorial", "step by step", "configure", "binary re", "reports"]},
+  {title:"Tutorial (ES)",href:"tutorial-es.html",kw:["tutorial", "paso a paso", "configurar", "binario", "informes"]},
+  {title:"Roadmap",href:"roadmap.html",kw:["roadmap", "v0.2", "v0.3", "v0.4", "v0.5", "features", "planned"]},
+  {title:"Architecture",href:"architecture.html",kw:["architecture", "components", "cli", "workflows", "oracles", "mcp server", "store", "diagrama"]},
+  {title:"CVE Chains",href:"cve-chains.html",kw:["cve chain", "multi-cve", "cadena", "exploit chain", "rce", "cve-chain"]},
+  {title:"Firmware Analysis",href:"firmware.html",kw:["firmware", "embedded", "flash", "squashfs", "binwalk", "iot", "layers"]},
+  {title:"Kernel Exploits",href:"kernel-exploits.html",kw:["kernel", "exploit", "ret2usr", "smep", "kaslr", "lpe", "privilege escalation", "lkm"]},
+  {title:"LoRA Fine-tuning",href:"finetune.html",kw:["finetune", "lora", "sft", "dataset", "jsonl", "training", "model", "fine-tuning"]},
+  {title:"MCP Tools Reference",href:"mcp-tools.html",kw:["mcp", "tools", "claude desktop", "vscode", "server", "api", "tools reference"]},
+];
+var inp=document.getElementById('nav-search-input');
+var box=document.getElementById('search-results');
+if(!inp)return;
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+inp.addEventListener('input',function(){
+  var q=inp.value.trim().toLowerCase();
+  if(!q){box.innerHTML='';box.classList.remove('open');return;}
+  var hits=idx.filter(function(e){
+    return e.title.toLowerCase().includes(q)||e.kw.some(function(k){return k.includes(q);});
+  });
+  if(!hits.length){box.innerHTML='<div style="padding:.6rem 1rem;color:var(--muted);font-size:.85rem">No results</div>';box.classList.add('open');return;}
+  box.innerHTML=hits.map(function(e){return'<a href="'+e.href+'">'+esc(e.title)+'</a>';}).join('');
+  box.classList.add('open');
+});
+document.addEventListener('click',function(e){
+  if(!document.getElementById('nav-search-wrap').contains(e.target)){
+    box.classList.remove('open');
+  }
+});
+})();
+</script>
 
 <div class="doc-layout">
   <aside class="doc-sidebar">
-<div class="wiki-lang"><span class="active-lang">EN</span><a href="index-es.html">ES</a></div>
 <p class="sidebar-section">On this page</p>
 <a href="#overview">Overview</a>
 <a href="#quick-start">Quick Start</a>
+<a href="#two-pipelines">Two Pipelines</a>
 <a href="#cve-engine">CVE Engine</a>
-<a href="#binary-re">Binary RE</a>
-<a href="#mcp-server">MCP Server</a>
+<a href="#binary-re">Binary RE Engine</a>
+<a href="#reports">Reports</a>
+<a href="#mcp-server">MCP Integration</a>
+<a href="#cli-reference">CLI Reference</a>
 <a href="#installation">Installation</a>
 <a href="#configuration">Configuration</a>
+<a href="#comparison">Comparison</a>
+<a href="#roadmap">Roadmap</a>
 <hr class="sidebar-sep">
 <p class="sidebar-section">Navigation</p>
 <a href="index.html" class="active">Home</a>
 <a href="index-es.html">Docs (ES)</a>
 <a href="tutorial.html">Tutorial</a>
 <a href="roadmap.html">Roadmap</a>
+<a href="architecture.html">Architecture</a>
+<a href="cve-chains.html">CVE Chains</a>
+<a href="firmware.html">Firmware</a>
+<a href="kernel-exploits.html">Kernel Exploits</a>
+<a href="finetune.html">Fine-tuning</a>
+<a href="mcp-tools.html">MCP Tools</a>
 <hr class="sidebar-sep">
 <p class="sidebar-section">Links</p>
 <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
@@ -325,92 +417,125 @@ body {
   <main class="doc-content">
 
     <h1 id="overview">binoracle</h1>
-    <p class="page-lead">Autonomous CVE exploit research and binary reverse engineering — 100% local, zero cloud calls.</p>
+    <p class="page-lead">Autonomous CVE exploit research and binary reverse engineering tool. All analysis runs locally — no data is sent to external services.</p>
 
-    <blockquote>
-      <strong>Legal notice</strong> — binoracle is a research and educational tool. All CVE labs run exclusively against Docker containers you provision locally. Do not use this tool against systems you do not own or lack explicit written authorization to test.
-    </blockquote>
+    <div class="doc-metrics">
+      <div class="doc-metric"><div class="metric-value">20+</div><div class="metric-label">CVE classes</div></div>
+      <div class="doc-metric"><div class="metric-value">50+</div><div class="metric-label">Exploit families</div></div>
+      <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Binary formats</div></div>
+      <div class="doc-metric"><div class="metric-value">~100</div><div class="metric-label">MCP tools</div></div>
+      <div class="doc-metric"><div class="metric-value">40+</div><div class="metric-label">Practice samples</div></div>
+    </div>
 
-    <h2 id="quick-start">Quick start</h2>
-    <pre><code># Install
+    <div class="doc-callout danger">
+      <strong>Legal notice.</strong> binoracle is a research and educational tool. All CVE labs run exclusively against Docker containers you provision locally on your own machine. Do not use this tool against systems you do not own or for which you lack explicit written authorization.
+    </div>
+
+    <h2 id="quick-start">Quick Start</h2>
+    <p>Prerequisites: Python 3.10+, Docker 20.x+, Ollama 0.3+.</p>
+    <pre><code># 1. Install binoracle
 pip install binoracle
 
-# Install Ollama and pull the model (Linux / macOS)
+# 2. Install Ollama and pull the model (Linux / macOS)
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen2.5-coder:7b
 
-# Configure the LLM backend
+# 3. Configure the LLM backend
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 
-# Run the CVE engine autonomously
+# 4. Run the CVE engine on a real CVE
 binoracle cve CVE-2025-27516
 
-# Static analysis on a binary
-binoracle triage ./target_binary
+# 5. Analyse a binary
+binoracle triage ./target_binary</code></pre>
 
-# Full exploit chain
-binoracle pwn ./vulnerable_binary</code></pre>
+    <div class="doc-callout tip">
+      <strong>Persist configuration.</strong> Add the three <code>export</code> lines to <code>~/.bashrc</code> or <code>~/.zshrc</code> so they survive shell restarts.
+    </div>
 
-    <h2 id="engines">Engines</h2>
-    <table>
-      <thead><tr><th>Engine</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><strong>CVE Engine</strong></td>
-          <td>Retrieves a CVE descriptor from NVD, feeds it to a local LLM (Qwen 2.5 Coder 7B via Ollama) which autonomously generates exploit hypotheses — no external hints supplied. Provisions an ephemeral Docker Compose lab, executes the proof-of-concept, captures Playwright screenshots at each step, and emits a structured HTML report.</td>
-        </tr>
-        <tr>
-          <td><strong>Binary RE Engine</strong></td>
-          <td>Static and dynamic analysis of ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM and SQLite. Covers exploit generation (stack, heap, format string, SROP), ROP chain synthesis, multi-backend decompilation, and hardening assessment. All operations run locally.</td>
-        </tr>
-        <tr>
-          <td><strong>MCP Server</strong></td>
-          <td>Exposes the full capability set as ~100 MCP tools, enabling integration with Claude Desktop, Cursor, Zed, and other MCP-compatible clients.</td>
-        </tr>
-      </tbody>
-    </table>
+    <h2 id="two-pipelines">Two Pipelines</h2>
+    <p>binoracle exposes two independent analysis pipelines that can be used separately or combined.</p>
+    <div class="doc-two-col">
+      <div>
+        <h4>CVE Pipeline</h4>
+        <p>Takes a CVE identifier. Retrieves the NVD descriptor, passes it to a local LLM which generates exploit hypotheses autonomously. Provisions an ephemeral Docker Compose lab, executes the proof-of-concept, records Playwright screenshots at every verification step, and emits a self-contained HTML report to disk.</p>
+        <p>No data is sent to external services. The LLM runs entirely on your machine via Ollama.</p>
+        <pre><code>binoracle cve CVE-2025-27516
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334</code></pre>
+      </div>
+      <div>
+        <h4>Binary RE Pipeline</h4>
+        <p>Takes a binary file. Runs static analysis (symbols, imports, sections, mitigations), optionally dynamic tracing, feeds the decompiled output to the LLM which selects an exploit technique and generates a working pwntools script. Outputs a structured HTML report with the full reasoning chain.</p>
+        <p>Supports ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, EVM, and SQLite formats.</p>
+        <pre><code>binoracle triage ./binary
+binoracle pwn    ./binary</code></pre>
+      </div>
+    </div>
 
     <h2 id="cve-engine">CVE Engine</h2>
-    <p>The engine is fully autonomous — the local LLM receives only the NVD description and no analyst-supplied hints. All exploit hypotheses are generated from that description alone.</p>
+    <p>The CVE engine is fully autonomous. The local LLM receives only the raw NVD description — no analyst-supplied hints, no guided prompts, no pre-filled templates. Hypotheses are generated entirely from that description.</p>
 
-    <img src="assets/cve-flow.svg" alt="CVE engine pipeline" style="width:100%;border-radius:var(--r);border:1px solid var(--brd);margin:1rem 0;">
+    <pre class="doc-pipeline"> NVD / NIST          LLM local           Docker lab         Playwright          HTML report
+ CVE descriptor  --&gt;  Qwen 2.5 Coder  --&gt;  ephemeral env  --&gt;  screenshots    --&gt;  disk only
+                      zero hints           Docker Compose      each step           HTML+CSS</pre>
+
+    <p>Each CVE run provisions a fresh Docker Compose environment scoped to that CVE. The environment is torn down automatically after the run. No persistent lab state is kept between runs.</p>
 
     <h3>Supported vulnerability classes</h3>
     <table>
-      <thead><tr><th>Class</th><th>Scaffolders</th><th>Auto PoC</th></tr></thead>
-      <tbody><tr><td>SSTI (Jinja2, Twig, Smarty)</td><td><code>pip / gem</code></td><td>✓ yes</td></tr>
-<tr><td>SQLi (GET / POST / JSON / header)</td><td><code>pip / gem / php / maven</code></td><td>✓ yes</td></tr>
-<tr><td>Path traversal / LFI</td><td><code>pip / gem / npm / httpd</code></td><td>✓ yes</td></tr>
-<tr><td>RCE / command injection</td><td><code>pip / gem / npm</code></td><td>✓ yes</td></tr>
-<tr><td>XSS (reflected / stored)</td><td><code>pip / npm</code></td><td>✓ yes</td></tr>
-<tr><td>SSRF</td><td><code>pip / npm</code></td><td>✓ yes</td></tr>
-<tr><td>XXE</td><td><code>java / maven</code></td><td>✓ yes</td></tr>
-<tr><td>Deserialization</td><td><code>java / gem (Marshal)</code></td><td>✓ yes</td></tr>
-<tr><td>Auth bypass / IDOR</td><td><code>pip / gem / npm</code></td><td>✓ yes</td></tr>
-<tr><td>File upload / webshell</td><td><code>pip</code></td><td>✓ yes</td></tr>
-<tr><td>CSRF</td><td><code>pip / gem</code></td><td>✓ yes</td></tr>
-<tr><td>WordPress plugins (100+)</td><td><code>WP Docker</code></td><td>✓ yes</td></tr>
-<tr><td>Joomla / Drupal extensions</td><td><code>CMS Docker</code></td><td>✓ yes</td></tr>
-<tr><td>Java / Maven (Spring, Struts, Log4j)</td><td><code>maven</code></td><td>✓ yes</td></tr>
-<tr><td>PHP Composer packages</td><td><code>php</code></td><td>✓ yes</td></tr>
-<tr><td>npm / Node.js / Next.js</td><td><code>npm</code></td><td>✓ yes</td></tr>
-<tr><td>Ruby gems (Rails, Rack, Sinatra)</td><td><code>gem</code></td><td>✓ yes</td></tr></tbody>
+      <thead><tr><th>Class</th><th>Ecosystems</th><th>Auto PoC</th></tr></thead>
+      <tbody><tr><td>SSTI</td><td><code>Jinja2, Twig, Smarty</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>SQLi (GET / POST / JSON / header)</td><td><code>Python, Ruby, PHP, Java</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Path traversal / LFI</td><td><code>Python, Ruby, Node, httpd</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>RCE / command injection</td><td><code>Python, Ruby, Node</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>XSS (reflected / stored)</td><td><code>Python, Node</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>SSRF</td><td><code>Python, Node</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>XXE</td><td><code>Java / Maven</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Deserialization</td><td><code>Java, Ruby (Marshal)</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Auth bypass / IDOR</td><td><code>Python, Ruby, Node</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>File upload / webshell</td><td><code>Python</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Open redirect</td><td><code>Python, Ruby, Node</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>CSRF</td><td><code>Python, Ruby</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>WordPress plugins (100+)</td><td><code>WP Docker</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Joomla extensions</td><td><code>Joomla Docker</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Drupal modules</td><td><code>Drupal Docker</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Apache httpd</td><td><code>httpd Docker</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Spring / Struts / Log4j</td><td><code>Maven</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>PHP Composer packages</td><td><code>PHP Docker</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>npm / Node.js / Next.js</td><td><code>Node Docker</code></td><td class="cmp-yes">yes</td></tr>
+<tr><td>Ruby gems (Rails, Rack, Sinatra)</td><td><code>Ruby Docker</code></td><td class="cmp-yes">yes</td></tr></tbody>
     </table>
 
     <h3>Commands</h3>
-    <pre><code># Single CVE
+    <pre><code># Single CVE, default language (Spanish)
 binoracle cve CVE-2025-27516
 
-# Batch, parallelized
+# Single CVE, English report, open in browser
+binoracle cve CVE-2025-27516 --lang en --open-report
+
+# Single CVE, custom output directory
+binoracle cve CVE-2025-27516 --out ./reports/
+
+# Batch run, parallelized
 binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
 
-# Report language override
-binoracle cve CVE-2025-27516 --lang en</code></pre>
+# Batch with output directory
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/</code></pre>
 
     <h2 id="binary-re">Binary RE Engine</h2>
-    <p>50+ exploit families automated end-to-end. Static analysis, dynamic tracing, decompilation, and exploit chain generation across multiple binary formats.</p>
+    <p>Static and dynamic analysis pipeline for binary files. Covers 50+ exploit families across stack, heap, format string, and low-level categories. All analysis runs locally without uploading the binary.</p>
+
+    <pre class="doc-pipeline"> Binary input
+     |
+     +-- Static analysis -- symbols, imports, sections, mitigations (NX/PIE/RELRO/canary)
+     |
+     +-- LLM analysis ----- decompiled code review, vuln patterns, technique selection
+     |
+     +-- Dynamic (opt) ---- strace / ltrace / gdb automation
+     |
+     +-- Exploit gen ------ pwntools script + structured HTML report</pre>
 
     <h3>Exploit families</h3>
     <table>
@@ -419,36 +544,64 @@ binoracle cve CVE-2025-27516 --lang en</code></pre>
 <tr><td><strong>Heap</strong></td><td>tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, large-bin attack, Botcake</td></tr>
 <tr><td><strong>Format string</strong></td><td>%n arbitrary write, GOT overwrite, canary leak, PIE leak</td></tr>
 <tr><td><strong>Low-level</strong></td><td>shellcode (NX off), bad-char scrubbing, IO_FILE exploit, DL-resolve, GOT hijack</td></tr>
-<tr><td><strong>Canary</strong></td><td>leak + reuse, fork brute-force</td></tr>
-<tr><td><strong>PIE</strong></td><td>partial overwrite, leak chain</td></tr></tbody>
+<tr><td><strong>Canary bypass</strong></td><td>leak + reuse, fork brute-force</td></tr>
+<tr><td><strong>PIE bypass</strong></td><td>partial overwrite, leak chain</td></tr></tbody>
     </table>
 
     <h3>Supported formats</h3>
     <table>
       <thead><tr><th>Format</th><th>Analysis backends</th></tr></thead>
-      <tbody><tr><td>ELF (x86-64 / x86 / ARM / MIPS / RISC-V)</td><td>radare2, pyelftools, pwntools, angr</td></tr>
+      <tbody><tr><td>ELF (x86-64 / x86 / ARM / MIPS / RISC-V)</td><td>radare2, pyelftools, pwntools, angr, pwndbg</td></tr>
 <tr><td>PE / PE+ (Windows)</td><td>pefile, LIEF, radare2</td></tr>
 <tr><td>Mach-O (macOS / iOS)</td><td>LIEF, radare2</td></tr>
 <tr><td>APK / DEX (Android)</td><td>apktool, jadx, androguard</td></tr>
 <tr><td>.NET assemblies</td><td>dnlib, ILSpy</td></tr>
+<tr><td>Go binaries</td><td>go-dis, symbol recovery</td></tr>
+<tr><td>Rust binaries</td><td>LIEF + symbol demangling</td></tr>
 <tr><td>WASM modules</td><td>wabt, binaryen</td></tr>
-<tr><td>Go / Rust binaries</td><td>LIEF + symbol recovery</td></tr>
 <tr><td>EVM bytecode</td><td>pyevmasm</td></tr>
 <tr><td>SQLite databases</td><td>sqlite3 schema + data dump</td></tr></tbody>
     </table>
 
     <h3>Commands</h3>
     <pre><code>binoracle triage ./binary        # mitigations, symbols, imports, sections
-binoracle decompile ./binary     # multi-backend: Ghidra, radare2, angr, pwndbg
+binoracle decompile ./binary     # multi-backend: Ghidra, radare2, angr, pwndbg + LLM
+binoracle pwn ./binary           # full exploit chain, technique auto-selected
 binoracle rop ./binary           # ROP gadget search + chain synthesis
-binoracle chain ./binary         # full exploit chain generation
-binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI</code></pre>
+binoracle chain ./binary         # gadget enumeration + pwntools script
+binoracle heap ./binary          # heap exploit primitives
+binoracle fmt ./binary           # format string exploitation
+binoracle srop ./binary          # SROP chain generation
+binoracle shellcode ./binary     # shellcode with bad-char filtering
+binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI audit</code></pre>
 
-    <h2 id="mcp-server">MCP Server</h2>
-    <p>binoracle exposes its full capability set as MCP tools, enabling integration with Claude Desktop, Cursor, Zed, and other MCP-compatible clients. Available tools include <code>triage</code>, <code>pwn</code>, <code>rop_chain</code>, <code>heap_exploit</code>, <code>fmt_exploit</code>, <code>cve_investigate</code>, <code>decompile</code>, <code>hardening</code>, <code>audit</code>, and others (~100 total).</p>
+    <h2 id="reports">Reports</h2>
+    <p>Every CVE investigation and binary analysis writes a self-contained HTML report to disk. Reports are single-file HTML with embedded CSS — no external dependencies required to view them.</p>
+    <table>
+      <thead><tr><th>Section</th><th>Contents</th></tr></thead>
+      <tbody>
+        <tr><td>Executive summary</td><td>CVSS score, severity rating, affected component and version</td></tr>
+        <tr><td>Hypothesis</td><td>Full LLM reasoning chain showing how the exploit was derived</td></tr>
+        <tr><td>Lab</td><td>Docker Compose specification, service versions, network configuration</td></tr>
+        <tr><td>Evidence</td><td>Playwright screenshots captured at each verification step</td></tr>
+        <tr><td>PoC</td><td>Complete, runnable curl / Python / pwntools exploit code</td></tr>
+        <tr><td>Remediation</td><td>Specific fix guidance with before/after code examples</td></tr>
+      </tbody>
+    </table>
+    <pre><code># Open report immediately after run
+binoracle cve CVE-2025-27516 --open-report
+
+# Write to a specific directory
+binoracle cve CVE-2025-27516 --out ./reports/
+
+# Batch with output directory
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/</code></pre>
+
+    <h2 id="mcp-server">MCP Integration</h2>
+    <p>binoracle exposes its full toolkit as an MCP server, making all analysis capabilities available to any MCP-compatible client: Claude Desktop, Cursor, Zed, and others. The server runs locally and does not require network access.</p>
     <pre><code>binoracle mcp-server</code></pre>
-    <pre><code>// claude_desktop_config.json
-{
+    <p>Add to your client configuration:</p>
+    <pre><code>{
   "mcpServers": {
     "binoracle": {
       "command": "binoracle",
@@ -456,35 +609,133 @@ binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI</code></
     }
   }
 }</code></pre>
+    <details>
+      <summary>All MCP tools (~100)</summary>
+      <p style="margin-top:.75rem;line-height:2">
+        <code>triage</code> <code>pwn</code> <code>rop_chain</code> <code>heap_exploit</code> <code>fmt_exploit</code> <code>decompile</code> <code>cve_investigate</code> <code>vuln_hunt</code> <code>iocscan</code> <code>hardening</code> <code>audit</code> <code>reachability</code> <code>diff_patch</code> <code>elf_layout</code> <code>pe_inspect</code> <code>apk_audit</code> <code>dotnet_inspect</code> <code>wasm_inspect</code> <code>sqlite_audit</code> <code>evm_inspect</code> <code>fuzz</code> <code>dynamic_trace</code> <code>coredump</code> <code>shellcode</code> <code>srop_chain</code> <code>got_hijack</code> <code>io_file</code> <code>dlresolve</code> <code>canary_leak</code> <code>pie_leak</code> <code>format_string</code> <code>heap_triage</code> <code>heap_tcache</code> <code>heap_fastbin</code> <code>heap_uaf</code> <code>heap_house</code> <code>stack_pivot</code> <code>ret2csu</code> <code>ret2plt</code> <code>ret2libc</code> <code>ret2win</code> <code>rop_search</code> <code>symbol_recovery</code> <code>import_scan</code> <code>export_scan</code> <code>section_dump</code> <code>string_extract</code> <code>entropy_scan</code> <code>yara_scan</code> <code>cve_batch</code> <code>vuln_classify</code> <code>patch_diff</code> <code>n_day_analysis</code> <code>cwe_map</code> <code>cvss_score</code> <code>exploit_db_search</code> <code>lab_provision</code> <code>lab_teardown</code> <code>lab_exec</code> <code>playwright_capture</code> <code>report_generate</code> <code>report_open</code> <code>web</code>
+      </p>
+    </details>
+
+    <h2 id="cli-reference">CLI Reference</h2>
+    <table>
+      <thead><tr><th>Command</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>triage</code></td><td>Mitigations, symbols, imports, sections</td></tr>
+<tr><td><code>decompile</code></td><td>Ghidra / radare2 / angr / pwndbg + LLM annotation</td></tr>
+<tr><td><code>pwn</code></td><td>Full exploit chain, technique auto-selected</td></tr>
+<tr><td><code>rop</code></td><td>ROP gadget search and chain synthesis</td></tr>
+<tr><td><code>chain</code></td><td>Gadget enumeration + pwntools script output</td></tr>
+<tr><td><code>heap</code></td><td>Heap exploit primitives (tcache / fastbin / UAF / House-of-X)</td></tr>
+<tr><td><code>fmt</code></td><td>Format string exploitation</td></tr>
+<tr><td><code>srop</code></td><td>SROP chain generator</td></tr>
+<tr><td><code>shellcode</code></td><td>Shellcode with bad-char filtering</td></tr>
+<tr><td><code>fuzz</code></td><td>Dumb and smart fuzzer (AFL integration)</td></tr>
+<tr><td><code>dynamic</code></td><td>strace / ltrace / gdb automation</td></tr>
+<tr><td><code>hardening</code></td><td>Mitigation audit with bypass notes</td></tr>
+<tr><td><code>cve</code></td><td>Full CVE pipeline: fetch -&gt; lab -&gt; PoC -&gt; report</td></tr>
+<tr><td><code>cve-batch</code></td><td>Parallelised batch CVE pipeline</td></tr>
+<tr><td><code>vuln-hunt</code></td><td>Static taint analysis (sinks, sources)</td></tr>
+<tr><td><code>ioc-scan</code></td><td>IOC and malware indicator scan</td></tr>
+<tr><td><code>audit</code></td><td>All oracles + LLM synthesis</td></tr>
+<tr><td><code>reachability</code></td><td>Source-to-sink reachability</td></tr>
+<tr><td><code>diff</code></td><td>Patch diff and N-day analysis</td></tr>
+<tr><td><code>apk</code></td><td>Android APK audit</td></tr>
+<tr><td><code>dotnet</code></td><td>.NET assembly inspection</td></tr>
+<tr><td><code>wasm</code></td><td>WASM module inspection</td></tr>
+<tr><td><code>sqlite</code></td><td>SQLite schema + data audit</td></tr>
+<tr><td><code>evm</code></td><td>EVM bytecode inspection</td></tr>
+<tr><td><code>mcp-server</code></td><td>Start MCP server</td></tr>
+<tr><td><code>web</code></td><td>Start local web UI</td></tr></tbody>
+    </table>
 
     <h2 id="installation">Installation</h2>
     <pre><code>pip install binoracle</code></pre>
-    <p>Optional dependency sets:</p>
-    <pre><code>pip install binoracle[pwn]        # pwntools + ROPgadget
-pip install binoracle[symbolic]   # angr symbolic execution
-pip install binoracle[screenshots] # Playwright screenshots in CVE reports
-pip install binoracle[all]        # all of the above</code></pre>
+    <p>Optional dependency sets install additional backends:</p>
+    <pre><code>pip install binoracle[elf]         # pyelftools extras
+pip install binoracle[pwn]         # pwntools + ROPgadget
+pip install binoracle[symbolic]    # angr symbolic execution
+pip install binoracle[screenshots] # Playwright for CVE report screenshots
+pip install binoracle[all]         # everything above</code></pre>
 
     <table>
-      <thead><tr><th>Dependency</th><th>Minimum</th><th>Recommended</th></tr></thead>
+      <thead><tr><th></th><th>Minimum</th><th>Recommended</th></tr></thead>
       <tbody>
         <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
         <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
         <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
         <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
-        <tr><td>GPU (optional)</td><td>—</td><td>8 GB VRAM (Qwen 7B quantized)</td></tr>
+        <tr><td>GPU</td><td>&mdash;</td><td>8 GB VRAM (Qwen 7B quantized)</td></tr>
       </tbody>
     </table>
 
     <h2 id="configuration">Configuration</h2>
-    <pre><code># Local LLM via Ollama (recommended)
+    <p>All configuration is via environment variables. No configuration file is required.</p>
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>BINORACLE_BACKEND</code></td><td><code>openai</code></td><td>LLM backend protocol (openai-compatible)</td></tr>
+        <tr><td><code>BINORACLE_BASE_URL</code></td><td><em>none</em></td><td>LLM API base URL (e.g. http://127.0.0.1:11434/v1)</td></tr>
+        <tr><td><code>BINORACLE_MODEL</code></td><td><em>none</em></td><td>Model identifier (e.g. qwen2.5-coder:7b)</td></tr>
+        <tr><td><code>BINORACLE_API_KEY</code></td><td><em>none</em></td><td>API key — only needed for cloud backends</td></tr>
+        <tr><td><code>BINORACLE_LANG</code></td><td><code>es</code></td><td>Report language: <code>es</code> or <code>en</code></td></tr>
+      </tbody>
+    </table>
+    <pre><code># Local Ollama (recommended — fully offline)
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 
-# Report language (default: es)
+# OpenAI-compatible cloud backend (optional)
+export BINORACLE_BASE_URL=https://api.openai.com/v1
+export BINORACLE_API_KEY=sk-...
+export BINORACLE_MODEL=gpt-4o-mini
+
+# English reports
 export BINORACLE_LANG=en</code></pre>
-    <p>Add these to your shell profile (<code>~/.bashrc</code>, <code>~/.zshrc</code>) to persist them across sessions.</p>
+
+    <h2 id="architecture">Architecture</h2>
+    <img src="assets/architecture.svg" alt="binoracle architecture diagram" style="width:100%;border-radius:var(--r);border:1px solid var(--brd);margin:1rem 0;">
+
+    <h2 id="corpus">Practice Corpus</h2>
+    <p>The repository includes 40+ intentionally vulnerable binaries for local exploitation practice. Each binary is built with a specific vulnerability and mitigations set to exercise a particular technique.</p>
+    <pre><code># Build all samples (requires Docker or gcc)
+samples/build.sh
+
+# Run the exploit chain against a sample
+binoracle pwn samples/bin/ret2libc
+binoracle pwn samples/bin/tcache_dup
+binoracle pwn samples/bin/house_of_orange
+binoracle pwn samples/bin/format_string
+binoracle pwn samples/bin/srop_x64</code></pre>
+    <p>Techniques covered: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, format string GOT overwrite, canary leak, PIE leak, CSU chain, DL-resolve, heap botcake, house-of-orange, unsafe-unlink, stack pivot, IO_FILE, callhijack, dlresolve32.</p>
+
+    <h2 id="comparison">Comparison</h2>
+    <table>
+      <thead><tr><th>Capability</th><th>binoracle</th><th>REA</th></tr></thead>
+      <tbody><tr><td>Autonomous CVE pipeline (NVD -&gt; lab -&gt; PoC)</td><td class="cmp-yes">yes</td><td class="cmp-no">no</td></tr>
+<tr><td>Local LLM via Ollama</td><td class="cmp-yes">yes</td><td class="cmp-no">no</td></tr>
+<tr><td>Ephemeral Docker labs per CVE</td><td class="cmp-yes">yes</td><td class="cmp-no">no</td></tr>
+<tr><td>Playwright screenshot evidence in reports</td><td class="cmp-yes">yes</td><td class="cmp-no">no</td></tr>
+<tr><td>WordPress / Joomla / Drupal lab scaffolding</td><td class="cmp-yes">yes</td><td class="cmp-no">no</td></tr>
+<tr><td>MCP server (~100 tools)</td><td class="cmp-yes">yes</td><td class="cmp-no">no</td></tr>
+<tr><td>APK / .NET / WASM / EVM analysis</td><td class="cmp-yes">yes</td><td class="cmp-partial">partial</td></tr>
+<tr><td>Fully offline operation</td><td class="cmp-yes">yes</td><td class="cmp-partial">partial</td></tr>
+<tr><td>Stack / heap / format string / SROP exploit chains</td><td class="cmp-yes">yes</td><td class="cmp-yes">yes</td></tr>
+<tr><td>ROP chain synthesis</td><td class="cmp-yes">yes</td><td class="cmp-yes">yes</td></tr>
+<tr><td>Multi-backend decompilation</td><td class="cmp-yes">yes</td><td class="cmp-yes">yes</td></tr>
+<tr><td>Practice corpus</td><td class="cmp-yes">yes</td><td class="cmp-yes">yes</td></tr></tbody>
+    </table>
+
+    <h2 id="roadmap">Roadmap</h2>
+    <ul>
+      <li>Kernel exploit chains (ret2usr, UAF in drivers)</li>
+      <li>Firmware analysis (UEFI, embedded Linux)</li>
+      <li>LibFuzzer corpus seeded from CVE PoCs</li>
+      <li>Multi-CVE chains (web RCE &mdash; local privilege escalation)</li>
+      <li>CVSS v4 scoring</li>
+      <li>Burp Suite MCP bridge</li>
+      <li>JEB decompiler (Android native)</li>
+      <li>Fine-tuned model for exploit hypothesis generation</li>
+    </ul>
 
   </main>
 </div>

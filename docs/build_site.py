@@ -1955,6 +1955,773 @@ binoracle pwn samples/bin/tcache_dup</code></pre>
     return shell("Tutorial de binoracle", "tutorial", body)
 
 # ---------------------------------------------------------------------------
+# Architecture page
+# ---------------------------------------------------------------------------
+def architecture_page():
+    arch_svg = """<svg viewBox="0 0 820 500" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:500px;font-family:system-ui,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+    </marker>
+  </defs>
+  <!-- Background boxes -->
+  <rect x="10" y="10" width="800" height="480" rx="12" fill="#161b22" stroke="#30363d"/>
+  <!-- CLI layer -->
+  <rect x="30" y="30" width="140" height="60" rx="8" fill="#1f6feb" stroke="#58a6ff"/>
+  <text x="100" y="55" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">CLI</text>
+  <text x="100" y="73" text-anchor="middle" fill="#b3d4ff" font-size="10">binoracle/cli.py</text>
+  <!-- CVE Agent -->
+  <rect x="220" y="30" width="150" height="60" rx="8" fill="#0d2847" stroke="#58a6ff"/>
+  <text x="295" y="55" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">CVE Agent</text>
+  <text x="295" y="73" text-anchor="middle" fill="#8b949e" font-size="10">workflows/cve_agent.py</text>
+  <!-- Workflows -->
+  <rect x="420" y="30" width="150" height="60" rx="8" fill="#0d2847" stroke="#bc8cff"/>
+  <text x="495" y="55" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">Workflows</text>
+  <text x="495" y="73" text-anchor="middle" fill="#8b949e" font-size="10">workflows/*.py</text>
+  <!-- MCP Server -->
+  <rect x="620" y="30" width="150" height="60" rx="8" fill="#0d2847" stroke="#3fb950"/>
+  <text x="695" y="55" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">MCP Server</text>
+  <text x="695" y="73" text-anchor="middle" fill="#8b949e" font-size="10">mcp_server.py</text>
+  <!-- Oracles -->
+  <rect x="30" y="160" width="140" height="60" rx="8" fill="#0d2847" stroke="#d29922"/>
+  <text x="100" y="185" text-anchor="middle" fill="#d29922" font-size="13" font-weight="700">Oracles</text>
+  <text x="100" y="203" text-anchor="middle" fill="#8b949e" font-size="10">oracles/*.py</text>
+  <!-- Report -->
+  <rect x="220" y="160" width="150" height="60" rx="8" fill="#0d2847" stroke="#f85149"/>
+  <text x="295" y="185" text-anchor="middle" fill="#f85149" font-size="13" font-weight="700">Report / HTML</text>
+  <text x="295" y="203" text-anchor="middle" fill="#8b949e" font-size="10">report/html.py</text>
+  <!-- Store -->
+  <rect x="420" y="160" width="150" height="60" rx="8" fill="#0d2847" stroke="#58a6ff"/>
+  <text x="495" y="185" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">Session Store</text>
+  <text x="495" y="203" text-anchor="middle" fill="#8b949e" font-size="10">store/session.py</text>
+  <!-- RAG / KB -->
+  <rect x="620" y="160" width="150" height="60" rx="8" fill="#0d2847" stroke="#bc8cff"/>
+  <text x="695" y="185" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">RAG / KB</text>
+  <text x="695" y="203" text-anchor="middle" fill="#8b949e" font-size="10">rag.py + kb/*.md</text>
+  <!-- LLM Backend -->
+  <rect x="230" y="310" width="360" height="60" rx="8" fill="#0a1628" stroke="#30363d" stroke-dasharray="5,3"/>
+  <text x="410" y="335" text-anchor="middle" fill="#8b949e" font-size="13" font-weight="700">LLM Backend</text>
+  <text x="410" y="353" text-anchor="middle" fill="#8b949e" font-size="10">local (Ollama/llama.cpp) · remote (Anthropic API)</text>
+  <!-- Docker / Sandbox -->
+  <rect x="230" y="400" width="360" height="60" rx="8" fill="#0a1628" stroke="#30363d" stroke-dasharray="5,3"/>
+  <text x="410" y="425" text-anchor="middle" fill="#8b949e" font-size="13" font-weight="700">Docker Sandbox</text>
+  <text x="410" y="443" text-anchor="middle" fill="#8b949e" font-size="10">wpverify · drupalverify · genericverify · autopoc</text>
+  <!-- Arrows: CLI -> CVE Agent -->
+  <line x1="170" y1="60" x2="218" y2="60" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- CLI -> Workflows -->
+  <line x1="170" y1="65" x2="418" y2="65" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+  <!-- CVE Agent -> Workflows -->
+  <line x1="370" y1="60" x2="418" y2="60" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Workflows -> MCP -->
+  <line x1="570" y1="60" x2="618" y2="60" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- CVE Agent -> Oracles -->
+  <line x1="295" y1="90" x2="130" y2="158" stroke="#d29922" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- CVE Agent -> Report -->
+  <line x1="295" y1="90" x2="295" y2="158" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- CVE Agent -> Store -->
+  <line x1="320" y1="90" x2="460" y2="158" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+  <!-- Workflows -> RAG -->
+  <line x1="495" y1="90" x2="695" y2="158" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+  <!-- CVE Agent -> LLM -->
+  <line x1="295" y1="220" x2="350" y2="308" stroke="#30363d" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Workflows -> LLM -->
+  <line x1="495" y1="220" x2="460" y2="308" stroke="#30363d" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Workflows -> Docker -->
+  <line x1="495" y1="220" x2="460" y2="398" stroke="#30363d" stroke-width="1.5" stroke-dasharray="5,2" marker-end="url(#arr)"/>
+</svg>"""
+
+    body = f"""
+<div class="doc-layout">
+{wiki_sidebar("architecture", "en")}
+<main class="doc-content" style="max-width:860px">
+  <h1 id="overview">Architecture</h1>
+  <p class="page-lead">binoracle is built as a layered, modular Python package. Each layer has a single responsibility — the CLI wires them together, but every component can be imported and used independently.</p>
+
+  <div style="margin:1.5rem 0;border:1px solid var(--brd);border-radius:var(--r);overflow:hidden;padding:1.5rem;background:var(--surf)">
+    {arch_svg}
+  </div>
+  <p style="font-size:.82rem;color:var(--muted);text-align:center;margin-top:.25rem">Figure 1 — Component map. Solid arrows = primary data paths. Dashed arrows = optional/lazy paths.</p>
+
+  <h2 id="components">Components at a glance</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Component</th><th>File / Package</th><th>Responsibility</th></tr></thead>
+    <tbody>
+      <tr><td><code>cli.py</code></td><td>binoracle/cli.py</td><td>Argument parsing, command dispatch, terminal output formatting</td></tr>
+      <tr><td>CVE Agent</td><td>workflows/cve_agent.py</td><td>End-to-end CVE investigation: NVD lookup → LLM hypothesis → Docker lab → verification</td></tr>
+      <tr><td>Workflows</td><td>workflows/*.py</td><td>Binary RE workflows: autopwn, cveplan, wpverify, drupalverify, firmware, kernel, finetune…</td></tr>
+      <tr><td>Oracles</td><td>oracles/*.py</td><td>Grounded data extraction: radare2, checksec, angr, capstone, pwntools, pefile, pyelftools</td></tr>
+      <tr><td>Report</td><td>report/html.py</td><td>Self-contained HTML report generation (CVE, binary, dataset)</td></tr>
+      <tr><td>Session Store</td><td>store/session.py</td><td>Persistent JSON store for findings across a session</td></tr>
+      <tr><td>RAG / KB</td><td>rag.py + kb/</td><td>Retrieval-augmented generation: searches the markdown knowledge base for technique context</td></tr>
+      <tr><td>MCP Server</td><td>mcp_server.py</td><td>Exposes every tool as an MCP endpoint for Claude Desktop / VS Code / Zed</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="diagram">Architecture Diagram</h2>
+  <p>The diagram above shows two main pipelines flowing through the architecture:</p>
+  <ol>
+    <li><strong>CVE Pipeline</strong> — CLI → CVE Agent → Oracles + LLM + Docker → Report + Store</li>
+    <li><strong>Binary RE Pipeline</strong> — CLI → Workflows → Oracles + LLM → Findings → Report</li>
+  </ol>
+  <p>Both pipelines share the same LLM backend, session store, RAG corpus, and HTML report generator. The MCP server wraps every tool and exposes it to AI assistants like Claude.</p>
+
+  <h2 id="data-flow">Data Flow</h2>
+  <p>When you run <code>binoracle cve CVE-2024-1234 -o report.html</code>, the following happens:</p>
+  <ol>
+    <li><strong>cli.py</strong> parses the command and calls <code>cmd_cve(args, config)</code>.</li>
+    <li><code>investigate_cve()</code> in <strong>cve_agent.py</strong> starts. It fetches the CVE from NVD, extracts CVSS score, severity, vector and description.</li>
+    <li>The LLM backend is queried for a hypothesis: target binary, trigger input, vulnerability class, affected version, attack plan.</li>
+    <li>If a public PoC exists on GitHub, it is fetched and read. The hypothesis is updated with real data.</li>
+    <li>The source code of the target is downloaded (PyPI, npm, GitHub) and statically analysed with radare2 / grep / AST analysis to <em>ground</em> the hypothesis in real function names and line numbers.</li>
+    <li>A Docker Compose lab is scaffolded and started. The PoC script is executed inside the sandbox. Output, screenshots and HTTP responses are captured.</li>
+    <li>The <code>Investigation</code> dataclass is populated with all evidence and serialised to cache (<code>~/.cache/binoracle/investigations/</code>).</li>
+    <li><code>render_investigation()</code> generates the markdown report. <code>render_investigation_page()</code> wraps it in the professional HTML template.</li>
+    <li>The HTML is written to the path you passed with <code>-o</code>. The terminal shows only the verdict box and the saved-path confirmation.</li>
+  </ol>
+
+  <h2 id="cli-layer">CLI Layer</h2>
+  <p><code>binoracle/cli.py</code> is the single entry point. It defines subcommands using <code>argparse</code> subparsers:</p>
+  <pre><code>binoracle cve &lt;CVE-ID&gt; [-o report.html] [--json evidence.json]
+binoracle investigate &lt;CVE-ID&gt; [--binary elf] [-o report.html]
+binoracle cve-chain &lt;CVE-ID&gt; [&lt;CVE-ID&gt; ...]
+binoracle autopwn &lt;binary&gt; [-o report.html]
+binoracle decompile &lt;binary&gt; [-f func] [--engine ghidra|r2]
+binoracle triage &lt;binary&gt;
+binoracle hunt &lt;binary&gt;
+binoracle firmware &lt;image&gt; [--extract-to dir]
+binoracle kernel-exploit &lt;module.ko&gt;
+binoracle finetune --collect | --train [--adapter lora]
+binoracle mcp-server</code></pre>
+  <p>Each subcommand handler (<code>cmd_cve</code>, <code>cmd_autopwn</code>, …) is a plain function that takes <code>(args, config)</code> and returns nothing. The exit code is set by <code>sys.exit()</code> only on explicit errors.</p>
+  <p>The <code>config</code> object is built from environment variables and <code>~/.config/binoracle/config.toml</code>. No config file is required — sensible defaults apply for everything except the LLM backend URL.</p>
+
+  <h2 id="agent-layer">Agent Layer</h2>
+  <p><code>workflows/cve_agent.py</code> is the largest file (~4500 lines). It contains:</p>
+  <ul>
+    <li>The <code>Investigation</code> dataclass — the central data model for a CVE investigation.</li>
+    <li><code>investigate_cve()</code> — the main orchestrator. It is a plain function, not a class. All state lives in the <code>Investigation</code> object passed by reference through helpers.</li>
+    <li>All the step functions: <code>fetch_cve()</code>, <code>query_llm_hypothesis()</code>, <code>fetch_public_poc()</code>, <code>ground_in_source()</code>, <code>scaffold_lab()</code>, <code>run_poc()</code>, <code>capture_screenshots()</code>, <code>render_investigation()</code>.</li>
+    <li>The investigation cache (read/write JSON to <code>~/.cache/binoracle/investigations/</code>).</li>
+  </ul>
+  <p>The agent never calls the CLI or the MCP server. It only knows about the <code>Investigation</code> dataclass and the step functions. This keeps it testable in isolation.</p>
+
+  <h2 id="oracle-layer">Oracle Layer</h2>
+  <p>Oracles are thin wrappers around external tools that return structured data:</p>
+  <ul>
+    <li><code>oracles/r2session.py</code> — manages a persistent <code>r2pipe</code> session. Runs radare2 JSON commands and caches results for the binary's lifetime.</li>
+    <li><code>oracles/checksec.py</code> — parses <code>r2 iS</code> and <code>r2 i</code> output to extract NX, PIE, Canary, RELRO, ASLR.</li>
+    <li><code>oracles/angr_oracle.py</code> — symbolic execution with angr. Used for auto-verification of stack overflows (finds exact overflow offset).</li>
+    <li><code>oracles/capstone_fallback.py</code> — disassembly fallback when r2 is not installed.</li>
+    <li><code>oracles/pefile_oracle.py</code> — PE header analysis (DllCharacteristics, imports, sections).</li>
+    <li><code>oracles/elf_oracle.py</code> — ELF analysis via pyelftools (DWARF, symbol table, section flags).</li>
+  </ul>
+  <p>All oracles are <em>lazily imported</em> — they only load when the tool they wrap is actually available. Missing an oracle never crashes binoracle; it degrades gracefully to what is installed.</p>
+
+  <h2 id="report-layer">Report Layer</h2>
+  <p><code>report/html.py</code> (~2500 lines) generates three kinds of self-contained HTML reports:</p>
+  <ul>
+    <li><strong>Binary RE report</strong> — <code>render_html()</code>: KPI dashboard, findings table, mitigation panel, decompiled functions, attack surface.</li>
+    <li><strong>CVE investigation report</strong> — <code>render_investigation_page()</code>: CVE hero header, CVSS/status badges, metadata grid, full markdown evidence below.</li>
+    <li><strong>Dataset SFT report</strong> — <code>render_dataset_page()</code>: summary + JSONL download button.</li>
+  </ul>
+  <p>All reports are <em>self-contained</em>: fonts are loaded from Google Fonts, everything else is inline or base64-embedded. No internet connection is needed to open a saved report.</p>
+
+  <h2 id="store">Session Store</h2>
+  <p><code>store/session.py</code> provides a lightweight append-only JSON store. Each <code>Finding</code> is a dataclass with title, severity, verdict, evidence, and location. Findings are written to <code>~/.local/share/binoracle/sessions/</code> and can be resumed across CLI invocations.</p>
+
+  <h2 id="mcp-layer">MCP Server</h2>
+  <p><code>mcp_server.py</code> exposes every binoracle capability as an MCP tool. The server uses the <code>mcp</code> Python package (FastMCP) and communicates over stdio. See the <a href="mcp-tools.html">MCP Tools Reference</a> for the full tool list.</p>
+  <p>Start the server with:</p>
+  <pre><code>binoracle mcp-server</code></pre>
+
+</main>
+</div>"""
+    return shell("Architecture — binoracle docs", "architecture", body)
+
+
+# ---------------------------------------------------------------------------
+# CVE Chains page
+# ---------------------------------------------------------------------------
+def cve_chains_page():
+    chain_svg = """<svg viewBox="0 0 760 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:200px;font-family:system-ui,sans-serif">
+  <defs>
+    <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+    </marker>
+  </defs>
+  <rect x="10" y="10" width="740" height="160" rx="10" fill="#161b22" stroke="#30363d"/>
+  <rect x="30" y="45" width="130" height="90" rx="8" fill="#0d2847" stroke="#58a6ff"/>
+  <text x="95" y="80" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">CVE-A</text>
+  <text x="95" y="97" text-anchor="middle" fill="#8b949e" font-size="10">Initial access</text>
+  <text x="95" y="113" text-anchor="middle" fill="#8b949e" font-size="9">e.g. auth bypass</text>
+  <line x1="162" y1="90" x2="210" y2="90" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="186" y="82" text-anchor="middle" fill="#8b949e" font-size="9">pivot</text>
+  <rect x="212" y="45" width="130" height="90" rx="8" fill="#0d2847" stroke="#bc8cff"/>
+  <text x="277" y="80" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="700">CVE-B</text>
+  <text x="277" y="97" text-anchor="middle" fill="#8b949e" font-size="10">Privilege escalation</text>
+  <text x="277" y="113" text-anchor="middle" fill="#8b949e" font-size="9">e.g. LPE / SUID</text>
+  <line x1="344" y1="90" x2="392" y2="90" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="368" y="82" text-anchor="middle" fill="#8b949e" font-size="9">chain</text>
+  <rect x="394" y="45" width="130" height="90" rx="8" fill="#0d2847" stroke="#d29922"/>
+  <text x="459" y="80" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">CVE-C</text>
+  <text x="459" y="97" text-anchor="middle" fill="#8b949e" font-size="10">Lateral movement</text>
+  <text x="459" y="113" text-anchor="middle" fill="#8b949e" font-size="9">e.g. RCE / SSRF</text>
+  <line x1="526" y1="90" x2="574" y2="90" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="550" y="82" text-anchor="middle" fill="#8b949e" font-size="9">exploit</text>
+  <rect x="576" y="45" width="130" height="90" rx="8" fill="#1a3822" stroke="#3fb950"/>
+  <text x="641" y="80" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">GOAL</text>
+  <text x="641" y="97" text-anchor="middle" fill="#8b949e" font-size="10">Full compromise</text>
+  <text x="641" y="113" text-anchor="middle" fill="#8b949e" font-size="9">root / data exfil</text>
+</svg>"""
+
+    body = f"""
+<div class="doc-layout">
+{wiki_sidebar("cve-chains", "en")}
+<main class="doc-content" style="max-width:860px">
+  <h1 id="overview">CVE Chains</h1>
+  <p class="page-lead">A CVE chain is an ordered sequence of two or more vulnerabilities that, when exploited in sequence, achieve an impact impossible with any single CVE alone. binoracle's <code>cve-chain</code> command investigates every CVE in the chain and synthesises an end-to-end attack narrative.</p>
+
+  <h2 id="what-is">What are CVE chains?</h2>
+  <p>Many real-world attacks require multiple steps:</p>
+  <ol>
+    <li>An unauthenticated attacker exploits an <strong>auth bypass</strong> (CVE-A) to gain a low-privilege session.</li>
+    <li>From that session they exploit a <strong>local privilege escalation</strong> (CVE-B) to gain root on the host.</li>
+    <li>From root they pivot via an <strong>SSRF or RCE</strong> (CVE-C) to reach an internal service.</li>
+  </ol>
+  <p>Each CVE alone might be rated MEDIUM. The chain is effectively CRITICAL. binoracle tracks the combined impact, pivot conditions and chained CVSS score across the full sequence.</p>
+
+  <div style="margin:1.5rem 0;border:1px solid var(--brd);border-radius:var(--r);overflow:hidden;padding:1.5rem;background:var(--surf)">
+    {chain_svg}
+  </div>
+  <p style="font-size:.82rem;color:var(--muted);text-align:center;margin-top:.25rem">Figure 1 — A three-CVE attack chain: initial access → privilege escalation → lateral movement → full compromise.</p>
+
+  <h2 id="pipeline">Chain Pipeline</h2>
+  <p>When you invoke <code>binoracle cve-chain CVE-A CVE-B CVE-C</code>, the engine:</p>
+  <ol>
+    <li>Investigates each CVE independently — NVD lookup, LLM hypothesis, source grounding, Docker verification. Each produces an <code>Investigation</code> object.</li>
+    <li>Analyses <strong>pivot conditions</strong>: does CVE-A's output (e.g. authenticated session, leaked credential, file write) provide the preconditions for CVE-B?</li>
+    <li>Computes a <strong>combined CVSS</strong> and <strong>combined impact statement</strong> for the whole chain.</li>
+    <li>Generates a unified HTML report with per-CVE sections and a chain summary at the top.</li>
+  </ol>
+
+  <h2 id="command">Command Reference</h2>
+  <pre><code>binoracle cve-chain &lt;CVE-1&gt; [&lt;CVE-2&gt; ...] [options]
+
+Options:
+  -o FILE, --html FILE     Export combined HTML report
+  --json FILE              Dump full chain evidence as JSON
+  --lang es|en             Report language (default: config)
+  --budget N               Max seconds per CVE (default: 300)
+  --no-cache               Bypass the investigation cache
+
+Examples:
+  # Two-step: auth bypass + privilege escalation
+  binoracle cve-chain CVE-2024-1071 CVE-2023-23752 -o chain.html
+
+  # Three-step chain with JSON evidence
+  binoracle cve-chain CVE-2023-1 CVE-2023-2 CVE-2023-3 --json chain.json -o chain.html
+
+  # Quick chain, skip Docker verification
+  binoracle cve-chain CVE-A CVE-B --budget 60</code></pre>
+
+  <div class="doc-callout tip">
+    <strong>Tip:</strong> Pass CVEs in exploit order — first the one that provides initial access, then each subsequent pivot. The engine infers pivot conditions automatically but ordering helps the LLM produce a better narrative.
+  </div>
+
+  <h2 id="examples">Example chains</h2>
+  <h3>WordPress: subscriber takeover → admin file write</h3>
+  <pre><code>binoracle cve-chain CVE-2024-1071 CVE-2024-27956 -o wp-chain.html</code></pre>
+  <p><strong>CVE-2024-1071</strong>: SQL injection via Ultimate Member plugin lets an unauthenticated user read the <code>wp_users</code> table and extract hashed passwords or directly set a known password via the injection.<br>
+  <strong>CVE-2024-27956</strong>: WP-Automatic plugin RCE via SQLi with authenticated user — using the credentials from CVE-1, an attacker gains admin-level file write, achieving full RCE.</p>
+
+  <h3>Apache + local: information disclosure → RCE</h3>
+  <pre><code>binoracle cve-chain CVE-2021-41773 CVE-2021-42013 -o apache-chain.html</code></pre>
+  <p><strong>CVE-2021-41773</strong>: Apache 2.4.49 path traversal — read /etc/passwd, discover enabled CGI modules.<br>
+  <strong>CVE-2021-42013</strong>: Apache 2.4.49/50 RCE via path traversal in CGI — combine with the traversal to achieve unauthenticated code execution.</p>
+
+  <h3>Container escape chain</h3>
+  <pre><code>binoracle cve-chain CVE-2022-0492 CVE-2022-25636 -o escape-chain.html</code></pre>
+  <p><strong>CVE-2022-0492</strong>: Linux cgroup v1 container escape — from container to host namespace.<br>
+  <strong>CVE-2022-25636</strong>: Netfilter heap out-of-bounds write for LPE — escalate to root on the host after escape.</p>
+
+  <h2 id="output">Output Format</h2>
+  <p>The <code>--json</code> flag dumps a JSON object with this structure:</p>
+  <pre><code>{{
+  "chain": ["CVE-A", "CVE-B", "CVE-C"],
+  "combined_impact": "Full RCE with no authentication required",
+  "combined_cvss_estimate": 9.8,
+  "pivot_conditions": [
+    {{"from": "CVE-A", "to": "CVE-B", "condition": "Authenticated session with subscriber role"}},
+    {{"from": "CVE-B", "to": "CVE-C", "condition": "Local file write in web root"}}
+  ],
+  "investigations": [
+    {{ /* Investigation object for CVE-A */ }},
+    {{ /* Investigation object for CVE-B */ }},
+    {{ /* Investigation object for CVE-C */ }}
+  ]
+}}</code></pre>
+  <p>Each <code>Investigation</code> object is the same schema as the single <code>--json</code> output from <code>binoracle cve</code> — the chain output embeds them all with the pivot analysis on top.</p>
+
+</main>
+</div>"""
+    return shell("CVE Chains — binoracle docs", "cve-chains", body)
+
+
+# ---------------------------------------------------------------------------
+# Firmware Analysis page
+# ---------------------------------------------------------------------------
+def firmware_page():
+    layers_svg = """<svg viewBox="0 0 500 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:280px;font-family:system-ui,sans-serif">
+  <rect x="10" y="10" width="480" height="260" rx="10" fill="#161b22" stroke="#30363d"/>
+  <rect x="30" y="30" width="440" height="40" rx="6" fill="#0d2847" stroke="#58a6ff"/>
+  <text x="250" y="56" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">Application Layer (busybox, httpd, openvpn, daemons)</text>
+  <rect x="30" y="80" width="440" height="40" rx="6" fill="#0d2847" stroke="#bc8cff"/>
+  <text x="250" y="106" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">Filesystem (SquashFS / JFFS2 / CRAMFS)</text>
+  <rect x="30" y="130" width="440" height="40" rx="6" fill="#0d2847" stroke="#d29922"/>
+  <text x="250" y="156" text-anchor="middle" fill="#d29922" font-size="13" font-weight="700">Kernel (Linux uImage / zImage / vmlinuz)</text>
+  <rect x="30" y="180" width="440" height="40" rx="6" fill="#0d2847" stroke="#3fb950"/>
+  <text x="250" y="206" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">Bootloader (U-Boot / RedBoot / CFE)</text>
+  <rect x="30" y="230" width="440" height="30" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="250" y="250" text-anchor="middle" fill="#8b949e" font-size="11">Flash / NAND / NOR — physical storage</text>
+</svg>"""
+
+    body = f"""
+<div class="doc-layout">
+{wiki_sidebar("firmware", "en")}
+<main class="doc-content" style="max-width:860px">
+  <h1 id="overview">Firmware Analysis</h1>
+  <p class="page-lead">binoracle can analyse firmware images from IoT devices, routers, embedded systems and industrial controllers. It extracts the filesystem, identifies binaries with known vulnerability classes, and applies the full radare2 + LLM analysis pipeline to each one.</p>
+
+  <h2 id="layers">Firmware Layers</h2>
+  <div style="margin:1.5rem 0;border:1px solid var(--brd);border-radius:var(--r);overflow:hidden;padding:1.5rem;background:var(--surf)">
+    {layers_svg}
+  </div>
+  <p>A typical firmware image packages several layers: a bootloader, a compressed kernel, and a compressed root filesystem. binoracle works at the <strong>filesystem layer</strong> — it extracts the SquashFS/JFFS2/CRAMFS image and analyses the ELF binaries inside it.</p>
+
+  <h2 id="extraction">Extraction</h2>
+  <pre><code>binoracle firmware &lt;image.bin&gt; [options]
+
+Options:
+  --extract-to DIR         Write extracted files to DIR (default: ./firmware_out/)
+  --list                   List all ELF binaries found, don't analyse
+  --focus GLOB             Only analyse binaries matching this glob (e.g. '*/httpd')
+  --depth N                Max directory depth to recurse (default: unlimited)
+  -o FILE                  HTML report output path
+  --json FILE              Dump findings as JSON</code></pre>
+
+  <p>Extraction is handled by a chain of format detectors:</p>
+  <ol>
+    <li><strong>File signature detection</strong> — identifies SquashFS, JFFS2, CRAMFS, gzip, lzma, bzip2, 7z, cpio, tar, zip by magic bytes.</li>
+    <li><strong>Binwalk-style carving</strong> (built-in, no binwalk dependency) — scans for embedded archives at any offset within the image.</li>
+    <li><strong>Recursive extraction</strong> — decompresses each layer. For SquashFS it calls <code>unsquashfs</code> (must be installed); for other formats it uses Python's stdlib (<code>tarfile</code>, <code>zipfile</code>, <code>gzip</code>, <code>lzma</code>).</li>
+    <li><strong>ELF enumeration</strong> — walks the extracted tree and collects every file with ELF magic bytes, regardless of extension.</li>
+  </ol>
+
+  <div class="doc-callout warn">
+    <strong>Requirement:</strong> <code>unsquashfs</code> must be installed to extract SquashFS images (<code>apt install squashfs-tools</code> / <code>brew install squashfs</code>). For other formats only Python stdlib is needed.
+  </div>
+
+  <h2 id="analysis">Binary Analysis</h2>
+  <p>Each extracted ELF is run through the full binoracle RE pipeline:</p>
+  <ol>
+    <li><strong>Triage</strong> — checksec, architecture detection (ARM32, ARM64, MIPS, x86, x64, PowerPC), libc version estimation from embedded strings.</li>
+    <li><strong>Hunt</strong> — static vulnerability hunting: format strings, dangerous function calls (<code>strcpy</code>, <code>gets</code>, <code>system</code>, <code>popen</code>), hardcoded credentials in <code>.rodata</code>, world-writable sockets.</li>
+    <li><strong>LLM analysis</strong> — context-aware analysis of decompiled output for the highest-risk functions identified in the hunt step.</li>
+    <li><strong>Auto-verify</strong> (optional, x86/x64 only) — angr symbolic execution to prove reachability and compute overflow offsets.</li>
+  </ol>
+  <pre><code># Analyse a TP-Link firmware image, focus on the httpd binary
+binoracle firmware tplink_archer_c7.bin --focus '*/httpd' -o firmware-report.html
+
+# List all ELF binaries in a firmware image without analysing
+binoracle firmware openwrt-snapshot.bin --list
+
+# Full analysis, all binaries, write JSON
+binoracle firmware netgear-r7000.bin --json firmware.json -o firmware.html</code></pre>
+
+  <h2 id="mitigations">Mitigations in Embedded Systems</h2>
+  <p>Embedded firmware often lacks modern exploit mitigations. binoracle's triage step reports:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Mitigation</th><th>What it means</th><th>Typical embedded status</th></tr></thead>
+    <tbody>
+      <tr><td>NX / DEP</td><td>Non-executable stack/heap</td><td>Often absent on MIPS/ARM32 without hardware support</td></tr>
+      <tr><td>Stack canary</td><td>Detects stack overflows before return</td><td>Absent in ~60% of embedded binaries (stripped builds)</td></tr>
+      <tr><td>PIE / ASLR</td><td>Randomised base address</td><td>Often absent; fixed addresses make ROP chains reliable</td></tr>
+      <tr><td>RELRO</td><td>Read-only GOT after relocation</td><td>Partial RELRO common; Full RELRO rare</td></tr>
+      <tr><td>FORTIFY_SOURCE</td><td>Runtime bounds checks on libc calls</td><td>Rarely present in stripped builds</td></tr>
+    </tbody>
+  </table></div>
+  <p>When mitigations are absent, binoracle notes this explicitly in the report and adjusts the exploitability assessment — a stack overflow in a binary with no NX, no canary and no ASLR is rated as <em>trivially exploitable</em>.</p>
+
+  <h2 id="use-cases">Use Cases</h2>
+  <h3>Router hardcoded credentials</h3>
+  <p>Many routers embed hardcoded SSH/Telnet/web credentials in <code>.rodata</code>. binoracle's hunt step searches for strings matching <code>admin</code>, <code>password</code>, <code>root</code>, <code>1234</code> adjacent to auth-related function calls and flags them as findings.</p>
+
+  <h3>MIPS/ARM buffer overflows in httpd</h3>
+  <p>The most common vulnerability class in embedded web servers is an unchecked <code>strcpy</code> from a URL or CGI parameter into a stack buffer. binoracle identifies these statically and, for x86/x64 test builds, can symbolically verify them with angr.</p>
+
+  <h3>Industrial controller (ICS/SCADA) firmware</h3>
+  <p>Many ICS controllers run Linux on ARM with stripped binaries and no ASLR. binoracle can analyse their management daemons, Modbus/DNP3 stacks, and OPC-UA servers for memory corruption and injection flaws.</p>
+
+</main>
+</div>"""
+    return shell("Firmware Analysis — binoracle docs", "firmware", body)
+
+
+# ---------------------------------------------------------------------------
+# Kernel Exploits page
+# ---------------------------------------------------------------------------
+def kernel_exploits_page():
+    body = f"""
+<div class="doc-layout">
+{wiki_sidebar("kernel-exploits", "en")}
+<main class="doc-content" style="max-width:860px">
+  <h1 id="overview">Kernel Exploits</h1>
+  <p class="page-lead">binoracle's kernel exploit module analyses Linux kernel modules (.ko files) and kernel-space binaries for memory corruption vulnerabilities. It integrates radare2's kernel-aware disassembly with LLM-guided analysis to identify exploitable paths.</p>
+
+  <div class="doc-callout warn">
+    <strong>Warning:</strong> Kernel exploitation is inherently dangerous. Always work in an isolated VM or container. Never run kernel exploits on production systems. binoracle scaffolds a QEMU VM for safe kernel exploit testing.
+  </div>
+
+  <h2 id="techniques">Supported Techniques</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Technique</th><th>Target</th><th>binoracle support</th></tr></thead>
+    <tbody>
+      <tr><td>ret2usr</td><td>x86/x64, no SMEP</td><td>Full — detects missing SMEP, generates ret2usr PoC</td></tr>
+      <tr><td>Stack canary bypass</td><td>Kernel modules</td><td>Detects absence of stack protector in .ko</td></tr>
+      <tr><td>KASLR bypass</td><td>All architectures</td><td>Identifies info leak primitives that can leak kernel base</td></tr>
+      <tr><td>SMEP bypass (ret2kernel)</td><td>x64 with SMEP</td><td>Identifies kernel ROP gadgets for CR4 manipulation</td></tr>
+      <tr><td>Heap spray / slab overflow</td><td>kmalloc slab</td><td>Detects kmalloc calls adjacent to unchecked copies</td></tr>
+      <tr><td>UAF in kernel objects</td><td>cdev / proc / netlink</td><td>Identifies object lifetime issues in driver code</td></tr>
+      <tr><td>Arbitrary read/write via ioctl</td><td>Char device drivers</td><td>Full ioctl handler analysis</td></tr>
+      <tr><td>LPE via SUID binary + kernel bug</td><td>Combined</td><td>Chains kernel vulnerability with SUID binary analysis</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="radare2">Radare2 Workflow</h2>
+  <p>binoracle opens the kernel module with <code>r2 -AA</code> in kernel analysis mode. Key commands used:</p>
+  <pre><code># Load a kernel module for analysis
+binoracle kernel-exploit my_driver.ko -o kernel-report.html
+
+# What radare2 does internally:
+# r2 -A -e anal.arch=x86 -e anal.bits=64 my_driver.ko
+# afl           - list all functions
+# pdf @ sym.ioctl_handler    - disassemble ioctl handler
+# pdd @ sym.ioctl_handler    - decompile (requires r2ghidra)
+# axt sym.kmalloc            - find all callers of kmalloc
+# axt sym.copy_from_user     - find all callers of copy_from_user
+# /R pop rdi; ret            - find ROP gadgets</code></pre>
+
+  <p>The analysis pipeline for a kernel module:</p>
+  <ol>
+    <li><strong>Symbol extraction</strong> — <code>nm -u</code> to find imported kernel symbols (kmalloc, kfree, copy_from_user, copy_to_user, printk).</li>
+    <li><strong>Entry point analysis</strong> — <code>init_module</code>, <code>cleanup_module</code>, and all <code>file_operations</code> callbacks (read, write, ioctl, mmap, poll).</li>
+    <li><strong>Taint tracking</strong> — data flow from <code>copy_from_user</code> to dangerous sinks (kmalloc size, memcpy length, kfree pointer).</li>
+    <li><strong>Mitigation check</strong> — presence of <code>__stack_chk_guard</code>, <code>-fstack-protector-strong</code> artefacts, CFI instrumentation.</li>
+    <li><strong>LLM analysis</strong> — decompiled ioctl handler analysed for integer overflow before kmalloc, missing bounds checks in copy_from_user, and type confusion.</li>
+  </ol>
+
+  <h2 id="smep-bypass">SMEP Bypass Example</h2>
+  <p>When SMEP is enabled (CR4 bit 20 set), user-space shellcode cannot be executed in kernel context. binoracle generates a ROP chain that clears CR4 bit 20 before returning to user-space payload:</p>
+  <pre><code># Example generated PoC structure (simplified):
+# 1. Trigger the kernel vulnerability to control RIP
+# 2. ROP chain to clear SMEP: mov cr4, rax; ret (gadget in kernel .text)
+# 3. Return to user-space shellcode (commit_creds(prepare_kernel_cred(0)))
+# 4. ret2user: restore registers and iretq to user-space
+
+# binoracle generates this automatically when it detects:
+# - A controllable kernel RIP
+# - SMEP enabled (detected from /proc/cpuinfo or kernel config)
+# - Suitable CR4 manipulation gadget in the target kernel
+
+binoracle kernel-exploit vuln_driver.ko --kernel vmlinuz --config .config -o report.html</code></pre>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Simple stack overflow in ioctl handler</h3>
+  <pre><code># A driver with a stack buffer overflow in copy_from_user:
+# static long dev_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {{
+#   char buf[64];
+#   copy_from_user(buf, (void*)arg, 512);  // overflow!
+# }}
+
+binoracle kernel-exploit overflow_driver.ko -o overflow-report.html</code></pre>
+  <p>binoracle will: detect the overflow (copy_from_user with size &gt; buffer), measure the offset to the return address, check for stack canary, and generate a ret2usr PoC if SMEP is absent or a SMEP-bypass ROP chain if SMEP is present.</p>
+
+  <h3>Use-after-free in a cdev</h3>
+  <pre><code># A driver that frees an object in .release but uses it in a concurrent .read:
+binoracle kernel-exploit uaf_driver.ko -o uaf-report.html</code></pre>
+  <p>binoracle analyses the <code>file_operations</code> struct, identifies <code>release</code> and <code>read</code> callbacks sharing a pointer, checks for missing locking (absence of mutex/spinlock calls around the shared pointer), and flags the UAF as a finding.</p>
+
+  <h3>QEMU test environment</h3>
+  <pre><code># Scaffold a QEMU VM for safe kernel testing:
+binoracle kernel-exploit my_driver.ko --qemu --kernel bzImage --initrd initrd.img
+
+# This starts a QEMU VM with:
+# - The vulnerable kernel + driver loaded
+# - A minimal BusyBox rootfs
+# - The generated PoC pre-loaded as /tmp/exploit
+# - A serial console for interaction</code></pre>
+
+</main>
+</div>"""
+    return shell("Kernel Exploits — binoracle docs", "kernel-exploits", body)
+
+
+# ---------------------------------------------------------------------------
+# Fine-tuning / LoRA page
+# ---------------------------------------------------------------------------
+def finetune_page():
+    body = f"""
+<div class="doc-layout">
+{wiki_sidebar("finetune", "en")}
+<main class="doc-content" style="max-width:860px">
+  <h1 id="overview">LoRA Fine-tuning</h1>
+  <p class="page-lead">binoracle can generate a supervised fine-tuning (SFT) dataset from your own CVE investigations and binary analysis sessions, then fine-tune a local LLM with LoRA adapters — producing a model that is significantly better at your specific technology stack and vulnerability classes.</p>
+
+  <h2 id="architecture">LoRA Architecture</h2>
+  <p>LoRA (Low-Rank Adaptation) adds a small number of trainable parameters to a frozen base model. Instead of updating all weights (which requires 40–80 GB of GPU RAM for a 7B model), LoRA injects trainable rank-decomposition matrices into the attention layers:</p>
+  <pre><code>W' = W + BA   where B ∈ R^(d×r), A ∈ R^(r×k), r &lt;&lt; min(d,k)</code></pre>
+  <p>At inference time the LoRA weights are merged with the base model — no extra latency. For security-focused fine-tuning, rank <code>r=8</code> or <code>r=16</code> is typically sufficient.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Parameter</th><th>Typical value</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>r</code> (rank)</td><td>8–16</td><td>Higher = more capacity, more GPU RAM</td></tr>
+      <tr><td><code>alpha</code></td><td>16–32</td><td>Scaling factor (typically 2×rank)</td></tr>
+      <tr><td>Target modules</td><td>q_proj, v_proj</td><td>Which attention matrices get LoRA</td></tr>
+      <tr><td>Dropout</td><td>0.05</td><td>Regularisation</td></tr>
+      <tr><td>Epochs</td><td>3–5</td><td>More = better fit, risk of overfitting on small datasets</td></tr>
+      <tr><td>Learning rate</td><td>2e-4</td><td>Cosine schedule with warmup</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="dataset">Dataset Generation</h2>
+  <p>Every CVE investigation and binary analysis session binoracle completes is a potential training example. The <code>finetune --collect</code> command converts completed investigations into SFT examples in ShareGPT format:</p>
+  <pre><code>binoracle finetune --collect --output sft_dataset.jsonl
+
+# Options:
+#   --min-cvss 5.0     Only include investigations with CVSS >= 5.0
+#   --verified-only    Only include verified (confirmed) investigations
+#   --include-binary   Include binary RE sessions (default: CVE only)
+#   --lang es|en       Dataset language
+#   --since 2024-01-01 Only include sessions since this date</code></pre>
+  <p>Each collected session becomes one or more training examples. For a CVE investigation, binoracle generates:</p>
+  <ul>
+    <li>A <strong>hypothesis example</strong>: system prompt + CVE description → target, trigger, attack plan</li>
+    <li>A <strong>PoC example</strong>: system prompt + CVE + grounded source analysis → PoC script</li>
+    <li>A <strong>verdict example</strong>: system prompt + CVE + lab output → verification verdict</li>
+  </ul>
+  <p>For a binary RE session it generates examples for triage, vulnerability hypothesis, and exploit strategy.</p>
+
+  <h2 id="command">finetune Command</h2>
+  <pre><code>binoracle finetune [--collect | --train | --merge | --push] [options]
+
+Subcommands:
+  --collect            Generate SFT JSONL from completed sessions
+  --train              Train LoRA adapter on a JSONL dataset
+  --merge              Merge LoRA adapter into base model (creates new GGUF)
+  --push               Push merged model to Ollama local registry
+
+Options (--collect):
+  --output FILE        JSONL output path (default: sft_dataset.jsonl)
+  --verified-only      Only include verified investigations
+  --min-cvss N         Minimum CVSS score to include
+  --since DATE         Only include sessions from this date onward
+
+Options (--train):
+  --dataset FILE       JSONL dataset to train on (required)
+  --base-model NAME    Base model in Ollama (default: config llm.model)
+  --adapter-name NAME  Name for the LoRA adapter (default: binoracle-lora)
+  --rank N             LoRA rank (default: 8)
+  --epochs N           Training epochs (default: 3)
+  --lr FLOAT           Learning rate (default: 2e-4)
+  --gpu N              Number of GPUs (default: auto-detect)
+
+Options (--merge):
+  --adapter NAME       Adapter to merge (default: binoracle-lora)
+  --output NAME        Output model name in Ollama
+
+Options (--push):
+  --model NAME         Merged model to push</code></pre>
+
+  <h2 id="jsonl">JSONL Format</h2>
+  <p>The dataset uses ShareGPT format — the same format used by most open-source fine-tuning frameworks (LLaMA-Factory, Axolotl, Unsloth):</p>
+  <pre><code>// sft_dataset.jsonl — one JSON object per line
+{{
+  "conversations": [
+    {{
+      "from": "system",
+      "value": "You are binoracle, an autonomous CVE exploit researcher..."
+    }},
+    {{
+      "from": "human",
+      "value": "CVE-2024-1071: SQL injection in Ultimate Member WordPress plugin via the 'sorting' parameter. CVSS 9.8 CRITICAL. Affected: Ultimate Member &lt;= 2.8.3."
+    }},
+    {{
+      "from": "gpt",
+      "value": "Target: WordPress with Ultimate Member plugin &lt;= 2.8.3\\nTrigger: HTTP GET /wp-json/um/v1/account?sorting=... with SQL injection payload\\nClass: sqli (time-based blind)\\nAffected table: wp_users\\n..."
+    }}
+  ],
+  "source": "binoracle-investigation",
+  "cve": "CVE-2024-1071",
+  "cvss": 9.8,
+  "verified": true
+}}</code></pre>
+
+  <h2 id="workflow">Full Workflow</h2>
+  <p>A complete fine-tuning workflow from investigation to deployed model:</p>
+  <pre><code># Step 1: Run several CVE investigations to build up a dataset
+binoracle investigate CVE-2024-1071 --source wordpress
+binoracle investigate CVE-2024-27956
+binoracle investigate CVE-2023-23752
+# ... run 20-50 investigations for a useful dataset
+
+# Step 2: Collect all verified sessions into a JSONL dataset
+binoracle finetune --collect --verified-only --output my_dataset.jsonl
+# Output: my_dataset.jsonl with N training examples
+
+# Step 3: Train a LoRA adapter on the dataset
+binoracle finetune --train --dataset my_dataset.jsonl --base-model qwen2.5-coder:7b --adapter-name my-lora --epochs 3
+# This requires: a GPU with >=8 GB VRAM (or CPU with patience)
+# Training takes ~30 min for 500 examples on a 7B model with one RTX 3080
+
+# Step 4: Merge the adapter into the base model
+binoracle finetune --merge --adapter my-lora --output binoracle-custom:latest
+
+# Step 5: Use the fine-tuned model
+BINORACLE_MODEL=binoracle-custom:latest binoracle cve CVE-2024-1234 -o report.html</code></pre>
+
+  <div class="doc-callout tip">
+    <strong>GPU requirements:</strong> Training a 7B model with LoRA requires ~8 GB VRAM (quantised to 4-bit via bitsandbytes). Training a 13B model requires ~16 GB. Training a 34B model requires ~24 GB. CPU training is possible but very slow (~10× slower than GPU).
+  </div>
+
+</main>
+</div>"""
+    return shell("LoRA Fine-tuning — binoracle docs", "finetune", body)
+
+
+# ---------------------------------------------------------------------------
+# MCP Tools Reference page
+# ---------------------------------------------------------------------------
+def mcp_tools_page():
+    tools = [
+        ("investigate_cve", "cve_id: str, lang?: str", "Full CVE investigation: NVD lookup → LLM hypothesis → Docker lab → HTML report bytes"),
+        ("cve_chain", "cve_ids: list[str], lang?: str", "Multi-CVE chain analysis with pivot condition inference and combined impact"),
+        ("autopwn", "binary_path: str, techniques?: list[str]", "Automated exploit development for a local ELF binary"),
+        ("triage_binary", "binary_path: str", "Checksec + architecture detection + mitigation summary"),
+        ("hunt_binary", "binary_path: str", "Static vulnerability hunt: format strings, dangerous calls, hardcoded secrets"),
+        ("decompile_function", "binary_path: str, function: str, engine?: str", "Decompile a function with Ghidra, r2ghidra or pdc"),
+        ("analyse_firmware", "image_path: str, focus?: str", "Extract and analyse ELF binaries from a firmware image"),
+        ("kernel_exploit", "module_path: str, kernel?: str", "Analyse a Linux kernel module for exploitable vulnerabilities"),
+        ("generate_dataset", "output_path: str, verified_only?: bool", "Generate SFT JSONL dataset from completed investigation sessions"),
+        ("render_report", "markdown: str, cve?: str, lang?: str", "Render a markdown string as a professional CVE HTML report"),
+        ("list_sessions", "", "List all investigation sessions in the local store"),
+        ("get_session", "session_id: str", "Get the full Investigation object for a completed session"),
+        ("fetch_cve", "cve_id: str", "Fetch CVE metadata from NVD (CVSS, vector, description, published date)"),
+    ]
+    rows = ""
+    for name, params, desc in tools:
+        rows += f'<tr><td><code>{name}</code></td><td><code style="font-size:.8em">{params}</code></td><td>{desc}</td></tr>\n'
+
+    body = f"""
+<div class="doc-layout">
+{wiki_sidebar("mcp-tools", "en")}
+<main class="doc-content" style="max-width:860px">
+  <h1 id="overview">MCP Tools Reference</h1>
+  <p class="page-lead">binoracle exposes every capability as an MCP (Model Context Protocol) tool. Connect Claude Desktop, VS Code with Continue, Zed, or any MCP-compatible client to run binoracle's full exploit research pipeline from within your AI assistant.</p>
+
+  <h2 id="setup">Setup</h2>
+  <p>Start the MCP server:</p>
+  <pre><code>binoracle mcp-server</code></pre>
+  <p>The server communicates over <strong>stdio</strong> and implements the <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP specification</a>. No network port is opened — the client process spawns binoracle as a subprocess and communicates via stdin/stdout pipes.</p>
+
+  <h2 id="claude-desktop">Claude Desktop</h2>
+  <p>Add binoracle to <code>~/.claude/claude_desktop_config.json</code>:</p>
+  <pre><code>{{
+  "mcpServers": {{
+    "binoracle": {{
+      "command": "binoracle",
+      "args": ["mcp-server"],
+      "env": {{
+        "BINORACLE_BACKEND": "ollama",
+        "BINORACLE_MODEL": "qwen2.5-coder:7b"
+      }}
+    }}
+  }}
+}}</code></pre>
+  <p>Restart Claude Desktop. You will see binoracle's tools appear in the tool picker. You can now ask Claude things like:</p>
+  <ul>
+    <li>"Investigate CVE-2024-1071 and give me the HTML report"</li>
+    <li>"Triage the binary at /path/to/binary and find vulnerabilities"</li>
+    <li>"Decompile the main function of /tmp/challenge"</li>
+    <li>"Analyse this firmware image: /tmp/router.bin"</li>
+  </ul>
+
+  <h2 id="vscode">VS Code (Continue)</h2>
+  <p>Add to <code>~/.continue/config.json</code>:</p>
+  <pre><code>{{
+  "mcpServers": [
+    {{
+      "name": "binoracle",
+      "command": "binoracle",
+      "args": ["mcp-server"]
+    }}
+  ]
+}}</code></pre>
+  <p>After adding it, Continue will auto-discover all binoracle tools. Use <code>@binoracle</code> in the Continue chat to scope tool calls.</p>
+
+  <h2 id="tools-list">Tools Reference</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Tool</th><th>Parameters</th><th>Description</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table></div>
+
+  <h2 id="examples">Examples</h2>
+  <h3>Ask Claude to investigate a CVE</h3>
+  <p>In Claude Desktop, with binoracle connected:</p>
+  <pre><code>User: Investigate CVE-2024-27956 and tell me if it's exploitable.
+       Save the report to /tmp/report.html
+
+Claude: [calls investigate_cve(cve_id="CVE-2024-27956")]
+        [calls render_report(markdown=..., cve="CVE-2024-27956")]
+        The CVE is confirmed exploitable. CVSS 9.8 CRITICAL.
+        Class: sqli (authentication bypass). Affected: WP Automatic <= 3.92.0.
+        Report saved to /tmp/report.html.</code></pre>
+
+  <h3>Binary analysis in Claude Desktop</h3>
+  <pre><code">User: There's a binary at /tmp/challenge. Find vulnerabilities and
+       give me an exploit strategy.
+
+Claude: [calls triage_binary(binary_path="/tmp/challenge")]
+        [calls hunt_binary(binary_path="/tmp/challenge")]
+        [calls decompile_function(binary_path="/tmp/challenge", function="main")]
+        [calls autopwn(binary_path="/tmp/challenge")]
+
+        I found a stack-based buffer overflow in main() at offset 0x104.
+        No canary, no PIE, NX enabled.
+        Strategy: ret2plt → leak libc → ret2libc for shell.
+        Here's the pwntools script: ...</code></pre>
+
+  <h3>Firmware analysis via MCP</h3>
+  <pre><code>User: Analyse this IoT firmware: /tmp/firmware.bin
+       Focus on network-facing daemons.
+
+Claude: [calls analyse_firmware(image_path="/tmp/firmware.bin", focus="*/httpd")]
+        Found 3 binaries: httpd, utelnetd, miniupnpd
+        httpd (MIPS32, no NX, no canary):
+          - strcpy overflow in CGI parameter handler (HIGH)
+          - hardcoded admin:admin credential in .rodata (HIGH)
+        utelnetd: telnet enabled with no auth (CRITICAL)
+        miniupnpd: format string in AddPortMapping handler (HIGH)</code></pre>
+
+  <div class="doc-callout">
+    <strong>Note:</strong> All file paths in MCP tool calls must be absolute paths accessible to the binoracle server process. If binoracle is running in a container or VM, paths must be accessible inside that environment.
+  </div>
+
+</main>
+</div>"""
+    return shell("MCP Tools Reference — binoracle docs", "mcp-tools", body)
+
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 def build():
@@ -1991,6 +2758,31 @@ def build():
     with open(os.path.join(SITE, "index-es.html"), "w", encoding="utf-8") as f:
         f.write(docs_es_page())
     print("  index-es.html")
+
+    # New wiki pages
+    with open(os.path.join(SITE, "architecture.html"), "w", encoding="utf-8") as f:
+        f.write(architecture_page())
+    print("  architecture.html")
+
+    with open(os.path.join(SITE, "cve-chains.html"), "w", encoding="utf-8") as f:
+        f.write(cve_chains_page())
+    print("  cve-chains.html")
+
+    with open(os.path.join(SITE, "firmware.html"), "w", encoding="utf-8") as f:
+        f.write(firmware_page())
+    print("  firmware.html")
+
+    with open(os.path.join(SITE, "kernel-exploits.html"), "w", encoding="utf-8") as f:
+        f.write(kernel_exploits_page())
+    print("  kernel-exploits.html")
+
+    with open(os.path.join(SITE, "finetune.html"), "w", encoding="utf-8") as f:
+        f.write(finetune_page())
+    print("  finetune.html")
+
+    with open(os.path.join(SITE, "mcp-tools.html"), "w", encoding="utf-8") as f:
+        f.write(mcp_tools_page())
+    print("  mcp-tools.html")
 
     print(f"\nSite written to {SITE}/")
 
