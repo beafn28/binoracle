@@ -1756,14 +1756,43 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     if not pkg or not re.match(r'^[@a-z][a-z0-9._/@-]*$', pkg):
         return None
 
+    # Normalize common aliases: "next.js" → "next", "express.js" → "express", etc.
+    _JS_ALIASES = {"next.js": "next", "express.js": "express", "vue.js": "vue",
+                   "nuxt.js": "nuxt", "angular.js": "angular"}
+    pkg = _JS_ALIASES.get(pkg, pkg)
+
     lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
     _os.makedirs(lab_dir, exist_ok=True)
 
-    dep_ver = f"{version}" if version else "*"
+    # Sanitize version: strip operator prefixes and compound ranges, keep only the
+    # first plain semver token (e.g. "<1.11.4, >=12.3.5" → "1.11.4" is the STARTING
+    # affected version, not the patched one; we want to use a sensible vulnerable ver).
+    _raw_ver = (version or "").strip()
+    _semver_tok = re.search(r'v?([0-9]+(?:\.[0-9]+){1,4})', _raw_ver)
+    _first_ver = _semver_tok.group(1) if _semver_tok else ""
+
+    # Next.js CVE-2025-29927: middleware was introduced in Next.js 12. If the inferred
+    # version is below 12 (e.g. "1.11.4" = the "starting affected" anchor, not a usable
+    # lab version), fall back to 12.3.4, the last vulnerable 12.x version, which
+    # has full middleware support and is confirmed to start quickly in dev mode.
+    _is_nextjs = "next" in pkg
+    if _is_nextjs and _first_ver:
+        _major = int(_first_ver.split(".")[0])
+        if _major < 12:
+            _first_ver = "12.3.4"
+            on_step(("version corregida a 12.3.4 (versiones Next.js pre-12 no soportan "
+                     "middleware -- usando ultima version 12.x vulnerable)"))
+
+    dep_ver = _first_ver if _first_ver else "*"
+    deps: dict = {pkg: dep_ver}
+    # Next.js requires react and react-dom as peer dependencies
+    if _is_nextjs:
+        deps["react"] = "^18"
+        deps["react-dom"] = "^18"
     pkg_json = {
         "name": "binoracle-lab",
         "version": "1.0.0",
-        "dependencies": {pkg: dep_ver},
+        "dependencies": deps,
         "scripts": {"start": "node server.js"}
     }
     with open(_os.path.join(lab_dir, "package.json"), "w") as f:
@@ -1775,18 +1804,88 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     if isinstance(params, list) and params:
         param = str(params[0])
 
-    # minimal Next.js / Express server - header bypass CVE-2025-29927
-    if "next" in pkg and vuln_class == "missing-authorization":
+    # Next.js auth-bypass lab: CVE-2025-29927 (x-middleware-subrequest header bypass).
+    # The lab needs:
+    #   middleware.js  — blocks access to /api/secret unless a valid auth token is present
+    #   pages/api/secret.js — returns the canary secret (only reachable after bypass)
+    #   server.js — custom Next.js HTTP server
+    # With the bypass header the middleware short-circuits before the auth check and
+    # the protected /api/secret route becomes accessible → exploit verified.
+    if _is_nextjs and vuln_class in ("missing-authorization", "auth-bypass"):
+        # middleware.js — restricts /api/secret; without bypass header request is blocked
+        mw_js = (
+            "import { NextResponse } from 'next/server';\n"
+            "export function middleware(request) {\n"
+            "  if (request.nextUrl.pathname.startsWith('/api/secret')) {\n"
+            "    const auth = request.headers.get('authorization');\n"
+            "    if (auth !== 'Bearer admin-secret-token') {\n"
+            "      return new NextResponse('Forbidden', { status: 403 });\n"
+            "    }\n"
+            "  }\n"
+            "  return NextResponse.next();\n"
+            "}\n"
+            "export const config = { matcher: ['/api/secret'] };\n"
+        )
+        secret_dir = _os.path.join(lab_dir, "pages", "api")
+        _os.makedirs(secret_dir, exist_ok=True)
+        with open(_os.path.join(lab_dir, "middleware.js"), "w") as f:
+            f.write(mw_js)
+        # pages/api/secret.js — returns canary
+        with open(_os.path.join(secret_dir, "secret.js"), "w") as f:
+            f.write(
+                "export default function handler(req, res) {\n"
+                "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
+                "}\n"
+            )
+        # Custom server entry point
         srv = (
             "const { createServer } = require('http');\n"
             "const next = require('next');\n"
             "const app = next({ dev: false });\n"
             "const handle = app.getRequestHandler();\n"
             "app.prepare().then(() => {\n"
-            "  createServer((req, res) => handle(req, res)).listen(3000, '0.0.0.0');\n"
-            "  console.log('ready on :3000');\n"
+            "  createServer((req, res) => handle(req, res)).listen(3000, '0.0.0.0', () => {\n"
+            "    console.log('ready on :3000');\n"
+            "  });\n"
             "});\n"
         )
+        # Update notes so verify_generic_header_bypass targets /api/secret and knows
+        # bypass_header; these keys are only set if not already present (LLM takes priority)
+        # Always override endpoint to /api/secret — that's where we put the canary.
+        # The LLM may have set a different endpoint (e.g. /api/middleware) which won't
+        # have the canary. The bypass_header / bypass_value have known values too.
+        notes["endpoint"] = "/api/secret"
+        notes["bypass_header"] = "x-middleware-subrequest"
+        notes["bypass_value"] = "middleware"
+        notes["confirm_string"] = "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
+        # Dockerfile: dev mode — no pre-build step needed; Next.js compiles on the
+        # first request. Middleware runs in dev mode exactly as in production for the
+        # auth-bypass check we care about. '-H 0.0.0.0' binds to all interfaces so
+        # the port is reachable from outside the container.
+        # Include proxy CA cert lines so npm install inside the container trusts
+        # the outbound HTTPS proxy (same mechanism as _proxy_dockerfile_lines() in
+        # genericverify.py — we import lazily to avoid a top-level circular import).
+        try:
+            from .genericverify import _proxy_dockerfile_lines as _pdl
+            _proxy_lines = _pdl(lab_dir)
+        except Exception:
+            _proxy_lines = []
+        dockerfile = (
+            "FROM node:20-alpine\n"
+            + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
+            + "WORKDIR /app\n"
+            "COPY package.json .\n"
+            "RUN npm install --legacy-peer-deps || true\n"
+            # Clear the proxy after install so the runtime server never tries
+            # to reach a build-time-only localhost proxy endpoint.
+            "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
+            "COPY . .\n"
+            "EXPOSE 3000\n"
+            # Use the locally installed binary to avoid npx network lookup
+            'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
+        )
+        with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+            f.write(dockerfile)
     else:
         srv = (
             "const http = require('http');\n"
@@ -1796,9 +1895,8 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             "});\n"
             "server.listen(3000, '0.0.0.0');\n"
         )
-
-    with open(_os.path.join(lab_dir, "server.js"), "w") as f:
-        f.write(srv)
+        with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+            f.write(srv)
 
     on_step(f"scaffolded minimal npm {pkg} lab at {lab_dir} (version={dep_ver})")
     return lab_dir
