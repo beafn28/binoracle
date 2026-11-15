@@ -2024,6 +2024,15 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
                 "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
                 "}\n"
             )
+        # .babelrc: fuerza Babel como transpilador en vez de SWC.
+        # En Next.js 15.x SWC es el default pero sus binarios nativos son optionalDependencies
+        # que pueden no instalarse bajo QEMU/emulacion (--platform linux/amd64 en M1) ni en
+        # entornos de CI con restricciones de red. Con .babelrc presente Next.js cae back a
+        # Babel automaticamente, usando el preset 'next/babel' que ya viene incluido en el
+        # paquete next -- sin dependencias extra. Esto elimina el crash
+        # 'node:internal/modules/cjs/loader throw e' que ocurre cuando @next/swc-* no carga.
+        with open(_os.path.join(lab_dir, ".babelrc"), "w") as f:
+            f.write('{"presets": ["next/babel"]}\n')
         # Custom server entry point
         srv = (
             "const { createServer } = require('http');\n"

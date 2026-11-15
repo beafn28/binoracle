@@ -442,7 +442,7 @@ class _GenericLab:
             time.sleep(delay)
         return None
 
-    def logs_tail(self, name: str, lines: int = 40) -> str:
+    def logs_tail(self, name: str, lines: int = 80) -> str:
         try:
             r = self.sh("logs", "--tail", str(lines), name, timeout=15)
             return ((r.stdout or "") + (r.stderr or "")).strip()

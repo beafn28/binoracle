@@ -1491,7 +1491,15 @@ def cmd_cve(args, config):
         if blockers:
             print(f"\n  {_b}Bloqueadores:{_r}")
             for bl in blockers[:3]:
-                print(f"    {vc}▸{_r} {bl[:100]}")
+                # Sin truncar a 100: los logs de docker contienen el error real de Node/Python
+                # que necesitamos ver entero para diagnosticar. Se limita a 800 chars para no
+                # llenar la terminal, pero es suficiente para ver el 'Error: Cannot find module'.
+                bl_txt = bl[:800]
+                # Indentar las líneas internas del bloque de logs para que se lean bien
+                lines = bl_txt.splitlines()
+                print(f"    {vc}▸{_r} {lines[0]}")
+                for ln in lines[1:]:
+                    print(f"      {ln}")
 
     print(f"\n  {_b}Tiempo total{_r}: {_tm_c}{elapsed_total:.1f}s{_r}")
     # Resumen rápido de clase + CVSS
