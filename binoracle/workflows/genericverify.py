@@ -115,30 +115,79 @@ _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target",
 
 _AUTO_DOCKERFILE_NAME = ".binoracle_auto_Dockerfile"
 
+
+def _best_python_image() -> str:
+    """Returns the best available Python base image.
+
+    Prefers python:3.11-slim (Debian-based, full glibc) but falls back to
+    python:3.11-alpine when slim is not in the local Docker cache AND a quick
+    pull attempt fails with Docker Hub rate-limiting (HTTP 429).  Alpine needs
+    build tools for C-extension wheels (aiohttp, cryptography, etc.); they are
+    added via a RUN apk add line injected by _alpine_python_build_deps().
+    """
+    # Check local cache first (fast path, no network)
+    r = subprocess.run(
+        ["docker", "images", "-q", "python:3.11-slim"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return "python:3.11-slim"
+    # Try a quick pull; if rate-limited use alpine (already cached from session warm-up)
+    pull = subprocess.run(
+        ["docker", "pull", "python:3.11-slim"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if pull.returncode == 0:
+        return "python:3.11-slim"
+    combined = (pull.stdout or "") + (pull.stderr or "")
+    if "429" in combined or "toomanyrequests" in combined.lower():
+        return "python:3.11-alpine"
+    return "python:3.11-slim"
+
+
+def _alpine_python_build_deps() -> str:
+    """Extra RUN step to install C build tools on Alpine Python images.
+
+    Required for packages with C extensions (aiohttp, cryptography, lxml…).
+    No-op on Debian/slim images (never inserted there).
+    """
+    return "RUN apk add --no-cache gcc musl-dev libffi-dev openssl-dev linux-headers"
+
+
 # deteccion de stack cuando el repo NO trae su propio Dockerfile/compose -- deliberadamente
 # acotada a los 3 casos mas comunes en PoCs publicos de CVEs web (Node/Python/PHP puro, sin
 # framework que exija su propio arranque especial como Django/Rails). Cada entrada: (fichero que
 # delata el stack, lineas del Dockerfile generado, puerto por defecto que se expone). Generalizar
 # a CUALQUIER stack sin acotar la lista seria adivinar a ciegas -- mejor una lista corta y
 # honesta que crece con casos reales confirmados, que una que finja cubrirlo todo.
-_STACK_SIGNALS = (
-    ("package.json", "node:20-alpine", 3000,
-     ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
-      'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
-    # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
-    ("Gemfile", "ruby:3.1-slim", 9292,
-     ["WORKDIR /app", "COPY . .",
-      "RUN gem install bundler --no-document && bundle install --retry 5",
-      'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
-    ("requirements.txt", "python:3.11-slim", 5000,
-     ["WORKDIR /app", "COPY . .",
-      "RUN pip install --no-cache-dir -r requirements.txt || true",
-      'CMD ["sh", "-c", "python app.py || python main.py || python manage.py runserver 0.0.0.0:5000"]']),
-    ("composer.json", "php:8.2-cli", 8000,
-     ["WORKDIR /app", "COPY . .",
-      "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
-      'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
-)
+def _build_stack_signals() -> tuple:
+    """Build stack signals with dynamic Python base image selection."""
+    py_image = _best_python_image()
+    py_run_lines: list = ["WORKDIR /app", "COPY . ."]
+    if "alpine" in py_image:
+        py_run_lines.append(_alpine_python_build_deps())
+    py_run_lines += [
+        "RUN pip install --no-cache-dir -r requirements.txt || true",
+        'CMD ["sh", "-c", "python app.py || python main.py || python manage.py runserver 0.0.0.0:5000"]',
+    ]
+    return (
+        ("package.json", "node:20-alpine", 3000,
+         ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
+          'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
+        # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
+        ("Gemfile", "ruby:3.1-slim", 9292,
+         ["WORKDIR /app", "COPY . .",
+          "RUN gem install bundler --no-document && bundle install --retry 5",
+          'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
+        ("requirements.txt", py_image, 5000, py_run_lines),
+        ("composer.json", "php:8.2-cli", 8000,
+         ["WORKDIR /app", "COPY . .",
+          "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
+          'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
+    )
+
+
+_STACK_SIGNALS = _build_stack_signals()
 # PHP sin composer.json (scripts sueltos, el caso mas comun en un PoC de un solo plugin/script
 # vulnerable): activa el servidor de desarrollo embebido de PHP, sirve cualquier .php del repo
 # tal cual, sin necesitar entender el proyecto.
@@ -267,9 +316,12 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
                "auto_generado": True, "stack_detectado": signal_file}
     flask_module = _detect_bare_flask_entry(source_dir)
     if flask_module:
-        lines = (["FROM python:3.11-slim"] + _proxy_dockerfile_lines(source_dir) +
-                ["WORKDIR /app", "COPY . .",
-                 "RUN pip install --no-cache-dir flask",
+        _py_img = _best_python_image()
+        _flask_pip = (["RUN " + _alpine_python_build_deps().split("RUN ", 1)[1]]
+                      if "alpine" in _py_img else [])
+        lines = ([f"FROM {_py_img}"] + _proxy_dockerfile_lines(source_dir) +
+                ["WORKDIR /app", "COPY . ."] + _flask_pip +
+                ["RUN pip install --no-cache-dir flask",
                  f"ENV FLASK_APP={flask_module}",
                  'CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]',
                  "EXPOSE 5000"])
@@ -375,8 +427,23 @@ class _GenericLab:
             if _ca_cert and os.path.isfile(_ca_cert):
                 proxy_build_args = ["--network", "host", "--build-arg",
                                    f"HTTPS_PROXY={os.environ.get('HTTPS_PROXY', '')}"]
-            r = self.sh("build", "--platform", "linux/amd64", "-t", self.image, *proxy_build_args,
-                       "-f", target["path"], target["context"], timeout=timeout_build)
+            # Retry on Docker Hub rate-limit (HTTP 429) with exponential backoff.
+            # Caps at 3 attempts; on each retry we wait longer (60s, 120s) before rebuilding.
+            _max_build_attempts = 3
+            r = None
+            for _attempt in range(_max_build_attempts):
+                r = self.sh("build", "--platform", "linux/amd64", "-t", self.image,
+                           *proxy_build_args, "-f", target["path"], target["context"],
+                           timeout=timeout_build)
+                if r.returncode == 0:
+                    break
+                combined = (r.stdout or "") + (r.stderr or "")
+                if "429" in combined or "toomanyrequests" in combined.lower():
+                    _wait = 60 * (2 ** _attempt)
+                    if _attempt + 1 < _max_build_attempts:
+                        time.sleep(_wait)
+                        continue
+                break
             if r.returncode != 0:
                 return r
             self.sh("network", "create", self.net, timeout=30)
