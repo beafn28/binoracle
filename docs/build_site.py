@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the binoracle GitHub Pages site."""
-import os, shutil, textwrap
+import os, re, shutil, textwrap
 import markdown as md
 
 SITE = os.path.join(os.path.dirname(__file__), "site")
@@ -9,7 +9,6 @@ ROOT = os.path.dirname(DOCS)
 
 PAGES = [
     ("README.es.md", "index-es.html", "binoracle — documentación en español"),
-    (os.path.join(ROOT, "ROADMAP.md"), "roadmap.html", "Roadmap — binoracle"),
 ]
 # Tutorial is generated inline (no source .md needed)
 GEN_PAGES = ["tutorial.html", "tutorial-es.html"]
@@ -226,9 +225,11 @@ body {
 .doc-content h1 { font-size: 2rem; font-weight: 800; margin-bottom: .5rem; color: var(--tx); }
 .doc-content h2 { font-size: 1.3rem; font-weight: 700; margin: 2rem 0 .75rem; padding-bottom: .4rem; border-bottom: 1px solid var(--brd); color: var(--tx); }
 .doc-content h3 { font-size: 1.05rem; font-weight: 700; margin: 1.5rem 0 .5rem; color: var(--tx); }
-.doc-content p { margin-bottom: 1rem; color: var(--tx); line-height: 1.65; }
-.doc-content ul, .doc-content ol { margin: .5rem 0 1rem 1.5rem; color: var(--tx); }
-.doc-content li { margin-bottom: .3rem; }
+.doc-content p { margin-bottom: 1.1rem; color: var(--tx); line-height: 1.7; }
+.doc-content ul, .doc-content ol { margin: .75rem 0 1.25rem 1.75rem; color: var(--tx); }
+.doc-content li { margin-bottom: .5rem; line-height: 1.65; }
+.doc-content hr { border: none; border-top: 1px solid var(--brd); margin: 2rem 0; }
+.doc-content del { text-decoration: line-through; color: var(--muted); }
 .doc-content code { background: var(--surf2); padding: .15em .4em; border-radius: 4px; font-size: .88em; color: var(--code); font-family: monospace; }
 .doc-content pre { background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r); padding: 1rem 1.25rem; overflow-x: auto; margin: 1rem 0; }
 .doc-content pre code { background: none; padding: 0; color: var(--tx); font-size: .88rem; }
@@ -240,12 +241,61 @@ body {
 .doc-content a { color: var(--acc); }
 .doc-content a:hover { text-decoration: underline; }
 
+/* ROADMAP PAGE */
+.rm-hero {
+  text-align: center; padding: 3rem 2rem 2rem;
+  background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(31,107,235,.1), transparent);
+}
+.rm-hero h1 { font-size: 2.2rem; font-weight: 800; margin-bottom: .5rem; color: var(--tx); }
+.rm-hero p { color: var(--muted); max-width: 580px; margin: 0 auto .5rem; font-size: .95rem; }
+.rm-principles { display: flex; gap: .9rem; flex-wrap: wrap; justify-content: center; margin-top: 1.25rem; }
+.rm-principle {
+  background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r);
+  padding: .85rem 1.1rem; font-size: .88rem; color: var(--muted); max-width: 310px; text-align: left;
+}
+.rm-principle strong { color: var(--acc); display: block; margin-bottom: .25rem; font-size: .9rem; }
+.rm-effort-legend {
+  display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-top: 1.1rem; font-size: .8rem; color: var(--muted);
+}
+.rm-effort-legend span { display: flex; align-items: center; gap: .4rem; }
+.rm-timeline { max-width: 900px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+.rm-card { border: 1px solid var(--brd); border-radius: 10px; overflow: hidden; margin-bottom: 1.5rem; background: var(--surf); }
+.rm-card-header {
+  display: flex; align-items: center; gap: 1rem; padding: 1rem 1.5rem;
+  background: var(--surf2); border-bottom: 1px solid var(--brd);
+}
+.rm-badge {
+  font-size: .7rem; font-weight: 700; padding: .25rem .65rem;
+  border-radius: 20px; white-space: nowrap; letter-spacing: .05em; text-transform: uppercase;
+}
+.rm-badge.version { background: rgba(88,166,255,.15); color: var(--acc); border: 1px solid rgba(88,166,255,.3); }
+.rm-badge.ongoing { background: rgba(210,153,34,.15); color: var(--yel); border: 1px solid rgba(210,153,34,.3); }
+.rm-badge.scope { background: rgba(139,148,158,.12); color: var(--muted); border: 1px solid var(--brd); }
+.rm-card-title { font-size: 1.05rem; font-weight: 700; color: var(--tx); }
+.rm-card-body { padding: 1.25rem 1.5rem; }
+.rm-desc { font-size: .9rem; color: var(--muted); margin-bottom: 1rem; line-height: 1.55; }
+.rm-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: .6rem; }
+.rm-item {
+  display: flex; align-items: flex-start; gap: .6rem;
+  background: var(--bg); border: 1px solid var(--brd); border-radius: 7px; padding: .6rem .9rem; font-size: .86rem;
+}
+.rm-item-effort {
+  font-size: .67rem; font-weight: 700; padding: .15rem .45rem; border-radius: 4px;
+  white-space: nowrap; flex-shrink: 0; margin-top: .1rem; letter-spacing: .03em;
+}
+.rm-eff-s { background: rgba(63,185,80,.15); color: var(--grn); }
+.rm-eff-m { background: rgba(88,166,255,.15); color: var(--acc); }
+.rm-eff-l { background: rgba(188,140,255,.15); color: var(--pur); }
+.rm-item-name { color: var(--tx); line-height: 1.45; }
+
 @media (max-width: 700px) {
   .nav-links { display: none; }
   .hero h1 { font-size: 2.2rem; }
   .table-pair { grid-template-columns: 1fr; }
   .doc-layout { flex-direction: column; }
   .doc-sidebar { width: 100%; position: static; height: auto; border-right: none; border-bottom: 1px solid var(--brd); }
+  .rm-timeline { padding: 1rem; }
+  .rm-items { grid-template-columns: 1fr; }
 }
 """
 
@@ -589,7 +639,15 @@ def index_page():
 def doc_page(source_path, title, current):
     with open(source_path, encoding="utf-8") as f:
         raw = f.read()
-    converter = md.Markdown(extensions=["tables", "fenced_code", "toc"])
+
+    # Strip <div align="center"> wrappers — they're GitHub-only presentational
+    # markup that prevents the markdown library from processing the content inside.
+    raw = re.sub(r'<div[^>]*>\n', '', raw)
+    raw = re.sub(r'</div>\n?', '', raw)
+    # Remove standalone logo <img> tags at the top (we show it in the nav already)
+    raw = re.sub(r'<img[^>]*logo\.svg[^>]*>\n?', '', raw)
+
+    converter = md.Markdown(extensions=["tables", "fenced_code", "toc", "md_in_html"])
     html_body = converter.convert(raw)
     toc = converter.toc  # type: ignore
 
@@ -612,6 +670,120 @@ def doc_page(source_path, title, current):
   </main>
 </div>"""
     return shell(title, current, body)
+
+# ---------------------------------------------------------------------------
+# Roadmap page
+# ---------------------------------------------------------------------------
+def roadmap_page():
+    with open(os.path.join(ROOT, "ROADMAP.md"), encoding="utf-8") as f:
+        raw = f.read()
+
+    # Split by level-2 headings: ['intro', '## Head1', 'body1', '## Head2', 'body2', ...]
+    chunks = re.split(r'^(## .+)$', raw, flags=re.MULTILINE)
+    intro_raw = chunks[0]
+
+    # Extract the two guiding principles from intro
+    rules = re.findall(
+        r'\d+\.\s+\*\*(.+?)\.\*\*\s+(.+?)(?=\n\d+\.|\n---|\Z)',
+        intro_raw, re.DOTALL
+    )
+    principles_html = ''
+    for rule_title, rule_body in rules[:2]:
+        body_text = rule_body.strip().split('\n')[0].strip()
+        if len(body_text) > 150:
+            body_text = body_text[:150].rsplit(' ', 1)[0] + '…'
+        principles_html += (
+            f'<div class="rm-principle"><strong>{rule_title}.</strong> {body_text}</div>\n'
+        )
+
+    def eff_class(eff):
+        e = eff.upper()
+        if 'L' in e and 'M' not in e:
+            return 'rm-eff-l'
+        if 'M' in e:
+            return 'rm-eff-m'
+        return 'rm-eff-s'
+
+    def render_section(heading_raw, content):
+        heading = heading_raw[3:].strip()
+        ver, title = (heading.split(' - ', 1) if ' - ' in heading else ('', heading))
+
+        # First non-empty, non-bullet, non-heading paragraph
+        desc = ''
+        for para in re.split(r'\n\n+', content.strip()):
+            p = para.strip()
+            if p and not p.startswith('-') and not p.startswith('#'):
+                desc = p.split('\n')[0].strip()
+                break
+        if len(desc) > 220:
+            desc = desc[:220].rsplit(' ', 1)[0] + '…'
+
+        # Items: "- **[Effort] Name.**"
+        items = re.findall(r'^- \*\*\[([^\]]+)\] (.+?)\.\*\*', content, re.MULTILINE)
+
+        h_lower = heading.lower()
+        if ver.startswith('v'):
+            badge_type = 'version'
+            badge_label = ver
+        elif 'quality' in h_lower or 'ongoing' in h_lower:
+            badge_type = 'ongoing'
+            badge_label = 'ongoing'
+        else:
+            badge_type = 'scope'
+            badge_label = 'out of scope'
+
+        items_html = ''
+        for effort, name in items:
+            name_clean = re.sub(r'~~(.+?)~~', r'\1', name)
+            ec = eff_class(effort)
+            items_html += (
+                f'<div class="rm-item">'
+                f'<span class="rm-item-effort {ec}">{effort}</span>'
+                f'<span class="rm-item-name">{name_clean}</span>'
+                f'</div>\n'
+            )
+
+        desc_html   = f'<p class="rm-desc">{desc}</p>' if desc else ''
+        items_grid  = f'<div class="rm-items">{items_html}</div>' if items_html else ''
+
+        return f"""<div class="rm-card">
+  <div class="rm-card-header">
+    <span class="rm-badge {badge_type}">{badge_label}</span>
+    <span class="rm-card-title">{title}</span>
+  </div>
+  <div class="rm-card-body">
+    {desc_html}
+    {items_grid}
+  </div>
+</div>
+"""
+
+    cards_html = ''
+    for i in range(1, len(chunks), 2):
+        if i + 1 < len(chunks):
+            cards_html += render_section(chunks[i], chunks[i + 1])
+
+    effort_legend = """
+<div class="rm-effort-legend">
+  <span><span class="rm-item-effort rm-eff-s">S</span> days</span>
+  <span><span class="rm-item-effort rm-eff-m">M</span> week or two</span>
+  <span><span class="rm-item-effort rm-eff-l">L</span> multi-week / research</span>
+</div>"""
+
+    body = f"""
+<div class="rm-hero">
+  <h1>Roadmap</h1>
+  <p>Direction for versions after 0.1.0. Every item ships as a verified attack path — never a prompt.</p>
+  <div class="rm-principles">
+    {principles_html}
+  </div>
+  {effort_legend}
+</div>
+<hr class="divider">
+<div class="rm-timeline">
+  {cards_html}
+</div>"""
+    return shell("Roadmap — binoracle", "roadmap", body)
 
 # ---------------------------------------------------------------------------
 # Tutorial page (English)
@@ -1093,6 +1265,11 @@ def build():
     with open(os.path.join(SITE, "tutorial-es.html"), "w", encoding="utf-8") as f:
         f.write(tutorial_es_page())
     print("  tutorial-es.html")
+
+    # Roadmap page
+    with open(os.path.join(SITE, "roadmap.html"), "w", encoding="utf-8") as f:
+        f.write(roadmap_page())
+    print("  roadmap.html")
 
     # Doc pages
     for src, out, title in PAGES:
