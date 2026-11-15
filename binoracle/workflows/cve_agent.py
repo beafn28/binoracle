@@ -1750,7 +1750,10 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     lab_dir = f"/tmp/{pkg}_autonomous_lab"
     _os.makedirs(lab_dir, exist_ok=True)
 
-    pin = f"{pkg}=={version}" if version else pkg
+    # Normalizar nombres pip incorrectos (el NVD usa "jinja" pero pip espera "Jinja2")
+    _PIP_CANONICAL = {"jinja": "Jinja2", "jinja2": "Jinja2", "flask_reuploaded": "flask-reuploaded"}
+    pip_pkg = _PIP_CANONICAL.get(pkg, pkg)
+    pin = f"{pip_pkg}=={version}" if version else pip_pkg
     req_lines = [pin]
     # dependencias de apoyo: solo paquetes DISTINTOS al principal
     if "flask" in pkg or "reuploaded" in pkg:
