@@ -30,13 +30,14 @@ import secrets
 import subprocess
 import tarfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from .wpverify import (WpVerifyResult, _docker_daemon_ok, _lab_host, _pick_param,
-                       _redirect_location_is_external, _token, _XssBrowserSession,
-                       _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS, _CMD_HINTS, _SQLI_HINTS,
-                       _URL_HINTS, _XSS_HINTS, _XML_HINTS, _REDIRECT_HINTS, _FILE_UPLOAD_HINTS)
+                       _redirect_location_is_external, _screenshot_response, _token,
+                       _XssBrowserSession, _ID_HINTS, _EMAIL_HINTS, _PASS_HINTS, _PATH_HINTS,
+                       _CMD_HINTS, _SQLI_HINTS, _URL_HINTS, _XSS_HINTS, _XML_HINTS,
+                       _REDIRECT_HINTS, _FILE_UPLOAD_HINTS)
 from .payload_kb import load_xss_payloads
 
 _MYSQL_IMAGE = "mysql:5.7"
@@ -281,6 +282,7 @@ class _DrupalLabSession:
     sub_pass: str
     sub_sess: object
     admin_sess: object
+    shots: list = field(default_factory=list)
 
 
 def _bootstrap_drupal_lab(lab: "_Lab", module_source_dir: str, slug: str, step,
@@ -361,7 +363,7 @@ def _bootstrap_drupal_lab(lab: "_Lab", module_source_dir: str, slug: str, step,
 
     return _DrupalLabSession(lab=lab, base_url=base_url, admin_user=admin_user,
                              admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
-                             sub_sess=sub_sess, admin_sess=admin_sess)
+                             sub_sess=sub_sess, admin_sess=admin_sess, shots=[])
 
 
 def verify_drupal_account_takeover(
@@ -429,6 +431,13 @@ def verify_drupal_account_takeover(
                                data=payload if m != "GET" else None,
                                params=payload if m == "GET" else None, timeout=20)
             res.evidence["status_code_respuesta"] = resp.status_code
+            step("capturando pantalla: petición atacante enviada al endpoint...")
+            _atk_png = _screenshot_response(boot.base_url + endpoint, m, resp.status_code, (resp.text or "")[:2000])
+            if _atk_png:
+                boot.shots.append({"png_b64": _atk_png,
+                                   "caption_es": f"Petición atacante ({m} {endpoint}) — intento de account takeover",
+                                   "caption_en": f"Attack request ({m} {endpoint}) — account takeover attempt",
+                                   "url": boot.base_url + endpoint})
         except Exception as e:
             res.detail = f"la peticion fallo: {e}"
             return res
@@ -464,11 +473,19 @@ def verify_drupal_account_takeover(
                           f"(uid={admin_uid}) -- confirmado por un SEGUNDO login/lectura "
                           f"independiente, no por el codigo de la respuesta")
             step("VERIFICADO: account takeover confirmado en Drupal.")
+            step("capturando pantalla: account takeover verificado...")
+            _win_png = _screenshot_response(boot.base_url + endpoint, m, 200, "account takeover confirmado en Drupal")
+            if _win_png:
+                boot.shots.append({"png_b64": _win_png,
+                                   "caption_es": "VERIFICADO — account takeover confirmado en laboratorio Drupal",
+                                   "caption_en": "VERIFIED — account takeover confirmed in Drupal lab",
+                                   "url": boot.base_url + endpoint})
         else:
             res.ok = True
             res.detail = ("se envio la peticion pero el efecto no se confirmo -- el account "
                           "takeover no se confirmo (puede que el endpoint/parametro no sean los "
                           "reales, o que el controlador si compruebe el uid contra la sesion)")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -561,6 +578,9 @@ def verify_drupal_path_traversal(
                 # mismo fix aplicado aqui).
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
+                boot.shots.append(_screenshot_response(
+                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                    "petición de control — path traversal", lang="es"))
             tried.append({"payload": payload_value, "status": resp.status_code,
                           "secret_presente": secret in (resp.text or "")})
             if secret in (resp.text or ""):
@@ -570,6 +590,10 @@ def verify_drupal_path_traversal(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
                      f"{path_param}={payload_value!r}.")
+                boot.shots.append(_screenshot_response(
+                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                    f"VERIFICADO — secreto filtrado con {path_param}={payload_value!r}",
+                    highlight=secret, lang="es"))
                 break
         res.evidence["intentos"] = tried
         if found:
@@ -584,6 +608,7 @@ def verify_drupal_path_traversal(
                           f"{path_param} y ninguna devolvio el secreto plantado -- el traversal "
                           f"no se confirmo (puede necesitar otra profundidad de '../', otra "
                           f"codificacion, o el endpoint/parametro no son los reales)")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -666,6 +691,9 @@ def verify_drupal_command_injection(
             if not first_resp_captured:
                 res.evidence["respuesta_muestra_primer_intento"] = (resp.text or "")[:500]
                 first_resp_captured = True
+                boot.shots.append(_screenshot_response(
+                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                    "petición de control — command injection", lang="es"))
             matched = bool(pattern.search(resp.text or ""))
             tried.append({"payload": payload_value, "status": resp.status_code, "suma_presente": matched})
             if matched:
@@ -675,6 +703,10 @@ def verify_drupal_command_injection(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: la respuesta contiene {expected} (={a}+{b}), calculado por un "
                      f"shell remoto -- ese numero no aparece en el payload enviado.")
+                boot.shots.append(_screenshot_response(
+                    boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                    f"VERIFICADO — suma {expected} en respuesta (RCE)", highlight=str(expected),
+                    lang="es"))
                 break
         res.evidence["intentos"] = tried
 
@@ -738,6 +770,7 @@ def verify_drupal_command_injection(
                           f"reflejada) y de timing ciega para {cmd_param}, y ninguna confirmo la "
                           f"suma esperada ({a}+{b}={expected}) ni un retraso consistente -- la "
                           f"inyeccion de comandos no se confirmo")
+        res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
