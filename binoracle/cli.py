@@ -1553,9 +1553,8 @@ def cmd_cve(args, config):
                     print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
-    # Imprime el resumen en terminal convirtiendo markdown a texto plano
-    # (sin ####/pipes de tabla/backticks -- el markdown crudo es ilegible en terminal).
-    print(_md_to_plain(render_investigation(inv, config.lang, embed_images=False)))
+    # El informe completo solo va al HTML (-o/--html); en terminal no se imprime nada mas
+    # despues del cuadro VERIFICADO / NO CONFIRMADO (ya se ve todo lo relevante ahi).
 
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
