@@ -1316,46 +1316,80 @@ def _make_cve_step_printer():
 
 def _md_to_plain(text: str) -> str:
     """Convierte markdown a texto plano legible en terminal.
-    Elimina: cabeceras (##/###), separadores de tabla (|---|), backticks,
-    negrita/cursiva (**/__), y convierte enlaces [texto](url) a 'texto (url)'."""
+
+    Reglas aplicadas en orden estricto:
+    1. Bloques de codigo (```) → detectados ANTES de cualquier sub; contenido indentado.
+    2. Cabeceras #/##/### → texto en mayusculas con subrayado o sin el.
+    3. Separadores de tabla |---|  → omitidos.
+    4. Filas de tabla → celdas separadas por espacios, backticks en celdas eliminados.
+    5. Reglas horizontales (---/===/***/~~~) → linea en blanco.
+    6. Blockquote > → indentado.
+    7. Negrita/cursiva, backticks inline, enlaces → texto plano.
+    8. Backtick suelto residual al inicio/fin de linea → eliminado.
+    """
     import re as _re
-    lines = []
-    for line in text.splitlines():
-        # Cabeceras: ## Titulo -> TITULO, ### Titulo -> Titulo
-        m = _re.match(r'^(#{1,6})\s+(.*)', line)
-        if m:
-            level = len(m.group(1))
-            title = m.group(2).strip()
+
+    _inline_code = _re.compile(r'`+([^`]+)`+')
+    _bold_italic = _re.compile(r'\*{1,3}([^*\n]+)\*{1,3}|_{1,3}([^_\n]+)_{1,3}')
+    _link        = _re.compile(r'\[([^\]]+)\]\([^)]*\)')
+    _hr          = _re.compile(r'^(\s*[-*_~=]{3,}\s*)$')
+
+    def _strip_inline(s: str) -> str:
+        s = _inline_code.sub(r'\1', s)
+        s = _bold_italic.sub(lambda m: m.group(1) or m.group(2), s)
+        s = _link.sub(r'\1', s)
+        return s.strip('`')
+
+    out: list[str] = []
+    inside_code = False
+
+    for raw in text.splitlines():
+        # --- 1. Valla de codigo (``` o ~~~) — ANTES de cualquier transformacion ---
+        if _re.match(r'^(`{3,}|~{3,})', raw):
+            inside_code = not inside_code
+            continue
+        if inside_code:
+            out.append('  ' + raw)
+            continue
+
+        # --- 2. Cabeceras ---
+        hm = _re.match(r'^(#{1,6})\s+(.*)', raw)
+        if hm:
+            level = len(hm.group(1))
+            title = _strip_inline(hm.group(2).strip())
             if level <= 2:
-                lines.append("")
-                lines.append(title.upper())
-                lines.append("─" * min(len(title), 60))
+                out.append('')
+                out.append(title.upper())
+                out.append('─' * min(len(title), 60))
             else:
-                lines.append("")
-                lines.append(title)
+                out.append('')
+                out.append(title)
             continue
-        # Separadores de tabla |---|---|  → omitir
-        if _re.match(r'^\|[-| :]+\|', line):
+
+        # --- 3. Separador de tabla |---|---|  → omitir ---
+        if _re.match(r'^\|[\s\-|:]+\|', raw):
             continue
-        # Filas de tabla | a | b | → quitar pipes extremos, separar con espacios
-        if line.startswith("|") and line.endswith("|"):
-            cells = [c.strip() for c in line[1:-1].split("|")]
-            lines.append("  " + "   ".join(cells))
+
+        # --- 4. Fila de tabla | a | b | ---
+        if raw.startswith('|') and raw.endswith('|'):
+            cells = [_strip_inline(c.strip()) for c in raw[1:-1].split('|')]
+            out.append('  ' + '   '.join(cells))
             continue
-        # Blockquote > texto → texto indentado
-        line = _re.sub(r'^>\s*', '  ', line)
-        # Negrita/cursiva **texto** o __texto__
-        line = _re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', line)
-        line = _re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', line)
-        # Backticks `code` → code
-        line = _re.sub(r'`([^`]*)`', r'\1', line)
-        # Bloques ``` → omitir la linea de apertura/cierre
-        if _re.match(r'^```', line):
+
+        # --- 5. Regla horizontal ---/===/***  → linea en blanco ---
+        if _hr.match(raw):
+            out.append('')
             continue
-        # Enlaces [texto](url) → texto
-        line = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', line)
-        lines.append(line)
-    return "\n".join(lines)
+
+        # --- 6. Blockquote ---
+        line = _re.sub(r'^>\s*', '  ', raw)
+
+        # --- 7. Inline: negrita, cursiva, backticks, enlaces ---
+        line = _strip_inline(line)
+
+        out.append(line)
+
+    return '\n'.join(out)
 
 
 def cmd_cve(args, config):
