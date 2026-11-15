@@ -1614,24 +1614,33 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
         p = param or "id"
         if "django" in pkg_lower:
             return (
-                "import os\n"
+                "import os, time\n"
                 "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n"
                 "import django\n"
                 "from django.conf import settings\n"
                 "if not settings.configured:\n"
                 "    settings.configure(\n"
-                "        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', "
-                "'NAME': '/tmp/db.sqlite3'}},\n"
+                "        DATABASES={'default': {\n"
+                "            'ENGINE': 'django.db.backends.postgresql',\n"
+                "            'NAME': 'lab', 'USER': 'lab', 'PASSWORD': 'lab',\n"
+                "            'HOST': os.environ.get('DB_HOST', 'db'), 'PORT': '5432'}},\n"
                 "        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n"
                 "        ROOT_URLCONF='urls', SECRET_KEY='binoracle', DEBUG=True,\n"
                 "        ALLOWED_HOSTS=['*'])\n"
-                "    django.setup()\n\n"
+                "    for _ in range(30):\n"
+                "        try:\n"
+                "            django.setup()\n"
+                "            from django.db import connection as _c\n"
+                "            _c.cursor().execute('SELECT 1')\n"
+                "            break\n"
+                "        except Exception:\n"
+                "            time.sleep(2)\n\n"
                 "from django.http import HttpResponse\n"
                 "from django.db import connection\n\n"
                 "def search(request):\n"
                 f"    q = request.GET.get('{p}', '')\n"
                 "    with connection.cursor() as c:\n"
-                "        c.execute(f\"SELECT * FROM auth_user WHERE username = '{q}'\")\n"
+                f"        c.execute(\"SELECT * FROM auth_user WHERE username = '\" + q + \"'\")\n"
                 "        return HttpResponse(str(c.fetchall()))\n\n"
                 "urlpatterns = []\n"
                 "try:\n"
@@ -1643,23 +1652,37 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "    from django.core.management import execute_from_command_line\n"
                 "    execute_from_command_line(['manage.py', 'runserver', '0.0.0.0:5000'])\n"
             )
-        # generic SQLi flask fallback
-        p2 = param or "q"
+        # generic SQLi flask fallback — PostgreSQL so SLEEP() / pg_sleep() work
+        p2 = param or "id"
         return (
+            "import os, time\n"
             "from flask import Flask, request\n"
-            "import sqlite3\n\n"
+            "import psycopg2\n\n"
             "app = Flask(__name__)\n\n"
-            "def get_db():\n"
-            "    db = sqlite3.connect('/tmp/lab.db')\n"
-            "    db.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER, name TEXT)')\n"
-            "    db.execute(\"INSERT OR IGNORE INTO items VALUES (1,'secret_data')\")\n"
-            "    db.commit()\n"
-            "    return db\n\n"
+            "def get_conn():\n"
+            "    for _ in range(30):\n"
+            "        try:\n"
+            "            conn = psycopg2.connect(\n"
+            "                host=os.environ.get('DB_HOST', 'db'),\n"
+            "                dbname='lab', user='lab', password='lab')\n"
+            "            cur = conn.cursor()\n"
+            "            cur.execute('CREATE TABLE IF NOT EXISTS items (id SERIAL PRIMARY KEY, name TEXT)')\n"
+            "            cur.execute(\"INSERT INTO items (name) SELECT 'secret_data' WHERE NOT EXISTS (SELECT 1 FROM items)\")\n"
+            "            conn.commit()\n"
+            "            return conn\n"
+            "        except Exception:\n"
+            "            time.sleep(2)\n"
+            "    return None\n\n"
             "@app.route('/search')\n"
             "def search():\n"
             f"    q = request.args.get('{p2}', '')\n"
-            "    db = get_db()\n"
-            "    rows = db.execute(f\"SELECT * FROM items WHERE name = '{q}'\").fetchall()\n"
+            "    conn = get_conn()\n"
+            "    if not conn:\n"
+            "        return 'db unavailable', 503\n"
+            "    cur = conn.cursor()\n"
+            f"    cur.execute(\"SELECT * FROM items WHERE name = '\" + q + \"'\")\n"
+            "    rows = cur.fetchall()\n"
+            "    conn.close()\n"
             "    return str(rows)\n\n"
             "if __name__ == '__main__':\n"
             "    app.run(host='0.0.0.0', port=5000)\n"
@@ -1762,6 +1785,13 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
             req_lines.append("flask>=2.0")
     elif "jinja" in pkg:
         req_lines.append("flask>=2.0")
+    # SQLi labs usan PostgreSQL (SLEEP/pg_sleep); SQLite no tiene SLEEP()
+    if vuln_class in ("sqli", "sql-injection"):
+        if "django" in pkg:
+            req_lines.append("psycopg2-binary")
+        else:
+            req_lines.append("flask>=2.0")
+            req_lines.append("psycopg2-binary")
     # aiohttp y django ya incluyen todo lo necesario sin extras
     req_path = _os.path.join(lab_dir, "requirements.txt")
     with open(req_path, "w") as f:
@@ -1782,6 +1812,34 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     app_path = _os.path.join(lab_dir, "app.py")
     with open(app_path, "w") as f:
         f.write(app_code)
+
+    # SQLi labs: generar docker-compose.yml con PostgreSQL para que pg_sleep() funcione
+    if vuln_class in ("sqli", "sql-injection"):
+        port = 5000
+        compose = (
+            "services:\n"
+            "  app:\n"
+            "    build: .\n"
+            f"    ports: ['{port}:{port}']\n"
+            "    environment:\n"
+            "      DB_HOST: db\n"
+            "    depends_on:\n"
+            "      db:\n"
+            "        condition: service_healthy\n"
+            "  db:\n"
+            "    image: postgres:15-alpine\n"
+            "    environment:\n"
+            "      POSTGRES_DB: lab\n"
+            "      POSTGRES_USER: lab\n"
+            "      POSTGRES_PASSWORD: lab\n"
+            "    healthcheck:\n"
+            "      test: ['CMD-SHELL', 'pg_isready -U lab']\n"
+            "      interval: 5s\n"
+            "      timeout: 5s\n"
+            "      retries: 15\n"
+        )
+        with open(_os.path.join(lab_dir, "docker-compose.yml"), "w") as f:
+            f.write(compose)
 
     # Populate notes so verification paths (sqli, ssti, etc.) can find the endpoint
     notes["endpoint"] = "/" + endpoint
