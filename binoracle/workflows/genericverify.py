@@ -33,6 +33,77 @@ import secrets
 
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
+
+def _screenshot_response(url: str, method: str, status: int, body: str,
+                         highlight: str = "", lang: str = "es") -> Optional[str]:
+    """Genera una captura de pantalla de tipo 'visor HTTP' con el cuerpo de respuesta
+    ya obtenido (no reintenta la peticion). Destaca visualmente `highlight` si se
+    pasa (p.ej. el secreto plantado o el resultado calculado). Usa una pagina HTML
+    sintetica en memoria -- no hay normalizacion de URL ni proxy de por medio.
+    Devuelve PNG codificado en base64, o None si Playwright no esta disponible."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
+    except Exception:
+        return None
+    import base64
+    import html as _html
+    import tempfile
+
+    body_disp = body[:4000]
+    body_escaped = _html.escape(body_disp)
+    if highlight:
+        hl_safe = _html.escape(highlight)
+        body_escaped = body_escaped.replace(hl_safe,
+            f'<mark class="hl">{hl_safe}</mark>')
+
+    st_color = "#4caf50" if 200 <= status < 300 else "#f44336"
+    lbl_text = "binoracle · evidencia HTTP" if lang == "es" else "binoracle · HTTP evidence"
+    page_src = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font:13px/1.6 'Courier New',monospace;background:#1e1e1e;color:#d4d4d4;min-height:100vh}}
+.bar{{background:#252526;padding:10px 16px;border-bottom:2px solid #007acc;display:flex;gap:12px;align-items:center}}
+.meth{{color:#4ec9b0;font-weight:700;font-size:14px;white-space:nowrap}}
+.url{{color:#9cdcfe;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
+.st{{color:{st_color};font-weight:700;font-size:13px;white-space:nowrap}}
+.lbl{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}}
+.body{{padding:14px 16px;white-space:pre-wrap;word-break:break-word;font-size:13px}}
+mark.hl{{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-weight:700}}
+</style></head><body>
+<div class="bar">
+  <span class="lbl">{_html.escape(lbl_text)}</span>
+  <span class="meth">{_html.escape(method)}</span>
+  <span class="url" title="{_html.escape(url[:300])}">{_html.escape(url[:200])}</span>
+  <span class="st">HTTP {status}</span>
+</div>
+<div class="body">{body_escaped}</div>
+</body></html>"""
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1200, "height": 800},
+                    device_scale_factor=2,
+                ).new_page()
+                page.set_content(page_src, wait_until="domcontentloaded")
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
 # configure_burp_mcp/_http_request viven en wpverify.py (ver ahi) -- UN SOLO estado compartido
 # por TODOS los verificadores (genericos y CMS-especificos), no una copia por modulo. Se
 # reexportan aqui (import de arriba) para no romper el `from .genericverify import
@@ -44,25 +115,80 @@ _CI_HINTS = ("cmd", "command", "exec", "run", "host", "ip", "address", "target",
 
 _AUTO_DOCKERFILE_NAME = ".binoracle_auto_Dockerfile"
 
+
+def _best_python_image() -> str:
+    """Returns the best available Python base image.
+
+    Prefers python:3.11-slim (Debian-based, full glibc) but falls back to
+    python:3.11-alpine when slim is not in the local Docker cache AND a quick
+    pull attempt fails with Docker Hub rate-limiting (HTTP 429).  Alpine needs
+    build tools for C-extension wheels (aiohttp, cryptography, etc.); they are
+    added via a RUN apk add line injected by _alpine_python_build_deps().
+    """
+    # Check local cache first (fast path, no network)
+    r = subprocess.run(
+        ["docker", "images", "-q", "python:3.11-slim"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return "python:3.11-slim"
+    # Try a quick pull; if rate-limited use alpine (already cached from session warm-up)
+    pull = subprocess.run(
+        ["docker", "pull", "python:3.11-slim"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if pull.returncode == 0:
+        return "python:3.11-slim"
+    combined = (pull.stdout or "") + (pull.stderr or "")
+    if "429" in combined or "toomanyrequests" in combined.lower():
+        return "python:3.11-alpine"
+    return "python:3.11-slim"
+
+
+def _alpine_python_build_deps() -> str:
+    """Extra RUN step to install C build tools on Alpine Python images.
+
+    Required for packages with C extensions (aiohttp, cryptography, lxml…).
+    No-op on Debian/slim images (never inserted there).
+    """
+    return "RUN apk add --no-cache gcc musl-dev libffi-dev openssl-dev linux-headers"
+
+
 # deteccion de stack cuando el repo NO trae su propio Dockerfile/compose -- deliberadamente
 # acotada a los 3 casos mas comunes en PoCs publicos de CVEs web (Node/Python/PHP puro, sin
 # framework que exija su propio arranque especial como Django/Rails). Cada entrada: (fichero que
 # delata el stack, lineas del Dockerfile generado, puerto por defecto que se expone). Generalizar
 # a CUALQUIER stack sin acotar la lista seria adivinar a ciegas -- mejor una lista corta y
 # honesta que crece con casos reales confirmados, que una que finja cubrirlo todo.
-_STACK_SIGNALS = (
-    ("package.json", "node:20-alpine", 3000,
-     ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
-      'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
-    ("requirements.txt", "python:3.11-slim", 5000,
-     ["WORKDIR /app", "COPY . .",
-      "RUN pip install --no-cache-dir -r requirements.txt || true",
-      'CMD ["sh", "-c", "python app.py || python main.py || python manage.py runserver 0.0.0.0:5000"]']),
-    ("composer.json", "php:8.2-cli", 8000,
-     ["WORKDIR /app", "COPY . .",
-      "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
-      'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
-)
+def _build_stack_signals() -> tuple:
+    """Build stack signals with dynamic Python base image selection."""
+    py_image = _best_python_image()
+    py_run_lines: list = ["WORKDIR /app", "COPY . ."]
+    if "alpine" in py_image:
+        py_run_lines.append(_alpine_python_build_deps())
+    py_run_lines += [
+        "RUN pip install --no-cache-dir -r requirements.txt || true",
+        'CMD ["sh", "-c", "python app.py || python main.py || python manage.py runserver 0.0.0.0:5000"]',
+    ]
+    return (
+        ("package.json", "node:20-alpine", 3000,
+         ["WORKDIR /app", "COPY . .", "RUN npm install || npm install --legacy-peer-deps || true",
+          'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
+        # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
+        ("Gemfile", "ruby:3.1-slim", 9292,
+         ["WORKDIR /app", "COPY . .",
+          "RUN gem install bundler --no-document && bundle install --retry 5 "
+          "|| gem install rack rackup webrick && bundle install --retry 3 || true",
+          'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
+        ("requirements.txt", py_image, 5000, py_run_lines),
+        ("composer.json", "php:8.2-cli", 8000,
+         ["WORKDIR /app", "COPY . .",
+          "RUN (command -v composer >/dev/null && composer install --no-interaction || true)",
+          'CMD ["php", "-S", "0.0.0.0:8000", "-t", "."]']),
+    )
+
+
+_STACK_SIGNALS = _build_stack_signals()
 # PHP sin composer.json (scripts sueltos, el caso mas comun en un PoC de un solo plugin/script
 # vulnerable): activa el servidor de desarrollo embebido de PHP, sirve cualquier .php del repo
 # tal cual, sin necesitar entender el proyecto.
@@ -150,7 +276,8 @@ def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
     (HTTPS_PROXY se propaga via ARG/ENV, no solo al build sino tambien a los RUN posteriores).
     Vacio si la variable no esta fijada: ningun despliegue sin este proxy corporativo concreto
     se ve afectado."""
-    ca_src = os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "")
+    ca_src = (os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "") or
+              os.environ.get("SSL_CERT_FILE", ""))
     if not ca_src or not os.path.isfile(ca_src):
         return []
     try:
@@ -163,15 +290,16 @@ def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
         "ENV HTTPS_PROXY=$HTTPS_PROXY",
         f"COPY {_PROXY_CA_FILENAME} /tmp/binoracle-ca.crt",
         "ENV NODE_EXTRA_CA_CERTS=/tmp/binoracle-ca.crt PIP_CERT=/tmp/binoracle-ca.crt "
-        "NPM_CONFIG_CAFILE=/tmp/binoracle-ca.crt",
+        "NPM_CONFIG_CAFILE=/tmp/binoracle-ca.crt "
+        "SSL_CERT_FILE=/tmp/binoracle-ca.crt BUNDLE_SSL_CA_CERT=/tmp/binoracle-ca.crt",
     ]
 
 
 def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
-    un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a Node/Python/PHP sin
-    framework (los 3 casos mas comunes en PoCs publicos), no un intento de adivinar cualquier
+    un Dockerfile minimo propio para arrancarlo -- deliberadamente acotado a Node/Ruby/Python/PHP sin
+    framework (los casos mas comunes en PoCs publicos), no un intento de adivinar cualquier
     stack posible. El Dockerfile generado queda guardado en el propio directorio del codigo
     (_AUTO_DOCKERFILE_NAME) para que quede constancia de que NO es el del autor del PoC -- el
     `step()` del caller debe dejarlo igual de explicito en el informe."""
@@ -189,9 +317,12 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
                "auto_generado": True, "stack_detectado": signal_file}
     flask_module = _detect_bare_flask_entry(source_dir)
     if flask_module:
-        lines = (["FROM python:3.11-slim"] + _proxy_dockerfile_lines(source_dir) +
-                ["WORKDIR /app", "COPY . .",
-                 "RUN pip install --no-cache-dir flask",
+        _py_img = _best_python_image()
+        _flask_pip = (["RUN " + _alpine_python_build_deps().split("RUN ", 1)[1]]
+                      if "alpine" in _py_img else [])
+        lines = ([f"FROM {_py_img}"] + _proxy_dockerfile_lines(source_dir) +
+                ["WORKDIR /app", "COPY . ."] + _flask_pip +
+                ["RUN pip install --no-cache-dir flask",
                  f"ENV FLASK_APP={flask_module}",
                  'CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]',
                  "EXPOSE 5000"])
@@ -292,18 +423,35 @@ class _GenericLab:
             # BINORACLE_DOCKER_BUILD_CA_CERT fijada, esto es un no-op (misma invocacion que
             # siempre, ningun despliegue sin este proxy concreto se ve afectado).
             proxy_build_args: List[str] = []
-            if os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT"):
+            _ca_cert = (os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "") or
+                        os.environ.get("SSL_CERT_FILE", ""))
+            if _ca_cert and os.path.isfile(_ca_cert):
                 proxy_build_args = ["--network", "host", "--build-arg",
                                    f"HTTPS_PROXY={os.environ.get('HTTPS_PROXY', '')}"]
-            r = self.sh("build", "-t", self.image, *proxy_build_args, "-f", target["path"],
-                       target["context"], timeout=timeout_build)
+            # Retry on Docker Hub rate-limit (HTTP 429) with exponential backoff.
+            # Caps at 3 attempts; on each retry we wait longer (60s, 120s) before rebuilding.
+            _max_build_attempts = 3
+            r = None
+            for _attempt in range(_max_build_attempts):
+                r = self.sh("build", "--platform", "linux/amd64", "-t", self.image,
+                           *proxy_build_args, "-f", target["path"], target["context"],
+                           timeout=timeout_build)
+                if r.returncode == 0:
+                    break
+                combined = (r.stdout or "") + (r.stderr or "")
+                if "429" in combined or "toomanyrequests" in combined.lower():
+                    _wait = 60 * (2 ** _attempt)
+                    if _attempt + 1 < _max_build_attempts:
+                        time.sleep(_wait)
+                        continue
+                break
             if r.returncode != 0:
                 return r
             self.sh("network", "create", self.net, timeout=30)
             self._created.append(("network", self.net))
             self._created.append(("image", self.image))
-            r = self.sh("run", "-d", "--name", self.container, "--network", self.net, "-P",
-                       self.image, timeout=timeout_run)
+            r = self.sh("run", "-d", "--platform", "linux/amd64", "--name", self.container,
+                       "--network", self.net, "-P", self.image, timeout=timeout_run)
             if r.returncode == 0:
                 self._created.append(("container", self.container))
             return r
@@ -347,9 +495,10 @@ class _GenericLab:
         import urllib.error
         import urllib.request
         host = _lab_host()
-        for _ in range(tries):
+        for _try in range(tries):
             for c in self.running_containers():
-                for port in self.published_ports(c):
+                ports = self.published_ports(c)
+                for port in ports:
                     try:
                         with urllib.request.urlopen(f"http://{host}:{port}/", timeout=4) as r:
                             if r.status < 500:
@@ -499,6 +648,22 @@ def _scan_web_routes(source_dir: str) -> list:
         if cur_ep is not None:
             routes.append((cur_ep, dict(cur_params), cur_meth))
 
+    # --- aiohttp (Python): add_static('/prefix', root, follow_symlinks=...) ---
+    # Confirmado en vivo con CVE-2024-23334: el LLM propone endpoint '/static/<path:path>'
+    # (con sintaxis de plantilla) que no se detecta como URL_PATH y falla la URL construction.
+    # Escaneando add_static() directamente se obtiene el prefijo limpio '/static/' como URL_PATH.
+    for py_file in _glob.glob(os.path.join(source_dir, "**", "*.py"), recursive=True):
+        try:
+            content = open(py_file).read()
+        except Exception:
+            continue
+        for m_as in re.finditer(
+            r'(?:app|router)(?:\.router)?\.add_static\s*\(\s*["\']([^"\']+)["\']',
+            content
+        ):
+            prefix = m_as.group(1).rstrip("/") + "/"
+            routes.append((prefix, {"URL_PATH": ""}, "GET"))
+
     # --- Sinatra / plain Rack (Ruby) --- includes config.ru (*.ru) and *.rb
     _rb_files = (_glob.glob(os.path.join(source_dir, "**", "*.rb"), recursive=True) +
                  _glob.glob(os.path.join(source_dir, "**", "*.ru"), recursive=True))
@@ -519,10 +684,14 @@ def _scan_web_routes(source_dir: str) -> list:
             # Extract root: (optional, for prefix-bypass canary planting)
             rack_root = ""
             m_root_str = re.search(r'root\s*:\s*["\']([^"\']+)["\']', block)
+            m_root_dir = re.search(r'root\s*:\s*__dir__', block)
             m_root_join = re.search(
                 r'root\s*:\s*File\.join\(__dir__\s*,\s*["\']([^"\']+)["\']', block)
             if m_root_str:
                 rack_root = m_root_str.group(1)
+            elif m_root_dir:
+                # root: __dir__ → el root es el propio WORKDIR del contenedor
+                rack_root = "WORKDIR/"
             elif m_root_join:
                 rack_root = "WORKDIR/" + m_root_join.group(1)
             urls_str = m_urls.group(1)
@@ -783,8 +952,20 @@ def verify_generic_path_traversal(
                 (isinstance(params, dict) and any(k.upper() in ("URL_PATH", "URLPATH") for k in params)) or
                 (isinstance(params, (list, tuple)) and any(str(p).upper() in ("URL_PATH", "URLPATH") for p in params)))
 
+    # Normalizar endpoint: strip sintaxis de plantilla de ruta (Flask/aiohttp).
+    # Confirmado en vivo con CVE-2024-23334: LLM propone '/static/<path:path>'.
+    # '<path:path>' no es parte de la URL real -- hay que eliminarlo Y activar URL_PATH mode.
+    if endpoint and '<' in endpoint:
+        # Recorta desde el primer '<': '/static/<path:path>' -> '/static/'
+        endpoint = re.sub(r'/<[^>]+>.*', '/', endpoint)
+        if not endpoint.endswith('/'):
+            endpoint = endpoint.rstrip('/') + '/'
+        _url_path_mode_from_template = True
+    else:
+        _url_path_mode_from_template = False
+
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
-    _url_path_mode = _is_url_path_mode(parameters)
+    _url_path_mode = _is_url_path_mode(parameters) or _url_path_mode_from_template
 
     # Gap real (confirmado con CVE-2024-23334 / aiohttp): muchos path-traversal inyectan el
     # payload en el PATH de la URL, no en un query-param -- e.g. GET /static/../../etc/passwd.
@@ -897,6 +1078,21 @@ def verify_generic_path_traversal(
                     res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                     step(f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
                          f"{payload_desc}.")
+                    _shot_url = (base_url + cand_ep + payload_value) if cand_up else (base_url + cand_ep)
+                    _png = _screenshot_response(
+                        url=_shot_url, method=cand_meth, status=resp.status_code,
+                        body=(resp.text or "")[:4000], highlight=secret,
+                    )
+                    if _png:
+                        res.evidence.setdefault("screenshots", []).append({
+                            "png_b64": _png, "url": _shot_url,
+                            "caption_es": (f"Respuesta HTTP real: el fichero canario ({canary_path}) "
+                                           f"servido por el servidor -- el secreto plantado (amarillo) "
+                                           f"confirma el path traversal."),
+                            "caption_en": (f"Real HTTP response: canary file ({canary_path}) served "
+                                           f"by server -- planted secret (highlighted) confirms path traversal."),
+                        })
+                        step("captura web guardada -- usa --html/-o para verla en el informe.")
                     break
             tried_all.extend(tried)
             if found:
@@ -919,14 +1115,19 @@ def verify_generic_path_traversal(
             for _ep2, _p2, _m2, _up2, _fs2 in candidates:
                 if isinstance(_p2, dict):
                     _rsr = _p2.get("RACK_STATIC_ROOT", "")
-                    if _rsr and not _rsr.startswith("WORKDIR/"):
-                        root_cands = [_rsr] + root_cands
+                    if _rsr:
+                        if not _rsr.startswith("WORKDIR/"):
+                            root_cands = [_rsr] + root_cands
+                        # "WORKDIR/" solo → se expande a WORKDIR puro después de detectar $PWD
             # Detectar WORKDIR del contenedor para expandir rutas relativas y priorizarlo
             try:
                 _wd = lab.sh("exec", container, "sh", "-c", "echo $PWD").stdout.strip()
                 if _wd and _wd != "/":
-                    # Sustituir WORKDIR/ en root_cands
-                    root_cands = [rc.replace("WORKDIR/", _wd + "/") for rc in root_cands]
+                    # Sustituir WORKDIR/ → "<wd>/" y "WORKDIR/" puro (trailing slash) → "<wd>"
+                    def _sub_wd(rc: str) -> str:
+                        s = rc.replace("WORKDIR/", _wd + "/")
+                        return s.rstrip("/") if s != _wd + "/" else _wd
+                    root_cands = [_sub_wd(rc) for rc in root_cands]
                     root_cands = [_wd + "/public", _wd + "/www", _wd + "/static", _wd] + root_cands
             except Exception:
                 pass
@@ -965,6 +1166,22 @@ def verify_generic_path_traversal(
                                 step(f"VERIFICADO (prefix bypass): canario en {_rc_path} accesible "
                                      f"via URL_PATH={bp!r} -- el middleware sirve ficheros fuera "
                                      f"del prefijo URL configurado.")
+                                _bp_url = target_url
+                                _bp_png = _screenshot_response(
+                                    url=_bp_url, method="GET", status=resp.status_code,
+                                    body=(resp.text or "")[:4000], highlight=secret2,
+                                )
+                                if _bp_png:
+                                    res.evidence.setdefault("screenshots", []).append({
+                                        "png_b64": _bp_png, "url": _bp_url,
+                                        "caption_es": (f"Bypass de prefijo URL confirmado: "
+                                                       f"{_rc_path} accesible fuera del prefijo "
+                                                       f"configurado (secreto en amarillo)."),
+                                        "caption_en": (f"URL-prefix bypass confirmed: "
+                                                       f"{_rc_path} accessible outside the "
+                                                       f"configured prefix (secret highlighted)."),
+                                    })
+                                    step("captura web guardada -- usa --html/-o para verla en el informe.")
                                 break
                         except Exception as e:
                             tried_all.append({"payload": f"[bypass]{bp}", "error": str(e)})
@@ -2149,6 +2366,21 @@ def verify_generic_xss(
                     res.evidence["payload_ganador"] = payload_value
                     step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
                          f"cambio exactamente a '{marker}'.")
+                    _, _xss_png = xb.render(base_url, endpoint, m, params, [], capture=True)
+                    if _xss_png:
+                        from urllib.parse import urlencode
+                        _xss_url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
+                        res.evidence.setdefault("screenshots", []).append({
+                            "png_b64": _xss_png, "url": _xss_url,
+                            "caption_es": (f"XSS confirmado: el navegador Chromium headless "
+                                           f"ejecuto el script inyectado en '{xss_param}' -- "
+                                           f"document.title cambio a '{marker}' (prueba de "
+                                           f"ejecucion JS real, no solo reflexion de texto)."),
+                            "caption_en": (f"XSS confirmed: headless Chromium executed the "
+                                           f"injected script in '{xss_param}' -- document.title "
+                                           f"changed to '{marker}' (proof of real JS execution, "
+                                           f"not just text reflection)."),
+                        })
                     break
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "xss_param": xss_param, "token": token, "metodo": m,
@@ -2305,6 +2537,23 @@ def verify_generic_ssti(
                     res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                     step(f"VERIFICADO: la respuesta contiene {payload_expected}, calculado por el "
                          f"motor de plantillas -- ese numero no aparece en el payload enviado.")
+                    _ssti_url = base_url + ep_path
+                    _ssti_png = _screenshot_response(
+                        url=_ssti_url, method=cand_meth, status=resp.status_code,
+                        body=(resp.text or "")[:4000], highlight=str(payload_expected),
+                    )
+                    if _ssti_png:
+                        res.evidence.setdefault("screenshots", []).append({
+                            "png_b64": _ssti_png, "url": _ssti_url,
+                            "caption_es": (f"SSTI confirmado: el motor de plantillas evaluo "
+                                           f"'{payload_value}' y devolvio {payload_expected} "
+                                           f"(resultado en amarillo) -- ese numero no estaba "
+                                           f"en el payload enviado."),
+                            "caption_en": (f"SSTI confirmed: template engine evaluated "
+                                           f"'{payload_value}' and returned {payload_expected} "
+                                           f"(highlighted) -- that number was not in the payload."),
+                        })
+                        step("captura web guardada -- usa --html/-o para verla en el informe.")
                     break
             tried_all.extend(tried)
             if found:
@@ -2384,6 +2633,22 @@ def verify_generic_ssti(
                                             _rend_resp.text or "")[:500]
                                         step(f"VERIFICADO (multi-step): upload {_nc!r} + render "
                                              f"{_rend_url!r} devolvio {expected}.")
+                                        _ms_png = _screenshot_response(
+                                            url=_rend_url, method="GET",
+                                            status=_rend_resp.status_code,
+                                            body=(_rend_resp.text or "")[:4000],
+                                            highlight=str(expected),
+                                        )
+                                        if _ms_png:
+                                            res.evidence.setdefault("screenshots", []).append({
+                                                "png_b64": _ms_png, "url": _rend_url,
+                                                "caption_es": (f"SSTI multi-step: plantilla renderizada "
+                                                               f"tras upload traversal -- el motor evaluo "
+                                                               f"'{_ssti_pl}' y devolvio {expected} (amarillo)."),
+                                                "caption_en": (f"Multi-step SSTI: template rendered "
+                                                               f"after upload traversal -- engine evaluated "
+                                                               f"'{_ssti_pl}' and returned {expected} (highlighted)."),
+                                            })
                                         break
                             except Exception:
                                 pass

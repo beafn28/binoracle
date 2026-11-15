@@ -128,7 +128,7 @@ The LLM receives the raw NVD description and nothing else. All exploit hypothese
 ### Supported file formats
 
 | Format | Backends |
-|--------|----------|
+|--------|---------|
 | ELF (x86-64 / x86 / ARM / MIPS / RISC-V) | radare2, pyelftools, pwntools, angr, pwndbg |
 | PE / PE+ (Windows) | pefile, LIEF, radare2 |
 | Mach-O (macOS / iOS) | LIEF, radare2 |

@@ -1175,6 +1175,144 @@ def _h_autofuzz_afl(args):
     return render_autofuzz_afl(r)
 
 
+@_tool("libfuzzer_corpus",
+       "Genera un corpus de semillas para libFuzzer a partir de datos de un CVE "
+       "(descripcion NVD + PoC opcional). Extrae payloads del PoC, deriva valores de borde "
+       "de la descripcion, y genera un harness.c listo para compilar con clang -fsanitize=fuzzer,address. "
+       "SOLO USO AUTORIZADO.",
+       {"cve_id":      {"type": "string",
+                        "description": "CVE identifier (e.g. CVE-2025-27516)"},
+        "poc_text":    {"type": "string",
+                        "description": "texto completo del PoC (Python/curl/pwntools)"},
+        "description": {"type": "string",
+                        "description": "descripcion NVD del CVE (si no se indica, se obtiene automaticamente)"},
+        "target_func": {"type": "string",
+                        "description": "nombre de la funcion C a fuzzear (default: target_function)"},
+        "hint":        {"type": "string",
+                        "description": "pista sobre el formato de entrada o funcion vulnerable"},
+        "out_dir":     {"type": "string",
+                        "description": "directorio de salida para el corpus (default: .)"}},
+       ["cve_id"])
+def _h_libfuzzer_corpus(args):
+    from .workflows.libfuzzer_corpus import build_corpus, write_corpus, render_corpus
+    a = args or {}
+    corpus = build_corpus(
+        cve_id=a.get("cve_id") or "",
+        poc_text=a.get("poc_text") or "",
+        description=a.get("description") or "",
+        target_func=a.get("target_func") or "target_function",
+        hint=a.get("hint") or "",
+    )
+    wrote_to = None
+    if a.get("out_dir") and corpus.ok:
+        try:
+            wrote_to = write_corpus(corpus, a["out_dir"])
+        except Exception as e:
+            corpus.note = (corpus.note or "") + f" (error al escribir corpus: {e})"
+    return render_corpus(corpus, wrote_to=wrote_to)
+
+
+@_tool("finetune_dataset",
+       "Exporta las investigaciones de CVE de la sesion como un dataset JSONL de instrucciones "
+       "para hacer fine-tuning LoRA de un modelo de lenguaje (Qwen-2.5-Coder, Mistral, etc.). "
+       "Genera train.jsonl, val.jsonl y un script run_lora.py listo para ejecutar con PEFT+TRL. "
+       "SOLO USO AUTORIZADO.",
+       {"reports_dir": {"type": "string",
+                        "description": "directorio de archivos JSON de binoracle para incluir en el dataset"},
+        "model_id":    {"type": "string",
+                        "description": "modelo base de HuggingFace (default: Qwen/Qwen2.5-Coder-7B-Instruct)"},
+        "out_dir":     {"type": "string",
+                        "description": "directorio de salida para los archivos generados (default: .)"}},
+       [])
+def _h_finetune_dataset(args):
+    from .workflows.finetune import build_finetune_dataset, render_finetune
+    a = args or {}
+    ds = build_finetune_dataset(
+        reports_dir=a.get("reports_dir") or "",
+        model_id=a.get("model_id") or "Qwen/Qwen2.5-Coder-7B-Instruct",
+        out_dir=a.get("out_dir") or ".",
+    )
+    return render_finetune(ds)
+
+
+@_tool("kernel_exploit_chain",
+       "Genera una cadena de exploit de kernel: ret2usr, UAF en driver, heap spray, ROP chain, "
+       "modprobe_path overwrite, dirty-pipe, io_uring, msg_msg, seq_operations. "
+       "Selecciona automaticamente el primitivo mas relevante a partir de la descripcion NVD. "
+       "Devuelve: hipotesis, precondiciones, postcondiciones, pasos y harness C listo para compilar. "
+       "SOLO USO AUTORIZADO — solo en VMs efimeras, kernels propios o entornos CTF/laboratorio.",
+       {"cve_id":      {"type": "string",
+                        "description": "CVE identifier (e.g. CVE-2022-0847)"},
+        "description": {"type": "string",
+                        "description": "descripcion NVD (si no se indica, se obtiene automaticamente)"},
+        "vuln_class":  {"type": "string",
+                        "description": "clase de vulnerabilidad (use-after-free, stack overflow, etc.)"},
+        "primitive":   {"type": "string",
+                        "description": "forzar un primitivo concreto: ret2usr | uaf_driver | heap_spray | "
+                                       "rop_chain | modprobe_path | msg_msg | seq_operations | "
+                                       "dirty_pipe | io_uring (default: auto)"}},
+       ["cve_id"])
+def _h_kernel_exploit_chain(args):
+    from .workflows.kernel_exploit import build_kernel_exploit, render_kernel_exploit
+    from .workflows.cvelookup import fetch_cve
+    a = args or {}
+    cve_id = a.get("cve_id") or ""
+    description = a.get("description") or ""
+    if cve_id and not description:
+        info = fetch_cve(cve_id)
+        description = info.description or ""
+    chain = build_kernel_exploit(
+        cve_id=cve_id,
+        description=description,
+        vuln_class=a.get("vuln_class") or "",
+        primitive=a.get("primitive") or "",
+    )
+    return render_kernel_exploit(chain)
+
+
+@_tool("firmware_analyze",
+       "Analiza imagenes de firmware: volumenes UEFI (.fd/.rom/.efi), rootfs SquashFS/JFFS2, "
+       "uImage/zImage, dumps de flash SPI/NAND, y binarios ELF/PE32+. "
+       "Detecta el formato automaticamente, extrae el sistema de archivos con "
+       "binwalk/unsquashfs/jefferson/uefi-firmware-parser, y busca: "
+       "credenciales hardcodeadas, binarios SUID, handlers SMM/SMI de UEFI, servicios de red "
+       "(telnetd/httpd/dropbear), configuracion de kernel insegura y binarios interesantes. "
+       "SOLO USO AUTORIZADO — solo firmware de dispositivos propios o con permiso escrito.",
+       {"image_path": {"type": "string",
+                       "description": "ruta al archivo de firmware (.fd, .efi, .bin, .rom, squashfs, etc.)"},
+        "out_dir":    {"type": "string",
+                       "description": "directorio para la extraccion (default: directorio temporal)"}},
+       ["image_path"])
+def _h_firmware_analyze(args):
+    from .workflows.firmware import analyze_firmware, render_firmware
+    a = args or {}
+    info = analyze_firmware(a.get("image_path") or "", out_dir=a.get("out_dir") or "")
+    return render_firmware(info)
+
+
+@_tool("cve_chain",
+       "Ejecuta una cadena multi-CVE (web RCE → local privesc → persistencia). "
+       "Investiga cada CVE secuencialmente, usando la postcondicion del stage anterior "
+       "como contexto para el siguiente. Devuelve narrativa completa de la cadena. "
+       "SOLO USO AUTORIZADO — solo contra entornos propios o con permiso escrito.",
+       {"cves":    {"type": "array",  "items": {"type": "string"},
+                   "description": "Lista ordenada de CVE IDs que forman la cadena "
+                                  "(ej. ['CVE-2021-44228', 'CVE-2021-4034'])"},
+        "out_dir": {"type": "string", "description": "directorio para informes HTML por CVE (default: .)"}},
+       ["cves"])
+def _h_cve_chain(args):
+    from .workflows.cve_chain import run_chain, render_chain
+    a = args or {}
+    cves = a.get("cves") or []
+    if isinstance(cves, str):
+        cves = [c.strip() for c in cves.split(",") if c.strip()]
+    result = run_chain(
+        cve_ids=cves,
+        out_dir=a.get("out_dir") or ".",
+    )
+    return render_chain(result)
+
+
 def _exploit_tool(name, desc, importer):
     @_tool(name, desc + " AUTORIZADO/CTF; verifica por ejecucion y degrada honestamente.",
            {"binary": {"type": "string", "description": "ruta al ELF"}}, ["binary"])

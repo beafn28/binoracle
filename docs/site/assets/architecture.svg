@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 620" width="1100" height="620" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.9" fill="#cbd5e1"/>
+    </pattern>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0,0 10,3.5 0,7" fill="#64748b"/>
+    </marker>
+    <marker id="arr-b" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0,0 10,3.5 0,7" fill="#3b82f6"/>
+    </marker>
+    <marker id="arr-g" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0,0 10,3.5 0,7" fill="#22c55e"/>
+    </marker>
+    <marker id="arr-p" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0,0 10,3.5 0,7" fill="#a855f7"/>
+    </marker>
+    <marker id="arr-y" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0,0 10,3.5 0,7" fill="#f59e0b"/>
+    </marker>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-color="#00000018"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1100" height="620" rx="16" fill="#ffffff"/>
+  <rect width="1100" height="620" rx="16" fill="url(#dots)"/>
+
+  <!-- ═══ TITLE ═══ -->
+  <text x="550" y="42" text-anchor="middle" font-size="21" font-weight="700" fill="#0f172a" letter-spacing="-0.3">binoracle — System Architecture</text>
+
+  <!-- ═══ INTERFACE LAYER (dashed wrapper) ═══ -->
+  <rect x="28" y="58" width="1044" height="96" rx="14" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="7,4"/>
+  <text x="48" y="76" font-size="10" font-weight="700" fill="#2563eb" letter-spacing="1">INTERFACE LAYER</text>
+
+  <!-- CLI -->
+  <rect x="56" y="84" width="240" height="56" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+  <text x="176" y="108" text-anchor="middle" font-size="14" font-weight="700" fill="#1e40af">CLI</text>
+  <text x="176" y="127" text-anchor="middle" font-size="11" fill="#3b82f6">50+ commands</text>
+
+  <!-- MCP Server -->
+  <rect x="430" y="84" width="240" height="56" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+  <text x="550" y="108" text-anchor="middle" font-size="14" font-weight="700" fill="#1e40af">MCP Server</text>
+  <text x="550" y="127" text-anchor="middle" font-size="11" fill="#3b82f6">~100 tools</text>
+
+  <!-- Web UI -->
+  <rect x="804" y="84" width="240" height="56" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+  <text x="924" y="108" text-anchor="middle" font-size="14" font-weight="700" fill="#1e40af">Web UI</text>
+  <text x="924" y="127" text-anchor="middle" font-size="11" fill="#3b82f6">Flask</text>
+
+  <!-- Connectors: interface → workflow -->
+  <polyline points="176,140 176,174 550,174" fill="none" stroke="#64748b" stroke-width="1.5"/>
+  <polyline points="924,140 924,174 550,174" fill="none" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="550" y1="140" x2="550" y2="194" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ═══ WORKFLOW LAYER ═══ -->
+  <rect x="176" y="196" width="748" height="96" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="2" filter="url(#shadow)"/>
+  <text x="550" y="216" text-anchor="middle" font-size="10" font-weight="700" fill="#475569" letter-spacing="1">WORKFLOW LAYER</text>
+  <text x="340" y="242" text-anchor="middle" font-size="12" font-weight="600" fill="#334155">cve_agent</text>
+  <text x="340" y="260" text-anchor="middle" font-size="11" fill="#64748b">genericverify</text>
+  <text x="550" y="242" text-anchor="middle" font-size="12" font-weight="600" fill="#334155">autopwn · chainanalyzer</text>
+  <text x="550" y="260" text-anchor="middle" font-size="11" fill="#64748b">rop · heap · fmt · srop</text>
+  <text x="760" y="242" text-anchor="middle" font-size="12" font-weight="600" fill="#334155">wpverify · joomlaverify</text>
+  <text x="760" y="260" text-anchor="middle" font-size="11" fill="#64748b">audit · vuln_hunt</text>
+
+  <!-- Connectors: workflow → 3 layers -->
+  <line x1="320" y1="292" x2="196" y2="336" stroke="#22c55e" stroke-width="1.8" marker-end="url(#arr-g)"/>
+  <line x1="550" y1="292" x2="550" y2="336" stroke="#a855f7" stroke-width="1.8" marker-end="url(#arr-p)"/>
+  <line x1="780" y1="292" x2="904" y2="336" stroke="#f59e0b" stroke-width="1.8" marker-end="url(#arr-y)"/>
+
+  <!-- ═══ ORACLE LAYER ═══ -->
+  <rect x="28" y="338" width="296" height="150" rx="12" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" filter="url(#shadow)"/>
+  <text x="176" y="360" text-anchor="middle" font-size="10" font-weight="700" fill="#16a34a" letter-spacing="1">ORACLE LAYER</text>
+  <text x="176" y="378" text-anchor="middle" font-size="10" fill="#4ade80">Deterministic ground-truth</text>
+  <text x="70" y="400" font-size="11" fill="#166534" font-weight="600">radare2 · pyelftools</text>
+  <text x="70" y="418" font-size="11" fill="#166534">pwntools · angr · pefile</text>
+  <text x="70" y="436" font-size="11" fill="#166534">jadx · LIEF · Ghidra</text>
+  <text x="70" y="454" font-size="11" fill="#15803d">ELF · PE · Mach-O · APK</text>
+  <text x="70" y="472" font-size="11" fill="#15803d">WASM · EVM · SQLite · .NET</text>
+
+  <!-- ═══ LLM BRIDGE ═══ -->
+  <rect x="402" y="338" width="296" height="150" rx="12" fill="#faf5ff" stroke="#a855f7" stroke-width="2" filter="url(#shadow)"/>
+  <text x="550" y="360" text-anchor="middle" font-size="10" font-weight="700" fill="#9333ea" letter-spacing="1">LLM BRIDGE</text>
+  <text x="550" y="378" text-anchor="middle" font-size="10" fill="#c084fc">Local-first · OpenAI-compatible</text>
+  <rect x="428" y="386" width="244" height="34" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="550" y="408" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">Qwen 2.5 Coder 7B (Ollama)</text>
+  <text x="550" y="436" text-anchor="middle" font-size="10" fill="#7c3aed" font-family="'Courier New',monospace">BINORACLE_BACKEND=openai</text>
+  <text x="550" y="452" text-anchor="middle" font-size="10" fill="#7c3aed" font-family="'Courier New',monospace">BINORACLE_BASE_URL=localhost</text>
+  <text x="550" y="468" text-anchor="middle" font-size="10" fill="#7c3aed" font-family="'Courier New',monospace">BINORACLE_MODEL=qwen2.5-coder:7b</text>
+
+  <!-- ═══ LAB SCAFFOLDER ═══ -->
+  <rect x="776" y="338" width="296" height="150" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="2" filter="url(#shadow)"/>
+  <text x="924" y="360" text-anchor="middle" font-size="10" font-weight="700" fill="#d97706" letter-spacing="1">LAB SCAFFOLDER</text>
+  <text x="924" y="378" text-anchor="middle" font-size="10" fill="#fbbf24">Ephemeral Docker Compose</text>
+  <text x="820" y="400" font-size="11" fill="#92400e">pip (Flask / Python)</text>
+  <text x="820" y="418" font-size="11" fill="#92400e">gem (Rails / Rack / Sinatra)</text>
+  <text x="820" y="436" font-size="11" fill="#92400e">npm / Node.js / Next.js</text>
+  <text x="820" y="454" font-size="11" fill="#92400e">maven (Spring / Log4j)</text>
+  <text x="820" y="472" font-size="11" fill="#b45309">WordPress · Joomla · Drupal</text>
+
+  <!-- Connector: Lab Scaffolder → Playwright -->
+  <line x1="924" y1="488" x2="924" y2="524" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ═══ PLAYWRIGHT VERIFIER ═══ -->
+  <rect x="402" y="524" width="670" height="52" rx="10" fill="#f0fdf4" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+  <text x="737" y="546" text-anchor="middle" font-size="13" font-weight="700" fill="#166534">Playwright Verifier</text>
+  <text x="737" y="563" text-anchor="middle" font-size="10" fill="#4ade80">HTTP requests · response inspection · screenshots · PoC code · HTML report</text>
+
+  <!-- Connector: LLM → Playwright -->
+  <line x1="550" y1="488" x2="550" y2="524" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+
+  <!-- ═══ ZERO CLOUD BADGE ═══ -->
+  <rect x="28" y="524" width="296" height="52" rx="10" fill="#052e16" stroke="#22c55e" stroke-width="2"/>
+  <text x="176" y="546" text-anchor="middle" font-size="13" font-weight="700" fill="#4ade80">Zero cloud calls</text>
+  <text x="176" y="563" text-anchor="middle" font-size="10" fill="#86efac">All data stays on your machine</text>
+
+  <!-- Outer border -->
+  <rect x="1" y="1" width="1098" height="618" rx="15" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+</svg>

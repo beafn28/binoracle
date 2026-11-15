@@ -1,5 +1,5 @@
 """Oracle registry assembly."""
-from .base import Oracle, Tool, ToolParam, ToolResult, ToolRegistry
+from .base import Oracle as Oracle, Tool as Tool, ToolParam as ToolParam, ToolResult as ToolResult, ToolRegistry
 from .elf_meta import ElfMetaOracle
 from .static_r2 import R2Oracle
 from .symbolic_angr import AngrOracle

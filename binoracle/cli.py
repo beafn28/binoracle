@@ -459,7 +459,7 @@ def _write_html(path, binary, triage=None, findings=None, ledger=None, answer=""
                 lang="es", decompiled=None, cfg=None, chains=None, mobile=False):
     html = render_html(binary, triage=triage, findings=findings, ledger=ledger, answer=answer,
                        lang=lang, decompiled=decompiled, cfg=cfg, chains=chains, mobile=mobile)
-    Path(path).write_text(html)
+    Path(path).write_text(html, encoding="utf-8")
     _eprint(f"(HTML written to {path})")
     if open_it:
         import subprocess, sys as _sys
@@ -550,6 +550,115 @@ def cmd_fuzz(args, config):
         print(render_autofuzz_afl(r))
         return
     print(generate_fuzz(binary, target_func=args.func, mode=args.mode))
+
+
+def cmd_cve_corpus(args, config):
+    from binoracle.workflows.libfuzzer_corpus import build_corpus, write_corpus, render_corpus
+    from binoracle.workflows.cvelookup import fetch_cve
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    print(f"\n  {_b}binoracle cve-corpus{_r}  {args.cve_id}\n")
+    print("  Fetching NVD description...")
+    info = fetch_cve(args.cve_id)
+    description = info.description if info.ok else ""
+    if not description:
+        print(f"  Warning: NVD description not found — {info.note or 'no data'}")
+    poc_text = ""
+    if getattr(args, "poc_file", "") and Path(args.poc_file).exists():
+        try:
+            poc_text = Path(args.poc_file).read_text(encoding="utf-8", errors="replace")
+            print(f"  PoC loaded from {args.poc_file} ({len(poc_text)} chars)")
+        except Exception as e:
+            print(f"  Warning: could not read PoC file: {e}")
+    corpus = build_corpus(
+        cve_id=args.cve_id,
+        poc_text=poc_text,
+        description=description,
+        target_func=args.target_func,
+        hint=args.hint,
+    )
+    wrote_to = None
+    try:
+        wrote_to = write_corpus(corpus, args.out_dir)
+        print(f"  Corpus written to {wrote_to}")
+    except Exception as e:
+        print(f"  Warning: could not write corpus: {e}")
+    print(render_corpus(corpus, wrote_to=wrote_to))
+
+
+def cmd_finetune(args, config):
+    from binoracle.workflows.finetune import build_finetune_dataset, render_finetune
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    print(f"\n  {_b}binoracle finetune{_r}\n")
+    store = None
+    try:
+        from binoracle.store import load_store
+        store = load_store(config)
+    except Exception:
+        pass
+    ds = build_finetune_dataset(
+        store=store,
+        reports_dir=getattr(args, "reports_dir", "") or "",
+        model_id=getattr(args, "model_id", "Qwen/Qwen2.5-Coder-7B-Instruct"),
+        out_dir=getattr(args, "out_dir", ".") or ".",
+    )
+    print(render_finetune(ds))
+
+
+def cmd_kernel_exploit(args, config):
+    from binoracle.workflows.kernel_exploit import build_kernel_exploit, render_kernel_exploit
+    from binoracle.workflows.cvelookup import fetch_cve
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    cve_id = getattr(args, "cve_id", "") or ""
+    primitive = getattr(args, "primitive", "") or ""
+    print(f"\n  {_b}binoracle kernel-exploit{_r}  {cve_id}\n")
+    description = ""
+    if cve_id:
+        print("  Fetching NVD description...")
+        info = fetch_cve(cve_id)
+        description = info.description or ""
+    chain = build_kernel_exploit(cve_id, description=description, primitive=primitive)
+    print(render_kernel_exploit(chain))
+
+
+def cmd_firmware(args, config):
+    from binoracle.workflows.firmware import analyze_firmware, render_firmware
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    print(f"\n  {_b}binoracle firmware{_r}  {args.image}\n")
+
+    def on_step(msg):
+        print(f"  {msg}")
+
+    info = analyze_firmware(args.image, out_dir=args.out_dir or "")
+    print(render_firmware(info))
+
+
+def cmd_cve_chain(args, config):
+    from binoracle.workflows.cve_chain import run_chain, render_chain
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    cves = args.cves
+    print(f"\n  {_b}binoracle cve-chain{_r}  {' → '.join(cves)}\n")
+
+    def on_step(msg):
+        print(f"  {msg}")
+
+    result = run_chain(
+        cve_ids=cves,
+        config=config,
+        on_step=on_step,
+        out_dir=args.out_dir,
+    )
+    print()
+    print(render_chain(result))
 
 
 def cmd_fmtstring(args, config):
@@ -1042,63 +1151,163 @@ def _parse_cli_params(raw_arg: str):
 
 
 def _make_cve_step_printer():
-    """Rich on_step callback for 'binoracle cve': timestamps, phase headers, verdict box."""
+    """Rich on_step callback para 'binoracle cve': colores, iconos, fases, paneles de datos."""
     import time as _time
     import re as _re
+    import sys as _sys
+    from . import colorlog as _cl
 
     _t0 = _time.time()
     _last_phase = [None]
+    _col = _cl._use_color(_sys.stdout)
+
+    # ── Paleta de colores ──────────────────────────────────────────────────────
+    R   = "\033[0m"   if _col else ""   # reset
+    B   = "\033[1m"   if _col else ""   # bold
+    DIM = "\033[2m"   if _col else ""   # dim
+    CYN = "\033[36m"  if _col else ""   # cyan  → INFO
+    GRN = "\033[32m"  if _col else ""   # verde → OK / VERIFICADO
+    YLW = "\033[33m"  if _col else ""   # amarillo → WARN
+    RED = "\033[31m"  if _col else ""   # rojo  → ERROR
+    BLU = "\033[34m"  if _col else ""   # azul  → fase header
+    MAG = "\033[35m"  if _col else ""   # magenta → highlight
+    WHT = "\033[97m"  if _col else ""   # blanco → texto prominente
+    BGN = "\033[1;32m" if _col else ""  # verde bold → VERIFICADO final
+
+    # Iconos por nivel
+    _ICON = {"info": f"{CYN}●{R}", "ok": f"{GRN}✔{R}", "warn": f"{YLW}⚠{R}",
+             "error": f"{RED}✖{R}", "verified": f"{BGN}★{R}"}
 
     _PHASES = [
-        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD"),
-        (r"hipot|llm|modelo|analiz|clasificar|propone|hypothesis", "HIPÓTESIS LLM"),
-        (r"grounded|codigo fuente|source|funcion|function|encontr", "ANÁLISIS DE CÓDIGO"),
-        (r"endpoi|url|route|ruta|parame", "ENDPOINT"),
-        (r"docker|lab|contenedor|container|arran|start|build|construy", "LABORATORIO DOCKER"),
-        (r"baseline|control|mediana|linea base", "BASELINE"),
-        (r"payload|intento|sleep|sqli|inject|fuzz|verif|probando|confirm", "VERIFICACIÓN"),
-        (r"informe|report|html|escrito|resultado|resultado final|verified", "RESULTADO"),
+        (r"nvd|consult|fetch.*cve|recuper", "CONSULTA NVD",        "◉"),
+        (r"hipot|llm|modelo|analiz|clasificar|propone|hypothesis",
+                                             "HIPÓTESIS LLM",       "◈"),
+        (r"grounded|codigo fuente|source|funcion|function|encontr",
+                                             "ANÁLISIS DE CÓDIGO",  "◆"),
+        (r"endpoi|url|route|ruta|parame",   "ENDPOINT",             "▶"),
+        (r"docker|lab|contenedor|container|arran|start|build|construy|scaffold",
+                                             "LABORATORIO DOCKER",  "■"),
+        (r"baseline|control|mediana|linea base", "BASELINE",        "≡"),
+        (r"payload|intento|sleep|sqli|inject|fuzz|verif|probando|confirm|canario|canary",
+                                             "VERIFICACIÓN",        "◎"),
+        (r"informe|report|html|escrito|resultado final|verified",   "RESULTADO", "◇"),
     ]
 
-    def _phase_for(msg: str) -> str:
+    def _phase_for(msg: str):
         ml = msg.lower()
-        for pat, name in _PHASES:
+        for pat, name, icon in _PHASES:
             if _re.search(pat, ml):
-                return name
-        return ""
+                return name, icon
+        return "", ""
 
-    def _print_phase_header(phase: str) -> None:
-        from . import colorlog as _cl
-        import sys as _sys
-        stream = _sys.stdout
-        bar = "─" * 56
-        if _cl._use_color(stream):
-            print(f"\n\033[1;34m┌{bar}┐\033[0m")
-            print(f"\033[1;34m│\033[0m  \033[1m{phase:<54}\033[0m\033[1;34m│\033[0m")
-            print(f"\033[1;34m└{bar}┘\033[0m")
+    def _print_phase_header(phase: str, icon: str) -> None:
+        pad = 58 - len(phase) - 5
+        if _col:
+            print(f"\n{BLU}{B}{'─' * 2} {icon}  {phase} {'─' * max(2, pad)}{R}")
         else:
-            print(f"\n┌{bar}┐")
-            print(f"│  {phase:<54}│")
-            print(f"└{bar}┘")
+            print(f"\n── {phase} {'─' * max(2, pad + 4)}")
+
+    # ── Extrae datos importantes de mensajes clave ──────────────────────────
+    def _highlight(msg: str, level: str) -> str:
+        """Resalta fragmentos importantes en el mensaje."""
+        if not _col:
+            return msg
+        # URLs y puertos
+        msg = _re.sub(r'(https?://\S+)', f"{MAG}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        # versiones: v1.2.3 o ==1.2.3
+        msg = _re.sub(r'(==?[0-9]+\.[0-9]+(?:\.[0-9]+)?)',
+                      f"{WHT}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        # CVE IDs
+        msg = _re.sub(r'(CVE-\d{4}-\d+)',
+                      f"{B}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        # 'VERIFICADO' y 'confirmado'
+        msg = _re.sub(r'(?i)(VERIFICADO|confirmad[oa])',
+                      f"{BGN}\\1{R}{_cl._COLOR.get(level,'')}", msg)
+        return msg
+
+    def _print_data_panel(lines: list[str], color: str = "") -> None:
+        """Imprime un panel de datos con borde lateral."""
+        c = color if _col else ""
+        bar = "│" if _col else "|"
+        for ln in lines:
+            print(f"  {c}{bar}{R}  {ln}")
 
     def on_step(msg: str) -> None:
-        from . import colorlog as _cl
-        import sys as _sys
         elapsed = _time.time() - _t0
         ts = f"{elapsed:>7.1f}s"
-        phase = _phase_for(msg)
+
+        phase, icon = _phase_for(msg)
         if phase and phase != _last_phase[0]:
-            _print_phase_header(phase)
+            _print_phase_header(phase, icon)
             _last_phase[0] = phase
-        stream = _sys.stdout
+
         level = _cl.classify(msg)
-        label = _cl._LABEL.get(level, level.upper())
-        if _cl._use_color(stream):
-            tc = "\033[2m"  # dim timestamp
-            lc = _cl._COLOR.get(level, "")
-            reset = _cl._RESET
-            bold = _cl._BOLD
-            print(f"  {tc}{ts}{reset}  {lc}{bold}[{label}]{reset}{lc} {msg}{reset}")
+        ico   = _ICON.get(level, _ICON["info"])
+        lc    = _cl._COLOR.get(level, "")
+        label = _cl._LABEL.get(level, "INFO")
+
+        # Mensajes de dato importante → panel destacado
+        # "objetivo arriba: http://..." → panel verde con URL
+        m_up = _re.search(r"objetivo arriba[:\s]+(https?://\S+)[^(]*\(contenedor\s+'([^']+)'",
+                           msg)
+        if m_up:
+            url, ctr = m_up.group(1), m_up.group(2)
+            if _col:
+                print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
+                print(f"\n  {GRN}{'┌' + '─'*50 + '┐'}{R}")
+                print(f"  {GRN}│{R}  {B}URL:{R}        {MAG}{url}{R}")
+                print(f"  {GRN}│{R}  {B}Contenedor:{R} {WHT}{ctr}{R}")
+                print(f"  {GRN}{'└' + '─'*50 + '┘'}{R}\n")
+            else:
+                print(f"  {ts}  [{label}] {msg}")
+                print(f"  URL: {url}  Contenedor: {ctr}")
+            return
+
+        # "hipotesis del LLM: clase=X, disparador=Y" → panel azul con clase
+        m_hyp = _re.search(r"hipot[^:]*:[^=]*(clase|class)\s*=\s*(\S+)", msg, _re.I)
+        if m_hyp:
+            vuln_cls = m_hyp.group(2).rstrip(",")
+            if _col:
+                print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
+                print(f"\n  {BLU}{'╌'*52}{R}")
+                print(f"  {BLU}»{R} {B}Clase:{R}  {MAG}{vuln_cls.upper()}{R}")
+                print(f"  {BLU}{'╌'*52}{R}\n")
+            else:
+                print(f"  {ts}  [{label}] {msg}")
+            return
+
+        # "scaffolded minimal X lab at /tmp/..." → resaltar pin
+        m_sc = _re.search(r"scaffold[^(]+\(vuln_class=(\S+),\s*pin=(\S+)\)", msg)
+        if m_sc:
+            if _col:
+                vc, pin = m_sc.group(1), m_sc.group(2)
+                print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
+                print(f"  {DIM}        pin: {WHT}{pin}{R}{DIM}  ·  clase: {WHT}{vc}{R}")
+            else:
+                print(f"  {ts}  [{label}] {msg}")
+            return
+
+        # "corrigiendo version: '3.9.2' es la version PARCHEADA" → resaltar en amarillo
+        if _re.search(r"corrigiendo version|PARCHEADA|ultima vulnerable", msg, _re.I):
+            if _col:
+                print(f"  {DIM}{ts}{R}  {YLW}⚡{R} {YLW}{B}[CORR]{R}{YLW} {msg}{R}")
+            else:
+                print(f"  {ts}  [CORR] {msg}")
+            return
+
+        # "VERIFICADO: el secreto plantado" → banner verde brillante
+        if _re.search(r"VERIFICADO[:\s]", msg, _re.I):
+            if _col:
+                print(f"\n  {BGN}{'━'*54}{R}")
+                print(f"  {BGN}★  {msg}{R}")
+                print(f"  {BGN}{'━'*54}{R}\n")
+            else:
+                print(f"  *** VERIFICADO: {msg} ***")
+            return
+
+        # línea estándar
+        if _col:
+            print(f"  {DIM}{ts}{R}  {ico} {lc}{B}[{label}]{R}{lc} {_highlight(msg, level)}{R}")
         else:
             print(f"  {ts}  [{label}] {msg}")
 
@@ -1125,17 +1334,19 @@ def cmd_cve(args, config):
     if getattr(args, "vuln_class", None):
         hints["vuln_class"] = args.vuln_class
 
-    # Banner
-    import sys as _sys
+    # ── Banner ────────────────────────────────────────────────────────────────
     _use_col = colorlog._use_color(_sys.stdout)
-    _r = colorlog._RESET if _use_col else ""
-    _b = colorlog._BOLD if _use_col else ""
-    _ac = "\033[1;36m" if _use_col else ""
-    _gc = "\033[32m" if _use_col else ""
-    bar = "═" * 60
-    print(f"\n{_ac}{bar}{_r}")
-    print(f"{_ac}  binoracle{_r}  {_b}{cve_id}{_r}  —  investigación autónoma")
-    print(f"{_ac}{bar}{_r}\n")
+    _r  = colorlog._RESET if _use_col else ""
+    _b  = colorlog._BOLD  if _use_col else ""
+    _d  = "\033[2m"    if _use_col else ""
+    _ac = "\033[1;96m" if _use_col else ""   # cyan brillante
+    _mc = "\033[1;35m" if _use_col else ""   # magenta → CVE ID
+    _gc = "\033[1;32m" if _use_col else ""   # verde → OK
+    bar = "═" * 62
+    print(f"\n{_ac}╔{bar}╗{_r}")
+    print(f"{_ac}║{_r}  {_d}◈{_r} {_b}BINORACLE{_r}  {_d}·{_r}  {_mc}{_b}{cve_id}{_r}"
+          f"  {_d}·{_r}  {_d}investigación autónoma{_r}")
+    print(f"{_ac}╚{bar}╝{_r}\n")
 
     t_start = _time.time()
     on_step = _make_cve_step_printer()
@@ -1152,41 +1363,122 @@ def cmd_cve(args, config):
 
     elapsed_total = _time.time() - t_start
 
-    # Verdict box
+    # ── Verdict box ───────────────────────────────────────────────────────────
     if inv.verified:
-        vc = "\033[1;32m" if _use_col else ""
-        icon = "✔ VERIFICADO"
+        vc   = "\033[1;32m" if _use_col else ""  # verde
+        icon = "★  VERIFICADO"
     else:
-        vc = "\033[1;33m" if _use_col else ""
-        icon = "✖ NO CONFIRMADO"
+        vc   = "\033[1;33m" if _use_col else ""  # amarillo
+        icon = "✖  NO CONFIRMADO"
 
-    bar2 = "═" * 60
-    print(f"\n{vc}{bar2}{_r}")
-    print(f"{vc}  {icon:^58}{_r}")
-    print(f"{vc}{bar2}{_r}")
+    bar2 = "═" * 62
+    print(f"\n{vc}╔{bar2}╗{_r}")
+    print(f"{vc}║{_r}  {vc}{_b}{icon:^60}{_r}{vc}║{_r}")
+    print(f"{vc}╚{bar2}╝{_r}")
 
+    # Detalles de evidencia
     ve = getattr(inv, "verified_evidence", None) or {}
     if isinstance(ve, dict):
-        payload = ve.get("payload_ganador", "")
-        t1 = ve.get("tiempo_1_ganador_s", "")
-        t2 = ve.get("tiempo_2_ganador_s", "")
-        base = ve.get("tiempo_base_mediana_s", "")
+        payload  = ve.get("payload_ganador", "")
+        t1       = ve.get("tiempo_1_ganador_s", "")
+        t2       = ve.get("tiempo_2_ganador_s", "")
+        base     = ve.get("tiempo_base_mediana_s", "")
         strategy = ve.get("estrategia", "")
-        if payload:
-            print(f"\n  {_b}Payload ganador{_r}:  {payload}")
-        if t1:
-            print(f"  {_b}Tiempo 1{_r}:          {t1}s   {_b}Tiempo 2{_r}: {t2}s   "
-                  f"{_b}Baseline{_r}: {base}s")
-        if strategy:
-            print(f"  {_b}Estrategia{_r}:        {strategy}")
+        ctr      = ve.get("contenedor", "")
+        endpoint = ve.get("endpoint", "")
+        _mc2 = "\033[35m" if _use_col else ""
+        _wh  = "\033[97m" if _use_col else ""
+        if payload or ctr or endpoint:
+            print()
+            if ctr:
+                print(f"  {_b}Contenedor{_r}:       {_wh}{ctr}{_r}")
+            if endpoint:
+                print(f"  {_b}Endpoint{_r}:         {_wh}{endpoint}{_r}")
+            if payload:
+                print(f"  {_b}Payload ganador{_r}:  {_mc2}{payload}{_r}")
+            if t1:
+                print(f"  {_b}Tiempo 1{_r}: {_wh}{t1}s{_r}  "
+                      f"{_b}Tiempo 2{_r}: {_wh}{t2}s{_r}  "
+                      f"{_b}Baseline{_r}: {_wh}{base}s{_r}")
+            if strategy:
+                print(f"  {_b}Estrategia{_r}:       {strategy}")
     detail = getattr(inv, "verified_detail", "") or ""
     if detail:
         print(f"\n  {detail}")
 
-    print(f"\n  {_b}Tiempo total{_r}: {elapsed_total:.1f}s")
+    _tm_c = "\033[36m" if _use_col else ""
+    # Resumen final de bloqueadores si no verificado
+    if not inv.verified:
+        blockers = getattr(inv, "blockers", []) or []
+        if blockers:
+            print(f"\n  {_b}Bloqueadores:{_r}")
+            for bl in blockers[:3]:
+                print(f"    {vc}▸{_r} {bl[:100]}")
+
+    print(f"\n  {_b}Tiempo total{_r}: {_tm_c}{elapsed_total:.1f}s{_r}")
+    # Resumen rápido de clase + CVSS
+    _notes = getattr(inv, "llm_notes", {}) or {}
+    _cls   = getattr(inv, "vuln_class", "") or _notes.get("vuln_class", "")
+    _cvss  = getattr(inv, "cvss_score", None)
+    _sev   = getattr(inv, "cvss_severity", "") or ""
+    _yc = "\033[33m" if _use_col else ""
+    if _cls or _cvss:
+        parts = []
+        if _cvss:
+            parts.append(f"CVSS {_cvss} {_sev}")
+        if _cls:
+            parts.append(f"clase: {_cls}")
+        poc_k = getattr(inv, "poc_kind", "") or ""
+        if poc_k:
+            parts.append(f"PoC: {poc_k}")
+        print(f"  {_d}{' · '.join(parts)}{_r}")
+
+    # Capturas disponibles: mostrar inline en iTerm2/Kitty; en otros terminales solo el contador
+    _vshots = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
+    _ashots = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
+    _all_terminal_shots = list(_vshots) + [s for s in _ashots if s not in _vshots]
+    if _all_terminal_shots:
+        import base64 as _b64mod
+        import os as _os
+        _term = _os.environ.get("TERM_PROGRAM", "") or _os.environ.get("TERM", "")
+        _iterm2 = "iterm" in _term.lower() or _os.environ.get("ITERM_SESSION_ID", "")
+        _kitty  = _os.environ.get("KITTY_WINDOW_ID", "") or "kitty" in _term.lower()
+        _gc = "\033[32m" if _use_col else ""
+        print(f"\n  {_gc}◈ Capturas paso a paso ({len(_all_terminal_shots)} imágen{'es' if len(_all_terminal_shots)!=1 else ''}):{_r}")
+        for i, _sh in enumerate(_all_terminal_shots):
+            _png = _sh.get("png_b64")
+            _cap = _sh.get("caption_es" if getattr(config, "lang", "es") == "es" else "caption_en") or ""
+            _url = _sh.get("url") or ""
+            print(f"    {_d}Paso {i+1}:{_r} {_cap[:90]}")
+            if _url:
+                print(f"      {_d}URL:{_r} {_url[:80]}")
+            if _png:
+                if _iterm2:
+                    # Protocolo iTerm2: imagen inline en terminal
+                    _raw = _b64mod.b64decode(_png)
+                    _enc = _b64mod.b64encode(_raw).decode("ascii")
+                    print(f"\033]1337;File=inline=1;width=80;height=20;preserveAspectRatio=1:{_enc}\a")
+                elif _kitty:
+                    # Protocolo Kitty: icat
+                    try:
+                        import subprocess as _sp, tempfile as _tf
+                        with _tf.NamedTemporaryFile(suffix=".png", delete=False) as _tmp:
+                            _tmp.write(_b64mod.b64decode(_png))
+                            _tmp_path = _tmp.name
+                        _sp.run(["kitty", "+kitten", "icat", "--align=left", _tmp_path],
+                                check=False, timeout=5)
+                        _os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+                else:
+                    _kb = len(_png) * 3 // 4 // 1024
+                    print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
-    print(render_investigation(inv, config.lang, embed_images=False))
+    # Solo imprime el markdown completo en terminal si no hay salida HTML/JSON
+    # (cuando hay fichero de salida el informe ya va al fichero, el terminal queda limpio)
+    if not getattr(args, "html", None) and not getattr(args, "json_out", None):
+        print(render_investigation(inv, config.lang, embed_images=False))
 
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
@@ -1194,7 +1486,9 @@ def cmd_cve(args, config):
         md_full = render_investigation(inv, config.lang)
         _Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script,
-                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind))
+                                      cve=cve_id, lang=config.lang, poc_kind=inv.poc_kind,
+                                      inv=inv),
+            encoding="utf-8")
         colorlog.ok(f"informe HTML escrito en {args.html}")
 
     if getattr(args, "json_out", None):
@@ -1291,13 +1585,50 @@ def cmd_investigate(args, config):
     # el terminal no puede pintar imagenes: embed_images=False cambia cada captura por un aviso
     # corto en vez de volcar decenas de KB de base64 como texto ilegible. El export HTML (abajo)
     # SI usa embed_images=True (el default), esas son las que de verdad se pintan como <img>.
-    print("\n" + render_investigation(inv, config.lang, embed_images=False))
+    # Capturas inline en iTerm2/Kitty si las hay
+    _vshots2 = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
+    _ashots2 = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
+    _term_shots2 = list(_vshots2) + [s for s in _ashots2 if s not in _vshots2]
+    if _term_shots2:
+        import base64 as _b64m2, os as _os2
+        _tp2 = _os2.environ.get("TERM_PROGRAM", "") or _os2.environ.get("TERM", "")
+        _iterm22 = "iterm" in _tp2.lower() or _os2.environ.get("ITERM_SESSION_ID", "")
+        _kitty2 = _os2.environ.get("KITTY_WINDOW_ID", "") or "kitty" in _tp2.lower()
+        print(f"\n  Capturas paso a paso ({len(_term_shots2)}):")
+        for i2, _sh2 in enumerate(_term_shots2):
+            _png2 = _sh2.get("png_b64")
+            _cap2 = _sh2.get("caption_es" if config.lang == "es" else "caption_en") or ""
+            print(f"    Paso {i2+1}: {_cap2[:90]}")
+            if _sh2.get("url"):
+                print(f"      URL: {_sh2['url'][:80]}")
+            if _png2:
+                if _iterm22:
+                    _raw2 = _b64m2.b64decode(_png2)
+                    _enc2 = _b64m2.b64encode(_raw2).decode("ascii")
+                    print(f"\033]1337;File=inline=1;width=80;height=20;preserveAspectRatio=1:{_enc2}\a")
+                elif _kitty2:
+                    try:
+                        import subprocess as _sp2, tempfile as _tf2
+                        with _tf2.NamedTemporaryFile(suffix=".png", delete=False) as _tmp2:
+                            _tmp2.write(_b64m2.b64decode(_png2))
+                            _tp2n = _tmp2.name
+                        _sp2.run(["kitty", "+kitten", "icat", "--align=left", _tp2n],
+                                 check=False, timeout=5)
+                        _os2.unlink(_tp2n)
+                    except Exception:
+                        pass
+                else:
+                    _kb2 = len(_png2) * 3 // 4 // 1024
+                    print(f"      [~{_kb2} KB — usa -o report.html para ver la imagen]")
+    if not getattr(args, "html", None) and not getattr(args, "json", None):
+        print("\n" + render_investigation(inv, config.lang, embed_images=False))
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
         md_full = render_investigation(inv, config.lang)
         Path(args.html).write_text(
             render_investigation_page(md_full, script=inv.developed_script, cve=args.cve,
-                                      lang=config.lang, poc_kind=inv.poc_kind))
+                                      lang=config.lang, poc_kind=inv.poc_kind, inv=inv),
+            encoding="utf-8")
         _eprint(f"(HTML written to {args.html})")
     if getattr(args, "json", None):
         # el markdown/HTML SIEMPRE recorta los cuerpos de respuesta reales a unos cientos de
@@ -1372,7 +1703,8 @@ def _run_investigate_batch_and_report(cve_ids, config, parallel: int, budget_s: 
             (html_dir / f"{it.cve_id}.html").write_text(
                 render_investigation_page(md_full, script=it.investigation.developed_script,
                                           cve=it.cve_id, lang=config.lang,
-                                          poc_kind=it.investigation.poc_kind))
+                                          poc_kind=it.investigation.poc_kind),
+                encoding="utf-8")
 
     print("\n" + render_batch_summary(items, config.lang))
     colorlog.info(f"informes individuales en {out_dir}/" +
@@ -1638,6 +1970,54 @@ def build_parser() -> argparse.ArgumentParser:
     fz.add_argument("--budget-s", type=int, default=60, dest="budget_s",
                     help="afl-fuzz time budget in seconds (with --run)")
     fz.set_defaults(func=cmd_fuzz)
+
+    cv = sub.add_parser("cve-corpus",
+                        help="seed a libFuzzer corpus from a CVE investigation (PoC + NVD description)")
+    cv.add_argument("cve_id", help="CVE identifier (e.g. CVE-2025-27516)")
+    cv.add_argument("--func", default="target_function", dest="target_func",
+                    help="name of the C function to fuzz (skeleton target)")
+    cv.add_argument("--hint", default="", help="short hint about the input format")
+    cv.add_argument("--out", default=".", dest="out_dir",
+                    help="output directory for the corpus (default: .)")
+    cv.add_argument("--poc", default="", dest="poc_file",
+                    help="path to a file containing the PoC text (optional)")
+    cv.set_defaults(func=cmd_cve_corpus)
+
+    ft = sub.add_parser("finetune",
+                        help="export CVE investigations as a LoRA fine-tuning dataset for exploit hypothesis generation")
+    ft.add_argument("--reports-dir", default="", dest="reports_dir",
+                    help="directory of binoracle JSON report files to include")
+    ft.add_argument("--model", default="Qwen/Qwen2.5-Coder-7B-Instruct", dest="model_id",
+                    help="HuggingFace model ID for the LoRA script")
+    ft.add_argument("--out", default=".", dest="out_dir",
+                    help="output directory for train.jsonl, val.jsonl, run_lora.py")
+    ft.set_defaults(func=cmd_finetune)
+
+    ke = sub.add_parser("kernel-exploit",
+                        help="generate a kernel exploit chain skeleton (ret2usr, UAF, ROP, dirty-pipe, ...)")
+    ke.add_argument("cve_id", nargs="?", default="",
+                    help="CVE identifier — NVD description auto-selects the primitive")
+    ke.add_argument("--primitive", default="",
+                    choices=["ret2usr", "uaf_driver", "heap_spray", "rop_chain",
+                             "modprobe_path", "msg_msg", "seq_operations",
+                             "dirty_pipe", "io_uring", ""],
+                    help="force a specific exploit primitive (default: auto-detect from NVD description)")
+    ke.set_defaults(func=cmd_kernel_exploit)
+
+    fw = sub.add_parser("firmware",
+                        help="analyze firmware images: UEFI (.fd/.efi), SquashFS, JFFS2, uImage, raw flash")
+    fw.add_argument("image", help="path to the firmware file")
+    fw.add_argument("--out", default="", dest="out_dir",
+                    help="directory for extracted contents (default: auto temp dir)")
+    fw.set_defaults(func=cmd_firmware)
+
+    ch = sub.add_parser("cve-chain",
+                        help="run a multi-CVE exploit chain (web RCE → local privesc → ...)")
+    ch.add_argument("cves", nargs="+",
+                    help="ordered CVE IDs forming the chain (e.g. CVE-2021-44228 CVE-2021-4034)")
+    ch.add_argument("--out", default=".", dest="out_dir",
+                    help="output directory for per-CVE HTML reports (default: .)")
+    ch.set_defaults(func=cmd_cve_chain)
 
     fs = sub.add_parser("fmtstring", help="format-string leak/write helper (infoleak)")
     fs.add_argument("binary", nargs="?")
