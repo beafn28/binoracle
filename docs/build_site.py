@@ -87,6 +87,26 @@ body {
 .nav-lang span { padding: .3rem .6rem; background: var(--surf2); color: var(--tx); }
 .nav-lang a { padding: .3rem .6rem; color: var(--muted); text-decoration: none; transition: all .15s; }
 .nav-lang a:hover { color: var(--tx); background: var(--surf); }
+.nav-search { position: relative; display: flex; align-items: center; }
+.nav-search input {
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px;
+  color: var(--tx); font-size: .82rem; padding: .3rem .7rem .3rem 2rem;
+  outline: none; width: 180px; transition: border-color .15s, width .2s;
+  font-family: inherit;
+}
+.nav-search input::placeholder { color: var(--muted); }
+.nav-search input:focus { border-color: var(--acc); width: 240px; }
+.nav-search .search-icon { position: absolute; left: .5rem; color: var(--muted); pointer-events: none; }
+#search-results {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  background: var(--surf); border: 1px solid var(--brd); border-radius: 8px;
+  min-width: 300px; max-height: 320px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 200; padding: .4rem 0;
+}
+#search-results a { display: block; padding: .45rem 1rem; color: var(--muted); text-decoration: none; font-size: .88rem; border-radius: 0; }
+#search-results a:hover { background: var(--surf2); color: var(--tx); }
+#search-results .sr-page { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--acc); padding: .3rem 1rem .1rem; }
+#search-results.open { display: block; }
 
 /* HERO */
 .hero {
@@ -338,12 +358,26 @@ body {
 # ---------------------------------------------------------------------------
 # HTML building blocks
 # ---------------------------------------------------------------------------
+SEARCH_INDEX = [
+    ("Home", "index.html", ["cve", "binary", "re", "exploit", "install", "quick start", "pipeline", "overview"]),
+    ("Docs (ES)", "index-es.html", ["instalacion", "motor cve", "binario", "informes", "mcp", "configuracion"]),
+    ("Tutorial (EN)", "tutorial.html", ["tutorial", "step by step", "configure", "binary re", "reports"]),
+    ("Tutorial (ES)", "tutorial-es.html", ["tutorial", "paso a paso", "configurar", "binario", "informes"]),
+    ("Roadmap", "roadmap.html", ["roadmap", "v0.2", "v0.3", "v0.4", "v0.5", "features", "planned"]),
+    ("Architecture", "architecture.html", ["architecture", "components", "cli", "workflows", "oracles", "mcp server", "store", "diagrama"]),
+    ("CVE Chains", "cve-chains.html", ["cve chain", "multi-cve", "cadena", "exploit chain", "rce", "cve-chain"]),
+    ("Firmware Analysis", "firmware.html", ["firmware", "embedded", "flash", "squashfs", "binwalk", "iot", "layers"]),
+    ("Kernel Exploits", "kernel-exploits.html", ["kernel", "exploit", "ret2usr", "smep", "kaslr", "lpe", "privilege escalation", "lkm"]),
+    ("LoRA Fine-tuning", "finetune.html", ["finetune", "lora", "sft", "dataset", "jsonl", "training", "model", "fine-tuning"]),
+    ("MCP Tools Reference", "mcp-tools.html", ["mcp", "tools", "claude desktop", "vscode", "server", "api", "tools reference"]),
+]
+
 def nav(current="index", lang_other=None):
     links = [
-        ("index", "index.html", "Home"),
-        ("docs", "index-es.html", "Docs"),
+        ("index",    "index.html",    "Home"),
+        ("docs",     "index-es.html", "Docs"),
         ("tutorial", "tutorial.html", "Tutorial"),
-        ("roadmap", "roadmap.html", "Roadmap"),
+        ("roadmap",  "roadmap.html",  "Roadmap"),
     ]
     items = ""
     for key, href, label in links:
@@ -354,6 +388,10 @@ def nav(current="index", lang_other=None):
         alt_label, alt_href = lang_other
         cur_label = "ES" if alt_label == "EN" else "EN"
         lang_html = f'<div class="nav-lang"><span>{cur_label}</span><a href="{alt_href}">{alt_label}</a></div>'
+    search_items_js = ""
+    for title, href, keywords in SEARCH_INDEX:
+        kw_js = ", ".join(f'"{k}"' for k in keywords)
+        search_items_js += f'  {{title:"{title}",href:"{href}",kw:[{kw_js}]}},\n'
     return f"""
 <nav class="nav">
   <a class="nav-brand" href="index.html">
@@ -362,12 +400,42 @@ def nav(current="index", lang_other=None):
   </a>
   <div class="nav-links">
     {items}
+    <div class="nav-search" id="nav-search-wrap">
+      <span class="search-icon">{ico('search','').replace('width="20" height="20"','width="14" height="14"')}</span>
+      <input type="search" id="nav-search-input" placeholder="Search docs..." autocomplete="off" aria-label="Search">
+      <div id="search-results"></div>
+    </div>
     {lang_html}
     <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
       {ico('github')} GitHub
     </a>
   </div>
-</nav>"""
+</nav>
+<script>
+(function(){{
+var idx=[
+{search_items_js}];
+var inp=document.getElementById('nav-search-input');
+var box=document.getElementById('search-results');
+if(!inp)return;
+function esc(s){{return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}}
+inp.addEventListener('input',function(){{
+  var q=inp.value.trim().toLowerCase();
+  if(!q){{box.innerHTML='';box.classList.remove('open');return;}}
+  var hits=idx.filter(function(e){{
+    return e.title.toLowerCase().includes(q)||e.kw.some(function(k){{return k.includes(q);}});
+  }});
+  if(!hits.length){{box.innerHTML='<div style="padding:.6rem 1rem;color:var(--muted);font-size:.85rem">No results</div>';box.classList.add('open');return;}}
+  box.innerHTML=hits.map(function(e){{return'<a href="'+e.href+'">'+esc(e.title)+'</a>';}}).join('');
+  box.classList.add('open');
+}});
+document.addEventListener('click',function(e){{
+  if(!document.getElementById('nav-search-wrap').contains(e.target)){{
+    box.classList.remove('open');
+  }}
+}});
+}})();
+</script>"""
 
 def footer():
     return """
@@ -463,30 +531,64 @@ def wiki_sidebar(current, lang="en"):
             ("#cross-cutting","Cross-cutting quality"),
             ("#out-of-scope", "Out of scope"),
         ],
+        "architecture": [
+            ("#overview",     "Overview"),
+            ("#components",   "Components"),
+            ("#diagram",      "Architecture Diagram"),
+            ("#data-flow",    "Data Flow"),
+            ("#cli-layer",    "CLI Layer"),
+            ("#agent-layer",  "Agent Layer"),
+            ("#oracle-layer", "Oracle Layer"),
+            ("#report-layer", "Report Layer"),
+            ("#store",        "Session Store"),
+            ("#mcp-layer",    "MCP Server"),
+        ],
+        "cve-chains": [
+            ("#overview",     "Overview"),
+            ("#what-is",      "What are CVE chains"),
+            ("#pipeline",     "Chain Pipeline"),
+            ("#diagram",      "Chain Flow Diagram"),
+            ("#command",      "Command Reference"),
+            ("#examples",     "Examples"),
+            ("#output",       "Output Format"),
+        ],
+        "firmware": [
+            ("#overview",     "Overview"),
+            ("#layers",       "Firmware Layers"),
+            ("#extraction",   "Extraction"),
+            ("#analysis",     "Binary Analysis"),
+            ("#mitigations",  "Mitigations"),
+            ("#use-cases",    "Use Cases"),
+        ],
+        "kernel-exploits": [
+            ("#overview",     "Overview"),
+            ("#techniques",   "Techniques"),
+            ("#radare2",      "Radare2 Workflow"),
+            ("#smep-bypass",  "SMEP Bypass"),
+            ("#examples",     "Examples"),
+        ],
+        "finetune": [
+            ("#overview",     "Overview"),
+            ("#architecture", "LoRA Architecture"),
+            ("#dataset",      "Dataset Generation"),
+            ("#command",      "finetune Command"),
+            ("#jsonl",        "JSONL Format"),
+            ("#workflow",     "Full Workflow"),
+        ],
+        "mcp-tools": [
+            ("#overview",     "Overview"),
+            ("#setup",        "Setup"),
+            ("#tools-list",   "Tools Reference"),
+            ("#claude-desktop","Claude Desktop"),
+            ("#vscode",       "VS Code"),
+            ("#examples",     "Examples"),
+        ],
     }
 
     sections = section_map.get(current, [])
     toc_html = "".join(f'<a href="{h}">{l}</a>\n' for h, l in sections)
 
-    # Language toggle
-    lang_pairs = {
-        ("index",    "en"): ("ES", "index-es.html"),
-        ("docs",     "es"): ("EN", "index.html"),
-        ("tutorial", "en"): ("ES", "tutorial-es.html"),
-        ("tutorial", "es"): ("EN", "tutorial.html"),
-    }
-    pair = lang_pairs.get((current, lang))
-    if pair:
-        alt_label, alt_href = pair
-        cur_label = "EN" if alt_label == "ES" else "ES"
-        lang_toggle = (
-            f'<div class="wiki-lang">'
-            f'<span class="active-lang">{cur_label}</span>'
-            f'<a href="{alt_href}">{alt_label}</a>'
-            f'</div>\n'
-        )
-    else:
-        lang_toggle = ""
+    lang_toggle = ""
 
     if lang == "en":
         sec_lbl, nav_lbl, lnk_lbl = "On this page", "Navigation", "Links"
@@ -500,10 +602,16 @@ def wiki_sidebar(current, lang="en"):
 
     if lang == "en":
         nav_items = [
-            ("index",    "index.html",       "Home"),
-            ("docs",     "index-es.html",    "Docs (ES)"),
-            ("tutorial", "tutorial.html",    "Tutorial"),
-            ("roadmap",  "roadmap.html",     "Roadmap"),
+            ("index",          "index.html",         "Home"),
+            ("docs",           "index-es.html",      "Docs (ES)"),
+            ("tutorial",       "tutorial.html",      "Tutorial"),
+            ("roadmap",        "roadmap.html",       "Roadmap"),
+            ("architecture",   "architecture.html",  "Architecture"),
+            ("cve-chains",     "cve-chains.html",    "CVE Chains"),
+            ("firmware",       "firmware.html",      "Firmware"),
+            ("kernel-exploits","kernel-exploits.html","Kernel Exploits"),
+            ("finetune",       "finetune.html",      "Fine-tuning"),
+            ("mcp-tools",      "mcp-tools.html",     "MCP Tools"),
         ]
     else:
         nav_items = [
