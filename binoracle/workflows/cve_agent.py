@@ -4548,6 +4548,39 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
              "no binary: schema + template developed; real blockers noted.")
 
     inv.steps = []   # el streaming ya emitio los pasos; el informe los reconstruye del render
+
+    # Captura de terminal: estado final de la investigacion
+    try:
+        from .wpverify import _screenshot_terminal_step
+        _status = ("VERIFICADO" if inv.verified else "NO CONFIRMADO") if es else ("VERIFIED" if inv.verified else "UNCONFIRMED")
+        _detail = inv.verified_detail or inv.blockers[0] if (inv.verified_detail or inv.blockers) else ""
+        _term_content = (
+            f"CVE: {inv.cve_id}\n"
+            f"Clase: {inv.vuln_class or '?'}\n"
+            f"CVSS: {inv.cvss_score or '?'} ({inv.cvss_severity or '?'})\n"
+            f"Resultado: {_status}\n"
+            + (f"Detalle: {_detail}\n" if _detail else "")
+            + (f"Payload: {inv.verified_evidence.get('payload_ganador', '')}\n"
+               if inv.verified and inv.verified_evidence else "")
+        )
+        _term_png = _screenshot_terminal_step(
+            title=f"{inv.cve_id} · {_status}",
+            content=_term_content,
+            highlight=_status,
+            lang=lang,
+        )
+        if _term_png:
+            inv.verified_evidence = inv.verified_evidence or {}
+            inv.verified_evidence.setdefault("screenshots", [])
+            shots = inv.verified_evidence["screenshots"]
+            shots.insert(0, {
+                "png_b64": _term_png,
+                "caption_es": f"Estado final de la investigacion en terminal: {_status}",
+                "caption_en": f"Final investigation status in terminal: {_status}",
+            })
+    except Exception:
+        pass
+
     save_investigation_to_cache(inv)
     return inv
 
