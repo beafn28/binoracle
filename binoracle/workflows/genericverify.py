@@ -754,9 +754,16 @@ def verify_generic_command_injection(
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "canary_path": canary_path, "canary_secret": secret})
         # Captura: servidor arrancado, antes del ataque
-        _shot_srv = _screenshot_response("GET", base_url + "/", timeout=10)
-        if _shot_srv:
-            res.evidence.setdefault("screenshots", []).append(_shot_srv)
+        try:
+            _shot_srv = _screenshot_terminal_step(
+                "Servidor levantado — antes del ataque",
+                f"Contenedor : {container}\nURL        : {base_url}\nMétodo     : {m}\nEndpoint   : {endpoint}")
+            if _shot_srv:
+                res.evidence.setdefault("screenshots", []).append(
+                    {"png_b64": _shot_srv, "caption_es": "Servidor levantado antes del ataque",
+                     "caption_en": "Server up before attack", "url": base_url})
+        except Exception:
+            pass
 
         # separadores reales de command injection (sh/bash/dash/ash) -- casuistica de
         # Command Injection/Intruder/command_exec.txt en PayloadsAllTheThings: los separadores
@@ -945,9 +952,16 @@ def verify_generic_path_traversal(
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
         # Captura: servidor arrancado, antes del ataque
-        _shot_srv = _screenshot_response("GET", base_url + "/", timeout=10)
-        if _shot_srv:
-            res.evidence.setdefault("screenshots", []).append(_shot_srv)
+        try:
+            _shot_srv = _screenshot_terminal_step(
+                "Servidor levantado — antes del ataque",
+                f"Contenedor : {container}\nURL        : {base_url}\nCanario    : {canary_path}")
+            if _shot_srv:
+                res.evidence.setdefault("screenshots", []).append(
+                    {"png_b64": _shot_srv, "caption_es": "Servidor levantado antes del ataque",
+                     "caption_en": "Server up before attack", "url": base_url})
+        except Exception:
+            pass
         step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
              f"propio contenedor del objetivo)...")
         if not lab.write_canary(container, canary_path, secret):
