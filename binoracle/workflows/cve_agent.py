@@ -786,7 +786,9 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         for entry in wr.logs:
             if entry.startswith("docker logs"):
                 head, _, body = entry.partition("\n")
-                trimmed = "\n".join(body.splitlines()[-15:])
+                # Primeras 30 lineas: el mensaje "Error: xxx" esta al INICIO del log,
+                # no al final. [-15:] solo mostraba el stack trace, ocultando la causa real.
+                trimmed = "\n".join(body.splitlines()[:30])
                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
         _attach_grounded_source_snippets(inv, es)
 
@@ -2083,7 +2085,13 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
             + "WORKDIR /app\n"
             "COPY package.json .\n"
-            "RUN npm install --legacy-peer-deps\n"
+            # --omit=optional impide que npm instale @next/swc-linux-x64-gnu y otros
+            # binarios nativos de SWC. Bajo emulacion QEMU (--platform linux/amd64 en M1)
+            # los binarios SWC precompilados fallan en dlopen() causando que Node.js crashee
+            # antes de imprimir el error completo ('node:internal/modules/cjs/loader throw e').
+            # Con --omit=optional + .babelrc, Next.js detecta que SWC no esta disponible y
+            # usa Babel como transpilador -- compatible con todas las plataformas.
+            "RUN npm install --legacy-peer-deps --omit=optional\n"
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
             "EXPOSE 3000\n"
