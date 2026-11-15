@@ -1212,6 +1212,26 @@ def _h_libfuzzer_corpus(args):
     return render_corpus(corpus, wrote_to=wrote_to)
 
 
+@_tool("firmware_analyze",
+       "Analiza imagenes de firmware: volumenes UEFI (.fd/.rom/.efi), rootfs SquashFS/JFFS2, "
+       "uImage/zImage, dumps de flash SPI/NAND, y binarios ELF/PE32+. "
+       "Detecta el formato automaticamente, extrae el sistema de archivos con "
+       "binwalk/unsquashfs/jefferson/uefi-firmware-parser, y busca: "
+       "credenciales hardcodeadas, binarios SUID, handlers SMM/SMI de UEFI, servicios de red "
+       "(telnetd/httpd/dropbear), configuracion de kernel insegura y binarios interesantes. "
+       "SOLO USO AUTORIZADO — solo firmware de dispositivos propios o con permiso escrito.",
+       {"image_path": {"type": "string",
+                       "description": "ruta al archivo de firmware (.fd, .efi, .bin, .rom, squashfs, etc.)"},
+        "out_dir":    {"type": "string",
+                       "description": "directorio para la extraccion (default: directorio temporal)"}},
+       ["image_path"])
+def _h_firmware_analyze(args):
+    from .workflows.firmware import analyze_firmware, render_firmware
+    a = args or {}
+    info = analyze_firmware(a.get("image_path") or "", out_dir=a.get("out_dir") or "")
+    return render_firmware(info)
+
+
 @_tool("cve_chain",
        "Ejecuta una cadena multi-CVE (web RCE → local privesc → persistencia). "
        "Investiga cada CVE secuencialmente, usando la postcondicion del stage anterior "

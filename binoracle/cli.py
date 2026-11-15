@@ -587,6 +587,20 @@ def cmd_cve_corpus(args, config):
     print(render_corpus(corpus, wrote_to=wrote_to))
 
 
+def cmd_firmware(args, config):
+    from binoracle.workflows.firmware import analyze_firmware, render_firmware
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    print(f"\n  {_b}binoracle firmware{_r}  {args.image}\n")
+
+    def on_step(msg):
+        print(f"  {msg}")
+
+    info = analyze_firmware(args.image, out_dir=args.out_dir or "")
+    print(render_firmware(info))
+
+
 def cmd_cve_chain(args, config):
     from binoracle.workflows.cve_chain import run_chain, render_chain
     _use_col = _color_ok()
@@ -1851,6 +1865,13 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--poc", default="", dest="poc_file",
                     help="path to a file containing the PoC text (optional)")
     cv.set_defaults(func=cmd_cve_corpus)
+
+    fw = sub.add_parser("firmware",
+                        help="analyze firmware images: UEFI (.fd/.efi), SquashFS, JFFS2, uImage, raw flash")
+    fw.add_argument("image", help="path to the firmware file")
+    fw.add_argument("--out", default="", dest="out_dir",
+                    help="directory for extracted contents (default: auto temp dir)")
+    fw.set_defaults(func=cmd_firmware)
 
     ch = sub.add_parser("cve-chain",
                         help="run a multi-CVE exploit chain (web RCE → local privesc → ...)")
