@@ -1,710 +1,418 @@
+<div align="center">
+
+<img src="docs/assets/logo.svg" alt="binoracle" width="120" height="120">
+
 # binoracle
 
-Local LLM copilot for binary reverse engineering and exploitation, grounded on real
-analysis oracles.
+**Autonomous CVE exploit research & binary reverse engineering — 100% local**
 
-Herramienta de ingeniería inversa + desarrollo de exploits **fundamentada en oráculos**: combina
-lectores estáticos deterministas con un motor de explotación **verificado por ejecución**. Es
-**local y offline** (nada sale del host), iguala y supera a [REA](https://github.com/morluto/rea), y
-tiene el motor de exploits reproducible más amplio posible en x86-64 / x86-32 (y aarch64 donde el
-entorno lo permite).
+[![PyPI](https://img.shields.io/pypi/v/binoracle?color=blue&label=PyPI)](https://pypi.org/project/binoracle/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![DEF CON Arsenal](https://img.shields.io/badge/DEF%20CON-Arsenal-red.svg)](#)
+[![Docs](https://img.shields.io/badge/docs-gh--pages-blueviolet)](https://beafn28.github.io/binoracle/)
 
-> **Regla de oro (grounding).** binoracle no marca nada como `verified` sin haber **popeado una
-> shell real** en un sandbox. Todo informe lleva evidencia y, cuando algo no se puede comprobar,
-> **degrada con honestidad** (`NOT_VERIFIED` / `NOT_APPLICABLE` + `limitations`), nunca finge. Los
-> lectores estáticos **nunca ejecutan** el objetivo; la ejecución vive en módulos de runtime
-> separados y en sandbox. Todo dato subido/externo es **no confiable**.
+[English](#) · [Español](docs/README.es.md) · [Docs](https://beafn28.github.io/binoracle/) · [Architecture](docs/ARCHITECTURE.md) · [Tutorial](docs/TUTORIAL.md)
 
-Este README es el documento único y completo. Índice:
-
-- [Resumen: todo binoracle de un vistazo](#resumen-todo-binoracle-de-un-vistazo)
-  - [Lectores estáticos](#lectores-estáticos-reversea-cualquier-cosa)
-  - [Motor de exploits (familias + verificación)](#motor-de-exploits-familias--estado-de-verificación)
-  - [Paridad REA](#paridad-rea-igualar-y-superar)
-  - [Interfaces: CLI / MCP / web](#interfaces-cli--mcp--web)
-  - [Tests](#verificación-y-tests)
-  - [Plataformas](#plataformas-soportadas)
-- [Arranque rápido (Docker y nativo)](#arranque-rápido)
-- [El resto de este documento](#why-this-is-different) desarrolla cada parte en detalle.
+</div>
 
 ---
 
-# Resumen: todo binoracle de un vistazo
-
-Tres planos, bien separados: **(1) lectores estáticos** que identifican el formato y extraen hechos
-sin ejecutar nada, **(2) análisis / arsenal** (chain-analyzer, gadgets ROP, primitivas, superficie),
-y **(3) motor de exploits** que reproduce cada familia y **confirma con shell real**. Encima, una
-capa de **paridad REA** y tres interfaces (CLI, MCP, web).
-
-## Lectores estáticos (reversea "cualquier cosa")
-
-`binoracle identify <fichero>` detecta el formato y enruta al lector adecuado:
-
-| Área | Formatos / lectores |
-|---|---|
-| **Nativo** | ELF, Mach-O, PE/COFF, Go, WebAssembly (`.wasm` → WAT), core dumps |
-| **Móvil** | APK (manifest, DEX/ABIs/firma), AndroidManifest (apktool), DEX→Java (jadx) |
-| **Flutter/Dart** | snapshot AOT (`f5f5dcdc`, hash, features), engine `libflutter.so`, `flutter_assets`, `AssetManifest.bin` (StandardMessageCodec) |
-| **Managed** | .NET/CLI (metadata `#~`, tablas ECMA-335, tokens, CIL) |
-| **Web / JS** | bundles JS, source recovery, imports de módulos, `.asar` (Electron), HAR, descubrimiento WebMCP |
-| **Datos / otros** | SQLite, EVM bytecode, `.jar`/`.class`, plist (bin/xml), firmware, escaneo de secretos/IOCs |
-
-## Motor de exploits (familias + estado de verificación)
-
-Cada familia tiene su sample en `samples/src/*.c` (compilado por `samples/build.sh`) y un flujo
-`autoX` que marca `verified: true` **solo si popea shell**. Cuando la glibc moderna bloquea la
-técnica, se reproduce in-binary; algunas se comprueban sobre glibc 2.39 real. Las que requieren una
-plataforma ausente **degradan con honestidad**, nunca dan falso positivo.
-
-**Stack / ROP / control de flujo:** ret2win (incl. stripped, 32-bit) · ret2win sobre PIE · ret2libc
-(con fuga) · ret2csu (+ cadena a execve) · SROP x86-64 **y** x86-32 · SROP aarch64 (degrada si no
-hay aarch64) · ret2dlresolve x64 **y** 32-bit (sin fuga de libc) · format-string Partial/Full RELRO
-(x64 y x86-32) · canary leak/bypass · PIE defeat · stack pivot · one_gadget · shellcode.
-
-**Heap (glibc):** tcache poison/dup · UAF (funcptr-hijack) · write-what-where · house-of-force ·
-house-of-spirit · house-of-einherjar · house-of-botcake · largebin attack · tcache-stashing-unlink ·
-house-of-corrosion · unsafe-unlink · fastbin-dup · House of Mind · IO_FILE/FSOP.
-
-Todas las familias de heap están **integradas en el chain-analyzer**: `analyze_chains` emite una
-`ExploitChain` por familia aplicable (detectada vía símbolos del ELF) y `_verify_chain` la despacha
-al verificador `autoX`, de modo que el grafo de cadenas refleja lo que de verdad popea shell. Una
-shell se confirma haciendo que imprima un marcador único; cada ejecución está aislada (sin red,
-límites de memoria/pid, ASLR off con `setarch -R`) para que el PoC sea determinista.
-
-> La tabla **detallada** por clase (mitigaciones manejadas y cómo se verifica cada una) está más
-> abajo, en [Verified exploitation](#verified-exploitation).
-
-## Paridad REA (igualar y superar)
-
-| Categoría | Capacidades | Módulos |
-|---|---|---|
-| **A. Estático nativo a nivel función** | analyze_function, call-graph, xrefs, address↔name, call-path, inspect_native_api, binary_overview, trace_feature; **sesión nativa con estado** (open/inspect/session/close/list) | `nativequery`, `nativesession`, `nativeconnect` (ida/hopper), `jebconnect` |
-| **B. Reconstrucción managed** | metadata → **grafo de tipos por token**, call-graph CIL, comparación de miembros, verificación de frontera managed/nativo | `managedquery`, `dotnetgraph`, `dotnetinspect` |
-| **C. Android** | clase/método, paquete, búsqueda de clases, refs, **grafo de app móvil**, recursos | `androidquery`, `androidmanifest`, `apkinspect` |
-| **D. JS / web** | recover sources, analyze bundle, trace imports, descubrir herramientas WebMCP | `jsinspect` |
-| **E. Orquestación** | correlate estático↔runtime, find_changed_behavior, trace_feature, captura de procesos, evidence bundles, ledger | `proccapture`, `ledger`, `nativequery` |
-
-## Interfaces: CLI / MCP / web
-
-**CLI** — subcomandos (`binoracle <cmd> --help`):
-
-```
-doctor cveplan triage hunt ask chat report primitives gadgets arsenal cyclic
-exploit-skeleton explain diff verify view rop shellcode fuzz fmtstring analyze
-serve mcp go core elf wasm sqlite evm har java secrets asar plist dotnet macho
-apk pe jeb js dynamic caller-tool identify autopoc autopwn audit regress tools
-rag kb learn heap train dataset autofuzz fetch investigate
-```
-
-**MCP** — `binoracle mcp` habla JSON-RPC por stdio y expone **~100 herramientas**: inspección
-(`inspect_apk`, `inspect_flutter`, `inspect_dotnet_assembly`, `inspect_elf_layout`…), exploits
-(`autopwn`, `analyze_chains`, `one_gadget`, `rop_arsenal`…), consulta nativa (`analyze_function`,
-`get_call_graph`, `open_binary`…), managed/android/js, dinámico (`dynamic_frida`, `dynamic_adb`,
-`dynamic_browser`) y evidencia (`record_evidence`, `export_evidence_bundle`).
-
-**Web** — `binoracle serve` (por defecto `http://127.0.0.1:8080`). API `POST /api/run` con
-`{"command","binary","options"}`.
-
-## Verificación y tests
-
-Suite offline en `tests/` (auto-salta lo que no aplica): `test_smoke.py` (lectores + todas las
-familias de exploits + grafo de cadenas de heap), `test_tools_and_config.py` (herramientas MCP, CLI,
-config, routing), `test_autoheap.py` (heap aislado), `test_sandbox.py` (el `run_driver`),
-`test_rag.py` / `test_trainer.py` (RAG local y dataset/trainer). Ejecutar: `pytest tests/ -v`; una
-familia: `pytest tests/test_smoke.py -k fastbindup -v`.
-
-## Plataformas soportadas
-
-| Plataforma | Lectores estáticos | Verificación de exploits (ejecución) |
-|---|---|---|
-| **Linux x86-64** (referencia) | ✅ | ✅ todo (x86-64 / x86-32) |
-| **Windows + WSL2** (x86-64) | ✅ | ✅ igual que Linux |
-| **Mac M1 + Docker `linux/amd64`** | ✅ | ✅ x86 por emulación (más lento) |
-| **Mac M1 nativo / VM ARM64** | ✅ | ⚠️ solo aarch64 nativo |
-| **Windows / macOS nativos** | ✅ | ❌ (sin ELF/`/proc`/glibc/`unshare`) |
-
-Lo único imprescindible para los exploits es un **kernel Linux** debajo; por eso en Mac/Windows la
-vía recomendada es Docker.
+> **LEGAL NOTICE** — binoracle is a research and education tool.
+> All CVE labs run against Docker containers you create locally.
+> Never use this against systems you do not own or have explicit written permission to test.
 
 ---
 
-# Arranque rápido
+## What is binoracle?
 
-**Docker (recomendado en Mac / Windows)** — un solo comando levanta **todo**: binoracle (lectores +
-verificación de exploits, Linux x86-64 dentro) **y** Ollama con el modelo LLM para la IA. Nada más
-que instalar que Docker:
+binoracle is a **fully local, offline-first** security research assistant with two main engines:
 
-```bash
-git clone https://github.com/beafn28/binoracle.git && cd binoracle
-docker compose up --build        # web http://127.0.0.1:8080 + IA (Ollama)
-# atajos (con GNU make; en Mac: brew install make && gmake docker):
-#   make docker | make docker-test | make docker-logs | make docker-shell | make docker-down
-```
+| Engine | What it does |
+|--------|-------------|
+| **CVE Engine** | Fetches a CVE from NVD → asks Qwen 2.5 Coder (local LLM) to generate exploit hypotheses → spins up a Docker lab → verifies the exploit with Playwright → produces a professional HTML report with screenshots |
+| **Binary RE Engine** | Analyzes ELF/PE/Mach-O/APK/WASM/Go/Rust/.NET/JS/EVM/SQLite — static analysis, decompilation, exploit generation, ROP chains, format strings, heap attacks, SROP — all offline |
 
-- La **primera vez** el servicio `ollama` descarga el modelo (`qwen2.5-coder:7b`, ~4.7 GB) y lo
-  cachea en un volumen; los siguientes arranques son inmediatos. La UI y el análisis estático están
-  disponibles enseguida; la IA (botón **Auditar en vivo**, **CVE→Exploit**, narrativa) en cuanto
-  termina la descarga (sigue el progreso con `docker compose logs -f ollama`).
-- Cambiar de modelo: `BINORACLE_MODEL=llama3.1:8b docker compose up`.
-- Si **no** quieres IA, arranca solo el analizador: `docker compose up binoracle`.
-- En **Mac M1**, binoracle corre como `linux/amd64` por emulación (para ejecutar los exploits x86),
-  y Ollama corre **nativo arm64** (rápido, con Metal) — lo mejor de ambos.
-
-**Probar que todo funciona** (oráculos + lectores + arsenal + verificación de exploits con shell
-real, en un comando):
-
-```bash
-make docker-test
-# equivalente:  docker compose run --rm binoracle bash scripts/docker-smoke.sh
-```
-
-**Analizar tus ficheros**: déjalos en `./targets/` y usa la ruta `/targets/<fichero>`:
-
-```bash
-cp ~/Downloads/tu-app.apk targets/
-docker compose run --rm binoracle binoracle apk /targets/tu-app.apk    # CLI puntual
-docker compose exec binoracle pytest tests/test_smoke.py -v            # verificar exploits
-```
-
-> El bloque `cap_add`/`security_opt` del `docker-compose.yml` es **solo** para la verificación de
-> exploits por ejecución (objetivos AUTORIZADOS / CTF); si solo quieres lectura estática, puedes
-> borrarlo.
-
-**Nativo (Linux x86-64):**
-
-```bash
-pip install -e . && bash samples/build.sh
-pytest tests/test_smoke.py -v
-binoracle serve
-```
-
-El resto del documento desarrolla cada parte en detalle.
+**Zero data leaves your machine.** The LLM runs locally via Ollama (Qwen 2.5 Coder 7B). Docker labs are ephemeral. Reports stay on disk.
 
 ---
 
-## Why this is different
-
-Most LLM-for-RE tools do one of two things: they call a cloud API (so you cannot feed
-them malware or client binaries), and they let the model "opine" over decompiled
-pseudocode with no ground truth (so it hallucinates bugs that are not there).
-
-binoracle takes the opposite stance:
-
-1. **Fully local.** The model runs on your machine via Ollama or any OpenAI-compatible
-   local server (llama.cpp, LM Studio, vLLM). Nothing leaves the host. Works offline.
-   The core tool uses only the Python standard library.
-
-2. **Oracle-grounded.** The model is not allowed to state a fact about the binary out of
-   thin air. Every claim must come from a real tool: radare2 for disassembly and
-   cross-references, pyelftools for headers and mitigations, angr for symbolic
-   reachability, a debugger for dynamic state. The agent loop is a
-   hypothesis -> oracle -> verification cycle. Unverified guesses are labelled as such.
-
-3. **The unit of work is a verified finding, not a prompt.** A vulnerability hypothesis
-   is only promoted to a finding when an oracle backs it (a dangerous sink reachable from
-   attacker-controlled input, a missing bounds check on a real path, etc.).
-
-The result: you can point it at a stripped ELF, get a grounded triage in seconds without
-any model at all, and then bring the local LLM in to reason on top of facts it cannot
-fake.
-
-## Verified exploitation
-
-binoracle does not stop at "this looks exploitable". For several bug classes it builds a
-real exploit and **runs it in an isolated sandbox to confirm a shell**, so the result is a
-verified exploit, not a claim.
-
-binoracle **trains** this skill on an authorized corpus (`binoracle train`): it develops and
-runs an exploit for every binary and records *only what the sandbox confirms*. The verified
-techniques are catalogued in `binoracle/kb/verified-playbook.md` — auto-generated
-(`binoracle train --export-playbook`), regenerated on each run, and fed back into planning, so
-the agent's hard-won, execution-verified playbook ships with the product. The selection logic
-(which technique for which defenses) is documented in `binoracle/kb/exploit-engineering.md`.
-
-The whole engine — all ~25 execution-verified exploit families (x86-64, x86-32, aarch64), the chain
-analyzer / ROP arsenal, full REA parity and the grounding mechanics — is summarised above in
-[Resumen: todo binoracle de un vistazo](#resumen-todo-binoracle-de-un-vistazo) and detailed class by
-class here. (`docs/ENGINE.md` and `docs/USAGE.md` keep deeper internals, but this README is
-self-contained.)
-
-| Class | Mitigations handled | How it is verified |
-|-------|--------------------|--------------------|
-| ret2win (incl. stripped, 32-bit) | overflow + gift/win function | jumps to win() in the sandbox (offset found symbolically, hard time-bounded) |
-| ret2win on PIE | NX + PIE | resolves the PIE base, jumps to win() |
-| ROP / ret2syscall (static/PIE) | NX (+ PIE) | builds an `execve('/bin/sh')`/ret2libc chain, spawns a shell |
-| ret2libc with leak | NX + ASLR (dynamic) | leaks libc (puts@GOT), computes the base, `system('/bin/sh')` |
-| ret2dlresolve (no leak) | NX, dynamic no-PIE, Partial RELRO | forges the linker's resolver structures → `system('/bin/sh')` with **no libc leak** |
-| SROP (sigreturn, x86-64 **and x86-32**) | NX, gadget-poor no-PIE | one sigreturn restores a forged register frame → `execve('/bin/sh')` with only `pop {r,e}ax` + a syscall gate (`syscall` / `int 0x80`) |
-| ret2csu | NX, gadget-poor no-PIE, x86-64 | the two universal `__libc_csu_init` gadgets set rdi/rsi/rdx and make an indirect `call [r12+rbx*8]` — no `pop rsi/rdx` needed; 16B ret-slide handled |
-| ret2csu → execve (chained) | NX, no `pop rsi`/`pop rdx`, x86-64 | csu sets rsi=0/rdx=0 (gadget2's forced call aimed at a benign `ret`), then `pop rdi`=&'/bin/sh', `pop rax`=59, `syscall` → `execve('/bin/sh',0,0)` |
-| format-string (Partial RELRO, x86-64 **and x86-32**) | NX, printf@GOT | overwrites printf@GOT with system, `system('/bin/sh')` (offset detection is arch-aware) |
-| format-string (Full RELRO) | NX + PIE + Full RELRO | GOT is read-only → ret2system by hijacking printf's saved return on the stack |
-| stack-canary bypass | NX + **stack canary** | leaks the canary (via a `%s` echo *or* a `printf(input)` format string), rewrites it in place, overflows past it to win() |
-| stack pivot (migration) | NX, **short** overflow | overflow reaches only saved RBP+RIP → set saved RBP=&staging buffer, RIP=`leave; ret` → RSP pivots into a full chain staged in .bss |
-| write-what-where | NX | unchecked index → a called function's GOT entry = win() |
-| UAF funcptr-hijack | NX | realloc recycles a freed struct whose first field is a function pointer = win() |
-| heap → shell (tcache poisoning) | NX, glibc ≥ 2.32 safe-linking | leaks the key via an empty bin, `free@GOT = win` (repairs the GOT neighbour the key-clear zeroes) |
-| house-of-force | NX, top-chunk overwrite | overwrites top->size huge → a wrapping malloc moves `top` to an arbitrary address → next alloc writes there → hijack a function pointer (real glibc HoF is mitigated ≥ 2.29; verified against an in-binary pre-2.29 top-chunk carve) |
-| house-of-spirit | NX, free of a fake chunk | frees an attacker-crafted fake chunk into the tcache → next malloc returns it over a function pointer → write hijacks it (real glibc 2.39 tcache; not mitigated) |
-| house-of-einherjar | NX, off-by-one / prev_size control | forged prev_size + cleared PREV_INUSE → backward consolidation lands the freed chunk at an arbitrary address → next malloc returns it → hijack (verified against an in-binary backward-consolidation allocator) |
-| house-of-botcake | NX, double-free | double-free routed through the unsorted bin (bypasses the tcache key) → overlapping chunks → safe-linked tcache poison → alloc over a function pointer (real glibc 2.39; heap addr for safe-linking read from /proc with ASLR off) |
-| tcache dup (double-free) | NX | makes malloc return an aligned GOT entry, `free@GOT = system` |
-
-A shell is confirmed by having it echo a unique marker. Every run is isolated:
-no network, memory and pid limits, and ASLR disabled (`setarch -R` / `aslr=False`) so the
-local proof-of-concept is deterministic.
-
-**ROP arsenal (grounded reasoning aid).** Alongside the verified classes, `analyze_chains`
-surfaces a ROP arsenal built from the binary: the best gadget per argument register
-(rdi/rsi/rdx/rcx/r8/r9/rax), the syscall gadget, the least-noisy stack pivot, write-what-where and
-register-to-register move gadgets, and an explicit execve-by-syscall coverage check. It also
-detects **ret2csu** (the universal `__libc_csu_init` gadgets, for when direct `pop rsi/rdx` are
-missing) and, for statically-linked binaries, integrates **one_gadget** magic-gadget offsets (the
-embedded libc lives inside the target; absolute addresses when no PIE). These are reported as
-*present/available* — grounded in the binary — not as verified chains, and shown up front in both
-the markdown and the interactive HTML report so the ROP reasoning is explicit. one_gadget is
-caller-supplied and degrades honestly with an install hint when the gem is absent.
-
-### Requirements
-
-Verification prefers the `binoracle-pwn` Docker image, but **Docker is not required**: when the
-image is absent, binoracle falls back to a **native OS-isolation sandbox** on any Linux x86-64
-host — a user+network namespace (`unshare -rn`, no network like `--network none`), ASLR off
-(`setarch -R`) and resource limits (CPU/memory/pids/file-size/no-core). The result records
-which engine verified it (`docker` or `native`). To use the Docker path, build the image once:
+## Quick Start
 
 ```bash
-make pwn-image        # builds the 'binoracle-pwn' image (python + pwntools + one_gadget)
-# make clean-docker   # if the Docker build cache fills the disk
-```
+# 1. Install binoracle
+pip install binoracle
 
-The sample corpus builds with that image too, or with a host `gcc` on Linux when the image is
-absent (`bash samples/build.sh`).
+# 2. Install Ollama + pull the model (macOS / Linux)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5-coder:7b
 
-### Using it
-
-```bash
-# one-shot: try every technique, verify which actually work, feed the knowledge base
-binoracle autopwn ./chall
-
-# only specific techniques
-binoracle autopwn ./chall            # (the web UI exposes per-technique checkboxes)
-
-# a single class
-binoracle autopoc ./chall            # ret2win: offset + exploit + sandbox verification
-
-# the local LLM drives the whole audit and calls the exploit tools itself
-binoracle audit ./chall
-```
-
-In `autopwn` the local model (with the IA toggle) reads the observed facts and decides which
-techniques to try and in what order. In `audit` the model drives an agent loop with the
-exploitation tools (`try_ret2win`, `try_rop`, `try_ret2libc`, `try_fmt`) available, and a
-deterministic backstop guarantees a verified exploit when one exists.
-
-### Scope
-
-Verified-by-execution today covers the classes tabulated above, plus ROP on PIE (`autopie_rop`
-resolves the ASLR-off PIE base in the sandbox, rebases the chain and confirms a shell; the
-`ropme_pie` static-PIE sample is the target), and heap-to-shell for the common menu-driven
-tcache-UAF shape (`autoheap_shell`: leaks the safe-linking key from a freed chunk, poisons
-the tcache to allocate over `free@GOT` on a no-PIE binary and overwrites it with `win`; the
-`heapexp` sample is the target). Double-free / heap-overflow are also confirmed by execution
-via glibc's allocator aborts (`autoheap`). Heap-to-shell runs natively on an x86-64 host;
-under a Mac's x86-64 emulation the final redirected jump into never-executed code can fail.
-Fully general heap exploitation (arbitrary layouts, libc-leak chains) remains bespoke per
-binary. Everything runs only against binaries you are authorized to analyze.
-
-## Optional caller-supplied tool integrations
-
-Some steps need a heavy external tool that binoracle deliberately does not bundle (offline,
-dependency-light). It drives one when you have it installed and **degrades honestly** (naming the
-tool and how to get it) when absent — each runs the tool with the artifact as an argument (no
-shell), bounded, and treats its output as untrusted:
-
-```bash
-binoracle caller-tool wat ./mod.wasm        # WAT disassembly via WABT (wasm2wat)
-binoracle caller-tool pcap ./cap.pcap       # protocol-hierarchy summary via TShark
-binoracle caller-tool firmware ./fw.bin     # signature scan via Binwalk (no extraction)
-binoracle caller-tool one_gadget ./libc.so.6  # magic-gadget offsets via one_gadget
-binoracle caller-tool capinfos ./cap.pcap   # capture file metadata via capinfos
-binoracle caller-tool manifest ./app.apk    # decode AndroidManifest.xml via Apktool
-binoracle caller-tool jadx ./app.apk        # decompile DEX to Java via JADX
-binoracle caller-tool ghidra ./prog         # decompile a native binary to C pseudocode via Ghidra
-```
-
-Native pseudocode is driven through **Ghidra's headless analyzer** (`analyzeHeadless`, found on
-`PATH` or under `GHIDRA_INSTALL_DIR`) — Ghidra decompiles statically and never runs the target. It
-imports into a throwaway project (removed afterwards) and returns per-function C pseudocode; pass a
-function name to scope it. Same model REA uses for native analysis (it requires Hopper/Ghidra/IDA).
-
-Also the `wasm_to_wat`, `pcap_summary`, `firmware_scan`, `one_gadget`, `pcap_fileinfo`,
-`apk_manifest`, `apk_decompile` and `decompile_native` MCP tools.
-
-## Dynamic / runtime analysis (separate from the static core)
-
-Everything above is static — binoracle never runs the target. For the cases that inherently need a
-**live** target (a device, a process, a web page), there is a clearly separated `dynamic` surface.
-It is **runtime**, caller-supplied, **for authorized targets only**, and its output is treated as
-untrusted data from a live (possibly hostile) target. It is never part of the grounded "verified by
-execution" exploit ledger.
-
-```bash
-binoracle dynamic adb-devices                 # connected Android devices (adb)
-binoracle dynamic adb-packages -s <serial>    # installed third-party packages
-binoracle dynamic adb-processes               # running processes (ps -A)
-binoracle dynamic adb-logcat --lines 200      # bounded log dump (never streams)
-binoracle dynamic adb-getprop                 # device fingerprint / build props
-binoracle dynamic adb-apk-path com.x.y        # locate the APK on device → pull → `binoracle apk`
-binoracle dynamic frida-devices               # devices visible to Frida (enumeration only)
-binoracle dynamic frida-ps                    # processes visible to Frida (no injection)
-binoracle dynamic browser https://example.tld --screenshot out.png
-```
-
-The browser surface loads the page in a locally launched headless Chromium (Playwright) and
-captures — passively, without submitting anything — the final URL, title, loaded scripts (and
-inline bodies), every request and its response status/type, console messages, cookies and
-localStorage keys, DOM metrics, an optional full-page screenshot, and a heuristic secret scan over
-inline scripts. adb/Frida are caller-supplied and degrade honestly when absent; the browser needs
-`pip install playwright` (it reuses an existing Chromium). Also the `dynamic_adb`, `dynamic_frida`
-and `dynamic_browser` MCP tools. **This is the runtime counterpart to REA's device/browser surfaces
-— kept out of the static, never-execute core on purpose.**
-
-**JEB (external engine connector).** JEB is commercial, so — exactly as REA does — binoracle does
-not embed it: you start your own JEB client serving MCP and point binoracle at it with
-`BINORACLE_JEB_MCP_URL` (or `--url`). `binoracle jeb` then speaks JSON-RPC 2.0 to that endpoint to
-list the engine's tools (`--call` to invoke one). Output is untrusted data from your JEB instance;
-it degrades honestly when no endpoint is configured. Also the `jeb_connect` MCP tool.
-
-## Reverse engineer anything (one entry point)
-
-`binoracle identify ./file` sniffs any artifact's format and routes it to the matching grounded
-reader — ELF (layout, or a core dump, or Go build-info), Mach-O, PE/.NET, WebAssembly, SQLite,
-Android APK, a Java JAR or .class, an Apple property-list, an Electron ASAR archive, or a HAR
-capture — and prints that
-reader's result. Also the `identify_artifact` MCP tool. The "reverse engineer anything" front
-door, with nothing executed.
-
-## MCP server (one MCP for grounded RE + exploit-dev)
-
-binoracle ships an MCP server so any MCP-capable agent (Claude Code, etc.) can drive its
-grounded tools. It speaks JSON-RPC 2.0 over stdio with **no extra dependency**:
-
-```bash
-binoracle mcp     # stdio MCP server; register it with your agent as a command server
-```
-
-Tools exposed: `triage`, `analyze_chains` (static or `verify`-by-execution), `hunt`,
-`primitives`, `kb_search`, and the authorized exploit-development tools `autopwn`, `autopoc`,
-`autolibc`, `autofmt`, `autoheap`, `autocanary`, `autosrop`, `autodlresolve`. Every result that
-derives from the analysis target is tagged `_meta.provenance.untrusted_content` so the host treats
-it as data, not instructions. Exploit tools are for AUTHORIZED / CTF / research targets only.
-
-The MCP design (one server registering many grounded tools over stdio, untrusted-target-content
-marking) is adapted from [REA](https://github.com/morluto/rea) (MIT); see THIRD_PARTY_NOTICES.
-
-## Supported executable formats
-
-binoracle is not ELF-only. The static and symbolic layers are format-agnostic because they
-are backed by radare2 and angr, which both understand multiple executable formats:
-
-| Format                     | triage / disasm / sinks (radare2) | checksec | angr reachability | run under debugger |
-|----------------------------|-----------------------------------|----------|-------------------|--------------------|
-| ELF (Linux)                | yes                               | yes      | yes               | yes (on Linux/host)|
-| PE / .exe / .dll (Windows) | yes                               | yes      | yes (via CLE)     | needs Windows/wine |
-| Mach-O (macOS)             | yes                               | yes      | partial           | yes (on macOS)     |
-| raw / shellcode blobs      | yes (with -a arch)                | n/a      | limited           | no                 |
-
-Notes:
-- Static analysis (functions, imports, disassembly, xrefs, sinks, ROP gadgets, gift finder)
-  and cross-format `r2_checksec` work on ELF, PE (.exe/.dll) and Mach-O out of the box.
-- `angr_reachable` works on ELF and PE; Mach-O support is partial.
-- The `elf_*` oracle (GOT/PLT, relocations, symbols) is ELF-specific; on PE/Mach-O those
-  tools simply report themselves unavailable and radare2 covers the equivalent ground.
-- Dynamic execution (`dbg_run_input`) can only run a binary the host can execute: a Linux
-  ELF on Linux, a Windows .exe under Windows/wine, a Mach-O on macOS.
-- **Go binaries**: `binoracle go ./target` reads the embedded build info (compiler version,
-  main module, dependencies with replacements, and build settings) **statically, with no Go
-  toolchain and without running the target**. Absence of the blob is not a verdict that the
-  binary is not Go. Also exposed as the `inspect_go_binary` MCP tool.
-- **Core dumps**: `binoracle core ./core` reads an ELF crash dump statically (no debugger): the
-  killing signal, the fault address, each thread's registers, and the memory mappings — and flags
-  a register that holds printable input bytes (the overflow tell). Also the `inspect_core_dump`
-  MCP tool. The starting point for turning a crash into an exploit.
-- **ELF layout**: `binoracle elf ./target` gives an offline layout — header, sections, load
-  segments, symbol/relocation counts, linkage (needed libs, interpreter) and the static
-  mitigation candidates (PIE, NX, executable stack, stack-canary presence, RELRO Partial/Full,
-  RWX segments), each labelled inferred with its limitations. Also the `inspect_elf_layout` MCP tool.
-- **WebAssembly**: `binoracle wasm ./mod.wasm` reads a module statically (no WABT) — version,
-  section inventory, function type signatures, and every import/export with its kind. Instruction
-  bodies are not decoded to WAT (that needs WABT); the limit is reported. Also `inspect_wasm_artifact`.
-- **SQLite databases**: `binoracle sqlite ./app.db` opens the file read-only and reports the schema
-  (tables, columns, indexes, views, triggers) and a bounded row sample — no writes, no triggers
-  fired. Built-in sqlite3, no dependency. Also the `inspect_sqlite_database` MCP tool.
-- **EVM bytecode**: `binoracle evm ./code.hex` reads EVM runtime bytecode (raw or hex) — the
-  function selectors (PUSH4 heuristic), capability opcodes (CALL/DELEGATECALL/CREATE/SELFDESTRUCT)
-  and the Solidity metadata CBOR trailer (solc version, IPFS/Swarm hash). Also `inspect_evm_bytecode`.
-- **Network captures (HAR)**: `binoracle har ./capture.har` reads a saved HTTP archive — the
-  request/response inventory, hosts, and secrets exposed in URLs/headers/bodies (Authorization,
-  api_key/token/password, JWT, AWS keys), heuristic and labelled. Also `inspect_har_capture`.
-- **.NET / CLI assemblies**: `binoracle dotnet ./app.dll` reads a managed PE statically (pefile to
-  locate the CLI header) — runtime/metadata version, the metadata streams, the metadata-table row
-  counts (Module/TypeDef/MethodDef/Assembly…) and a sample of the #Strings name heap. CIL method
-  bodies are not disassembled. Also the `inspect_dotnet_assembly` MCP tool.
-- **Mach-O (macOS)**: `binoracle macho ./bin` reads the Mach-O header and load commands statically —
-  architecture, file type, segments with protections (W+X flagged), linked dylibs, entry point and
-  the mitigation flags (PIE, executable stack); fat/universal binaries are split into slices. It
-  also reads the section table for **Objective-C** metadata (class and selector names, class/
-  protocol/category counts) and **Swift** metadata (`__swift5_*` descriptor counts) — grounded
-  names and counts, no runtime. Also the `inspect_macho` MCP tool.
-- **PE (Windows)**: `binoracle pe ./app.exe` reads a PE statically (pefile) — architecture, sections
-  with Shannon entropy (packing hint), the DllCharacteristics mitigations (ASLR, DEP/NX, Control
-  Flow Guard, SafeSEH, high-entropy ASLR), the imported DLLs, and a capability map of imports
-  (process/network/crypto/injection/registry/anti-debug). Also the `inspect_pe` MCP tool.
-- **Android APKs**: `binoracle apk ./app.apk` reads the APK (a ZIP) statically — DEX files, native
-  libraries by ABI, the app framework (Flutter/React Native/Unity/Xamarin), signing (v1 JAR +
-  v2/v3 block) and SHA-256 digests of the Flutter snapshots (libapp.so). The binary
-  AndroidManifest.xml is detected but not decoded (needs Apktool). Also the `inspect_apk` MCP tool.
-- **Java (JAR / .class)**: `binoracle java ./app.jar` reads a JAR (a ZIP) statically — the
-  MANIFEST.MF (Main-Class, versions), the class/package inventory, the framework by package prefix
-  (Spring/Jakarta/Kotlin/Scala/Android), signing, and the bytecode major version → Java release.
-  Point it at a standalone `.class` and it reads the magic/version and class/super names from the
-  constant pool. Method bodies are not decompiled (needs CFR/Procyon). Also the `inspect_java` MCP
-  tool. (The `.class` magic `0xCAFEBABE` collides with Mach-O fat; detection disambiguates by the
-  bytecode version field.)
-- **Apple property-lists**: `binoracle plist ./Info.plist` reads a binary (bplist00) or XML plist
-  with the built-in plistlib — bundle id, executable, versions, minimum OS, the URL schemes it
-  registers and the privacy usage-description keys (`NS*UsageDescription`) that reveal what the app
-  touches (camera, location, microphone…). Also the `inspect_plist` MCP tool.
-- **Electron apps (ASAR)**: `binoracle asar ./app.asar` reads an Electron archive straight from
-  bytes — the file/directory tree, the embedded `package.json` (name, version, `main` entry point,
-  declared dependencies), the JavaScript modules and the per-file integrity blocks. `package.json`
-  is sliced out by offset; JS is never executed or deminified. Also the `inspect_asar` MCP tool.
-- **JavaScript / Electron (deep)**: `binoracle js ./app` reads a `.js`, a `.js.map`, or an extracted
-  app directory statically — recovers original sources from **source maps** (and whether contents
-  are embedded, plus the generator), the **module import graph** (external packages vs relative),
-  the **Electron/IPC boundaries** (ipcMain/ipcRenderer channels, `contextBridge` exposures, preload,
-  `child_process`/shell), detected **routes**, and **native add-on** references. Heuristic, skips
-  `node_modules`. Also the `inspect_javascript` MCP tool.
-- **Embedded secrets / IOCs (any file)**: `binoracle secrets ./anything` extracts printable strings
-  (ASCII + UTF-16LE) from any artifact and flags embedded URLs, hosts, IPs, e-mails, cloud/API
-  credentials (AWS/GCP/Slack/GitHub/Stripe), JWTs, private-key PEM headers and high-entropy tokens.
-  Secret values are redacted in the output; everything is heuristic and labelled. The cross-cutting
-  companion to the format readers. Also the `scan_iocs` MCP tool.
-
-So yes: point it at a `.exe` and you get triage, mitigations, sinks, disassembly, gadget
-search and angr reachability. You just cannot *run* a Windows .exe on macOS without wine.
-
-## No false positives, by construction
-
-Grounding is not just a prompt instruction here; it is enforced in code:
-
-- **Verdict gate.** A finding is only `verified` if the grounding ledger contains a proof
-  source (an `angr` reachability result or a `dbg` crash). Otherwise the verdict is capped
-  at `grounded`. The model does not get to call something "verified".
-- **Evidence gate.** A finding whose `evidence` field is empty or cannot be traced back to
-  a tool result we actually ran is downgraded to `unverified` and flagged.
-- **No contradicting tools.** The prompt forbids denying a tool result, and the
-  deterministic workflows (triage, primitives heuristic) never route factual claims through
-  the model at all.
-- **Anti-loop.** Repeated identical tool calls are cached and refused, and the agent is
-  forced to finalize instead of spinning.
-
-So a "verified attack path" means an oracle proved it, not that the LLM asserted it.
-
-## Install
-
-The skeleton needs nothing but Python 3.10+. Oracles are optional extras:
-
-```bash
-# clone / cd into the folder, then:
-pip install -e .            # core only (stdlib)
-pip install -e ".[elf]"     # + ELF header/mitigation oracle (pyelftools)
-pip install -e ".[all]"     # + r2pipe, angr, capstone
-```
-
-radare2 must be on PATH for the static oracle (`brew install radare2` /
-`apt install radare2`). For real (non-toy) binaries, also install `r2pipe` so radare2 runs
-as a persistent session (analysis is cached once instead of per call), and `angr` so
-reachability can be *proven* rather than assumed:
-
-```bash
-pip install -e ".[symbolic]"   # angr: turns 'grounded' findings into 'verified' ones
-pip install r2pipe             # persistent radare2 session (much faster on real binaries)
-pip install pwntools           # ROP chain builder + shellcode generation
-```
-
-Everything degrades gracefully: if an oracle is missing, its tools report themselves
-unavailable instead of crashing.
-
-Point it at a local model:
-
-```bash
-# default backend is Ollama on http://localhost:11434
-ollama pull qwen2.5-coder:7b        # any coder-ish local model works
+# 3. Configure
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
+
+# 4. Investigate a CVE autonomously
+binoracle cve CVE-2025-27516
+
+# 5. Analyze a binary
+binoracle triage ./target_binary
+
+# 6. Full exploit chain
+binoracle pwn ./vulnerable_binary
 ```
 
-## Usage
+---
 
-Recon and understanding:
+## CVE Engine
+
+The CVE engine is **fully autonomous** — Claude provides zero hints. The local LLM reads the NVD description and generates every exploit hypothesis from scratch.
+
+```
+NVD Description ──► Qwen 2.5 Coder ──► Hypothesis ──► Docker Lab ──► Playwright Verify ──► HTML Report
+                      (local only)       (class, payload,   (Flask/Rails/      (screenshots        (evidence,
+                                         endpoint, param)    npm/httpd)          + PoC code)         timeline)
+```
+
+### Supported vulnerability classes
+
+| Class | Scaffolder | Auto-PoC |
+|-------|-----------|---------|
+| SSTI (Jinja2, Twig, Smarty) | pip / gem | ✓ |
+| SQLi (GET/POST/JSON/header) | pip / gem / php / maven | ✓ |
+| Path Traversal / LFI | pip / gem / npm / httpd | ✓ |
+| RCE / Command Injection | pip / gem / npm | ✓ |
+| XSS (Reflected / Stored) | pip / npm | ✓ |
+| SSRF | pip / npm | ✓ |
+| XXE | java / maven | ✓ |
+| Deserialization | java / gem (Marshal) | ✓ |
+| Auth Bypass / IDOR | pip / gem / npm | ✓ |
+| File Upload / Webshell | pip | ✓ |
+| Open Redirect | pip / gem / npm | ✓ |
+| CSRF | pip / gem | ✓ |
+| WordPress plugins (100+) | WP Docker | ✓ |
+| Joomla extensions | Joomla Docker | ✓ |
+| Drupal modules | Drupal Docker | ✓ |
+| Apache httpd | httpd Docker | ✓ |
+| Java/Maven (Spring, Struts) | maven | ✓ |
+| PHP (Composer packages) | php | ✓ |
+| npm / Node.js / Next.js | npm | ✓ |
+| Ruby gems | gem | ✓ |
 
 ```bash
-binoracle doctor                       # what oracles + which LLM backend are available
-binoracle triage ./target              # grounded facts + mitigations (NO model needed)
-binoracle triage ./target --explain    # same, plus a local-LLM narrative on top of facts
-binoracle explain ./target sym.main    # explain one function, grounded in its disassembly
-binoracle ask ./target "where does stdin reach system()?"
-binoracle chat ./target                # interactive grounded REPL
+# Single CVE
+binoracle cve CVE-2025-27516
+
+# Batch (parallelized)
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
+
+# Custom language report
+binoracle cve CVE-2025-27516 --lang en
 ```
 
-Vulnerability research and exploitation:
+---
+
+## Binary Reverse Engineering Engine
+
+### 50+ exploit families — fully automated
+
+```
+binoracle pwn ./binary
+```
+
+| Family | Techniques |
+|--------|-----------|
+| **Stack** | ret2win · ret2libc · ret2plt · ret2csu · SROP (x86-64/x86-32/aarch64) · stack pivot · ROP chains |
+| **Heap** | tcache dup · fastbin dup · UAF · double-free · House-of-Force · House-of-Spirit · House-of-Orange · House-of-Mind · large bin attack · unsafeunlink · Botcake |
+| **Format String** | %n arbitrary write · GOT overwrite · canary leak · pie leak |
+| **Low-level** | shellcode (NX off) · bad-char scrubbing · IO\_FILE exploit · DL-resolve · GOT hijack |
+| **Canary** | leak + reuse · fork bruteforce |
+| **PIE** | partial overwrite · leak chain |
+
+### Static analysis — REA parity + beyond
+
+```
+binoracle triage ./binary        # mitigations, symbols, imports
+binoracle decompile ./binary     # multi-engine: Ghidra, radare2, angr, pwndbg
+binoracle rop ./binary           # ROP gadget search + chain synthesis
+binoracle chain ./binary         # full exploit chain
+```
+
+| Format | Engines |
+|--------|--------|
+| ELF (x86-64/x86/ARM/MIPS/RISC-V) | radare2 · pyelftools · pwntools · angr · pwndbg |
+| PE / PE+ (Windows) | pefile · LIEF · radare2 |
+| Mach-O (macOS/iOS) | LIEF · radare2 |
+| APK / DEX (Android) | apktool · jadx · androguard |
+| .NET / C# | dnlib · ILSpy (via dotnet-script) |
+| JS / TypeScript / Electron | esprima · acorn |
+| Flutter (Dart) | blutter / reFlutter stub |
+| Go binaries | go-dis stub · symbol recovery |
+| Rust binaries | LIEF + symbol demangling |
+| WASM | wabt · binaryen |
+| SQLite databases | python sqlite3 · schema + data dump |
+| EVM bytecode | pyevmasm |
+
+### Hardening analysis
 
 ```bash
-binoracle hunt ./target                # vuln hypotheses, each verified against an oracle
-binoracle primitives ./target          # reason about the exploitation primitive to use
-binoracle gadgets ./target -f "pop rdi"  # ROP gadget search
-binoracle cyclic -n 200                 # De Bruijn pattern (offset discovery)
-binoracle cyclic --find 0x6161616c      # find the offset from a crash value (== pwntools)
-binoracle exploit-skeleton ./target --offset 72 -o exp.py   # pwntools template, grounded
-binoracle rop ./target --goal execve       # build a real ROP chain (pwntools)
-binoracle shellcode --arch amd64 --kind sh # execve('/bin/sh') shellcode
-binoracle fmtstring ./target               # format-string leak/write helper (infoleak)
-binoracle fuzz ./target --mode afl         # fuzzing harness / AFL command
+binoracle hardening ./binary   # NX, PIE, RELRO, stack canary, Fortify, CFI, shadow stack
+binoracle mit ./binary         # mitigations detail with bypass notes
 ```
 
-Knowledge base (RAG) and tooling:
+---
+
+## MCP Server (~100 tools)
+
+binoracle exposes every capability as an MCP tool so Claude Desktop, Cursor, Zed, and any MCP-compatible client can call it natively.
 
 ```bash
-binoracle kb                               # list the bundled exploitation cheat sheets
-binoracle kb "double free tcache glibc"    # retrieve the most relevant technique snippets
-binoracle tools                            # detect the installed binary-pentest toolchain
-binoracle rag                              # RAG status + retrieval layers (embeddings/expand/rerank)
-binoracle learn <folder>                   # learn a skills/docs folder into the KB (--apply to write)
+binoracle mcp-server            # start the MCP server
 ```
 
-The `kb` command exposes the same local RAG the model consults during `primitives` and
-`audit`: curated exploitation cheat sheets plus an imported CTF pwn/reverse corpus, indexed
-recursively from `binoracle/kb/`. It is grounding for the model's reasoning, never a source of
-verdicts: the oracles remain the only thing that can promote a finding to `verified`.
-
-Retrieval is hybrid and layered, and turns itself on automatically. The core is a
-dependency-free TF-IDF cosine retriever (always on, deterministic). When a local model is
-reachable, semantic embeddings and LLM query-expansion enable by themselves (embeddings build
-in a background thread and cache to disk, so nothing blocks); with no model it stays TF-IDF.
-The best installed embedder is auto-selected (bge-m3 multilingual > nomic-embed-text > the LLM
-itself) - bge-m3 is recommended because it matches Spanish queries against English content far
-better. Reranking stays opt-in (heaviest layer).
-
-Override anything with env vars or the dashboard's "RAG" toggle (persisted):
-
-```bash
-export BINORACLE_RAG_AUTO=0      # disable the automatic behaviour (pure TF-IDF)
-export BINORACLE_RAG_EMBED=1     # force semantic embeddings on/off
-export BINORACLE_EMBED_MODEL=bge-m3   # force a specific embedder (else auto-selected)
-export BINORACLE_RAG_EXPAND=1    # LLM query expansion (related technical terms)
-export BINORACLE_RAG_RERANK=1    # LLM reranking of the candidate pool
-export BINORACLE_RAG_FULL=1      # force all three on
+```json
+// claude_desktop_config.json
+{
+  "mcpServers": {
+    "binoracle": {
+      "command": "binoracle",
+      "args": ["mcp-server"]
+    }
+  }
+}
 ```
 
-`binoracle doctor` (and the web dashboard's Estado) print the active RAG mode.
+Selected tools: `triage`, `pwn`, `rop_chain`, `heap_exploit`, `fmt_exploit`, `decompile`, `cve_investigate`, `vuln_hunt`, `iocscan`, `hardening`, `audit`, `reachability`, `diff_patch`, `elf_layout`, `pe_inspect`, `apk_audit`, `dotnet_inspect`, `wasm_inspect`, `sqlite_audit`, `evm_inspect`, `fuzz`, `dynamic_trace`, `coredump`, `burp_mcp`, `jeb_connect` …
 
-One-shot manager (give it a `.c` source or a binary, get the full verified report):
+---
 
-```bash
-binoracle analyze ./chall.c                # compiles, analyzes, verifies, writes HTML
-binoracle analyze ./chall  -o report.html
+## CLI Reference
+
+```
+binoracle <command> [options]
 ```
 
-Local web dashboard (metrics, mitigation grid, all commands, file upload):
+| Command | Description |
+|---------|-------------|
+| `triage` | Static facts: mitigations, symbols, imports, sections |
+| `decompile` | Multi-engine decompilation with LLM annotation |
+| `pwn` | Full auto-exploit chain (chooses technique automatically) |
+| `rop` | ROP gadget search + chain synthesis |
+| `chain` | Chain analyzer: finds gadgets, generates pwntools script |
+| `heap` | Heap exploit primitives (tcache/fastbin/UAF/HoF…) |
+| `fmt` | Format string exploitation |
+| `srop` | SROP chain generator |
+| `shellcode` | Shellcode generator with bad-char scrubbing |
+| `fuzz` | Dumb + smart fuzzer (AFL integration) |
+| `dynamic` | Dynamic trace: strace, ltrace, gdb automation |
+| `hardening` | Mitigations + bypass paths |
+| `cve` | Investigate a CVE end-to-end |
+| `cve-batch` | Batch CVE investigation (parallel) |
+| `vuln-hunt` | Static vulnerability hunting (sinks, sources, taint) |
+| `ioc-scan` | IOC / malware indicators scan |
+| `audit` | Full security audit (all oracles + LLM synthesis) |
+| `reachability` | Reachability analysis (source → sink) |
+| `diff` | Patch diff / N-day analysis |
+| `apk` | Android APK full audit |
+| `dotnet` | .NET assembly inspection |
+| `wasm` | WASM module inspection |
+| `sqlite` | SQLite database audit |
+| `evm` | EVM bytecode inspection |
+| `mcp-server` | Start MCP server |
+| `web` | Start web UI (localhost) |
 
-```bash
-binoracle serve            # http://127.0.0.1:8765 (localhost only)
-```
-
-n-day / regression:
-
-```bash
-binoracle diff ./old ./new -o diff.md   # radiff2-grounded patch diff + LLM fix analysis
-binoracle report ./target -o out.md     # full grounded markdown report from the session
-binoracle view ./target                 # interactive HTML report, opens in the browser
-binoracle hunt ./target --html out.html # any command can also emit the HTML report
-```
-
-Sessions (facts, annotations, findings) are stored per-binary in a local SQLite DB under
-`.binoracle/` so a re-run is incremental.
-
-## AI analysis and language
-
-When a local model is up, `binoracle view` and `binoracle hunt` add an **AI layer** on top
-of the grounded findings:
-
-- a professional **executive summary** for a CISO, and
-- per finding, a structured write-up (Description / Impact / Exploitation path / Remediation).
-
-This layer is constrained: it writes the human-facing prose but **cannot change the
-code-assigned verdict or severity**, and it is told not to claim exploitability beyond what
-the verdict allows. Evidence stays the raw tool output. So the AI makes the report readable
-and complete without introducing false positives.
-
-Language is controlled by `BINORACLE_LANG` (default `es`; `en` also supported), and the HTML
-report has a live ES/EN toggle and a light/dark toggle.
-
-```bash
-BINORACLE_LANG=es binoracle view ./target        # Spanish, verified findings, AI narrative
-BINORACLE_LANG=en binoracle hunt ./target --html report.html
-```
+---
 
 ## Architecture
 
 ```
-        binoracle ask/hunt/chat
-                 |
-                 v
-        +--------------------+        proposes tool calls
-        |    AGENT LOOP      |  <---------------------------.
-        | hypothesis->verify |                              |
-        +---------+----------+                              |
-                  | executes only registered oracle tools   |
-                  v                                          |
-   +----------------------------+     grounded facts     +--+--------------+
-   |          ORACLES           |----------------------->|   LOCAL LLM     |
-   | r2 | elf | angr | debugger |                        | (Ollama /       |
-   +-------------+--------------+                         |  OpenAI-compat) |
-                 |                                        +-----------------+
-                 v
-        +--------------------+
-        |   SESSION STORE    |  SQLite: facts, annotations, verified findings
-        +--------------------+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         binoracle                                    │
+│                                                                     │
+│  CLI (50+ cmds)   MCP Server (~100 tools)   Web UI                  │
+│        │                  │                   │                     │
+│        └──────────────────┴──────────────────┘                      │
+│                           │                                          │
+│              ┌────────────▼────────────┐                            │
+│              │      Workflow Layer      │                            │
+│              │  cve_agent · autopwn     │                            │
+│              │  chainanalyzer · rop     │                            │
+│              │  heap · fmt · srop       │                            │
+│              └────────────┬────────────┘                            │
+│                           │                                          │
+│         ┌─────────────────┼──────────────────┐                      │
+│         │                 │                   │                      │
+│  ┌──────▼──────┐  ┌───────▼──────┐  ┌────────▼────────┐           │
+│  │  Oracle     │  │  LLM Bridge  │  │  Docker / Lab   │           │
+│  │  Layer      │  │  (Ollama /   │  │  Scaffolder     │           │
+│  │  radare2    │  │   OpenAI API)│  │  (pip/gem/npm/  │           │
+│  │  pyelftools │  └──────────────┘  │   maven/php/    │           │
+│  │  angr       │                    │   wp/joomla/    │           │
+│  │  pwntools   │                    │   httpd)        │           │
+│  │  pefile     │                    └─────────────────┘           │
+│  │  jadx       │                                                    │
+│  └─────────────┘                                                    │
+│                                                                     │
+│  Local model: Qwen 2.5 Coder 7B via Ollama (zero cloud calls)       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-Key rule enforced in `agent/grounding.py`: a statement about the binary that is not
-attributable to an oracle result is flagged `[UNVERIFIED]` in the output.
+---
 
-## Scope and ethics
+## Reports
 
-This is a research and CTF tool. Use it on binaries you are authorized to analyze: your
-own software, CTF challenges, malware in a lab, and targets covered by an authorized
-engagement. It does not ship weaponized exploits against third-party systems; it helps you
-understand a binary and reason about exploitation primitives on targets you are allowed to
-work on.
+Every investigation produces a **professional HTML report** with:
 
-## Layout
+- Executive summary with CVSS score and severity badge
+- LLM hypothesis and reasoning chain
+- Lab scaffold and configuration
+- Playwright screenshots at every verification step
+- Full PoC code (curl / Python / pwntools)
+- Remediation recommendations (concrete, actionable, in English and Spanish)
 
+```bash
+# Open the last report
+binoracle cve CVE-2025-27516 --open-report
+
+# Output to specific directory
+binoracle cve CVE-2025-27516 --out ./reports/
 ```
-binoracle/
-  llm/         local model backends (Ollama, OpenAI-compatible), tool-call protocol
-  oracles/     ground-truth analyzers:
-               static_r2      (radare2: info, imports, disasm, xrefs, sinks, checksec,
-                               rop gadgets, gift-function finder, stack frames)
-               elf_meta       (pyelftools + stdlib fallback: header, checksec, GOT/PLT,
-                               relocations, symbols)
-               exploit_helpers(pure-stdlib: De Bruijn cyclic, fmtstr offset, badchars)
-               symbolic_angr  (reachability proofs + concrete inputs, optional)
-               dynamic_dbg    (lldb/gdb: run + observe real crashes, opt-in)
-  agent/       the grounded hypothesis/verification loop, tool schema, prompts
-  store/       SQLite session persistence
-  workflows/   triage, vuln hunt, function explanation
-  report/      markdown rendering
-  cli.py       command line entrypoint
+
+---
+
+## Practice Corpus
+
+binoracle ships 40+ intentionally vulnerable binaries for local practice:
+
+```bash
+# Compile the corpus (needs Docker or gcc)
+samples/build.sh
+
+# Work through the guided tutorial
+binoracle triage samples/bin/ret2win
+binoracle pwn samples/bin/ret2libc
+binoracle pwn samples/bin/format_string
+# → see docs/TUTORIAL.md for the full walkthrough
 ```
+
+Techniques covered: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, format string GOT overwrite, canary leak, PIE leak, CSU chain, DL-resolve, heap botcake, house-of-orange, unsafeunlink, stack pivot, IO\_FILE, callhijack, dlresolve32 …
+
+---
+
+## Installation
+
+### From PyPI
+
+```bash
+pip install binoracle
+```
+
+### From source
+
+```bash
+git clone https://github.com/beafn28/binoracle
+cd binoracle
+pip install -e ".[all]"
+```
+
+### Optional dependencies
+
+```bash
+pip install binoracle[elf]        # ELF deep analysis (pyelftools extras)
+pip install binoracle[pwn]        # pwntools + ROPgadget
+pip install binoracle[symbolic]   # angr symbolic execution
+pip install binoracle[web]        # web UI
+pip install binoracle[screenshots] # Playwright screenshots in CVE reports
+pip install binoracle[all]        # everything
+```
+
+### System requirements
+
+| Requirement | Minimum | Recommended |
+|------------|---------|-------------|
+| Python | 3.10 | 3.12 |
+| RAM | 8 GB | 16 GB |
+| Docker | 20.x | 25.x |
+| Ollama | 0.3 | latest |
+| GPU | — | 8 GB VRAM (Qwen 7B) |
+
+---
+
+## Configuration
+
+```bash
+# LLM backend (Ollama — recommended)
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+
+# Or cloud (OpenAI-compatible)
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=https://api.openai.com/v1
+export BINORACLE_API_KEY=sk-...
+export BINORACLE_MODEL=gpt-4o-mini
+
+# Report language
+export BINORACLE_LANG=en   # or "es" (default: "es")
+```
+
+---
+
+## Comparison with REA
+
+| Feature | binoracle | REA |
+|---------|-----------|-----|
+| Local LLM (Ollama) | ✓ | ✗ |
+| CVE → Docker lab → verified PoC | ✓ | ✗ |
+| Playwright screenshots in reports | ✓ | ✗ |
+| WordPress / Joomla / Drupal labs | ✓ | ✗ |
+| ret2win / ret2libc / SROP | ✓ | ✓ |
+| Heap attacks (tcache/fastbin/UAF/HoX) | ✓ | ✓ |
+| Format string exploitation | ✓ | ✓ |
+| ROP chain synthesis | ✓ | ✓ |
+| MCP server | ✓ | ✗ |
+| Practice corpus (40+ binaries) | ✓ | ✓ |
+| APK / .NET / WASM / EVM | ✓ | partial |
+| 100% offline | ✓ | partial |
+
+---
+
+## Roadmap
+
+- [ ] Kernel exploit chains (ret2usr, UAF in drivers)
+- [ ] Firmware analysis (UEFI, embedded Linux)
+- [ ] Active fuzzing integration (LibFuzzer corpus seeding from CVE PoCs)
+- [ ] Multi-CVE chaining (pivot from web RCE to privesc)
+- [ ] CVSS v4 scoring
+- [ ] Burp Suite MCP bridge (live request replay)
+- [ ] JEB decompiler integration (Android native)
+- [ ] Fine-tuned model for binoracle hypotheses
+
+---
+
+## Contributing
+
+```bash
+git clone https://github.com/beafn28/binoracle
+cd binoracle
+pip install -e ".[all]"
+pre-commit install
+```
+
+Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## License
+
+MIT © 2024–2025 Beatriz Fresno Naumova
+
+---
+
+<div align="center">
+
+**binoracle** — built for DEF CON Arsenal
+
+[Docs](https://beafn28.github.io/binoracle/) · [Issues](https://github.com/beafn28/binoracle/issues) · [Twitter / X](https://x.com/beafn28)
+
+</div>

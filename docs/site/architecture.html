@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Architecture — binoracle</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="binoracle architecture: three planes — static readers, analysis/arsenal, exploit engine.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .arch-box {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      background: var(--bg2);
+      position: relative;
+    }
+    .arch-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .plane {
+      border: 2px solid var(--border);
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .plane-label {
+      position: absolute;
+      top: -12px;
+      left: 20px;
+      background: var(--bg);
+      padding: 2px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 20px;
+    }
+    .plane-blue { border-color: rgba(88,166,255,0.3); }
+    .plane-green { border-color: rgba(63,185,80,0.3); }
+    .plane-green .plane-label { color: var(--green); border-color: var(--green); }
+    .plane-purple { border-color: rgba(188,140,255,0.3); }
+    .plane-purple .plane-label { color: var(--purple); border-color: var(--purple); }
+    .module-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .module-chip {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--fg);
+    }
+    .layer-arrow {
+      text-align: center;
+      color: var(--border);
+      font-size: 24px;
+      margin: 4px 0;
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a class="nav-brand" href="index.html">
+    <span class="nav-dot"></span>binoracle
+  </a>
+  <ul class="nav-links">
+    <li><a href="index.html">Home</a></li>
+    <li><a href="cve-engine.html">CVE Engine</a></li>
+    <li><a href="binary-re.html">Binary RE</a></li>
+    <li><a href="architecture.html" class="active">Architecture</a></li>
+    <li><a href="https://github.com/beafn28/binoracle" target="_blank">GitHub ↗</a></li>
+  </ul>
+</nav>
+
+<div class="container" style="padding-top:48px;padding-bottom:80px;">
+
+  <div class="mb-8">
+    <h4>Documentation</h4>
+    <h1 class="mt-2">Architecture</h1>
+    <p class="text-muted mt-4" style="font-size:17px;max-width:650px;">
+      Three clearly separated planes: static readers, analysis/arsenal, and execution-verified exploit engine.
+      A CVE layer on top. Three interfaces at the bottom.
+    </p>
+  </div>
+
+  <!-- Three planes -->
+  <h2 class="mb-4">Three Planes</h2>
+
+  <div style="max-width:800px;">
+    <!-- Plane 1: Static readers -->
+    <div class="plane plane-blue">
+      <div class="plane-label">Plane 1 — Static Readers</div>
+      <p class="text-muted" style="font-size:13px;">Identify the format and extract facts. Never execute the target.</p>
+      <div class="module-row">
+        <span class="module-chip">elf_reader</span>
+        <span class="module-chip">pe_reader</span>
+        <span class="module-chip">macho_reader</span>
+        <span class="module-chip">apk_reader</span>
+        <span class="module-chip">flutter_reader</span>
+        <span class="module-chip">dotnet_reader</span>
+        <span class="module-chip">js_reader</span>
+        <span class="module-chip">wasm_reader</span>
+        <span class="module-chip">sqlite_reader</span>
+        <span class="module-chip">evm_reader</span>
+        <span class="module-chip">secrets_scanner</span>
+      </div>
+    </div>
+
+    <div class="layer-arrow">↓</div>
+
+    <!-- Plane 2: Analysis -->
+    <div class="plane plane-purple">
+      <div class="plane-label">Plane 2 — Analysis / Arsenal</div>
+      <p class="text-muted" style="font-size:13px;">Reason over static facts. Build ROP chains, identify primitives, map attack surface.</p>
+      <div class="module-row">
+        <span class="module-chip">chain_analyzer</span>
+        <span class="module-chip">rop_arsenal</span>
+        <span class="module-chip">gadget_finder</span>
+        <span class="module-chip">primitive_detector</span>
+        <span class="module-chip">surface_mapper</span>
+        <span class="module-chip">nativequery</span>
+        <span class="module-chip">nativesession</span>
+        <span class="module-chip">rag_kb</span>
+      </div>
+    </div>
+
+    <div class="layer-arrow">↓</div>
+
+    <!-- Plane 3: Exploit engine -->
+    <div class="plane plane-green">
+      <div class="plane-label">Plane 3 — Exploit Engine (execution-verified)</div>
+      <p class="text-muted" style="font-size:13px;">Build and confirm exploits. Runs in an isolated sandbox. Only marks VERIFIED with real shell.</p>
+      <div class="module-row">
+        <span class="module-chip">autopwn</span>
+        <span class="module-chip">autopoc</span>
+        <span class="module-chip">autoheap</span>
+        <span class="module-chip">autoheap_shell</span>
+        <span class="module-chip">autopie_rop</span>
+        <span class="module-chip">verify_chain</span>
+        <span class="module-chip">run_driver</span>
+        <span class="module-chip">sandbox (docker|native)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CVE engine -->
+  <h2 class="mb-4" style="margin-top:48px;">CVE Engine Layer</h2>
+  <div style="max-width:800px;">
+    <div class="arch-box mb-4">
+      <div class="arch-label">CVE pipeline (wraps all three planes)</div>
+      <div class="module-row">
+        <span class="module-chip">nvd_fetcher</span>
+        <span class="module-chip">cve_agent (Qwen 2.5)</span>
+        <span class="module-chip">lab scaffolds</span>
+        <span class="module-chip">exploit_runner</span>
+        <span class="module-chip">report_generator</span>
+        <span class="module-chip">playwright_screenshots</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interfaces -->
+  <h2 class="mb-4" style="margin-top:48px;">Interfaces</h2>
+  <div class="grid grid-3 mb-8">
+    <div class="card">
+      <h3>CLI</h3>
+      <p class="text-muted mt-2" style="font-size:13px;">50+ subcommands. Everything accessible from the terminal. <code>binoracle &lt;cmd&gt; --help</code> for each.</p>
+      <div class="mt-4 text-muted" style="font-size:12px;font-family:'JetBrains Mono',monospace;">binoracle investigate …<br>binoracle autopwn …<br>binoracle elf …<br>binoracle serve</div>
+    </div>
+    <div class="card">
+      <h3>MCP Server</h3>
+      <p class="text-muted mt-2" style="font-size:13px;">~100 tools over JSON-RPC stdio. Connect to Claude Desktop, VS Code, or any MCP client.</p>
+      <div class="mt-4 text-muted" style="font-size:12px;font-family:'JetBrains Mono',monospace;">binoracle mcp</div>
+    </div>
+    <div class="card">
+      <h3>Web UI</h3>
+      <p class="text-muted mt-2" style="font-size:13px;">Local web interface at <code>http://127.0.0.1:8080</code>. API at <code>POST /api/run</code>.</p>
+      <div class="mt-4 text-muted" style="font-size:12px;font-family:'JetBrains Mono',monospace;">binoracle serve</div>
+    </div>
+  </div>
+
+  <!-- Sandbox -->
+  <h2 class="mb-4">Sandbox</h2>
+  <div class="grid grid-2 mb-8">
+    <div class="card">
+      <h3>Docker sandbox</h3>
+      <p class="text-muted mt-2" style="font-size:13px;">Preferred. Uses <code>binoracle-pwn</code> Docker image (Python + pwntools + one_gadget). Deterministic, portable.</p>
+      <div class="code-block mt-4">
+        <div class="code-block-header"><div class="code-block-dots"><span class="dot-red"></span><span class="dot-yellow"></span><span class="dot-green"></span></div><span>build once</span></div>
+        <pre style="padding:12px;font-size:12px;">make pwn-image</pre>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Native sandbox</h3>
+      <p class="text-muted mt-2" style="font-size:13px;">Fallback on Linux x86-64 when Docker is absent. User + network namespace (<code>unshare -rn</code>), ASLR off (<code>setarch -R</code>), resource limits (CPU/memory/pids).</p>
+      <p class="text-muted mt-2" style="font-size:13px;">Result records which engine verified: <code>docker</code> or <code>native</code>.</p>
+    </div>
+  </div>
+
+  <!-- LLM backends -->
+  <h2 class="mb-4">LLM Backends</h2>
+  <table class="mb-8">
+    <thead>
+      <tr>
+        <th>Backend</th>
+        <th>Config</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Ollama</strong> (default)</td>
+        <td><code>BINORACLE_BACKEND=ollama</code></td>
+        <td>Runs Qwen 2.5 Coder 7B locally. Best tested. Free.</td>
+      </tr>
+      <tr>
+        <td><strong>llama.cpp</strong></td>
+        <td><code>BINORACLE_BACKEND=llamacpp</code></td>
+        <td>OpenAI-compatible server. Fast on CPU/Metal/CUDA.</td>
+      </tr>
+      <tr>
+        <td><strong>LM Studio</strong></td>
+        <td><code>BINORACLE_BACKEND=openai</code></td>
+        <td>OpenAI-compatible endpoint at any URL.</td>
+      </tr>
+      <tr>
+        <td><strong>vLLM</strong></td>
+        <td><code>BINORACLE_BACKEND=openai</code></td>
+        <td>High-throughput inference server.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Source layout -->
+  <h2 class="mb-4">Source Layout</h2>
+  <div class="code-block">
+    <div class="code-block-header">
+      <div class="code-block-dots"><span class="dot-red"></span><span class="dot-yellow"></span><span class="dot-green"></span></div>
+      <span>repository</span>
+    </div>
+    <pre>binoracle/
+├── binoracle/              <span style="color:var(--muted)"># main package</span>
+│   ├── workflows/
+│   │   ├── cve_agent.py    <span style="color:var(--muted)"># CVE pipeline + Qwen integration</span>
+│   │   └── ...
+│   ├── exploit_engine/     <span style="color:var(--muted)"># all exploit families</span>
+│   ├── static_readers/     <span style="color:var(--muted)"># ELF, PE, APK, ... readers</span>
+│   ├── mcp_server/         <span style="color:var(--muted)"># ~100 MCP tools</span>
+│   ├── web/                <span style="color:var(--muted)"># web UI + /api/run</span>
+│   └── kb/                 <span style="color:var(--muted)"># knowledge base + verified playbook</span>
+├── samples/
+│   ├── src/                <span style="color:var(--muted)"># exploit sample sources (*.c)</span>
+│   └── build.sh            <span style="color:var(--muted)"># compile all samples</span>
+├── tests/
+│   ├── test_smoke.py       <span style="color:var(--muted)"># all exploit families + readers</span>
+│   ├── test_tools_and_config.py
+│   └── test_autoheap.py
+├── docs/                   <span style="color:var(--muted)"># documentation + GitHub Pages site</span>
+├── reports/                <span style="color:var(--muted)"># generated CVE reports</span>
+├── docker-compose.yml
+└── pyproject.toml</pre>
+  </div>
+
+</div>
+
+<footer>
+  <div class="footer-inner">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:8px;">
+        <span class="nav-dot"></span>binoracle
+      </div>
+      <div class="text-muted">Architecture Documentation</div>
+    </div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;">
+      <a href="index.html">Home</a>
+      <a href="cve-engine.html">CVE Engine</a>
+      <a href="binary-re.html">Binary RE</a>
+      <a href="https://github.com/beafn28/binoracle">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
