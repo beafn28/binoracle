@@ -1875,6 +1875,11 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     pkg = _JS_ALIASES.get(pkg, pkg)
 
     lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
+    # Limpiar el directorio si ya existe para evitar que ficheros de versiones anteriores
+    # (p.ej. package.json con next@12.3.0 de una run previa) contaminen el nuevo lab.
+    import shutil as _shutil
+    if _os.path.isdir(lab_dir):
+        _shutil.rmtree(lab_dir)
     _os.makedirs(lab_dir, exist_ok=True)
 
     # Sanitize version: strip operator prefixes and compound ranges, keep only the
@@ -1884,12 +1889,17 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     _semver_tok = re.search(r'v?([0-9]+(?:\.[0-9]+){1,4})', _raw_ver)
     _first_ver = _semver_tok.group(1) if _semver_tok else ""
 
-    # Next.js CVE-2025-29927: middleware was introduced in Next.js 12. If the inferred
-    # version is below 12 (e.g. "1.11.4" = the "starting affected" anchor, not a usable
-    # lab version), fall back to 12.3.4, the last vulnerable 12.x version, which
-    # has full middleware support and is confirmed to start quickly in dev mode.
+    # CVE-2025-29927 (x-middleware-subrequest bypass) affects Next.js 11.1.4-15.2.3.
+    # The x-middleware-subrequest header mechanism was introduced in Next.js 13.x and the
+    # bypass works in 13.x/14.x/15.x. Using 12.x gives wrong results because the header
+    # is NOT processed the same way. Force 15.2.2 (last vulnerable 15.x) for
+    # missing-authorization labs so the bypass check always targets the right code path.
     _is_nextjs = "next" in pkg
-    if _is_nextjs and _first_ver:
+    if _is_nextjs and vuln_class in ("missing-authorization", "auth-bypass"):
+        _first_ver = "15.2.2"
+        on_step(("version forzada a 15.2.2 para lab de bypass de middleware Next.js "
+                 "(x-middleware-subrequest solo funciona en Next.js 13+/15.x)"))
+    elif _is_nextjs and _first_ver:
         _major = int(_first_ver.split(".")[0])
         if _major < 12:
             _first_ver = "12.3.4"
