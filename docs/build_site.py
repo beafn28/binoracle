@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """Build the binoracle GitHub Pages site."""
-import os, shutil, textwrap
+import os, re, shutil, textwrap
 import markdown as md
 
 SITE = os.path.join(os.path.dirname(__file__), "site")
 DOCS = os.path.dirname(__file__)
 ROOT = os.path.dirname(DOCS)
 
-PAGES = [
-    ("README.es.md", "index-es.html", "binoracle — documentación en español"),
-    (os.path.join(ROOT, "ROADMAP.md"), "roadmap.html", "Roadmap — binoracle"),
-]
+PAGES = []  # Pages are written as custom HTML functions; no markdown-to-HTML conversion needed
 # Tutorial is generated inline (no source .md needed)
 GEN_PAGES = ["tutorial.html", "tutorial-es.html"]
 
@@ -86,6 +83,10 @@ body {
 .nav-links a:hover, .nav-links a.active { color: var(--tx); }
 .nav-gh { display: flex; align-items: center; gap: .4rem; padding: .35rem .85rem; background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px; color: var(--tx); text-decoration: none; font-size: .85rem; transition: border-color .15s; }
 .nav-gh:hover { border-color: var(--acc); }
+.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; }
+.nav-lang span { padding: .3rem .6rem; background: var(--surf2); color: var(--tx); }
+.nav-lang a { padding: .3rem .6rem; color: var(--muted); text-decoration: none; transition: all .15s; }
+.nav-lang a:hover { color: var(--tx); background: var(--surf); }
 
 /* HERO */
 .hero {
@@ -226,9 +227,11 @@ body {
 .doc-content h1 { font-size: 2rem; font-weight: 800; margin-bottom: .5rem; color: var(--tx); }
 .doc-content h2 { font-size: 1.3rem; font-weight: 700; margin: 2rem 0 .75rem; padding-bottom: .4rem; border-bottom: 1px solid var(--brd); color: var(--tx); }
 .doc-content h3 { font-size: 1.05rem; font-weight: 700; margin: 1.5rem 0 .5rem; color: var(--tx); }
-.doc-content p { margin-bottom: 1rem; color: var(--tx); line-height: 1.65; }
-.doc-content ul, .doc-content ol { margin: .5rem 0 1rem 1.5rem; color: var(--tx); }
-.doc-content li { margin-bottom: .3rem; }
+.doc-content p { margin-bottom: 1.1rem; color: var(--tx); line-height: 1.7; }
+.doc-content ul, .doc-content ol { margin: .75rem 0 1.25rem 1.75rem; color: var(--tx); }
+.doc-content li { margin-bottom: .5rem; line-height: 1.65; }
+.doc-content hr { border: none; border-top: 1px solid var(--brd); margin: 2rem 0; }
+.doc-content del { text-decoration: line-through; color: var(--muted); }
 .doc-content code { background: var(--surf2); padding: .15em .4em; border-radius: 4px; font-size: .88em; color: var(--code); font-family: monospace; }
 .doc-content pre { background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r); padding: 1rem 1.25rem; overflow-x: auto; margin: 1rem 0; }
 .doc-content pre code { background: none; padding: 0; color: var(--tx); font-size: .88rem; }
@@ -240,19 +243,102 @@ body {
 .doc-content a { color: var(--acc); }
 .doc-content a:hover { text-decoration: underline; }
 
+/* ROADMAP PAGE */
+.rm-hero {
+  text-align: center; padding: 3rem 2rem 2rem;
+  background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(31,107,235,.1), transparent);
+}
+.rm-hero h1 { font-size: 2.2rem; font-weight: 800; margin-bottom: .5rem; color: var(--tx); }
+.rm-hero p { color: var(--muted); max-width: 580px; margin: 0 auto .5rem; font-size: .95rem; }
+.rm-principles { display: flex; gap: .9rem; flex-wrap: wrap; justify-content: center; margin-top: 1.25rem; }
+.rm-principle {
+  background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r);
+  padding: .85rem 1.1rem; font-size: .88rem; color: var(--muted); max-width: 310px; text-align: left;
+}
+.rm-principle strong { color: var(--acc); display: block; margin-bottom: .25rem; font-size: .9rem; }
+.rm-effort-legend {
+  display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-top: 1.1rem; font-size: .8rem; color: var(--muted);
+}
+.rm-effort-legend span { display: flex; align-items: center; gap: .4rem; }
+.rm-timeline { max-width: 900px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+.rm-card { border: 1px solid var(--brd); border-radius: 10px; overflow: hidden; margin-bottom: 1.5rem; background: var(--surf); }
+.rm-card-header {
+  display: flex; align-items: center; gap: 1rem; padding: 1rem 1.5rem;
+  background: var(--surf2); border-bottom: 1px solid var(--brd);
+}
+.rm-badge {
+  font-size: .7rem; font-weight: 700; padding: .25rem .65rem;
+  border-radius: 20px; white-space: nowrap; letter-spacing: .05em; text-transform: uppercase;
+}
+.rm-badge.version { background: rgba(88,166,255,.15); color: var(--acc); border: 1px solid rgba(88,166,255,.3); }
+.rm-badge.ongoing { background: rgba(210,153,34,.15); color: var(--yel); border: 1px solid rgba(210,153,34,.3); }
+.rm-badge.scope { background: rgba(139,148,158,.12); color: var(--muted); border: 1px solid var(--brd); }
+.rm-card-title { font-size: 1.05rem; font-weight: 700; color: var(--tx); }
+.rm-card-body { padding: 1.25rem 1.5rem; }
+.rm-desc { font-size: .9rem; color: var(--muted); margin-bottom: 1rem; line-height: 1.55; }
+.rm-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: .6rem; }
+.rm-item {
+  display: flex; align-items: flex-start; gap: .6rem;
+  background: var(--bg); border: 1px solid var(--brd); border-radius: 7px; padding: .6rem .9rem; font-size: .86rem;
+}
+.rm-item-effort {
+  font-size: .67rem; font-weight: 700; padding: .15rem .45rem; border-radius: 4px;
+  white-space: nowrap; flex-shrink: 0; margin-top: .1rem; letter-spacing: .03em;
+}
+.rm-eff-s { background: rgba(63,185,80,.15); color: var(--grn); }
+.rm-eff-m { background: rgba(88,166,255,.15); color: var(--acc); }
+.rm-eff-l { background: rgba(188,140,255,.15); color: var(--pur); }
+.rm-item-name { color: var(--tx); line-height: 1.45; }
+
 @media (max-width: 700px) {
   .nav-links { display: none; }
   .hero h1 { font-size: 2.2rem; }
   .table-pair { grid-template-columns: 1fr; }
   .doc-layout { flex-direction: column; }
   .doc-sidebar { width: 100%; position: static; height: auto; border-right: none; border-bottom: 1px solid var(--brd); }
+  .rm-timeline { padding: 1rem; }
+  .rm-items { grid-template-columns: 1fr; }
 }
+/* WIKI SIDEBAR */
+.wiki-lang { display: flex; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .78rem; font-weight: 700; margin-bottom: 1.25rem; }
+.wiki-lang .active-lang { padding: .3rem .65rem; background: var(--surf2); color: var(--tx); }
+.wiki-lang a { padding: .3rem .65rem; color: var(--muted); text-decoration: none; transition: all .15s; }
+.wiki-lang a:hover { color: var(--tx); background: var(--surf); }
+.sidebar-section { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: .9rem 0 .4rem; padding: 0 .5rem; }
+.sidebar-sep { border: none; border-top: 1px solid var(--brd); margin: .9rem 0; }
+.doc-sidebar a.active { color: var(--acc) !important; background: rgba(88,166,255,.08); }
+.doc-sidebar .toc ul { list-style: none; padding: 0; margin: 0; }
+.doc-sidebar .toc li { margin: 0; }
+.doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
+.doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
+.page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
+.doc-callout{border-radius:var(--r);padding:.75rem 1.1rem;margin:1.1rem 0;border-left:3px solid var(--acc);background:rgba(88,166,255,.07);font-size:.9rem}
+.doc-callout.warn{border-color:var(--yel);background:rgba(210,153,34,.07)}
+.doc-callout.tip{border-color:var(--grn);background:rgba(63,185,80,.07)}
+.doc-callout.danger{border-color:var(--red);background:rgba(248,81,73,.07)}
+.doc-callout strong{color:inherit}
+.doc-pipeline{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem 1.5rem;margin:1rem 0;overflow-x:auto;font-family:'Courier New',monospace;font-size:.82rem;line-height:1.8;color:var(--code);white-space:pre}
+.cmp-yes{color:var(--grn);font-weight:600}
+.cmp-partial{color:var(--yel);font-weight:600}
+.cmp-no{color:var(--muted)}
+.doc-metrics{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0 1.5rem}
+.doc-metric{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:.9rem 1.25rem;text-align:center;min-width:120px}
+.doc-metric .metric-value{font-size:1.8rem;font-weight:800;color:var(--acc);line-height:1.1}
+.doc-metric .metric-label{font-size:.75rem;color:var(--muted);margin-top:.25rem}
+.doc-two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1rem 0}
+.doc-two-col>div{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem}
+.doc-two-col h4{font-size:.85rem;font-weight:700;color:var(--acc);margin-bottom:.75rem;padding-bottom:.4rem;border-bottom:1px solid var(--brd);text-transform:uppercase;letter-spacing:.06em}
+.doc-badge{display:inline-block;font-size:.72rem;font-weight:700;padding:.2rem .55rem;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;margin:.1rem}
+.doc-badge.green{background:rgba(63,185,80,.15);color:var(--grn);border:1px solid rgba(63,185,80,.3)}
+.doc-badge.blue{background:rgba(88,166,255,.15);color:var(--acc);border:1px solid rgba(88,166,255,.3)}
+.doc-badge.yellow{background:rgba(210,153,34,.15);color:var(--yel);border:1px solid rgba(210,153,34,.3)}
+@media(max-width:700px){{.doc-two-col{{grid-template-columns:1fr}}.doc-metrics{{gap:.6rem}}}}
 """
 
 # ---------------------------------------------------------------------------
 # HTML building blocks
 # ---------------------------------------------------------------------------
-def nav(current="index"):
+def nav(current="index", lang_other=None):
     links = [
         ("index", "index.html", "Home"),
         ("docs", "index-es.html", "Docs"),
@@ -263,6 +349,11 @@ def nav(current="index"):
     for key, href, label in links:
         cls = ' class="active"' if key == current else ""
         items += f'<a href="{href}"{cls}>{label}</a>\n'
+    lang_html = ''
+    if lang_other:
+        alt_label, alt_href = lang_other
+        cur_label = "ES" if alt_label == "EN" else "EN"
+        lang_html = f'<div class="nav-lang"><span>{cur_label}</span><a href="{alt_href}">{alt_label}</a></div>'
     return f"""
 <nav class="nav">
   <a class="nav-brand" href="index.html">
@@ -271,6 +362,7 @@ def nav(current="index"):
   </a>
   <div class="nav-links">
     {items}
+    {lang_html}
     <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
       {ico('github')} GitHub
     </a>
@@ -281,7 +373,7 @@ def footer():
     return """
 <footer>
   <div class="footer">
-    <span>MIT &copy; 2024&ndash;2025 Beatriz Fresno Naumova</span>
+    <span>MIT &copy; 2024&ndash;2026 Beatriz Fresno Naumova</span>
     <div class="footer-links">
       <a href="index.html">Home</a>
       <a href="roadmap.html">Roadmap</a>
@@ -291,7 +383,7 @@ def footer():
   </div>
 </footer>"""
 
-def shell(title, current, body):
+def shell(title, current, body, lang_other=None):
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -302,38 +394,172 @@ def shell(title, current, body):
 <style>{CSS}</style>
 </head>
 <body>
-{nav(current)}
+{nav(current, lang_other)}
 {body}
 {footer()}
 </body>
 </html>"""
 
 # ---------------------------------------------------------------------------
-# Landing page
+# Wiki sidebar — shared across all documentation pages
+# ---------------------------------------------------------------------------
+def wiki_sidebar(current, lang="en"):
+    section_map = {
+        "index": [
+            ("#overview",      "Overview"),
+            ("#quick-start",   "Quick Start"),
+            ("#two-pipelines", "Two Pipelines"),
+            ("#cve-engine",    "CVE Engine"),
+            ("#binary-re",     "Binary RE Engine"),
+            ("#reports",       "Reports"),
+            ("#mcp-server",    "MCP Integration"),
+            ("#cli-reference", "CLI Reference"),
+            ("#installation",  "Installation"),
+            ("#configuration", "Configuration"),
+            ("#comparison",    "Comparison"),
+            ("#roadmap",       "Roadmap"),
+        ],
+        "docs": [
+            ("#descripcion",    "Descripción"),
+            ("#instalacion",    "Instalación"),
+            ("#dos-motores",    "Dos motores"),
+            ("#motor-cve",      "Motor CVE"),
+            ("#motor-re-binario","Motor RE Binario"),
+            ("#informes",       "Informes"),
+            ("#integracion-mcp","Integración MCP"),
+            ("#referencia-comandos","Referencia CLI"),
+            ("#arquitectura",   "Arquitectura"),
+            ("#corpus",         "Corpus"),
+            ("#configuracion",  "Configuración"),
+            ("#comparacion",    "Comparación"),
+            ("#hoja-ruta",      "Hoja de ruta"),
+        ],
+        "tutorial": (
+            [
+                ("#overview",  "Overview"),
+                ("#install",   "Installation"),
+                ("#configure", "Configuration"),
+                ("#cve",       "CVE Engine"),
+                ("#binary",    "Binary RE"),
+                ("#mcp",       "MCP Server"),
+                ("#reports",   "Reports"),
+                ("#corpus",    "Practice Corpus"),
+            ] if lang == "en" else [
+                ("#descripcion",  "Descripción"),
+                ("#instalacion",  "Instalación"),
+                ("#configuracion","Configuración"),
+                ("#motor-cve",    "Motor CVE"),
+                ("#binario",      "Motor RE Binario"),
+                ("#mcp",          "Servidor MCP"),
+                ("#informes",     "Informes"),
+                ("#corpus",       "Corpus de práctica"),
+            ]
+        ),
+        "roadmap": [
+            ("#v02",          "v0.2"),
+            ("#v03",          "v0.3"),
+            ("#v04",          "v0.4"),
+            ("#v05",          "v0.5"),
+            ("#cross-cutting","Cross-cutting quality"),
+            ("#out-of-scope", "Out of scope"),
+        ],
+    }
+
+    sections = section_map.get(current, [])
+    toc_html = "".join(f'<a href="{h}">{l}</a>\n' for h, l in sections)
+
+    # Language toggle
+    lang_pairs = {
+        ("index",    "en"): ("ES", "index-es.html"),
+        ("docs",     "es"): ("EN", "index.html"),
+        ("tutorial", "en"): ("ES", "tutorial-es.html"),
+        ("tutorial", "es"): ("EN", "tutorial.html"),
+    }
+    pair = lang_pairs.get((current, lang))
+    if pair:
+        alt_label, alt_href = pair
+        cur_label = "EN" if alt_label == "ES" else "ES"
+        lang_toggle = (
+            f'<div class="wiki-lang">'
+            f'<span class="active-lang">{cur_label}</span>'
+            f'<a href="{alt_href}">{alt_label}</a>'
+            f'</div>\n'
+        )
+    else:
+        lang_toggle = ""
+
+    if lang == "en":
+        sec_lbl, nav_lbl, lnk_lbl = "On this page", "Navigation", "Links"
+    else:
+        sec_lbl, nav_lbl, lnk_lbl = "En esta página", "Navegación", "Enlaces"
+
+    toc_block = (
+        f'<p class="sidebar-section">{sec_lbl}</p>\n{toc_html}'
+        f'<hr class="sidebar-sep">\n'
+    ) if toc_html else ""
+
+    if lang == "en":
+        nav_items = [
+            ("index",    "index.html",       "Home"),
+            ("docs",     "index-es.html",    "Docs (ES)"),
+            ("tutorial", "tutorial.html",    "Tutorial"),
+            ("roadmap",  "roadmap.html",     "Roadmap"),
+        ]
+    else:
+        nav_items = [
+            ("docs",     "index-es.html",    "Inicio"),
+            ("index",    "index.html",       "Home (EN)"),
+            ("tutorial", "tutorial-es.html", "Tutorial"),
+            ("roadmap",  "roadmap.html",     "Roadmap"),
+        ]
+
+    nav_html = ""
+    for key, href, label in nav_items:
+        cls = ' class="active"' if key == current else ""
+        nav_html += f'<a href="{href}"{cls}>{label}</a>\n'
+
+    return (
+        f'<aside class="doc-sidebar">\n'
+        f'{lang_toggle}'
+        f'{toc_block}'
+        f'<p class="sidebar-section">{nav_lbl}</p>\n'
+        f'{nav_html}'
+        f'<hr class="sidebar-sep">\n'
+        f'<p class="sidebar-section">{lnk_lbl}</p>\n'
+        f'<a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>\n'
+        f'<a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>\n'
+        f'</aside>'
+    )
+
+# ---------------------------------------------------------------------------
+# Landing page (English wiki home)
 # ---------------------------------------------------------------------------
 def index_page():
     vuln_rows = [
-        ("SSTI (Jinja2, Twig, Smarty)", "pip / gem"),
-        ("SQLi (GET / POST / JSON / header)", "pip / gem / php / maven"),
-        ("Path traversal / LFI", "pip / gem / npm / httpd"),
-        ("RCE / command injection", "pip / gem / npm"),
-        ("XSS (reflected / stored)", "pip / npm"),
-        ("SSRF", "pip / npm"),
-        ("XXE", "java / maven"),
-        ("Deserialization", "java / gem (Marshal)"),
-        ("Auth bypass / IDOR", "pip / gem / npm"),
-        ("File upload / webshell", "pip"),
-        ("CSRF", "pip / gem"),
-        ("WordPress plugins (100+)", "WP Docker"),
-        ("Joomla / Drupal extensions", "CMS Docker"),
-        ("Java / Maven (Spring, Struts, Log4j)", "maven"),
-        ("PHP Composer packages", "php"),
-        ("npm / Node.js / Next.js", "npm"),
-        ("Ruby gems (Rails, Rack, Sinatra)", "gem"),
+        ("SSTI", "Jinja2, Twig, Smarty", "yes"),
+        ("SQLi (GET / POST / JSON / header)", "Python, Ruby, PHP, Java", "yes"),
+        ("Path traversal / LFI", "Python, Ruby, Node, httpd", "yes"),
+        ("RCE / command injection", "Python, Ruby, Node", "yes"),
+        ("XSS (reflected / stored)", "Python, Node", "yes"),
+        ("SSRF", "Python, Node", "yes"),
+        ("XXE", "Java / Maven", "yes"),
+        ("Deserialization", "Java, Ruby (Marshal)", "yes"),
+        ("Auth bypass / IDOR", "Python, Ruby, Node", "yes"),
+        ("File upload / webshell", "Python", "yes"),
+        ("Open redirect", "Python, Ruby, Node", "yes"),
+        ("CSRF", "Python, Ruby", "yes"),
+        ("WordPress plugins (100+)", "WP Docker", "yes"),
+        ("Joomla extensions", "Joomla Docker", "yes"),
+        ("Drupal modules", "Drupal Docker", "yes"),
+        ("Apache httpd", "httpd Docker", "yes"),
+        ("Spring / Struts / Log4j", "Maven", "yes"),
+        ("PHP Composer packages", "PHP Docker", "yes"),
+        ("npm / Node.js / Next.js", "Node Docker", "yes"),
+        ("Ruby gems (Rails, Rack, Sinatra)", "Ruby Docker", "yes"),
     ]
     vuln_trs = "\n".join(
-        f"<tr><td>{cls}</td><td><code>{sc}</code></td><td>{ico('check')} yes</td></tr>"
-        for cls, sc in vuln_rows
+        f'<tr><td>{cls}</td><td><code>{eco}</code></td><td class="cmp-yes">{poc}</td></tr>'
+        for cls, eco, poc in vuln_rows
     )
 
     exploit_rows = [
@@ -341,8 +567,8 @@ def index_page():
         ("Heap", "tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, large-bin attack, Botcake"),
         ("Format string", "%n arbitrary write, GOT overwrite, canary leak, PIE leak"),
         ("Low-level", "shellcode (NX off), bad-char scrubbing, IO_FILE exploit, DL-resolve, GOT hijack"),
-        ("Canary", "leak + reuse, fork brute-force"),
-        ("PIE", "partial overwrite, leak chain"),
+        ("Canary bypass", "leak + reuse, fork brute-force"),
+        ("PIE bypass", "partial overwrite, leak chain"),
     ]
     exploit_trs = "\n".join(
         f"<tr><td><strong>{fam}</strong></td><td>{tech}</td></tr>"
@@ -350,13 +576,14 @@ def index_page():
     )
 
     format_rows = [
-        ("ELF (x86-64 / x86 / ARM / MIPS / RISC-V)", "radare2, pyelftools, pwntools, angr"),
+        ("ELF (x86-64 / x86 / ARM / MIPS / RISC-V)", "radare2, pyelftools, pwntools, angr, pwndbg"),
         ("PE / PE+ (Windows)", "pefile, LIEF, radare2"),
         ("Mach-O (macOS / iOS)", "LIEF, radare2"),
         ("APK / DEX (Android)", "apktool, jadx, androguard"),
         (".NET assemblies", "dnlib, ILSpy"),
+        ("Go binaries", "go-dis, symbol recovery"),
+        ("Rust binaries", "LIEF + symbol demangling"),
         ("WASM modules", "wabt, binaryen"),
-        ("Go / Rust binaries", "LIEF + symbol recovery"),
         ("EVM bytecode", "pyevmasm"),
         ("SQLite databases", "sqlite3 schema + data dump"),
     ]
@@ -365,156 +592,335 @@ def index_page():
         for fmt, be in format_rows
     )
 
+    cmd_rows = [
+        ("triage", "Mitigations, symbols, imports, sections"),
+        ("decompile", "Ghidra / radare2 / angr / pwndbg + LLM annotation"),
+        ("pwn", "Full exploit chain, technique auto-selected"),
+        ("rop", "ROP gadget search and chain synthesis"),
+        ("chain", "Gadget enumeration + pwntools script output"),
+        ("heap", "Heap exploit primitives (tcache / fastbin / UAF / House-of-X)"),
+        ("fmt", "Format string exploitation"),
+        ("srop", "SROP chain generator"),
+        ("shellcode", "Shellcode with bad-char filtering"),
+        ("fuzz", "Dumb and smart fuzzer (AFL integration)"),
+        ("dynamic", "strace / ltrace / gdb automation"),
+        ("hardening", "Mitigation audit with bypass notes"),
+        ("cve", "Full CVE pipeline: fetch -&gt; lab -&gt; PoC -&gt; report"),
+        ("cve-batch", "Parallelised batch CVE pipeline"),
+        ("vuln-hunt", "Static taint analysis (sinks, sources)"),
+        ("ioc-scan", "IOC and malware indicator scan"),
+        ("audit", "All oracles + LLM synthesis"),
+        ("reachability", "Source-to-sink reachability"),
+        ("diff", "Patch diff and N-day analysis"),
+        ("apk", "Android APK audit"),
+        ("dotnet", ".NET assembly inspection"),
+        ("wasm", "WASM module inspection"),
+        ("sqlite", "SQLite schema + data audit"),
+        ("evm", "EVM bytecode inspection"),
+        ("mcp-server", "Start MCP server"),
+        ("web", "Start local web UI"),
+    ]
+    cmd_trs = "\n".join(
+        f"<tr><td><code>{cmd}</code></td><td>{desc}</td></tr>"
+        for cmd, desc in cmd_rows
+    )
+
+    cmp_rows = [
+        ("Autonomous CVE pipeline (NVD -&gt; lab -&gt; PoC)", "yes", "no"),
+        ("Local LLM via Ollama", "yes", "no"),
+        ("Ephemeral Docker labs per CVE", "yes", "no"),
+        ("Playwright screenshot evidence in reports", "yes", "no"),
+        ("WordPress / Joomla / Drupal lab scaffolding", "yes", "no"),
+        ("MCP server (~100 tools)", "yes", "no"),
+        ("APK / .NET / WASM / EVM analysis", "yes", "partial"),
+        ("Fully offline operation", "yes", "partial"),
+        ("Stack / heap / format string / SROP exploit chains", "yes", "yes"),
+        ("ROP chain synthesis", "yes", "yes"),
+        ("Multi-backend decompilation", "yes", "yes"),
+        ("Practice corpus", "yes", "yes"),
+    ]
+    cmp_trs = "\n".join(
+        f'<tr><td>{cap}</td><td class="cmp-yes">{b}</td>'
+        f'<td class="cmp-{"yes" if r == "yes" else ("partial" if r == "partial" else "no")}">{r}</td></tr>'
+        for cap, b, r in cmp_rows
+    )
+
     body = f"""
-<section class="hero">
-  <img src="assets/logo.svg" alt="binoracle">
-  <h1>binoracle</h1>
-  <p class="tagline">Autonomous CVE exploit research and binary reverse engineering — 100% local, zero cloud calls.</p>
-  <div class="install-box">
-    <span class="prompt">$</span>
-    pip install binoracle
-  </div>
-  <div class="hero-cta">
-    <a class="btn btn-primary" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">{ico('github')} GitHub</a>
-    <a class="btn btn-secondary" href="roadmap.html">{ico('arrow-right')} Roadmap</a>
-  </div>
-  <div class="badges">
-    <img src="https://img.shields.io/pypi/v/binoracle?color=blue&label=PyPI" alt="PyPI">
-    <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" alt="Python">
-    <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT">
-  </div>
-</section>
+<div class="doc-layout">
+  {wiki_sidebar("index", "en")}
+  <main class="doc-content">
 
-<hr class="divider">
+    <h1 id="overview">binoracle</h1>
+    <p class="page-lead">Autonomous CVE exploit research and binary reverse engineering tool. All analysis runs locally — no data is sent to external services.</p>
 
-<div class="section">
-  <h2 class="section-title">Two independent analysis pipelines</h2>
-  <p class="section-sub">binoracle combines a CVE exploit research engine with a binary reverse engineering engine, both running fully offline on your machine.</p>
-  <div class="feature-grid">
-    <div class="feature-card">
-      <div class="feature-icon blue">{ico('shield')}</div>
-      <h3>CVE Engine</h3>
-      <p>Retrieves a CVE descriptor from NVD and submits it to a local LLM which autonomously generates exploit hypotheses without external hints. Provisions an ephemeral Docker Compose lab, executes the proof-of-concept, captures Playwright screenshots, and emits a structured HTML report.</p>
-      <div class="tag-list">
-        <span class="tag">NVD</span><span class="tag">Qwen 2.5 Coder 7B</span><span class="tag">Docker</span><span class="tag">Playwright</span>
+    <div class="doc-metrics">
+      <div class="doc-metric"><div class="metric-value">20+</div><div class="metric-label">CVE classes</div></div>
+      <div class="doc-metric"><div class="metric-value">50+</div><div class="metric-label">Exploit families</div></div>
+      <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Binary formats</div></div>
+      <div class="doc-metric"><div class="metric-value">~100</div><div class="metric-label">MCP tools</div></div>
+      <div class="doc-metric"><div class="metric-value">40+</div><div class="metric-label">Practice samples</div></div>
+    </div>
+
+    <div class="doc-callout danger">
+      <strong>Legal notice.</strong> binoracle is a research and educational tool. All CVE labs run exclusively against Docker containers you provision locally on your own machine. Do not use this tool against systems you do not own or for which you lack explicit written authorization.
+    </div>
+
+    <h2 id="quick-start">Quick Start</h2>
+    <p>Prerequisites: Python 3.10+, Docker 20.x+, Ollama 0.3+.</p>
+    <pre><code># 1. Install binoracle
+pip install binoracle
+
+# 2. Install Ollama and pull the model (Linux / macOS)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5-coder:7b
+
+# 3. Configure the LLM backend
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+
+# 4. Run the CVE engine on a real CVE
+binoracle cve CVE-2025-27516
+
+# 5. Analyse a binary
+binoracle triage ./target_binary</code></pre>
+
+    <div class="doc-callout tip">
+      <strong>Persist configuration.</strong> Add the three <code>export</code> lines to <code>~/.bashrc</code> or <code>~/.zshrc</code> so they survive shell restarts.
+    </div>
+
+    <h2 id="two-pipelines">Two Pipelines</h2>
+    <p>binoracle exposes two independent analysis pipelines that can be used separately or combined.</p>
+    <div class="doc-two-col">
+      <div>
+        <h4>CVE Pipeline</h4>
+        <p>Takes a CVE identifier. Retrieves the NVD descriptor, passes it to a local LLM which generates exploit hypotheses autonomously. Provisions an ephemeral Docker Compose lab, executes the proof-of-concept, records Playwright screenshots at every verification step, and emits a self-contained HTML report to disk.</p>
+        <p>No data is sent to external services. The LLM runs entirely on your machine via Ollama.</p>
+        <pre><code>binoracle cve CVE-2025-27516
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334</code></pre>
+      </div>
+      <div>
+        <h4>Binary RE Pipeline</h4>
+        <p>Takes a binary file. Runs static analysis (symbols, imports, sections, mitigations), optionally dynamic tracing, feeds the decompiled output to the LLM which selects an exploit technique and generates a working pwntools script. Outputs a structured HTML report with the full reasoning chain.</p>
+        <p>Supports ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, EVM, and SQLite formats.</p>
+        <pre><code>binoracle triage ./binary
+binoracle pwn    ./binary</code></pre>
       </div>
     </div>
-    <div class="feature-card">
-      <div class="feature-icon purple">{ico('cpu')}</div>
-      <h3>Binary RE Engine</h3>
-      <p>Static and dynamic analysis of ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM, and SQLite artifacts. Covers exploit generation across stack, heap, format string, and SROP primitives, plus ROP chain synthesis and multi-backend decompilation. All operations are local.</p>
-      <div class="tag-list">
-        <span class="tag">50+ exploit families</span><span class="tag">pwntools</span><span class="tag">radare2</span><span class="tag">angr</span>
-      </div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon green">{ico('server')}</div>
-      <h3>MCP Server</h3>
-      <p>Exposes binoracle's full capability set as ~100 MCP tools, enabling integration with Claude Desktop, Cursor, Zed, and other MCP-compatible clients. Start the server with one command and add it to your client's configuration.</p>
-      <div class="tag-list">
-        <span class="tag">~100 tools</span><span class="tag">Claude Desktop</span><span class="tag">Cursor</span><span class="tag">Zed</span>
-      </div>
-    </div>
-  </div>
-</div>
 
-<hr class="divider">
+    <h2 id="cve-engine">CVE Engine</h2>
+    <p>The CVE engine is fully autonomous. The local LLM receives only the raw NVD description — no analyst-supplied hints, no guided prompts, no pre-filled templates. Hypotheses are generated entirely from that description.</p>
 
-<div class="section">
-  <h2 class="section-title">How the CVE engine works</h2>
-  <p class="section-sub">The engine is fully autonomous — the local LLM receives only the NVD description and no analyst-supplied hints. All exploit hypotheses are derived from that description alone.</p>
-  <div class="pipeline-diagram"><img src="assets/cve-flow.svg" alt="CVE engine pipeline"></div>
-  <div class="steps-grid">
-    <div class="step s1"><div class="step-num">Step 1</div><h4>NVD Fetch</h4><p>Retrieves the CVE record: identifier, CVSS score, affected package, and plain-language description.</p></div>
-    <div class="step s2"><div class="step-num">Step 2</div><h4>LLM Hypothesis</h4><p>Qwen 2.5 Coder reads the description and generates a structured hypothesis: class, endpoint, payload strategy, ecosystem scaffolder.</p></div>
-    <div class="step s3"><div class="step-num">Step 3</div><h4>Scaffolder Selection</h4><p>The engine maps the detected ecosystem to the matching Docker Compose lab template.</p></div>
-    <div class="step s4"><div class="step-num">Step 4</div><h4>Docker Lab</h4><p>An ephemeral lab is built with the vulnerable package pinned at the affected version. Torn down after the run.</p></div>
-    <div class="step s5"><div class="step-num">Step 5</div><h4>Playwright Verify</h4><p>The PoC executes against the lab. Playwright captures screenshots at each HTTP step and writes the HTML report.</p></div>
-  </div>
-  <h3 style="margin:2rem 0 1rem; color:var(--tx);">Supported vulnerability classes</h3>
-  <div class="table-wrap"><table><thead><tr><th>Class</th><th>Scaffolder</th><th>Auto PoC</th></tr></thead><tbody>{vuln_trs}</tbody></table></div>
-  <div style="background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1rem 1.5rem;margin-top:1rem;">
-    <p style="font-family:monospace;font-size:.88rem;color:var(--tx);">
-      <span style="color:var(--muted)"># Single CVE</span><br>binoracle cve CVE-2025-27516<br><br>
-      <span style="color:var(--muted)"># Batch, parallelized</span><br>binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
-    </p>
-  </div>
-</div>
+    <pre class="doc-pipeline"> NVD / NIST          LLM local           Docker lab         Playwright          HTML report
+ CVE descriptor  --&gt;  Qwen 2.5 Coder  --&gt;  ephemeral env  --&gt;  screenshots    --&gt;  disk only
+                      zero hints           Docker Compose      each step           HTML+CSS</pre>
 
-<hr class="divider">
+    <p>Each CVE run provisions a fresh Docker Compose environment scoped to that CVE. The environment is torn down automatically after the run. No persistent lab state is kept between runs.</p>
 
-<div class="section">
-  <h2 class="section-title">Binary RE capabilities</h2>
-  <p class="section-sub">50+ exploit families automated end-to-end. Static analysis, dynamic tracing, decompilation, and exploit chain generation across multiple binary formats.</p>
-  <div class="table-pair">
-    <div>
-      <h3 style="color:var(--tx);margin-bottom:.75rem;">Exploit families</h3>
-      <div class="table-wrap"><table><thead><tr><th>Family</th><th>Techniques</th></tr></thead><tbody>{exploit_trs}</tbody></table></div>
-    </div>
-    <div>
-      <h3 style="color:var(--tx);margin-bottom:.75rem;">Supported formats</h3>
-      <div class="table-wrap"><table><thead><tr><th>Format</th><th>Backends</th></tr></thead><tbody>{format_trs}</tbody></table></div>
-    </div>
-  </div>
-</div>
+    <h3>Supported vulnerability classes</h3>
+    <table>
+      <thead><tr><th>Class</th><th>Ecosystems</th><th>Auto PoC</th></tr></thead>
+      <tbody>{vuln_trs}</tbody>
+    </table>
 
-<hr class="divider">
+    <h3>Commands</h3>
+    <pre><code># Single CVE, default language (Spanish)
+binoracle cve CVE-2025-27516
 
-<div class="section">
-  <div class="zero-cloud">
-    <div class="lock-icon">{ico('lock')}</div>
-    <h3>Zero cloud calls</h3>
-    <p>No data leaves your machine at any point. The LLM runs locally via Ollama, Docker labs are ephemeral and local, and reports are written to disk.</p>
+# Single CVE, English report, open in browser
+binoracle cve CVE-2025-27516 --lang en --open-report
+
+# Single CVE, custom output directory
+binoracle cve CVE-2025-27516 --out ./reports/
+
+# Batch run, parallelized
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
+
+# Batch with output directory
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/</code></pre>
+
+    <h2 id="binary-re">Binary RE Engine</h2>
+    <p>Static and dynamic analysis pipeline for binary files. Covers 50+ exploit families across stack, heap, format string, and low-level categories. All analysis runs locally without uploading the binary.</p>
+
+    <pre class="doc-pipeline"> Binary input
+     |
+     +-- Static analysis -- symbols, imports, sections, mitigations (NX/PIE/RELRO/canary)
+     |
+     +-- LLM analysis ----- decompiled code review, vuln patterns, technique selection
+     |
+     +-- Dynamic (opt) ---- strace / ltrace / gdb automation
+     |
+     +-- Exploit gen ------ pwntools script + structured HTML report</pre>
+
+    <h3>Exploit families</h3>
+    <table>
+      <thead><tr><th>Family</th><th>Techniques</th></tr></thead>
+      <tbody>{exploit_trs}</tbody>
+    </table>
+
+    <h3>Supported formats</h3>
+    <table>
+      <thead><tr><th>Format</th><th>Analysis backends</th></tr></thead>
+      <tbody>{format_trs}</tbody>
+    </table>
+
+    <h3>Commands</h3>
+    <pre><code>binoracle triage ./binary        # mitigations, symbols, imports, sections
+binoracle decompile ./binary     # multi-backend: Ghidra, radare2, angr, pwndbg + LLM
+binoracle pwn ./binary           # full exploit chain, technique auto-selected
+binoracle rop ./binary           # ROP gadget search + chain synthesis
+binoracle chain ./binary         # gadget enumeration + pwntools script
+binoracle heap ./binary          # heap exploit primitives
+binoracle fmt ./binary           # format string exploitation
+binoracle srop ./binary          # SROP chain generation
+binoracle shellcode ./binary     # shellcode with bad-char filtering
+binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI audit</code></pre>
+
+    <h2 id="reports">Reports</h2>
+    <p>Every CVE investigation and binary analysis writes a self-contained HTML report to disk. Reports are single-file HTML with embedded CSS — no external dependencies required to view them.</p>
+    <table>
+      <thead><tr><th>Section</th><th>Contents</th></tr></thead>
+      <tbody>
+        <tr><td>Executive summary</td><td>CVSS score, severity rating, affected component and version</td></tr>
+        <tr><td>Hypothesis</td><td>Full LLM reasoning chain showing how the exploit was derived</td></tr>
+        <tr><td>Lab</td><td>Docker Compose specification, service versions, network configuration</td></tr>
+        <tr><td>Evidence</td><td>Playwright screenshots captured at each verification step</td></tr>
+        <tr><td>PoC</td><td>Complete, runnable curl / Python / pwntools exploit code</td></tr>
+        <tr><td>Remediation</td><td>Specific fix guidance with before/after code examples</td></tr>
+      </tbody>
+    </table>
+    <pre><code># Open report immediately after run
+binoracle cve CVE-2025-27516 --open-report
+
+# Write to a specific directory
+binoracle cve CVE-2025-27516 --out ./reports/
+
+# Batch with output directory
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/</code></pre>
+
+    <h2 id="mcp-server">MCP Integration</h2>
+    <p>binoracle exposes its full toolkit as an MCP server, making all analysis capabilities available to any MCP-compatible client: Claude Desktop, Cursor, Zed, and others. The server runs locally and does not require network access.</p>
+    <pre><code>binoracle mcp-server</code></pre>
+    <p>Add to your client configuration:</p>
+    <pre><code>{{
+  "mcpServers": {{
+    "binoracle": {{
+      "command": "binoracle",
+      "args": ["mcp-server"]
+    }}
+  }}
+}}</code></pre>
+    <details>
+      <summary>All MCP tools (~100)</summary>
+      <p style="margin-top:.75rem;line-height:2">
+        <code>triage</code> <code>pwn</code> <code>rop_chain</code> <code>heap_exploit</code> <code>fmt_exploit</code> <code>decompile</code> <code>cve_investigate</code> <code>vuln_hunt</code> <code>iocscan</code> <code>hardening</code> <code>audit</code> <code>reachability</code> <code>diff_patch</code> <code>elf_layout</code> <code>pe_inspect</code> <code>apk_audit</code> <code>dotnet_inspect</code> <code>wasm_inspect</code> <code>sqlite_audit</code> <code>evm_inspect</code> <code>fuzz</code> <code>dynamic_trace</code> <code>coredump</code> <code>shellcode</code> <code>srop_chain</code> <code>got_hijack</code> <code>io_file</code> <code>dlresolve</code> <code>canary_leak</code> <code>pie_leak</code> <code>format_string</code> <code>heap_triage</code> <code>heap_tcache</code> <code>heap_fastbin</code> <code>heap_uaf</code> <code>heap_house</code> <code>stack_pivot</code> <code>ret2csu</code> <code>ret2plt</code> <code>ret2libc</code> <code>ret2win</code> <code>rop_search</code> <code>symbol_recovery</code> <code>import_scan</code> <code>export_scan</code> <code>section_dump</code> <code>string_extract</code> <code>entropy_scan</code> <code>yara_scan</code> <code>cve_batch</code> <code>vuln_classify</code> <code>patch_diff</code> <code>n_day_analysis</code> <code>cwe_map</code> <code>cvss_score</code> <code>exploit_db_search</code> <code>lab_provision</code> <code>lab_teardown</code> <code>lab_exec</code> <code>playwright_capture</code> <code>report_generate</code> <code>report_open</code> <code>web</code>
+      </p>
+    </details>
+
+    <h2 id="cli-reference">CLI Reference</h2>
+    <table>
+      <thead><tr><th>Command</th><th>Description</th></tr></thead>
+      <tbody>{cmd_trs}</tbody>
+    </table>
+
+    <h2 id="installation">Installation</h2>
+    <pre><code>pip install binoracle</code></pre>
+    <p>Optional dependency sets install additional backends:</p>
+    <pre><code>pip install binoracle[elf]         # pyelftools extras
+pip install binoracle[pwn]         # pwntools + ROPgadget
+pip install binoracle[symbolic]    # angr symbolic execution
+pip install binoracle[screenshots] # Playwright for CVE report screenshots
+pip install binoracle[all]         # everything above</code></pre>
+
+    <table>
+      <thead><tr><th></th><th>Minimum</th><th>Recommended</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
+        <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
+        <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
+        <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
+        <tr><td>GPU</td><td>&mdash;</td><td>8 GB VRAM (Qwen 7B quantized)</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="configuration">Configuration</h2>
+    <p>All configuration is via environment variables. No configuration file is required.</p>
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>BINORACLE_BACKEND</code></td><td><code>openai</code></td><td>LLM backend protocol (openai-compatible)</td></tr>
+        <tr><td><code>BINORACLE_BASE_URL</code></td><td><em>none</em></td><td>LLM API base URL (e.g. http://127.0.0.1:11434/v1)</td></tr>
+        <tr><td><code>BINORACLE_MODEL</code></td><td><em>none</em></td><td>Model identifier (e.g. qwen2.5-coder:7b)</td></tr>
+        <tr><td><code>BINORACLE_API_KEY</code></td><td><em>none</em></td><td>API key — only needed for cloud backends</td></tr>
+        <tr><td><code>BINORACLE_LANG</code></td><td><code>es</code></td><td>Report language: <code>es</code> or <code>en</code></td></tr>
+      </tbody>
+    </table>
+    <pre><code># Local Ollama (recommended — fully offline)
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+
+# OpenAI-compatible cloud backend (optional)
+export BINORACLE_BASE_URL=https://api.openai.com/v1
+export BINORACLE_API_KEY=sk-...
+export BINORACLE_MODEL=gpt-4o-mini
+
+# English reports
+export BINORACLE_LANG=en</code></pre>
+
+    <h2 id="architecture">Architecture</h2>
+    <img src="assets/architecture.svg" alt="binoracle architecture diagram" style="width:100%;border-radius:var(--r);border:1px solid var(--brd);margin:1rem 0;">
+
+    <h2 id="corpus">Practice Corpus</h2>
+    <p>The repository includes 40+ intentionally vulnerable binaries for local exploitation practice. Each binary is built with a specific vulnerability and mitigations set to exercise a particular technique.</p>
+    <pre><code># Build all samples (requires Docker or gcc)
+samples/build.sh
+
+# Run the exploit chain against a sample
+binoracle pwn samples/bin/ret2libc
+binoracle pwn samples/bin/tcache_dup
+binoracle pwn samples/bin/house_of_orange
+binoracle pwn samples/bin/format_string
+binoracle pwn samples/bin/srop_x64</code></pre>
+    <p>Techniques covered: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, format string GOT overwrite, canary leak, PIE leak, CSU chain, DL-resolve, heap botcake, house-of-orange, unsafe-unlink, stack pivot, IO_FILE, callhijack, dlresolve32.</p>
+
+    <h2 id="comparison">Comparison</h2>
+    <table>
+      <thead><tr><th>Capability</th><th>binoracle</th><th>REA</th></tr></thead>
+      <tbody>{cmp_trs}</tbody>
+    </table>
+
+    <h2 id="roadmap">Roadmap</h2>
     <ul>
-      <li>{ico('check')} LLM via Ollama at localhost:11434</li>
-      <li>{ico('check')} Docker labs torn down after each run</li>
-      <li>{ico('check')} Reports written to disk only</li>
-      <li>{ico('check')} No telemetry, no account required</li>
+      <li>Kernel exploit chains (ret2usr, UAF in drivers)</li>
+      <li>Firmware analysis (UEFI, embedded Linux)</li>
+      <li>LibFuzzer corpus seeded from CVE PoCs</li>
+      <li>Multi-CVE chains (web RCE &mdash; local privilege escalation)</li>
+      <li>CVSS v4 scoring</li>
+      <li>Burp Suite MCP bridge</li>
+      <li>JEB decompiler (Android native)</li>
+      <li>Fine-tuned model for exploit hypothesis generation</li>
     </ul>
-  </div>
-</div>
 
-<hr class="divider">
-
-<div class="section">
-  <h2 class="section-title">Quick start</h2>
-  <p class="section-sub">Three steps from zero to running your first CVE investigation.</p>
-  <div class="code-card">
-    <div class="code-header"><div class="dot dot-red"></div><div class="dot dot-yel"></div><div class="dot dot-grn"></div><span>terminal</span></div>
-    <pre><span class="comment"># 1. Install binoracle</span>
-<span class="cmd">pip install binoracle</span>
-
-<span class="comment"># 2. Install Ollama and pull the model</span>
-<span class="cmd">curl -fsSL https://ollama.com/install.sh | sh</span>
-<span class="cmd">ollama pull qwen2.5-coder:7b</span>
-
-<span class="comment"># 3. Configure the LLM backend</span>
-<span class="kw">export</span> <span class="val">BINORACLE_BACKEND</span>=openai
-<span class="kw">export</span> <span class="val">BINORACLE_BASE_URL</span>=http://127.0.0.1:11434/v1
-<span class="kw">export</span> <span class="val">BINORACLE_MODEL</span>=qwen2.5-coder:7b
-
-<span class="cmd">binoracle cve CVE-2025-27516</span>
-<span class="cmd">binoracle pwn ./vulnerable_binary</span></pre>
-  </div>
-</div>
-
-<hr class="divider">
-
-<div class="section">
-  <h2 class="section-title">Architecture</h2>
-  <p class="section-sub">Interface layer (CLI, MCP server, web UI) → Workflow layer → Oracle / LLM Bridge / Lab Scaffolder backends.</p>
-  <div class="arch-diagram"><img src="assets/architecture.svg" alt="binoracle architecture"></div>
-</div>
-"""
-    return shell("binoracle — autonomous security research tool", "index", body)
+  </main>
+</div>"""
+    return shell("binoracle — autonomous security research tool", "index", body, lang_other=("ES", "index-es.html"))
 
 # ---------------------------------------------------------------------------
 # Doc page renderer
 # ---------------------------------------------------------------------------
-def doc_page(source_path, title, current):
+def doc_page(source_path, title, current, lang_other=None):
     with open(source_path, encoding="utf-8") as f:
         raw = f.read()
-    converter = md.Markdown(extensions=["tables", "fenced_code", "toc"])
+
+    # Strip <div align="center"> wrappers — they're GitHub-only presentational
+    # markup that prevents the markdown library from processing the content inside.
+    raw = re.sub(r'<div[^>]*>\n', '', raw)
+    raw = re.sub(r'</div>\n?', '', raw)
+    # Remove standalone logo <img> tags at the top (we show it in the nav already)
+    raw = re.sub(r'<img[^>]*logo\.svg[^>]*>\n?', '', raw)
+
+    converter = md.Markdown(extensions=["tables", "fenced_code", "toc", "md_in_html"])
     html_body = converter.convert(raw)
     toc = converter.toc  # type: ignore
 
@@ -536,107 +942,703 @@ def doc_page(source_path, title, current):
     {html_body}
   </main>
 </div>"""
-    return shell(title, current, body)
+    return shell(title, current, body, lang_other=lang_other)
+
+# ---------------------------------------------------------------------------
+# Spanish wiki home (pure HTML — avoids markdown conversion issues)
+# ---------------------------------------------------------------------------
+def docs_es_page():
+    vuln_rows_es = [
+        ("SSTI", "Jinja2, Twig, Smarty", "sí"),
+        ("SQLi (GET / POST / JSON / cabecera)", "Python, Ruby, PHP, Java", "sí"),
+        ("Path traversal / LFI", "Python, Ruby, Node, httpd", "sí"),
+        ("RCE / inyección de comandos", "Python, Ruby, Node", "sí"),
+        ("XSS (reflejado / almacenado)", "Python, Node", "sí"),
+        ("SSRF", "Python, Node", "sí"),
+        ("XXE", "Java / Maven", "sí"),
+        ("Deserialización", "Java, Ruby (Marshal)", "sí"),
+        ("Bypass de autenticación / IDOR", "Python, Ruby, Node", "sí"),
+        ("Subida de ficheros / webshell", "Python", "sí"),
+        ("Redirección abierta", "Python, Ruby, Node", "sí"),
+        ("CSRF", "Python, Ruby", "sí"),
+        ("Plugins WordPress (100+)", "WP Docker", "sí"),
+        ("Extensiones Joomla", "Joomla Docker", "sí"),
+        ("Módulos Drupal", "Drupal Docker", "sí"),
+        ("Apache httpd", "httpd Docker", "sí"),
+        ("Spring / Struts / Log4j", "Maven", "sí"),
+        ("Paquetes PHP Composer", "PHP Docker", "sí"),
+        ("npm / Node.js / Next.js", "Node Docker", "sí"),
+        ("Gems Ruby (Rails, Rack, Sinatra)", "Ruby Docker", "sí"),
+    ]
+    vuln_trs = "\n".join(
+        f'<tr><td>{cls}</td><td><code>{eco}</code></td><td class="cmp-yes">{poc}</td></tr>'
+        for cls, eco, poc in vuln_rows_es
+    )
+
+    exploit_rows_es = [
+        ("Stack", "ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64/x86-32/aarch64), stack pivot, cadenas ROP"),
+        ("Heap", "tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, large-bin attack, Botcake"),
+        ("Format string", "escritura arbitraria con %n, sobrescritura GOT, fuga de canary, fuga de PIE"),
+        ("Bajo nivel", "shellcode (NX off), limpieza de bad-chars, exploit IO_FILE, DL-resolve, secuestro GOT"),
+        ("Bypass de canary", "fuga + reutilización, fuerza bruta en fork"),
+        ("Bypass de PIE", "sobrescritura parcial, cadena de fugas"),
+    ]
+    exploit_trs = "\n".join(
+        f"<tr><td><strong>{fam}</strong></td><td>{tech}</td></tr>"
+        for fam, tech in exploit_rows_es
+    )
+
+    format_rows_es = [
+        ("ELF (x86-64 / x86 / ARM / MIPS / RISC-V)", "radare2, pyelftools, pwntools, angr, pwndbg"),
+        ("PE / PE+ (Windows)", "pefile, LIEF, radare2"),
+        ("Mach-O (macOS / iOS)", "LIEF, radare2"),
+        ("APK / DEX (Android)", "apktool, jadx, androguard"),
+        ("Ensamblados .NET", "dnlib, ILSpy"),
+        ("Binarios Go", "go-dis, recuperación de símbolos"),
+        ("Binarios Rust", "LIEF + demangling de símbolos"),
+        ("Módulos WASM", "wabt, binaryen"),
+        ("Bytecode EVM", "pyevmasm"),
+        ("Bases de datos SQLite", "sqlite3 schema + volcado de datos"),
+    ]
+    format_trs = "\n".join(
+        f"<tr><td>{fmt}</td><td>{be}</td></tr>"
+        for fmt, be in format_rows_es
+    )
+
+    cmd_rows_es = [
+        ("triage", "Mitigaciones, símbolos, importaciones, secciones"),
+        ("decompile", "Ghidra / radare2 / angr / pwndbg + anotación LLM"),
+        ("pwn", "Cadena de exploit completa, técnica seleccionada automáticamente"),
+        ("rop", "Búsqueda de gadgets ROP y síntesis de cadenas"),
+        ("chain", "Enumeración de gadgets + script pwntools"),
+        ("heap", "Primitivas de exploit heap (tcache / fastbin / UAF / House-of-X)"),
+        ("fmt", "Explotación de format string"),
+        ("srop", "Generador de cadenas SROP"),
+        ("shellcode", "Shellcode con filtrado de bad-chars"),
+        ("fuzz", "Fuzzer simple e inteligente (integración AFL)"),
+        ("dynamic", "strace / ltrace / automatización gdb"),
+        ("hardening", "Auditoría de mitigaciones con notas de bypass"),
+        ("cve", "Pipeline CVE completo: obtener &rarr; lab &rarr; PoC &rarr; informe"),
+        ("cve-batch", "Pipeline CVE por lotes, paralelizado"),
+        ("vuln-hunt", "Análisis de taint estático (sinks, sources)"),
+        ("ioc-scan", "Escáner de IOC e indicadores de malware"),
+        ("audit", "Todos los oráculos + síntesis LLM"),
+        ("reachability", "Alcanzabilidad source-to-sink"),
+        ("diff", "Diff de parche y análisis N-day"),
+        ("apk", "Auditoría completa de APK Android"),
+        ("dotnet", "Inspección de ensamblados .NET"),
+        ("wasm", "Inspección de módulos WASM"),
+        ("sqlite", "Auditoría de esquema y datos SQLite"),
+        ("evm", "Inspección de bytecode EVM"),
+        ("mcp-server", "Iniciar servidor MCP"),
+        ("web", "Iniciar interfaz web local"),
+    ]
+    cmd_trs = "\n".join(
+        f"<tr><td><code>{cmd}</code></td><td>{desc}</td></tr>"
+        for cmd, desc in cmd_rows_es
+    )
+
+    cmp_rows_es = [
+        ("Pipeline autónomo CVE (NVD &rarr; lab &rarr; PoC)", "sí", "no"),
+        ("LLM local via Ollama", "sí", "no"),
+        ("Laboratorios Docker efímeros por CVE", "sí", "no"),
+        ("Evidencia Playwright en informes", "sí", "no"),
+        ("Scaffolding WordPress / Joomla / Drupal", "sí", "no"),
+        ("Servidor MCP (~100 herramientas)", "sí", "no"),
+        ("Análisis APK / .NET / WASM / EVM", "sí", "parcial"),
+        ("Operación 100 % offline", "sí", "parcial"),
+        ("Cadenas stack / heap / format string / SROP", "sí", "sí"),
+        ("Síntesis de cadenas ROP", "sí", "sí"),
+        ("Decompilación multi-backend", "sí", "sí"),
+        ("Corpus de práctica", "sí", "sí"),
+    ]
+    cmp_trs = "\n".join(
+        f'<tr><td>{cap}</td><td class="cmp-yes">{b}</td>'
+        f'<td class="cmp-{"yes" if r == "sí" else ("partial" if r == "parcial" else "no")}">{r}</td></tr>'
+        for cap, b, r in cmp_rows_es
+    )
+
+    body = f"""
+<div class="doc-layout">
+  {wiki_sidebar("docs", "es")}
+  <main class="doc-content">
+
+    <h1 id="descripcion">binoracle</h1>
+    <p class="page-lead">Herramienta de investigación autónoma de exploits CVE y reversing binario. Todo el análisis se ejecuta localmente — ningún dato sale de tu máquina.</p>
+
+    <div class="doc-metrics">
+      <div class="doc-metric"><div class="metric-value">20+</div><div class="metric-label">Clases CVE</div></div>
+      <div class="doc-metric"><div class="metric-value">50+</div><div class="metric-label">Familias de exploit</div></div>
+      <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Formatos binarios</div></div>
+      <div class="doc-metric"><div class="metric-value">~100</div><div class="metric-label">Herramientas MCP</div></div>
+      <div class="doc-metric"><div class="metric-value">40+</div><div class="metric-label">Muestras de práctica</div></div>
+    </div>
+
+    <div class="doc-callout danger">
+      <strong>Aviso legal.</strong> binoracle es una herramienta de investigación y educación. Todos los laboratorios CVE se ejecutan contra contenedores Docker que tú aprovisionas localmente en tu propia máquina. No la uses contra sistemas que no sean tuyos o para los que no dispongas de autorización escrita explícita.
+    </div>
+
+    <h2 id="instalacion">Instalación</h2>
+    <p>Requisitos previos: Python 3.10+, Docker 20.x+, Ollama 0.3+.</p>
+    <pre><code># 1. Instalar binoracle
+pip install binoracle
+
+# 2. Instalar Ollama y descargar el modelo (Linux / macOS)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5-coder:7b
+
+# 3. Configurar el backend LLM
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+
+# 4. Investigar un CVE con el motor autónomo
+binoracle cve CVE-2025-27516
+
+# 5. Analizar un binario
+binoracle triage ./binario_objetivo</code></pre>
+
+    <div class="doc-callout tip">
+      <strong>Configuración persistente.</strong> Añade las tres líneas <code>export</code> a <code>~/.bashrc</code> o <code>~/.zshrc</code> para que persistan entre reinicios de sesión.
+    </div>
+
+    <h2 id="dos-motores">Dos motores</h2>
+    <p>binoracle expone dos pipelines de análisis independientes que pueden usarse por separado o en combinación.</p>
+    <div class="doc-two-col">
+      <div>
+        <h4>Motor CVE</h4>
+        <p>Recibe un identificador CVE. Obtiene el descriptor de NVD y se lo pasa a un LLM local que genera hipótesis de exploit de forma autónoma. Levanta un laboratorio Docker Compose efímero, ejecuta el PoC, registra capturas de pantalla Playwright en cada paso de verificación y escribe un informe HTML autocontenido en disco.</p>
+        <p>Ningún dato se envía a servicios externos. El LLM se ejecuta íntegramente en tu máquina mediante Ollama.</p>
+        <pre><code>binoracle cve CVE-2025-27516
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334</code></pre>
+      </div>
+      <div>
+        <h4>Motor RE Binario</h4>
+        <p>Recibe un fichero binario. Ejecuta análisis estático (símbolos, importaciones, secciones, mitigaciones), opcionalmente trazado dinámico, alimenta el código decompilado al LLM que selecciona la técnica de exploit y genera un script pwntools funcional. Genera un informe HTML con la cadena de razonamiento completa.</p>
+        <p>Compatible con ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, EVM y SQLite.</p>
+        <pre><code>binoracle triage ./binario
+binoracle pwn    ./binario</code></pre>
+      </div>
+    </div>
+
+    <h2 id="motor-cve">Motor CVE</h2>
+    <p>El motor CVE es completamente autónomo. El LLM local recibe únicamente la descripción cruda de NVD — sin pistas del analista, sin prompts guiados, sin plantillas precargadas. Las hipótesis se generan exclusivamente a partir de esa descripción.</p>
+
+    <pre class="doc-pipeline"> NVD / NIST          LLM local           Lab Docker         Playwright          Informe HTML
+ Descriptor CVE  --&gt;  Qwen 2.5 Coder  --&gt;  entorno efímero  --&gt;  capturas       --&gt;  solo en disco
+                      sin pistas           Docker Compose      cada paso           HTML+CSS</pre>
+
+    <p>Cada ejecución CVE levanta un entorno Docker Compose nuevo exclusivo para ese CVE. El entorno se elimina automáticamente al terminar la ejecución. No se conserva estado de laboratorio entre ejecuciones.</p>
+
+    <h3>Clases de vulnerabilidad soportadas</h3>
+    <table>
+      <thead><tr><th>Clase</th><th>Ecosistemas</th><th>Auto PoC</th></tr></thead>
+      <tbody>{vuln_trs}</tbody>
+    </table>
+
+    <h3>Comandos</h3>
+    <pre><code># CVE individual, idioma por defecto (español)
+binoracle cve CVE-2025-27516
+
+# CVE individual, informe en inglés, abrir en navegador
+binoracle cve CVE-2025-27516 --lang en --open-report
+
+# CVE individual, directorio de salida personalizado
+binoracle cve CVE-2025-27516 --out ./informes/
+
+# Lote paralelizado
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
+
+# Lote con directorio de salida
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./informes/</code></pre>
+
+    <h2 id="motor-re-binario">Motor RE Binario</h2>
+    <p>Pipeline de análisis estático y dinámico para ficheros binarios. Cubre 50+ familias de exploit en las categorías stack, heap, format string y bajo nivel. Todo el análisis se ejecuta localmente sin subir el binario.</p>
+
+    <pre class="doc-pipeline"> Binario de entrada
+     |
+     +-- Análisis estático  -- símbolos, importaciones, secciones, mitigaciones (NX/PIE/RELRO/canary)
+     |
+     +-- Análisis LLM ------  revisión de código decompilado, patrones de vuln, selección de técnica
+     |
+     +-- Dinámica (opc.) ---  strace / ltrace / automatización gdb
+     |
+     +-- Generación exploit - script pwntools + informe HTML estructurado</pre>
+
+    <h3>Familias de exploit</h3>
+    <table>
+      <thead><tr><th>Familia</th><th>Técnicas</th></tr></thead>
+      <tbody>{exploit_trs}</tbody>
+    </table>
+
+    <h3>Formatos soportados</h3>
+    <table>
+      <thead><tr><th>Formato</th><th>Backends de análisis</th></tr></thead>
+      <tbody>{format_trs}</tbody>
+    </table>
+
+    <h3>Comandos</h3>
+    <pre><code>binoracle triage ./binario        # mitigaciones, símbolos, importaciones, secciones
+binoracle decompile ./binario     # multi-backend: Ghidra, radare2, angr, pwndbg + LLM
+binoracle pwn ./binario           # cadena de exploit completa, técnica seleccionada automáticamente
+binoracle rop ./binario           # búsqueda de gadgets ROP + síntesis de cadenas
+binoracle chain ./binario         # enumeración de gadgets + script pwntools
+binoracle heap ./binario          # primitivas de exploit heap
+binoracle fmt ./binario           # explotación de format string
+binoracle srop ./binario          # generación de cadenas SROP
+binoracle shellcode ./binario     # shellcode con filtrado de bad-chars
+binoracle hardening ./binario     # auditoría NX, PIE, RELRO, canary, Fortify, CFI</code></pre>
+
+    <h2 id="informes">Informes</h2>
+    <p>Cada investigación CVE y cada análisis binario escribe un informe HTML autocontenido en disco. Los informes son ficheros HTML únicos con CSS embebido — no requieren dependencias externas para visualizarlos.</p>
+    <table>
+      <thead><tr><th>Sección</th><th>Contenido</th></tr></thead>
+      <tbody>
+        <tr><td>Resumen ejecutivo</td><td>Puntuación CVSS, severidad, componente y versión afectados</td></tr>
+        <tr><td>Hipótesis</td><td>Cadena de razonamiento completa del LLM mostrando cómo se derivó el exploit</td></tr>
+        <tr><td>Laboratorio</td><td>Especificación Docker Compose, versiones de servicios, configuración de red</td></tr>
+        <tr><td>Evidencia</td><td>Capturas de pantalla Playwright tomadas en cada paso de verificación</td></tr>
+        <tr><td>PoC</td><td>Código de exploit completo y ejecutable: curl / Python / pwntools</td></tr>
+        <tr><td>Remediación</td><td>Guía de corrección específica con ejemplos de código antes/después</td></tr>
+      </tbody>
+    </table>
+    <pre><code># Abrir informe inmediatamente tras la ejecución
+binoracle cve CVE-2025-27516 --open-report
+
+# Escribir en un directorio específico
+binoracle cve CVE-2025-27516 --out ./informes/
+
+# Lote con directorio de salida
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./informes/</code></pre>
+
+    <h2 id="integracion-mcp">Integración MCP</h2>
+    <p>binoracle expone su conjunto completo de herramientas como servidor MCP, poniendo todas las capacidades de análisis a disposición de cualquier cliente compatible: Claude Desktop, Cursor, Zed y otros. El servidor se ejecuta localmente y no requiere acceso a red.</p>
+    <pre><code>binoracle mcp-server</code></pre>
+    <p>Añade a la configuración de tu cliente:</p>
+    <pre><code>{{
+  "mcpServers": {{
+    "binoracle": {{
+      "command": "binoracle",
+      "args": ["mcp-server"]
+    }}
+  }}
+}}</code></pre>
+    <details>
+      <summary>Todas las herramientas MCP (~100)</summary>
+      <p style="margin-top:.75rem;line-height:2">
+        <code>triage</code> <code>pwn</code> <code>rop_chain</code> <code>heap_exploit</code> <code>fmt_exploit</code> <code>decompile</code> <code>cve_investigate</code> <code>vuln_hunt</code> <code>iocscan</code> <code>hardening</code> <code>audit</code> <code>reachability</code> <code>diff_patch</code> <code>elf_layout</code> <code>pe_inspect</code> <code>apk_audit</code> <code>dotnet_inspect</code> <code>wasm_inspect</code> <code>sqlite_audit</code> <code>evm_inspect</code> <code>fuzz</code> <code>dynamic_trace</code> <code>coredump</code> <code>shellcode</code> <code>srop_chain</code> <code>got_hijack</code> <code>io_file</code> <code>dlresolve</code> <code>canary_leak</code> <code>pie_leak</code> <code>format_string</code> <code>heap_triage</code> <code>heap_tcache</code> <code>heap_fastbin</code> <code>heap_uaf</code> <code>heap_house</code> <code>stack_pivot</code> <code>ret2csu</code> <code>ret2plt</code> <code>ret2libc</code> <code>ret2win</code> <code>rop_search</code> <code>symbol_recovery</code> <code>import_scan</code> <code>export_scan</code> <code>section_dump</code> <code>string_extract</code> <code>entropy_scan</code> <code>yara_scan</code> <code>cve_batch</code> <code>vuln_classify</code> <code>patch_diff</code> <code>n_day_analysis</code> <code>cwe_map</code> <code>cvss_score</code> <code>exploit_db_search</code> <code>lab_provision</code> <code>lab_teardown</code> <code>lab_exec</code> <code>playwright_capture</code> <code>report_generate</code> <code>report_open</code> <code>web</code>
+      </p>
+    </details>
+
+    <h2 id="referencia-comandos">Referencia CLI</h2>
+    <table>
+      <thead><tr><th>Comando</th><th>Descripción</th></tr></thead>
+      <tbody>{cmd_trs}</tbody>
+    </table>
+
+    <h2 id="arquitectura">Arquitectura</h2>
+    <img src="assets/architecture.svg" alt="Arquitectura de binoracle" style="width:100%;border-radius:var(--r);border:1px solid var(--brd);margin:1rem 0;">
+
+    <h2 id="corpus">Corpus de práctica</h2>
+    <p>El repositorio incluye 40+ binarios vulnerables intencionalmente para practicar explotación local. Cada binario está compilado con una vulnerabilidad específica y un conjunto de mitigaciones para ejercitar una técnica concreta.</p>
+    <pre><code># Compilar todas las muestras (requiere Docker o gcc)
+samples/build.sh
+
+# Ejecutar la cadena de exploit contra una muestra
+binoracle pwn samples/bin/ret2libc
+binoracle pwn samples/bin/tcache_dup
+binoracle pwn samples/bin/house_of_orange
+binoracle pwn samples/bin/format_string
+binoracle pwn samples/bin/srop_x64</code></pre>
+    <p>Técnicas cubiertas: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, sobrescritura GOT por format string, fuga de canary, fuga de PIE, cadena CSU, DL-resolve, heap botcake, house-of-orange, unsafe-unlink, stack pivot, IO_FILE, callhijack, dlresolve32.</p>
+
+    <h2 id="configuracion">Configuración</h2>
+    <p>Toda la configuración se realiza mediante variables de entorno. No se requiere fichero de configuración.</p>
+    <table>
+      <thead><tr><th>Variable</th><th>Por defecto</th><th>Descripción</th></tr></thead>
+      <tbody>
+        <tr><td><code>BINORACLE_BACKEND</code></td><td><code>openai</code></td><td>Protocolo del backend LLM (compatible con openai)</td></tr>
+        <tr><td><code>BINORACLE_BASE_URL</code></td><td><em>ninguno</em></td><td>URL base de la API LLM (p.ej. http://127.0.0.1:11434/v1)</td></tr>
+        <tr><td><code>BINORACLE_MODEL</code></td><td><em>ninguno</em></td><td>Identificador del modelo (p.ej. qwen2.5-coder:7b)</td></tr>
+        <tr><td><code>BINORACLE_API_KEY</code></td><td><em>ninguno</em></td><td>Clave API — solo necesaria para backends en la nube</td></tr>
+        <tr><td><code>BINORACLE_LANG</code></td><td><code>es</code></td><td>Idioma del informe: <code>es</code> o <code>en</code></td></tr>
+      </tbody>
+    </table>
+    <pre><code># LLM local via Ollama (recomendado — completamente offline)
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+
+# Backend en la nube compatible con OpenAI (opcional)
+export BINORACLE_BASE_URL=https://api.openai.com/v1
+export BINORACLE_API_KEY=sk-...
+export BINORACLE_MODEL=gpt-4o-mini
+
+# Informes en inglés
+export BINORACLE_LANG=en</code></pre>
+
+    <h2 id="comparacion">Comparación</h2>
+    <table>
+      <thead><tr><th>Capacidad</th><th>binoracle</th><th>REA</th></tr></thead>
+      <tbody>{cmp_trs}</tbody>
+    </table>
+
+    <h2 id="hoja-ruta">Hoja de ruta</h2>
+    <ul>
+      <li>Cadenas de exploit de kernel (ret2usr, UAF en drivers)</li>
+      <li>Análisis de firmware (UEFI, Linux embebido)</li>
+      <li>Corpus LibFuzzer sembrado desde PoC de CVE</li>
+      <li>Cadenas multi-CVE (RCE web &mdash; escalada de privilegios local)</li>
+      <li>Puntuación CVSS v4</li>
+      <li>Puente Burp Suite MCP</li>
+      <li>Decompilador JEB (Android nativo)</li>
+      <li>Modelo ajustado para generación de hipótesis de exploit</li>
+    </ul>
+
+  </main>
+</div>"""
+    return shell("binoracle — documentación en español", "docs", body, lang_other=("EN", "index.html"))
+
+# ---------------------------------------------------------------------------
+# Roadmap page
+# ---------------------------------------------------------------------------
+def roadmap_page():
+    with open(os.path.join(ROOT, "ROADMAP.md"), encoding="utf-8") as f:
+        raw = f.read()
+
+    # Split by level-2 headings: ['intro', '## Head1', 'body1', '## Head2', 'body2', ...]
+    chunks = re.split(r'^(## .+)$', raw, flags=re.MULTILINE)
+    intro_raw = chunks[0]
+
+    # Extract the two guiding principles from intro
+    rules = re.findall(
+        r'\d+\.\s+\*\*(.+?)\.\*\*\s+(.+?)(?=\n\d+\.|\n---|\Z)',
+        intro_raw, re.DOTALL
+    )
+    principles_html = ''
+    for rule_title, rule_body in rules[:2]:
+        body_text = rule_body.strip().split('\n')[0].strip()
+        if len(body_text) > 150:
+            body_text = body_text[:150].rsplit(' ', 1)[0] + '…'
+        principles_html += (
+            f'<div class="rm-principle"><strong>{rule_title}.</strong> {body_text}</div>\n'
+        )
+
+    def eff_class(eff):
+        e = eff.upper()
+        if 'L' in e and 'M' not in e:
+            return 'rm-eff-l'
+        if 'M' in e:
+            return 'rm-eff-m'
+        return 'rm-eff-s'
+
+    def render_section(heading_raw, content):
+        heading = heading_raw[3:].strip()
+        ver, title = (heading.split(' - ', 1) if ' - ' in heading else ('', heading))
+
+        # First non-empty, non-bullet, non-heading paragraph
+        desc = ''
+        for para in re.split(r'\n\n+', content.strip()):
+            p = para.strip()
+            if p and not p.startswith('-') and not p.startswith('#'):
+                desc = p.split('\n')[0].strip()
+                break
+        if len(desc) > 220:
+            desc = desc[:220].rsplit(' ', 1)[0] + '…'
+
+        # Items: "- **[Effort] Name.**"
+        items = re.findall(r'^- \*\*\[([^\]]+)\] (.+?)\.\*\*', content, re.MULTILINE)
+
+        h_lower = heading.lower()
+        if ver.startswith('v'):
+            badge_type = 'version'
+            badge_label = ver
+        elif 'quality' in h_lower or 'ongoing' in h_lower:
+            badge_type = 'ongoing'
+            badge_label = 'ongoing'
+        else:
+            badge_type = 'scope'
+            badge_label = 'out of scope'
+
+        items_html = ''
+        for effort, name in items:
+            name_clean = re.sub(r'~~(.+?)~~', r'\1', name)
+            ec = eff_class(effort)
+            items_html += (
+                f'<div class="rm-item">'
+                f'<span class="rm-item-effort {ec}">{effort}</span>'
+                f'<span class="rm-item-name">{name_clean}</span>'
+                f'</div>\n'
+            )
+
+        desc_html   = f'<p class="rm-desc">{desc}</p>' if desc else ''
+        items_grid  = f'<div class="rm-items">{items_html}</div>' if items_html else ''
+
+        # Derive a stable anchor ID from the version/heading
+        if ver.startswith('v'):
+            card_id = ver.replace('.', '')
+        elif 'quality' in h_lower or 'ongoing' in h_lower:
+            card_id = 'cross-cutting'
+        else:
+            card_id = 'out-of-scope'
+
+        return f"""<div class="rm-card" id="{card_id}">
+  <div class="rm-card-header">
+    <span class="rm-badge {badge_type}">{badge_label}</span>
+    <span class="rm-card-title">{title}</span>
+  </div>
+  <div class="rm-card-body">
+    {desc_html}
+    {items_grid}
+  </div>
+</div>
+"""
+
+    cards_html = ''
+    for i in range(1, len(chunks), 2):
+        if i + 1 < len(chunks):
+            cards_html += render_section(chunks[i], chunks[i + 1])
+
+    effort_legend = """
+<div class="rm-effort-legend">
+  <span><span class="rm-item-effort rm-eff-s">S</span> days</span>
+  <span><span class="rm-item-effort rm-eff-m">M</span> week or two</span>
+  <span><span class="rm-item-effort rm-eff-l">L</span> multi-week / research</span>
+</div>"""
+
+    body = f"""
+<div class="doc-layout">
+  {wiki_sidebar("roadmap", "en")}
+  <main class="doc-content">
+    <h1>Roadmap</h1>
+    <p class="page-lead">Direction for versions after 0.1.0. Every item ships as a verified attack path — never a prompt.</p>
+
+    <div class="rm-principles" style="margin:0 0 1.25rem;">
+      {principles_html}
+    </div>
+    {effort_legend}
+    <hr style="border:none;border-top:1px solid var(--brd);margin:1.5rem 0;">
+    {cards_html}
+  </main>
+</div>"""
+    return shell("Roadmap — binoracle", "roadmap", body)
 
 # ---------------------------------------------------------------------------
 # Tutorial page (English)
 # ---------------------------------------------------------------------------
 def tutorial_page():
-    body = """
+    body = f"""
 <div class="doc-layout">
-  <aside class="doc-sidebar">
-    <h4>Contents</h4>
-    <a href="#overview">Overview</a>
-    <a href="#install">Installation</a>
-    <a href="#configure">Configuration</a>
-    <a href="#cve">CVE Engine</a>
-    <a href="#binary">Binary RE Engine</a>
-    <a href="#mcp">MCP Server</a>
-    <a href="#reports">Reports</a>
-    <a href="#corpus">Practice Corpus</a>
-    <h4 style="margin-top:1.5rem;">Navigation</h4>
-    <a href="index.html">Home</a>
-    <a href="tutorial-es.html">Tutorial (ES)</a>
-    <a href="roadmap.html">Roadmap</a>
-    <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub</a>
-  </aside>
+  {wiki_sidebar("tutorial", "en")}
   <main class="doc-content">
+
     <h1 id="overview">binoracle Tutorial</h1>
     <p>This tutorial walks through every capability binoracle provides — from initial setup to running a full CVE investigation and generating an exploit chain against a local binary. All operations run entirely on your machine; no external API keys or cloud services are required.</p>
-    <blockquote><strong>Legal notice</strong> — binoracle is a research and educational tool. All CVE labs run against Docker containers you provision locally. Do not use this tool against systems you do not own or lack explicit written authorization to test.</blockquote>
+
+    <blockquote>
+      <strong>Legal notice</strong> — binoracle is a research and educational tool.
+      All CVE labs run against Docker containers you provision locally.
+      Do not use this tool against systems you do not own or lack explicit written authorization to test.
+    </blockquote>
+
     <h2 id="install">1. Installation</h2>
-    <p>binoracle requires Python 3.10 or later and Docker 20+.</p>
-    <pre><code>pip install binoracle\npip install binoracle[pwn]        # pwntools + ROPgadget\npip install binoracle[symbolic]   # angr symbolic execution\npip install binoracle[screenshots] # Playwright screenshots\npip install binoracle[all]        # all of the above</code></pre>
+    <p>binoracle requires Python 3.10 or later and Docker 20+. Install via pip:</p>
+    <pre><code>pip install binoracle</code></pre>
+    <p>Install optional extras to unlock additional analysis backends:</p>
+    <pre><code>pip install binoracle[pwn]        # pwntools + ROPgadget
+pip install binoracle[symbolic]   # angr symbolic execution
+pip install binoracle[screenshots] # Playwright screenshots in CVE reports
+pip install binoracle[all]        # all of the above</code></pre>
+
+    <p>Verify the installation:</p>
+    <pre><code>binoracle --version</code></pre>
+
     <h2 id="configure">2. Configuration</h2>
-    <p>Install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> and pull the model:</p>
-    <pre><code>curl -fsSL https://ollama.com/install.sh | sh\nollama pull qwen2.5-coder:7b</code></pre>
-    <p>Set environment variables (add to <code>~/.bashrc</code> or <code>~/.zshrc</code>):</p>
-    <pre><code>export BINORACLE_BACKEND=openai\nexport BINORACLE_BASE_URL=http://127.0.0.1:11434/v1\nexport BINORACLE_MODEL=qwen2.5-coder:7b\nexport BINORACLE_LANG=en</code></pre>
-    <table><thead><tr><th>Dependency</th><th>Minimum</th><th>Recommended</th></tr></thead><tbody>
-      <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
-      <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
-      <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
-      <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
-      <tr><td>GPU (optional)</td><td>—</td><td>8 GB VRAM (Qwen 7B quantized)</td></tr>
-    </tbody></table>
+    <p>binoracle needs a local LLM to generate exploit hypotheses. The recommended setup is <strong>Qwen 2.5 Coder 7B</strong> running via <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>.</p>
+
+    <h3>Install Ollama and pull the model</h3>
+    <pre><code># Linux / macOS
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5-coder:7b</code></pre>
+
+    <h3>Set environment variables</h3>
+    <pre><code>export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+export BINORACLE_LANG=en    # report language: en or es</code></pre>
+
+    <p>Add these to your shell profile (<code>~/.bashrc</code>, <code>~/.zshrc</code>) to persist them across sessions.</p>
+
+    <h3>System requirements</h3>
+    <table>
+      <thead><tr><th>Dependency</th><th>Minimum</th><th>Recommended</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
+        <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
+        <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
+        <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
+        <tr><td>GPU (optional)</td><td>—</td><td>8 GB VRAM (Qwen 7B quantized)</td></tr>
+      </tbody>
+    </table>
+
     <h2 id="cve">3. CVE Engine</h2>
     <p>The CVE engine takes a CVE identifier, retrieves the descriptor from NVD, feeds it to the local LLM, and autonomously generates and verifies an exploit proof-of-concept against an ephemeral Docker lab.</p>
-    <pre><code>binoracle cve CVE-2025-27516\nbinoracle cve-batch CVE-2025-27516 CVE-2024-23334\nbinoracle cve CVE-2025-27516 --lang en --out ./reports/ --open-report</code></pre>
-    <table><thead><tr><th>Step</th><th>What happens</th></tr></thead><tbody>
-      <tr><td><strong>1 — NVD fetch</strong></td><td>Retrieves CVE record: identifier, CVSS score, affected package, description.</td></tr>
-      <tr><td><strong>2 — LLM hypothesis</strong></td><td>Qwen reads the description and outputs: vulnerability class, endpoint, payload strategy, scaffolder.</td></tr>
-      <tr><td><strong>3 — Scaffolder selection</strong></td><td>Maps the detected ecosystem to the matching Docker Compose lab template.</td></tr>
-      <tr><td><strong>4 — Docker lab</strong></td><td>Ephemeral lab built with the vulnerable package at the affected version. Torn down when done.</td></tr>
-      <tr><td><strong>5 — Playwright verify</strong></td><td>PoC executes against the lab. Playwright captures screenshots, records HTTP pairs, writes HTML report.</td></tr>
-    </tbody></table>
+
+    <h3>Basic usage</h3>
+    <pre><code># Investigate a single CVE
+binoracle cve CVE-2025-27516
+
+# Batch, parallelized
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
+
+# Force English report
+binoracle cve CVE-2025-27516 --lang en
+
+# Save to a specific directory
+binoracle cve CVE-2025-27516 --out ./reports/
+
+# Open report automatically when finished
+binoracle cve CVE-2025-27516 --open-report</code></pre>
+
+    <h3>What the engine does, step by step</h3>
+    <table>
+      <thead><tr><th>Step</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1 — NVD fetch</strong></td><td>Retrieves the CVE record: identifier, CVSS score, affected package version, and the plain-language description.</td></tr>
+        <tr><td><strong>2 — LLM hypothesis</strong></td><td>Qwen 2.5 Coder reads the description and outputs a structured hypothesis: vulnerability class (SSTI, SQLi, RCE…), affected endpoint, payload strategy, and the technology scaffolder to use.</td></tr>
+        <tr><td><strong>3 — Scaffolder selection</strong></td><td>The engine maps the detected ecosystem (Flask, Rails, Spring, WordPress…) to the matching Docker Compose lab template.</td></tr>
+        <tr><td><strong>4 — Docker lab</strong></td><td>An ephemeral lab is built and started with the vulnerable package pinned at the affected version. The lab is torn down when the run finishes.</td></tr>
+        <tr><td><strong>5 — Playwright verification</strong></td><td>The PoC is executed against the running lab. Playwright captures screenshots at each HTTP step, records request/response pairs, and writes the structured HTML report.</td></tr>
+      </tbody>
+    </table>
+
     <h3>Supported vulnerability classes</h3>
-    <table><thead><tr><th>Class</th><th>Scaffolders</th></tr></thead><tbody>
-      <tr><td>SSTI (Jinja2, Twig, Smarty)</td><td><code>pip</code> / <code>gem</code></td></tr>
-      <tr><td>SQLi (GET / POST / JSON / header)</td><td><code>pip</code> / <code>gem</code> / <code>php</code> / <code>maven</code></td></tr>
-      <tr><td>Path traversal / LFI</td><td><code>pip</code> / <code>gem</code> / <code>npm</code> / <code>httpd</code></td></tr>
-      <tr><td>RCE / command injection</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
-      <tr><td>XSS (reflected / stored)</td><td><code>pip</code> / <code>npm</code></td></tr>
-      <tr><td>SSRF / CSRF / XXE</td><td><code>pip</code> / <code>npm</code> / <code>java</code></td></tr>
-      <tr><td>Deserialization</td><td><code>java</code> / <code>gem (Marshal)</code></td></tr>
-      <tr><td>Auth bypass / IDOR</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
-      <tr><td>File upload / webshell</td><td><code>pip</code></td></tr>
-      <tr><td>WordPress plugins (100+)</td><td>WP Docker</td></tr>
-      <tr><td>Joomla / Drupal extensions</td><td>CMS Docker</td></tr>
-      <tr><td>Java / Maven (Spring, Struts, Log4j)</td><td><code>maven</code></td></tr>
-      <tr><td>PHP / npm / Ruby gems</td><td><code>php</code> / <code>npm</code> / <code>gem</code></td></tr>
-    </tbody></table>
+    <table>
+      <thead><tr><th>Class</th><th>Scaffolders</th></tr></thead>
+      <tbody>
+        <tr><td>SSTI (Jinja2, Twig, Smarty)</td><td><code>pip</code> / <code>gem</code></td></tr>
+        <tr><td>SQLi (GET / POST / JSON / header)</td><td><code>pip</code> / <code>gem</code> / <code>php</code> / <code>maven</code></td></tr>
+        <tr><td>Path traversal / LFI</td><td><code>pip</code> / <code>gem</code> / <code>npm</code> / <code>httpd</code></td></tr>
+        <tr><td>RCE / command injection</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
+        <tr><td>XSS (reflected / stored)</td><td><code>pip</code> / <code>npm</code></td></tr>
+        <tr><td>SSRF</td><td><code>pip</code> / <code>npm</code></td></tr>
+        <tr><td>XXE</td><td><code>java</code> / <code>maven</code></td></tr>
+        <tr><td>Deserialization</td><td><code>java</code> / <code>gem (Marshal)</code></td></tr>
+        <tr><td>Auth bypass / IDOR</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
+        <tr><td>File upload / webshell</td><td><code>pip</code></td></tr>
+        <tr><td>CSRF</td><td><code>pip</code> / <code>gem</code></td></tr>
+        <tr><td>WordPress plugins (100+)</td><td>WP Docker</td></tr>
+        <tr><td>Joomla / Drupal extensions</td><td>CMS Docker</td></tr>
+        <tr><td>Java / Maven (Spring, Struts, Log4j)</td><td><code>maven</code></td></tr>
+        <tr><td>PHP Composer packages</td><td><code>php</code></td></tr>
+        <tr><td>npm / Node.js / Next.js</td><td><code>npm</code></td></tr>
+        <tr><td>Ruby gems (Rails, Rack, Sinatra)</td><td><code>gem</code></td></tr>
+      </tbody>
+    </table>
+
     <h2 id="binary">4. Binary RE Engine</h2>
-    <pre><code>binoracle pwn ./binary          # full exploit chain, auto-selected technique\nbinoracle triage ./binary       # mitigations, symbols, imports, sections\nbinoracle decompile ./binary    # Ghidra, radare2, angr, pwndbg\nbinoracle rop ./binary          # ROP gadget search + chain synthesis\nbinoracle hardening ./binary    # hardening assessment with bypass notes</code></pre>
-    <table><thead><tr><th>Family</th><th>Techniques</th></tr></thead><tbody>
-      <tr><td><strong>Stack</strong></td><td>ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64/x86-32/aarch64), stack pivot, ROP chains</td></tr>
-      <tr><td><strong>Heap</strong></td><td>tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, large-bin attack, Botcake</td></tr>
-      <tr><td><strong>Format string</strong></td><td>%n arbitrary write, GOT overwrite, canary leak, PIE leak</td></tr>
-      <tr><td><strong>Low-level</strong></td><td>shellcode (NX off), bad-char scrubbing, IO_FILE exploit, DL-resolve, GOT hijack</td></tr>
-      <tr><td><strong>Canary / PIE</strong></td><td>leak + reuse, fork brute-force, partial overwrite, leak chain</td></tr>
-    </tbody></table>
-    <h3>Practice corpus</h3>
-    <pre><code>samples/build.sh\nbinoracle triage samples/bin/ret2win\nbinoracle pwn samples/bin/ret2libc\nbinoracle pwn samples/bin/format_string\nbinoracle pwn samples/bin/tcache_dup</code></pre>
-    <table><thead><tr><th>Binary</th><th>Technique</th><th>Difficulty</th></tr></thead><tbody>
-      <tr><td><code>ret2win</code></td><td>Simple return address overwrite</td><td>Beginner</td></tr>
-      <tr><td><code>ret2libc</code></td><td>Ret-to-libc with ROP stub</td><td>Beginner</td></tr>
-      <tr><td><code>format_string</code></td><td>GOT overwrite via %n</td><td>Intermediate</td></tr>
-      <tr><td><code>canary_leak</code></td><td>Stack canary leak + reuse</td><td>Intermediate</td></tr>
-      <tr><td><code>tcache_dup</code></td><td>tcache double-free primitive</td><td>Intermediate</td></tr>
-      <tr><td><code>house_of_orange</code></td><td>House-of-Orange heap exploitation</td><td>Advanced</td></tr>
-      <tr><td><code>srop_chain</code></td><td>Sigreturn-oriented programming</td><td>Advanced</td></tr>
-      <tr><td><code>io_file</code></td><td>IO_FILE structure hijack</td><td>Advanced</td></tr>
-    </tbody></table>
+    <p>The binary engine provides automated exploit generation, static analysis, decompilation, and ROP chain synthesis across a wide range of binary formats.</p>
+
+    <h3>Automated exploit chain</h3>
+    <pre><code># Full exploit chain — technique is auto-selected
+binoracle pwn ./binary
+
+# Static analysis: mitigations, symbols, imports, sections
+binoracle triage ./binary
+
+# Multi-backend decompilation
+binoracle decompile ./binary
+
+# ROP gadget search and chain synthesis
+binoracle rop ./binary
+
+# Hardening assessment with bypass notes
+binoracle hardening ./binary</code></pre>
+
+    <h3>Exploit families</h3>
+    <table>
+      <thead><tr><th>Family</th><th>Techniques</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Stack</strong></td><td>ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64/x86-32/aarch64), stack pivot, ROP chains</td></tr>
+        <tr><td><strong>Heap</strong></td><td>tcache dup, fastbin dup, UAF, double-free, House-of-Force, House-of-Spirit, House-of-Orange, House-of-Mind, large-bin attack, unsafe-unlink, Botcake</td></tr>
+        <tr><td><strong>Format string</strong></td><td>%n arbitrary write, GOT overwrite, canary leak, PIE leak</td></tr>
+        <tr><td><strong>Low-level</strong></td><td>shellcode (NX off), bad-char scrubbing, IO_FILE exploit, DL-resolve, GOT hijack</td></tr>
+        <tr><td><strong>Canary</strong></td><td>leak + reuse, fork brute-force</td></tr>
+        <tr><td><strong>PIE</strong></td><td>partial overwrite, leak chain</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Working with the practice corpus</h3>
+    <p>binoracle ships 40+ intentionally vulnerable binaries for local practice.</p>
+    <pre><code># Compile the corpus (requires Docker or gcc)
+samples/build.sh
+
+# Run triage on a classic ret2win binary
+binoracle triage samples/bin/ret2win
+
+# Generate a full exploit chain
+binoracle pwn samples/bin/ret2libc
+binoracle pwn samples/bin/format_string
+binoracle pwn samples/bin/tcache_dup</code></pre>
+
+    <p>Techniques covered: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, format string GOT overwrite, canary leak, PIE leak, CSU chain, DL-resolve, heap botcake, house-of-orange, unsafe-unlink, stack pivot, IO_FILE, callhijack, dlresolve32.</p>
+
     <h2 id="mcp">5. MCP Server</h2>
+    <p>Start the MCP server to expose all binoracle capabilities as ~100 tools to MCP-compatible clients such as Claude Desktop, Cursor, or Zed.</p>
     <pre><code>binoracle mcp-server</code></pre>
-    <pre><code>// claude_desktop_config.json\n{\n  "mcpServers": {\n    "binoracle": { "command": "binoracle", "args": ["mcp-server"] }\n  }\n}</code></pre>
-    <p>Key tools: <code>triage</code>, <code>pwn</code>, <code>rop_chain</code>, <code>heap_exploit</code>, <code>fmt_exploit</code>, <code>decompile</code>, <code>cve_investigate</code>, <code>vuln_hunt</code>, <code>hardening</code>, <code>audit</code>, <code>reachability</code>, <code>diff_patch</code>, <code>elf_layout</code>, <code>pe_inspect</code>, <code>apk_audit</code>, <code>dotnet_inspect</code>, <code>wasm_inspect</code>, <code>sqlite_audit</code>, <code>evm_inspect</code>, <code>fuzz</code>, <code>dynamic_trace</code>, <code>coredump</code> (~100 total).</p>
+
+    <p>Add the server to your client configuration:</p>
+    <pre><code>// claude_desktop_config.json
+{{
+  "mcpServers": {{
+    "binoracle": {{
+      "command": "binoracle",
+      "args": ["mcp-server"]
+    }}
+  }}
+}}</code></pre>
+
+    <p>Key MCP tools: <code>triage</code>, <code>pwn</code>, <code>rop_chain</code>, <code>heap_exploit</code>, <code>fmt_exploit</code>, <code>decompile</code>, <code>cve_investigate</code>, <code>vuln_hunt</code>, <code>hardening</code>, <code>audit</code>, <code>reachability</code>, <code>diff_patch</code>, <code>elf_layout</code>, <code>pe_inspect</code>, <code>apk_audit</code>, <code>dotnet_inspect</code>, <code>wasm_inspect</code>, <code>sqlite_audit</code>, <code>evm_inspect</code>, <code>fuzz</code>, <code>dynamic_trace</code>, <code>coredump</code>.</p>
+
     <h2 id="reports">6. Reports</h2>
-    <p>Each CVE investigation produces an HTML report with: executive summary + CVSS score, LLM hypothesis + reasoning chain, lab scaffold + Docker Compose spec, Playwright screenshots at each verification step, complete PoC code (curl / Python / pwntools), remediation recommendations.</p>
-    <pre><code>binoracle cve CVE-2025-27516 --open-report\nbinoracle cve CVE-2025-27516 --out ./reports/my-research/</code></pre>
+    <p>Each CVE investigation produces a structured HTML report containing:</p>
+    <ul>
+      <li>Executive summary with CVSS score and severity classification</li>
+      <li>LLM hypothesis with the full reasoning chain</li>
+      <li>Lab scaffold configuration and Docker Compose specification</li>
+      <li>Playwright screenshots at each verification step</li>
+      <li>Complete PoC code (curl, Python, pwntools)</li>
+      <li>Remediation recommendations with specific fix guidance</li>
+    </ul>
+    <pre><code># Open the report immediately after the run
+binoracle cve CVE-2025-27516 --open-report
+
+# Save to a specific output directory
+binoracle cve CVE-2025-27516 --out ./reports/my-research/</code></pre>
+
     <h2 id="corpus">7. Practice Corpus</h2>
-    <p>40+ intentionally vulnerable binaries covering every exploit technique. Build with Docker or native gcc:</p>
-    <pre><code>samples/build.sh</code></pre>
-    <p>Techniques: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, format string GOT overwrite, canary leak, PIE leak, CSU chain, DL-resolve, heap botcake, house-of-orange, unsafe-unlink, stack pivot, IO_FILE, callhijack, dlresolve32.</p>
+    <p>The practice corpus is a set of intentionally vulnerable binaries designed to cover every exploit technique binoracle supports. Compile them with Docker or native gcc:</p>
+    <pre><code># Build with Docker (no local toolchain needed)
+samples/build.sh --docker
+
+# Build with the system toolchain
+samples/build.sh</code></pre>
+
+    <p>After building, the binaries are in <code>samples/bin/</code>. Work through them in order of increasing difficulty:</p>
+    <table>
+      <thead><tr><th>Binary</th><th>Technique</th><th>Difficulty</th></tr></thead>
+      <tbody>
+        <tr><td><code>ret2win</code></td><td>Simple return address overwrite</td><td>Beginner</td></tr>
+        <tr><td><code>ret2libc</code></td><td>Ret-to-libc with ROP stub</td><td>Beginner</td></tr>
+        <tr><td><code>format_string</code></td><td>GOT overwrite via %n</td><td>Intermediate</td></tr>
+        <tr><td><code>canary_leak</code></td><td>Stack canary leak + reuse</td><td>Intermediate</td></tr>
+        <tr><td><code>tcache_dup</code></td><td>tcache double-free primitive</td><td>Intermediate</td></tr>
+        <tr><td><code>house_of_orange</code></td><td>House-of-Orange heap exploitation</td><td>Advanced</td></tr>
+        <tr><td><code>srop_chain</code></td><td>Sigreturn-oriented programming</td><td>Advanced</td></tr>
+        <tr><td><code>io_file</code></td><td>IO_FILE structure hijack</td><td>Advanced</td></tr>
+      </tbody>
+    </table>
+
   </main>
 </div>"""
     return shell("Tutorial — binoracle", "tutorial", body)
@@ -645,137 +1647,242 @@ def tutorial_page():
 # Tutorial page (Spanish)
 # ---------------------------------------------------------------------------
 def tutorial_es_page():
-    body = """
+    body = f"""
 <div class="doc-layout">
-  <aside class="doc-sidebar">
-    <h4>Contenido</h4>
-    <a href="#descripcion">Descripción</a>
-    <a href="#instalacion">Instalación</a>
-    <a href="#configuracion">Configuración</a>
-    <a href="#motor-cve">Motor CVE</a>
-    <a href="#binario">Motor RE Binario</a>
-    <a href="#mcp">Servidor MCP</a>
-    <a href="#informes">Informes</a>
-    <a href="#corpus">Corpus de práctica</a>
-    <h4 style="margin-top:1.5rem;">Navegación</h4>
-    <a href="index.html">Inicio</a>
-    <a href="tutorial.html">Tutorial (EN)</a>
-    <a href="roadmap.html">Roadmap</a>
-    <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub</a>
-  </aside>
+  {wiki_sidebar("tutorial", "es")}
   <main class="doc-content">
+
     <h1 id="descripcion">Tutorial de binoracle</h1>
     <p>Este tutorial recorre todas las capacidades de binoracle: desde la instalación inicial hasta ejecutar una investigación CVE completa y generar una cadena de exploit contra un binario local. Todo se ejecuta en tu máquina; no se requieren claves de API externas ni servicios en la nube.</p>
-    <blockquote><strong>Aviso legal</strong> — binoracle es una herramienta de investigación y educación. Todos los laboratorios CVE se ejecutan contra contenedores Docker que tú creas localmente. No la uses contra sistemas que no sean tuyos o para los que no tengas permiso escrito explícito.</blockquote>
+
+    <blockquote>
+      <strong>Aviso legal</strong> — binoracle es una herramienta de investigación y educación.
+      Todos los laboratorios CVE se ejecutan contra contenedores Docker que tú creas localmente.
+      No la uses contra sistemas que no sean tuyos o para los que no tengas permiso escrito explícito.
+    </blockquote>
+
     <h2 id="instalacion">1. Instalación</h2>
-    <p>binoracle requiere Python 3.10 o superior y Docker 20+.</p>
-    <pre><code>pip install binoracle\npip install binoracle[pwn]        # pwntools + ROPgadget\npip install binoracle[symbolic]   # ejecución simbólica angr\npip install binoracle[screenshots] # capturas Playwright\npip install binoracle[all]        # todo lo anterior</code></pre>
+    <p>binoracle requiere Python 3.10 o superior y Docker 20+. Instala con pip:</p>
+    <pre><code>pip install binoracle</code></pre>
+    <p>Instala extras opcionales para desbloquear backends de análisis adicionales:</p>
+    <pre><code>pip install binoracle[pwn]        # pwntools + ROPgadget
+pip install binoracle[symbolic]   # ejecución simbólica angr
+pip install binoracle[screenshots] # capturas Playwright en informes CVE
+pip install binoracle[all]        # todo lo anterior</code></pre>
+    <p>Verifica la instalación:</p>
+    <pre><code>binoracle --version</code></pre>
+
     <h2 id="configuracion">2. Configuración</h2>
-    <p>Instala <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> y descarga el modelo:</p>
-    <pre><code>curl -fsSL https://ollama.com/install.sh | sh\nollama pull qwen2.5-coder:7b</code></pre>
-    <p>Variables de entorno (añade a <code>~/.bashrc</code> o <code>~/.zshrc</code>):</p>
-    <pre><code>export BINORACLE_BACKEND=openai\nexport BINORACLE_BASE_URL=http://127.0.0.1:11434/v1\nexport BINORACLE_MODEL=qwen2.5-coder:7b\nexport BINORACLE_LANG=es</code></pre>
-    <table><thead><tr><th>Dependencia</th><th>Mínimo</th><th>Recomendado</th></tr></thead><tbody>
-      <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
-      <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
-      <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
-      <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
-      <tr><td>GPU (opcional)</td><td>—</td><td>8 GB VRAM (Qwen 7B cuantizado)</td></tr>
-    </tbody></table>
+    <p>binoracle necesita un LLM local para generar hipótesis de exploit. La configuración recomendada es <strong>Qwen 2.5 Coder 7B</strong> ejecutándose mediante <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>.</p>
+
+    <h3>Instalar Ollama y descargar el modelo</h3>
+    <pre><code># Linux / macOS
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5-coder:7b</code></pre>
+
+    <h3>Variables de entorno</h3>
+    <pre><code>export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+export BINORACLE_LANG=es    # idioma del informe: es o en</code></pre>
+
+    <p>Añade estas líneas a tu perfil de shell (<code>~/.bashrc</code>, <code>~/.zshrc</code>) para que persistan entre sesiones.</p>
+
+    <h3>Requisitos del sistema</h3>
+    <table>
+      <thead><tr><th>Dependencia</th><th>Mínimo</th><th>Recomendado</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
+        <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
+        <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
+        <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
+        <tr><td>GPU (opcional)</td><td>—</td><td>8 GB VRAM (Qwen 7B cuantizado)</td></tr>
+      </tbody>
+    </table>
+
     <h2 id="motor-cve">3. Motor CVE</h2>
     <p>El motor CVE toma un identificador CVE, recupera el descriptor de NVD, lo envía al LLM local, y genera y verifica de forma autónoma un proof-of-concept de exploit contra un laboratorio Docker efímero.</p>
-    <pre><code>binoracle cve CVE-2025-27516\nbinoracle cve-batch CVE-2025-27516 CVE-2024-23334\nbinoracle cve CVE-2025-27516 --lang es --out ./informes/ --open-report</code></pre>
-    <table><thead><tr><th>Paso</th><th>Qué ocurre</th></tr></thead><tbody>
-      <tr><td><strong>1 — Obtención NVD</strong></td><td>Recupera el registro CVE: identificador, CVSS, versión afectada, descripción.</td></tr>
-      <tr><td><strong>2 — Hipótesis LLM</strong></td><td>Qwen lee la descripción y genera: clase de vulnerabilidad, endpoint, payload, scaffolder.</td></tr>
-      <tr><td><strong>3 — Selección scaffolder</strong></td><td>Mapea el ecosistema detectado a la plantilla Docker Compose correspondiente.</td></tr>
-      <tr><td><strong>4 — Laboratorio Docker</strong></td><td>Lab efímero con el paquete vulnerable en la versión afectada. Se destruye al terminar.</td></tr>
-      <tr><td><strong>5 — Verificación Playwright</strong></td><td>El PoC se ejecuta contra el lab. Playwright captura pantallas y escribe el informe HTML.</td></tr>
-    </tbody></table>
+
+    <h3>Uso básico</h3>
+    <pre><code># Investigar un CVE individual
+binoracle cve CVE-2025-27516
+
+# Lote, paralelizado
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
+
+# Informe en inglés
+binoracle cve CVE-2025-27516 --lang en
+
+# Guardar en directorio específico
+binoracle cve CVE-2025-27516 --out ./informes/
+
+# Abrir el informe al terminar
+binoracle cve CVE-2025-27516 --open-report</code></pre>
+
+    <h3>Pasos del motor, en detalle</h3>
+    <table>
+      <thead><tr><th>Paso</th><th>Qué ocurre</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1 — Obtención NVD</strong></td><td>Recupera el registro CVE: identificador, puntuación CVSS, versión del paquete afectado y la descripción en lenguaje natural.</td></tr>
+        <tr><td><strong>2 — Hipótesis LLM</strong></td><td>Qwen 2.5 Coder lee la descripción y genera una hipótesis estructurada: clase de vulnerabilidad (SSTI, SQLi, RCE…), endpoint afectado, estrategia de payload y scaffolder tecnológico.</td></tr>
+        <tr><td><strong>3 — Selección del scaffolder</strong></td><td>El motor mapea el ecosistema detectado (Flask, Rails, Spring, WordPress…) a la plantilla Docker Compose correspondiente.</td></tr>
+        <tr><td><strong>4 — Laboratorio Docker</strong></td><td>Se construye y arranca un lab efímero con el paquete vulnerable fijado en la versión afectada. El lab se destruye al finalizar la ejecución.</td></tr>
+        <tr><td><strong>5 — Verificación Playwright</strong></td><td>El PoC se ejecuta contra el lab. Playwright captura pantallas en cada paso HTTP, registra los pares solicitud/respuesta y escribe el informe HTML estructurado.</td></tr>
+      </tbody>
+    </table>
+
     <h3>Clases de vulnerabilidad soportadas</h3>
-    <table><thead><tr><th>Clase</th><th>Scaffolders</th></tr></thead><tbody>
-      <tr><td>SSTI (Jinja2, Twig, Smarty)</td><td><code>pip</code> / <code>gem</code></td></tr>
-      <tr><td>SQLi (GET / POST / JSON / header)</td><td><code>pip</code> / <code>gem</code> / <code>php</code> / <code>maven</code></td></tr>
-      <tr><td>Path traversal / LFI</td><td><code>pip</code> / <code>gem</code> / <code>npm</code> / <code>httpd</code></td></tr>
-      <tr><td>RCE / inyección de comandos</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
-      <tr><td>XSS / SSRF / CSRF / XXE</td><td><code>pip</code> / <code>npm</code> / <code>java</code></td></tr>
-      <tr><td>Deserialización</td><td><code>java</code> / <code>gem (Marshal)</code></td></tr>
-      <tr><td>Auth Bypass / IDOR / File upload</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
-      <tr><td>Plugins WordPress (100+)</td><td>WP Docker</td></tr>
-      <tr><td>Extensiones Joomla / Drupal</td><td>CMS Docker</td></tr>
-      <tr><td>Java / Maven (Spring, Struts, Log4j)</td><td><code>maven</code></td></tr>
-      <tr><td>PHP / npm / Ruby gems</td><td><code>php</code> / <code>npm</code> / <code>gem</code></td></tr>
-    </tbody></table>
+    <table>
+      <thead><tr><th>Clase</th><th>Scaffolders</th></tr></thead>
+      <tbody>
+        <tr><td>SSTI (Jinja2, Twig, Smarty)</td><td><code>pip</code> / <code>gem</code></td></tr>
+        <tr><td>SQLi (GET / POST / JSON / header)</td><td><code>pip</code> / <code>gem</code> / <code>php</code> / <code>maven</code></td></tr>
+        <tr><td>Path traversal / LFI</td><td><code>pip</code> / <code>gem</code> / <code>npm</code> / <code>httpd</code></td></tr>
+        <tr><td>RCE / inyección de comandos</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
+        <tr><td>XSS (reflected / stored)</td><td><code>pip</code> / <code>npm</code></td></tr>
+        <tr><td>SSRF</td><td><code>pip</code> / <code>npm</code></td></tr>
+        <tr><td>XXE</td><td><code>java</code> / <code>maven</code></td></tr>
+        <tr><td>Deserialización</td><td><code>java</code> / <code>gem (Marshal)</code></td></tr>
+        <tr><td>Auth Bypass / IDOR</td><td><code>pip</code> / <code>gem</code> / <code>npm</code></td></tr>
+        <tr><td>Subida de ficheros / Webshell</td><td><code>pip</code></td></tr>
+        <tr><td>CSRF</td><td><code>pip</code> / <code>gem</code></td></tr>
+        <tr><td>Plugins WordPress (100+)</td><td>WP Docker</td></tr>
+        <tr><td>Extensiones Joomla / Drupal</td><td>CMS Docker</td></tr>
+        <tr><td>Java / Maven (Spring, Struts, Log4j)</td><td><code>maven</code></td></tr>
+        <tr><td>Paquetes PHP Composer</td><td><code>php</code></td></tr>
+        <tr><td>npm / Node.js / Next.js</td><td><code>npm</code></td></tr>
+        <tr><td>Gems Ruby (Rails, Rack, Sinatra)</td><td><code>gem</code></td></tr>
+      </tbody>
+    </table>
+
     <h2 id="binario">4. Motor de Reversing Binario</h2>
-    <pre><code>binoracle pwn ./binario          # cadena de exploit completa\nbinoracle triage ./binario       # mitigaciones, símbolos, importaciones\nbinoracle decompile ./binario    # Ghidra, radare2, angr, pwndbg\nbinoracle rop ./binario          # búsqueda de gadgets ROP + síntesis\nbinoracle hardening ./binario    # hardening con notas de bypass</code></pre>
-    <table><thead><tr><th>Familia</th><th>Técnicas</th></tr></thead><tbody>
-      <tr><td><strong>Stack</strong></td><td>ret2win, ret2libc, ret2plt, ret2csu, SROP, stack pivot, cadenas ROP</td></tr>
-      <tr><td><strong>Heap</strong></td><td>tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, Botcake</td></tr>
-      <tr><td><strong>Format String</strong></td><td>escritura arbitraria con %n, sobrescritura GOT, fuga de canary, fuga de PIE</td></tr>
-      <tr><td><strong>Bajo nivel</strong></td><td>shellcode, bad-chars, IO_FILE, DL-resolve, secuestro GOT</td></tr>
-      <tr><td><strong>Canary / PIE</strong></td><td>fuga + reutilización, fuerza bruta en fork, sobrescritura parcial</td></tr>
-    </tbody></table>
+    <p>El motor binario proporciona generación de exploits automatizada, análisis estático, decompilación y síntesis de cadenas ROP para una amplia variedad de formatos binarios.</p>
+
+    <h3>Uso básico</h3>
+    <pre><code># Cadena de exploit completa — técnica seleccionada automáticamente
+binoracle pwn ./binario
+
+# Análisis estático: mitigaciones, símbolos, importaciones, secciones
+binoracle triage ./binario
+
+# Decompilación multi-motor
+binoracle decompile ./binario
+
+# Búsqueda de gadgets ROP y síntesis de cadena
+binoracle rop ./binario
+
+# Evaluación de hardening con notas de bypass
+binoracle hardening ./binario</code></pre>
+
+    <h3>Familias de exploit</h3>
+    <table>
+      <thead><tr><th>Familia</th><th>Técnicas</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Stack</strong></td><td>ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64/x86-32/aarch64), stack pivot, cadenas ROP</td></tr>
+        <tr><td><strong>Heap</strong></td><td>tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, large-bin attack, Botcake</td></tr>
+        <tr><td><strong>Format String</strong></td><td>escritura arbitraria con %n, sobrescritura GOT, fuga de canary, fuga de PIE</td></tr>
+        <tr><td><strong>Bajo nivel</strong></td><td>shellcode (NX off), limpieza de bad-chars, exploit IO_FILE, DL-resolve, secuestro GOT</td></tr>
+        <tr><td><strong>Canary</strong></td><td>fuga + reutilización, fuerza bruta en fork</td></tr>
+        <tr><td><strong>PIE</strong></td><td>sobrescritura parcial, cadena de fugas</td></tr>
+      </tbody>
+    </table>
+
     <h3>Corpus de práctica</h3>
-    <pre><code>samples/build.sh\nbinoracle triage samples/bin/ret2win\nbinoracle pwn samples/bin/ret2libc\nbinoracle pwn samples/bin/format_string\nbinoracle pwn samples/bin/tcache_dup</code></pre>
-    <table><thead><tr><th>Binario</th><th>Técnica</th><th>Dificultad</th></tr></thead><tbody>
-      <tr><td><code>ret2win</code></td><td>Sobrescritura de dirección de retorno</td><td>Principiante</td></tr>
-      <tr><td><code>ret2libc</code></td><td>Ret-to-libc con stub ROP</td><td>Principiante</td></tr>
-      <tr><td><code>format_string</code></td><td>Sobrescritura GOT con %n</td><td>Intermedio</td></tr>
-      <tr><td><code>canary_leak</code></td><td>Fuga de canary + reutilización</td><td>Intermedio</td></tr>
-      <tr><td><code>tcache_dup</code></td><td>Primitiva double-free tcache</td><td>Intermedio</td></tr>
-      <tr><td><code>house_of_orange</code></td><td>Explotación heap House-of-Orange</td><td>Avanzado</td></tr>
-      <tr><td><code>srop_chain</code></td><td>Programación orientada a Sigreturn</td><td>Avanzado</td></tr>
-      <tr><td><code>io_file</code></td><td>Secuestro de estructura IO_FILE</td><td>Avanzado</td></tr>
-    </tbody></table>
+    <pre><code># Compilar el corpus (requiere Docker o gcc)
+samples/build.sh --docker
+
+# Análisis del binario más sencillo
+binoracle triage samples/bin/ret2win
+
+# Generar cadena de exploit
+binoracle pwn samples/bin/ret2libc
+binoracle pwn samples/bin/format_string
+binoracle pwn samples/bin/tcache_dup</code></pre>
+
+    <table>
+      <thead><tr><th>Binario</th><th>Técnica</th><th>Dificultad</th></tr></thead>
+      <tbody>
+        <tr><td><code>ret2win</code></td><td>Sobrescritura de dirección de retorno</td><td>Principiante</td></tr>
+        <tr><td><code>ret2libc</code></td><td>Ret-to-libc con stub ROP</td><td>Principiante</td></tr>
+        <tr><td><code>format_string</code></td><td>Sobrescritura GOT con %n</td><td>Intermedio</td></tr>
+        <tr><td><code>canary_leak</code></td><td>Fuga de canary de pila + reutilización</td><td>Intermedio</td></tr>
+        <tr><td><code>tcache_dup</code></td><td>Primitiva double-free tcache</td><td>Intermedio</td></tr>
+        <tr><td><code>house_of_orange</code></td><td>Explotación heap House-of-Orange</td><td>Avanzado</td></tr>
+        <tr><td><code>srop_chain</code></td><td>Programación orientada a Sigreturn</td><td>Avanzado</td></tr>
+        <tr><td><code>io_file</code></td><td>Secuestro de estructura IO_FILE</td><td>Avanzado</td></tr>
+      </tbody>
+    </table>
+
     <h2 id="mcp">5. Servidor MCP</h2>
+    <p>Inicia el servidor MCP para exponer todas las capacidades de binoracle como ~100 herramientas a clientes compatibles con MCP como Claude Desktop, Cursor o Zed.</p>
     <pre><code>binoracle mcp-server</code></pre>
-    <pre><code>// claude_desktop_config.json\n{\n  "mcpServers": {\n    "binoracle": { "command": "binoracle", "args": ["mcp-server"] }\n  }\n}</code></pre>
+    <pre><code>// claude_desktop_config.json
+{{
+  "mcpServers": {{
+    "binoracle": {{
+      "command": "binoracle",
+      "args": ["mcp-server"]
+    }}
+  }}
+}}</code></pre>
+
     <h2 id="informes">6. Informes</h2>
-    <p>Cada investigación CVE genera un informe HTML con: resumen ejecutivo + CVSS, hipótesis del LLM + cadena de razonamiento, configuración del lab + Docker Compose, capturas Playwright, código PoC completo, recomendaciones de remediación.</p>
-    <pre><code>binoracle cve CVE-2025-27516 --open-report\nbinoracle cve CVE-2025-27516 --out ./informes/</code></pre>
+    <p>Cada investigación CVE genera un informe HTML con:</p>
+    <ul>
+      <li>Resumen ejecutivo con puntuación CVSS y clasificación de severidad</li>
+      <li>Hipótesis del LLM con la cadena de razonamiento completa</li>
+      <li>Configuración del laboratorio y especificación Docker Compose</li>
+      <li>Capturas de pantalla de Playwright en cada paso de verificación</li>
+      <li>Código PoC completo (curl, Python, pwntools)</li>
+      <li>Recomendaciones de remediación con orientación específica</li>
+    </ul>
+
     <h2 id="corpus">7. Corpus de práctica</h2>
-    <p>Más de 40 binarios intencionalmente vulnerables. Compiílalos con Docker o gcc:</p>
+    <p>binoracle incluye más de 40 binarios intencionalmente vulnerables para práctica local. Compílalos con Docker o gcc nativo:</p>
     <pre><code>samples/build.sh</code></pre>
     <p>Técnicas cubiertas: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, format string GOT overwrite, canary leak, PIE leak, CSU chain, DL-resolve, heap botcake, house-of-orange, unsafe-unlink, stack pivot, IO_FILE, callhijack, dlresolve32.</p>
+
   </main>
 </div>"""
-    return shell("Tutorial — binoracle", "tutorial", body)
+    return shell("Tutorial de binoracle", "tutorial", body)
 
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 def build():
+    # Clean and recreate site/
     if os.path.exists(SITE):
         shutil.rmtree(SITE)
     os.makedirs(SITE)
 
+    # Copy assets
     assets_src = os.path.join(DOCS, "assets")
     assets_dst = os.path.join(SITE, "assets")
     if os.path.exists(assets_src):
         shutil.copytree(assets_src, assets_dst)
 
+    # Landing page
     with open(os.path.join(SITE, "index.html"), "w", encoding="utf-8") as f:
         f.write(index_page())
     print("  index.html")
 
+    # Tutorial pages
     with open(os.path.join(SITE, "tutorial.html"), "w", encoding="utf-8") as f:
         f.write(tutorial_page())
     print("  tutorial.html")
-
     with open(os.path.join(SITE, "tutorial-es.html"), "w", encoding="utf-8") as f:
         f.write(tutorial_es_page())
     print("  tutorial-es.html")
 
-    for src, out, title in PAGES:
-        src_path = src if os.path.isabs(src) else os.path.join(DOCS, src)
-        if not os.path.exists(src_path):
-            print(f"  SKIP {out} (source not found: {src_path})")
-            continue
-        current = out.replace(".html", "").replace("index-es", "docs")
-        html = doc_page(src_path, title, current)
-        with open(os.path.join(SITE, out), "w", encoding="utf-8") as f:
-            f.write(html)
-        print(f"  {out}")
+    # Roadmap page
+    with open(os.path.join(SITE, "roadmap.html"), "w", encoding="utf-8") as f:
+        f.write(roadmap_page())
+    print("  roadmap.html")
+
+    # Spanish wiki home
+    with open(os.path.join(SITE, "index-es.html"), "w", encoding="utf-8") as f:
+        f.write(docs_es_page())
+    print("  index-es.html")
 
     print(f"\nSite written to {SITE}/")
 
