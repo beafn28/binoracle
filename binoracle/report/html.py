@@ -2314,10 +2314,10 @@ def render_training_page(markdown: str, lang: str = "es") -> str:
 def render_investigation_page(markdown: str, script: str = "", cve: str = "target",
                               lang: str = "es", poc_kind: str = "pwntools",
                               inv=None) -> str:
-    """Informe profesional de CVE: hero con CVE grande, badges CVSS/estado/PoC, grid de metadata,
-    y el informe markdown completo debajo. Autocontenido (sin dependencias externas una vez guardado).
-    `inv` es el objeto Investigation -- si se pasa, se extrae metadata estructurada para los badges
-    y el grid; si no, el informe solo tiene el markdown."""
+    """Informe profesional de CVE: hero con CVSS grande, sidebar de navegacion, tarjeta de prueba
+    de explotacion, timeline de cadena de ataque, analisis tecnico, galeria de capturas.
+    Autocontenido (sin dependencias externas una vez guardado).
+    `inv` es el objeto Investigation -- si se pasa, se extrae metadata estructurada."""
     import base64
     import re as _re
     from datetime import datetime, timezone
@@ -2331,111 +2331,256 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         generated_long = now.strftime("%B %-d, %Y")
     generated_short = now.strftime("%Y-%m-%d %H:%M UTC")
 
-    # --- Extraer metadata del objeto Investigation si se proporciona ---
-    cvss_score = getattr(inv, "cvss_score", None)
-    cvss_severity = getattr(inv, "cvss_severity", "") or ""
-    cvss_vector = getattr(inv, "cvss_vector", "") or ""
-    description = getattr(inv, "description", "") or ""
-    published = getattr(inv, "published", "") or ""
-    vuln_class = getattr(inv, "vuln_class", "") or ""
-    verified = getattr(inv, "verified", False)
+    # ── Extraer datos del objeto Investigation ──────────────────────────────
+    cvss_score     = getattr(inv, "cvss_score", None)
+    cvss_severity  = getattr(inv, "cvss_severity", "") or ""
+    cvss_vector    = getattr(inv, "cvss_vector", "") or ""
+    description    = getattr(inv, "description", "") or ""
+    published      = getattr(inv, "published", "") or ""
+    vuln_class     = getattr(inv, "vuln_class", "") or ""
+    verified       = getattr(inv, "verified", False)
+    verified_detail= getattr(inv, "verified_detail", "") or ""
+    verified_ev    = getattr(inv, "verified_evidence", {}) or {}
+    attempt_ev     = getattr(inv, "attempt_evidence", {}) or {}
     dynamic_verify = getattr(inv, "dynamic_verify", {}) or {}
-    poc_source_used = getattr(inv, "poc_source_used", "") or ""
-    llm_notes = getattr(inv, "llm_notes", {}) or {}
-    affected_ver = str(llm_notes.get("affected_version") or "").strip()
+    poc_source_used= getattr(inv, "poc_source_used", "") or ""
+    llm_notes      = getattr(inv, "llm_notes", {}) or {}
+    blockers       = list(getattr(inv, "blockers", []) or [])
+    affected_ver   = str(llm_notes.get("affected_version") or "").strip()
+
     if not description:
-        # Intentar extraer la primera oracion del markdown como descripcion
         for ln in (markdown or "").splitlines():
             ln = ln.strip()
             if ln and not ln.startswith("#") and not ln.startswith("|") and len(ln) > 20:
                 description = ln[:220].rstrip(".") + ("…" if len(ln) > 220 else "")
                 break
 
-    # --- Badges ---
+    # Colores por severidad
+    _SEV_BG   = {"CRITICAL":"#b91c1c","HIGH":"#c2410c","MEDIUM":"#b45309","LOW":"#166534"}
+    _SEV_RING = {"CRITICAL":"#fca5a5","HIGH":"#fdba74","MEDIUM":"#fcd34d","LOW":"#86efac"}
+    sev_up    = cvss_severity.upper()
+    sev_bg    = _SEV_BG.get(sev_up, "#374151")
+    sev_ring  = _SEV_RING.get(sev_up, "#6b7280")
+
+    # ── Badges hero ─────────────────────────────────────────────────────────
     badges_html = ""
     if cvss_score is not None:
-        sev = (cvss_severity or "").upper()
-        badge_col = {"CRITICAL": "#b91c1c", "HIGH": "#c2410c", "MEDIUM": "#b45309",
-                     "LOW": "#166534", "NONE": "#374151"}.get(sev, "#374151")
-        badges_html += (f'<span class="ibadge" style="background:{badge_col};color:#fff">'
-                        f'&#9654; CVSS {cvss_score:.1f} {sev}</span>')
+        badges_html += (f'<span class="ibadge" style="background:{sev_bg};color:#fff">'
+                        f'&#9654; CVSS {cvss_score:.1f} {_esc(sev_up)}</span>')
     if verified:
-        badges_html += ('<span class="ibadge" style="background:#166534;color:#fff">'
+        badges_html += ('<span class="ibadge ibadge-verified">'
                         '&#10003; ' + ("VERIFICADO" if es else "VERIFIED") + '</span>')
     elif dynamic_verify.get("attempted"):
-        badges_html += ('<span class="ibadge" style="background:#92400e;color:#fff">'
+        badges_html += ('<span class="ibadge ibadge-unconf">'
                         '&#10007; ' + ("NO CONFIRMADO" if es else "NOT CONFIRMED") + '</span>')
     else:
         badges_html += ('<span class="ibadge ibadge-outline">'
-                        + ("SIN VERIFICACIÓN DINÁMICA" if es else "NOT DYNAMICALLY VERIFIED")
-                        + '</span>')
+                        + ("SIN VER. DINÁMICA" if es else "NOT DYNAMICALLY VERIFIED") + '</span>')
     if poc_source_used:
-        badges_html += ('<span class="ibadge" style="background:#1d4ed8;color:#fff">'
-                        + ("PoC PÚBLICO" if es else "PUBLIC PoC") + '</span>')
-    else:
-        badges_html += ('<span class="ibadge ibadge-outline">'
-                        + ("SIN PoC PÚBLICO" if es else "NO PUBLIC PoC") + '</span>')
+        badges_html += ('<span class="ibadge" style="background:#1d4ed8;color:#fff">PoC '
+                        + ("PÚBLICO" if es else "PUBLIC") + '</span>')
     if vuln_class:
         badges_html += f'<span class="ibadge ibadge-gray">{_esc(vuln_class)}</span>'
     if affected_ver:
         badges_html += f'<span class="ibadge ibadge-gray">{_esc(affected_ver)}</span>'
 
-    # --- Grid de metadata (RESUMEN EJECUTIVO) ---
-    def _card(label: str, value: str, value_cls: str = "") -> str:
-        cls = f' class="{value_cls}"' if value_cls else ""
+    # ── Grid de metadata ────────────────────────────────────────────────────
+    def _mcard(label, value_html):
         return (f'<div class="mc"><div class="mc-label">{label}</div>'
-                f'<div class="mc-val"{cls}>{value}</div></div>')
+                f'<div class="mc-val">{value_html}</div></div>')
 
-    sev_col = ""
-    if cvss_severity:
-        sev_col = {"CRITICAL": "#b91c1c", "HIGH": "#c2410c", "MEDIUM": "#b45309",
-                   "LOW": "#166534"}.get(cvss_severity.upper(), "")
-
-    cards = []
+    mc_items = []
     if cvss_score is not None:
-        sev_str = f"{cvss_score:.1f} &mdash; {_esc(cvss_severity or '?')}"
-        val_html = (f'<span style="color:{sev_col};font-weight:700">{sev_str}</span>'
-                    if sev_col else sev_str)
-        cards.append(_card("PUNTUACIÓN CVSS" if es else "CVSS SCORE", val_html))
+        mc_items.append(_mcard("CVSS SCORE",
+            f'<span style="color:{sev_bg};font-weight:800;font-size:22px">{cvss_score:.1f}</span>'
+            f'<span style="color:{sev_bg};font-weight:600;margin-left:6px">{_esc(sev_up)}</span>'))
     if cvss_vector:
-        cards.append(_card("VECTOR CVSS" if es else "CVSS VECTOR",
-                           f'<code style="font-size:11px">{_esc(cvss_vector)}</code>'))
+        mc_items.append(_mcard("VECTOR CVSS",
+            f'<code style="font-size:10px;word-break:break-all">{_esc(cvss_vector)}</code>'))
     if affected_ver:
-        cards.append(_card("VERSIONES AFECTADAS" if es else "AFFECTED VERSIONS",
-                           f'<strong>{_esc(affected_ver)}</strong>'))
+        mc_items.append(_mcard("VERSIONES AFECTADAS" if es else "AFFECTED VERSIONS",
+            f'<strong>{_esc(affected_ver)}</strong>'))
     if vuln_class:
-        cards.append(_card("CLASE" if es else "CLASS", _esc(vuln_class)))
-    auth_val = str(llm_notes.get("auth") or llm_notes.get("authentication") or "").strip()
-    if auth_val:
-        cards.append(_card("AUTENTICACIÓN" if es else "AUTHENTICATION", _esc(auth_val)))
+        mc_items.append(_mcard("CLASE" if es else "CLASS", _esc(vuln_class)))
+    _auth = str(llm_notes.get("auth") or llm_notes.get("authentication") or "").strip()
+    if _auth:
+        mc_items.append(_mcard("AUTENTICACIÓN" if es else "AUTH", _esc(_auth)))
     if poc_source_used:
-        cards.append(_card("PoC PÚBLICO" if es else "PUBLIC PoC",
-                           f'<a href="{_esc(poc_source_used)}" target="_blank" '
-                           f'style="color:var(--acc);word-break:break-all">'
-                           f'{_esc(poc_source_used[:60])}{"…" if len(poc_source_used)>60 else ""}</a>'))
+        mc_items.append(_mcard("PoC PÚBLICO" if es else "PUBLIC PoC",
+            f'<a href="{_esc(poc_source_used)}" target="_blank" rel="noopener" '
+            f'style="color:var(--acc);word-break:break-all;font-size:12px">'
+            f'{_esc(poc_source_used[:55])}{"…" if len(poc_source_used)>55 else ""}</a>'))
     else:
-        cards.append(_card("PoC PÚBLICO" if es else "PUBLIC PoC",
-                           "Ninguno conocido" if es else "None known"))
+        mc_items.append(_mcard("PoC PÚBLICO" if es else "PUBLIC PoC",
+            f'<span style="color:var(--mut)">{"Ninguno conocido" if es else "None known"}</span>'))
     if verified:
-        v_txt = "Sí &mdash; laboratorio aislado" if es else "Yes &mdash; isolated lab"
-        cards.append(_card("VERIFICADO POR BINORACLE", f'<span style="color:#166534;font-weight:600">{v_txt}</span>'))
+        mc_items.append(_mcard("VERIFICADO" if es else "VERIFIED",
+            '<span style="color:#166534;font-weight:700">&#10003; '
+            + ("Sí &mdash; lab aislado" if es else "Yes &mdash; isolated lab") + '</span>'))
     elif dynamic_verify.get("attempted"):
-        cards.append(_card("VERIFICADO POR BINORACLE",
-                           f'<span style="color:#92400e;font-weight:600">'
-                           + ("Intentado, no replicado" if es else "Attempted, not replicated")
-                           + '</span>'))
-    else:
-        cards.append(_card("VERIFICADO POR BINORACLE",
-                           "No &mdash; sin laboratorio" if es else "No &mdash; no lab"))
+        mc_items.append(_mcard("VERIFICADO" if es else "VERIFIED",
+            '<span style="color:#92400e;font-weight:600">'
+            + ("Intentado, sin confirmar" if es else "Attempted, unconfirmed") + '</span>'))
     if published:
-        cards.append(_card("PUBLICADO (NVD)" if es else "PUBLISHED (NVD)", _esc(published[:10])))
+        mc_items.append(_mcard("PUBLICADO (NVD)" if es else "PUBLISHED (NVD)", _esc(published[:10])))
 
-    grid_html = ('<div class="mc-grid">' + "".join(cards) + '</div>') if cards else ""
+    grid_html = ('<div class="mc-grid">' + "".join(mc_items) + '</div>') if mc_items else ""
 
-    # --- Boton de descarga del exploit/PoC ---
+    # ── Tarjeta de prueba de explotacion ────────────────────────────────────
+    proof_section = ""
+    if verified and verified_ev:
+        endpoint  = _esc(str(verified_ev.get("endpoint") or ""))
+        metodo    = _esc(str(verified_ev.get("metodo") or "GET"))
+        payload   = _esc(str(verified_ev.get("payload_ganador") or ""))
+        status    = verified_ev.get("status_code_respuesta")
+        body_snip = _esc(str(verified_ev.get("respuesta_cuerpo_recorte") or "")[:300])
+        container = _esc(str(verified_ev.get("contenedor") or ""))
+        canary    = _esc(str(verified_ev.get("canary_path") or ""))
+        secret    = _esc(str(verified_ev.get("canary_secret") or ""))
+        base_url  = _esc(str(verified_ev.get("base_url") or ""))
+
+        status_cls = "st-2xx" if isinstance(status, int) and 200 <= status < 300 else "st-err"
+        status_txt = f"{status} OK" if status == 200 else (str(status) if status else "—")
+
+        req_path  = (endpoint + payload) if payload else endpoint
+
+        proof_title = "EXPLOTACIÓN CONFIRMADA EN SANDBOX AISLADO" if es else "EXPLOITATION CONFIRMED IN ISOLATED SANDBOX"
+        proof_section = (
+            f'<section id="sec-proof" style="margin-top:32px">'
+            f'<div class="section-hd proof-hd">&#9733; {proof_title}</div>'
+            f'<div class="proof-card">'
+            f'<div class="proof-top">'
+            f'<div class="proof-top-label">{"Laboratorio Docker efímero" if es else "Ephemeral Docker lab"}</div>'
+            + (f'<code class="proof-container">{container}</code>' if container else "")
+            + f'</div>'
+            f'<div class="proof-cols">'
+            # REQUEST
+            f'<div class="proof-col">'
+            f'<div class="req-label">REQUEST</div>'
+            f'<div class="req-line">'
+            f'<span class="req-method">{metodo}</span>'
+            f'<code class="req-url">{req_path}</code>'
+            f'</div>'
+            + (f'<div class="req-host" style="margin-top:6px;font-size:11px;color:var(--mut)">'
+               f'Host: {base_url}</div>' if base_url else "")
+            + (f'<div class="canary-info" style="margin-top:8px;font-size:11px">'
+               f'<span class="req-label" style="display:inline">CANARIO</span> '
+               f'<code>{canary}</code>'
+               + (f' &rarr; <code style="color:var(--grn)">{secret}</code>' if secret else "")
+               + '</div>' if canary else "")
+            + f'</div>'
+            # RESPONSE
+            f'<div class="proof-col">'
+            f'<div class="req-label">RESPONSE</div>'
+            f'<span class="status-badge {status_cls}">{_esc(status_txt)}</span>'
+            + (f'<pre class="proof-body">{body_snip}</pre>' if body_snip else "")
+            + f'</div>'
+            f'</div>'  # proof-cols
+            + (f'<div class="proof-detail">{_esc(verified_detail[:300])}</div>' if verified_detail else "")
+            + f'</div>'  # proof-card
+            f'</section>'
+        )
+
+    # ── Timeline de cadena de ataque ─────────────────────────────────────────
+    chain_section = ""
+    pasos = llm_notes.get("pasos") or []
+    if pasos:
+        items = ""
+        for i, paso in enumerate(pasos):
+            items += (f'<div class="tl-item">'
+                      f'<div class="tl-num">{i+1}</div>'
+                      f'<div class="tl-content">{_esc(str(paso))}</div>'
+                      f'</div>')
+        chain_title = "CADENA DE ATAQUE" if es else "ATTACK CHAIN"
+        chain_section = (
+            f'<section id="sec-chain" style="margin-top:32px">'
+            f'<div class="section-hd">{chain_title}</div>'
+            f'<div class="timeline">{items}</div>'
+            f'</section>'
+        )
+
+    # ── Analisis tecnico (cards desde llm_notes) ─────────────────────────────
+    tech_section = ""
+    _tc_items = []
+    def _tc(label, val):
+        if val:
+            _tc_items.append(f'<div class="tc-card"><div class="tc-label">{label}</div>'
+                             f'<div class="tc-val">{_esc(str(val))}</div></div>')
+
+    _tc("TARGET" if es else "TARGET", llm_notes.get("target_binary") or vuln_class)
+    _tc("ENDPOINT", llm_notes.get("endpoint"))
+    _tc("HTTP METHOD", llm_notes.get("http_method"))
+    _tc("PARÁMETROS" if es else "PARAMETERS", llm_notes.get("parameters"))
+    _vf = (llm_notes.get("vulnerable_functions") or llm_notes.get("vulnerablefunctions")
+           or llm_notes.get("vulnerablefunction") or "")
+    _tc("FUNCIONES VULNERABLES" if es else "VULNERABLE FUNCTIONS", _vf)
+    _auth_req = llm_notes.get("auth_required")
+    if _auth_req is not None:
+        _tc("AUTH REQUERIDA" if es else "AUTH REQUIRED",
+            ("No" if str(_auth_req).lower() in ("false","no","0") else "Sí"))
+    _strat = llm_notes.get("strategy") or llm_notes.get("trigger") or ""
+    if _strat:
+        _tc_items.append(
+            f'<div class="tc-card tc-wide"><div class="tc-label">'
+            + ("ESTRATEGIA DE ATAQUE" if es else "ATTACK STRATEGY")
+            + f'</div><div class="tc-val">{_esc(str(_strat))}</div></div>')
+
+    if _tc_items:
+        tech_title = "ANÁLISIS TÉCNICO" if es else "TECHNICAL ANALYSIS"
+        tech_section = (
+            f'<section id="sec-tech" style="margin-top:32px">'
+            f'<div class="section-hd">{tech_title}</div>'
+            f'<div class="tc-grid">{"".join(_tc_items)}</div>'
+            f'</section>'
+        )
+
+    # ── Galeria de capturas ───────────────────────────────────────────────────
+    _all_shots = list(verified_ev.get("screenshots") or []) + \
+                 [s for s in (attempt_ev.get("screenshots") or [])
+                  if s not in (verified_ev.get("screenshots") or [])]
+    shots_section = ""
+    if _all_shots:
+        shot_cards = []
+        for i, sh in enumerate(_all_shots):
+            png = sh.get("png_b64")
+            if not png:
+                continue
+            cap     = _esc(sh.get("caption_es" if es else "caption_en") or "")
+            url_txt = _esc(sh.get("url") or "")
+            step_lbl= f"PASO {i+1}" if es else f"STEP {i+1}"
+            shot_cards.append(
+                f'<div class="shot-card">'
+                f'<img class="shot-img" src="data:image/png;base64,{png}" alt="{cap}" loading="lazy">'
+                f'<div class="shot-meta">'
+                f'<div class="shot-step">{step_lbl}</div>'
+                + (f'<div class="shot-caption">{cap}</div>' if cap else "")
+                + (f'<div class="shot-url">{url_txt}</div>' if url_txt else "")
+                + '</div></div>')
+        if shot_cards:
+            shots_title = "CAPTURAS DE EVIDENCIA" if es else "EVIDENCE SCREENSHOTS"
+            shots_section = (
+                f'<section id="sec-shots" style="margin-top:32px">'
+                f'<div class="section-hd">{shots_title}</div>'
+                f'<div class="shots-grid">{"".join(shot_cards)}</div>'
+                f'</section>')
+
+    # ── Bloqueos ──────────────────────────────────────────────────────────────
+    blockers_section = ""
+    if blockers:
+        items = "".join(f'<div class="blocker-item">&#9888; {_esc(b)}</div>'
+                        for b in blockers[:6])
+        bl_title = "BLOQUEOS Y LIMITACIONES" if es else "BLOCKERS & LIMITATIONS"
+        blockers_section = (
+            f'<section id="sec-blockers" style="margin-top:32px">'
+            f'<div class="section-hd">{bl_title}</div>'
+            f'<div class="blockers-box">{items}</div>'
+            f'</section>')
+
+    # ── PoC download + inline ─────────────────────────────────────────────────
+    poc_section = ""
     dl = ""
     if script:
-        b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        b64  = base64.b64encode(script.encode("utf-8")).decode("ascii")
         safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", cve or "target")
         if poc_kind == "html":
             label = "&#8681; Descargar PoC (HTML, CSRF)" if es else "&#8681; Download PoC (HTML, CSRF)"
@@ -2448,25 +2593,84 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             fname, mime = f"exploit_{safe}.py", "text/x-python"
         dl = (f'<a class="dlbtn" download="{fname}" '
               f'href="data:{mime};base64,{b64}">{label}</a>')
+        inline_lines = script.splitlines()[:60]
+        inline_code  = _esc("\n".join(inline_lines))
+        more_lbl     = ""
+        if len(script.splitlines()) > 60:
+            more_lbl = (f'<div style="font-size:11px;color:var(--mut);padding:6px 14px;'
+                        f'border-top:1px solid var(--brd)">'
+                        + ("… descarga el archivo para ver el script completo"
+                           if es else "… download the file for the full script")
+                        + '</div>')
+        poc_title = "PoC / EXPLOIT" if es else "PoC / EXPLOIT"
+        poc_section = (
+            f'<section id="sec-poc" style="margin-top:32px">'
+            f'<div class="section-hd">{poc_title}</div>'
+            + dl +
+            f'<pre class="poc-inline">{inline_code}</pre>'
+            + more_lbl +
+            f'</section>')
 
-    # --- CSS y JS ---
+    # ── Informe completo (markdown) ───────────────────────────────────────────
+    full_title = "INFORME COMPLETO" if es else "FULL REPORT"
+    full_section = (
+        f'<section id="sec-report" style="margin-top:32px">'
+        f'<div class="section-hd">{full_title}</div>'
+        f'<div class="md-body">{_md_rich(markdown or "")}</div>'
+        f'</section>')
+
+    # ── Sidebar de navegacion ────────────────────────────────────────────────
+    sidenav_links = []
+    sidenav_links.append(f'<a href="#sec-summary" class="sidenav-link">'
+                         + ("Resumen" if es else "Summary") + '</a>')
+    if verified:
+        sidenav_links.append('<a href="#sec-proof" class="sidenav-link sidenav-verified">'
+                             '&#9733; ' + ("Prueba" if es else "Proof") + '</a>')
+    if pasos:
+        sidenav_links.append(f'<a href="#sec-chain" class="sidenav-link">'
+                             + ("Cadena de ataque" if es else "Attack chain") + '</a>')
+    if _tc_items:
+        sidenav_links.append(f'<a href="#sec-tech" class="sidenav-link">'
+                             + ("Análisis técnico" if es else "Tech analysis") + '</a>')
+    if _all_shots:
+        sidenav_links.append(f'<a href="#sec-shots" class="sidenav-link">'
+                             + ("Capturas" if es else "Screenshots") + '</a>')
+    if blockers:
+        sidenav_links.append(f'<a href="#sec-blockers" class="sidenav-link sidenav-warn">'
+                             + ("Bloqueos" if es else "Blockers") + '</a>')
+    if script:
+        sidenav_links.append(f'<a href="#sec-poc" class="sidenav-link">PoC</a>')
+    sidenav_links.append(f'<a href="#sec-report" class="sidenav-link">'
+                         + ("Informe" if es else "Report") + '</a>')
+
+    sidenav = (
+        f'<nav class="sidenav">'
+        f'<div class="sidenav-title">{"SECCIONES" if es else "SECTIONS"}</div>'
+        + "".join(sidenav_links)
+        + '</nav>')
+
+    # ── CSS ───────────────────────────────────────────────────────────────────
     css = """<style>
 :root{--bg:#ffffff;--surf:#f6f8fa;--fg:#1f2328;--mut:#57606a;--brd:#d0d7de;
-  --acc:#0969da;--red:#cf222e;--grn:#1a7f37;--yel:#9a6700;--code-bg:#f6f8fa;
-  --code-fg:#24292f;color-scheme:light}
+  --acc:#0969da;--red:#cf222e;--grn:#1a7f37;--yel:#9a6700;
+  --code-bg:#f6f8fa;--code-fg:#24292f;--proof-bg:#f0fdf4;--proof-brd:#16a34a;
+  --blocker-bg:#fffbeb;--blocker-brd:#d97706;color-scheme:light}
 @media(prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#0d1117;--surf:#161b22;--fg:#e6edf3;--mut:#8b949e;--brd:#30363d;
   --acc:#58a6ff;--red:#f85149;--grn:#3fb950;--yel:#d29922;
-  --code-bg:#0d1117;--code-fg:#e6edf3;color-scheme:dark}}
+  --code-bg:#161b22;--code-fg:#e6edf3;--proof-bg:#0d2818;--proof-brd:#3fb950;
+  --blocker-bg:#1c1700;--blocker-brd:#d29922;color-scheme:dark}}
 :root[data-theme=dark]{--bg:#0d1117;--surf:#161b22;--fg:#e6edf3;--mut:#8b949e;
   --brd:#30363d;--acc:#58a6ff;--red:#f85149;--grn:#3fb950;--yel:#d29922;
-  --code-bg:#0d1117;--code-fg:#e6edf3;color-scheme:dark}
+  --code-bg:#161b22;--code-fg:#e6edf3;--proof-bg:#0d2818;--proof-brd:#3fb950;
+  --blocker-bg:#1c1700;--blocker-brd:#d29922;color-scheme:dark}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,
-  'Segoe UI',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6}
+body{background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:14px;line-height:1.6}
 a{color:var(--acc)}
 code,pre,kbd{font-family:ui-monospace,'JetBrains Mono','Cascadia Code','Fira Code',monospace}
-/* Topbar */
+/* ── Topbar ── */
 .topbar{position:sticky;top:0;z-index:100;background:var(--surf);
   border-bottom:1px solid var(--brd);display:flex;align-items:center;
   gap:12px;padding:10px 24px}
@@ -2480,39 +2684,103 @@ code,pre,kbd{font-family:ui-monospace,'JetBrains Mono','Cascadia Code','Fira Cod
 .tb-toggle{background:var(--surf);border:1px solid var(--brd);color:var(--fg);
   border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;font-family:inherit}
 .tb-toggle:hover{border-color:var(--acc);color:var(--acc)}
-/* Banner confidencial */
+/* ── Banner ── */
 .conf-banner{background:var(--red);color:#fff;font-size:11px;font-weight:700;
   text-align:center;padding:5px 20px;letter-spacing:.08em}
-/* Hero */
-.hero{background:var(--surf);border-bottom:1px solid var(--brd);padding:32px 24px 28px}
-.hero-inner{max-width:960px;margin:0 auto}
+/* ── Hero ── */
+.hero{background:var(--surf);border-bottom:1px solid var(--brd);padding:36px 24px 32px}
+.hero-inner{max-width:1180px;margin:0 auto;display:flex;align-items:flex-start;gap:28px}
+.hero-left{flex:1;min-width:0}
+.hero-right{flex-shrink:0}
 .hero-eyebrow{font-size:11px;font-weight:600;letter-spacing:.12em;color:var(--mut);
   text-transform:uppercase;margin-bottom:14px}
-.hero-cve{font-family:ui-monospace,'JetBrains Mono',monospace;font-size:36px;font-weight:700;
-  color:var(--acc);letter-spacing:-.5px;margin-bottom:10px}
-.hero-desc{font-size:16px;font-weight:600;color:var(--fg);margin-bottom:18px;
-  max-width:800px;line-height:1.4}
-/* Badges inline */
+.hero-cve{font-family:ui-monospace,'JetBrains Mono',monospace;font-size:44px;font-weight:800;
+  color:var(--acc);letter-spacing:-.8px;margin-bottom:12px;line-height:1.1}
+.hero-desc{font-size:15px;font-weight:500;color:var(--fg);margin-bottom:18px;
+  max-width:780px;line-height:1.5}
+.cvss-pill{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
+  width:96px;height:96px;border-radius:50%;border:4px solid;text-decoration:none}
+.cvss-pill-score{font-size:28px;font-weight:900;line-height:1}
+.cvss-pill-sev{font-size:10px;font-weight:700;letter-spacing:.08em;margin-top:2px}
+/* ── Badges ── */
 .badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:4px}
 .ibadge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;
   letter-spacing:.03em;padding:4px 10px;border-radius:5px;white-space:nowrap}
 .ibadge-outline{background:transparent;border:1.5px solid var(--brd);color:var(--mut)}
 .ibadge-gray{background:var(--surf);border:1.5px solid var(--brd);color:var(--fg)}
-/* Main layout */
-main{max-width:960px;margin:0 auto;padding:32px 24px 80px}
-/* Seccion header */
+.ibadge-verified{background:#166534;color:#fff}
+.ibadge-unconf{background:#92400e;color:#fff}
+/* ── Layout principal: sidebar + contenido ── */
+.page-wrap{max-width:1180px;margin:0 auto;padding:32px 24px 80px;
+  display:grid;grid-template-columns:200px 1fr;gap:32px;align-items:start}
+/* ── Sidebar ── */
+.sidenav{position:sticky;top:60px;background:var(--surf);border:1px solid var(--brd);
+  border-radius:10px;padding:14px 0;overflow:hidden}
+.sidenav-title{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--mut);padding:0 16px 10px;border-bottom:1px solid var(--brd);margin-bottom:6px}
+.sidenav-link{display:block;padding:6px 16px;font-size:13px;color:var(--fg);
+  text-decoration:none;border-left:3px solid transparent;transition:all .15s}
+.sidenav-link:hover{background:var(--bg);color:var(--acc);border-left-color:var(--acc)}
+.sidenav-verified{color:#166534;font-weight:600}
+.sidenav-warn{color:var(--yel)}
+/* ── Seccion header ── */
 .section-hd{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
   color:var(--mut);padding-bottom:10px;border-bottom:1px solid var(--brd);margin-bottom:18px}
-/* Grid de metadata */
-.mc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-bottom:28px}
+.proof-hd{color:#166534;border-bottom-color:#bbf7d0}
+/* ── Grid de metadata ── */
+.mc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
+  gap:12px;margin-bottom:4px}
 .mc{background:var(--surf);border:1px solid var(--brd);border-radius:8px;padding:14px 16px}
 .mc-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
   color:var(--mut);margin-bottom:6px}
 .mc-val{font-size:14px;font-weight:500;color:var(--fg)}
-/* Separador de seccion */
-.sec-sep{border:none;border-top:1px solid var(--brd);margin:28px 0}
-/* Galeria de capturas paso a paso */
-.shots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:16px;margin-bottom:28px}
+/* ── Tarjeta de prueba de explotacion ── */
+.proof-card{background:var(--proof-bg);border:2px solid var(--proof-brd);
+  border-radius:12px;overflow:hidden;margin-top:4px}
+.proof-top{display:flex;align-items:center;gap:12px;padding:10px 16px;
+  background:rgba(22,163,74,.12);border-bottom:1px solid var(--proof-brd)}
+.proof-top-label{font-size:11px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--grn)}
+.proof-container{font-size:11px;color:var(--mut)}
+.proof-cols{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.proof-col{padding:16px;border-right:1px solid var(--brd)}
+.proof-col:last-child{border-right:none}
+.req-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--mut);margin-bottom:8px}
+.req-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.req-method{background:#1d4ed8;color:#fff;font-size:11px;font-weight:700;
+  padding:2px 8px;border-radius:4px;font-family:ui-monospace,monospace}
+.req-url{font-size:12px;color:var(--fg);word-break:break-all;flex:1}
+.status-badge{display:inline-block;padding:3px 10px;border-radius:4px;
+  font-size:12px;font-weight:700;font-family:ui-monospace,monospace;margin-bottom:8px}
+.st-2xx{background:#166534;color:#fff}
+.st-err{background:#b91c1c;color:#fff}
+.proof-body{font-size:12px;font-family:ui-monospace,monospace;background:var(--code-bg);
+  color:var(--code-fg);border:1px solid var(--brd);border-radius:6px;
+  padding:10px 12px;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto}
+.proof-detail{padding:12px 16px;font-size:12px;color:var(--mut);
+  border-top:1px solid var(--brd);font-style:italic}
+.canary-info{margin-top:8px;font-size:11px}
+/* ── Timeline ── */
+.timeline{position:relative;padding-left:36px}
+.timeline::before{content:"";position:absolute;left:14px;top:8px;bottom:8px;
+  width:2px;background:var(--brd)}
+.tl-item{position:relative;margin-bottom:20px;display:flex;align-items:flex-start;gap:0}
+.tl-num{position:absolute;left:-36px;width:28px;height:28px;border-radius:50%;
+  background:var(--acc);color:#fff;font-size:12px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;z-index:1}
+.tl-content{background:var(--surf);border:1px solid var(--brd);border-radius:8px;
+  padding:10px 14px;font-size:13px;line-height:1.5;width:100%}
+/* ── Analisis tecnico ── */
+.tc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.tc-card{background:var(--surf);border:1px solid var(--brd);border-radius:8px;padding:12px 14px}
+.tc-wide{grid-column:1/-1}
+.tc-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--mut);margin-bottom:5px}
+.tc-val{font-size:13px;color:var(--fg);word-break:break-word}
+/* ── Galeria capturas ── */
+.shots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));
+  gap:16px;margin-bottom:4px}
 .shot-card{background:var(--surf);border:1px solid var(--brd);border-radius:10px;overflow:hidden}
 .shot-img{width:100%;display:block;border-bottom:1px solid var(--brd)}
 .shot-meta{padding:10px 14px}
@@ -2521,17 +2789,26 @@ main{max-width:960px;margin:0 auto;padding:32px 24px 80px}
 .shot-caption{font-size:12px;color:var(--fg);line-height:1.4}
 .shot-url{font-size:11px;color:var(--mut);font-family:ui-monospace,monospace;
   margin-top:5px;word-break:break-all}
-/* Boton descarga */
+/* ── Bloqueos ── */
+.blockers-box{background:var(--blocker-bg);border:1px solid var(--blocker-brd);
+  border-radius:8px;overflow:hidden}
+.blocker-item{padding:10px 16px;font-size:13px;color:var(--fg);
+  border-bottom:1px solid var(--blocker-brd)}
+.blocker-item:last-child{border-bottom:none}
+/* ── PoC inline ── */
 .dlbtn{display:inline-flex;align-items:center;gap:7px;background:var(--acc);color:#fff;
   border-radius:8px;padding:9px 18px;text-decoration:none;font-weight:600;
-  font-size:13px;margin-bottom:20px}
+  font-size:13px;margin-bottom:14px}
 .dlbtn:hover{opacity:.85}
-/* Contenido markdown */
-.md-body h3{font-size:18px;font-weight:700;margin:28px 0 10px;
-  padding-bottom:8px;border-bottom:2px solid var(--brd)}
+.poc-inline{background:#0d1117;color:#e6edf3;border:1px solid var(--brd);
+  border-radius:8px;padding:16px;overflow:auto;font-size:12px;line-height:1.5;
+  white-space:pre;max-height:380px}
+/* ── Contenido markdown ── */
+.md-body h3{font-size:17px;font-weight:700;margin:26px 0 10px;
+  padding-bottom:7px;border-bottom:2px solid var(--brd)}
 .md-body h4{font-size:11px;font-weight:700;text-transform:uppercase;
-  letter-spacing:.08em;color:var(--mut);margin:22px 0 7px}
-.md-body h5{font-size:14px;font-weight:600;margin:14px 0 5px;color:var(--acc)}
+  letter-spacing:.08em;color:var(--mut);margin:20px 0 6px}
+.md-body h5{font-size:14px;font-weight:600;margin:12px 0 4px;color:var(--acc)}
 .md-body p{margin:8px 0}
 .md-body blockquote,.md-body .callout{border-left:3px solid var(--acc);background:var(--surf);
   padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:13px}
@@ -2552,17 +2829,26 @@ main{max-width:960px;margin:0 auto;padding:32px 24px 80px}
   display:block;margin:12px 0}
 .md-body ul,.md-body ol{padding-left:22px;margin:8px 0}
 .md-body li{margin:4px 0}
-@media(max-width:640px){
-  .hero{padding:20px 16px 20px}
-  .hero-cve{font-size:26px}
-  main{padding:20px 16px 60px}
-  .tb-meta,.tb-cve{display:none}}
+/* ── Responsive ── */
+@media(max-width:860px){
+  .page-wrap{grid-template-columns:1fr;gap:16px}
+  .sidenav{position:static;display:flex;flex-wrap:wrap;gap:4px;padding:10px 12px;
+    border-radius:8px;margin-bottom:0}
+  .sidenav-title{display:none}
+  .sidenav-link{padding:4px 10px;border-left:none;border:1px solid var(--brd);
+    border-radius:5px;font-size:12px}
+  .hero-inner{flex-direction:column;gap:16px}
+  .hero-cve{font-size:30px}
+  .proof-cols{grid-template-columns:1fr}
+  .proof-col{border-right:none;border-bottom:1px solid var(--brd)}
+  .proof-col:last-child{border-bottom:none}}
 @media print{
-  .topbar,.conf-banner{display:none!important}
-  body{background:#fff;color:#000}
-  main{max-width:none}}
+  .topbar,.conf-banner,.sidenav{display:none!important}
+  .page-wrap{display:block}
+  body{background:#fff;color:#000}}
 </style>"""
 
+    # ── JS ────────────────────────────────────────────────────────────────────
     js = """<script>
 (function(){var t=localStorage.getItem('inv-theme');
 if(t)document.documentElement.setAttribute('data-theme',t)})();
@@ -2571,50 +2857,19 @@ var n=r.getAttribute('data-theme')==='dark'?'light':'dark';
 r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
 </script>"""
 
-    # Encabezado de la pagina
+    # ── Ensamblado ────────────────────────────────────────────────────────────
     conf_txt = ("CONFIDENCIAL — SOLO PARA OBJETIVOS AUTORIZADOS (PENTEST / CTF / LABORATORIO)"
                 if es else "CONFIDENTIAL — AUTHORIZED TARGETS ONLY (PENTEST / CTF / LAB)")
-    heading_eyebrow = ("INFORME DE VULNERABILIDAD — BINORACLE · "
-                       + generated_long.upper() if es else
-                       "VULNERABILITY REPORT — BINORACLE · " + generated_long.upper())
-    exec_summary_hd = "RESUMEN EJECUTIVO" if es else "EXECUTIVE SUMMARY"
-    tech_desc_hd = "DESCRIPCIÓN TÉCNICA Y HALLAZGOS" if es else "TECHNICAL DESCRIPTION &amp; FINDINGS"
-    shots_hd = "CAPTURAS DE EVIDENCIA — PASO A PASO" if es else "EVIDENCE SCREENSHOTS — STEP BY STEP"
+    heading_eyebrow = ("INFORME DE VULNERABILIDAD — BINORACLE · " + generated_long.upper()
+                       if es else "VULNERABILITY REPORT — BINORACLE · " + generated_long.upper())
 
-    # --- Extraer screenshots de inv para galeria prominente ---
-    _all_shots = []
-    if inv is not None:
-        _vshots = (getattr(inv, "verified_evidence", {}) or {}).get("screenshots") or []
-        _ashots = (getattr(inv, "attempt_evidence", {}) or {}).get("screenshots") or []
-        _all_shots = list(_vshots) + [s for s in _ashots if s not in _vshots]
-
-    shots_section = ""
-    if _all_shots:
-        cards = []
-        for i, sh in enumerate(_all_shots):
-            png = sh.get("png_b64")
-            if not png:
-                continue
-            cap = _esc(sh.get("caption_es" if es else "caption_en") or "")
-            url_txt = _esc(sh.get("url") or "")
-            step_label = f"PASO {i + 1}" if es else f"STEP {i + 1}"
-            img_tag = f'<img class="shot-img" src="data:image/png;base64,{png}" alt="{cap}" loading="lazy">'
-            cards.append(
-                f'<div class="shot-card">'
-                f'{img_tag}'
-                f'<div class="shot-meta">'
-                f'<div class="shot-step">{step_label}</div>'
-                + (f'<div class="shot-caption">{cap}</div>' if cap else "")
-                + (f'<div class="shot-url">{url_txt}</div>' if url_txt else "")
-                + '</div></div>'
-            )
-        if cards:
-            shots_section = (
-                f'<section style="margin-top:28px">'
-                f'<div class="section-hd">{shots_hd}</div>'
-                f'<div class="shots-grid">{"".join(cards)}</div>'
-                '</section>'
-            )
+    # CVSS pill en el hero
+    cvss_pill = ""
+    if cvss_score is not None:
+        cvss_pill = (f'<a href="#sec-summary" class="cvss-pill" '
+                     f'style="color:{sev_bg};border-color:{sev_ring}">'
+                     f'<span class="cvss-pill-score">{cvss_score:.1f}</span>'
+                     f'<span class="cvss-pill-sev">{_esc(sev_up)}</span></a>')
 
     head = (
         "<!doctype html>"
@@ -2622,8 +2877,7 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
         "<meta charset='utf-8'>"
         f"<title>{_esc(cve or 'binoracle')} — binoracle</title>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        + css + js +
-        "</head><body>"
+        + css + js + "</head><body>"
     )
 
     topbar = (
@@ -2633,46 +2887,44 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
         '<div class="tb-spacer"></div>'
         f'<span class="tb-meta">{_esc(generated_short)}</span>'
         '<button class="tb-toggle" onclick="_toggleTheme()">&#9711; Tema</button>'
-        '</div>'
-    )
+        '</div>')
 
     conf_banner = f'<div class="conf-banner">{conf_txt}</div>'
 
     hero = (
         '<div class="hero">'
         '<div class="hero-inner">'
+        '<div class="hero-left">'
         f'<div class="hero-eyebrow">{heading_eyebrow}</div>'
         f'<div class="hero-cve">{_esc(cve or "")}</div>'
         + (f'<div class="hero-desc">{_esc(description)}</div>' if description else "")
         + (f'<div class="badges">{badges_html}</div>' if badges_html else "")
-        + '</div></div>'
-    )
+        + '</div>'
+        + (f'<div class="hero-right">{cvss_pill}</div>' if cvss_pill else "")
+        + '</div></div>')
 
-    summary_section = ""
-    if grid_html:
-        summary_section = (
-            '<section style="margin-top:28px">'
-            f'<div class="section-hd">{exec_summary_hd}</div>'
-            + grid_html +
-            '</section>'
-        )
+    summary_section = (
+        f'<section id="sec-summary">'
+        f'<div class="section-hd">{"RESUMEN EJECUTIVO" if es else "EXECUTIVE SUMMARY"}</div>'
+        + grid_html
+        + '</section>')
 
-    tech_section_hd = (
-        f'<hr class="sec-sep">'
-        f'<div class="section-hd">{tech_desc_hd}</div>'
-    )
+    content = (
+        summary_section
+        + proof_section
+        + chain_section
+        + tech_section
+        + shots_section
+        + blockers_section
+        + poc_section
+        + full_section)
 
     body = (
-        topbar + conf_banner + hero +
-        '<main>'
-        + summary_section
-        + shots_section
-        + tech_section_hd
-        + (dl + "\n" if dl else "")
-        + '<div class="md-body">'
-        + _md_rich(markdown or "")
-        + '</div></main></body></html>'
-    )
+        topbar + conf_banner + hero
+        + '<div class="page-wrap">'
+        + sidenav
+        + f'<div class="content">{content}</div>'
+        + '</div></body></html>')
 
     return head + body
 
