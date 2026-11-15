@@ -587,6 +587,24 @@ def cmd_cve_corpus(args, config):
     print(render_corpus(corpus, wrote_to=wrote_to))
 
 
+def cmd_kernel_exploit(args, config):
+    from binoracle.workflows.kernel_exploit import build_kernel_exploit, render_kernel_exploit
+    from binoracle.workflows.cvelookup import fetch_cve
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    cve_id = getattr(args, "cve_id", "") or ""
+    primitive = getattr(args, "primitive", "") or ""
+    print(f"\n  {_b}binoracle kernel-exploit{_r}  {cve_id}\n")
+    description = ""
+    if cve_id:
+        print("  Fetching NVD description...")
+        info = fetch_cve(cve_id)
+        description = info.description or ""
+    chain = build_kernel_exploit(cve_id, description=description, primitive=primitive)
+    print(render_kernel_exploit(chain))
+
+
 def cmd_firmware(args, config):
     from binoracle.workflows.firmware import analyze_firmware, render_firmware
     _use_col = _color_ok()
@@ -1865,6 +1883,17 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--poc", default="", dest="poc_file",
                     help="path to a file containing the PoC text (optional)")
     cv.set_defaults(func=cmd_cve_corpus)
+
+    ke = sub.add_parser("kernel-exploit",
+                        help="generate a kernel exploit chain skeleton (ret2usr, UAF, ROP, dirty-pipe, ...)")
+    ke.add_argument("cve_id", nargs="?", default="",
+                    help="CVE identifier — NVD description auto-selects the primitive")
+    ke.add_argument("--primitive", default="",
+                    choices=["ret2usr", "uaf_driver", "heap_spray", "rop_chain",
+                             "modprobe_path", "msg_msg", "seq_operations",
+                             "dirty_pipe", "io_uring", ""],
+                    help="force a specific exploit primitive (default: auto-detect from NVD description)")
+    ke.set_defaults(func=cmd_kernel_exploit)
 
     fw = sub.add_parser("firmware",
                         help="analyze firmware images: UEFI (.fd/.efi), SquashFS, JFFS2, uImage, raw flash")

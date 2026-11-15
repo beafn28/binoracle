@@ -1212,6 +1212,41 @@ def _h_libfuzzer_corpus(args):
     return render_corpus(corpus, wrote_to=wrote_to)
 
 
+@_tool("kernel_exploit_chain",
+       "Genera una cadena de exploit de kernel: ret2usr, UAF en driver, heap spray, ROP chain, "
+       "modprobe_path overwrite, dirty-pipe, io_uring, msg_msg, seq_operations. "
+       "Selecciona automaticamente el primitivo mas relevante a partir de la descripcion NVD. "
+       "Devuelve: hipotesis, precondiciones, postcondiciones, pasos y harness C listo para compilar. "
+       "SOLO USO AUTORIZADO — solo en VMs efimeras, kernels propios o entornos CTF/laboratorio.",
+       {"cve_id":      {"type": "string",
+                        "description": "CVE identifier (e.g. CVE-2022-0847)"},
+        "description": {"type": "string",
+                        "description": "descripcion NVD (si no se indica, se obtiene automaticamente)"},
+        "vuln_class":  {"type": "string",
+                        "description": "clase de vulnerabilidad (use-after-free, stack overflow, etc.)"},
+        "primitive":   {"type": "string",
+                        "description": "forzar un primitivo concreto: ret2usr | uaf_driver | heap_spray | "
+                                       "rop_chain | modprobe_path | msg_msg | seq_operations | "
+                                       "dirty_pipe | io_uring (default: auto)"}},
+       ["cve_id"])
+def _h_kernel_exploit_chain(args):
+    from .workflows.kernel_exploit import build_kernel_exploit, render_kernel_exploit
+    from .workflows.cvelookup import fetch_cve
+    a = args or {}
+    cve_id = a.get("cve_id") or ""
+    description = a.get("description") or ""
+    if cve_id and not description:
+        info = fetch_cve(cve_id)
+        description = info.description or ""
+    chain = build_kernel_exploit(
+        cve_id=cve_id,
+        description=description,
+        vuln_class=a.get("vuln_class") or "",
+        primitive=a.get("primitive") or "",
+    )
+    return render_kernel_exploit(chain)
+
+
 @_tool("firmware_analyze",
        "Analiza imagenes de firmware: volumenes UEFI (.fd/.rom/.efi), rootfs SquashFS/JFFS2, "
        "uImage/zImage, dumps de flash SPI/NAND, y binarios ELF/PE32+. "
