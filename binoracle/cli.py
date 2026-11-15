@@ -1330,7 +1330,10 @@ def cmd_cve(args, config):
         print(f"  {_d}{' · '.join(parts)}{_r}")
     print()
 
-    print(render_investigation(inv, config.lang, embed_images=False))
+    # Solo imprime el markdown completo en terminal si no hay salida HTML/JSON
+    # (cuando hay fichero de salida el informe ya va al fichero, el terminal queda limpio)
+    if not getattr(args, "html", None) and not getattr(args, "json_out", None):
+        print(render_investigation(inv, config.lang, embed_images=False))
 
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
