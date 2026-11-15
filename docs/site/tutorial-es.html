@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tutorial de binoracle</title>
+<style>
+:root{--bg:#0d1117;--surf:#161b22;--surf2:#21262d;--brd:#30363d;--tx:#e6edf3;--muted:#8b949e;--acc:#58a6ff;--acc2:#1f6feb;--pur:#bc8cff;--grn:#3fb950;--code:#7ee2b8;--r:8px;font-size:16px;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;line-height:1.6;min-height:100vh;}
+.nav{position:sticky;top:0;z-index:100;display:flex;align-items:center;gap:1.5rem;padding:.75rem 2rem;background:rgba(13,17,23,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--brd);}
+.nav-brand{display:flex;align-items:center;gap:.6rem;text-decoration:none;color:var(--tx);font-weight:700;font-size:1.05rem;}
+.nav-links{display:flex;gap:1.25rem;margin-left:auto;}
+.nav-links a{color:var(--muted);text-decoration:none;font-size:.9rem;transition:color .15s;}
+.nav-links a:hover,.nav-links a.active{color:var(--tx);}
+.nav-gh{display:flex;align-items:center;gap:.4rem;padding:.35rem .85rem;background:var(--surf2);border:1px solid var(--brd);border-radius:6px;color:var(--tx);text-decoration:none;font-size:.85rem;}
+.doc-layout{display:flex;gap:0;min-height:calc(100vh - 54px);}
+.doc-sidebar{width:220px;flex-shrink:0;padding:1.5rem 1rem;border-right:1px solid var(--brd);position:sticky;top:54px;height:calc(100vh - 54px);overflow-y:auto;}
+.doc-sidebar a{display:block;padding:.3rem .5rem;color:var(--muted);text-decoration:none;font-size:.88rem;border-radius:5px;}
+.doc-sidebar a:hover{color:var(--tx);background:var(--surf2);}
+.doc-sidebar a.active{color:var(--acc)!important;background:rgba(88,166,255,.08);}
+.doc-content{flex:1;padding:2.5rem 2rem;max-width:820px;}
+.doc-content h1{font-size:2rem;font-weight:800;margin-bottom:.5rem;color:var(--tx);}
+.doc-content h2{font-size:1.3rem;font-weight:700;margin:2rem 0 .75rem;padding-bottom:.4rem;border-bottom:1px solid var(--brd);color:var(--tx);}
+.doc-content h3{font-size:1.05rem;font-weight:700;margin:1.5rem 0 .5rem;color:var(--tx);}
+.doc-content p{margin-bottom:1.1rem;color:var(--tx);line-height:1.7;}
+.doc-content ul,.doc-content ol{margin:.75rem 0 1.25rem 1.75rem;color:var(--tx);}
+.doc-content li{margin-bottom:.5rem;line-height:1.65;}
+.doc-content code{background:var(--surf2);padding:.15em .4em;border-radius:4px;font-size:.88em;color:var(--code);font-family:monospace;}
+.doc-content pre{background:var(--surf);border:1px solid var(--brd);border-radius:8px;padding:1rem 1.25rem;overflow-x:auto;margin:1rem 0;}
+.doc-content pre code{background:none;padding:0;color:var(--tx);font-size:.88rem;}
+.doc-content blockquote{border-left:3px solid var(--acc2);padding:.5rem 1rem;color:var(--muted);background:var(--surf);border-radius:0 8px 8px 0;margin:1rem 0;}
+.doc-content table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem;}
+.doc-content th{background:var(--surf2);color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;padding:.6rem .9rem;text-align:left;border-bottom:1px solid var(--brd);}
+.doc-content td{padding:.6rem .9rem;border-bottom:1px solid var(--brd);}
+.doc-content a{color:var(--acc);}
+.sidebar-section{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:.9rem 0 .4rem;padding:0 .5rem;}
+.sidebar-sep{border:none;border-top:1px solid var(--brd);margin:.9rem 0;}
+.wiki-lang{display:flex;border:1px solid var(--brd);border-radius:6px;overflow:hidden;font-size:.78rem;font-weight:700;margin-bottom:1.25rem;}
+.wiki-lang .active-lang{padding:.3rem .65rem;background:var(--surf2);color:var(--tx);}
+.wiki-lang a{padding:.3rem .65rem;color:var(--muted);text-decoration:none;transition:all .15s;}
+.wiki-lang a:hover{color:var(--tx);background:var(--surf);}
+.footer{border-top:1px solid var(--brd);padding:2rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;color:var(--muted);font-size:.85rem;max-width:1100px;margin:0 auto;}
+.footer a{color:var(--muted);text-decoration:none;}
+.footer-links{display:flex;gap:1.25rem;}
+@media(max-width:700px){.nav-links{display:none;}.doc-layout{flex-direction:column;}.doc-sidebar{width:100%;position:static;height:auto;border-right:none;border-bottom:1px solid var(--brd);}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-brand" href="index.html">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="13" stroke="#58a6ff" stroke-width="2"/><circle cx="14" cy="14" r="6" fill="#58a6ff" opacity=".3"/><circle cx="14" cy="14" r="2" fill="#58a6ff"/></svg>
+    binoracle
+  </a>
+  <div class="nav-links">
+    <a href="index.html">Home</a>
+    <a href="index-es.html">Docs</a>
+    <a href="tutorial.html" class="active">Tutorial</a>
+    <a href="roadmap.html">Roadmap</a>
+    <div class="wiki-lang" style="margin:0"><span class="active-lang">ES</span><a href="tutorial.html">EN</a></div>
+    <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</nav>
+<div class="doc-layout">
+  <aside class="doc-sidebar">
+    <div class="wiki-lang"><span class="active-lang">ES</span><a href="tutorial.html">EN</a></div>
+    <p class="sidebar-section">En esta página</p>
+    <a href="#instalacion">1. Instalación</a>
+    <a href="#configuracion">2. Configuración</a>
+    <a href="#motor-cve">3. Motor CVE</a>
+    <a href="#binario">4. Motor RE Binario</a>
+    <a href="#mcp">5. Servidor MCP</a>
+    <a href="#informes">6. Informes</a>
+    <a href="#corpus">7. Corpus de práctica</a>
+    <hr class="sidebar-sep">
+    <p class="sidebar-section">Navegación</p>
+    <a href="index-es.html">Inicio</a>
+    <a href="index.html">Home (EN)</a>
+    <a href="tutorial-es.html" class="active">Tutorial</a>
+    <a href="roadmap.html">Roadmap</a>
+    <hr class="sidebar-sep">
+    <p class="sidebar-section">Enlaces</p>
+    <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
+    <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
+  </aside>
+  <main class="doc-content">
+    <h1>Tutorial de binoracle</h1>
+    <p>Este tutorial recorre todas las capacidades de binoracle: desde la instalación inicial hasta ejecutar una investigación CVE completa y generar una cadena de exploit contra un binario local. Todo se ejecuta en tu máquina; no se requieren claves de API externas ni servicios en la nube.</p>
+    <blockquote><strong>Aviso legal</strong> — binoracle es una herramienta de investigación y educación. Todos los laboratorios CVE se ejecutan contra contenedores Docker que tú creas localmente. No la uses contra sistemas que no sean tuyos o para los que no tengas permiso escrito explícito.</blockquote>
+    <h2 id="instalacion">1. Instalación</h2>
+    <pre><code>pip install binoracle
+pip install binoracle[pwn]        # pwntools + ROPgadget
+pip install binoracle[symbolic]   # ejecución simbólica angr
+pip install binoracle[screenshots] # capturas Playwright
+pip install binoracle[all]        # todo lo anterior</code></pre>
+    <p>Verifica: <code>binoracle --version</code></p>
+    <h2 id="configuracion">2. Configuración</h2>
+    <pre><code>curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5-coder:7b
+
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+export BINORACLE_LANG=es</code></pre>
+    <h2 id="motor-cve">3. Motor CVE</h2>
+    <p>El motor CVE toma un identificador CVE, recupera el descriptor de NVD, lo envía al LLM local, y genera y verifica de forma autónoma un proof-of-concept contra un laboratorio Docker efímero.</p>
+    <pre><code>binoracle cve CVE-2025-27516
+binoracle cve-batch CVE-2025-27516 CVE-2024-23334
+binoracle cve CVE-2025-27516 --lang en
+binoracle cve CVE-2025-27516 --out ./informes/
+binoracle cve CVE-2025-27516 --open-report</code></pre>
+    <h3>Pasos del motor</h3>
+    <table>
+      <thead><tr><th>Paso</th><th>Qué ocurre</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1 — NVD</strong></td><td>Recupera identificador CVE, puntuación CVSS, versión afectada y descripción.</td></tr>
+        <tr><td><strong>2 — Hipótesis LLM</strong></td><td>Qwen 2.5 Coder genera hipótesis estructurada: clase de vulnerabilidad, endpoint, estrategia de payload, scaffolder.</td></tr>
+        <tr><td><strong>3 — Scaffolder</strong></td><td>Mapea el ecosistema a la plantilla Docker Compose correspondiente.</td></tr>
+        <tr><td><strong>4 — Lab Docker</strong></td><td>Levanta lab efímero con paquete vulnerable fijado. Se destruye al terminar.</td></tr>
+        <tr><td><strong>5 — Playwright</strong></td><td>Ejecuta el PoC, captura pantallas en cada paso HTTP, escribe el informe HTML.</td></tr>
+      </tbody>
+    </table>
+    <h2 id="binario">4. Motor de Reversing Binario</h2>
+    <pre><code>binoracle pwn ./binario           # cadena de exploit completa
+binoracle triage ./binario        # mitigaciones, símbolos, importaciones
+binoracle decompile ./binario     # decompilación multi-motor
+binoracle rop ./binario           # búsqueda de gadgets ROP + síntesis
+binoracle hardening ./binario     # evaluación de hardening</code></pre>
+    <h2 id="mcp">5. Servidor MCP</h2>
+    <pre><code>binoracle mcp-server</code></pre>
+    <pre><code>// claude_desktop_config.json
+{ "mcpServers": { "binoracle": { "command": "binoracle", "args": ["mcp-server"] } } }</code></pre>
+    <h2 id="informes">6. Informes</h2>
+    <p>Cada investigación CVE genera un informe HTML con: resumen ejecutivo con puntuación CVSS, hipótesis del LLM con cadena de razonamiento, configuración del laboratorio, capturas de pantalla de Playwright, código PoC completo y recomendaciones de remediación.</p>
+    <h2 id="corpus">7. Corpus de práctica</h2>
+    <pre><code>samples/build.sh --docker
+binoracle triage samples/bin/ret2win
+binoracle pwn samples/bin/ret2libc</code></pre>
+    <table>
+      <thead><tr><th>Binario</th><th>Técnica</th><th>Dificultad</th></tr></thead>
+      <tbody>
+        <tr><td><code>ret2win</code></td><td>Sobrescritura de dirección de retorno</td><td>Principiante</td></tr>
+        <tr><td><code>ret2libc</code></td><td>Ret-to-libc con stub ROP</td><td>Principiante</td></tr>
+        <tr><td><code>format_string</code></td><td>Sobrescritura GOT con %n</td><td>Intermedio</td></tr>
+        <tr><td><code>tcache_dup</code></td><td>Primitiva double-free tcache</td><td>Intermedio</td></tr>
+        <tr><td><code>srop_chain</code></td><td>Programación orientada a Sigreturn</td><td>Avanzado</td></tr>
+      </tbody>
+    </table>
+  </main>
+</div>
+<footer><div class="footer"><span>MIT &copy; 2024–2026 Beatriz Fresno Naumova</span><div class="footer-links"><a href="index.html">Home</a><a href="roadmap.html">Roadmap</a><a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues</a><a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub</a></div></div></footer>
+</body>
+</html>
