@@ -4,7 +4,7 @@
 
 # binoracle
 
-**Investigacion autonoma de exploits CVE y reversing binario &mdash; 100 % local, ningun dato sale de tu maquina**
+**Investigación autónoma de exploits CVE y reversing binario &mdash; 100 % local, ningún dato sale de tu máquina**
 
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-22C55E?style=for-the-badge)](../LICENSE)
@@ -18,13 +18,13 @@
 
 ---
 
-> **Aviso legal** &mdash; binoracle es una herramienta de investigacion y educacion.
+> **Aviso legal** &mdash; binoracle es una herramienta de investigación y educación.
 > Todos los laboratorios CVE se ejecutan contra contenedores Docker que tu mismo aprovisionas localmente.
 > No la uses contra sistemas que no sean tuyos o para los que no tengas autorizacion escrita explicita.
 
 ---
 
-## Instalacion
+## Instalación
 
 ```bash
 pip install binoracle
@@ -47,7 +47,7 @@ export BINORACLE_MODEL=qwen2.5-coder:7b
 <tr>
 <td valign="top">
 
-Dale a binoracle un identificador de CVE. Obtiene el descriptor de NVD, se lo pasa a **Qwen 2.5 Coder 7B local** (via Ollama), que genera hipotesis de exploit de forma autonoma &mdash; sin pistas del analista. Luego levanta un laboratorio Docker Compose efimero, lanza el PoC contra el, captura capturas de pantalla con Playwright en cada paso y escribe un informe HTML estructurado en disco.
+Dale a binoracle un identificador de CVE. Obtiene el descriptor de NVD, se lo pasa a **Qwen 2.5 Coder 7B local** (via Ollama), que genera hipótesis de exploit de forma autónoma &mdash; sin pistas del analista. Luego levanta un laboratorio Docker Compose efímero, lanza el PoC contra él, captura capturas de pantalla con Playwright en cada paso y escribe un informe HTML estructurado en disco.
 
 ```bash
 binoracle cve CVE-2025-27516
@@ -58,7 +58,7 @@ binoracle cve-batch CVE-2025-27516 CVE-2024-23334
 </td>
 <td valign="top">
 
-Dale a binoracle un binario. Ejecuta analisis estatico y dinamico (ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM, SQLite), selecciona la tecnica de exploit adecuada, genera un script pwntools funcional e informa de las mitigaciones y estrategias de bypass.
+Dale a binoracle un binario. Ejecuta análisis estático y dinámico (ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM, SQLite), selecciona la técnica de exploit adecuada, genera un script pwntools funcional e informa de las mitigaciones y estrategias de bypass.
 
 ```bash
 binoracle triage    ./binario
@@ -83,7 +83,7 @@ NVD  -->  LLM local  -->  hipotesis  -->  lab Docker  -->  PoC  -->  informe HTM
           Qwen 2.5      sin pistas     entorno efimero  Playwright   solo en disco
 ```
 
-El LLM recibe unicamente la descripcion cruda de NVD. Todas las hipotesis de exploit se generan a partir de esa descripcion, sin ninguna pista ni guia externa.
+El LLM recibe únicamente la descripción cruda de NVD. Todas las hipótesis de exploit se generan a partir de esa descripción, sin ninguna pista ni guía externa.
 
 ### Cobertura de vulnerabilidades
 
@@ -114,15 +114,15 @@ El LLM recibe unicamente la descripcion cruda de NVD. Todas las hipotesis de exp
 
 ## Motor RE Binario
 
-### Tecnicas de exploit
+### Técnicas de exploit
 
-| Categoria | Tecnicas |
+| Categoría | Técnicas |
 |-----------|----------|
 | Stack | ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64 / x86-32 / aarch64), stack pivot |
 | Heap | tcache dup, fastbin dup, UAF, double-free, House-of-Force, House-of-Spirit, House-of-Orange, House-of-Mind, large-bin attack, unsafe-unlink, Botcake |
 | Format string | escritura arbitraria con %n, sobrescritura GOT, fuga de canary, fuga de PIE |
 | Bajo nivel | shellcode (NX off), limpieza de bad-chars, IO_FILE, DL-resolve, secuestro GOT |
-| Bypass de canary | fuga + reutilizacion, fuerza bruta en fork |
+| Bypass de canary | fuga + reutilización, fuerza bruta en fork |
 | Bypass de PIE | sobrescritura parcial, cadena de fugas |
 
 ### Formatos soportados
@@ -144,16 +144,16 @@ El LLM recibe unicamente la descripcion cruda de NVD. Todas las hipotesis de exp
 
 ## Informes
 
-Cada investigacion CVE y cada analisis binario genera un informe HTML autocontenido:
+Cada investigación CVE y cada análisis binario genera un informe HTML autocontenido:
 
 | Seccion | Contenido |
 |---------|-----------|
 | Resumen ejecutivo | Puntuacion CVSS, severidad, componente afectado |
 | Hipotesis | Cadena de razonamiento completa del LLM |
-| Laboratorio | Especificacion Docker Compose, versiones de servicios |
+| Laboratorio | Especificación Docker Compose, versiones de servicios |
 | Evidencia | Capturas de pantalla Playwright en cada paso de verificacion |
 | PoC | Codigo completo curl / Python / pwntools |
-| Remediacion | Guia de correccion especifica con ejemplos de codigo |
+| Remediación | Guía de corrección específica con ejemplos de código |
 
 ```bash
 binoracle cve CVE-2025-27516 --open-report
@@ -163,7 +163,7 @@ binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./informes/
 
 ---
 
-## Integracion MCP
+## Integración MCP
 
 binoracle funciona como servidor MCP, exponiendo el kit completo (~100 herramientas) a cualquier cliente compatible.
 
@@ -197,7 +197,7 @@ binoracle mcp-server
 |---------|-------------|
 | `triage` | Mitigaciones, simbolos, importaciones, secciones |
 | `decompile` | Ghidra / radare2 / angr / pwndbg + anotacion LLM |
-| `pwn` | Cadena de exploit completa, tecnica seleccionada automaticamente |
+| `pwn` | Cadena de exploit completa, técnica seleccionada automáticamente |
 | `rop` | Busqueda de gadgets ROP y sintesis de cadenas |
 | `chain` | Enumeracion de gadgets + script pwntools |
 | `heap` | Primitivas de exploit heap (tcache / fastbin / UAF / House-of-X) |
@@ -209,11 +209,11 @@ binoracle mcp-server
 | `hardening` | Auditoria de mitigaciones con notas de bypass |
 | `cve` | Pipeline CVE completo: obtener -> lab -> PoC -> informe |
 | `cve-batch` | Pipeline CVE por lotes, paralelizado |
-| `vuln-hunt` | Analisis de taint estatico (sinks, sources) |
+| `vuln-hunt` | Análisis de taint estático (sinks, sources) |
 | `ioc-scan` | Escaner de IOC e indicadores de malware |
 | `audit` | Todos los oraculos + sintesis LLM |
 | `reachability` | Alcanzabilidad source-to-sink |
-| `diff` | Diff de parche y analisis N-day |
+| `diff` | Diff de parche y análisis N-day |
 | `apk` | Auditoria completa de APK Android |
 | `dotnet` | Inspeccion de ensamblados .NET |
 | `wasm` | Inspeccion de modulos WASM |
@@ -230,7 +230,7 @@ binoracle mcp-server
 
 ---
 
-## Corpus de practica
+## Corpus de práctica
 
 40+ binarios vulnerables para practicar explotacion local:
 
@@ -246,7 +246,7 @@ Cobertura: ret2win, ret2libc, SROP, tcache dup, fastbin dup, UAF, sobrescritura 
 
 ---
 
-## Configuracion
+## Configuración
 
 ```bash
 # LLM local via Ollama (recomendado, 100 % offline)
@@ -276,7 +276,7 @@ pip install binoracle[all]         # todo
 
 **Requisitos del sistema**
 
-| | Minimo | Recomendado |
+| | Mínimo | Recomendado |
 |-|--------|-------------|
 | Python | 3.10 | 3.12 |
 | RAM | 8 GB | 16 GB |
@@ -286,7 +286,7 @@ pip install binoracle[all]         # todo
 
 ---
 
-## Que diferencia a binoracle
+## Qué diferencia a binoracle
 
 | Capacidad | binoracle | REA |
 |-----------|:---------:|:---:|
@@ -296,7 +296,7 @@ pip install binoracle[all]         # todo
 | Evidencia Playwright en los informes | si | no |
 | Scaffolding WordPress / Joomla / Drupal | si | no |
 | Servidor MCP (~100 herramientas) | si | no |
-| Analisis APK / .NET / WASM / EVM | si | parcial |
+| Análisis APK / .NET / WASM / EVM | si | parcial |
 | Operacion 100 % offline | si | parcial |
 | Cadenas de exploit stack / heap / format string / SROP | si | si |
 | Sintesis de cadenas ROP | si | si |
@@ -308,13 +308,13 @@ pip install binoracle[all]         # todo
 ## Hoja de ruta
 
 - [ ] Cadenas de exploit de kernel (ret2usr, UAF en drivers)
-- [ ] Analisis de firmware (UEFI, Linux embebido)
+- [ ] Análisis de firmware (UEFI, Linux embebido)
 - [ ] Corpus LibFuzzer sembrado desde PoC de CVE
 - [ ] Cadenas multi-CVE (RCE web -> escalada de privilegios local)
 - [ ] Puntuacion CVSS v4
 - [ ] Puente Burp Suite MCP
 - [ ] Decompilador JEB (Android nativo)
-- [ ] Modelo ajustado para generacion de hipotesis de exploit
+- [ ] Modelo ajustado para generación de hipótesis de exploit
 
 ---
 
