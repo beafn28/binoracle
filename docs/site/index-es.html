@@ -49,6 +49,10 @@ body {
 .nav-links a:hover, .nav-links a.active { color: var(--tx); }
 .nav-gh { display: flex; align-items: center; gap: .4rem; padding: .35rem .85rem; background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px; color: var(--tx); text-decoration: none; font-size: .85rem; transition: border-color .15s; }
 .nav-gh:hover { border-color: var(--acc); }
+.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; }
+.nav-lang span { padding: .3rem .6rem; background: var(--surf2); color: var(--tx); }
+.nav-lang a { padding: .3rem .6rem; color: var(--muted); text-decoration: none; transition: all .15s; }
+.nav-lang a:hover { color: var(--tx); background: var(--surf); }
 
 /* HERO */
 .hero {
@@ -261,6 +265,19 @@ body {
   .rm-timeline { padding: 1rem; }
   .rm-items { grid-template-columns: 1fr; }
 }
+/* WIKI SIDEBAR */
+.wiki-lang { display: flex; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .78rem; font-weight: 700; margin-bottom: 1.25rem; }
+.wiki-lang .active-lang { padding: .3rem .65rem; background: var(--surf2); color: var(--tx); }
+.wiki-lang a { padding: .3rem .65rem; color: var(--muted); text-decoration: none; transition: all .15s; }
+.wiki-lang a:hover { color: var(--tx); background: var(--surf); }
+.sidebar-section { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: .9rem 0 .4rem; padding: 0 .5rem; }
+.sidebar-sep { border: none; border-top: 1px solid var(--brd); margin: .9rem 0; }
+.doc-sidebar a.active { color: var(--acc) !important; background: rgba(88,166,255,.08); }
+.doc-sidebar .toc ul { list-style: none; padding: 0; margin: 0; }
+.doc-sidebar .toc li { margin: 0; }
+.doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
+.doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
+.page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
 </style>
 </head>
 <body>
@@ -276,6 +293,7 @@ body {
 <a href="tutorial.html">Tutorial</a>
 <a href="roadmap.html">Roadmap</a>
 
+    <div class="nav-lang"><span>ES</span><a href="index.html">EN</a></div>
     <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg> GitHub
     </a>
@@ -283,88 +301,45 @@ body {
 </nav>
 
 <div class="doc-layout">
-  
-<aside class="doc-sidebar">
-  <h4>On this page</h4>
-  <div class="toc">
-<ul>
-<li><a href="#binoracle">binoracle</a><ul>
-<li><a href="#que-es-binoracle">¿Qué es binoracle?</a></li>
-<li><a href="#inicio-rapido">Inicio rápido</a></li>
-<li><a href="#motor-cve">Motor CVE</a><ul>
-<li><a href="#clases-de-vulnerabilidad-soportadas">Clases de vulnerabilidad soportadas</a></li>
-</ul>
-</li>
-<li><a href="#motor-de-reversing-binario">Motor de Reversing Binario</a><ul>
-<li><a href="#50-familias-de-exploit-completamente-automatizadas">50+ familias de exploit — completamente automatizadas</a></li>
-<li><a href="#analisis-estatico-paridad-rea-mas">Análisis estático — paridad REA + más</a></li>
-</ul>
-</li>
-<li><a href="#servidor-mcp-100-herramientas">Servidor MCP (~100 herramientas)</a></li>
-<li><a href="#arquitectura">Arquitectura</a></li>
-<li><a href="#informes">Informes</a></li>
-<li><a href="#comparacion-con-rea">Comparación con REA</a></li>
-<li><a href="#instalacion">Instalación</a></li>
-<li><a href="#configuracion">Configuración</a></li>
-<li><a href="#corpus-de-practica">Corpus de práctica</a></li>
-<li><a href="#licencia">Licencia</a></li>
-</ul>
-</li>
-</ul>
-</div>
-
-  <h4 style="margin-top:1.5rem;">Navigation</h4>
-  <a href="index.html">Home</a>
-  <a href="index-es.html">Docs (ES)</a>
-  <a href="roadmap.html">Roadmap</a>
-  <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub</a>
+  <aside class="doc-sidebar">
+<div class="wiki-lang"><span class="active-lang">ES</span><a href="index.html">EN</a></div>
+<p class="sidebar-section">En esta página</p>
+<a href="#descripcion">Descripción</a>
+<a href="#inicio-rapido">Inicio rápido</a>
+<a href="#motor-cve">Motor CVE</a>
+<a href="#motor-re">Motor RE Binario</a>
+<a href="#servidor-mcp">Servidor MCP</a>
+<a href="#instalacion">Instalación</a>
+<a href="#configuracion">Configuración</a>
+<hr class="sidebar-sep">
+<p class="sidebar-section">Navegación</p>
+<a href="index-es.html" class="active">Inicio</a>
+<a href="index.html">Home (EN)</a>
+<a href="tutorial-es.html">Tutorial</a>
+<a href="roadmap.html">Roadmap</a>
+<hr class="sidebar-sep">
+<p class="sidebar-section">Enlaces</p>
+<a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
+<a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
 </aside>
   <main class="doc-content">
-    <h1 id="binoracle">binoracle</h1>
-<p><strong>Investigación autónoma de exploits CVE y reversing binario — 100% local</strong></p>
-<p><a href="https://pypi.org/project/binoracle/"><img alt="PyPI" src="https://img.shields.io/pypi/v/binoracle?color=blue&amp;label=PyPI" /></a>
-<a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-%3E%3D3.10-blue" /></a>
-<a href="../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
-<a href="https://beafn28.github.io/binoracle/"><img alt="Docs" src="https://img.shields.io/badge/docs-gh--pages-blueviolet" /></a></p>
-<p><a href="../README.md">English</a> · <a href="README.es.md">Español</a> · <a href="https://beafn28.github.io/binoracle/">Docs</a> · <a href="assets/architecture.svg">Arquitectura</a></p>
-<hr />
-<blockquote>
-<p><strong>AVISO LEGAL</strong> — binoracle es una herramienta de investigación y educación.
-Todos los laboratorios CVE se ejecutan contra contenedores Docker que tú creas localmente.
-Nunca la uses contra sistemas que no sean tuyos o para los que no tengas permiso escrito explícito.</p>
-</blockquote>
-<hr />
-<h2 id="que-es-binoracle">¿Qué es binoracle?</h2>
-<p>binoracle es un asistente de investigación de seguridad <strong>totalmente local y offline-first</strong> con dos motores principales:</p>
-<table>
-<thead>
-<tr>
-<th>Motor</th>
-<th>Qué hace</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Motor CVE</strong></td>
-<td>Obtiene un CVE de NVD → pide a Qwen 2.5 Coder (LLM local) que genere hipótesis de exploit → levanta un laboratorio Docker → verifica el exploit con Playwright → genera un informe HTML profesional con capturas de pantalla</td>
-</tr>
-<tr>
-<td><strong>Motor RE Binario</strong></td>
-<td>Analiza ELF/PE/Mach-O/APK/WASM/Go/Rust/.NET/JS/EVM/SQLite — análisis estático, decompilación, generación de exploits, cadenas ROP, format strings, ataques de heap — todo offline</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Ningún dato sale de tu máquina.</strong> El LLM corre localmente via Ollama (Qwen 2.5 Coder 7B). Los laboratorios Docker son efímeros. Los informes se quedan en disco.</p>
-<hr />
-<h2 id="inicio-rapido">Inicio rápido</h2>
-<pre><code class="language-bash"># 1. Instalar binoracle
+
+    <h1 id="descripcion">binoracle</h1>
+    <p class="page-lead">Investigación autónoma de exploits CVE y reversing binario — 100% local, cero llamadas a la nube.</p>
+
+    <blockquote>
+      <strong>Aviso legal</strong> — binoracle es una herramienta de investigación y educación. Todos los laboratorios CVE se ejecutan contra contenedores Docker que tú creas localmente. No la uses contra sistemas que no sean tuyos o para los que no tengas permiso escrito explícito.
+    </blockquote>
+
+    <h2 id="inicio-rapido">Inicio rápido</h2>
+    <pre><code># 1. Instalar binoracle
 pip install binoracle
 
-# 2. Instalar Ollama + descargar el modelo (macOS / Linux)
+# 2. Instalar Ollama y descargar el modelo (Linux / macOS)
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen2.5-coder:7b
 
-# 3. Configurar
+# 3. Configurar el backend LLM
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
@@ -376,320 +351,147 @@ binoracle cve CVE-2025-27516
 binoracle triage ./binario_objetivo
 
 # 6. Cadena de exploit completa
-binoracle pwn ./binario_vulnerable
-</code></pre>
-<hr />
-<h2 id="motor-cve">Motor CVE</h2>
-<p>El motor CVE es <strong>completamente autónomo</strong> — no se proporcionan pistas externas. El LLM local lee la descripción de NVD y genera todas las hipótesis de exploit desde cero.</p>
-<p><img alt="Flujo del motor CVE" src="assets/cve-flow.svg" /></p>
-<h3 id="clases-de-vulnerabilidad-soportadas">Clases de vulnerabilidad soportadas</h3>
-<table>
-<thead>
-<tr>
-<th>Clase</th>
-<th>Scaffolders</th>
-<th>Auto-PoC</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>SSTI (Jinja2, Twig, Smarty)</td>
-<td>pip / gem</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>SQLi (GET/POST/JSON/header)</td>
-<td>pip / gem / php / maven</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Path Traversal / LFI</td>
-<td>pip / gem / npm / httpd</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>RCE / Inyección de comandos</td>
-<td>pip / gem / npm</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>XSS (Reflected / Stored)</td>
-<td>pip / npm</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>SSRF</td>
-<td>pip / npm</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>XXE</td>
-<td>java / maven</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Deserialización</td>
-<td>java / gem (Marshal)</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Auth Bypass / IDOR</td>
-<td>pip / gem / npm</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Subida de ficheros / Webshell</td>
-<td>pip</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Open Redirect</td>
-<td>pip / gem / npm</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>CSRF</td>
-<td>pip / gem</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Plugins WordPress (100+)</td>
-<td>WP Docker</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Extensiones Joomla</td>
-<td>Joomla Docker</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Módulos Drupal</td>
-<td>Drupal Docker</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Apache httpd</td>
-<td>httpd Docker</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Java/Maven (Spring, Struts)</td>
-<td>maven</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>PHP (paquetes Composer)</td>
-<td>php</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>npm / Node.js / Next.js</td>
-<td>npm</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Gems Ruby</td>
-<td>gem</td>
-<td>✓</td>
-</tr>
-</tbody>
-</table>
-<pre><code class="language-bash"># CVE individual
+binoracle pwn ./binario_vulnerable</code></pre>
+
+    <h2 id="motores">Motores</h2>
+    <table>
+      <thead><tr><th>Motor</th><th>Descripción</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Motor CVE</strong></td>
+          <td>Obtiene el descriptor CVE de NVD, lo pasa a un LLM local (Qwen 2.5 Coder 7B via Ollama) que genera hipótesis de exploit de forma autónoma — sin pistas externas. Levanta un laboratorio Docker efímero, ejecuta el PoC, captura pantallas Playwright en cada paso y emite un informe HTML estructurado.</td>
+        </tr>
+        <tr>
+          <td><strong>Motor RE Binario</strong></td>
+          <td>Análisis estático y dinámico de ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM y SQLite. Cubre generación de exploits (stack, heap, format string, SROP), síntesis de cadenas ROP, decompilación multi-motor y evaluación de mitigaciones. Todo local.</td>
+        </tr>
+        <tr>
+          <td><strong>Servidor MCP</strong></td>
+          <td>Expone el conjunto completo de capacidades como ~100 herramientas MCP, permitiendo integración con Claude Desktop, Cursor, Zed y otros clientes compatibles con MCP.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2 id="motor-cve">Motor CVE</h2>
+    <p>El motor es completamente autónomo — el LLM local recibe únicamente la descripción de NVD y ninguna pista externa. Todas las hipótesis de exploit se generan a partir de esa descripción.</p>
+
+    <img src="assets/cve-flow.svg" alt="Flujo del motor CVE" style="width:100%;border-radius:var(--r);border:1px solid var(--brd);margin:1rem 0;">
+
+    <h3>Clases de vulnerabilidad soportadas</h3>
+    <table>
+      <thead><tr><th>Clase</th><th>Scaffolders</th><th>Auto PoC</th></tr></thead>
+      <tbody><tr><td>SSTI (Jinja2, Twig, Smarty)</td><td><code>pip / gem</code></td><td>✓ sí</td></tr>
+<tr><td>SQLi (GET / POST / JSON / header)</td><td><code>pip / gem / php / maven</code></td><td>✓ sí</td></tr>
+<tr><td>Path Traversal / LFI</td><td><code>pip / gem / npm / httpd</code></td><td>✓ sí</td></tr>
+<tr><td>RCE / Inyección de comandos</td><td><code>pip / gem / npm</code></td><td>✓ sí</td></tr>
+<tr><td>XSS (Reflected / Stored)</td><td><code>pip / npm</code></td><td>✓ sí</td></tr>
+<tr><td>SSRF</td><td><code>pip / npm</code></td><td>✓ sí</td></tr>
+<tr><td>XXE</td><td><code>java / maven</code></td><td>✓ sí</td></tr>
+<tr><td>Deserialización</td><td><code>java / gem (Marshal)</code></td><td>✓ sí</td></tr>
+<tr><td>Auth Bypass / IDOR</td><td><code>pip / gem / npm</code></td><td>✓ sí</td></tr>
+<tr><td>Subida de ficheros / Webshell</td><td><code>pip</code></td><td>✓ sí</td></tr>
+<tr><td>CSRF</td><td><code>pip / gem</code></td><td>✓ sí</td></tr>
+<tr><td>Plugins WordPress (100+)</td><td><code>WP Docker</code></td><td>✓ sí</td></tr>
+<tr><td>Extensiones Joomla / módulos Drupal</td><td><code>CMS Docker</code></td><td>✓ sí</td></tr>
+<tr><td>Java / Maven (Spring, Struts, Log4j)</td><td><code>maven</code></td><td>✓ sí</td></tr>
+<tr><td>Paquetes PHP Composer</td><td><code>php</code></td><td>✓ sí</td></tr>
+<tr><td>npm / Node.js / Next.js</td><td><code>npm</code></td><td>✓ sí</td></tr>
+<tr><td>Gems Ruby (Rails, Rack, Sinatra)</td><td><code>gem</code></td><td>✓ sí</td></tr></tbody>
+    </table>
+
+    <h3>Comandos</h3>
+    <pre><code># CVE individual
 binoracle cve CVE-2025-27516
 
 # Lote (paralelizado)
 binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
 
-# Informe solo en inglés
-binoracle cve CVE-2025-27516 --lang en
-</code></pre>
-<hr />
-<h2 id="motor-de-reversing-binario">Motor de Reversing Binario</h2>
-<h3 id="50-familias-de-exploit-completamente-automatizadas">50+ familias de exploit — completamente automatizadas</h3>
-<pre><code>binoracle pwn ./binario
-</code></pre>
-<table>
-<thead>
-<tr>
-<th>Familia</th>
-<th>Técnicas</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Stack</strong></td>
-<td>ret2win · ret2libc · ret2plt · ret2csu · SROP (x86-64/x86-32/aarch64) · stack pivot · cadenas ROP</td>
-</tr>
-<tr>
-<td><strong>Heap</strong></td>
-<td>tcache dup · fastbin dup · UAF · double-free · House-of-Force · House-of-Spirit · House-of-Orange · House-of-Mind · large bin attack · unsafeunlink · Botcake</td>
-</tr>
-<tr>
-<td><strong>Format String</strong></td>
-<td>escritura arbitraria con %n · sobrescritura GOT · fuga de canary · fuga de PIE</td>
-</tr>
-<tr>
-<td><strong>Bajo nivel</strong></td>
-<td>shellcode (NX off) · limpieza de bad-chars · exploit IO_FILE · DL-resolve · secuestro GOT</td>
-</tr>
-<tr>
-<td><strong>Canary</strong></td>
-<td>fuga + reutilización · fuerza bruta en fork</td>
-</tr>
-<tr>
-<td><strong>PIE</strong></td>
-<td>sobrescritura parcial · cadena de fugas</td>
-</tr>
-</tbody>
-</table>
-<h3 id="analisis-estatico-paridad-rea-mas">Análisis estático — paridad REA + más</h3>
-<pre><code>binoracle triage ./binario       # mitigaciones, símbolos, importaciones
-binoracle decompile ./binario    # multi-motor: Ghidra, radare2, angr, pwndbg
-binoracle rop ./binario          # búsqueda de gadgets ROP + síntesis de cadenas
-binoracle chain ./binario        # cadena de exploit completa
-</code></pre>
-<hr />
-<h2 id="servidor-mcp-100-herramientas">Servidor MCP (~100 herramientas)</h2>
-<pre><code class="language-bash">binoracle mcp-server
-</code></pre>
-<pre><code class="language-json">// claude_desktop_config.json
+# Informe en inglés
+binoracle cve CVE-2025-27516 --lang en</code></pre>
+
+    <h2 id="motor-re">Motor de Reversing Binario</h2>
+    <p>Más de 50 familias de exploit automatizadas de principio a fin. Análisis estático, traza dinámica, decompilación y generación de cadenas de exploit en múltiples formatos binarios.</p>
+
+    <h3>Familias de exploit</h3>
+    <table>
+      <thead><tr><th>Familia</th><th>Técnicas</th></tr></thead>
+      <tbody><tr><td><strong>Stack</strong></td><td>ret2win, ret2libc, ret2plt, ret2csu, SROP (x86-64/x86-32/aarch64), stack pivot, cadenas ROP</td></tr>
+<tr><td><strong>Heap</strong></td><td>tcache dup, fastbin dup, UAF, double-free, House-of-Force/Spirit/Orange/Mind, large-bin attack, Botcake</td></tr>
+<tr><td><strong>Format string</strong></td><td>escritura arbitraria con %n, sobrescritura GOT, fuga canary, fuga PIE</td></tr>
+<tr><td><strong>Bajo nivel</strong></td><td>shellcode (NX off), limpieza bad-chars, exploit IO_FILE, DL-resolve, secuestro GOT</td></tr>
+<tr><td><strong>Canary</strong></td><td>fuga + reutilización, fuerza bruta en fork</td></tr>
+<tr><td><strong>PIE</strong></td><td>sobrescritura parcial, cadena de fugas</td></tr></tbody>
+    </table>
+
+    <h3>Formatos soportados</h3>
+    <table>
+      <thead><tr><th>Formato</th><th>Backends de análisis</th></tr></thead>
+      <tbody><tr><td>ELF (x86-64 / x86 / ARM / MIPS / RISC-V)</td><td>radare2, pyelftools, pwntools, angr</td></tr>
+<tr><td>PE / PE+ (Windows)</td><td>pefile, LIEF, radare2</td></tr>
+<tr><td>Mach-O (macOS / iOS)</td><td>LIEF, radare2</td></tr>
+<tr><td>APK / DEX (Android)</td><td>apktool, jadx, androguard</td></tr>
+<tr><td>Ensamblados .NET</td><td>dnlib, ILSpy</td></tr>
+<tr><td>Módulos WASM</td><td>wabt, binaryen</td></tr>
+<tr><td>Binarios Go / Rust</td><td>LIEF + recuperación de símbolos</td></tr>
+<tr><td>Bytecode EVM</td><td>pyevmasm</td></tr>
+<tr><td>Bases de datos SQLite</td><td>sqlite3 schema + volcado</td></tr></tbody>
+    </table>
+
+    <h3>Comandos</h3>
+    <pre><code>binoracle triage ./binario        # mitigaciones, símbolos, importaciones
+binoracle decompile ./binario     # Ghidra, radare2, angr, pwndbg
+binoracle rop ./binario           # búsqueda de gadgets ROP + síntesis
+binoracle chain ./binario         # cadena de exploit completa
+binoracle hardening ./binario     # NX, PIE, RELRO, canary, Fortify, CFI</code></pre>
+
+    <h2 id="servidor-mcp">Servidor MCP</h2>
+    <p>binoracle expone su conjunto completo de capacidades como herramientas MCP, permitiendo integración con Claude Desktop, Cursor, Zed y otros clientes. Herramientas disponibles: <code>triage</code>, <code>pwn</code>, <code>rop_chain</code>, <code>heap_exploit</code>, <code>fmt_exploit</code>, <code>cve_investigate</code>, <code>decompile</code>, <code>hardening</code>, <code>audit</code> y otras (~100 en total).</p>
+    <pre><code>binoracle mcp-server</code></pre>
+    <pre><code>// claude_desktop_config.json
 {
-  &quot;mcpServers&quot;: {
-    &quot;binoracle&quot;: {
-      &quot;command&quot;: &quot;binoracle&quot;,
-      &quot;args&quot;: [&quot;mcp-server&quot;]
+  "mcpServers": {
+    "binoracle": {
+      "command": "binoracle",
+      "args": ["mcp-server"]
     }
   }
-}
-</code></pre>
-<hr />
-<h2 id="arquitectura">Arquitectura</h2>
-<p><img alt="Arquitectura binoracle" src="assets/architecture.svg" /></p>
-<hr />
-<h2 id="informes">Informes</h2>
-<p>Cada investigación genera un <strong>informe HTML profesional</strong> con:</p>
-<ul>
-<li>Resumen ejecutivo con puntuación CVSS y badge de severidad</li>
-<li>Hipótesis del LLM y cadena de razonamiento</li>
-<li>Configuración del laboratorio y scaffold</li>
-<li>Capturas de pantalla de Playwright en cada paso de verificación</li>
-<li>Código PoC completo (curl / Python / pwntools)</li>
-<li>Recomendaciones de remediación (concretas y accionables, en español e inglés)</li>
-</ul>
-<hr />
-<h2 id="comparacion-con-rea">Comparación con REA</h2>
-<table>
-<thead>
-<tr>
-<th>Funcionalidad</th>
-<th>binoracle</th>
-<th>REA</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>LLM local (Ollama)</td>
-<td>✓</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>CVE → laboratorio Docker → PoC verificado</td>
-<td>✓</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>Capturas Playwright como evidencia</td>
-<td>✓</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>Labs WordPress / Joomla / Drupal</td>
-<td>✓</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>ret2win / ret2libc / SROP</td>
-<td>✓</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Ataques heap (tcache/fastbin/UAF/HoX)</td>
-<td>✓</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Explotación format string</td>
-<td>✓</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Síntesis de cadenas ROP</td>
-<td>✓</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Servidor MCP (~100 herramientas)</td>
-<td>✓</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>Corpus de práctica (40+ binarios)</td>
-<td>✓</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>APK / .NET / WASM / EVM</td>
-<td>✓</td>
-<td>parcial</td>
-</tr>
-<tr>
-<td>100% offline</td>
-<td>✓</td>
-<td>parcial</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="instalacion">Instalación</h2>
-<pre><code class="language-bash">pip install binoracle
+}</code></pre>
 
-# Extras opcionales
-pip install binoracle[pwn]        # pwntools + ROPgadget
+    <h2 id="instalacion">Instalación</h2>
+    <pre><code>pip install binoracle</code></pre>
+    <p>Conjuntos de dependencias opcionales:</p>
+    <pre><code>pip install binoracle[pwn]        # pwntools + ROPgadget
 pip install binoracle[symbolic]   # ejecución simbólica angr
 pip install binoracle[screenshots] # capturas Playwright en informes CVE
-pip install binoracle[all]        # todo
-</code></pre>
-<hr />
-<h2 id="configuracion">Configuración</h2>
-<pre><code class="language-bash"># LLM local (recomendado)
+pip install binoracle[all]        # todo lo anterior</code></pre>
+
+    <table>
+      <thead><tr><th>Dependencia</th><th>Mínimo</th><th>Recomendado</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td>3.10</td><td>3.12</td></tr>
+        <tr><td>RAM</td><td>8 GB</td><td>16 GB</td></tr>
+        <tr><td>Docker</td><td>20.x</td><td>25.x</td></tr>
+        <tr><td>Ollama</td><td>0.3</td><td>latest</td></tr>
+        <tr><td>GPU (opcional)</td><td>—</td><td>8 GB VRAM (Qwen 7B cuantizado)</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="configuracion">Configuración</h2>
+    <pre><code># LLM local via Ollama (recomendado)
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 
 # Idioma del informe (por defecto: es)
-export BINORACLE_LANG=es
-</code></pre>
-<hr />
-<h2 id="corpus-de-practica">Corpus de práctica</h2>
-<pre><code class="language-bash"># Compilar el corpus (necesita Docker o gcc)
-samples/build.sh
+export BINORACLE_LANG=es</code></pre>
+    <p>Añade estas líneas a tu perfil de shell (<code>~/.bashrc</code>, <code>~/.zshrc</code>) para que persistan entre sesiones.</p>
 
-# Seguir el tutorial guiado
-binoracle triage samples/bin/ret2win
-binoracle pwn samples/bin/ret2libc
-# → ver docs/TUTORIAL.md para el recorrido completo
-</code></pre>
-<hr />
-<h2 id="licencia">Licencia</h2>
-<p>MIT © 2024–2025 Beatriz Fresno Naumova</p>
-<hr />
-<p><a href="https://beafn28.github.io/binoracle/">Docs</a> · <a href="https://github.com/beafn28/binoracle/issues">Issues</a></p>
   </main>
 </div>
 
 <footer>
   <div class="footer">
-    <span>MIT &copy; 2024&ndash;2025 Beatriz Fresno Naumova</span>
+    <span>MIT &copy; 2024&ndash;2026 Beatriz Fresno Naumova</span>
     <div class="footer-links">
       <a href="index.html">Home</a>
       <a href="roadmap.html">Roadmap</a>
