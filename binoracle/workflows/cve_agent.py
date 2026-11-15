@@ -2065,20 +2065,19 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             with open(idx_js, "w") as f:
                 f.write("export default function Home() { return <p>bin0racle lab</p>; }\n")
         dockerfile = (
-            "FROM node:20-alpine\n"
+            "FROM node:20-slim\n"
+            # node:20-slim usa Debian (glibc) en vez de Alpine (musl): necesario para
+            # los binarios nativos de SWC que usa Next.js 15.x -- en Alpine los binarios
+            # SWC precompilados se cargan contra glibc y fallan en musl con el error
+            # 'node:internal/modules/cjs/loader throw e'. node:20-slim es el sustituto
+            # minimo recomendado por la documentacion oficial de Next.js para Docker.
             + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
             + "WORKDIR /app\n"
             "COPY package.json .\n"
-            # Sin '|| true': si npm install falla el build falla con un error claro
-            # en vez de generar un contenedor roto que peta en arranque con
-            # node:internal/modules/cjs/loader.
             "RUN npm install --legacy-peer-deps\n"
-            # Limpiar proxy tras install para que el servidor en runtime no lo use.
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
             "EXPOSE 3000\n"
-            # next dev compila al primer request (~30-60s en 15.x) pero el middleware
-            # funciona exactamente igual que en produccion para el bypass que probamos.
             'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
