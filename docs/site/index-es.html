@@ -49,30 +49,53 @@ body {
 .nav-links a:hover, .nav-links a.active { color: var(--tx); }
 .nav-gh { display: flex; align-items: center; gap: .4rem; padding: .35rem .85rem; background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px; color: var(--tx); text-decoration: none; font-size: .85rem; transition: border-color .15s; }
 .nav-gh:hover { border-color: var(--acc); }
-.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; }
-.nav-lang span { padding: .3rem .6rem; background: var(--surf2); color: var(--tx); }
-.nav-lang a { padding: .3rem .6rem; color: var(--muted); text-decoration: none; transition: all .15s; }
-.nav-lang a:hover { color: var(--tx); background: var(--surf); }
-.nav-search { position: relative; display: flex; align-items: center; }
-.nav-search input {
-  background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px;
-  color: var(--tx); font-size: .82rem; padding: .3rem .7rem .3rem 2rem;
-  outline: none; width: 180px; transition: border-color .15s, width .2s;
+.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; flex-shrink: 0; }
+.nav-lang span { padding: .3rem .7rem; background: var(--acc2); color: #fff; }
+.nav-lang a { padding: .3rem .7rem; color: var(--muted); text-decoration: none; transition: all .15s; }
+.nav-lang a:hover { color: var(--tx); background: var(--surf2); }
+/* search wrap — always in nav, outside collapsible links */
+.nav-search-wrap { position: relative; display: flex; align-items: center; flex-shrink: 0; }
+.nav-search-wrap input {
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 8px;
+  color: var(--tx); font-size: .85rem; padding: .38rem 2.6rem .38rem 2.1rem;
+  outline: none; width: 220px; transition: border-color .2s, width .25s, box-shadow .2s;
   font-family: inherit;
 }
-.nav-search input::placeholder { color: var(--muted); }
-.nav-search input:focus { border-color: var(--acc); width: 240px; }
-.nav-search .search-icon { position: absolute; left: .5rem; color: var(--muted); pointer-events: none; }
-#search-results {
-  display: none; position: absolute; top: calc(100% + 6px); left: 0;
-  background: var(--surf); border: 1px solid var(--brd); border-radius: 8px;
-  min-width: 300px; max-height: 320px; overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 200; padding: .4rem 0;
+.nav-search-wrap input::placeholder { color: var(--muted); }
+.nav-search-wrap input:focus { border-color: var(--acc); width: 300px; box-shadow: 0 0 0 3px rgba(88,166,255,.15); }
+.nav-search-wrap .s-ico { position: absolute; left: .6rem; color: var(--muted); pointer-events: none; display: flex; }
+.nav-search-wrap .s-kbd {
+  position: absolute; right: .55rem; display: flex; gap: 2px; pointer-events: none;
+  font-size: .68rem; color: var(--muted); font-family: ui-monospace, monospace;
 }
-#search-results a { display: block; padding: .45rem 1rem; color: var(--muted); text-decoration: none; font-size: .88rem; border-radius: 0; }
-#search-results a:hover { background: var(--surf2); color: var(--tx); }
-#search-results .sr-page { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--acc); padding: .3rem 1rem .1rem; }
+.nav-search-wrap .s-kbd kbd {
+  background: var(--surf); border: 1px solid var(--brd); border-radius: 3px;
+  padding: 1px 4px; font-size: .68rem; line-height: 1.4;
+}
+.nav-search-wrap input:focus + .s-kbd { opacity: 0; }
+#search-results {
+  display: none; position: absolute; top: calc(100% + 8px); left: 0;
+  background: var(--surf); border: 1px solid var(--brd); border-radius: 10px;
+  min-width: 360px; max-height: 400px; overflow-y: auto;
+  box-shadow: 0 12px 32px rgba(0,0,0,.45); z-index: 300; padding: .5rem 0;
+}
 #search-results.open { display: block; }
+.sr-header { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--acc); padding: .5rem 1rem .25rem; }
+.sr-item { display: flex; align-items: center; gap: .65rem; padding: .5rem 1rem;
+  color: var(--tx); text-decoration: none; font-size: .88rem; cursor: pointer; transition: background .1s; }
+.sr-item:hover, .sr-item.active { background: var(--surf2); }
+.sr-item .sr-icon { flex-shrink: 0; color: var(--acc); opacity: .7; display: flex; }
+.sr-item .sr-title { flex: 1; font-weight: 500; }
+.sr-item .sr-title mark { background: none; color: var(--acc); font-weight: 700; }
+.sr-item .sr-tags { font-size: .75rem; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sr-item .sr-enter { font-size: .7rem; color: var(--muted); background: var(--surf2); border: 1px solid var(--brd);
+  border-radius: 3px; padding: 1px 5px; opacity: 0; }
+.sr-item.active .sr-enter { opacity: 1; }
+.sr-empty { padding: .7rem 1rem; color: var(--muted); font-size: .88rem; }
+.sr-footer { padding: .4rem 1rem; border-top: 1px solid var(--brd); display: flex; gap: 1rem; margin-top: .3rem; }
+.sr-footer span { font-size: .7rem; color: var(--muted); display: flex; align-items: center; gap: 3px; }
+.sr-footer kbd { background: var(--surf2); border: 1px solid var(--brd); border-radius: 3px; padding: 1px 4px; font-size: .65rem; }
 
 /* HERO */
 .hero {
@@ -334,49 +357,116 @@ body {
 <a href="tutorial.html">Tutorial</a>
 <a href="roadmap.html">Roadmap</a>
 
-    <div class="nav-search" id="nav-search-wrap">
-      <span class="search-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
-      <input type="search" id="nav-search-input" placeholder="Search docs..." autocomplete="off" aria-label="Search">
-      <div id="search-results"></div>
-    </div>
-    <div class="nav-lang"><span>ES</span><a href="index.html">EN</a></div>
-    <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg> GitHub
-    </a>
   </div>
+  <div class="nav-search-wrap" id="nav-search-wrap">
+    <span class="s-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+    <input type="search" id="nav-search-input" placeholder="Search docs..." autocomplete="off" aria-label="Search docs" spellcheck="false">
+    <span class="s-kbd"><kbd>⌘</kbd><kbd>K</kbd></span>
+    <div id="search-results"></div>
+  </div>
+  <div class="nav-lang"><span>ES</span><a href="index.html">EN</a></div>
+  <a class="nav-gh" href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg> GitHub
+  </a>
 </nav>
 <script>
 (function(){
+var ICONS={};
+ICONS['zap']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
+ICONS['book']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'
+ICONS['terminal']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+ICONS['layers']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
+ICONS['cpu']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>'
+ICONS['shield']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
+ICONS['package']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>'
+ICONS['lock']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
+ICONS['server']='<svg class="sr-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>'
 var idx=[
-  {title:"Home",href:"index.html",kw:["cve", "binary", "re", "exploit", "install", "quick start", "pipeline", "overview"]},
-  {title:"Docs (ES)",href:"index-es.html",kw:["instalacion", "motor cve", "binario", "informes", "mcp", "configuracion"]},
-  {title:"Tutorial (EN)",href:"tutorial.html",kw:["tutorial", "step by step", "configure", "binary re", "reports"]},
-  {title:"Tutorial (ES)",href:"tutorial-es.html",kw:["tutorial", "paso a paso", "configurar", "binario", "informes"]},
-  {title:"Roadmap",href:"roadmap.html",kw:["roadmap", "v0.2", "v0.3", "v0.4", "v0.5", "features", "planned"]},
-  {title:"Architecture",href:"architecture.html",kw:["architecture", "components", "cli", "workflows", "oracles", "mcp server", "store", "diagrama"]},
-  {title:"CVE Chains",href:"cve-chains.html",kw:["cve chain", "multi-cve", "cadena", "exploit chain", "rce", "cve-chain"]},
-  {title:"Firmware Analysis",href:"firmware.html",kw:["firmware", "embedded", "flash", "squashfs", "binwalk", "iot", "layers"]},
-  {title:"Kernel Exploits",href:"kernel-exploits.html",kw:["kernel", "exploit", "ret2usr", "smep", "kaslr", "lpe", "privilege escalation", "lkm"]},
-  {title:"LoRA Fine-tuning",href:"finetune.html",kw:["finetune", "lora", "sft", "dataset", "jsonl", "training", "model", "fine-tuning"]},
-  {title:"MCP Tools Reference",href:"mcp-tools.html",kw:["mcp", "tools", "claude desktop", "vscode", "server", "api", "tools reference"]},
+  {title:"Home",href:"index.html",kw:["cve", "binary", "re", "exploit", "install", "quick start", "pipeline", "overview"],icon:"zap",desc:"Overview, install, quick start"},
+  {title:"Docs (ES)",href:"index-es.html",kw:["instalacion", "motor cve", "binario", "informes", "mcp", "configuracion"],icon:"book",desc:"Inicio, instalación, motor CVE"},
+  {title:"Tutorial (EN)",href:"tutorial.html",kw:["tutorial", "step by step", "configure", "binary re", "reports"],icon:"terminal",desc:"Step-by-step guide — CVE to exploit"},
+  {title:"Tutorial (ES)",href:"tutorial-es.html",kw:["tutorial", "paso a paso", "configurar", "binario", "informes"],icon:"terminal",desc:"Guía paso a paso — CVE al exploit"},
+  {title:"Roadmap",href:"roadmap.html",kw:["roadmap", "v0.2", "v0.3", "v0.4", "v0.5", "features", "planned"],icon:"layers",desc:"v0.2–v0.5 planned features"},
+  {title:"Architecture",href:"architecture.html",kw:["architecture", "components", "cli", "workflows", "oracles", "mcp server", "store", "diagrama"],icon:"cpu",desc:"Components, oracles, MCP, workflows"},
+  {title:"CVE Chains",href:"cve-chains.html",kw:["cve chain", "multi-cve", "cadena", "exploit chain", "rce", "cve-chain"],icon:"shield",desc:"Multi-CVE chaining, exploit chains"},
+  {title:"Firmware Analysis",href:"firmware.html",kw:["firmware", "embedded", "flash", "squashfs", "binwalk", "iot", "layers"],icon:"package",desc:"IoT firmware extraction & analysis"},
+  {title:"Kernel Exploits",href:"kernel-exploits.html",kw:["kernel", "exploit", "ret2usr", "smep", "kaslr", "lpe", "privilege escalation", "lkm"],icon:"lock",desc:"Kernel LPE, ret2usr, SMEP bypass"},
+  {title:"LoRA Fine-tuning",href:"finetune.html",kw:["finetune", "lora", "sft", "dataset", "jsonl", "training", "model", "fine-tuning"],icon:"cpu",desc:"LoRA fine-tuning on security data"},
+  {title:"MCP Tools Reference",href:"mcp-tools.html",kw:["mcp", "tools", "claude desktop", "vscode", "server", "api", "tools reference"],icon:"server",desc:"Claude Desktop / VS Code MCP tools"},
 ];
 var inp=document.getElementById('nav-search-input');
 var box=document.getElementById('search-results');
+var cur=-1;
 if(!inp)return;
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function hi(text,q){
+  if(!q)return esc(text);
+  var i=text.toLowerCase().indexOf(q.toLowerCase());
+  if(i<0)return esc(text);
+  return esc(text.slice(0,i))+'<mark>'+esc(text.slice(i,i+q.length))+'</mark>'+esc(text.slice(i+q.length));
+}
+function render(hits,q){
+  if(!hits.length){
+    box.innerHTML='<div class="sr-empty">No results for <strong>'+esc(q)+'</strong></div>';
+    box.classList.add('open');cur=-1;return;
+  }
+  var html='<div class="sr-header">Pages — '+hits.length+' found</div>';
+  hits.forEach(function(e,i){
+    var icon=ICONS[e.icon]||ICONS['book'];
+    html+='<a class="sr-item" href="'+e.href+'" data-idx="'+i+'">'
+      +'<span class="sr-icon">'+icon+'</span>'
+      +'<span style="flex:1;min-width:0"><div class="sr-title">'+hi(e.title,q)+'</div>'
+      +(e.desc?'<div class="sr-tags">'+esc(e.desc)+'</div>':'')
+      +'</span>'
+      +'<span class="sr-enter">↩</span>'
+      +'</a>';
+  });
+  html+='<div class="sr-footer">'
+    +'<span><kbd>↑</kbd><kbd>↓</kbd> navegar</span>'
+    +'<span><kbd>↩</kbd> abrir</span>'
+    +'<span><kbd>Esc</kbd> cerrar</span>'
+    +'</div>';
+  box.innerHTML=html;
+  box.classList.add('open');
+  cur=-1;
+}
+function setActive(n){
+  var items=box.querySelectorAll('.sr-item');
+  if(!items.length)return;
+  if(cur>=0&&cur<items.length)items[cur].classList.remove('active');
+  cur=(n+items.length)%items.length;
+  items[cur].classList.add('active');
+  items[cur].scrollIntoView({block:'nearest'});
+}
 inp.addEventListener('input',function(){
   var q=inp.value.trim().toLowerCase();
-  if(!q){box.innerHTML='';box.classList.remove('open');return;}
+  if(!q){box.innerHTML='';box.classList.remove('open');cur=-1;return;}
   var hits=idx.filter(function(e){
     return e.title.toLowerCase().includes(q)||e.kw.some(function(k){return k.includes(q);});
   });
-  if(!hits.length){box.innerHTML='<div style="padding:.6rem 1rem;color:var(--muted);font-size:.85rem">No results</div>';box.classList.add('open');return;}
-  box.innerHTML=hits.map(function(e){return'<a href="'+e.href+'">'+esc(e.title)+'</a>';}).join('');
-  box.classList.add('open');
+  render(hits,q);
+});
+inp.addEventListener('focus',function(){
+  if(!inp.value.trim()&&!box.classList.contains('open')){
+    render(idx,'');
+  }
+});
+inp.addEventListener('keydown',function(e){
+  if(!box.classList.contains('open'))return;
+  if(e.key==='ArrowDown'){e.preventDefault();setActive(cur+1);}
+  else if(e.key==='ArrowUp'){e.preventDefault();setActive(cur-1);}
+  else if(e.key==='Enter'){
+    var items=box.querySelectorAll('.sr-item');
+    if(cur>=0&&cur<items.length){e.preventDefault();location.href=items[cur].href;}
+  }
+  else if(e.key==='Escape'){box.classList.remove('open');inp.blur();cur=-1;}
+});
+document.addEventListener('keydown',function(e){
+  if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();inp.focus();inp.select();}
 });
 document.addEventListener('click',function(e){
   if(!document.getElementById('nav-search-wrap').contains(e.target)){
-    box.classList.remove('open');
+    box.classList.remove('open');cur=-1;
   }
 });
 })();

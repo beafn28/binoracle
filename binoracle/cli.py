@@ -1475,10 +1475,8 @@ def cmd_cve(args, config):
                     print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
-    # Solo imprime el markdown completo en terminal si no hay salida HTML/JSON
-    # (cuando hay fichero de salida el informe ya va al fichero, el terminal queda limpio)
-    if not getattr(args, "html", None) and not getattr(args, "json_out", None):
-        print(render_investigation(inv, config.lang, embed_images=False))
+    # Siempre imprime el resumen en terminal (sin imágenes base64)
+    print(render_investigation(inv, config.lang, embed_images=False))
 
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
@@ -1620,8 +1618,8 @@ def cmd_investigate(args, config):
                 else:
                     _kb2 = len(_png2) * 3 // 4 // 1024
                     print(f"      [~{_kb2} KB — usa -o report.html para ver la imagen]")
-    if not getattr(args, "html", None) and not getattr(args, "json", None):
-        print("\n" + render_investigation(inv, config.lang, embed_images=False))
+    # Siempre imprime el resumen en terminal (sin imágenes base64)
+    print("\n" + render_investigation(inv, config.lang, embed_images=False))
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
         md_full = render_investigation(inv, config.lang)
