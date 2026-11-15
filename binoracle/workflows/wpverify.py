@@ -678,6 +678,74 @@ class _Lab:
                 pass
 
 
+def _screenshot_response(url: str, method: str, status: int, body: str,
+                         highlight: str = "", lang: str = "es") -> Optional[str]:
+    """Captura visual de tipo 'visor HTTP' con la respuesta ya obtenida (no reintenta la peticion).
+    Destaca visualmente `highlight` en la respuesta. Devuelve PNG en base64, o None."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
+    except Exception:
+        return None
+    import base64
+    import html as _html
+    import tempfile
+
+    body_disp = body[:4000]
+    body_escaped = _html.escape(body_disp)
+    if highlight:
+        hl_safe = _html.escape(highlight)
+        body_escaped = body_escaped.replace(hl_safe,
+            f'<mark class="hl">{hl_safe}</mark>')
+
+    st_color = "#4caf50" if 200 <= status < 300 else "#f44336"
+    lbl_text = "binoracle · evidencia HTTP" if lang == "es" else "binoracle · HTTP evidence"
+    page_src = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font:13px/1.6 'Courier New',monospace;background:#1e1e1e;color:#d4d4d4;min-height:100vh}}
+.bar{{background:#252526;padding:10px 16px;border-bottom:2px solid #007acc;display:flex;gap:12px;align-items:center}}
+.meth{{color:#4ec9b0;font-weight:700;font-size:14px;white-space:nowrap}}
+.url{{color:#9cdcfe;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
+.st{{color:{st_color};font-weight:700;font-size:13px;white-space:nowrap}}
+.lbl{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}}
+.body{{padding:14px 16px;white-space:pre-wrap;word-break:break-word;font-size:13px}}
+mark.hl{{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-weight:700}}
+</style></head><body>
+<div class="bar">
+  <span class="lbl">{_html.escape(lbl_text)}</span>
+  <span class="meth">{_html.escape(method)}</span>
+  <span class="url" title="{_html.escape(url[:300])}">{_html.escape(url[:200])}</span>
+  <span class="st">HTTP {status}</span>
+</div>
+<div class="body">{body_escaped}</div>
+</body></html>"""
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1200, "height": 800},
+                    device_scale_factor=2,
+                ).new_page()
+                page.set_content(page_src, wait_until="domcontentloaded")
+                page.screenshot(path=out_path, full_page=True)
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str]:
     """Reusa las cookies de una requests.Session YA autenticada (via _wp_login) para abrir esa
     misma sesion en un Chromium headless (Playwright) y capturar una foto REAL de la pagina --
@@ -2541,6 +2609,24 @@ def verify_wordpress_sqli(
         # devolviendo lo esperado (p.ej. no un error fatal de PHP, no un redirect inesperado...)
         # para la peticion mas simple de todas, ANTES de intentar nada mas complicado.
         res.evidence["respuesta_control_recorte"] = (base_resp.text or "")[:300]
+        # Captura visual HTTP: peticion de control para el informe paso a paso
+        step("capturando pantalla: peticion de control HTTP (sin inyeccion, respuesta base)...")
+        _ctrl_url = boot.base_url + endpoint
+        _ctrl_png = _screenshot_response(_ctrl_url, m, base_resp.status_code,
+                                         (base_resp.text or "")[:2000])
+        if _ctrl_png:
+            boot.shots.append({
+                "png_b64": _ctrl_png,
+                "caption_es": (f"Petición de control ({m} {endpoint}) — sin inyección, "
+                               f"respuesta base del servidor. Código HTTP {base_resp.status_code}. "
+                               f"Esta respuesta sirve como línea base para detectar diferencias "
+                               f"causadas por la inyección."),
+                "caption_en": (f"Control request ({m} {endpoint}) — no injection payload, "
+                               f"server baseline response. HTTP code {base_resp.status_code}. "
+                               f"This response is the baseline against which injection-caused "
+                               f"differences are measured."),
+                "url": _ctrl_url,
+            })
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
         # contextos de inyeccion: el query real puede envolver el valor en comillas simples,
         # dobles, un parentesis, o nada (contexto numerico) -- probar los cuatro en vez de asumir
@@ -2879,6 +2965,25 @@ def verify_wordpress_sqli(
                     f"SQL no se confirmo" +
                     (f". Respuesta real de la peticion de control: {control_sample!r}"
                      if control_sample else ""))
+                # Captura final: ultima respuesta obtenida, para que el informe muestre algo
+                step("capturando pantalla: ultima respuesta HTTP recibida (resultado final del "
+                     "intento de inyeccion)...")
+                _last_resp_body = control_sample or ""
+                _last_png = _screenshot_response(boot.base_url + endpoint, m,
+                                                 base_resp.status_code, _last_resp_body)
+                if _last_png:
+                    boot.shots.append({
+                        "png_b64": _last_png,
+                        "caption_es": (f"Última respuesta HTTP recibida ({m} {endpoint}) — "
+                                       f"ninguna de las {len(error_tried) + len(union_tried)} "
+                                       f"combinaciones de inyección mostró evidencia de SQLi. "
+                                       f"Esta es la respuesta base del servidor para diagnóstico."),
+                        "caption_en": (f"Last HTTP response received ({m} {endpoint}) — none "
+                                       f"of the {len(error_tried) + len(union_tried)} injection "
+                                       f"combinations showed SQLi evidence. This is the server "
+                                       f"baseline response for diagnosis."),
+                        "url": boot.base_url + endpoint,
+                    })
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

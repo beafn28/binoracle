@@ -307,14 +307,14 @@ pip install binoracle[all]         # todo
 
 ## Hoja de ruta
 
-- [ ] Cadenas de exploit de kernel (ret2usr, UAF en drivers)
-- [ ] Análisis de firmware (UEFI, Linux embebido)
-- [ ] Corpus LibFuzzer sembrado desde PoC de CVE
-- [ ] Cadenas multi-CVE (RCE web -> escalada de privilegios local)
-- [ ] Puntuación CVSS v4
-- [ ] Puente Burp Suite MCP
-- [ ] Decompilador JEB (Android nativo)
-- [ ] Modelo ajustado para generación de hipótesis de exploit
+- [x] Cadenas de exploit de kernel (ret2usr, UAF en drivers) — `binoracle kernel-exploit`
+- [x] Análisis de firmware (UEFI, Linux embebido) — `binoracle firmware <imagen>`
+- [x] Corpus LibFuzzer sembrado desde PoC de CVE — `binoracle cve-corpus CVE-XXXX-YYYY`
+- [x] Cadenas multi-CVE (RCE web -> escalada de privilegios local) — `binoracle cve-chain CVE-A CVE-B`
+- [x] Puntuación CVSS v4 — integrado en todos los informes HTML
+- [x] Puente Burp Suite MCP — `configure_burp_mcp()` / `--burp` flag
+- [x] Decompilador JEB (Android nativo) — `BINORACLE_JEB_MCP_URL=<url>` + `binoracle caller-tool jeb`
+- [ ] Modelo ajustado para generación de hipótesis de exploit (requiere corpus de entrenamiento)
 
 ---
 

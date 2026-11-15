@@ -25,8 +25,8 @@ from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HI
                        _REDIRECT_HINTS, _SQLI_HINTS, _URL_HINTS, _XML_HINTS, _XSS_HINTS,
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
                        _http_request_raw_path, _lab_host,
-                       _pick_param, _redirect_location_is_external, _run, _token,
-                       configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
+                       _pick_param, _redirect_location_is_external, _run, _screenshot_response,
+                       _token, configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
                          load_ssti_arithmetic_payloads, load_xss_payloads)
 import secrets
@@ -34,77 +34,7 @@ import secrets
 _COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
 
-def _screenshot_response(url: str, method: str, status: int, body: str,
-                         highlight: str = "", lang: str = "es") -> Optional[str]:
-    """Genera una captura de pantalla de tipo 'visor HTTP' con el cuerpo de respuesta
-    ya obtenido (no reintenta la peticion). Destaca visualmente `highlight` si se
-    pasa (p.ej. el secreto plantado o el resultado calculado). Usa una pagina HTML
-    sintetica en memoria -- no hay normalizacion de URL ni proxy de por medio.
-    Devuelve PNG codificado en base64, o None si Playwright no esta disponible."""
-    try:
-        from playwright.sync_api import sync_playwright
-        from .. import chromium_launch_kwargs
-    except Exception:
-        return None
-    import base64
-    import html as _html
-    import tempfile
-
-    body_disp = body[:4000]
-    body_escaped = _html.escape(body_disp)
-    if highlight:
-        hl_safe = _html.escape(highlight)
-        body_escaped = body_escaped.replace(hl_safe,
-            f'<mark class="hl">{hl_safe}</mark>')
-
-    st_color = "#4caf50" if 200 <= status < 300 else "#f44336"
-    lbl_text = "binoracle · evidencia HTTP" if lang == "es" else "binoracle · HTTP evidence"
-    page_src = f"""<!doctype html>
-<html><head><meta charset="utf-8"><style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font:13px/1.6 'Courier New',monospace;background:#1e1e1e;color:#d4d4d4;min-height:100vh}}
-.bar{{background:#252526;padding:10px 16px;border-bottom:2px solid #007acc;display:flex;gap:12px;align-items:center}}
-.meth{{color:#4ec9b0;font-weight:700;font-size:14px;white-space:nowrap}}
-.url{{color:#9cdcfe;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}}
-.st{{color:{st_color};font-weight:700;font-size:13px;white-space:nowrap}}
-.lbl{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}}
-.body{{padding:14px 16px;white-space:pre-wrap;word-break:break-word;font-size:13px}}
-mark.hl{{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-weight:700}}
-</style></head><body>
-<div class="bar">
-  <span class="lbl">{_html.escape(lbl_text)}</span>
-  <span class="meth">{_html.escape(method)}</span>
-  <span class="url" title="{_html.escape(url[:300])}">{_html.escape(url[:200])}</span>
-  <span class="st">HTTP {status}</span>
-</div>
-<div class="body">{body_escaped}</div>
-</body></html>"""
-
-    fd, out_path = tempfile.mkstemp(suffix=".png")
-    os.close(fd)
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(**chromium_launch_kwargs())
-            try:
-                page = browser.new_context(
-                    viewport={"width": 1200, "height": 800},
-                    device_scale_factor=2,
-                ).new_page()
-                page.set_content(page_src, wait_until="domcontentloaded")
-                page.screenshot(path=out_path, full_page=True)
-            finally:
-                browser.close()
-        with open(out_path, "rb") as fh:
-            return base64.b64encode(fh.read()).decode("ascii")
-    except Exception:
-        return None
-    finally:
-        try:
-            os.unlink(out_path)
-        except OSError:
-            pass
-
-# configure_burp_mcp/_http_request viven en wpverify.py (ver ahi) -- UN SOLO estado compartido
+# configure_burp_mcp/_http_request/_screenshot_response viven en wpverify.py (ver ahi) -- UN SOLO estado compartido
 # por TODOS los verificadores (genericos y CMS-especificos), no una copia por modulo. Se
 # reexportan aqui (import de arriba) para no romper el `from .genericverify import
 # configure_burp_mcp` que cli.py/web.py ya usaban.
