@@ -1677,9 +1677,15 @@ def _scaffold_gem_lab(target: str, version: str, vuln_class: str,
     _os.makedirs(lab_dir, exist_ok=True)
 
     ver_pin = f", '= {version}'" if version else ""
-    # 'rackup' se separó de rack en rack >= 3.0 pero en ruby:3.1-slim también se necesita
-    # explícitamente para rack 2.x; 'webrick' se necesita a partir de rackup 2.x (ya no bundled).
-    gemfile = f"source 'https://rubygems.org'\ngem '{pkg}'{ver_pin}\ngem 'rackup'\ngem 'webrick'\n"
+    # rackup se separó de rack en rack >= 3.0.  Para rack 2.x el gem separado es rackup ~> 1.0
+    # (rackup >= 2 requiere rack >= 3 y rompe el bundle).  webrick sigue siendo necesario en ambos.
+    _rack_major = 0
+    try:
+        _rack_major = int((version or "0").split(".")[0])
+    except Exception:
+        pass
+    rackup_pin = ", '~> 1.0'" if 0 < _rack_major < 3 else ""
+    gemfile = f"source 'https://rubygems.org'\ngem '{pkg}'{ver_pin}\ngem 'rackup'{rackup_pin}\ngem 'webrick'\n"
     with open(_os.path.join(lab_dir, "Gemfile"), "w") as f:
         f.write(gemfile)
 

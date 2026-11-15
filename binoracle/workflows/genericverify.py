@@ -177,7 +177,8 @@ def _build_stack_signals() -> tuple:
         # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
         ("Gemfile", "ruby:3.1-slim", 9292,
          ["WORKDIR /app", "COPY . .",
-          "RUN gem install bundler --no-document && bundle install --retry 5",
+          "RUN gem install bundler --no-document && bundle install --retry 5 "
+          "|| gem install rack rackup webrick && bundle install --retry 3 || true",
           'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
         ("requirements.txt", py_image, 5000, py_run_lines),
         ("composer.json", "php:8.2-cli", 8000,
