@@ -4,7 +4,7 @@
 
 # binoracle
 
-### Autonomous CVE exploit research · Binary reverse engineering · Fully local
+### Autonomous CVE exploit research &middot; Binary reverse engineering &middot; Fully local
 
 <br/>
 
@@ -16,17 +16,15 @@
 
 <br/>
 
-**[English](README.md)** · [Español](docs/README.es.md) · [Docs](https://beafn28.github.io/binoracle/) · [Architecture](docs/assets/architecture.svg)
-
-<br/>
+**[English](README.md)** &middot; [Espanol](docs/README.es.md) &middot; [Docs](https://beafn28.github.io/binoracle/) &middot; [Architecture](docs/assets/architecture.svg)
 
 </div>
 
 ---
 
-> ⚠️ **Legal notice** — binoracle is a research and educational tool.
+> **Legal notice** &mdash; binoracle is a research and educational tool.
 > All CVE labs run exclusively against Docker containers you provision locally.
-> **Do not use this tool against systems you do not own or lack explicit written authorization to test.**
+> Do not use this tool against systems you do not own or lack explicit written authorization to test.
 
 ---
 
@@ -38,20 +36,22 @@ binoracle is a **local-first** security research workstation with two fully auto
 <tr>
 <td width="50%">
 
-### 🔍 CVE Engine
-Fetches a CVE from NVD, feeds it to a **local Qwen 2.5 Coder 7B** (via Ollama) which autonomously generates exploit hypotheses — zero hints from the analyst. Spins up an ephemeral Docker Compose lab, fires the PoC, captures Playwright screenshots at every verification step, and writes a full HTML report to disk.
+**CVE Engine**
+
+Fetches a CVE from NVD, feeds it to a **local Qwen 2.5 Coder 7B** (via Ollama) which autonomously generates exploit hypotheses &mdash; zero hints from the analyst. Spins up an ephemeral Docker Compose lab, fires the PoC, captures Playwright screenshots at every verification step, and writes a full HTML report to disk.
 
 </td>
 <td width="50%">
 
-### 🔬 Binary RE Engine
-Static + dynamic analysis of ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM, SQLite. Automated exploit chains (stack · heap · format string · SROP), ROP synthesis, decompilation via Ghidra/radare2/angr/pwndbg, and hardening assessment. Everything runs locally.
+**Binary RE Engine**
+
+Static and dynamic analysis of ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM, SQLite. Automated exploit chains (stack &middot; heap &middot; format string &middot; SROP), ROP synthesis, decompilation via Ghidra/radare2/angr/pwndbg, and hardening assessment. Everything runs locally.
 
 </td>
 </tr>
 </table>
 
-> No data leaves the host. The LLM runs at `localhost:11434`. Labs are torn down after each run.
+No data leaves the host. The LLM runs at `localhost:11434`. Labs are torn down after each run.
 
 ---
 
@@ -61,7 +61,7 @@ Static + dynamic analysis of ELF, PE, Mach-O, APK, WASM, Go, Rust, .NET, JS, EVM
 # 1. Install binoracle
 pip install binoracle
 
-# 2. Install Ollama + pull the model
+# 2. Install Ollama and pull the model
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen2.5-coder:7b
 
@@ -70,7 +70,7 @@ export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 
-# 4. Fire at a CVE
+# 4. Run a CVE investigation
 binoracle cve CVE-2025-27516
 
 # 5. Analyse a binary
@@ -84,38 +84,38 @@ binoracle pwn   ./vulnerable
 
 ![CVE engine pipeline](docs/assets/cve-flow.svg)
 
-### How it works
+### Pipeline
 
 ```
-NVD description  →  local LLM  →  exploit hypothesis  →  Docker lab  →  PoC execution  →  HTML report
-       ↑                 ↑                 ↑                  ↑               ↑               ↑
-  fetched live     Qwen 2.5-Coder    zero analyst hints  ephemeral env   Playwright SS   disk only
+NVD description  ->  local LLM  ->  exploit hypothesis  ->  Docker lab  ->  PoC execution  ->  HTML report
+       |                |                   |                    |                |                 |
+  fetched live    Qwen2.5-Coder      zero analyst hints   ephemeral env    Playwright SS      disk only
 ```
 
 ### Supported vulnerability classes
 
 | Class | Scaffolders | Auto PoC |
 |-------|------------|----------|
-| SSTI (Jinja2, Twig, Smarty) | pip / gem | ✅ |
-| SQLi (GET / POST / JSON / header) | pip / gem / php / maven | ✅ |
-| Path traversal / LFI | pip / gem / npm / httpd | ✅ |
-| RCE / command injection | pip / gem / npm | ✅ |
-| XSS (reflected / stored) | pip / npm | ✅ |
-| SSRF | pip / npm | ✅ |
-| XXE | java / maven | ✅ |
-| Deserialization | java / gem (Marshal) | ✅ |
-| Auth bypass / IDOR | pip / gem / npm | ✅ |
-| File upload / webshell | pip | ✅ |
-| Open redirect | pip / gem / npm | ✅ |
-| CSRF | pip / gem | ✅ |
-| WordPress plugins (100+) | WP Docker | ✅ |
-| Joomla extensions | Joomla Docker | ✅ |
-| Drupal modules | Drupal Docker | ✅ |
-| Apache httpd | httpd Docker | ✅ |
-| Java / Maven (Spring, Struts, Log4j) | maven | ✅ |
-| PHP Composer packages | php | ✅ |
-| npm / Node.js / Next.js | npm | ✅ |
-| Ruby gems (Rails, Rack, Sinatra) | gem | ✅ |
+| SSTI (Jinja2, Twig, Smarty) | pip / gem | yes |
+| SQLi (GET / POST / JSON / header) | pip / gem / php / maven | yes |
+| Path traversal / LFI | pip / gem / npm / httpd | yes |
+| RCE / command injection | pip / gem / npm | yes |
+| XSS (reflected / stored) | pip / npm | yes |
+| SSRF | pip / npm | yes |
+| XXE | java / maven | yes |
+| Deserialization | java / gem (Marshal) | yes |
+| Auth bypass / IDOR | pip / gem / npm | yes |
+| File upload / webshell | pip | yes |
+| Open redirect | pip / gem / npm | yes |
+| CSRF | pip / gem | yes |
+| WordPress plugins (100+) | WP Docker | yes |
+| Joomla extensions | Joomla Docker | yes |
+| Drupal modules | Drupal Docker | yes |
+| Apache httpd | httpd Docker | yes |
+| Java / Maven (Spring, Struts, Log4j) | maven | yes |
+| PHP Composer packages | php | yes |
+| npm / Node.js / Next.js | npm | yes |
+| Ruby gems (Rails, Rack, Sinatra) | gem | yes |
 
 ```bash
 # Single CVE
@@ -133,37 +133,37 @@ binoracle cve CVE-2025-27516 --lang en
 ## Binary RE Engine
 
 ```bash
-binoracle pwn ./binary       # full automated exploit chain
-binoracle triage ./binary    # mitigations, symbols, imports, sections
-binoracle decompile ./binary # multi-backend decompilation + LLM annotation
-binoracle rop ./binary       # ROP gadget search + chain synthesis
-binoracle hardening ./binary # NX, PIE, RELRO, canary, Fortify, CFI...
+binoracle pwn       ./binary   # full automated exploit chain
+binoracle triage    ./binary   # mitigations, symbols, imports, sections
+binoracle decompile ./binary   # multi-backend decompilation + LLM annotation
+binoracle rop       ./binary   # ROP gadget search + chain synthesis
+binoracle hardening ./binary   # NX, PIE, RELRO, canary, Fortify, CFI...
 ```
 
 ### Exploit families
 
 | Family | Techniques |
 |--------|------------|
-| **Stack** | ret2win · ret2libc · ret2plt · ret2csu · SROP (x86-64/x86-32/aarch64) · stack pivot · ROP chains |
-| **Heap** | tcache dup · fastbin dup · UAF · double-free · House-of-Force/Spirit/Orange/Mind · large-bin attack · unsafe-unlink · Botcake |
-| **Format string** | %n arbitrary write · GOT overwrite · canary leak · PIE leak |
-| **Low-level** | shellcode (NX off) · bad-char scrubbing · IO_FILE · DL-resolve · GOT hijack |
-| **Canary** | leak + reuse · fork brute-force |
-| **PIE** | partial overwrite · leak chain |
+| Stack | ret2win &middot; ret2libc &middot; ret2plt &middot; ret2csu &middot; SROP (x86-64/x86-32/aarch64) &middot; stack pivot &middot; ROP chains |
+| Heap | tcache dup &middot; fastbin dup &middot; UAF &middot; double-free &middot; House-of-Force/Spirit/Orange/Mind &middot; large-bin attack &middot; unsafe-unlink &middot; Botcake |
+| Format string | %n arbitrary write &middot; GOT overwrite &middot; canary leak &middot; PIE leak |
+| Low-level | shellcode (NX off) &middot; bad-char scrubbing &middot; IO_FILE &middot; DL-resolve &middot; GOT hijack |
+| Canary | leak + reuse &middot; fork brute-force |
+| PIE | partial overwrite &middot; leak chain |
 
 ### Supported formats
 
 | Format | Analysis backends |
 |--------|------------------|
-| ELF (x86-64 / x86 / ARM / MIPS / RISC-V) | radare2 · pyelftools · pwntools · angr · pwndbg |
-| PE / PE+ (Windows) | pefile · LIEF · radare2 |
-| Mach-O (macOS / iOS) | LIEF · radare2 |
-| APK / DEX (Android) | apktool · jadx · androguard |
-| .NET assemblies | dnlib · ILSpy |
-| JavaScript / TypeScript | esprima · acorn |
-| Go binaries | go-dis stub · symbol recovery |
+| ELF (x86-64 / x86 / ARM / MIPS / RISC-V) | radare2 &middot; pyelftools &middot; pwntools &middot; angr &middot; pwndbg |
+| PE / PE+ (Windows) | pefile &middot; LIEF &middot; radare2 |
+| Mach-O (macOS / iOS) | LIEF &middot; radare2 |
+| APK / DEX (Android) | apktool &middot; jadx &middot; androguard |
+| .NET assemblies | dnlib &middot; ILSpy |
+| JavaScript / TypeScript | esprima &middot; acorn |
+| Go binaries | go-dis stub &middot; symbol recovery |
 | Rust binaries | LIEF + symbol demangling |
-| WASM modules | wabt · binaryen |
+| WASM modules | wabt &middot; binaryen |
 | SQLite databases | sqlite3 schema + data dump |
 | EVM bytecode | pyevmasm |
 
@@ -171,14 +171,14 @@ binoracle hardening ./binary # NX, PIE, RELRO, canary, Fortify, CFI...
 
 ## Reports
 
-Every investigation produces a **standalone HTML report** with:
+Every investigation produces a standalone HTML report containing:
 
-- 📋 Executive summary with CVSS score and severity classification
-- 🧠 LLM hypothesis with the full reasoning chain
-- 🐳 Docker Compose lab specification
-- 📸 Playwright screenshots at each verification step
-- 💻 Complete PoC code (curl · Python · pwntools)
-- 🛡️ Remediation guidance with specific fix examples
+- Executive summary with CVSS score and severity classification
+- LLM hypothesis with the full reasoning chain
+- Docker Compose lab specification
+- Playwright screenshots at each verification step
+- Complete PoC code (curl &middot; Python &middot; pwntools)
+- Remediation guidance with specific fix examples
 
 ```bash
 # Auto-open after generation
@@ -187,7 +187,7 @@ binoracle cve CVE-2025-27516 --open-report
 # Custom output directory
 binoracle cve CVE-2025-27516 --out ./reports/
 
-# Batch → one report per CVE
+# Batch: one report per CVE
 binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/
 ```
 
@@ -195,7 +195,7 @@ binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/
 
 ## MCP Server
 
-binoracle exposes its entire capability set as **~100 MCP tools**, letting you drive it from Claude Desktop, Cursor, Zed, or any MCP client.
+binoracle exposes its entire capability set as approximately 100 MCP tools, letting you drive it from Claude Desktop, Cursor, Zed, or any MCP client.
 
 ```bash
 binoracle mcp-server
@@ -214,9 +214,9 @@ binoracle mcp-server
 ```
 
 <details>
-<summary>All available MCP tools (click to expand)</summary>
+<summary>All available MCP tools</summary>
 
-`triage` · `pwn` · `rop_chain` · `heap_exploit` · `fmt_exploit` · `decompile` · `cve_investigate` · `vuln_hunt` · `iocscan` · `hardening` · `audit` · `reachability` · `diff_patch` · `elf_layout` · `pe_inspect` · `apk_audit` · `dotnet_inspect` · `wasm_inspect` · `sqlite_audit` · `evm_inspect` · `fuzz` · `dynamic_trace` · `coredump` · `shellcode` · `srop_chain` · `got_hijack` · `io_file` · `dlresolve` · `canary_leak` · `pie_leak` · `format_string` · `heap_triage` · `heap_tcache` · `heap_fastbin` · `heap_uaf` · `heap_house` · `stack_pivot` · `ret2csu` · `ret2plt` · `ret2libc` · `ret2win` · `rop_search` · `symbol_recovery` · `import_scan` · `export_scan` · `section_dump` · `string_extract` · `entropy_scan` · `yara_scan` · `cve_batch` · `vuln_classify` · `patch_diff` · `n_day_analysis` · `cwe_map` · `cvss_score` · `exploit_db_search` · `lab_provision` · `lab_teardown` · `lab_exec` · `playwright_capture` · `report_generate` · `report_open` · `web` and more (~100 total)
+`triage` &middot; `pwn` &middot; `rop_chain` &middot; `heap_exploit` &middot; `fmt_exploit` &middot; `decompile` &middot; `cve_investigate` &middot; `vuln_hunt` &middot; `iocscan` &middot; `hardening` &middot; `audit` &middot; `reachability` &middot; `diff_patch` &middot; `elf_layout` &middot; `pe_inspect` &middot; `apk_audit` &middot; `dotnet_inspect` &middot; `wasm_inspect` &middot; `sqlite_audit` &middot; `evm_inspect` &middot; `fuzz` &middot; `dynamic_trace` &middot; `coredump` &middot; `shellcode` &middot; `srop_chain` &middot; `got_hijack` &middot; `io_file` &middot; `dlresolve` &middot; `canary_leak` &middot; `pie_leak` &middot; `format_string` &middot; `heap_triage` &middot; `heap_tcache` &middot; `heap_fastbin` &middot; `heap_uaf` &middot; `heap_house` &middot; `stack_pivot` &middot; `ret2csu` &middot; `ret2plt` &middot; `ret2libc` &middot; `ret2win` &middot; `rop_search` &middot; `symbol_recovery` &middot; `import_scan` &middot; `export_scan` &middot; `section_dump` &middot; `string_extract` &middot; `entropy_scan` &middot; `yara_scan` &middot; `cve_batch` &middot; `vuln_classify` &middot; `patch_diff` &middot; `n_day_analysis` &middot; `cwe_map` &middot; `cvss_score` &middot; `exploit_db_search` &middot; `lab_provision` &middot; `lab_teardown` &middot; `lab_exec` &middot; `playwright_capture` &middot; `report_generate` &middot; `report_open` &middot; `web` and more
 
 </details>
 
@@ -238,7 +238,7 @@ binoracle mcp-server
 | `fuzz` | Dumb and smart fuzzer (AFL integration) |
 | `dynamic` | Dynamic trace: strace, ltrace, gdb automation |
 | `hardening` | Mitigation enumeration with bypass notes |
-| `cve` | Full CVE investigation (fetch → lab → PoC → report) |
+| `cve` | Full CVE investigation (fetch -> lab -> PoC -> report) |
 | `cve-batch` | Parallelised batch CVE investigation |
 | `vuln-hunt` | Static vulnerability hunting (sinks, sources, taint) |
 | `ioc-scan` | IOC and malware indicator scan |
@@ -263,7 +263,7 @@ binoracle mcp-server
 
 ## Practice Corpus
 
-binoracle ships **40+ intentionally vulnerable binaries** to sharpen your skills:
+binoracle ships 40+ intentionally vulnerable binaries for local practice:
 
 ```bash
 # Compile the full corpus (requires Docker or gcc)
@@ -277,21 +277,21 @@ binoracle pwn   samples/bin/tcache_dup
 binoracle pwn   samples/bin/house_of_orange
 ```
 
-**Techniques covered:** ret2win · ret2libc · SROP · tcache dup · fastbin dup · UAF · format string GOT overwrite · canary leak · PIE leak · CSU chain · DL-resolve · heap botcake · house-of-orange · unsafe-unlink · stack pivot · IO_FILE · callhijack · dlresolve32
+Techniques covered: ret2win &middot; ret2libc &middot; SROP &middot; tcache dup &middot; fastbin dup &middot; UAF &middot; format string GOT overwrite &middot; canary leak &middot; PIE leak &middot; CSU chain &middot; DL-resolve &middot; heap botcake &middot; house-of-orange &middot; unsafe-unlink &middot; stack pivot &middot; IO_FILE &middot; callhijack &middot; dlresolve32
 
-> See [docs/TUTORIAL.md](docs/TUTORIAL.md) for the full guided walkthrough.
+See [docs/TUTORIAL.md](docs/TUTORIAL.md) for the full guided walkthrough.
 
 ---
 
 ## Installation
 
-### From PyPI
+**From PyPI**
 
 ```bash
 pip install binoracle
 ```
 
-### From source
+**From source**
 
 ```bash
 git clone https://github.com/beafn28/binoracle
@@ -299,10 +299,10 @@ cd binoracle
 pip install -e ".[all]"
 ```
 
-### Dependency sets
+**Dependency sets**
 
 ```bash
-pip install binoracle[elf]         # deep ELF analysis (pyelftools extras)
+pip install binoracle[elf]         # deep ELF analysis
 pip install binoracle[pwn]         # pwntools + ROPgadget
 pip install binoracle[symbolic]    # angr symbolic execution
 pip install binoracle[web]         # web UI
@@ -310,7 +310,7 @@ pip install binoracle[screenshots] # Playwright screenshots in CVE reports
 pip install binoracle[all]         # everything
 ```
 
-### System requirements
+**System requirements**
 
 | Dependency | Minimum | Recommended |
 |-----------|---------|-------------|
@@ -318,25 +318,25 @@ pip install binoracle[all]         # everything
 | RAM | 8 GB | 16 GB |
 | Docker | 20.x | 25.x |
 | Ollama | 0.3 | latest |
-| GPU | — | 8 GB VRAM (Qwen 7B quantized) |
+| GPU | &mdash; | 8 GB VRAM (Qwen 7B quantized) |
 
 ---
 
 ## Configuration
 
 ```bash
-# ✅ Recommended — local LLM via Ollama (fully offline)
+# Recommended: local LLM via Ollama (fully offline)
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 
-# ☁️ Optional — any OpenAI-compatible cloud backend
+# Optional: any OpenAI-compatible cloud backend
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=https://api.openai.com/v1
 export BINORACLE_API_KEY=sk-...
 export BINORACLE_MODEL=gpt-4o-mini
 
-# 🌐 Report language (default: es)
+# Report language (default: es)
 export BINORACLE_LANG=en
 ```
 
@@ -346,18 +346,18 @@ export BINORACLE_LANG=en
 
 | Feature | binoracle | REA |
 |---------|:---------:|:---:|
-| Local LLM via Ollama | ✅ | ❌ |
-| CVE → Docker lab → verified PoC | ✅ | ❌ |
-| Playwright screenshots as evidence | ✅ | ❌ |
-| WordPress / Joomla / Drupal labs | ✅ | ❌ |
-| MCP server (~100 tools) | ✅ | ❌ |
-| APK / .NET / WASM / EVM analysis | ✅ | ⚠️ partial |
-| Fully offline | ✅ | ⚠️ partial |
-| ret2win / ret2libc / SROP | ✅ | ✅ |
-| Heap attacks (tcache / fastbin / UAF / House-of-X) | ✅ | ✅ |
-| Format string exploitation | ✅ | ✅ |
-| ROP chain synthesis | ✅ | ✅ |
-| Practice corpus (40+ binaries) | ✅ | ✅ |
+| Local LLM via Ollama | yes | no |
+| CVE -> Docker lab -> verified PoC | yes | no |
+| Playwright screenshots as evidence | yes | no |
+| WordPress / Joomla / Drupal labs | yes | no |
+| MCP server (~100 tools) | yes | no |
+| APK / .NET / WASM / EVM analysis | yes | partial |
+| Fully offline | yes | partial |
+| ret2win / ret2libc / SROP | yes | yes |
+| Heap attacks (tcache / fastbin / UAF / House-of-X) | yes | yes |
+| Format string exploitation | yes | yes |
+| ROP chain synthesis | yes | yes |
+| Practice corpus (40+ binaries) | yes | yes |
 
 ---
 
@@ -366,7 +366,7 @@ export BINORACLE_LANG=en
 - [ ] Kernel exploit chains (ret2usr, UAF in kernel drivers)
 - [ ] Firmware analysis (UEFI, embedded Linux)
 - [ ] Active fuzzing with LibFuzzer corpus seeding from CVE PoCs
-- [ ] Multi-CVE chaining (web RCE → local privilege escalation)
+- [ ] Multi-CVE chaining (web RCE -> local privilege escalation)
 - [ ] CVSS v4 scoring
 - [ ] Burp Suite MCP bridge (live request replay)
 - [ ] JEB decompiler integration (Android native)
@@ -389,14 +389,14 @@ Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution g
 
 ## License
 
-MIT © 2024–2025 Beatriz Fresno Naumova
+MIT &copy; 2024&ndash;2025 Beatriz Fresno Naumova
 
 ---
 
 <div align="center">
 
-**binoracle — autonomous security research · fully local · no data leaves your host**
+**binoracle &mdash; autonomous security research &middot; fully local &middot; no data leaves your host**
 
-[📖 Docs](https://beafn28.github.io/binoracle/) · [🐛 Issues](https://github.com/beafn28/binoracle/issues) · [🌐 Español](docs/README.es.md)
+[Docs](https://beafn28.github.io/binoracle/) &middot; [Issues](https://github.com/beafn28/binoracle/issues) &middot; [Espanol](docs/README.es.md)
 
 </div>
