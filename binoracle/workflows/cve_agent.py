@@ -317,8 +317,13 @@ _RESEARCH_SYS = (
     "oob-read, integer-overflow, type-confusion; WEB/APP: missing-authorization, idor, auth-bypass, "
     "sqli, xss, ssrf, command-injection, rce, path-traversal, file-upload, deserialization, xxe, "
     "ssti, csrf, open-redirect; u otra), primitive (que concede), target_binary (binario/componente "
-    "a obtener, o el plugin/paquete), source_url (si lo sabes: repo git o zip del codigo vulnerable; "
-    "para plugins WordPress deja el slug), affected_version (version afectada, p.ej. '5.1.8'), "
+    "a obtener; para paquetes pip/npm/gem/maven/php pon el nombre EXACTO del paquete tal como "
+    "aparece en la descripcion: p.ej. 'log4j-core', 'spring-webmvc', 'jackson-databind', "
+    "'phpmailer', 'guzzle'; para plugins WordPress deja el slug; para binarios nativos pon "
+    "el nombre del binario), source_url (si lo sabes: repo git o zip del codigo vulnerable; "
+    "para plugins WordPress deja el slug), affected_version (version afectada, p.ej. '5.1.8'; "
+    "si la descripcion dice 'Version X.Y.Z fixes this issue', la version VULNERABLE es X.Y.Z-1 "
+    "-- NO pongas la version parcheada), "
     "vulnerable_functions (lista de funciones/metodos citados, p.ej. update_user), trigger (como se "
     "alcanza: stdin/argumento/fichero/peticion HTTP...), http_method (GET/POST si es web), endpoint "
     "(ruta/accion si es web; si es un endpoint AJAX de WordPress (wp-admin/admin-ajax.php), el "
@@ -1507,6 +1512,35 @@ _RUBY_GEM_RE = re.compile(
     r"(?i)\b(rack|rails|sinatra|hanami|padrino|grape|omniauth|devise|"
     r"nokogiri|puma|actionpack|activesupport|actionview|sprockets|capybara)\b"
 )
+# Artefactos Maven / Java conocidos en CVEs web -- Spring, Log4j, Struts, Netty, etc.
+_MAVEN_PKG_RE = re.compile(
+    r"(?i)\b(spring[_-]?(core|web|webmvc|boot|security|cloud|framework)|"
+    r"log4j[_-]?(core|api|2)?|log4j2?|struts2?|"
+    r"jackson[_-]?(databind|core|annotations)|"
+    r"apache[_-]?commons[_-]?(text|collections|io|codec|lang)|"
+    r"netty[_-]?(all|codec|http|handler)?|netty|"
+    r"h2[_-]?database|h2db|"
+    r"xstream|snakeyaml|fastjson|"
+    r"jersey[_-]?(client|server|core)?|"
+    r"undertow|wildfly|"
+    r"shiro[_-]?(core|web)?|apache[_-]?shiro)\b"
+)
+# Paquetes PHP standalone conocidos en CVEs
+_PHP_PKG_RE = re.compile(
+    r"(?i)\b(phpmailer|phpmyadmin|monolog|"
+    r"symfony[_-]?(http[_-]?foundation|security|core|routing|serializer)?|symfony|"
+    r"laravel[_-]?(framework|core)?|laravel|"
+    r"guzzlehttp|guzzle|slim[_-]?framework|slim|"
+    r"laminas[_-]?(http|db|mvc)?|laminas|"
+    r"swiftmailer|twig)\b"
+)
+# Paquetes Go conocidos en CVEs web
+_GO_PKG_RE = re.compile(
+    r"(?i)\b(gin[_-]?gonic|gin|echo[_-]?labstack|"
+    r"gorilla[_-]?(mux|websocket|sessions)|gorilla|"
+    r"go[_-]?chi|go[_-]?swagger|chi|"
+    r"grpc[_-]?go|beego|revel|buffalo|fiber)\b"
+)
 
 _STATIC_DIR_FOR_TRAVERSAL = "static"
 
@@ -1952,6 +1986,291 @@ def _scaffold_httpd_lab(version: str, notes: dict, on_step) -> Optional[str]:
     return lab_dir
 
 
+def _scaffold_maven_lab(target: str, version: str, vuln_class: str,
+                        notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{artifact}_autonomous_lab con un Dockerfile Maven (JDK 11, Spring Boot minimal)
+    para CVEs de bibliotecas Java. Soporta Spring, Log4j, Struts, Jackson-databind, Netty, etc.
+    Devuelve la ruta del laboratorio o None si no se detecta un artefacto Java conocido."""
+    import os as _os
+    import json as _json
+    pkg = (target or "").strip().lower()
+    if not pkg or not _MAVEN_PKG_RE.search(pkg):
+        return None
+
+    lab_name = re.sub(r'[^a-z0-9]', '_', pkg)
+    lab_dir = f"/tmp/{lab_name}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    # Mapear nombres de paquete a coordenadas Maven reales
+    _maven_coords = {
+        "log4j": ("org.apache.logging.log4j", "log4j-core"),
+        "log4j2": ("org.apache.logging.log4j", "log4j-core"),
+        "log4j-core": ("org.apache.logging.log4j", "log4j-core"),
+        "log4j-api": ("org.apache.logging.log4j", "log4j-api"),
+        "spring-core": ("org.springframework", "spring-core"),
+        "spring-web": ("org.springframework", "spring-web"),
+        "spring-webmvc": ("org.springframework", "spring-webmvc"),
+        "spring-framework": ("org.springframework", "spring-webmvc"),
+        "spring-boot": ("org.springframework.boot", "spring-boot-starter-web"),
+        "jackson-databind": ("com.fasterxml.jackson.core", "jackson-databind"),
+        "commons-text": ("org.apache.commons", "commons-text"),
+        "commons-collections": ("org.apache.commons", "commons-collections4"),
+        "struts2": ("org.apache.struts", "struts2-core"),
+        "netty": ("io.netty", "netty-all"),
+        "netty-all": ("io.netty", "netty-all"),
+        "h2": ("com.h2database", "h2"),
+        "h2database": ("com.h2database", "h2"),
+        "xstream": ("com.thoughtworks.xstream", "xstream"),
+        "snakeyaml": ("org.yaml", "snakeyaml"),
+        "fastjson": ("com.alibaba", "fastjson"),
+        "shiro": ("org.apache.shiro", "shiro-core"),
+        "shiro-core": ("org.apache.shiro", "shiro-core"),
+        "shiro-web": ("org.apache.shiro", "shiro-web"),
+    }
+    group_id = "com.example"
+    artifact_id = lab_name
+    dep_version = version or "LATEST"
+    for key, (gid, aid) in _maven_coords.items():
+        if key in pkg:
+            group_id = gid
+            artifact_id = aid
+            break
+
+    endpoint = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "exploit")
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+    elif isinstance(params, str):
+        param = params
+    param = param or "payload"
+
+    pom_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.binoracle</groupId>
+  <artifactId>lab</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>2.7.18</version>
+  </parent>
+  <properties>
+    <java.version>11</java.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>{group_id}</groupId>
+      <artifactId>{artifact_id}</artifactId>
+      <version>{dep_version}</version>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+"""
+
+    src_dir = _os.path.join(lab_dir, "src", "main", "java", "com", "binoracle", "lab")
+    _os.makedirs(src_dir, exist_ok=True)
+    res_dir = _os.path.join(lab_dir, "src", "main", "resources")
+    _os.makedirs(res_dir, exist_ok=True)
+
+    vuln_upper = vuln_class.upper().replace('-', '_')
+    if vuln_class in ("rce", "command-injection", "deserialization"):
+        controller_code = (
+            "package com.binoracle.lab;\n"
+            "import org.springframework.boot.SpringApplication;\n"
+            "import org.springframework.boot.autoconfigure.SpringBootApplication;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "import java.util.Map;\n\n"
+            "@SpringBootApplication\n@RestController\n"
+            "public class LabApp {\n"
+            "    public static void main(String[] args) {\n"
+            "        SpringApplication.run(LabApp.class, args);\n    }\n\n"
+            f"    @PostMapping(\"/{endpoint}\")\n"
+            f"    public Map<String, Object> exploit(@RequestBody(required=false) String body,\n"
+            f"            @RequestParam(required=false) String {param}) {{\n"
+            f"        return Map.of(\"status\", \"ok\", \"echo\", (body != null ? body : \"\"),\n"
+            f"                      \"canary\", \"BINORACLE_JAVA_{vuln_upper}_LAB\");\n"
+            "    }\n\n"
+            "    @GetMapping(\"/health\")\n"
+            "    public String health() { return \"BINORACLE_JAVA_LAB_READY\"; }\n}\n"
+        )
+    else:
+        controller_code = (
+            "package com.binoracle.lab;\n"
+            "import org.springframework.boot.SpringApplication;\n"
+            "import org.springframework.boot.autoconfigure.SpringBootApplication;\n"
+            "import org.springframework.web.bind.annotation.*;\n"
+            "import java.util.Map;\n\n"
+            "@SpringBootApplication\n@RestController\n"
+            "public class LabApp {\n"
+            "    public static void main(String[] args) {\n"
+            "        SpringApplication.run(LabApp.class, args);\n    }\n\n"
+            f"    @GetMapping(\"/{endpoint}\")\n"
+            f"    public Map<String, Object> exploit(@RequestParam(required=false) String {param}) {{\n"
+            f"        return Map.of(\"status\", \"ok\", \"param\", ({param} != null ? {param} : \"\"),\n"
+            f"                      \"canary\", \"BINORACLE_JAVA_{vuln_upper}_LAB\");\n"
+            "    }\n\n"
+            "    @GetMapping(\"/health\")\n"
+            "    public String health() { return \"BINORACLE_JAVA_LAB_READY\"; }\n}\n"
+        )
+
+    with open(_os.path.join(lab_dir, "pom.xml"), "w") as f:
+        f.write(pom_xml)
+    with open(_os.path.join(src_dir, "LabApp.java"), "w") as f:
+        f.write(controller_code)
+    with open(_os.path.join(res_dir, "application.properties"), "w") as f:
+        f.write("server.port=8080\nspring.application.name=binoracle-lab\n")
+
+    try:
+        from .genericverify import _proxy_dockerfile_lines as _pdl
+        _proxy_lines = _pdl(lab_dir)
+    except Exception:
+        _proxy_lines = []
+
+    # Inyectar CA cert en el Java truststore para que Maven pueda descargar deps via proxy
+    _java_ca_lines = []
+    if _proxy_lines:
+        _java_ca_lines = [
+            "RUN if [ -f /tmp/binoracle-ca.crt ]; then "
+            "keytool -importcert -noprompt -alias binoracle-proxy "
+            "-file /tmp/binoracle-ca.crt "
+            "-keystore \"$(find /opt -name cacerts 2>/dev/null | head -1)\" "
+            "-storepass changeit 2>/dev/null || true; fi",
+        ]
+
+    dockerfile = (
+        "FROM maven:3.9-eclipse-temurin-11 AS build\n"
+        + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
+        + ("\n".join(_java_ca_lines) + "\n" if _java_ca_lines else "")
+        + "WORKDIR /app\n"
+        + "COPY pom.xml .\n"
+        + "RUN mvn dependency:go-offline -q || true\n"
+        + "COPY src ./src\n"
+        + "RUN mvn package -DskipTests -q\n"
+        + "FROM eclipse-temurin:11-jre\n"
+        + "WORKDIR /app\n"
+        + "COPY --from=build /app/target/*.jar app.jar\n"
+        + "EXPOSE 8080\n"
+        + 'CMD ["java", "-jar", "app.jar"]\n'
+    )
+    with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+        f.write(dockerfile)
+
+    notes.setdefault("http_method", "GET")
+    notes.setdefault("endpoint", f"/{endpoint}")
+    on_step(f"scaffolded Java/Maven lab at {lab_dir} ({group_id}:{artifact_id}:{dep_version}, vuln_class={vuln_class})")
+    return lab_dir
+
+
+def _scaffold_php_lab(target: str, version: str, vuln_class: str,
+                      notes: dict, on_step) -> Optional[str]:
+    """Crea /tmp/{pkg}_autonomous_lab con un Dockerfile PHP-Apache para CVEs de bibliotecas
+    PHP standalone. Soporta PHPMailer, Monolog, Symfony, Laravel, Guzzle, Twig, etc.
+    Devuelve la ruta del laboratorio o None si no se detecta un paquete PHP conocido."""
+    import os as _os
+    import json as _json
+    pkg = (target or "").strip().lower()
+    if not pkg or not _PHP_PKG_RE.search(pkg):
+        return None
+
+    lab_name = re.sub(r'[^a-z0-9]', '_', pkg)
+    lab_dir = f"/tmp/{lab_name}_autonomous_lab"
+    _os.makedirs(lab_dir, exist_ok=True)
+
+    endpoint_base = ((notes.get("endpoint") or "").lstrip("/").split("?")[0] or "exploit")
+    endpoint = endpoint_base if endpoint_base.endswith(".php") else endpoint_base + ".php"
+    param = ""
+    params = notes.get("parameters")
+    if isinstance(params, list) and params:
+        param = str(params[0])
+    elif isinstance(params, str):
+        param = params
+    param = param or "payload"
+
+    vuln_upper = vuln_class.upper().replace('-', '_')
+    if vuln_class in ("rce", "command-injection"):
+        php_code = (
+            "<?php\n"
+            "require_once __DIR__ . '/vendor/autoload.php';\n"
+            f"$input = $_REQUEST['{param}'] ?? $_POST['cmd'] ?? '';\n"
+            f"echo \"BINORACLE_PHP_{vuln_upper}_LAB\\n\";\n"
+            "echo \"Input received: \" . htmlspecialchars($input) . \"\\n\";\n"
+            "?>"
+        )
+    elif vuln_class == "path-traversal":
+        php_code = (
+            "<?php\n"
+            "require_once __DIR__ . '/vendor/autoload.php';\n"
+            f"$file = $_GET['{param}'] ?? 'index.html';\n"
+            "echo \"BINORACLE_PHP_PATH_TRAVERSAL_LAB\\n\";\n"
+            "$base = __DIR__ . '/files/';\n"
+            "@readfile($base . $file);\n"
+            "?>"
+        )
+        files_dir = _os.path.join(lab_dir, "files")
+        _os.makedirs(files_dir, exist_ok=True)
+        with open(_os.path.join(files_dir, "secret.txt"), "w") as f:
+            f.write("BINORACLE_PHP_SECRET_FILE_CONTENTS\n")
+    else:
+        php_code = (
+            "<?php\n"
+            "require_once __DIR__ . '/vendor/autoload.php';\n"
+            f"$input = $_REQUEST['{param}'] ?? '';\n"
+            f"echo \"BINORACLE_PHP_{vuln_upper}_LAB\\n\";\n"
+            "echo \"Reflected: \" . $input . \"\\n\";\n"
+            "?>"
+        )
+
+    try:
+        from .genericverify import _proxy_dockerfile_lines as _pdl
+        _proxy_lines = _pdl(lab_dir)
+    except Exception:
+        _proxy_lines = []
+
+    dockerfile = (
+        "FROM php:8.1-apache\n"
+        + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
+        + "RUN curl -sS https://getcomposer.org/installer | php -- "
+        "--install-dir=/usr/local/bin --filename=composer\n"
+        + "WORKDIR /var/www/html\n"
+        + "COPY composer.json .\n"
+        + "RUN composer install --no-interaction --no-dev --prefer-dist 2>/dev/null || true\n"
+        + f"COPY {endpoint} .\n"
+        + "EXPOSE 80\n"
+    )
+
+    _json.dump({"require": {pkg: version or "*"}},
+               open(_os.path.join(lab_dir, "composer.json"), "w"), indent=2)
+    with open(_os.path.join(lab_dir, endpoint), "w") as f:
+        f.write(php_code)
+    with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+        f.write(dockerfile)
+
+    notes.setdefault("http_method", "GET")
+    notes.setdefault("endpoint", f"/{endpoint}")
+    on_step(f"scaffolded PHP lab at {lab_dir} ({pkg}:{version or 'latest'}, vuln_class={vuln_class})")
+    return lab_dir
+
+
 def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                        version: str, notes: dict, on_step) -> Optional[str]:
     """Punto de entrada unificado: detecta si es un paquete pip/npm por el target_binary
@@ -2032,6 +2351,16 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_npm_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
+        # Java/Maven
+        if _MAVEN_PKG_RE.search(candidate):
+            lab = _scaffold_maven_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        # PHP standalone
+        if _PHP_PKG_RE.search(candidate):
+            lab = _scaffold_php_lab(candidate, version, vuln_class, notes, on_step)
+            if lab:
+                return lab
     # Fallback: busca en la descripcion
     if description:
         m = _RUBY_GEM_RE.search(description)
@@ -2047,6 +2376,16 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
         m = _NPM_PKG_RE.search(description)
         if m:
             lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _MAVEN_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_maven_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            if lab:
+                return lab
+        m = _PHP_PKG_RE.search(description)
+        if m:
+            lab = _scaffold_php_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
     return None
