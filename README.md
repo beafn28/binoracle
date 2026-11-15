@@ -9,7 +9,6 @@
 [![PyPI](https://img.shields.io/pypi/v/binoracle?color=blue&label=PyPI)](https://pypi.org/project/binoracle/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![DEF CON Arsenal](https://img.shields.io/badge/DEF%20CON-Arsenal-red.svg)](#)
 [![Docs](https://img.shields.io/badge/docs-gh--pages-blueviolet)](https://beafn28.github.io/binoracle/)
 
 [English](#) · [Español](docs/README.es.md) · [Docs](https://beafn28.github.io/binoracle/) · [Architecture](docs/ARCHITECTURE.md) · [Tutorial](docs/TUTORIAL.md)
@@ -411,7 +410,7 @@ MIT © 2024–2025 Beatriz Fresno Naumova
 
 <div align="center">
 
-**binoracle** — built for DEF CON Arsenal
+**binoracle**
 
 [Docs](https://beafn28.github.io/binoracle/) · [Issues](https://github.com/beafn28/binoracle/issues) · [Twitter / X](https://x.com/beafn28)
 
