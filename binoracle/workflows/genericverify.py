@@ -650,6 +650,53 @@ def _scan_web_routes(source_dir: str) -> list:
     return uniq
 
 
+def _diagnose_infra_error(e: Exception, source_dir: str = "", base_url: str = "") -> str:
+    """Razona el error de infraestructura y devuelve un mensaje de diagnostico especifico.
+    Convierte errores genericos ('timeout', 'connection refused', etc.) en explicaciones
+    utiles con causas y sugerencias de accion."""
+    import subprocess as _sp
+    msg = str(e)
+    is_next = "next_autonomous" in source_dir or "next" in source_dir.lower()
+    is_timeout = isinstance(e, (_sp.TimeoutExpired,)) or "timeout" in msg.lower() or "timed out" in msg.lower()
+
+    if is_timeout:
+        if is_next:
+            return (
+                "timeout de arranque del lab Next.js -- Next.js 15.x en dev mode tarda "
+                "60-120s en compilar la primera peticion. El contenedor arranco pero la "
+                "app aun no estaba lista. Reintenta con --no-cache para un lab limpio"
+            )
+        return (
+            f"timeout de infraestructura: el laboratorio no respondio a tiempo -- "
+            f"puede que Docker tardara en construir la imagen o el servidor necesite "
+            f"mas tiempo de arranque. Reintenta con --no-cache. Detalle: {e}"
+        )
+    if "connection refused" in msg.lower() or "connectionrefused" in msg.lower():
+        return (
+            f"conexion rechazada{(' en ' + base_url) if base_url else ''} -- "
+            f"el servidor arranco pero cerro el puerto o no llego a escuchar. "
+            f"Revisa los logs del contenedor con: docker logs <contenedor>"
+        )
+    if "docker" in msg.lower() and ("not found" in msg.lower() or "daemon" in msg.lower()):
+        return (
+            "Docker no esta corriendo o no esta en el PATH -- "
+            "arranca Docker Desktop (Mac/Windows) o 'sudo systemctl start docker' (Linux) "
+            f"y vuelve a intentarlo. Detalle: {e}"
+        )
+    if "no space left" in msg.lower():
+        return (
+            "sin espacio en disco -- Docker no puede construir la imagen del lab. "
+            "Libera espacio con: docker system prune -f"
+        )
+    if "permission denied" in msg.lower():
+        return (
+            f"permiso denegado -- puede que Docker necesite sudo o que el usuario "
+            f"no este en el grupo 'docker'. Detalle: {e}"
+        )
+    # Generico pero con el mensaje completo para diagnostico
+    return f"error inesperado: {e}"
+
+
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
                            budget_s: float, setup_commands: Optional[List[str]] = None) -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
@@ -845,10 +892,10 @@ def verify_generic_command_injection(
                           f"sean los reales, o que la entrada no llegue a una shell sin filtrar)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1167,10 +1214,10 @@ def verify_generic_path_traversal(
                           f"endpoint/parametro no son los reales)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1302,10 +1349,10 @@ def verify_generic_lfi_rce(
                            "codigo)"))
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1405,10 +1452,10 @@ def verify_generic_idor(
                           f"bloqueados/permitidos)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1509,10 +1556,10 @@ def verify_generic_file_upload(
                           f"estas extensiones)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1628,10 +1675,10 @@ def verify_generic_ssrf(
                           f"filtre de verdad las URLs internas antes de seguirlas)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1964,10 +2011,10 @@ def verify_generic_sqli_blind(
                           f"probados, o que de verdad no haya inyeccion)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2115,10 +2162,10 @@ def verify_generic_xxe(
                           f"reales)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2227,10 +2274,10 @@ def verify_generic_open_redirect(
                     f"status={first.get('status')} location={first.get('location')!r}")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2363,10 +2410,10 @@ def verify_generic_xss(
         res.evidence["intentos"] = tried[:50]
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2636,10 +2683,10 @@ def verify_generic_ssti(
                           f"ninguna produjo el resultado esperado -- el SSTI no se confirmo")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2779,10 +2826,10 @@ def verify_generic_header_bypass(
             )
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
