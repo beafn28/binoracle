@@ -1902,6 +1902,50 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     return lab_dir
 
 
+_APACHE_HTTPD_RE = re.compile(r'\bapache\b.*\b(http\s*server|httpd)\b|\bhttpd\b', re.IGNORECASE)
+
+
+def _scaffold_httpd_lab(version: str, notes: dict, on_step) -> Optional[str]:
+    """Crea un laboratorio Docker minimo para CVEs de Apache httpd (p.ej. CVE-2021-41773).
+    Usa FROM httpd:<version> (p.ej. httpd:2.4.49) -- la imagen oficial debe estar en el
+    cache local o ser descargable. Configura una configuracion vulnerable que replica el
+    entorno afectado: sin 'Require all denied' a nivel raiz, con un Alias /uploads/ accesible.
+    La CVE-2021-41773 solo se activa cuando los ficheros fuera del directorio configurado
+    NO estan protegidos por 'Require all denied' (confirmado en vivo: con denied -> 403).
+    Devuelve la ruta del laboratorio o None si la version no es util."""
+    import os as _os
+    ver = (version or "").strip() or "2.4.49"
+    # Verificar que la version parece valida para httpd
+    if not re.match(r'^\d+\.\d+\.\d+', ver):
+        ver = "2.4.49"
+    lab_dir = f"/tmp/apache_httpd_lab_{ver.replace('.', '_')}"
+    _os.makedirs(lab_dir, exist_ok=True)
+    # Dockerfile: FROM httpd:<ver>, cambia Require all denied a granted (entorno vulnerable real),
+    # crea Alias /uploads/ con acceso concedido para que .%2e/ pueda traversar desde ahi.
+    # Confirmado en vivo (CVE-2021-41773): .%2e/.%2e/.%2e/.%2e/ desde /uploads/ llega a /tmp/
+    # cuando no hay Require all denied en el directorio raiz. La canonical '../' (sin encoding)
+    # retorna 404 (normalizada/bloqueada por Apache), confirmando que es el bug de normalizacion.
+    dockerfile = (
+        f"FROM httpd:{ver}\n"
+        "# CVE-2021-41773: configuracion vulnerable (sin Require all denied a nivel raiz)\n"
+        "RUN sed -i 's/Require all denied/Require all granted/' /usr/local/apache2/conf/httpd.conf\n"
+        "RUN mkdir -p /usr/local/apache2/uploads\n"
+        "RUN printf '\\nAlias /uploads/ /usr/local/apache2/uploads/\\n"
+        "<Directory \"/usr/local/apache2/uploads\">\\n"
+        "    AllowOverride None\\n    Options None\\n    Require all granted\\n"
+        "</Directory>\\n' >> /usr/local/apache2/conf/httpd.conf\n"
+        "EXPOSE 80\n"
+    )
+    with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
+        f.write(dockerfile)
+    # Endpoint: /uploads/ en modo URL_PATH -- la genericverify probara .%2e/ etc.
+    notes["endpoint"] = "/uploads/"
+    notes["http_method"] = "GET"
+    notes["parameters"] = ["URL_PATH"]
+    on_step(f"scaffolded Apache httpd {ver} lab at {lab_dir} (CVE path-traversal via /uploads/)")
+    return lab_dir
+
+
 def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                        version: str, notes: dict, on_step) -> Optional[str]:
     """Punto de entrada unificado: detecta si es un paquete pip/npm por el target_binary
@@ -1951,6 +1995,19 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                     version = corrected
 
     candidate = (target_binary or "").strip().lower()
+    # Apache httpd se chequea primero: es un binario, no un paquete pip/gem/npm.
+    # La deteccion mira target_binary Y la descripcion para no depender de que el LLM
+    # ponga exactamente "httpd" en target_binary (a veces pone "Apache HTTP Server").
+    if vuln_class == "path-traversal":
+        _apache_hit = (
+            _APACHE_HTTPD_RE.search(candidate) if candidate else False
+        ) or (
+            _APACHE_HTTPD_RE.search(description) if description else False
+        )
+        if _apache_hit:
+            lab = _scaffold_httpd_lab(version, notes, on_step)
+            if lab:
+                return lab
     # Si el LLM dijo target_binary, intenta directamente.
     # Ruby se chequea ANTES que pip: "rack" y otras gemas coinciden con el regex genérico pip.
     if candidate:
