@@ -552,6 +552,62 @@ def cmd_fuzz(args, config):
     print(generate_fuzz(binary, target_func=args.func, mode=args.mode))
 
 
+def cmd_cve_corpus(args, config):
+    from binoracle.workflows.libfuzzer_corpus import build_corpus, write_corpus, render_corpus
+    from binoracle.workflows.cvelookup import fetch_cve
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    print(f"\n  {_b}binoracle cve-corpus{_r}  {args.cve_id}\n")
+    print("  Fetching NVD description...")
+    info = fetch_cve(args.cve_id)
+    description = info.description if info.ok else ""
+    if not description:
+        print(f"  Warning: NVD description not found — {info.note or 'no data'}")
+    poc_text = ""
+    if getattr(args, "poc_file", "") and Path(args.poc_file).exists():
+        try:
+            poc_text = Path(args.poc_file).read_text(encoding="utf-8", errors="replace")
+            print(f"  PoC loaded from {args.poc_file} ({len(poc_text)} chars)")
+        except Exception as e:
+            print(f"  Warning: could not read PoC file: {e}")
+    corpus = build_corpus(
+        cve_id=args.cve_id,
+        poc_text=poc_text,
+        description=description,
+        target_func=args.target_func,
+        hint=args.hint,
+    )
+    wrote_to = None
+    try:
+        wrote_to = write_corpus(corpus, args.out_dir)
+        print(f"  Corpus written to {wrote_to}")
+    except Exception as e:
+        print(f"  Warning: could not write corpus: {e}")
+    print(render_corpus(corpus, wrote_to=wrote_to))
+
+
+def cmd_cve_chain(args, config):
+    from binoracle.workflows.cve_chain import run_chain, render_chain
+    _use_col = _color_ok()
+    _b = "\033[1m" if _use_col else ""
+    _r = "\033[0m" if _use_col else ""
+    cves = args.cves
+    print(f"\n  {_b}binoracle cve-chain{_r}  {' → '.join(cves)}\n")
+
+    def on_step(msg):
+        print(f"  {msg}")
+
+    result = run_chain(
+        cve_ids=cves,
+        config=config,
+        on_step=on_step,
+        out_dir=args.out_dir,
+    )
+    print()
+    print(render_chain(result))
+
+
 def cmd_fmtstring(args, config):
     print(fmtstring_help(offset=args.offset, target_addr=args.addr, value=args.value))
 
@@ -1783,6 +1839,26 @@ def build_parser() -> argparse.ArgumentParser:
     fz.add_argument("--budget-s", type=int, default=60, dest="budget_s",
                     help="afl-fuzz time budget in seconds (with --run)")
     fz.set_defaults(func=cmd_fuzz)
+
+    cv = sub.add_parser("cve-corpus",
+                        help="seed a libFuzzer corpus from a CVE investigation (PoC + NVD description)")
+    cv.add_argument("cve_id", help="CVE identifier (e.g. CVE-2025-27516)")
+    cv.add_argument("--func", default="target_function", dest="target_func",
+                    help="name of the C function to fuzz (skeleton target)")
+    cv.add_argument("--hint", default="", help="short hint about the input format")
+    cv.add_argument("--out", default=".", dest="out_dir",
+                    help="output directory for the corpus (default: .)")
+    cv.add_argument("--poc", default="", dest="poc_file",
+                    help="path to a file containing the PoC text (optional)")
+    cv.set_defaults(func=cmd_cve_corpus)
+
+    ch = sub.add_parser("cve-chain",
+                        help="run a multi-CVE exploit chain (web RCE → local privesc → ...)")
+    ch.add_argument("cves", nargs="+",
+                    help="ordered CVE IDs forming the chain (e.g. CVE-2021-44228 CVE-2021-4034)")
+    ch.add_argument("--out", default=".", dest="out_dir",
+                    help="output directory for per-CVE HTML reports (default: .)")
+    ch.set_defaults(func=cmd_cve_chain)
 
     fs = sub.add_parser("fmtstring", help="format-string leak/write helper (infoleak)")
     fs.add_argument("binary", nargs="?")

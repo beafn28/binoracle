@@ -1175,6 +1175,66 @@ def _h_autofuzz_afl(args):
     return render_autofuzz_afl(r)
 
 
+@_tool("libfuzzer_corpus",
+       "Genera un corpus de semillas para libFuzzer a partir de datos de un CVE "
+       "(descripcion NVD + PoC opcional). Extrae payloads del PoC, deriva valores de borde "
+       "de la descripcion, y genera un harness.c listo para compilar con clang -fsanitize=fuzzer,address. "
+       "SOLO USO AUTORIZADO.",
+       {"cve_id":      {"type": "string",
+                        "description": "CVE identifier (e.g. CVE-2025-27516)"},
+        "poc_text":    {"type": "string",
+                        "description": "texto completo del PoC (Python/curl/pwntools)"},
+        "description": {"type": "string",
+                        "description": "descripcion NVD del CVE (si no se indica, se obtiene automaticamente)"},
+        "target_func": {"type": "string",
+                        "description": "nombre de la funcion C a fuzzear (default: target_function)"},
+        "hint":        {"type": "string",
+                        "description": "pista sobre el formato de entrada o funcion vulnerable"},
+        "out_dir":     {"type": "string",
+                        "description": "directorio de salida para el corpus (default: .)"}},
+       ["cve_id"])
+def _h_libfuzzer_corpus(args):
+    from .workflows.libfuzzer_corpus import build_corpus, write_corpus, render_corpus
+    a = args or {}
+    corpus = build_corpus(
+        cve_id=a.get("cve_id") or "",
+        poc_text=a.get("poc_text") or "",
+        description=a.get("description") or "",
+        target_func=a.get("target_func") or "target_function",
+        hint=a.get("hint") or "",
+    )
+    wrote_to = None
+    if a.get("out_dir") and corpus.ok:
+        try:
+            wrote_to = write_corpus(corpus, a["out_dir"])
+        except Exception as e:
+            corpus.note = (corpus.note or "") + f" (error al escribir corpus: {e})"
+    return render_corpus(corpus, wrote_to=wrote_to)
+
+
+@_tool("cve_chain",
+       "Ejecuta una cadena multi-CVE (web RCE → local privesc → persistencia). "
+       "Investiga cada CVE secuencialmente, usando la postcondicion del stage anterior "
+       "como contexto para el siguiente. Devuelve narrativa completa de la cadena. "
+       "SOLO USO AUTORIZADO — solo contra entornos propios o con permiso escrito.",
+       {"cves":    {"type": "array",  "items": {"type": "string"},
+                   "description": "Lista ordenada de CVE IDs que forman la cadena "
+                                  "(ej. ['CVE-2021-44228', 'CVE-2021-4034'])"},
+        "out_dir": {"type": "string", "description": "directorio para informes HTML por CVE (default: .)"}},
+       ["cves"])
+def _h_cve_chain(args):
+    from .workflows.cve_chain import run_chain, render_chain
+    a = args or {}
+    cves = a.get("cves") or []
+    if isinstance(cves, str):
+        cves = [c.strip() for c in cves.split(",") if c.strip()]
+    result = run_chain(
+        cve_ids=cves,
+        out_dir=a.get("out_dir") or ".",
+    )
+    return render_chain(result)
+
+
 def _exploit_tool(name, desc, importer):
     @_tool(name, desc + " AUTORIZADO/CTF; verifica por ejecucion y degrada honestamente.",
            {"binary": {"type": "string", "description": "ruta al ELF"}}, ["binary"])
