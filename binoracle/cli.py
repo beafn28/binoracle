@@ -1290,7 +1290,7 @@ def _make_cve_step_printer():
         # "corrigiendo version: '3.9.2' es la version PARCHEADA" → resaltar en amarillo
         if _re.search(r"corrigiendo version|PARCHEADA|ultima vulnerable", msg, _re.I):
             if _col:
-                print(f"  {DIM}{ts}{R}  {YLW}⚡{R} {YLW}{B}[CORR]{R}{YLW} {msg}{R}")
+                print(f"  {DIM}{ts}{R}  {YLW}{B}[CORR]{R}{YLW} {msg}{R}")
             else:
                 print(f"  {ts}  [CORR] {msg}")
             return
