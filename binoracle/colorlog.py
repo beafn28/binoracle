@@ -52,13 +52,20 @@ _OK_RE = re.compile(
 # Mensajes que merecen un recuadro destacado (verificacion, lab listo, resultado final)
 _BOX_RE = re.compile(
     r"verificad[oa] en (laboratorio|sandbox)|laboratorio.*listo|WordPress listo|MySQL listo|"
-    r"exploit confirmado|VERIFICADO|no confirmado.*laboratorio|desmontando el laboratorio",
+    r"exploit confirmado|VERIFICADO|no confirmado.*laboratorio|desmontando el laboratorio|"
+    r"SQLI confirmada|SQLI VERIFICADA|account.takeover confirmado|"
+    r"inyeccion SQL no se confirmo|ninguna.*inyecci[oó]n.*evidencia",
     re.IGNORECASE)
 # Mensajes que marcan el inicio de una fase principal → se muestran como sección
 _SECTION_RE = re.compile(
     r"^(consultando CVE|levantando laboratorio|intentando verificaci[oó]n din[aá]mica|"
     r"clonando el PoC|leyendo el c[oó]digo real|scaffolded.*lab at|"
-    r"confirmando en el c[oó]digo|el LLM reviso la evidencia|capturando pantalla)",
+    r"confirmando en el c[oó]digo|el LLM reviso la evidencia|capturando pantalla|"
+    r"petici[oó]n de control|probando error.based|probando UNION.based|"
+    r"probando boolean.blind|probando time.based|enviando la petici[oó]n|"
+    r"verificaci[oó]n din[aá]mica.*intentada|iniciando sesi[oó]n como|"
+    r"copiando el plugin|creando.*usuario|desarrollando el PoC|"
+    r"obteniendo el c[oó]digo fuente|resolviendo plugin)",
     re.IGNORECASE)
 
 
