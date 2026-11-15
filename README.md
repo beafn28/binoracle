@@ -331,7 +331,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT &copy; 2024&ndash;2026 Beatriz Fresno Naumova
+MIT &copy; 2026 Beatriz Fresno Naumova
 
 ---
 
