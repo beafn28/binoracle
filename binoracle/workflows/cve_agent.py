@@ -1783,6 +1783,19 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     with open(app_path, "w") as f:
         f.write(app_code)
 
+    # Populate notes so verification paths (sqli, ssti, etc.) can find the endpoint
+    notes["endpoint"] = "/" + endpoint
+    if not notes.get("parameters"):
+        if param:
+            notes["parameters"] = [param]
+        elif vuln_class in ("sqli", "sql-injection"):
+            notes["parameters"] = ["id"]
+        elif vuln_class == "ssti":
+            notes["parameters"] = ["template"]
+        elif vuln_class in ("command-injection", "rce"):
+            notes["parameters"] = ["cmd"]
+    notes.setdefault("http_method", "GET")
+
     on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
              f"(vuln_class={vuln_class}, pin={pin})"))
     return lab_dir
@@ -1933,6 +1946,8 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         )
         with open(_os.path.join(lab_dir, "server.js"), "w") as f:
             f.write(srv)
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("http_method", "GET")
 
     on_step(f"scaffolded minimal npm {pkg} lab at {lab_dir} (version={dep_ver})")
     return lab_dir
