@@ -1657,7 +1657,7 @@ def _gen_gem_app(pkg: str, vuln_class: str, version: str) -> str:
             "use Rack::Static,\n"
             "  root: __dir__,\n"
             "  urls: ['/static']\n\n"
-            "run lambda { |env| [200, {'Content-Type' => 'text/plain'}, ['rack lab ok']] }\n"
+            "run lambda { |env| [200, {'content-type' => 'text/plain'}, ['rack lab ok']] }\n"
         )
     return ""
 
@@ -1677,7 +1677,9 @@ def _scaffold_gem_lab(target: str, version: str, vuln_class: str,
     _os.makedirs(lab_dir, exist_ok=True)
 
     ver_pin = f", '= {version}'" if version else ""
-    gemfile = f"source 'https://rubygems.org'\ngem '{pkg}'{ver_pin}\n"
+    # 'rackup' se separó de rack en rack >= 3.0 pero en ruby:3.1-slim también se necesita
+    # explícitamente para rack 2.x; 'webrick' se necesita a partir de rackup 2.x (ya no bundled).
+    gemfile = f"source 'https://rubygems.org'\ngem '{pkg}'{ver_pin}\ngem 'rackup'\ngem 'webrick'\n"
     with open(_os.path.join(lab_dir, "Gemfile"), "w") as f:
         f.write(gemfile)
 
@@ -1813,7 +1815,7 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
     # this issue" -> LLM retorna affected_version=3.9.2 -> lab instala aiohttp==3.9.2 (la
     # version ya parcheada) -> el traversal no funciona nunca porque ya tiene la validacion.
     # Solucion: detectar el patron y decrementar al ultimo patch vulnerable (3.9.1).
-    if version and description:
+    if description:
         # Recoge todas las versiones que la descripción NVD marca como "primera parcheada":
         # (a) "Version X.Y.Z fixes…" / "Versions X.Y.Z fixes…"
         # (b) "Prior to versions X.Y.Z" / "before version X.Y.Z" / "versions prior to X.Y.Z"
@@ -1826,7 +1828,7 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             if _clause:
                 for _vtoken in _VERSION_TOKENS_RE.findall(_clause):
                     _patched_ver_candidates.add(_vtoken)
-        if version in _patched_ver_candidates:
+        if version and version in _patched_ver_candidates:
             corrected = _decrement_patch_version(version)
             if corrected != version:
                 _hint = next((m.group(0) for m in _PRIOR_TO_VERSION_RE.finditer(description)
@@ -1836,6 +1838,19 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                          f"descripcion del CVE ('{_hint}') -- instalando "
                          f"'{corrected}' (ultima vulnerable)"))
                 version = corrected
+        elif not version and _patched_ver_candidates:
+            # Sin version del LLM: inferir la ultima vulnerable decrementando la menor version
+            # parcheada que indique la descripcion NVD (p.ej. "Prior to versions 2.2.13, 3.0.14"
+            # -> la menor parcheada es 2.2.13 -> ultima vulnerable = 2.2.12).
+            _sorted = sorted(_patched_ver_candidates,
+                             key=lambda v: [int(x) for x in v.split(".") if x.isdigit()])
+            _lowest_patched = _sorted[0] if _sorted else None
+            if _lowest_patched:
+                corrected = _decrement_patch_version(_lowest_patched)
+                if corrected != _lowest_patched:
+                    on_step((f"version inferida de descripcion CVE: '{_lowest_patched}' es la "
+                             f"version parcheada -- instalando '{corrected}' (ultima vulnerable)"))
+                    version = corrected
 
     candidate = (target_binary or "").strip().lower()
     # Si el LLM dijo target_binary, intenta directamente.

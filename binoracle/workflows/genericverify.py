@@ -127,9 +127,8 @@ _STACK_SIGNALS = (
       'CMD ["sh", "-c", "npm start || node index.js || node app.js || node server.js"]']),
     # Ruby/Rack: se chequea antes que requirements.txt porque "rack" coincide con el patron pip
     ("Gemfile", "ruby:3.1-slim", 9292,
-     ["WORKDIR /app", "COPY Gemfile* ./",
-      "RUN gem install bundler --no-document && bundle install || true",
-      "COPY . .",
+     ["WORKDIR /app", "COPY . .",
+      "RUN gem install bundler --no-document && bundle install --retry 5",
       'CMD ["bundle", "exec", "rackup", "--host", "0.0.0.0", "--port", "9292", "config.ru"]']),
     ("requirements.txt", "python:3.11-slim", 5000,
      ["WORKDIR /app", "COPY . .",
@@ -227,7 +226,8 @@ def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
     (HTTPS_PROXY se propaga via ARG/ENV, no solo al build sino tambien a los RUN posteriores).
     Vacio si la variable no esta fijada: ningun despliegue sin este proxy corporativo concreto
     se ve afectado."""
-    ca_src = os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "")
+    ca_src = (os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "") or
+              os.environ.get("SSL_CERT_FILE", ""))
     if not ca_src or not os.path.isfile(ca_src):
         return []
     try:
@@ -370,7 +370,9 @@ class _GenericLab:
             # BINORACLE_DOCKER_BUILD_CA_CERT fijada, esto es un no-op (misma invocacion que
             # siempre, ningun despliegue sin este proxy concreto se ve afectado).
             proxy_build_args: List[str] = []
-            if os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT"):
+            _ca_cert = (os.environ.get("BINORACLE_DOCKER_BUILD_CA_CERT", "") or
+                        os.environ.get("SSL_CERT_FILE", ""))
+            if _ca_cert and os.path.isfile(_ca_cert):
                 proxy_build_args = ["--network", "host", "--build-arg",
                                    f"HTTPS_PROXY={os.environ.get('HTTPS_PROXY', '')}"]
             r = self.sh("build", "--platform", "linux/amd64", "-t", self.image, *proxy_build_args,
@@ -425,9 +427,10 @@ class _GenericLab:
         import urllib.error
         import urllib.request
         host = _lab_host()
-        for _ in range(tries):
+        for _try in range(tries):
             for c in self.running_containers():
-                for port in self.published_ports(c):
+                ports = self.published_ports(c)
+                for port in ports:
                     try:
                         with urllib.request.urlopen(f"http://{host}:{port}/", timeout=4) as r:
                             if r.status < 500:
