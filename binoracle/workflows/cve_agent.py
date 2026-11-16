@@ -1592,11 +1592,14 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
             name = m.group(1).strip().rstrip(".")
             slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
             if slug and len(slug) >= 3:
-                # Skip if the slug looks like an NVD phrasing artifact (not a real plugin name)
-                if any(slug.startswith(pfx) for pfx in _SLUG_REJECT_PREFIXES):
-                    continue
-                # Return on first non-trivial match — patterns are ordered most-specific first
-                return slug
+                # Recover real slug from NVD phrasing artifacts:
+                # "an-issue-in-woocommerce-payments" → "woocommerce-payments"
+                for pfx in _SLUG_REJECT_PREFIXES:
+                    if slug.startswith(pfx):
+                        slug = slug[len(pfx):]
+                        break
+                if slug and len(slug) >= 3:
+                    return slug
     return None
 
 
@@ -1783,7 +1786,12 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
         # generic SQLi flask fallback — SQLite (no external deps needed, works in any container)
         # Time-based blind via randomblob(N): SELECT randomblob(300000000) burns ~1-2s on most hardware.
         # Boolean-blind and UNION-based also work because SQLite reflects error messages.
+        # Route uses the caller-provided endpoint (stripped to a simple path safe for Flask),
+        # or /search when none is given.
         p2 = param or "id"
+        _ep_raw = (endpoint or "search").lstrip("/").split("?")[0]  # strip query string
+        _ep_safe = re.sub(r"[^a-zA-Z0-9/_.\-]", "_", _ep_raw) or "search"
+        _route = f"/{_ep_safe}"
         return (
             "import sqlite3, time\n"
             "from flask import Flask, request, g\n\n"
@@ -1796,9 +1804,9 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
             "        g.db.execute(\"INSERT OR IGNORE INTO items VALUES (1, 'secret_data')\")\n"
             "        g.db.commit()\n"
             "    return g.db\n\n"
-            "@app.route('/search')\n"
-            "def search():\n"
-            f"    q = request.args.get('{p2}', '')\n"
+            f"@app.route('{_route}', methods=['GET', 'POST'])\n"
+            "def vuln():\n"
+            f"    q = request.args.get('{p2}') or request.form.get('{p2}', '')\n"
             "    try:\n"
             "        db = get_db()\n"
             f"        rows = db.execute(\"SELECT * FROM items WHERE name = '\" + q + \"'\").fetchall()\n"
@@ -2014,7 +2022,15 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     # exactamente los valores que se pasaron a _gen_pip_app, NO dependemos de detectar
     # si es placeholder: simplemente usamos los valores que el lab tiene de verdad.
     # Django ignora el endpoint del LLM en su urlpatterns (siempre usa 'search').
-    _lab_ep = "search" if "django" in pkg else (endpoint or "search")
+    # SQLi lab generates a route from the endpoint after stripping query-string and special chars.
+    _is_sqli_lab = "sqli" in vuln_class or "sql" in vuln_class
+    if "django" in pkg:
+        _lab_ep = "search"
+    elif _is_sqli_lab:
+        _ep_raw = (endpoint or "search").lstrip("/").split("?")[0]
+        _lab_ep = re.sub(r"[^a-zA-Z0-9/_.\-]", "_", _ep_raw) or "search"
+    else:
+        _lab_ep = endpoint or "search"
     _lab_param = param or "q"
     notes["endpoint"] = f"/{_lab_ep}"
     notes["parameters"] = [_lab_param]
