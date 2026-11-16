@@ -220,10 +220,9 @@ class _PythonExtractor(_BaseExtractor):
 
     def find_param_defs(self, content: str, param_name: str) -> List[ParamDefinition]:
         results = []
-        # Pydantic / FastAPI: Literal["a", "b"] or Enum class
+        # Pydantic / FastAPI: param_name: Literal["a", "b"] — anchored to the param name
         for m in re.finditer(
-            r"(?:" + re.escape(param_name) + r"""\s*:\s*[A-Za-z_]*\s*=?\s*)?"""
-            r"""Literal\[(['"a-zA-Z0-9_,\s]+)\]""",
+            re.escape(param_name) + r"""\s*:\s*(?:[A-Za-z_]+\s*\[)?Literal\[(['"a-zA-Z0-9_,\s]+)\]""",
             content
         ):
             vals = re.findall(r"""['"]([a-zA-Z0-9_\-]{2,30})['"]""", m.group(1))
@@ -232,17 +231,21 @@ class _PythonExtractor(_BaseExtractor):
                     name=param_name, required=True, type_hint="enum",
                     allowed_values=vals, language="python",
                 ))
-        # Django choices: CHOICES = [('a', '...'), ('b', '...')]
-        for m in re.finditer(
-            r"""[A-Z_]+\s*=\s*\[((?:\s*\(['\"][a-zA-Z0-9_\-]+['"]\s*,.*?\)\s*,?\s*)+)\]""",
-            content, re.DOTALL
-        ):
-            vals = re.findall(r"""\(\s*['"]([a-zA-Z0-9_\-]{2,30})['"]\s*,""", m.group(1))
-            if vals:
-                results.append(ParamDefinition(
-                    name=param_name, required=True, type_hint="enum",
-                    allowed_values=vals, language="python",
-                ))
+        # Django choices: look for the choices tuple/list near a field that names this param.
+        # Anchor: find a CharField/ChoiceField that mentions param_name within 400 chars of CHOICES.
+        for pname_m in re.finditer(re.escape(param_name), content, re.IGNORECASE):
+            ctx = content[max(0, pname_m.start() - 50): pname_m.start() + 600]
+            for m in re.finditer(
+                r"""[A-Z_]+\s*=\s*\[((?:\s*\(['\"][a-zA-Z0-9_\-]+['"]\s*,.*?\)\s*,?\s*)+)\]""",
+                ctx, re.DOTALL
+            ):
+                vals = re.findall(r"""\(\s*['"]([a-zA-Z0-9_\-]{2,30})['"]\s*,""", m.group(1))
+                if vals:
+                    results.append(ParamDefinition(
+                        name=param_name, required=True, type_hint="enum",
+                        allowed_values=vals, language="python",
+                    ))
+                    break
         return results
 
 
@@ -252,22 +255,27 @@ class _JavaScriptExtractor(_BaseExtractor):
 
     def find_param_defs(self, content: str, param_name: str) -> List[ParamDefinition]:
         results = []
-        # Zod: z.enum(["a", "b"])
-        for m in re.finditer(r"z\.enum\(\s*\[([^\]]+)\]", content):
-            vals = re.findall(r"""['"`]([a-zA-Z0-9_\-]{2,30})['"`]""", m.group(1))
-            if vals:
-                results.append(ParamDefinition(
-                    name=param_name, required=True, type_hint="enum",
-                    allowed_values=vals, language="javascript",
-                ))
-        # Joi: Joi.string().valid('a', 'b')
-        for m in re.finditer(r"""\.valid\(([^)]+)\)""", content):
-            vals = re.findall(r"""['"`]([a-zA-Z0-9_\-]{2,30})['"`]""", m.group(1))
-            if vals:
-                results.append(ParamDefinition(
-                    name=param_name, required=True, type_hint="enum",
-                    allowed_values=vals, language="javascript",
-                ))
+        # For each occurrence of param_name in the file, check for schema patterns nearby.
+        for pname_m in re.finditer(re.escape(param_name), content, re.IGNORECASE):
+            ctx = content[pname_m.start(): pname_m.start() + 400]
+            # Zod: param_name: z.enum(["a", "b"]) — colon + z.enum within 100 chars
+            for m in re.finditer(r"z\.enum\(\s*\[([^\]]+)\]", ctx):
+                vals = re.findall(r"""['"`]([a-zA-Z0-9_\-]{2,30})['"`]""", m.group(1))
+                if vals:
+                    results.append(ParamDefinition(
+                        name=param_name, required=True, type_hint="enum",
+                        allowed_values=vals, language="javascript",
+                    ))
+                    break
+            # Joi: .valid('a', 'b') within 200 chars of param_name
+            for m in re.finditer(r"""\.valid\(([^)]+)\)""", ctx):
+                vals = re.findall(r"""['"`]([a-zA-Z0-9_\-]{2,30})['"`]""", m.group(1))
+                if vals:
+                    results.append(ParamDefinition(
+                        name=param_name, required=True, type_hint="enum",
+                        allowed_values=vals, language="javascript",
+                    ))
+                    break
         return results
 
 
