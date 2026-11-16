@@ -193,13 +193,25 @@ class _PHPExtractor(_BaseExtractor):
                     allowed = good
                     break
 
-            # Also look for $allowed_types = ['a', 'b'] WITHIN the matched block only.
-            # Searching outside the block risks finding arrays from sibling params.
+            # Also look for $allowed_types = ['a', 'b'] in a window that extends past the
+            # matched block end (block may be truncated by an inner ']' in the closure).
+            # We use a 400-char window starting from the block start, but require that the
+            # variable assignment appears BEFORE the NEXT sibling param key ('other_param' =>).
             if not allowed:
+                win_start = m.start()
+                win_end   = min(len(content), win_start + len(block) + 200)
+                # Restrict window to content before the next sibling param key at top level
+                next_sibling = re.search(
+                    r"""['"]\s*[a-zA-Z_][a-zA-Z0-9_]*\s*['"]\s*=>""",
+                    content[m.end(): m.end() + 300]
+                )
+                if next_sibling:
+                    win_end = min(win_end, m.end() + next_sibling.start())
+                win = content[win_start:win_end]
                 for arr_m in re.finditer(
                     r"\$\w*(?:type|kind|mode|value|option|status|role|method|provider|allow)\w*"
                     r"\s*=\s*\[(['\"][a-zA-Z0-9_\-]+['\"](?:\s*,\s*['\"][a-zA-Z0-9_\-]+['\"])*)\]",
-                    block
+                    win
                 ):
                     vals = re.findall(r"['\"]([a-zA-Z0-9_\-]{2,30})['\"]", arr_m.group(1))
                     good = [v for v in vals if v.lower() not in self._NEVER and not v.isdigit()]
@@ -280,16 +292,20 @@ class _JavaScriptExtractor(_BaseExtractor):
 
 
 class _GenericExtractor(_BaseExtractor):
-    """Language-agnostic fallback: finds the param name near an array of string literals."""
+    """Language-agnostic fallback: finds the param name as a KEY (followed by = or : or ()
+    and looks for an array of string literals within 300 chars. Only triggers on key-value
+    context to avoid cross-param contamination."""
     extensions = (".php", ".py", ".js", ".ts", ".rb", ".java", ".go", ".rs")
 
     def find_param_defs(self, content: str, param_name: str) -> List[ParamDefinition]:
-        # Find param_name within 400 chars of a list-looking pattern
-        for m in re.finditer(re.escape(param_name), content, re.IGNORECASE):
-            ctx = content[m.start(): m.start() + 400]
-            # Look for arrays: ["a", "b", "c"] or ('a', 'b') etc.
+        # Require param_name to appear as a key: name= / name: / name(
+        for m in re.finditer(
+            re.escape(param_name) + r"""\s*(?:=|:|\()""",
+            content, re.IGNORECASE
+        ):
+            ctx = content[m.start(): m.start() + 300]
             for arr_m in re.finditer(
-                r"""[\[(]['"` ]([a-zA-Z0-9_\-]{2,20}['"`]\s*,\s*['"` ][a-zA-Z0-9_\-]{2,20})['"` ]?\s*[\])]""",
+                r"""[\[(]['"` ]?([a-zA-Z0-9_\-]{2,20}['"`]\s*,\s*['"`]?[a-zA-Z0-9_\-]{2,20})['"` ]?\s*[\])]""",
                 ctx
             ):
                 vals = re.findall(r"""['"`]([a-zA-Z0-9_\-]{2,20})['"`]""", arr_m.group(0))
