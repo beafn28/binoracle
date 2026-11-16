@@ -1257,12 +1257,38 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
         return None
 
     # -- helpers internos ---------------------------------------------------
+    # GitHub sub-page URL patterns that are NOT clonable repos.
+    # /issues/, /pull/, /commit/, /releases/ → fetch as HTTP page instead.
+    # /blob/ → convert to raw.githubusercontent.com and fetch as HTTP.
+    _GH_SUBPAGE_RE = re.compile(
+        r"github\.com/[^/]+/[^/]+/(issues|pull|commit|releases|discussions)/",
+        re.IGNORECASE,
+    )
+    _GH_BLOB_RE = re.compile(
+        r"github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)",
+        re.IGNORECASE,
+    )
+
     def _read_git_ref(ref) -> Optional[str]:
         from .websource import fetch_git_source
-        step(f"clonando PoC ({ref.url})...")
-        fr = fetch_git_source(ref.url, timeout=timeout)
+        url = ref.url
+        # GitHub issue/PR/commit/releases URLs are not repos — route to HTTP fetch.
+        if _GH_SUBPAGE_RE.search(url):
+            step(f"URL de GitHub no-repo (issue/pull/commit) -- intentando fetch HTTP ({url})...")
+            return _read_http_ref(ref)
+        # GitHub blob URL → convert to raw.githubusercontent.com
+        blob_m = _GH_BLOB_RE.search(url)
+        if blob_m:
+            raw_url = (f"https://raw.githubusercontent.com/"
+                       f"{blob_m.group(1)}/{blob_m.group(2)}/{blob_m.group(3)}/{blob_m.group(4)}")
+            import types as _types
+            raw_ref = _types.SimpleNamespace(url=raw_url, source="github")
+            step(f"GitHub blob URL → raw ({raw_url})...")
+            return _read_http_ref(raw_ref)
+        step(f"clonando PoC ({url})...")
+        fr = fetch_git_source(url, timeout=timeout)
         if not fr.ok or not fr.local_path:
-            step(f"  fallo git clone {ref.url}: {getattr(fr, 'error', 'error desconocido')}")
+            step(f"  fallo git clone {url}: {getattr(fr, 'error', 'error desconocido')}")
             return None
         chunks, total, count = [], 0, 0
         for dirpath, _dirs, files in os.walk(fr.local_path):
