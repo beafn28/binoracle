@@ -1832,26 +1832,140 @@ class DependencyAnalysis:
         ("gem",      "nokogiri",                     "1.13.", "CVE-2022-29181",  "xxe"),
     ]
 
+    # OSV ecosystem mapping
+    _OSV_ECOSYSTEM: Dict[str, str] = {
+        "npm": "npm", "pip": "PyPI", "composer": "Packagist",
+        "gem": "RubyGems", "cargo": "crates.io", "go": "Go",
+        "maven": "Maven",
+    }
+
+    def _query_osv_batch(self, queries: List[Dict]) -> List[List[Dict]]:
+        """
+        Batch-query OSV.dev (/v1/querybatch) for a list of {name, ecosystem, version} dicts.
+        Returns a parallel list of vuln lists (empty list = no vulns or query failed).
+        Much faster than individual queries: one round-trip for all packages.
+        """
+        if not queries:
+            return []
+        try:
+            import urllib.request, json as _json
+            payload = _json.dumps({
+                "queries": [
+                    {
+                        "version": q["version"].lstrip("^~>="),
+                        "package": {"name": q["name"], "ecosystem": q["ecosystem"]},
+                    }
+                    for q in queries
+                ]
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.osv.dev/v1/querybatch",
+                data=payload, method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = _json.loads(resp.read())
+            results = data.get("results", [])
+            # results is a list of {"vulns": [...]} or {} — align to queries length
+            return [r.get("vulns", []) for r in results] + [[] for _ in range(len(queries) - len(results))]
+        except Exception:
+            return [[] for _ in queries]
+
+    @staticmethod
+    def _osv_vuln_class(vuln: dict) -> str:
+        """Best-effort vuln class from OSV vuln data (summary, details, severity types)."""
+        # Combine all text sources: summary, details, and database_specific severity strings
+        text_sources = [
+            vuln.get("summary", ""),
+            vuln.get("details", ""),
+        ]
+        for sev in vuln.get("severity", []):
+            text_sources.append(sev.get("score", ""))
+        combined = " ".join(text_sources).lower()
+
+        # Map keyword → vuln_class (order matters: more specific first)
+        for kw, vc in (
+            ("sql injection",           "sqli"),
+            ("sql-injection",           "sqli"),
+            ("sqli",                    "sqli"),
+            ("remote code exec",        "rce"),
+            ("command inject",          "rce"),
+            ("arbitrary code",          "rce"),
+            ("server-side request",     "ssrf"),
+            ("ssrf",                    "ssrf"),
+            ("cross-site scripting",    "xss"),
+            ("cross site scripting",    "xss"),
+            (" xss",                    "xss"),
+            ("path travers",            "path_traversal"),
+            ("directory travers",       "path_traversal"),
+            ("deserialization",         "deserialization"),
+            ("prototype pollut",        "prototype_pollution"),
+            ("regex denial",            "redos"),
+            ("regular expression",      "redos"),
+            ("open redirect",           "open_redirect"),
+            ("csrf",                    "csrf"),
+            ("auth bypass",             "auth_bypass"),
+            ("authentication bypass",   "auth_bypass"),
+            ("arbitrary file",          "arbitrary_file_write"),
+        ):
+            if kw in combined:
+                return vc
+        return "unknown"
+
     def flag_known_vulnerable(self, report: "DependencyReport") -> List[Dict[str, str]]:
         """
-        Cross-reference the dependency report against a small hardcoded DB of known CVEs.
-        Returns flagged packages with CVE ID, vuln class, and upgrade advice.
+        Cross-reference the dependency report against known CVEs:
+        1. Local hardcoded list (fast, offline)
+        2. OSV.dev API (comprehensive, requires network; skipped on timeout)
+        Returns deduplicated flagged packages with CVE ID, vuln class, and upgrade advice.
         """
+        seen: set = set()
         flags: List[Dict[str, str]] = []
+
+        def _add(rec, cve_id, vuln_class):
+            key = (rec.name.lower(), cve_id)
+            if key in seen:
+                return
+            seen.add(key)
+            flags.append({
+                "package":    rec.name,
+                "version":    rec.version,
+                "manager":    rec.manager,
+                "cve_id":     cve_id,
+                "vuln_class": vuln_class,
+                "source_file": rec.source_file,
+                "advice":     f"Upgrade {rec.name} — {cve_id} ({vuln_class})",
+            })
+
         for rec in report.dependencies:
+            # 1. Hardcoded DB (offline, instant)
             for manager, pkg, ver_prefix, cve_id, vuln_class in self._KNOWN_VULNS:
                 if (rec.manager == manager
                         and rec.name.lower() == pkg.lower()
                         and rec.version.lstrip("^~>=").startswith(ver_prefix)):
-                    flags.append({
-                        "package":    rec.name,
-                        "version":    rec.version,
-                        "manager":    rec.manager,
-                        "cve_id":     cve_id,
-                        "vuln_class": vuln_class,
-                        "source_file": rec.source_file,
-                        "advice":     f"Upgrade {rec.name} — {cve_id} ({vuln_class})",
-                    })
+                    _add(rec, cve_id, vuln_class)
+
+        # 2. OSV.dev batch query (one HTTP call for all queryable packages)
+        osv_queries = []
+        osv_recs = []
+        for rec in report.dependencies:
+            osv_eco = self._OSV_ECOSYSTEM.get(rec.manager, "")
+            ver = rec.version.lstrip("^~>=")
+            if osv_eco and ver and ver not in ("", "*", "latest"):
+                osv_queries.append({"name": rec.name, "ecosystem": osv_eco, "version": ver})
+                osv_recs.append(rec)
+
+        if osv_queries:
+            batch_results = self._query_osv_batch(osv_queries)
+            for rec, vulns in zip(osv_recs, batch_results):
+                for vuln in vulns:
+                    cve_id = next(
+                        (a for a in vuln.get("aliases", []) if a.upper().startswith("CVE-")),
+                        vuln.get("id", ""),
+                    )
+                    if cve_id:
+                        _add(rec, cve_id, self._osv_vuln_class(vuln))
+
         return flags
 
     def _parse_file(self, fpath: str, rel: str, fname: str) -> List[DependencyRecord]:
@@ -2171,6 +2285,23 @@ class UniversalEngine:
                 f"{top.vuln_class} vulnerability found in {top.location}"
             )
             result.cve_profiles.append(synth)
+
+        # Also add CVE profiles for vulnerable dependencies (unless already in list)
+        existing_ids = {p.cve_id for p in result.cve_profiles}
+        for dep in result.vuln_deps:
+            dep_cve = dep.get("cve_id", "")
+            if dep_cve and dep_cve not in existing_ids:
+                dep_profile = self.cve_intel.profile_from_nvd(dep_cve)
+                if dep_profile is None:
+                    dep_profile = self.cve_intel.profile_from_description(
+                        f"{dep.get('vuln_class', 'unknown')} vulnerability in "
+                        f"{dep.get('package', '?')} {dep.get('version', '')}"
+                    )
+                    if dep_profile:
+                        dep_profile.cve_id = dep_cve
+                if dep_profile:
+                    result.cve_profiles.append(dep_profile)
+                    existing_ids.add(dep_cve)
 
         # ── 4. Enrich each profile with scan evidence + generate test strategy ───
         enriched_profiles: List[CveProfile] = []

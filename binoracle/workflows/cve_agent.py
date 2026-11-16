@@ -1553,6 +1553,17 @@ _PLUGIN_NAME_PATTERNS = [
     # Directory Free WordPress plugin before 1.7.0 does not sanitise...") -- "The <X> WordPress
     # plugin before/version <Y> ..." en vez de "vulnerability in X allows"/"This issue affects X:".
     re.compile(r"[Tt]he ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) WordPress plugin (?:before|versions?)"),
+    # WooCommerce/WooPayments style: "vulnerability exists in X, also known as Y" -- priorizamos
+    # el alias (despues de "also known as") porque es el nombre largo que genera el slug correcto.
+    # Confirmado en vivo: CVE-2023-28121 "in WooPayments, also known as WooCommerce Payments" →
+    # WooPayments→woo-payments no existe en WordPress.org pero WooCommerce Payments→woocommerce-payments sí.
+    re.compile(r"also known as ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60})"),
+    # "vulnerability exists in X versions" -- fraseo alternativo de NVD
+    re.compile(r"(?:vulnerability|vuln(?:erability)?)\s+exists in ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)[,\s]"),
+    # "X plugin for WordPress" (en vez de "X WordPress plugin")
+    re.compile(r"([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin for (?:WordPress|WooCommerce)"),
+    # "plugin X" – fraseo corto de NVD cuando el nombre es el sujeto directo
+    re.compile(r"plugin\s+([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)\s+(?:<=|before|through|version)"),
 ]
 
 
