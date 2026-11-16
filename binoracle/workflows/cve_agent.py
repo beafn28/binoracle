@@ -1567,6 +1567,12 @@ _PLUGIN_NAME_PATTERNS = [
 ]
 
 
+# Slugs that are NVD phrasing artifacts, not real product names.
+# "an-issue-in-X" comes from "This issue affects an-issue-in-X:" in some NVD records.
+_SLUG_REJECT_PREFIXES = ("an-issue-in-", "this-issue-", "the-issue-", "an-auth-",
+                          "a-vuln-", "the-vuln-", "affected-")
+
+
 def _guess_wp_slug_from_description(description: str) -> Optional[str]:
     """Fallback DETERMINISTA para cuando el LLM no propuso source_url (confirmado en vivo que
     pasa: el texto libre del LLM no siempre extrae/adivina el slug de WordPress.org aunque el
@@ -1579,12 +1585,17 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
     con honestidad si el slug no existe de verdad)."""
     if not description:
         return None
+    candidates: list = []
     for pattern in _PLUGIN_NAME_PATTERNS:
         m = pattern.search(description)
         if m:
             name = m.group(1).strip().rstrip(".")
             slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
             if slug and len(slug) >= 3:
+                # Skip if the slug looks like an NVD phrasing artifact (not a real plugin name)
+                if any(slug.startswith(pfx) for pfx in _SLUG_REJECT_PREFIXES):
+                    continue
+                # Return on first non-trivial match — patterns are ordered most-specific first
                 return slug
     return None
 
@@ -1769,38 +1780,31 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "    from django.core.management import execute_from_command_line\n"
                 "    execute_from_command_line(['manage.py', 'runserver', '0.0.0.0:5000'])\n"
             )
-        # generic SQLi flask fallback — PostgreSQL so SLEEP() / pg_sleep() work
+        # generic SQLi flask fallback — SQLite (no external deps needed, works in any container)
+        # Time-based blind via randomblob(N): SELECT randomblob(300000000) burns ~1-2s on most hardware.
+        # Boolean-blind and UNION-based also work because SQLite reflects error messages.
         p2 = param or "id"
         return (
-            "import os, time\n"
-            "from flask import Flask, request\n"
-            "import psycopg2\n\n"
-            "app = Flask(__name__)\n\n"
-            "def get_conn():\n"
-            "    for _ in range(30):\n"
-            "        try:\n"
-            "            conn = psycopg2.connect(\n"
-            "                host=os.environ.get('DB_HOST', 'db'),\n"
-            "                dbname='lab', user='lab', password='lab')\n"
-            "            cur = conn.cursor()\n"
-            "            cur.execute('CREATE TABLE IF NOT EXISTS items (id SERIAL PRIMARY KEY, name TEXT)')\n"
-            "            cur.execute(\"INSERT INTO items (name) SELECT 'secret_data' WHERE NOT EXISTS (SELECT 1 FROM items)\")\n"
-            "            conn.commit()\n"
-            "            return conn\n"
-            "        except Exception:\n"
-            "            time.sleep(2)\n"
-            "    return None\n\n"
+            "import sqlite3, time\n"
+            "from flask import Flask, request, g\n\n"
+            "app = Flask(__name__)\n"
+            "DB = '/tmp/lab.db'\n\n"
+            "def get_db():\n"
+            "    if not hasattr(g, 'db'):\n"
+            "        g.db = sqlite3.connect(DB)\n"
+            "        g.db.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)')\n"
+            "        g.db.execute(\"INSERT OR IGNORE INTO items VALUES (1, 'secret_data')\")\n"
+            "        g.db.commit()\n"
+            "    return g.db\n\n"
             "@app.route('/search')\n"
             "def search():\n"
             f"    q = request.args.get('{p2}', '')\n"
-            "    conn = get_conn()\n"
-            "    if not conn:\n"
-            "        return 'db unavailable', 503\n"
-            "    cur = conn.cursor()\n"
-            f"    cur.execute(\"SELECT * FROM items WHERE name = '\" + q + \"'\")\n"
-            "    rows = cur.fetchall()\n"
-            "    conn.close()\n"
-            "    return str(rows)\n\n"
+            "    try:\n"
+            "        db = get_db()\n"
+            f"        rows = db.execute(\"SELECT * FROM items WHERE name = '\" + q + \"'\").fetchall()\n"
+            "        return str(rows)\n"
+            "    except Exception as e:\n"
+            "        return str(e), 500\n\n"
             "if __name__ == '__main__':\n"
             "    app.run(host='0.0.0.0', port=5000)\n"
         )

@@ -1621,6 +1621,46 @@ def cmd_cve(args, config):
         colorlog.ok(f"evidencia JSON escrita en {args.json_out}")
 
 
+def cmd_scan(args, config):
+    """binoracle scan <source_dir> — static vuln scan + OSV dep audit + CVE test strategies."""
+    import json as _json
+    from .workflows.engine import UniversalEngine
+
+    source_dir = args.source_dir
+    cve_ids    = getattr(args, "cve_ids", None) or []
+    base_url   = getattr(args, "base_url", "http://TARGET")
+    max_files  = getattr(args, "max_files", 500)
+    json_out   = getattr(args, "json_out", None)
+
+    engine = UniversalEngine()
+    result = engine.full_analysis(
+        source_dir, cve_ids=cve_ids or None,
+        base_url=base_url, max_scan_files=max_files,
+    )
+
+    print(result.summary)
+
+    # Print test strategies
+    for cid, steps in result.test_strategies.items():
+        print(f"\n── {cid} ({len(steps)} steps) ──────────────────────────────")
+        for s in steps:
+            print(f"  [{s.order}] {s.action}")
+            if s.curl:
+                print(f"       $ {s.curl}")
+            if s.expected:
+                print(f"       => {s.expected}")
+
+    if json_out:
+        import dataclasses
+        def _enc(o):
+            if dataclasses.is_dataclass(o):
+                return dataclasses.asdict(o)
+            return str(o)
+        with open(json_out, "w") as f:
+            _json.dump(dataclasses.asdict(result), f, indent=2, default=_enc)
+        print(f"\nJSON → {json_out}")
+
+
 def cmd_investigate(args, config):
     """Agente de investigacion guiado por LLM: de la CVE al exploit, investigando y probando. El LLM
     razona y propone; si das --binary, prueba y VERIFICA en sandbox; el informe es honesto sobre lo
@@ -2633,6 +2673,18 @@ def build_parser() -> argparse.ArgumentParser:
                      help="force a fresh investigation even for a CVE already cached locally "
                           "(same flag as 'investigate', see its help)")
     ipw.set_defaults(func=cmd_investigate_watch)
+
+    sc2 = sub.add_parser("scan", help="static security scan + dependency audit + CVE test strategies "
+                                      "for a source directory (wraps the Universal Engine full_analysis)")
+    sc2.add_argument("source_dir", help="path to the source directory to audit")
+    sc2.add_argument("--cve", action="append", dest="cve_ids", metavar="CVE-ID",
+                     help="CVE ID to include in test strategies (can be repeated)")
+    sc2.add_argument("--base-url", default="http://TARGET",
+                     help="base URL for curl commands in test strategies (default: http://TARGET)")
+    sc2.add_argument("--max-files", type=int, default=500,
+                     help="max files to scan for static findings (default 500)")
+    sc2.add_argument("--json", dest="json_out", help="dump full result as JSON to this path")
+    sc2.set_defaults(func=cmd_scan)
 
     return p
 
