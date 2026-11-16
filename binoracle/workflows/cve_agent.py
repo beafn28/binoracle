@@ -1841,6 +1841,13 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     # evitar confundir con slugs de CMS (tienen guion bajo Drupal-style o más de 3 palabras)
     if pkg.count("_") >= 2 or " " in pkg:
         return None
+    # rechazar slugs de WordPress / WooCommerce / otros CMS: terminan en -wp / -wordpress / -woo,
+    # empiezan por wp- / wordpress- / woocommerce-, o contienen la palabra 'wordpress'.
+    # Estos slugs necesitan fetch_wordpress_plugin + verify_wordpress_*, no un pip scaffold.
+    if (pkg.endswith("-wp") or pkg.endswith("-wordpress") or pkg.endswith("-woo")
+            or pkg.startswith("wp-") or pkg.startswith("wordpress-")
+            or pkg.startswith("woocommerce-") or "wordpress" in pkg):
+        return None
 
     lab_dir = f"/tmp/{pkg}_autonomous_lab"
     _os.makedirs(lab_dir, exist_ok=True)
@@ -1892,6 +1899,7 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
             "services:\n"
             "  app:\n"
             "    build: .\n"
+            "    platform: linux/amd64\n"
             f"    ports: ['{port}:{port}']\n"
             "    environment:\n"
             "      DB_HOST: db\n"
@@ -1900,6 +1908,7 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
             "        condition: service_healthy\n"
             "  db:\n"
             "    image: postgres:15-alpine\n"
+            "    platform: linux/amd64\n"
             "    environment:\n"
             "      POSTGRES_DB: lab\n"
             "      POSTGRES_USER: lab\n"

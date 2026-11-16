@@ -742,7 +742,7 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     step("construyendo y arrancando el objetivo (docker build/compose, puede tardar)...")
     r = lab.build_and_run(target)
     if r.returncode != 0:
-        res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:500]}"
+        res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:2000]}"
         lab.teardown()
         return None
 
