@@ -1203,7 +1203,11 @@ _AJAX_ACTION_HANDLER_RE_TMPL = (
     r"(?:['\"]([A-Za-z0-9_]+)['\"]"
     # callback como array($this, 'metodo') -- con o sin coma final (formato multilinea):
     r"|array\s*\(\s*\$this\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\)"
-    r"|array\s*\(\s*self::class\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\))"
+    r"|array\s*\(\s*self::class\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\)"
+    # callback como array( SomeClass::method(), 'method' ) o array( UM()->foo(), 'method' )
+    # -- el primer elemento puede ser cualquier expresion PHP sin comas ni comillas literales,
+    # cubriendo patrones como array( UM()->member_directory(), 'ajax_get_members' ) (UM 2.8.x):
+    r"|array\s*\(\s*[^,'\"]+,\s*['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\))"
 )
 
 
@@ -1374,7 +1378,7 @@ def find_ajax_handler_function(local_path: str, action: str) -> Optional[dict]:
                 continue
             m = pattern.search(text)
             if m:
-                func_name = m.group(1) or m.group(2) or m.group(3)
+                func_name = m.group(1) or m.group(2) or m.group(3) or m.group(4)
                 line_no = text.count("\n", 0, m.start()) + 1
                 return {"function": func_name, "location": f"{os.path.relpath(fp, local_path)}:{line_no}"}
         if scanned >= _MAX_SCAN_FILES:

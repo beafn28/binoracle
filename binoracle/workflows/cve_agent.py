@@ -3213,16 +3213,38 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             # luego cada parametro de notes["parameters"], luego params DataTables
                             # comunes -- cubre el caso habitual en que el LLM no extrae sqli_param
                             # pero si conoce el parametro vulnerable (order[0][dir], etc.).
+                            # nonce/token/security params appear in EVERY AJAX handler (every
+                            # handler verifies its nonce). Using them to identify the vulnerable
+                            # action produces false matches — confirmed in live lab: CVE-2024-1071
+                            # (UM), nonce search returned um_secure_scan_affected_users instead of
+                            # um_get_members. Defer them to the end of the candidate list so
+                            # plugin-specific params always win.
+                            _GENERIC_AUTH_PARAMS = frozenset(
+                                ("nonce", "security", "_nonce", "_wpnonce", "token",
+                                 "_token", "csrf", "verify"))
                             _pts: list = []
+                            _pts_deferred: list = []
                             if _sqli_p:
-                                _pts.append(_sqli_p)
+                                if _sqli_p.lower() in _GENERIC_AUTH_PARAMS:
+                                    _pts_deferred.append(_sqli_p)
+                                else:
+                                    _pts.append(_sqli_p)
                             for _pp in (notes.get("parameters") or []):
                                 _pps = str(_pp).strip() if _pp else ""
-                                if _pps and _pps not in _pts:
+                                if not _pps or _pps in _pts or _pps in _pts_deferred:
+                                    continue
+                                if _pps.lower() in _GENERIC_AUTH_PARAMS:
+                                    _pts_deferred.append(_pps)
+                                else:
                                     _pts.append(_pps)
                             for _pp in ("order", "start", "length", "draw", "search",
                                         "columns", "id", "post_id", "user_id",
                                         "orderby", "dir"):
+                                if _pp not in _pts and _pp not in _pts_deferred:
+                                    _pts.append(_pp)
+                            # Deferred nonce/token params: last resort only — they appear in
+                            # every AJAX handler and produce false matches (see comment above).
+                            for _pp in _pts_deferred:
                                 if _pp not in _pts:
                                     _pts.append(_pp)
                             _found_via_p = ""
