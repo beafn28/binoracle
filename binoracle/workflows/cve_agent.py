@@ -2916,6 +2916,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             source = _lab_candidate
             guessed_source = False  # lab scaffolded deterministically, no es una suposicion CMS
 
+    # Detectar URLs de repos PoC de usuarios en GitHub (no el plugin real).
+    # Patrón: github.com/<user>/<CVE-XXXX-XXXXX> -- el último segmento contiene "CVE-".
+    # En ese caso el LLM se confundió y dio el PoC en vez del plugin: ignorar y buscar slug.
+    # Confirmado en vivo: CVE-2023-28121 → LLM dio github.com/Secragon/CVE-2023-28121/
+    # que no existe (repo privado/borrado), pero el slug real "woocommerce-payments" sí.
+    if source:
+        _src_last_seg = source.rstrip("/").split("/")[-1] if "://" in source else ""
+        if re.match(r'(?i)^CVE-\d{4}-\d{4,}', _src_last_seg):
+            step((f"'{source}' parece una URL de repo PoC (el segmento final es '{_src_last_seg}'), "
+                  f"no el codigo fuente del plugin -- ignorando y buscando el slug real...") if es else
+                 (f"'{source}' looks like a PoC repo URL (last segment is '{_src_last_seg}'), "
+                  f"not the actual plugin source — skipping and looking for the real slug..."))
+            # Intentar slug desde descripcion
+            _slug_from_desc = _guess_wp_slug_from_description(inv.description)
+            if _slug_from_desc:
+                source = _slug_from_desc
+                guessed_source = True
+            else:
+                source = ""  # nada que intentar; el motor seguira sin source
+
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
              f"attempting to fetch the real source ({source})...")
