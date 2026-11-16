@@ -887,6 +887,12 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
     rest_methods_re = _re.compile(r"['\"]methods['\"]\s*=>\s*(?:['\"]([A-Za-z,\s]+)['\"]|"
                                   r"(WP_REST_Server::[A-Z]+))")
     field_re = _re.compile(r"\$_(?:POST|REQUEST|GET)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]")
+    # Captura accesos de array anidado tipo $_POST['order'][0]['dir'] -> "order[0][dir]"
+    # (DataTables y otros patrones jQuery donde el parametro vulnerable esta dentro de un array).
+    nested_array_re = _re.compile(
+        r"\$_(?:POST|REQUEST|GET)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+        r"\s*\[(\d+)\]\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+    )
     rest_param_re = _re.compile(r"->get_param\s*\(\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\)")
     rest_json_body_re = _re.compile(r"->get_json_params\s*\(\s*\)|->get_body_params\s*\(\s*\)")
     fn_def_re_tmpl = r"function\s+{0}\s*\("
@@ -920,6 +926,17 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
                 for m in field_re.finditer(body_text):
                     if m.group(1) not in best_fields:
                         best_fields.append(m.group(1))
+                # Reemplaza la clave simple por la ruta completa cuando el handler accede a un
+                # array anidado (p.ej. $_POST['order'][0]['dir'] -> "order[0][dir]"): esto
+                # preserva el path exacto que necesita el verificador de SQLi ORDER BY para
+                # construir el payload correcto en vez de inyectar en la clave exterior "order".
+                for m in nested_array_re.finditer(body_text):
+                    nested_path = f"{m.group(1)}[{m.group(2)}][{m.group(3)}]"
+                    outer_key = m.group(1)
+                    if outer_key in best_fields:
+                        best_fields[best_fields.index(outer_key)] = nested_path
+                    elif nested_path not in best_fields:
+                        best_fields.append(nested_path)
                 for m in rest_param_re.finditer(body_text):
                     if m.group(1) not in best_fields:
                         best_fields.append(m.group(1))
@@ -975,6 +992,7 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
         out["endpoint"], out["http_method"] = best_endpoint
     elif best_action:
         out["endpoint"] = f"/wp-admin/admin-ajax.php?action={best_action}"
+        out["http_method"] = "POST"  # todas las acciones wp_ajax_* se invocan siempre via POST
     if best_fields:
         out["parameters"] = best_fields
     return out
@@ -2987,7 +3005,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                                          ("?" if "?" not in old_ep else "&") +
                                                          f"action={_param_action}")
                                 notes["ajax_action"] = _param_action
+                                notes["http_method"] = "POST"  # AJAX siempre se llama via POST
                                 inv.llm_notes["ajax_action"] = _param_action
+                                inv.llm_notes["http_method"] = "POST"
                                 inv.llm_notes["endpoint"] = notes["endpoint"]
                                 # propagamos tambien sqli_param para que el verificador SQLi lo
                                 # use directamente sin tener que adivinarlo de nuevo.
@@ -3066,7 +3086,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                                              ("?" if "?" not in old_ep else "&") +
                                                              f"action={best}")
                                     notes["ajax_action"] = best
+                                    notes["http_method"] = "POST"  # AJAX siempre POST
                                     inv.llm_notes["ajax_action"] = best
+                                    inv.llm_notes["http_method"] = "POST"
                                     inv.llm_notes["endpoint"] = notes["endpoint"]
                                     # buscar el handler de la nueva accion para grounding
                                     recovered2 = find_ajax_handler_function(fr.local_path, best)
@@ -3732,7 +3754,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
                 from .websource import find_shortcode_name, find_join_relationship_table
                 params = notes.get("parameters") or []
-                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                _raw_sqli = notes.get("sqli_param") or ""
+                # Si sqli_param es una clave simple ("order") pero los parametros refinados
+                # contienen un path de array mas especifico ("order[0][dir]"), usarlo -- esto
+                # ocurre cuando find_ajax_action_for_param encontro la accion via la clave
+                # exterior y luego _deterministic_web_hints_from_source extrae el path completo.
+                if _raw_sqli:
+                    for _pp in (params or []):
+                        if str(_pp).startswith(_raw_sqli + "["):
+                            _raw_sqli = str(_pp)
+                            break
+                sqli_p = _raw_sqli or _pick_param(params, _SQLI_HINTS)
                 # si el endpoint es la raiz ('/'), atacarla directamente no puede reflejar
                 # ninguna diferencia (es la portada vacia por defecto, sin contenido del plugin)
                 # -- confirmado en vivo, CVE-2024-3552: con el shortcode real del plugin,

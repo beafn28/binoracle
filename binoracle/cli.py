@@ -2417,7 +2417,7 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("cve", help="CVE id (e.g. CVE-2025-59681)")
     cv.add_argument("--source", help="source dir / plugin slug / git URL for the vulnerable code")
     cv.add_argument("--endpoint", help="vulnerable HTTP endpoint")
-    cv.add_argument("--method", default="GET", help="HTTP method (default GET)")
+    cv.add_argument("--method", help="HTTP method override (omit to let binoracle detect it)")
     cv.add_argument("--params", help="comma-separated request parameters (name or name=value)")
     cv.add_argument("--vuln-class", help="known vuln class (sqli, rce, xxe, missing-authorization...)")
     cv.add_argument("--budget", type=float, default=600,

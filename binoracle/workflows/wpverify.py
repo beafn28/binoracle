@@ -2622,7 +2622,10 @@ def verify_wordpress_sqli(
             endpoint = boot.shortcode_page_path
             res.evidence["endpoint_shortcode_page"] = endpoint
 
-        m = (http_method or "GET").upper()
+        # AJAX WordPress siempre usa POST: si el caller no lo especifico pero el endpoint es
+        # admin-ajax.php, el default correcto es POST (los handlers leen $_POST, no $_GET).
+        _ep_lower = (endpoint or "").lower()
+        m = (http_method or ("POST" if "admin-ajax.php" in _ep_lower else "GET")).upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
 
         # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
