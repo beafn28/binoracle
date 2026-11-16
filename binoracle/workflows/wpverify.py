@@ -1541,8 +1541,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 _r_ids = lab.wp_cli("db", "query",
                                     "SELECT ID FROM wp_posts WHERE post_type='um_directory'",
                                     "--skip-column-names", timeout=10)
-                _ids_out = (r_ids.stdout if hasattr(r_ids, "stdout") else
-                            (_r_ids.stdout or "")).strip()
+                _ids_out = (_r_ids.stdout or "").strip()
                 if _ids_out:
                     for _real_id in _ids_out.split():
                         if _real_id.isdigit():
