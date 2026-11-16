@@ -1715,7 +1715,7 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "            'NAME': 'lab', 'USER': 'lab', 'PASSWORD': 'lab',\n"
                 "            'HOST': os.environ.get('DB_HOST', 'db'), 'PORT': '5432'}},\n"
                 "        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n"
-                "        ROOT_URLCONF='urls', SECRET_KEY='binoracle', DEBUG=True,\n"
+                "        ROOT_URLCONF='app', SECRET_KEY='binoracle', DEBUG=True,\n"
                 "        ALLOWED_HOSTS=['*'])\n"
                 "    for _ in range(30):\n"
                 "        try:\n"
@@ -2119,6 +2119,11 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             # Con --omit=optional + .babelrc, Next.js detecta que SWC no esta disponible y
             # usa Babel como transpilador -- compatible con todas las plataformas.
             "RUN npm install --legacy-peer-deps --omit=optional\n"
+            # Eliminar cualquier addon nativo (.node) que haya quedado instalado
+            # (pueden crashear Node bajo emulacion QEMU o arquitectura incorrecta con
+            # 'node:internal/modules/cjs/loader throw e'). Sin estos ficheros Next.js
+            # cae automaticamente a Babel gracias al .babelrc copiado mas abajo.
+            "RUN find /app/node_modules -name '*.node' -delete 2>/dev/null || true\n"
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
             "EXPOSE 3000\n"
@@ -3245,6 +3250,58 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
                              "inicial" if es else "no LLM available or nothing to refine: keeping "
                              "the initial hypothesis")
+            # Override determinista para WordPress SQLi: si un parametro de tipo DataTables
+            # (order, dir, start, etc.) apunta directamente a una accion DISTINTA de la
+            # actualmente seleccionada (via codigo real, no similitud de nombres), la accion
+            # del codigo GANA -- evidencia directa mas fuerte que el scoring de similaridad.
+            # Corrige el caso 'error-log-viewer-wp' donde el LLM escoge 'elvwp_log_download'
+            # pero la accion vulnerable real es 'elvwp_datatable_loglist' (usa $_POST['order']).
+            if (fr.ok and not is_drupal and not is_joomla and
+                    inv.vuln_class in ("sqli", "sql-injection") and
+                    notes.get("ajax_action")):
+                from .websource import find_ajax_action_for_param as _fap_override
+                _sqli_cands_ov = []
+                _sqli_p_ov = (notes.get("sqli_param") or "").strip()
+                if _sqli_p_ov:
+                    _sqli_cands_ov.append(_sqli_p_ov.split("[")[0].strip("'\" "))
+                for _pp_ov in ("order", "dir", "start", "orderby", "length", "draw"):
+                    if _pp_ov not in _sqli_cands_ov:
+                        _sqli_cands_ov.append(_pp_ov)
+                for _cand_ov in _sqli_cands_ov:
+                    if not _cand_ov or len(_cand_ov) < 2:
+                        continue
+                    _real_act_ov = _fap_override(fr.local_path, _cand_ov)
+                    if _real_act_ov and _real_act_ov != notes["ajax_action"]:
+                        step((f"parametro '{_cand_ov}' apunta directamente a "
+                              f"'{_real_act_ov}' en el codigo real (accion actual: "
+                              f"'{notes['ajax_action']}') -- sobreescribiendo con la "
+                              f"accion correcta segun el codigo") if es else
+                             (f"param '{_cand_ov}' points directly to '{_real_act_ov}' "
+                              f"in real source (current action: '{notes['ajax_action']}') "
+                              f"-- overriding with code-evidence action"))
+                        _old_ep_ov = notes.get("endpoint") or ""
+                        import re as _re_ov
+                        if "action=" in _old_ep_ov:
+                            _new_ep_ov = _re_ov.sub(r"action=[^&]*",
+                                                     f"action={_real_act_ov}", _old_ep_ov)
+                        else:
+                            _new_ep_ov = f"/wp-admin/admin-ajax.php?action={_real_act_ov}"
+                        notes["ajax_action"] = _real_act_ov
+                        notes["endpoint"] = _new_ep_ov
+                        notes["sqli_param"] = _cand_ov
+                        inv.llm_notes["ajax_action"] = _real_act_ov
+                        inv.llm_notes["endpoint"] = _new_ep_ov
+                        inv.llm_notes["sqli_param"] = _cand_ov
+                        from .websource import find_ajax_handler_function as _fahf_ov
+                        _rec_ov = _fahf_ov(fr.local_path, _real_act_ov)
+                        if _rec_ov:
+                            inv.source_grounding["found"] = {
+                                _rec_ov["function"]: [_rec_ov["location"]]}
+                            step((f"handler real: '{_rec_ov['function']}' en "
+                                  f"{_rec_ov['location']}") if es else
+                                 (f"real handler: '{_rec_ov['function']}' at "
+                                  f"{_rec_ov['location']}"))
+                        break
             # Ruta SIN LLM: el bloque 'if fn_names:' de arriba no corre cuando el LLM no esta
             # disponible (fn_names=[]) y deja notes["endpoint"] vacio. Para CVEs de clase sqli
             # en WordPress, escanear el plugin en busca de acciones AJAX SQLi-susceptibles y

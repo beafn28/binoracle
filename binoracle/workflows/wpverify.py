@@ -388,6 +388,41 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                 f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
                 f"antes de que su contenido aparezca en ningun lado")
 
+    # Para plugins cuyo sumidero vulnerable está detrás de un 'directory_id' obligatorio
+    # (Ultimate Member, etc.) el LLM a veces no incluye ese parámetro en base_params --
+    # pre-poblarlo con un placeholder vacío para que el bucle de fuerza bruta a continuación
+    # lo encuentre y lo resuelva. Además, si tenemos acceso al lab, consultar WP-CLI para
+    # obtener el ID real del post um_directory (o del CPT configurado) y calcular el hash
+    # directamente -- más rápido y fiable que la fuerza bruta ciega.
+    gate_cfg = _SQLI_CUSTOM_SORT_GATE.get(slug, {})
+    dir_id_param = gate_cfg.get("directory_id_param", "")
+    if dir_id_param and dir_id_param != exclude_param and dir_id_param not in base_params:
+        # Intentar primero resolverlo via WP-CLI (tenemos el lab disponible):
+        # buscar el primer post del CPT del plugin (um_directory) y derivar su hash.
+        cpt_name = _PLUGIN_DIRECTORY_CPT.get(slug, "")
+        resolved_via_cli = False
+        if cpt_name and lab is not None:
+            try:
+                import hashlib as _hl
+                r_id = lab.wp_cli("post", "list", f"--post_type={cpt_name}",
+                                  "--post_status=any", "--format=ids",
+                                  "--posts_per_page=1", timeout=15)
+                raw_id = (r_id.stdout or "").strip().split()[0] if r_id.returncode == 0 else ""
+                if raw_id.isdigit():
+                    _n = int(raw_id)
+                    _hashed = _hl.md5(str(_n).encode()).hexdigest()[10:15]
+                    base_params[dir_id_param] = _hashed
+                    step(f"'{dir_id_param}' resuelto directamente via WP-CLI (post "
+                         f"{cpt_name} ID={_n} -> hash '{_hashed}') -- sin fuerza bruta")
+                    resolved_via_cli = True
+            except Exception:
+                pass
+        if not resolved_via_cli:
+            # Fallback: dejar vacío para que la fuerza bruta lo resuelva abajo
+            base_params[dir_id_param] = ""
+            step(f"'{dir_id_param}' no estaba en los parámetros -- añadido para "
+                 f"que la fuerza bruta de IDs ofuscados lo resuelva")
+
     other_id_params = [k for k in base_params
                        if k != exclude_param and k not in nonce_like_keys
                        and any(h in k.lower() for h in ("id", "dir"))]
