@@ -1,14 +1,16 @@
 """
 Universal Autonomous Error Analysis & Self-Remediation Engine.
 
-Three core capabilities, each independently extensible:
+Five core capabilities, each independently extensible:
 
   SourceCodeIntelligence   — understand code in any framework / language
   VulnerabilityIntelligence — detect security issues from code + behavior
+  CveIntelligence          — reason about CVE descriptions, classify, map to attack surface
+  DependencyAnalysis       — parse dependency manifests, detect vulnerable packages
   RemediationEngine        — DETECT → ANALYZE → DIAGNOSE → PROPOSE → VERIFY → CORRECT
 
-Orchestrated by UniversalEngine. No CVE IDs, no framework rules, no hardcoded fixes:
-all reasoning is driven by evidence from the actual error signal and source code.
+Orchestrated by UniversalEngine. No hardcoded CVE IDs, no framework-specific rules:
+all reasoning is driven by evidence from error signals, source code, and NVD data.
 """
 
 from __future__ import annotations
@@ -728,23 +730,422 @@ class RemediationEngine:
         )
 
 
+# ─────────────────────── 4. CVE Intelligence ──────────────────────────────────
+
+@dataclass
+class CveProfile:
+    """Structured reasoning extracted from a CVE description — no NVD fields verbatim."""
+    cve_id:         str
+    vuln_class:     str              # "auth_bypass", "sqli", "rce", "path_traversal", …
+    affected_component: str          # e.g. "kivicare", "next.js", "django"
+    version_hint:   str              # e.g. "4.1.2", "<=13.5.6"
+    auth_required:  bool             # True if exploitation requires prior auth
+    endpoint_hint:  str              # e.g. "/wp-json/kivicare/v1/auth/patient/social-login"
+    exploit_method: str              # brief one-line description
+    confidence:     float            # 0.0–1.0 based on how much we could extract
+    raw_description: str = ""
+
+
+# Keyword → vuln class mapping (checked in order; first match wins)
+_VULN_CLASS_PATTERNS: List[Tuple[str, str]] = [
+    (r"\b(?:authentication bypass|auth bypass|bypass.{0,30}auth(?:entication)?|"
+     r"unauthenticated.{0,30}access|without.{0,20}auth(?:entication)?)\b",
+     "auth_bypass"),
+    (r"\b(?:sql injection|sqli|sql.{0,10}inject)\b",                 "sqli"),
+    (r"\b(?:remote code execution|rce|arbitrary code|code inject)\b", "rce"),
+    (r"\b(?:path traversal|directory traversal|lfi|local file inclus)\b", "path_traversal"),
+    (r"\b(?:cross.site scripting|xss|script inject)\b",              "xss"),
+    (r"\b(?:server.side request forgery|ssrf)\b",                    "ssrf"),
+    (r"\b(?:cross.site request forgery|csrf)\b",                     "csrf"),
+    (r"\b(?:insecure deseri|deserializ)\b",                          "deserialization"),
+    (r"\b(?:open redirect)\b",                                        "open_redirect"),
+    (r"\b(?:file upload|arbitrary.{0,20}upload|webshell)\b",         "file_upload"),
+    (r"\b(?:idor|insecure direct object|object reference)\b",        "idor"),
+    (r"\b(?:privilege escalation|privesc|elevat.{0,20}privilege)\b", "privilege_escalation"),
+    (r"\b(?:xxe|xml external entity)\b",                             "xxe"),
+    (r"\b(?:broken.{0,20}access control|missing.{0,30}authorization|"
+     r"lack.{0,20}(?:of\s+)?authorization)\b",                       "broken_access_control"),
+]
+
+# Auth-not-required signals
+_NO_AUTH_PATTERNS = [
+    r"\bunauthenticated\b",
+    r"\bwithout.{0,20}(?:authentication|login|credential)\b",
+    r"\bno.{0,10}(?:authentication|login|credential)\s+required\b",
+    r"\banonymous\b",
+    r"\bany.{0,10}(?:user|visitor|attacker)\b",
+]
+
+# Auth-required signals
+_AUTH_REQUIRED_PATTERNS = [
+    r"\b(?:authenticated|logged.{0,10}in|low.privilege|subscriber|contributor)\b",
+    r"\bwith.{0,20}(?:authentication|valid.{0,10}account|low.{0,5}privilege)\b",
+]
+
+
+def _extract_endpoint_hint(text: str) -> str:
+    """Find the most specific URL-like hint from a CVE description."""
+    # REST path: /something/something
+    for m in re.finditer(r"/(?:[a-zA-Z0-9_\-]+/){1,6}[a-zA-Z0-9_\-]*", text):
+        p = m.group(0)
+        if len(p) > 5 and p.count("/") >= 2:
+            return p
+    # Named endpoint hint
+    for m in re.finditer(r"(?:endpoint|route|path|URL)[:\s]+(['\"/]?[^\s,;.\"\']{6,60})", text, re.I):
+        return m.group(1).strip("'\"")
+    return ""
+
+
+def _extract_version_hint(text: str) -> str:
+    """Find version constraints like '<=4.1.2', 'through 3.5', 'before 2.0.0'."""
+    for pat in [
+        r"(?:<=|<|through|prior to|before|up to)\s*v?(\d+\.\d+(?:\.\d+)?)",
+        r"\bv?(\d+\.\d+(?:\.\d+)?)\s+(?:and earlier|and below|and prior)",
+        r"\bversion\s+(\d+\.\d+(?:\.\d+)?)\b",
+    ]:
+        m = re.search(pat, text, re.I)
+        if m:
+            return m.group(1)
+    return ""
+
+
+class CveIntelligence:
+    """
+    Reasons about CVE descriptions to build a structured CveProfile.
+    Uses cvelookup.fetch_cve() when network is available; falls back to
+    description-only analysis when given raw text directly.
+    """
+
+    def profile_from_description(self, description: str, cve_id: str = "") -> CveProfile:
+        """Extract structured CveProfile from free-text description alone."""
+        text = description or ""
+        lower = text.lower()
+
+        # Classify vuln class
+        vuln_class = "unknown"
+        for pattern, cls in _VULN_CLASS_PATTERNS:
+            if re.search(pattern, lower, re.I):
+                vuln_class = cls
+                break
+
+        # Auth requirement
+        no_auth = any(re.search(p, lower, re.I) for p in _NO_AUTH_PATTERNS)
+        yes_auth = any(re.search(p, lower, re.I) for p in _AUTH_REQUIRED_PATTERNS)
+        auth_required = yes_auth and not no_auth
+
+        # Affected component: first quoted name, plugin name, or product name
+        component = ""
+        for pat in [
+            r"(?:plugin|module|extension|package|library|component)\s+['\"]?([A-Za-z][A-Za-z0-9_\-\s]{2,30}?)['\"]?\s+(?:for|before|through|<=|plugin)",
+            r"WordPress\s+plugin\s+['\"]?([^'\"<]{3,40}?)['\"]?\s+(?:before|through|<=|prior)",
+            r"in\s+([A-Za-z][A-Za-z0-9_\-]{2,30})\s+(?:plugin|module|before|through|<=)",
+        ]:
+            m = re.search(pat, text, re.I)
+            if m:
+                component = m.group(1).strip().lower()
+                break
+        if not component:
+            # Fallback: first capitalized product-looking word
+            m = re.search(r"\b([A-Z][a-zA-Z0-9]{3,20}(?:\s[A-Z][a-zA-Z0-9]{2,20})?)\b", text)
+            if m:
+                component = m.group(1).lower()
+
+        endpoint = _extract_endpoint_hint(text)
+        version  = _extract_version_hint(text)
+
+        # Confidence based on how much we extracted
+        score = sum([
+            vuln_class != "unknown",
+            bool(component),
+            bool(endpoint),
+            bool(version),
+        ]) / 4.0
+
+        # Short exploit method summary
+        method_map = {
+            "auth_bypass":          "unauthenticated access via missing authorization check",
+            "sqli":                 "SQL injection via unsanitized input parameter",
+            "rce":                  "remote code execution via crafted input",
+            "path_traversal":       "path traversal via directory sequence in parameter",
+            "xss":                  "cross-site scripting via reflected/stored user input",
+            "ssrf":                 "server-side request forgery via URL parameter",
+            "csrf":                 "cross-site request forgery via forged request",
+            "deserialization":      "insecure deserialization of untrusted data",
+            "file_upload":          "arbitrary file upload bypassing extension/MIME filter",
+            "idor":                 "insecure direct object reference via ID parameter",
+            "broken_access_control":"missing authorization on sensitive endpoint",
+        }
+        exploit_method = method_map.get(vuln_class, "exploitation via crafted request")
+
+        return CveProfile(
+            cve_id=cve_id,
+            vuln_class=vuln_class,
+            affected_component=component,
+            version_hint=version,
+            auth_required=auth_required,
+            endpoint_hint=endpoint,
+            exploit_method=exploit_method,
+            confidence=score,
+            raw_description=text[:300],
+        )
+
+    def profile_from_nvd(self, cve_id: str, timeout: float = 20.0) -> Optional[CveProfile]:
+        """Fetch CVE from NVD and return a structured CveProfile. Returns None on network error."""
+        try:
+            from binoracle.workflows.cvelookup import fetch_cve
+            info = fetch_cve(cve_id, timeout=timeout, enrich=False)
+            if not info.ok or not info.description:
+                return None
+            profile = self.profile_from_description(info.description, cve_id)
+            # Override version from NVD CVSS when available
+            if not profile.version_hint and info.cvss_vector:
+                profile.confidence = min(1.0, profile.confidence + 0.1)
+            return profile
+        except Exception:
+            return None
+
+
+# ─────────────────────── 5. Dependency Analysis ───────────────────────────────
+
+@dataclass
+class DependencyRecord:
+    """One package/library from a dependency manifest."""
+    name:        str
+    version:     str           # declared version string (may be a range)
+    manager:     str           # "npm", "pip", "composer", "maven", "gem", "cargo", "go"
+    source_file: str           # relative path of the manifest file
+    dev_only:    bool = False  # true for devDependencies, test-only, etc.
+
+
+@dataclass
+class DependencyReport:
+    dependencies: List[DependencyRecord]
+    managers_found: List[str]
+    source_dir: str
+
+
+class DependencyAnalysis:
+    """
+    Parses dependency manifests from any ecosystem and returns a structured inventory.
+    Supports: npm/yarn (package.json), pip (requirements.txt, pyproject.toml, setup.cfg),
+    Composer (composer.json), Maven (pom.xml), Bundler (Gemfile.lock / Gemfile),
+    Cargo (Cargo.toml), Go modules (go.mod).
+    """
+
+    def analyze(self, source_dir: str, max_depth: int = 4) -> DependencyReport:
+        """Walk source_dir up to max_depth levels and parse all dependency manifests."""
+        records: List[DependencyRecord] = []
+        managers: List[str] = []
+
+        for root, dirs, files in os.walk(source_dir):
+            # Limit depth
+            depth = root[len(source_dir):].count(os.sep)
+            if depth >= max_depth:
+                dirs.clear()
+                continue
+            # Skip common non-source dirs
+            dirs[:] = [d for d in dirs if d not in
+                       ("node_modules", ".git", "vendor", "__pycache__", ".venv", "venv",
+                        "dist", "build", "target", ".tox", "eggs", ".eggs")]
+
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                rel   = os.path.relpath(fpath, source_dir)
+                try:
+                    new = self._parse_file(fpath, rel, fname)
+                except Exception:
+                    new = []
+                for rec in new:
+                    records.append(rec)
+                    if rec.manager not in managers:
+                        managers.append(rec.manager)
+
+        return DependencyReport(
+            dependencies=records,
+            managers_found=managers,
+            source_dir=source_dir,
+        )
+
+    def _parse_file(self, fpath: str, rel: str, fname: str) -> List[DependencyRecord]:
+        """Dispatch to the right parser based on filename."""
+        if fname == "package.json":
+            return self._parse_package_json(fpath, rel)
+        if fname in ("requirements.txt", "requirements-dev.txt", "requirements_dev.txt"):
+            return self._parse_requirements_txt(fpath, rel,
+                                                 dev_only="dev" in fname.lower())
+        if fname == "pyproject.toml":
+            return self._parse_pyproject_toml(fpath, rel)
+        if fname == "composer.json":
+            return self._parse_composer_json(fpath, rel)
+        if fname == "pom.xml":
+            return self._parse_pom_xml(fpath, rel)
+        if fname in ("Gemfile", "Gemfile.lock"):
+            return self._parse_gemfile(fpath, rel)
+        if fname == "Cargo.toml":
+            return self._parse_cargo_toml(fpath, rel)
+        if fname == "go.mod":
+            return self._parse_go_mod(fpath, rel)
+        return []
+
+    # ── npm / yarn ────────────────────────────────────────────────────────────
+    def _parse_package_json(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        try:
+            data = json.loads(open(fpath, encoding="utf-8").read())
+        except Exception:
+            return []
+        recs = []
+        for section, dev in (("dependencies", False), ("devDependencies", True),
+                              ("peerDependencies", False), ("optionalDependencies", False)):
+            for name, ver in (data.get(section) or {}).items():
+                recs.append(DependencyRecord(name=name, version=str(ver),
+                                              manager="npm", source_file=rel, dev_only=dev))
+        return recs
+
+    # ── pip ───────────────────────────────────────────────────────────────────
+    def _parse_requirements_txt(self, fpath: str, rel: str,
+                                  dev_only: bool = False) -> List[DependencyRecord]:
+        recs = []
+        for line in open(fpath, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("-"):
+                continue
+            m = re.match(r"([A-Za-z0-9_.\-]+)\s*([><=!~^]{0,3})\s*([^\s;#]*)", line)
+            if m:
+                recs.append(DependencyRecord(
+                    name=m.group(1), version=(m.group(2) + m.group(3)).strip(),
+                    manager="pip", source_file=rel, dev_only=dev_only,
+                ))
+        return recs
+
+    def _parse_pyproject_toml(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        content = open(fpath, encoding="utf-8", errors="replace").read()
+        recs = []
+        # [project] dependencies = ["name>=ver", ...]
+        for m in re.finditer(
+            r"dependencies\s*=\s*\[(.*?)\]", content, re.DOTALL
+        ):
+            for dep in re.findall(r"""['"]([A-Za-z0-9_.\-]+)\s*([><=!~^][^\s'"]*)?""",
+                                   m.group(1)):
+                recs.append(DependencyRecord(name=dep[0], version=dep[1] or "",
+                                              manager="pip", source_file=rel))
+        return recs
+
+    # ── Composer (PHP) ────────────────────────────────────────────────────────
+    def _parse_composer_json(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        try:
+            data = json.loads(open(fpath, encoding="utf-8").read())
+        except Exception:
+            return []
+        recs = []
+        for section, dev in (("require", False), ("require-dev", True)):
+            for name, ver in (data.get(section) or {}).items():
+                if name == "php":
+                    continue
+                recs.append(DependencyRecord(name=name, version=str(ver),
+                                              manager="composer", source_file=rel, dev_only=dev))
+        return recs
+
+    # ── Maven (Java) ──────────────────────────────────────────────────────────
+    def _parse_pom_xml(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        content = open(fpath, encoding="utf-8", errors="replace").read()
+        recs = []
+        for m in re.finditer(
+            r"<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>"
+            r"(?:\s*<version>([^<]*)</version>)?",
+            content, re.DOTALL
+        ):
+            name = f"{m.group(1).strip()}:{m.group(2).strip()}"
+            ver  = (m.group(3) or "").strip()
+            # Check if test scope
+            dev = bool(re.search(
+                r"<scope>test</scope>",
+                content[m.start(): m.start() + 500]
+            ))
+            recs.append(DependencyRecord(name=name, version=ver,
+                                          manager="maven", source_file=rel, dev_only=dev))
+        return recs
+
+    # ── Bundler (Ruby) ────────────────────────────────────────────────────────
+    def _parse_gemfile(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        recs = []
+        for line in open(fpath, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if line.startswith("#"):
+                continue
+            # gem 'name', '~> 1.2' or gem "name", ">= 1.0"
+            m = re.match(r"""gem\s+['"]([^'"]+)['"]\s*(?:,\s*['"]([^'"]+)['"])?""", line)
+            if m:
+                recs.append(DependencyRecord(
+                    name=m.group(1), version=m.group(2) or "",
+                    manager="gem", source_file=rel,
+                ))
+            # Gemfile.lock: exact versions
+            m2 = re.match(r"\s{4}([A-Za-z0-9_\-]+)\s+\(([^)]+)\)", line)
+            if m2:
+                recs.append(DependencyRecord(
+                    name=m2.group(1), version=m2.group(2),
+                    manager="gem", source_file=rel,
+                ))
+        return recs
+
+    # ── Cargo (Rust) ─────────────────────────────────────────────────────────
+    def _parse_cargo_toml(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        content = open(fpath, encoding="utf-8", errors="replace").read()
+        recs = []
+        in_deps = False
+        in_dev  = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped in ("[dependencies]", "[workspace.dependencies]"):
+                in_deps, in_dev = True, False
+            elif stripped in ("[dev-dependencies]", "[build-dependencies]"):
+                in_deps, in_dev = True, True
+            elif stripped.startswith("["):
+                in_deps = False
+            elif in_deps:
+                m = re.match(r'([A-Za-z0-9_\-]+)\s*=\s*["\']?([^"\'#\n]+)["\']?', stripped)
+                if m:
+                    recs.append(DependencyRecord(
+                        name=m.group(1), version=m.group(2).strip().strip('"\''),
+                        manager="cargo", source_file=rel, dev_only=in_dev,
+                    ))
+        return recs
+
+    # ── Go modules ────────────────────────────────────────────────────────────
+    def _parse_go_mod(self, fpath: str, rel: str) -> List[DependencyRecord]:
+        recs = []
+        for line in open(fpath, encoding="utf-8", errors="replace"):
+            m = re.match(r"\s*([a-zA-Z0-9_.\-/]+)\s+(v[^\s]+)", line.strip())
+            if m and not line.strip().startswith("//") and not line.strip().startswith("module"):
+                recs.append(DependencyRecord(
+                    name=m.group(1), version=m.group(2),
+                    manager="go", source_file=rel,
+                ))
+        return recs
+
+
 # ─────────────────────────── Universal Engine ─────────────────────────────────
 
 class UniversalEngine:
     """
-    Orchestrates all three capabilities:
-      SourceCodeIntelligence, VulnerabilityIntelligence, RemediationEngine.
+    Orchestrates all five capabilities:
+      SourceCodeIntelligence, VulnerabilityIntelligence, CveIntelligence,
+      DependencyAnalysis, RemediationEngine.
 
     Public entry points:
       .analyze_request_error(...)    — fix a failed HTTP request
       .analyze_process_error(...)    — reason about a failed process
       .assess_security(...)          — static security analysis of source
+      .profile_cve(...)             — reason about a CVE description
+      .analyze_dependencies(...)    — inventory a project's dependencies
     """
 
     def __init__(self):
-        self.source_intel = SourceCodeIntelligence()
-        self.vuln_intel   = VulnerabilityIntelligence()
-        self.remediation  = RemediationEngine(self.source_intel)
+        self.source_intel  = SourceCodeIntelligence()
+        self.vuln_intel    = VulnerabilityIntelligence()
+        self.cve_intel     = CveIntelligence()
+        self.dep_analysis  = DependencyAnalysis()
+        self.remediation   = RemediationEngine(self.source_intel)
 
     def analyze_request_error(
         self,
@@ -792,3 +1193,34 @@ class UniversalEngine:
     ) -> List[SecurityFinding]:
         """Static security analysis of source_dir. Returns findings with evidence."""
         return self.vuln_intel.analyze_auth_flow(source_dir, endpoint)
+
+    def profile_cve(
+        self,
+        cve_id_or_description: str,
+        fetch_nvd: bool = True,
+        timeout: float = 20.0,
+    ) -> CveProfile:
+        """
+        Reason about a CVE: classify vuln class, extract component/version/endpoint hints.
+        If cve_id_or_description looks like a CVE ID and fetch_nvd=True, fetches from NVD.
+        Otherwise (or on network error), analyzes the description text directly.
+        """
+        is_id = bool(re.match(r"CVE-\d{4}-\d{4,}$", cve_id_or_description.strip(), re.I))
+        if is_id and fetch_nvd:
+            profile = self.cve_intel.profile_from_nvd(
+                cve_id_or_description.strip().upper(), timeout=timeout
+            )
+            if profile:
+                return profile
+        return self.cve_intel.profile_from_description(cve_id_or_description)
+
+    def analyze_dependencies(
+        self,
+        source_dir: str,
+        max_depth: int = 4,
+    ) -> DependencyReport:
+        """
+        Parse all dependency manifests in source_dir and return a structured inventory.
+        Covers npm, pip, composer, maven, bundler, cargo, go modules.
+        """
+        return self.dep_analysis.analyze(source_dir, max_depth=max_depth)
