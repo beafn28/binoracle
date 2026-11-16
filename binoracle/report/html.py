@@ -2860,8 +2860,8 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
     # ── Ensamblado ────────────────────────────────────────────────────────────
     conf_txt = ("CONFIDENCIAL — SOLO PARA OBJETIVOS AUTORIZADOS (PENTEST / CTF / LABORATORIO)"
                 if es else "CONFIDENTIAL — AUTHORIZED TARGETS ONLY (PENTEST / CTF / LAB)")
-    heading_eyebrow = ("INFORME DE VULNERABILIDAD — BINORACLE · " + generated_long.upper()
-                       if es else "VULNERABILITY REPORT — BINORACLE · " + generated_long.upper())
+    heading_eyebrow = ("INFORME DE VULNERABILIDAD — bin0racle · " + generated_long.upper()
+                       if es else "VULNERABILITY REPORT — bin0racle · " + generated_long.upper())
 
     # CVSS pill en el hero
     cvss_pill = ""
@@ -2875,14 +2875,14 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
         "<!doctype html>"
         f"<html lang='{lang}'><head>"
         "<meta charset='utf-8'>"
-        f"<title>{_esc(cve or 'binoracle')} — binoracle</title>"
+        f"<title>{_esc(cve or 'bin0racle')} — bin0racle</title>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         + css + js + "</head><body>"
     )
 
     topbar = (
         '<div class="topbar">'
-        '<div class="tb-brand"><span class="dot"></span>binoracle</div>'
+        '<div class="tb-brand"><span class="dot"></span>bin<span style="color:#f5a623">0</span>racle</div>'
         f'<span class="tb-cve">{_esc(cve or "")}</span>'
         '<div class="tb-spacer"></div>'
         f'<span class="tb-meta">{_esc(generated_short)}</span>'
@@ -3188,7 +3188,7 @@ def render_html(binary: str, triage=None, findings: Optional[List[Finding]] = No
     i18n = _json.dumps(_I18N)
 
     header_html = "" if embed else f'''<header>
-  <div class="brand"><span class="dot"></span> binoracle <em data-i18n="subtitle"></em></div>
+  <div class="brand"><span class="dot"></span> bin<span style="color:#f5a623">0</span>racle <em data-i18n="subtitle"></em></div>
   <div class="hmeta"><code>{_esc(binary)}</code> &middot; {ts}</div>
   <div class="controls">
     <button id="lang" class="ctl" onclick="toggleLang()">EN</button>

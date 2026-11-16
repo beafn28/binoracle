@@ -1420,10 +1420,39 @@ def cmd_cve(args, config):
     _ac = "\033[1;96m" if _use_col else ""   # cyan brillante
     _mc = "\033[1;35m" if _use_col else ""   # magenta → CVE ID
     _gc = "\033[1;32m" if _use_col else ""   # verde → OK
+    _oc = "\033[1;33m" if _use_col else ""   # ámbar → el "0" de bin0racle y hex values
     bar = "═" * 62
+    # Crystal ball ASCII art — refleja el logo bin0racle (esfera + pedestal + nombre)
+    if _use_col:
+        _cb = [
+            f"{_ac}╭───────────╮{_r}",
+            f"{_ac}│{_r} 1001 {_oc}0xE9{_r} {_ac}│{_r}",
+            f"{_ac}│{_r} 0110  1011 {_ac}│{_r}",
+            f"{_ac}│{_r} {_oc}RCE{_r}  0101 {_ac}│{_r}",
+            f"{_ac}│{_r} 1100 {_oc}0x90{_r} {_ac}│{_r}",
+            f"{_ac}╰─────┬─────╯{_r}",
+            f"      {_ac}═╧═{_r}      ",
+        ]
+        _name = f"{_b}bin{_r}{_oc}{_b}0{_r}{_ac}{_b}racle{_r}"
+    else:
+        _cb = [
+            "╭───────────╮",
+            "│ 1001  0xE9│",
+            "│ 0110  1011│",
+            "│ RCE   0101│",
+            "│ 1100  0x90│",
+            "╰─────┬─────╯",
+            "      ═╧═    ",
+        ]
+        _name = "bin0racle"
     print(f"\n{_ac}╔{bar}╗{_r}")
-    print(f"{_ac}║{_r}  {_d}◈{_r} {_b}BINORACLE{_r}  {_d}·{_r}  {_mc}{_b}{cve_id}{_r}"
-          f"  {_d}·{_r}  {_d}investigación autónoma{_r}")
+    print(f"{_ac}║{_r}  {_cb[0]}  {_name}")
+    print(f"{_ac}║{_r}  {_cb[1]}  {_d}oracle de investigación CVE autónoma{_r}")
+    print(f"{_ac}║{_r}  {_cb[2]}  {_mc}{_b}{cve_id}{_r}  {_d}·  investigación autónoma{_r}")
+    print(f"{_ac}║{_r}  {_cb[3]}")
+    print(f"{_ac}║{_r}  {_cb[4]}")
+    print(f"{_ac}║{_r}  {_cb[5]}")
+    print(f"{_ac}║{_r}  {_cb[6]}")
     print(f"{_ac}╚{bar}╝{_r}\n")
 
     t_start = _time.time()
