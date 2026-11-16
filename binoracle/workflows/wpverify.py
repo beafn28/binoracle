@@ -2780,6 +2780,9 @@ def verify_wordpress_sqli(
     extra_nonce_pages: Optional[list] = None,
     extra_setup_trigger_paths: Optional[list] = None,
     keep_lab_on_failure: bool = False,
+    _live_boot: Optional["_LabSession"] = None,
+    _boot_ref: Optional[list] = None,
+    _lab_ref: Optional[list] = None,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -2909,14 +2912,26 @@ def verify_wordpress_sqli(
         # "Wrong Nonce" aunque el parametro/payload sean correctos. relationship_table, en
         # cambio, solo tiene sentido cuando se ataca la propia pagina del shortcode (ver mas
         # abajo), asi que sigue atado a ese caso.
-        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
-                              setup_wp_options=setup_wp_options,
-                              companion_plugins=companion_plugins,
-                              shortcode_name=shortcode_name,
-                              relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
-                              extra_setup_trigger_paths=extra_setup_trigger_paths)
-        if boot is None:
-            return res
+        if _live_boot is not None:
+            # Persistent-lab fast path: reuse an already-bootstrapped lab session.
+            # Docker containers stay alive; only the probe logic re-runs.
+            # WP_DEBUG_DISPLAY is set right after this block so it still runs
+            # (idempotent — harmless to repeat on each retry).
+            boot = _live_boot
+        else:
+            boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                                  setup_wp_options=setup_wp_options,
+                                  companion_plugins=companion_plugins,
+                                  shortcode_name=shortcode_name,
+                                  relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
+                                  extra_setup_trigger_paths=extra_setup_trigger_paths)
+            if boot is None:
+                return res
+            # Expose boot + lab to caller for persistent-lab mode
+            if _boot_ref is not None:
+                _boot_ref.append(boot)
+            if _lab_ref is not None:
+                _lab_ref.append(lab)
         # WP_DEBUG_DISPLAY se activa AQUI, DESPUES de que el login del subscriber ya haya
         # funcionado -- no en _bootstrap_lab (antes del login). Bug real encontrado en vivo,
         # CVE-2024-1071 (Ultimate Member), en una demo real: activarlo DESDE el bootstrap
@@ -3440,7 +3455,10 @@ def verify_wordpress_sqli(
         res.detail = f"error inesperado: {e}"
         return res
     finally:
-        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+        # _live_boot: we borrowed the lab, caller owns teardown — don't touch it.
+        # _lab_ref is not None: caller requested deferred teardown — skip for now.
+        if _live_boot is None and _lab_ref is None:
+            _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
 def verify_wordpress_ssrf(

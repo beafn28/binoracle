@@ -390,7 +390,7 @@ _REFINE_SYS = (
 # "una pista mas" indefinidamente sin confirmar nada de verdad. Compartido por CUALQUIER
 # verificador que use el bucle de reintento (no solo SQLi, el nombre se queda por compatibilidad
 # con el primero que lo uso).
-_SQLI_RETRY_MAX_ATTEMPTS = 3
+_SQLI_RETRY_MAX_ATTEMPTS = 8   # cheap now: retries reuse the same Docker lab
 _RETRY_MAX_ATTEMPTS = _SQLI_RETRY_MAX_ATTEMPTS
 
 _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
@@ -620,7 +620,8 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
 def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_keys: dict,
                              attempt_fn, wr: Any, endpoint, param,
                              technique_label: str = "", max_attempts: int = _RETRY_MAX_ATTEMPTS,
-                             on_suggestion: Optional[Callable[[dict], None]] = None
+                             on_suggestion: Optional[Callable[[dict], None]] = None,
+                             ere_nonce_pages: Optional[List[str]] = None,
                              ) -> Any:
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
@@ -642,8 +643,39 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     for attempt_n in range(1, max_attempts):
         if wr.verified or not wr.available:
             break
-        suggestion = _llm_suggest_retry_from_evidence(llm, system_prompt, wr, evidence_keys,
-                                                      technique_label=technique_label)
+        # Fast first-pass: ExploitReasoningEngine (~100ms, no LLM).
+        # Only bypasses LLM when ERE has high confidence AND can produce a
+        # concrete fix (currently: NONCE_MISMATCH and AUTH_GATE_FIRED).
+        suggestion = None
+        _ere_skipped_llm = False
+        try:
+            from .engine import ExploitReasoningEngine as _ERE
+            _ctrl_body = wr.evidence.get("respuesta_control_recorte", "")
+            if _ctrl_body:
+                _ere_analysis = _ERE().analyze_response(
+                    _ctrl_body, status_code=200, vuln_class="sqli")
+                if (_ere_analysis.best
+                        and _ere_analysis.best.confidence >= 0.70
+                        and not _ere_analysis.succeeded):
+                    _ere_sug = _ere_hypothesis_to_suggestion(
+                        _ere_analysis.best, list(ere_nonce_pages or []))
+                    if _ere_sug:
+                        suggestion = _ere_sug
+                        _ere_skipped_llm = True
+                        _chain = _ere_analysis.best.chain
+                        _conf = _ere_analysis.best.confidence
+                        _hint = _ere_analysis.best.fix_hint[:100]
+                        step((f"ExploitReasoningEngine: {_chain} "
+                              f"(conf={_conf:.0%}) -- {_hint}") if es else
+                             (f"ExploitReasoningEngine: {_chain} "
+                              f"(conf={_conf:.0%}) -- {_hint}"))
+        except Exception:
+            pass
+
+        if not _ere_skipped_llm:
+            suggestion = _llm_suggest_retry_from_evidence(
+                llm, system_prompt, wr, evidence_keys,
+                technique_label=technique_label)
         if not suggestion:
             break
         if on_suggestion is not None:
@@ -715,6 +747,18 @@ def _apply_generic_wp_suggestion(sug: dict, extra_nonce_pages: list,
             params.setdefault(extra_p, "1")
         elif extra_p not in params:
             params.append(extra_p)
+
+
+def _ere_hypothesis_to_suggestion(hyp: Any, extra_nonce_pages: list) -> Optional[dict]:
+    """Fast path: convert an ExploitHypothesis from ExploitReasoningEngine to a
+    suggestion dict without calling the LLM (~100ms vs ~15s for Ollama).
+    Returns None when ERE cannot produce an actionable fix — caller falls back
+    to _llm_suggest_retry_from_evidence."""
+    try:
+        from .engine import ExploitReasoningEngine as _ERE
+        return _ERE().hypothesis_to_wp_suggestion(hyp, extra_nonce_pages)
+    except Exception:
+        return None
 
 
 def _looks_like_drupal_module(local_path: str, plugin_dir: str) -> bool:
@@ -4234,6 +4278,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _sqli_ep = notes.get("endpoint") or ""
                 _sqli_http_method = ("POST" if "admin-ajax" in _sqli_ep
                                      else notes.get("http_method") or "GET")
+                # Persistent-lab refs: first call populates these; retries reuse them.
+                # The lab (Docker containers) stays alive across all retries and is
+                # torn down explicitly after _run_evidence_retry_loop completes.
+                _sqli_boot_ref: List[Any] = []
+                _sqli_lab_ref:  List[Any] = []
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, _sqli_ep,
                     _sqli_http_method, params,
@@ -4241,7 +4290,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     setup_wp_options=notes.get("setup_options") or [],
                     companion_plugins=companion_plugins, shortcode_name=shortcode_name,
                     relationship_table=relationship_table,
-                    keep_lab_on_failure=keep_lab_on_failure)
+                    keep_lab_on_failure=keep_lab_on_failure,
+                    _boot_ref=_sqli_boot_ref,
+                    _lab_ref=_sqli_lab_ref)
                 # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
@@ -4250,18 +4301,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # _SQLI_RETRY_MAX_ATTEMPTS intentos en total, no infinito): cada iteracion para en
                 # cuanto se confirma, o en cuanto el LLM deja de ver ninguna pista nueva en la
                 # evidencia del ultimo intento -- nunca un reintento a ciegas sin base real.
-                # si "Wrong Nonce"/similar persiste a pesar de que verify_wordpress_sqli YA
-                # rasca el nonce de TODAS las paginas publicadas del sitio (ver wpverify.py,
-                # _list_real_page_urls), es que esta en una pagina que esa enumeracion no cubrio
-                # -- se le da al LLM la oportunidad de señalar una pagina CONCRETA (por el
-                # README/nombre del PoC publico, nunca inventada) para que se pruebe tambien en
-                # el siguiente intento, en vez de rendirse solo porque el scraping determinista
-                # no la encontro.
-                # igual que arriba, pero para cuando el sintoma es "el plugin no muestra NADA de
-                # si mismo en ninguna pagina" (ver 'nonce_scraping_diagnostico' en la evidencia) --
-                # el LLM puede reconocer que ESTE plugin exige un paso de configuracion propio
-                # (confirmado en vivo, Ultimate Member/CVE-2024-1071) y señalar la URL de admin
-                # que lo dispara, sin que binoracle tenga que conocer ya ese plugin de antemano.
+                # Cada reintento ahora REUTILIZA el mismo laboratorio Docker levantado por el
+                # primer intento (no teardown + nuevo bootstrap): el coste por reintento baja de
+                # ~87s a ~2-3s, lo que permite subir el limite a 8 sin que el tiempo total crezca.
+                # ExploitReasoningEngine actua como primera capa de diagnostico (~100ms, sin LLM)
+                # para señales de alta confianza (Wrong Nonce, auth gate); el LLM se reserva para
+                # casos ambiguos.
                 extra_nonce_pages: List[str] = []
                 extra_setup_trigger_paths: List[str] = []
                 def _on_sqli_suggestion(sug):
@@ -4270,6 +4315,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 def _attempt_sqli(ep, pr):
                     _ep_method = ("POST" if "admin-ajax" in (ep or "")
                                   else notes.get("http_method") or "GET")
+                    # Pass _live_boot to skip Docker bootstrap on retries.
+                    # If the first attempt failed before bootstrap completed
+                    # (_sqli_boot_ref is empty), fall back to full bootstrap.
+                    _live = _sqli_boot_ref[0] if _sqli_boot_ref else None
                     return verify_wordpress_sqli(
                         fr.local_path, plugin_dir, ep, _ep_method, params,
                         sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
@@ -4277,12 +4326,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name,
                         relationship_table=relationship_table,
                         extra_nonce_pages=list(extra_nonce_pages),
-                        extra_setup_trigger_paths=list(extra_setup_trigger_paths))
+                        extra_setup_trigger_paths=list(extra_setup_trigger_paths),
+                        _live_boot=_live)
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
-                        max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion))
+                        max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
+                        ere_nonce_pages=extra_nonce_pages))
+                # Teardown the persistent lab now that all retries are done.
+                # _lab_ref[0] is the _Lab object; _boot_ref[0] is the _LabSession.
+                # If the first attempt failed before bootstrap, refs are empty — no-op.
+                if _sqli_lab_ref and _sqli_boot_ref and not keep_lab_on_failure:
+                    try:
+                        from .wpverify import _finalize_lab as _wp_finalize
+                        _wp_finalize(_sqli_lab_ref[0], _sqli_boot_ref[0],
+                                     wr, step, keep_lab_on_failure)
+                    except Exception:
+                        pass
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}

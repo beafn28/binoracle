@@ -1193,6 +1193,29 @@ class ExploitAnalysis:
     raw_response: str = ""
 
 
+@dataclass
+class SourceAnalysisHint:
+    """
+    Structured output of static source analysis performed BEFORE the first probe.
+
+    Feeds into lab bootstrap so the engine can pre-configure gating conditions
+    (e.g. a WP option that enables the vulnerable code path) that would otherwise
+    be discovered only through failed probe attempts.
+    """
+    gating_options: Dict[str, str] = field(default_factory=dict)
+    # e.g. {"member_directory_own_table": "1"} — applied via wp-cli option patch
+    required_session: str = "subscriber"
+    # "anonymous" | "subscriber" | "admin"
+    injection_context: str = ""
+    # "ORDER BY" | "WHERE" | "HAVING" | "INSERT" | "UPDATE" | ""
+    anon_guard_patterns: List[str] = field(default_factory=list)
+    # PHP function names that force anonymous session (e.g. predefined_no_caps)
+    setup_admin_paths: List[str] = field(default_factory=list)
+    # WP-admin URLs to visit during bootstrap to activate the plugin's features
+    confidence: float = 0.0
+    evidence: List[str] = field(default_factory=list)
+
+
 class ExploitReasoningEngine:
     """
     Reasons about failed exploit attempts from HTTP/process responses.
@@ -1274,6 +1297,48 @@ class ExploitReasoningEngine:
          "INJECTION_CONTEXT", 0.80,
          "timeout detected — time-based blind injection likely landed; "
          "confirm with a CASE WHEN (1=1) THEN SLEEP(N) ELSE 0 END conditional pair"),
+
+        # RESOURCE_NOT_FOUND — WordPress object resolution failures
+        (r"\b(?:invalid\s+post\s+id|post\s+not\s+found|page\s+not\s+found|"
+         r"term\s+not\s+found|attachment\s+not\s+found|no\s+results\s+found|"
+         r"\"total_users\":\s*0|\"users\":\s*\[\s*\])\b",
+         "RESOURCE_NOT_FOUND", 0.75,
+         "WordPress object (post/page/term/user) not found — verify the resource ID "
+         "resolves to an existing object; check hash/ID mapping"),
+
+        # AUTH_GATE_FIRED — additional WordPress / REST guards
+        (r"\b(?:rest_forbidden|rest_cannot_access|rest_user_cannot_edit|"
+         r"rest_not_logged_in|rest_login_required|woocommerce_rest_cannot_view|"
+         r"you\s+must\s+be\s+logged\s+in|please\s+log\s+in)\b",
+         "AUTH_GATE_FIRED", 0.88,
+         "REST API auth guard fired — provide a valid auth token (cookie or Application Password)"),
+
+        # INJECTION_CONTEXT — PostgreSQL error signatures
+        (r"\b(?:pg_query|psql\s+error|pdo.*pgsql|ERROR:\s+syntax\s+error\s+at\s+or\s+near|"
+         r"unterminated\s+quoted\s+string|invalid\s+input\s+syntax\s+for\s+type)\b",
+         "INJECTION_CONTEXT", 0.80,
+         "PostgreSQL error signature — adapt payload syntax: use $$ quoting, "
+         "CAST(), and avoid MySQL-specific functions"),
+
+        # INJECTION_CONTEXT — MSSQL / SQL Server error signatures
+        (r"\b(?:unclosed\s+quotation\s+mark|incorrect\s+syntax\s+near|"
+         r"conversion\s+failed\s+when\s+converting|mssql|sqlsrv)\b",
+         "INJECTION_CONTEXT", 0.80,
+         "MSSQL/SQL Server error — adapt payload: use WAITFOR DELAY, TOP/NOLOCK hints, "
+         "and stacked queries with semicolons"),
+
+        # FRAMEWORK_PROTECTION — ORM layer may already be parameterizing the query
+        (r"\b(?:sequelize|typeorm|eloquent|knex|prisma|doctrine|hibernate|"
+         r"active_record|django\.db|sqlalchemy)\b",
+         "FRAMEWORK_PROTECTION", 0.70,
+         "ORM framework name in response — injection may be parameterized at the ORM level; "
+         "look for raw() / execute() / annotate() calls that bypass the ORM"),
+
+        # INJECTION_CONTEXT — generic invalid input / payload broke parsing before SQL
+        (r"\b(?:invalid\s+input|malformed\s+request|bad\s+request|400\s+bad\s+request)\b",
+         "INJECTION_CONTEXT", 0.55,
+         "Invalid input response — payload may have broken request parsing before reaching SQL; "
+         "try URL-encoding or reducing payload complexity"),
     ]
 
     # Signals derived from HTTP status code alone
@@ -1404,6 +1469,185 @@ class ExploitReasoningEngine:
                 f"fix: {h.fix_hint}"
             )
         return "Top hypotheses for why payload failed:\n" + "\n".join(lines)
+
+    def analyze_plugin_source(
+        self,
+        source_dir: str,
+        slug: str = "",
+    ) -> SourceAnalysisHint:
+        """
+        Read PHP/Python/Node plugin source and extract pre-probe configuration hints.
+
+        Runs BEFORE the first probe so the lab bootstrap can pre-configure gating
+        options the engine would otherwise discover only through failed attempts
+        (e.g. member_directory_own_table=1 for CVE-2024-1071).  Pure static pattern
+        matching — no code execution, no network.
+        """
+        import os as _os
+        import glob as _glob
+
+        hint = SourceAnalysisHint()
+        if not _os.path.isdir(source_dir):
+            return hint
+
+        evidence: List[str] = []
+
+        # Collect PHP files; cap at 200 to keep latency bounded
+        php_files = _glob.glob(_os.path.join(source_dir, "**", "*.php"),
+                               recursive=True)[:200]
+        all_source = ""
+        for fp in php_files:
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                    all_source += fh.read(8192) + "\n"
+            except Exception:
+                pass
+
+        if not all_source:
+            return hint
+
+        # 1. Gating options — get_option('key') inside a conditional
+        for m in re.finditer(
+            r"get_option\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", all_source, re.I
+        ):
+            opt_name = m.group(1)
+            snippet = all_source[max(0, m.start() - 120): m.end() + 120]
+            if re.search(r"\b(?:if|while|&&|\|\|)\b", snippet):
+                val_m = re.search(r"(?:==|===)\s*['\"]?([01])['\"]?", snippet)
+                expected = val_m.group(1) if val_m else "1"
+                # Skip generic WP core options
+                if not re.match(
+                    r"^(?:blog|site|admin|template|active_plugins|upload|"
+                    r"blogname|siteurl|home|timezone|charset|lang)$",
+                    opt_name, re.I
+                ):
+                    if opt_name not in hint.gating_options:
+                        hint.gating_options[opt_name] = expected
+                        evidence.append(
+                            f"gating_option: {opt_name}={expected} "
+                            f"(near: {snippet[:60]!r})"
+                        )
+
+        # 2. Array sub-key access that gates a code path
+        for m in re.finditer(
+            r"\$(?:options?|settings?|config)\s*\[\s*['\"]([^'\"]+)['\"]\s*\]",
+            all_source, re.I
+        ):
+            opt_name = m.group(1)
+            snippet = all_source[max(0, m.start() - 80): m.end() + 80]
+            if re.search(r"\b(?:if|while|&&|\|\|)\b", snippet):
+                if not re.match(
+                    r"^(?:blog|site|admin|template|active|upload|home|lang)$",
+                    opt_name, re.I
+                ) and opt_name not in hint.gating_options:
+                    hint.gating_options[opt_name] = "1"
+                    evidence.append(
+                        f"gating_array_key: {opt_name} (near: {snippet[:60]!r})"
+                    )
+
+        # 3. Anonymous session guard patterns
+        anon_guards = [
+            "predefined_no_caps", "can_view_all", "is_user_logged_in",
+            "current_user_can", "wp_verify_nonce",
+        ]
+        for guard in anon_guards:
+            if re.search(r"\b" + re.escape(guard) + r"\b", all_source):
+                for gm in list(re.finditer(re.escape(guard), all_source))[:3]:
+                    snip = all_source[max(0, gm.start() - 200): gm.end() + 200]
+                    if re.search(r"\b(?:return|wp_die|wp_send_json_error)\b", snip):
+                        hint.anon_guard_patterns.append(guard)
+                        evidence.append(f"anon_guard: {guard} with early return")
+                        break
+
+        if any(g in hint.anon_guard_patterns
+               for g in ("predefined_no_caps", "can_view_all")):
+            hint.required_session = "anonymous"
+            evidence.append(
+                "required_session=anonymous (predefined_no_caps/can_view_all)"
+            )
+
+        # 4. Injection context — ORDER BY vs WHERE raw interpolation
+        orderby_m = re.search(
+            r"ORDER\s+BY\s+[^;\"']{0,30}"
+            r"\$(?:this->)?(?:sql_order|orderby|sortby|order_field|sort_field"
+            r"|sort_col|column)\b",
+            all_source, re.I
+        )
+        if orderby_m:
+            hint.injection_context = "ORDER BY"
+            evidence.append(
+                f"ORDER BY raw interpolation: {orderby_m.group(0)!r}"
+            )
+        else:
+            where_m = re.search(
+                r"WHERE\s+[^;]{0,80}"
+                r"\$(?:wpdb->prepare\s*\()?[a-z_]+\s*[=<>]",
+                all_source, re.I
+            )
+            if where_m:
+                hint.injection_context = "WHERE"
+                evidence.append(
+                    f"WHERE raw interpolation: {where_m.group(0)!r}"
+                )
+
+        # 5. Admin setup paths — custom WP admin pages this plugin registers
+        admin_paths: set = set()
+        for m in re.finditer(
+            r"admin\.php\?page=([a-z0-9_\-]+)(?:&[a-z0-9_=\-&%]+)?",
+            all_source, re.I
+        ):
+            admin_paths.add(f"/wp-admin/admin.php?page={m.group(1)}")
+        hint.setup_admin_paths = list(admin_paths)[:5]
+        if admin_paths:
+            evidence.append(f"setup_admin_paths: {list(admin_paths)[:3]}")
+
+        hint.evidence = evidence[:20]
+        hint.confidence = min(0.95, 0.3 + 0.1 * len(evidence))
+        return hint
+
+    def hypothesis_to_wp_suggestion(
+        self,
+        hyp: ExploitHypothesis,
+        extra_nonce_pages: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Convert an ExploitHypothesis into the JSON suggestion dict expected by
+        _run_evidence_retry_loop / _apply_generic_wp_suggestion (cve_agent.py).
+
+        Returns None for chains where the LLM adds more value than pattern rules
+        (RESOURCE_NOT_FOUND, INJECTION_CONTEXT) — caller falls back to LLM.
+        """
+        extra_nonce_pages = extra_nonce_pages or []
+
+        if hyp.chain == "NONCE_MISMATCH":
+            nonce_page = (
+                "/register/"
+                if "/register/" not in extra_nonce_pages
+                else "/login/"
+            )
+            return {
+                "endpoint_alternativo": None,
+                "parametro_alternativo": None,
+                "pagina_extra_para_nonce": nonce_page,
+                "razon": (
+                    f"ExploitReasoningEngine [{hyp.chain} "
+                    f"conf={hyp.confidence:.0%}]: {hyp.fix_hint}"
+                ),
+            }
+
+        if hyp.chain == "AUTH_GATE_FIRED":
+            return {
+                "endpoint_alternativo": None,
+                "parametro_alternativo": None,
+                "razon": (
+                    f"ExploitReasoningEngine [{hyp.chain} "
+                    f"conf={hyp.confidence:.0%}]: {hyp.fix_hint}"
+                ),
+            }
+
+        # RESOURCE_NOT_FOUND and INJECTION_CONTEXT: LLM knows the specific
+        # resource ID scheme and endpoint — defer to it
+        return None
 
 
 # ─────────────────────── 4. CVE Intelligence ──────────────────────────────────
@@ -2591,6 +2835,19 @@ class UniversalEngine:
             blocker_description=blocker_description,
             source_snippets=source_snippets or [],
         )
+
+    def analyze_plugin_source(
+        self,
+        source_dir: str,
+        slug: str = "",
+    ) -> "SourceAnalysisHint":
+        """
+        Pre-probe static analysis of a plugin's source to discover gating conditions,
+        required session type, and raw-SQL injection context.  Run this BEFORE the
+        first probe so the lab bootstrap can apply the hints immediately — cutting
+        failed attempts caused by conditions that are readable from the source.
+        """
+        return self.exploit_reasoning.analyze_plugin_source(source_dir, slug)
 
     def analyze_process_error(
         self,
