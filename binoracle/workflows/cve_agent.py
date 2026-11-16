@@ -2909,6 +2909,66 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                  f"'{known_action}' en el codigo descargado" if es else
                                  f"no add_action registration for '{known_action}' was found in "
                                  f"the fetched source"))
+                            # Fallback: el LLM adivino un nombre de accion que no existe en el
+                            # codigo real -- escanear TODAS las acciones AJAX registradas y elegir
+                            # la mas similar al nombre propuesto por el LLM (distancia minima de
+                            # Levenshtein simplificada: se busca la que comparta mas fragmentos de
+                            # palabras). Si se encuentra una buena candidata, se actualiza el
+                            # endpoint para que la verificacion use la accion real.
+                            from .websource import find_all_ajax_actions
+                            all_actions = find_all_ajax_actions(fr.local_path)
+                            if all_actions:
+                                step((f"escaneando las {len(all_actions)} acciones AJAX reales "
+                                     f"del plugin para encontrar la mas parecida a "
+                                     f"'{known_action}'..." if es else
+                                     (f"scanning the {len(all_actions)} real AJAX actions of the "
+                                     f"plugin to find the closest match to '{known_action}'...")))
+                                # seleccionar la accion con mas palabras en comun con known_action
+                                _known_words = set(re.split(r'[_-]', known_action.lower()))
+                                def _score(act: str) -> int:
+                                    return len(set(re.split(r'[_-]', act.lower())) & _known_words)
+                                best = max(all_actions, key=_score)
+                                if _score(best) > 0:
+                                    step((f"accion AJAX mas parecida en el codigo real: "
+                                         f"'{best}' (coincidencia de palabras: "
+                                         f"{_score(best)}/{len(_known_words)}) -- "
+                                         f"actualizando endpoint" if es else
+                                         (f"closest AJAX action in the real code: '{best}' "
+                                         f"(word overlap: {_score(best)}/{len(_known_words)}) "
+                                         f"-- updating endpoint")))
+                                    # actualizar notes con la accion real
+                                    old_ep = notes.get("endpoint") or ""
+                                    if "action=" in old_ep:
+                                        import urllib.parse as _up
+                                        _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
+                                        _qs["action"] = best
+                                        _base = old_ep.split("?", 1)[0]
+                                        notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                    else:
+                                        notes["endpoint"] = (old_ep.rstrip("?&") +
+                                                             ("?" if "?" not in old_ep else "&") +
+                                                             f"action={best}")
+                                    notes["ajax_action"] = best
+                                    inv.llm_notes["ajax_action"] = best
+                                    inv.llm_notes["endpoint"] = notes["endpoint"]
+                                    # buscar el handler de la nueva accion para grounding
+                                    recovered2 = find_ajax_handler_function(fr.local_path, best)
+                                    if recovered2:
+                                        inv.source_grounding["found"] = {
+                                            recovered2["function"]: [recovered2["location"]]}
+                                        step((f"RECUPERADO: handler de '{best}' -> "
+                                             f"'{recovered2['function']}' en "
+                                             f"{recovered2['location']}" if es else
+                                             (f"RECOVERED: handler of '{best}' -> "
+                                             f"'{recovered2['function']}' at "
+                                             f"{recovered2['location']}")))
+                                else:
+                                    step((f"ninguna de las {len(all_actions)} acciones AJAX "
+                                         f"encontradas comparte palabras con '{known_action}' -- "
+                                         f"se mantiene la hipotesis original" if es else
+                                         (f"none of the {len(all_actions)} found AJAX actions "
+                                         f"shares words with '{known_action}' -- keeping original "
+                                         f"hypothesis")))
                 # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
                 # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
                 # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara
