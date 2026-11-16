@@ -655,16 +655,45 @@ class VulnerabilityIntelligence:
     ]
 
     # ── 4. Hardcoded secrets ─────────────────────────────────────────────────────
+    # Require the value to look like a real secret: ≥16 chars, not a PHP/JS variable ($x, x=)
+    # and not a bare identifier (letters only). Excludes `token=` in URL construction.
     _HARDCODED_PATTERNS: List[Tuple[str, str]] = [
-        (r"""(?:password|passwd|pwd|secret|api_key|apikey|token|credential)\s*=\s*['"][^'"]{8,100}['"]""",
+        # password/secret/api_key = "real-looking-value" (not a variable, not a template)
+        (r"""(?:password|passwd|pwd|secret_key|api_key|apikey|private_key|auth_secret)\s*[=:]\s*['"][A-Za-z0-9!@#$%^&*\-_+/]{16,100}['"]""",
          "hardcoded_credential"),
-        (r"""(?:sk-|pk-|Bearer\s)[A-Za-z0-9\-_]{20,}""",
+        # OpenAI / Stripe / GitHub PAT key patterns
+        (r"""(?:sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|pk_live_[A-Za-z0-9]{20,}|xox[bpoa]-[A-Za-z0-9\-]{20,})""",
          "hardcoded_api_key"),
-        (r"""(?:mysql|postgresql|postgres|mongodb)://[^@\s]{3,}:[^@\s]{3,}@""",
+        # DB connection string with credentials
+        (r"""(?:mysql|postgresql|postgres|mongodb)://[A-Za-z0-9_\-]{3,}:[A-Za-z0-9!@#$%^&*]{3,}@""",
          "hardcoded_db_connection_string"),
+        # Private key block
         (r"""-----BEGIN (?:RSA |EC )?PRIVATE KEY-----""",
          "embedded_private_key"),
     ]
+
+    # Directories to skip entirely for sink/XSS scanning (minified/bundled JS)
+    _SKIP_DIRS = frozenset((
+        "node_modules", ".git", "vendor", "__pycache__", ".venv", "venv",
+        "dist", "build", "public/assets", "assets",
+    ))
+    # File name patterns that indicate minified/compiled JS (skip innerHTML detection)
+    _MINIFIED_JS_RE = re.compile(r'[-.]min\.js$|[-.]bundle\.js$|[-\.]chunk\.js$')
+
+    def _is_minified(self, fpath: str) -> bool:
+        """True for minified/bundled JS files where innerHTML findings are almost always FP."""
+        fname = os.path.basename(fpath)
+        if self._MINIFIED_JS_RE.search(fname):
+            return True
+        # Heuristic: single-line JS file longer than 2000 chars
+        try:
+            with open(fpath, encoding="utf-8", errors="replace") as f:
+                first = f.read(4000)
+            if "\n" not in first[:3000] and len(first) >= 3000:
+                return True
+        except Exception:
+            pass
+        return False
 
     def scan_for_vulnerabilities(
         self,
@@ -682,8 +711,8 @@ class VulnerabilityIntelligence:
         source_exts = (".php", ".py", ".js", ".ts", ".java", ".rb", ".go", ".rs")
         file_count = 0
         for root, dirs, files in os.walk(source_dir):
-            dirs[:] = [d for d in dirs if d not in
-                       ("node_modules", ".git", "vendor", "__pycache__", ".venv", "venv")]
+            # Prune dirs that contain only build/vendor artefacts
+            dirs[:] = [d for d in dirs if d not in self._SKIP_DIRS]
             for fname in files:
                 if file_count >= max_files:
                     break
@@ -691,6 +720,7 @@ class VulnerabilityIntelligence:
                     continue
                 fpath = os.path.join(root, fname)
                 rel = os.path.relpath(fpath, source_dir)
+                is_minified = self._is_minified(fpath)
                 try:
                     content = open(fpath, encoding="utf-8", errors="replace").read()
                 except Exception:
@@ -730,7 +760,12 @@ class VulnerabilityIntelligence:
                         ))
 
                 # Mode 3: sinks without mitigation
-                for sink_pat, mitig_pat, vuln_class in self._SINK_PATTERNS:
+                # Skip innerHTML XSS detection in minified/bundled JS (too many FP)
+                active_sinks = [
+                    (sp, mp, vc) for sp, mp, vc in self._SINK_PATTERNS
+                    if not (is_minified and vc == "xss_dom_innerHTML")
+                ]
+                for sink_pat, mitig_pat, vuln_class in active_sinks:
                     for m in re.finditer(sink_pat, content, re.I | re.DOTALL):
                         window = content[max(0, m.start() - 50): m.start() + 600]
                         if mitig_pat and re.search(mitig_pat, window, re.I):

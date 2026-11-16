@@ -16,21 +16,6 @@
 
 ---
 
-Local LLM copilot for binary reverse engineering and exploitation, grounded on real
-analysis oracles.
-
-[![Python](https://img.shields.io/badge/python-%3E%3D3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-22C55E?style=for-the-badge)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-gh--pages-7C3AED?style=for-the-badge&logo=github&logoColor=white)](https://beafn28.github.io/binoracle/)
-[![Ollama](https://img.shields.io/badge/LLM-Ollama%20local-F97316?style=for-the-badge)](https://ollama.com)
-[![Docker](https://img.shields.io/badge/labs-Docker%20ephemeral-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
-
-[English](README.md) &middot; [Espanol](docs/README.es.md) &middot; [Documentation](https://beafn28.github.io/binoracle/) &middot; [Architecture](docs/assets/architecture.svg)
-
-</div>
-
----
-
 > **Legal notice** &mdash; binoracle is a research and educational tool.
 > All CVE labs run exclusively against Docker containers you provision locally.
 > Do not use this tool against systems you do not own or lack explicit written authorization to test.
