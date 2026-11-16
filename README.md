@@ -1,10 +1,23 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="binoracle" width="120" height="120">
+<img src="docs/assets/logo.svg" alt="binoracle" width="140" height="154">
 
 # binoracle
 
-**Local CVE exploit research and binary reverse engineering &mdash; fully autonomous, no data leaves your host**
+**Local CVE exploit research and binary reverse engineering — fully autonomous, no data leaves your host**
+
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22C55E?style=for-the-badge)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-gh--pages-7C3AED?style=for-the-badge&logo=github&logoColor=white)](https://beafn28.github.io/binoracle/)
+[![Ollama](https://img.shields.io/badge/LLM-Ollama%20local-F97316?style=for-the-badge)](https://ollama.com)
+[![Docker](https://img.shields.io/badge/labs-Docker%20ephemeral-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
+
+</div>
+
+---
+
+Local LLM copilot for binary reverse engineering and exploitation, grounded on real
+analysis oracles.
 
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22C55E?style=for-the-badge)](LICENSE)

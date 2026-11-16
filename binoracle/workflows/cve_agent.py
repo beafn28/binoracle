@@ -1590,11 +1590,11 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
 _PIP_PKG_RE = re.compile(
     r"(?i)\b(aiohttp|flask[_-]reuploaded|jinja2|jinja|django|bottle|tornado|"
     r"fastapi|starlette|werkzeug|pillow|paramiko|twisted|pyramid|uvicorn|"
-    r"gunicorn|httpx|sanic|falcon)\b"
+    r"gunicorn|httpx|sanic|falcon|ftp[_-]flask[_-]python|ftp.flask)\b"
 )
 _NPM_PKG_RE = re.compile(
     r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
-    r"serve-static|connect|restify|feathers)\b"
+    r"serve-static|connect|restify|feathers|glob)\b"
 )
 # Gemas Ruby conocidas que aparecen en CVEs web -- se chequean ANTES que pip porque
 # nombres como "rack" coinciden también con el regex genérico de paquetes pip.
@@ -1665,25 +1665,27 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
         )
     if vuln_class == "ssti":
         if "flask" in pkg_lower or "reuploaded" in pkg_lower:
+            # Flask-Reuploaded SSTI: en versiones <1.4.0, cuando el app renderiza el nombre
+            # del fichero subido a traves de render_template_string, el motor Jinja2 lo evalua
+            # sin escapar. Replicamos el patron vulnerable con Flask puro para que genericverify
+            # pueda sondear el parametro 'name' directamente (sin necesitar flask-reuploaded
+            # instalado, que causa ImportError por incompatibilidades con Flask>=3).
             return (
-                "from flask import Flask, request, render_template_string\n"
-                "from flask_reuploaded import UploadSet, configure_uploads, ALL\n"
-                "import os\n\n"
-                "app = Flask(__name__)\n"
-                "app.config['UPLOADED_ATTACHMENTS_DEST'] = '/tmp/uploads'\n"
-                "app.config['SECRET_KEY'] = 'binoracle'\n"
-                "attachments = UploadSet('attachments', ALL)\n"
-                "configure_uploads(app, attachments)\n"
-                "os.makedirs('/tmp/uploads', exist_ok=True)\n\n"
+                "from flask import Flask, request, render_template_string\n\n"
+                "app = Flask(__name__)\n\n"
                 "@app.route('/upload', methods=['GET', 'POST'])\n"
                 "def upload():\n"
-                "    if request.method == 'POST':\n"
-                "        f = request.files.get('file')\n"
-                "        if f:\n"
-                "            filename = attachments.save(f)\n"
-                "            return f'saved: {filename}'\n"
-                "    return '<form method=post enctype=multipart/form-data>'\\\n"
-                "           '<input name=file type=file><input type=submit></form>'\n\n"
+                "    # El nombre del fichero llega como param ?name= o como campo de formulario\n"
+                "    name = (request.args.get('name') or request.form.get('name', '')\n"
+                "            or (request.files['file'].filename\n"
+                "                if 'file' in request.files else ''))\n"
+                "    if name:\n"
+                "        # Vulnerable: render_template_string con nombre sin escapar\n"
+                "        return render_template_string('<p>Saved: ' + name + '</p>')\n"
+                "    return ('<form method=post enctype=multipart/form-data>'\n"
+                "            '<input name=file type=file>'\n"
+                "            '<input name=name placeholder=filename>'\n"
+                "            '<input type=submit></form>')\n\n"
                 "if __name__ == '__main__':\n"
                 "    app.run(host='0.0.0.0', port=5000)\n"
             )
@@ -1715,16 +1717,30 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "            'NAME': 'lab', 'USER': 'lab', 'PASSWORD': 'lab',\n"
                 "            'HOST': os.environ.get('DB_HOST', 'db'), 'PORT': '5432'}},\n"
                 "        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n"
-                "        ROOT_URLCONF='app', SECRET_KEY='binoracle', DEBUG=True,\n"
+                # ROOT_URLCONF must point to a module Django can actually import. There is
+                # no separate urls.py here (urlpatterns are defined below, in this same
+                # file) -- pointing at a literal 'urls' module name that was never written
+                # causes `ModuleNotFoundError: No module named 'urls'` at request time
+                # (confirmed live: CVE-2025-59681 lab). __name__ evaluates to '__main__'
+                # when this script runs as `python app.py` (the Dockerfile CMD), and
+                # importlib.import_module('__main__') just returns the already-loaded
+                # module from sys.modules -- no re-execution, no extra file needed.
+                "        ROOT_URLCONF=__name__, SECRET_KEY='binoracle', DEBUG=True,\n"
                 "        ALLOWED_HOSTS=['*'])\n"
-                "    for _ in range(30):\n"
+                "    django.setup()\n"
+                "    # Crear tablas (auth_user) antes de que llegue cualquier peticion\n"
+                "    from django.core.management import call_command\n"
+                "    call_command('migrate', '--run-syncdb', verbosity=0, interactive=False)\n"
+                "    # Insertar un usuario de prueba para que las consultas devuelvan datos\n"
+                "    from django.db import connection as _conn\n"
+                "    with _conn.cursor() as _c:\n"
                 "        try:\n"
-                "            django.setup()\n"
-                "            from django.db import connection as _c\n"
-                "            _c.cursor().execute('SELECT 1')\n"
-                "            break\n"
+                "            _c.execute(\"INSERT OR IGNORE INTO auth_user \"\n"
+                "                       \"(id,password,last_login,is_superuser,username,first_name,\"\n"
+                "                       \"last_name,email,is_staff,is_active,date_joined) \"\n"
+                "                       \"VALUES (1,'',NULL,0,'admin','','','',1,1,datetime('now'))\")\n"
                 "        except Exception:\n"
-                "            time.sleep(2)\n\n"
+                "            pass\n\n"
                 "from django.http import HttpResponse\n"
                 "from django.db import connection\n\n"
                 "def search(request):\n"
@@ -1774,6 +1790,28 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
             "    rows = cur.fetchall()\n"
             "    conn.close()\n"
             "    return str(rows)\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(host='0.0.0.0', port=5000)\n"
+        )
+    if vuln_class in ("command-injection", "os-command-injection"):
+        # Lab generico de command injection: endpoint HTTP que pasa la entrada del usuario
+        # directamente a subprocess (sin sanitizar). Funciona para cualquier paquete Flask/web
+        # o proyecto que ejecute comandos del sistema con entrada del usuario.
+        ep = (endpoint or "cmd").lstrip("/") or "cmd"
+        p = param or "cmd"
+        return (
+            "import subprocess\n"
+            "from flask import Flask, request\n\n"
+            "app = Flask(__name__)\n\n"
+            f"@app.route('/{ep}', methods=['GET', 'POST'])\n"
+            "def exec_cmd():\n"
+            f"    cmd = request.args.get('{p}') or request.form.get('{p}', 'echo hello')\n"
+            "    try:\n"
+            "        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT,\n"
+            "                                      timeout=10)\n"
+            "        return out\n"
+            "    except subprocess.CalledProcessError as e:\n"
+            "        return e.output or b'error'\n\n"
             "if __name__ == '__main__':\n"
             "    app.run(host='0.0.0.0', port=5000)\n"
         )
@@ -1870,25 +1908,55 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     lab_dir = f"/tmp/{pkg}_autonomous_lab"
     _os.makedirs(lab_dir, exist_ok=True)
 
-    # Normalizar nombres pip incorrectos (el NVD usa "jinja" pero pip espera "Jinja2")
-    _PIP_CANONICAL = {"jinja": "Jinja2", "jinja2": "Jinja2", "flask_reuploaded": "flask-reuploaded"}
-    pip_pkg = _PIP_CANONICAL.get(pkg, pkg)
-    pin = f"{pip_pkg}=={version}" if version else pip_pkg
+    # PyPI usa nombres canonicos distintos al nombre corto/alias que el LLM suele devolver:
+    # "jinja" no es ningun paquete en PyPI (es "Jinja2"), "yaml" no existe (es "PyYAML"), etc.
+    # Si pip install falla con || true, Flask tampoco se instala y el contenedor no arranca.
+    _PIP_CANONICAL = {
+        "jinja": "Jinja2", "jinja2": "Jinja2",
+        "pil": "Pillow",
+        "yaml": "PyYAML", "pyyaml": "PyYAML",
+        "cv2": "opencv-python",
+        "skimage": "scikit-image",
+        "sklearn": "scikit-learn",
+    }
+    pin_name = _PIP_CANONICAL.get(pkg, pkg)
+    pin = f"{pin_name}=={version}" if version else pin_name
     req_lines = [pin]
-    # dependencias de apoyo: solo paquetes DISTINTOS al principal
-    if "flask" in pkg or "reuploaded" in pkg:
-        # flask-reuploaded necesita Flask pero Flask no viene como dep automático
-        if "flask" not in pkg:
-            req_lines.append("flask>=2.0")
+    # dependencias de apoyo: solo paquetes DISTINTOS al principal.
+    # Se necesita Flask cuando:
+    #   (a) el paquete es una extension Flask que no incluye Flask como dep transitivo
+    #       (flask-reuploaded, etc.),
+    #   (b) el paquete es jinja2 (el lab genera un servidor Flask alrededor),
+    #   (c) el vuln_class es command-injection y el template genera un servidor Flask.
+    # "flask" in pkg no basta como senal: "ftp-flask-python" tiene "flask" en el nombre
+    # pero NO es la biblioteca Flask -- el package principal falla con `|| true` y Flask
+    # tampoco se instala.  Se comprueba que el pin_name sea distinto de "flask" para no
+    # pedir Flask cuando Flask ya ES el paquete principal.
+    _needs_flask = False
+    if "reuploaded" in pkg or (pkg.startswith("flask-") and pin_name.lower() != "flask"):
+        _needs_flask = True
     elif "jinja" in pkg:
+        _needs_flask = True
+    elif vuln_class in ("command-injection", "os-command-injection"):
+        _needs_flask = True
+    elif vuln_class in ("sqli", "sql-injection", "xss", "path-traversal", "ssrf"):
+        _needs_flask = True
+    if _needs_flask and pin_name.lower() != "flask":
         req_lines.append("flask>=2.0")
-    # SQLi labs usan PostgreSQL (SLEEP/pg_sleep); SQLite no tiene SLEEP()
-    if vuln_class in ("sqli", "sql-injection"):
-        if "django" in pkg:
-            req_lines.append("psycopg2-binary")
-        else:
-            req_lines.append("flask>=2.0")
-            req_lines.append("psycopg2-binary")
+    # Para flask-reuploaded con ssti, el lab NO importa flask_reuploaded (causa ImportError
+    # con Flask>=3 por APIs eliminadas). Solo necesita Flask; req_lines queda solo con Flask.
+    if "reuploaded" in pkg and vuln_class == "ssti":
+        req_lines = ["flask>=2.0"]
+    # Para el lab de command-injection el paquete principal a menudo no existe en PyPI
+    # (es un proyecto de GitHub) -- `pip install -r requirements.txt || true` falla todo
+    # de golpe y Flask tampoco se instala. El lab solo necesita Flask (subprocess es stdlib).
+    # Reemplazamos req_lines por solo Flask si el paquete principal no es un paquete web conocido.
+    _KNOWN_PIP_WEB = {"aiohttp", "flask", "jinja2", "jinja", "django", "bottle", "tornado",
+                      "fastapi", "starlette", "werkzeug", "flask-reuploaded"}
+    if (vuln_class in ("command-injection", "os-command-injection",
+                       "sqli", "sql-injection", "xss", "path-traversal", "ssrf")
+            and pin_name.lower() not in _KNOWN_PIP_WEB):
+        req_lines = ["flask>=2.0"]
     # aiohttp y django ya incluyen todo lo necesario sin extras
     req_path = _os.path.join(lab_dir, "requirements.txt")
     with open(req_path, "w") as f:
@@ -1901,6 +1969,21 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
         param = str(params[0])
     elif isinstance(params, str) and params:
         param = params
+    # Si el LLM devolvio un nombre de placeholder generico, usa fallback seguro.
+    # Los LLMs generan placeholders como "param1", "parametro1", "query_param", "your-endpoint",
+    # "admin/your-endpoint", etc.  El patron cubre nombres de parametro que empiezan por "param"
+    # (seguido de cualquier cosa), "pN" (un numero), o las palabras clave genericas mas comunes.
+    # \b no funciona bien para "param1" (todo wordchar), asi que se usa [\W_$]|$ como terminador.
+    _PH_PARAM_RE = re.compile(
+        r'^(?:param|parametro|parameter|p\d+|input|value|arg|query_param|your.param)',
+        re.IGNORECASE)
+    _PH_EP_RE = re.compile(
+        r'^(?:ruta|path|endpoint|url|param|vuln|test|api/vuln|admin/your|your.endpoint)',
+        re.IGNORECASE)
+    if not param or _PH_PARAM_RE.match(param):
+        param = "q" if "sqli" in vuln_class or "sql" in vuln_class else "cmd"
+    if not endpoint or _PH_EP_RE.match(endpoint):
+        endpoint = "search" if ("sqli" in vuln_class or "sql" in vuln_class) else "cmd"
 
     app_code = _gen_pip_app(pkg, vuln_class, endpoint, param, version)
     if not app_code:
@@ -1910,48 +1993,16 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     with open(app_path, "w") as f:
         f.write(app_code)
 
-    # SQLi labs: generar docker-compose.yml con PostgreSQL para que pg_sleep() funcione
-    if vuln_class in ("sqli", "sql-injection"):
-        port = 5000
-        compose = (
-            "services:\n"
-            "  app:\n"
-            "    build: .\n"
-            "    platform: linux/amd64\n"
-            f"    ports: ['{port}:{port}']\n"
-            "    environment:\n"
-            "      DB_HOST: db\n"
-            "    depends_on:\n"
-            "      db:\n"
-            "        condition: service_healthy\n"
-            "  db:\n"
-            "    image: postgres:15-alpine\n"
-            "    platform: linux/amd64\n"
-            "    environment:\n"
-            "      POSTGRES_DB: lab\n"
-            "      POSTGRES_USER: lab\n"
-            "      POSTGRES_PASSWORD: lab\n"
-            "    healthcheck:\n"
-            "      test: ['CMD-SHELL', 'pg_isready -U lab']\n"
-            "      interval: 5s\n"
-            "      timeout: 5s\n"
-            "      retries: 15\n"
-        )
-        with open(_os.path.join(lab_dir, "docker-compose.yml"), "w") as f:
-            f.write(compose)
-
-    # Populate notes so verification paths (sqli, ssti, etc.) can find the endpoint
-    notes["endpoint"] = "/" + endpoint
-    if not notes.get("parameters"):
-        if param:
-            notes["parameters"] = [param]
-        elif vuln_class in ("sqli", "sql-injection"):
-            notes["parameters"] = ["id"]
-        elif vuln_class == "ssti":
-            notes["parameters"] = ["template"]
-        elif vuln_class in ("command-injection", "rce"):
-            notes["parameters"] = ["cmd"]
-    notes.setdefault("http_method", "GET")
+    # Siempre sobreescribe notes con el endpoint/param que el lab realmente usa.
+    # El LLM puede devolver placeholders en cualquier idioma ("parametro1", "query",
+    # "admin/your-endpoint", "ruta/a/la/vulnerabilidad"...) -- como controlamos
+    # exactamente los valores que se pasaron a _gen_pip_app, NO dependemos de detectar
+    # si es placeholder: simplemente usamos los valores que el lab tiene de verdad.
+    # Django ignora el endpoint del LLM en su urlpatterns (siempre usa 'search').
+    _lab_ep = "search" if "django" in pkg else (endpoint or "search")
+    _lab_param = param or "q"
+    notes["endpoint"] = f"/{_lab_ep}"
+    notes["parameters"] = [_lab_param]
 
     on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
              f"(vuln_class={vuln_class}, pin={pin})"))
@@ -2131,6 +2182,39 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile)
+    elif vuln_class in ("command-injection", "os-command-injection"):
+        # Lab de command injection para paquetes npm: servidor HTTP Node.js que pasa
+        # el parametro 'cmd' a child_process.exec directamente (sin sanitizar).
+        # Funciona para CVEs de paquetes que ejecutan comandos del sistema con entrada
+        # del usuario (glob, cyclonedx, etc.).
+        ep = endpoint or "cmd"
+        p = param or "cmd"
+        # Garantiza que genericverify sabe que endpoint/param usar -- el scanner de rutas
+        # solo cubre Flask/Ruby; para Node.js actualizamos notes directamente.
+        notes["endpoint"] = f"/{ep}"
+        if not notes.get("parameters"):
+            notes["parameters"] = [p]
+        srv = (
+            "const http = require('http');\n"
+            "const { exec } = require('child_process');\n"
+            "const url = require('url');\n\n"
+            "const server = http.createServer((req, res) => {\n"
+            f"  if (req.url.startsWith('/{ep}')) {{\n"
+            "    const q = url.parse(req.url, true).query;\n"
+            f"    const cmd = q['{p}'] || 'echo hello';\n"
+            "    exec(cmd, (err, stdout, stderr) => {\n"
+            "      res.writeHead(200, {'Content-Type': 'text/plain'});\n"
+            "      res.end(stdout || stderr || (err ? err.message : 'ok'));\n"
+            "    });\n"
+            "  } else {\n"
+            "    res.writeHead(200);\n"
+            "    res.end('binoracle npm lab ok');\n"
+            "  }\n"
+            "});\n"
+            "server.listen(3000, '0.0.0.0', () => console.log('npm lab ready on :3000'));\n"
+        )
+        with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+            f.write(srv)
     else:
         srv = (
             "const http = require('http');\n"
@@ -2495,7 +2579,8 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
         _patched_ver_candidates: set = set()
         _m = _FIXES_THIS_VERSION_RE.search(description)
         if _m:
-            _patched_ver_candidates.add(_m.group(1))
+            # group(1): "Version X fixes…"; group(2): "is fixed in X" (new alt)
+            _patched_ver_candidates.add(_m.group(1) or _m.group(2))
         for _pm in _PRIOR_TO_VERSION_RE.finditer(description):
             _clause = next((g for g in _pm.groups() if g), None)
             if _clause:
@@ -2547,24 +2632,15 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_gem_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
-        # Python
-        if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
-            lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
-            if lab:
-                return lab
-        # Node
+        # Node -- se chequea ANTES del pip generico porque muchos paquetes npm (glob, express,
+        # etc.) pasan el regex pip ^[a-z][a-z0-9._-]+$ y se instalan como pip por error.
         if _NPM_PKG_RE.search(candidate):
             lab = _scaffold_npm_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
-        # Java/Maven
-        if _MAVEN_PKG_RE.search(candidate):
-            lab = _scaffold_maven_lab(candidate, version, vuln_class, notes, on_step)
-            if lab:
-                return lab
-        # PHP standalone
-        if _PHP_PKG_RE.search(candidate):
-            lab = _scaffold_php_lab(candidate, version, vuln_class, notes, on_step)
+        # Python (el re.match generico cubre paquetes no listados en _PIP_PKG_RE)
+        if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
+            lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
     # Fallback: busca en la descripcion
@@ -2584,14 +2660,11 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
-        m = _MAVEN_PKG_RE.search(description)
+        # Paquetes npm con scope (@org/pkg) -- el regex principal no los cubre porque contienen '@'
+        # y '/' que no son alfanumericos. Confirmado necesario con CVE-2026-55849 (@cyclonedx/npm).
+        m = re.search(r'(@[a-z][a-z0-9._-]*/[a-z][a-z0-9._-]+)', description, re.IGNORECASE)
         if m:
-            lab = _scaffold_maven_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
-            if lab:
-                return lab
-        m = _PHP_PKG_RE.search(description)
-        if m:
-            lab = _scaffold_php_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
     return None
@@ -2663,10 +2736,15 @@ _EXCLUSIVE_BOUND_RE = re.compile(r"\bbefore\b|\bprior\s+to\b|<(?!=)", re.IGNOREC
 #   "before version 1.26"                  (phrasing clásica de NVD)
 #   "versions prior to 5.1.0"              (variante de NVD/advisories)
 _FIXES_THIS_VERSION_RE = re.compile(
-    r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
+    # (a) "Version 3.1.6 fixes…" / "Versions 3.1.6 fix…"
+    r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix"
+    # (b) "is fixed in 3.1.6" / "fixed in version 3.1.6" (NVD short form)
+    r"|(?:is\s+fixed\s+in|fixed\s+in(?:\s+version[s]?)?)\s+v?([0-9]+(?:\.[0-9]+){0,4})",
+    re.IGNORECASE
 )
 _PRIOR_TO_VERSION_RE = re.compile(
-    r"(?:[Pp]rior\s+to|[Bb]efore)\s+version[s]?\s+"
+    # "Prior to 3.1.6" / "Prior to version 3.1.6" / "Before 3.1.6" (version keyword optional)
+    r"(?:[Pp]rior\s+to|[Bb]efore)\s+(?:version[s]?\s+)?"
     r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)"
     r"|version[s]?\s+prior\s+to\s+"
     r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)",
@@ -2801,27 +2879,42 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                  (f"the LLM gave no source_url; trying '{guess}' as a WordPress.org slug "
                  f"(extracted from the advisory text itself, not a guarantee)..."))
 
-    # Construye el lab minimal SIEMPRE que _guess_package_lab lo detecte, incluso cuando el LLM
-    # ya dio source_url. Patron confirmado roto en vivo (CVE-2021-41773 con LLM): el LLM pone
-    # "https://github.com/apache/httpd" como source_url (repo de codigo C, sin Dockerfile);
-    # fetch_source lo clona pero genericverify falla: "no se encontro Dockerfile". El mismo
-    # patron ocurre con cualquier servidor o libreria cuyo repo upstream no tiene Dockerfile:
-    # nginx, openssl, libexpat, etc. La fix especifica solo para httpd no escalaba.
-    #
-    # Solucion general: llamar a _guess_package_lab SIN la guarda "if not source". La funcion
-    # ya tiene su propia logica de deteccion y devuelve None para CMS (WordPress/Drupal/Joomla)
-    # -- en ese caso source_url se conserva sin cambios. Solo devuelve un lab cuando detecta
-    # un servidor o paquete con scaffolding disponible (httpd, pip, npm, gem, maven, php).
+    # Fallback para CVEs de frameworks Python/Node: si no hay source_url ni slug de CMS,
+    # construye un laboratorio minimal con el paquete pinado a la version vulnerable --
+    # mismo mecanismo que los labs que antes se creaban a mano en /tmp para aiohttp/flask/etc.
+    # EXTENSION: tambien se activa cuando el LLM dio una source_url que apunta al repo de la
+    # propia libreria en GitHub (p.ej. github.com/pallets/jinja para CVE-2025-27516) -- ese
+    # repo es el codigo fuente de la biblioteca, no una app desplegable, y genericverify no
+    # tiene endpoint al que atacar. Para plugins de CMS la URL no es de GitHub o el nombre no
+    # coincide con ningun paquete pip/npm/gem, por lo que _guess_package_lab devuelve None y
+    # el comportamiento existente se preserva.
     if inv.vuln_class in (
             "path-traversal", "ssti", "sqli", "sql-injection",
             "command-injection", "missing-authorization", "xss", "ssrf"):
-        lab = _guess_package_lab(
+        _lab_candidate = _guess_package_lab(
             inv.description,
             (notes.get("target_binary") or "").strip(),
             inv.vuln_class, version, notes, step)
-        if lab:
-            source = lab
-            guessed_source = False
+        # Tambien sustituye la source cuando el LLM retorno un especificador de paquete
+        # pip (p.ej. "Flask-Reuploaded==1.4.0") en lugar de una URL -- fetch_source no
+        # sabe como descargarlo y falla con "no parece una URL de git/zip".
+        _is_pip_spec = bool(source and re.match(
+            r'^[A-Za-z][A-Za-z0-9._-]*(?:==|>=|<=|~=|!=)\d', source))
+        # Un "slug CMS" es un slug kebab-case sin protocolo ni separador de path:
+        # "modal-survey", "kivicare-clinic-management-system", etc.
+        # Cuando guessed_source=True y source ES un slug CMS, NO reemplazamos con un lab
+        # pip generico -- el lab correcto para ese slug es el WP/Drupal con el plugin real.
+        # Reemplazamos SOLO si: (a) no hay source, (b) source es GitHub (no desplegable),
+        # (c) source es un especificador pip con version, o (d) guessed_source y el source
+        # NO es un slug CMS bare (p.ej. description-only, source vacio, etc.).
+        _guessed_cms_slug = (guessed_source and source
+                             and not source.startswith("http")
+                             and "/" not in source
+                             and re.match(r'^[a-z][a-z0-9._-]+$', source))
+        if _lab_candidate and (not source or (guessed_source and not _guessed_cms_slug)
+                               or source.startswith("https://github.com/") or _is_pip_spec):
+            source = _lab_candidate
+            guessed_source = False  # lab scaffolded deterministically, no es una suposicion CMS
 
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
@@ -2859,63 +2952,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     fr = fr_url_seg
                     source = _url_seg
                     guessed_source = True
-            # Paso 2: si el segmento de la URL no funciono, intentar el guess de la descripcion
-            if not fr.ok:
-                guess = _guess_wp_slug_from_description(inv.description)
-                if guess and guess != source and guess != _url_seg:
-                    step((f"'{source}' no se pudo obtener ({fr.note}) -- probando '{guess}' como "
-                         f"slug de WordPress.org (extraido del propio texto del aviso)...") if es else
-                         (f"'{source}' could not be fetched ({fr.note}) -- trying '{guess}' as a "
-                         f"WordPress.org slug (extracted from the advisory text itself)..."))
-                    fr_retry = fetch_source(guess, version=version, on_step=step,
-                                            cms_hint=(notes.get("cms") or "").strip().lower(),
-                                            exclusive_upper_bound=version_exclusive)
-                    if fr_retry.ok:
-                        fr = fr_retry
-                        source = guess
-                        guessed_source = True
-        # Si el slug adivinado descargo bien pero la version descargada es MAS NUEVA que la
-        # afectada en el CVE, puede ser un plugin DISTINTO con nombre similar (p.ej.
-        # 'error-log-viewer' existe y es 1.1.8, pero el CVE afecta 'error-log-viewer-wp' <=1.0.5).
-        # Se intenta la variante con sufijo '-wp' antes de seguir con el plugin equivocado.
-        if fr.ok and guessed_source and not source.endswith("-wp"):
-            try:
-                def _vt(v):
-                    import re as _re
-                    return tuple(int(x) for x in _re.split(r"[.\-]", v or "") if x.isdigit())
-                _version_too_new = (version and fr.resolved_version and
-                                    _vt(fr.resolved_version) > _vt(version))
-                # Tambien intentar variante '-wp' cuando el plugin descargado no tiene
-                # ninguna accion AJAX registrada y el CVE es SQLi en WordPress: indica que
-                # el slug adivinado corresponde a un plugin DISTINTO del vulnerable (p.ej.
-                # 'error-log-viewer' != 'error-log-viewer-wp' aunque tengan la misma version).
-                _zero_ajax = False
-                if (not _version_too_new and
-                        inv.vuln_class in ("sqli", "sql-injection", "missing-authorization",
-                                           "auth-bypass", "idor")):
-                    from .websource import find_all_ajax_actions as _faa_check
-                    _zero_ajax = not _faa_check(fr.local_path)
-                if _version_too_new or _zero_ajax:
-                    _wp_slug = source + "-wp"
-                    if _version_too_new:
-                        step((f"'{source}' descargo version {fr.resolved_version} pero el CVE "
-                              f"afecta <={version} -- probando variante '{_wp_slug}'...") if es else
-                             (f"'{source}' downloaded version {fr.resolved_version} but CVE affects "
-                              f"<={version} -- trying variant '{_wp_slug}'..."))
-                    else:
-                        step((f"'{source}' no tiene acciones AJAX registradas; puede ser un plugin "
-                              f"distinto al vulnerable -- probando variante '{_wp_slug}'...") if es
-                             else (f"'{source}' has no registered AJAX actions; may be a different "
-                                   f"plugin than the vulnerable one -- trying variant '{_wp_slug}'..."))
-                    fr_wp = fetch_source(_wp_slug, version=version, on_step=step,
-                                         cms_hint="wordpress",
-                                         exclusive_upper_bound=version_exclusive)
-                    if fr_wp.ok:
-                        fr = fr_wp
-                        source = _wp_slug
-                        guessed_source = True
-            except Exception:
-                pass
+        # Fallback: si el slug CMS no se pudo descargar (404/etc.) pero hay un lab pip
+        # scaffoldeado (disponible porque _guessed_cms_slug evitó que reemplazara source),
+        # usarlo como última opción: mejor un lab Flask genérico que nada.
+        _lab_candidate_fallback = locals().get("_lab_candidate")
+        if not fr.ok and _lab_candidate_fallback:
+            step((f"'{source}' no se pudo obtener -- usando lab generico como fallback "
+                  f"({_lab_candidate_fallback})...") if es else
+                 (f"'{source}' could not be fetched -- using generic lab fallback "
+                  f"({_lab_candidate_fallback})..."))
+            fr = fetch_source(_lab_candidate_fallback, version=version, on_step=step)
+            if fr.ok:
+                source = _lab_candidate_fallback
+                guessed_source = False
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note,
@@ -3467,7 +3516,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # jamas validado, no como una password nueva que fijar) -- exige el hint explicito
                 # unauthenticated_login_bypass (de --unauthenticated-login-bypass) porque solo el
                 # analista que leyo el aviso real sabe que el endpoint es publico.
-                if notes.get("unauthenticated_login_bypass"):
+                # EXTENSION (CVE-2026-2991/KiviCare): si hay email_p pero NO id_p, el patron
+                # es "social-login bypass" (te autentican con solo saber el email de un usuario
+                # ya registrado, sin ID de victima ni cambio de credencial) -- se trata igual
+                # que unauthenticated_login_bypass aunque el hint explicito no este presente.
+                _is_social_login_bypass = (email_p and not id_p
+                                           and not (pass_p and id_p))
+                if notes.get("unauthenticated_login_bypass") or _is_social_login_bypass:
                     step(("intentando verificacion DINAMICA -- login bypass SIN NINGUNA sesion "
                          "previa (WordPress+MySQL efimero en Docker)..." if es else
                          "attempting DYNAMIC verification -- login bypass with NO prior session "
@@ -4102,18 +4157,29 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      if es else "attempting GENERIC DYNAMIC verification -- time-based blind "
                      "(SLEEP/pg_sleep), the target is built from its own Dockerfile/compose..."))
                 id_table_hint = notes.get("sqli_identifier_table_hint", "")
+                # Cuando el lab fue scaffoldeado por nosotros (local-dir), el endpoint y el
+                # parametro son FIJOS (los que el lab realmente expone).  El retry del LLM
+                # suele sugerir endpoints CMS (admin-ajax.php, etc.) que no existen en el lab
+                # y producen 404 en ambos payloads bool → diff=0 → never confirmed.
+                # Capturamos el endpoint/param del lab antes del retry y los forzamos en el
+                # callback para que el LLM no los sobreescriba.
+                _genlab_ep    = notes.get("endpoint")
+                _genlab_param = sqli_p or ""
+                _is_local_lab = (fr.kind == "local-dir")
                 wr = verify_generic_sqli_blind(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
+                    fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
+                    params, sqli_param_hint=_genlab_param, on_step=step, budget_s=budget_s,
                     sqli_identifier_table_hint=id_table_hint)
                 def _attempt_sqli_blind_generic(ep, pr):
+                    _ep  = _genlab_ep    if _is_local_lab else ep
+                    _pr  = _genlab_param if _is_local_lab else pr
                     return verify_generic_sqli_blind(
-                        fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        fr.local_path, _ep, notes.get("http_method") or "GET", params,
+                        sqli_param_hint=_pr or "", on_step=step, budget_s=budget_s,
                         sqli_identifier_table_hint=id_table_hint)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
-                    _attempt_sqli_blind_generic, wr, notes.get("endpoint"), sqli_p,
+                    _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,
                     technique_label="SQLi ciega por tiempo (generico)",
                     max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
                 _apply_wpverify_result(inv, wr, es, llm)
@@ -4995,8 +5061,11 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # un mecanismo de impacto mas especifico (ssti, path-traversal, command-injection, xxe...),
     # ese gana sobre el "file-upload" del LLM -- e.g. CVE-2026-27641: LLM dice "file-upload"
     # pero la descripcion dice "server-side template injection (SSTI)".
+    # "deserialization" es igualmente vaga cuando la descripcion dice claramente ssti/traversal/etc.
+    # (confirmado en vivo con CVE-2025-27516: LLM retorno "deserialization" pero la descripcion
+    # dice "templating engine" -> classify_cve da "ssti" -> el lab correcto es el Jinja2 SSTI).
     _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
-    if _llm_class == "file-upload" and _desc_class in _UPLOAD_OVERRIDE:
+    if _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
         inv.vuln_class = _desc_class
     else:
         inv.vuln_class = _llm_class or _desc_class or ""
