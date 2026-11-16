@@ -1421,38 +1421,41 @@ def cmd_cve(args, config):
     _mc = "\033[1;35m" if _use_col else ""   # magenta → CVE ID
     _gc = "\033[1;32m" if _use_col else ""   # verde → OK
     _oc = "\033[1;33m" if _use_col else ""   # ámbar → el "0" de bin0racle y hex values
-    bar = "═" * 62
-    # Crystal ball ASCII art — refleja el logo bin0racle (esfera + pedestal + nombre)
-    if _use_col:
-        _cb = [
-            f"{_ac}╭───────────╮{_r}",
-            f"{_ac}│{_r} 1001 {_oc}0xE9{_r} {_ac}│{_r}",
-            f"{_ac}│{_r} 0110  1011 {_ac}│{_r}",
-            f"{_ac}│{_r} {_oc}RCE{_r}  0101 {_ac}│{_r}",
-            f"{_ac}│{_r} 1100 {_oc}0x90{_r} {_ac}│{_r}",
-            f"{_ac}╰─────┬─────╯{_r}",
-            f"      {_ac}═╧═{_r}      ",
-        ]
-        _name = f"{_b}bin{_r}{_oc}{_b}0{_r}{_ac}{_b}racle{_r}"
-    else:
-        _cb = [
-            "╭───────────╮",
-            "│ 1001  0xE9│",
-            "│ 0110  1011│",
-            "│ RCE   0101│",
-            "│ 1100  0x90│",
-            "╰─────┬─────╯",
-            "      ═╧═    ",
-        ]
-        _name = "bin0racle"
+    _W  = 62   # visible width between ║ borders
+    bar = "═" * _W
+
+    def _brow(vis, txt):
+        return f"{_ac}║{_r}{txt}{' ' * max(0, _W - vis)}{_ac}║{_r}"
+
+    # Header: "  bin0racle" (11) + 13 spaces + subtitle (36) + 2 spaces = 62
+    _hdr = (f"  {_b}bin{_r}{_oc}{_b}0{_r}{_ac}{_b}racle{_r}"
+            f"             {_d}oracle de investigación CVE autónoma  {_r}")
+
+    # Crystal ball rows (left 16 visible) + info right column
+    _cv  = len(cve_id)
+    _rows = [
+        (f"   {_ac}╭───────────╮{_r}", 16, "", 0),
+        (f"   {_ac}│{_r} 1001 {_oc}0xE9{_r} {_ac}│{_r}", 16,
+         f"   {_d}▸ {_r}{_mc}{_b}{cve_id}{_r}", 5 + _cv),
+        (f"   {_ac}│{_r} 0110 1011 {_ac}│{_r}", 16,
+         f"   {_d}investigación autónoma{_r}", 25),
+        (f"   {_ac}│{_r} {_oc}{_b}RCE{_r}  0101 {_ac}│{_r}", 16, "", 0),
+        (f"   {_ac}│{_r} 1100 {_oc}0x90{_r} {_ac}│{_r}", 16, "", 0),
+        (f"   {_ac}╰─────┬─────╯{_r}", 16, "", 0),
+        (f"        {_ac}═╧═{_r}", 11, "", 0),
+    ]
+
+    # Footer: "creado por @beafn28" right-aligned (40 pad + 19 text + 3 margin = 62)
+    _ft  = f"{_d}creado por {_r}{_oc}{_b}@beafn28{_r}"
+    _ftr = " " * (_W - 3 - 19) + _ft + "   "
+
     print(f"\n{_ac}╔{bar}╗{_r}")
-    print(f"{_ac}║{_r}  {_cb[0]}  {_name}")
-    print(f"{_ac}║{_r}  {_cb[1]}  {_d}oracle de investigación CVE autónoma{_r}")
-    print(f"{_ac}║{_r}  {_cb[2]}  {_mc}{_b}{cve_id}{_r}  {_d}·  investigación autónoma{_r}")
-    print(f"{_ac}║{_r}  {_cb[3]}")
-    print(f"{_ac}║{_r}  {_cb[4]}")
-    print(f"{_ac}║{_r}  {_cb[5]}")
-    print(f"{_ac}║{_r}  {_cb[6]}")
+    print(_brow(62, _hdr))
+    print(f"{_ac}╠{bar}╣{_r}")
+    for la, lv, ra, rv in _rows:
+        print(_brow(lv + rv, la + ra))
+    print(f"{_ac}╠{bar}╣{_r}")
+    print(_brow(62, _ftr))
     print(f"{_ac}╚{bar}╝{_r}\n")
 
     t_start = _time.time()
