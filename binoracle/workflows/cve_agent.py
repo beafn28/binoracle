@@ -2806,19 +2806,44 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         # ABSOLUTO (ver mas arriba); si dio algo, aunque fuera inservible, nunca se llegaba a
         # intentar el slug real -- dando por perdido el codigo cuando SI se podia haber obtenido.
         if not fr.ok and not guessed_source:
-            guess = _guess_wp_slug_from_description(inv.description)
-            if guess and guess != source:
-                step((f"'{source}' no se pudo obtener ({fr.note}) -- probando '{guess}' como "
-                     f"slug de WordPress.org (extraido del propio texto del aviso)...") if es else
-                     (f"'{source}' could not be fetched ({fr.note}) -- trying '{guess}' as a "
-                     f"WordPress.org slug (extracted from the advisory text itself)..."))
-                fr_retry = fetch_source(guess, version=version, on_step=step,
-                                        cms_hint=(notes.get("cms") or "").strip().lower(),
-                                        exclusive_upper_bound=version_exclusive)
-                if fr_retry.ok:
-                    fr = fr_retry
-                    source = guess
+            # Paso 1: intentar el ultimo segmento de la URL fallida como slug de WordPress.org
+            # ANTES que el guess basado en la descripcion del CVE. Razon: la descripcion suele
+            # omitir el sufijo del slug real (p.ej. extrae 'error-log-viewer' de la descripcion
+            # cuando el slug real en WordPress.org ES 'error-log-viewer-wp'). La URL que dio el
+            # LLM ('https://github.com/wp-plugins/error-log-viewer-wp') contiene el slug correcto
+            # como ultimo segmento de path -- si tiene forma de slug de WordPress, se prueba
+            # primero y se evita descargar el plugin equivocado.
+            from .websource import looks_like_wp_slug as _lwps
+            _url_seg = source.rstrip("/").split("/")[-1] if source and "://" in source else ""
+            if _url_seg and _lwps(_url_seg) and _url_seg != source:
+                step((f"'{source}' no se pudo obtener ({fr.note}) -- probando primero "
+                      f"'{_url_seg}' como slug de WordPress.org (extraido de la URL de "
+                      f"origen)...") if es else
+                     (f"'{source}' could not be fetched ({fr.note}) -- trying "
+                      f"'{_url_seg}' first as a WordPress.org slug (extracted from the "
+                      f"source URL)..."))
+                fr_url_seg = fetch_source(_url_seg, version=version, on_step=step,
+                                          cms_hint="wordpress",
+                                          exclusive_upper_bound=version_exclusive)
+                if fr_url_seg.ok:
+                    fr = fr_url_seg
+                    source = _url_seg
                     guessed_source = True
+            # Paso 2: si el segmento de la URL no funciono, intentar el guess de la descripcion
+            if not fr.ok:
+                guess = _guess_wp_slug_from_description(inv.description)
+                if guess and guess != source and guess != _url_seg:
+                    step((f"'{source}' no se pudo obtener ({fr.note}) -- probando '{guess}' como "
+                         f"slug de WordPress.org (extraido del propio texto del aviso)...") if es else
+                         (f"'{source}' could not be fetched ({fr.note}) -- trying '{guess}' as a "
+                         f"WordPress.org slug (extracted from the advisory text itself)..."))
+                    fr_retry = fetch_source(guess, version=version, on_step=step,
+                                            cms_hint=(notes.get("cms") or "").strip().lower(),
+                                            exclusive_upper_bound=version_exclusive)
+                    if fr_retry.ok:
+                        fr = fr_retry
+                        source = guess
+                        guessed_source = True
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note,
