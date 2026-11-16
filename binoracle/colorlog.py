@@ -40,7 +40,7 @@ _LABEL = {
 }
 
 _ERROR_RE = re.compile(
-    r"\berror\b|\bfallo\b|fall[oó]|no se pudo|excepcion|traceback|no se pudo conectar",
+    r"\berror(?!-)|\bfallo\b|fall[oó]|no se pudo|excepcion|traceback|no se pudo conectar",
     re.IGNORECASE)
 _WARN_RE = re.compile(
     r"bloqueo|no confirmad|no se (encontr|reconoc)|no filtr|ignorad[ao]|no tiene pinta|"
