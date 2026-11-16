@@ -2610,6 +2610,23 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                              f"version parcheada -- instalando '{corrected}' (ultima vulnerable)"))
                     version = corrected
 
+    # Si la descripcion menciona "WordPress" o "plugin for WordPress" / "plugin for WooCommerce",
+    # esto es un plugin CMS que debe pasar por fetch_source(slug) + wpverify, no un pip lab.
+    # Retornar None aqui evita que _guess_package_lab reemplace 'source' con un lab de psycopg2
+    # cuando el LLM no incluyó una source_url explícita (source="") pero sí es un plugin WP.
+    # Confirmado en vivo: CVE-2024-27956 (Automatic Migration) → description dice "WordPress
+    # plugin" → _scaffold_pip_lab("automatic-migration") generaba lab con psycopg2 que fallaba
+    # por ModuleNotFoundError y el contenedor nunca arrancaba.
+    _desc_lower = (description or "").lower()
+    _target_lower = (target_binary or "").lower()
+    _is_wp_desc = ("wordpress" in _desc_lower or "woocommerce" in _desc_lower
+                   or "wp plugin" in _desc_lower or " plugin for" in _desc_lower
+                   or "drupal" in _desc_lower or "joomla" in _desc_lower)
+    _is_wp_target = ("wordpress" in _target_lower or "woocommerce" in _target_lower
+                     or _target_lower.startswith("wp-") or _target_lower.endswith("-wp"))
+    if _is_wp_desc or _is_wp_target:
+        return None
+
     candidate = (target_binary or "").strip().lower()
     # Apache httpd se chequea primero: es un binario, no un paquete pip/gem/npm.
     # La deteccion mira target_binary Y la descripcion para no depender de que el LLM
