@@ -1526,6 +1526,37 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             lab.wp_cli("user", "meta", "update", "1", "_um_status", "approved", timeout=10)
             lab.wp_cli("user", "meta", "update", "1", "account_status", "approved", timeout=10)
             step("admin (ID=1) marcado como UM-approved -- necesario para que ORDER BY se evalúe")
+            # Verify that MySQL SUBSTRING(MD5(ID), 11, 5) can actually find the directory post
+            # from its hash. get_directory_by_hash() relies on this exact SQL, so if it returns
+            # nothing here the AJAX endpoint will always fail with "Wrong member directory data".
+            _sql_check = (f"SELECT CONCAT('hash_lookup_ok:',ID) FROM wp_posts "
+                          f"WHERE SUBSTRING(MD5(ID), 11, 5) = '{_um_hashed}'")
+            r_sqlck = lab.wp_cli("db", "query", _sql_check, "--skip-column-names", timeout=15)
+            _sqlck_out = (r_sqlck.stdout or "").strip()
+            if f"hash_lookup_ok:{dir_post_id}" in _sqlck_out:
+                step(f"MySQL hash lookup confirmado: SUBSTRING(MD5({dir_post_id}),11,5)='{_um_hashed}' OK")
+            else:
+                # The post exists (we just created it) but MySQL can't find it via the hash
+                # formula. Try computing the hash the same way MySQL does to find the right ID.
+                _r_ids = lab.wp_cli("db", "query",
+                                    "SELECT ID FROM wp_posts WHERE post_type='um_directory'",
+                                    "--skip-column-names", timeout=10)
+                _ids_out = (r_ids.stdout if hasattr(r_ids, "stdout") else
+                            (_r_ids.stdout or "")).strip()
+                if _ids_out:
+                    for _real_id in _ids_out.split():
+                        if _real_id.isdigit():
+                            import hashlib as _hl2
+                            _real_hash = _hl2.md5(_real_id.encode()).hexdigest()[10:15]
+                            lab.wp_cli("post", "meta", "update", _real_id,
+                                       "_um_hash", _real_hash, timeout=10)
+                            dir_post_id = _real_id
+                            _um_hashed = _real_hash
+                            step(f"hash recalculado para um_directory real (ID={_real_id}): '{_real_hash}'")
+                            break
+                else:
+                    step(f"[WARN] MySQL hash lookup fallo (hash='{_um_hashed}', post={dir_post_id}) "
+                         f"-- get_directory_by_hash devolvera vacio; raw={_sqlck_out!r}")
 
     # For UM-style plugins the shortcode that embeds the DIRECTORY (not the login form)
     # must reference the actual CPT post ID so the AJAX nonce for um_get_members is
@@ -2812,6 +2843,29 @@ def verify_wordpress_sqli(
     hace automaticamente con esta opcion puesta, para no destruir la pista antes de que de
     tiempo a mirarla."""
     step = on_step or (lambda _m: None)
+    # Prune orphaned binoracle lab resources from previous crashed/incomplete runs.
+    # Each lab creates containers/networks/volumes tagged with a unique run ID; if the
+    # process dies before teardown() the resources are left dangling. Remove them before
+    # starting a new run so they don't accumulate and waste disk space.
+    try:
+        import subprocess as _sp
+        _prune_v = _sp.run(
+            ["docker", "volume", "ls", "--format", "{{.Name}}"],
+            capture_output=True, text=True, timeout=10
+        )
+        for _vname in (_prune_v.stdout or "").splitlines():
+            if _vname.startswith("binoracle-wpverify-") and _vname.endswith("-html"):
+                _sp.run(["docker", "volume", "rm", "-f", _vname],
+                        capture_output=True, timeout=10)
+        _prune_c = _sp.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10
+        )
+        for _cname in (_prune_c.stdout or "").splitlines():
+            if _cname.startswith("binoracle-wpverify-") or _cname.startswith("binoracle-lab-"):
+                _sp.run(["docker", "rm", "-f", _cname], capture_output=True, timeout=10)
+    except Exception:
+        pass
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
         return pre
