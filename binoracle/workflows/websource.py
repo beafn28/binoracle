@@ -1242,6 +1242,102 @@ def find_all_ajax_actions(local_path: str) -> List[str]:
     return actions
 
 
+def find_ajax_action_for_param(local_path: str, param_name: str) -> Optional[str]:
+    """Busca la accion AJAX cuyo handler accede directamente al parametro POST indicado.
+
+    Util cuando la similitud de nombres no basta (el LLM adivina 'elv_get_logs' pero el
+    parametro vulnerable 'order[0][dir]' solo aparece dentro del handler de
+    'elvwp_datatable_loglist'). Tres pasos:
+      1. Leer todos los PHP del plugin y construir mapa accion->funcion_handler.
+      2. Para cada fichero, encontrar las funciones que usan $_POST['<clave>'].
+      3. Cruzar: la primera accion cuya funcion_handler usa el parametro gana.
+    """
+    if not param_name or not local_path or not os.path.isdir(local_path):
+        return None
+    # clave de primer nivel: "order[0][dir]" -> "order", "dir" -> "dir"
+    top_key = re.split(r"[\[\(]", param_name.strip())[0].strip("'\" ")
+    if not top_key or len(top_key) < 2:
+        return None
+
+    param_pats = [
+        re.compile(rf"\$_POST\s*\[\s*['\"]?{re.escape(top_key)}['\"]?\s*\]"),
+        re.compile(rf"\$_REQUEST\s*\[\s*['\"]?{re.escape(top_key)}['\"]?\s*\]"),
+    ]
+    # registro de acciones AJAX: captura la accion y luego extrae el nombre del metodo/funcion
+    # del segundo argumento, que puede ser:
+    #   - string simple: add_action('wp_ajax_foo', 'function_name')
+    #   - array($this, 'method') o array(Class::class, 'method') -- posiblemente multilínea
+    _AJAX_ACTION_RE = re.compile(
+        r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['\"]",
+        re.DOTALL
+    )
+    # extrae el nombre de metodo/funcion del segundo arg, buscando a partir del segundo ','
+    # tras la accion: 'method_name' o array(...,'method_name',...)
+    _METHOD_FROM_ARRAY_RE = re.compile(r"['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\)")
+    _METHOD_SIMPLE_RE = re.compile(r"['\"]([A-Za-z0-9_]+)['\"]")
+    _FUNC_NAME_RE = re.compile(r"function\s+(\w+)\s*\(")
+
+    # Paso 1: leer todos los PHP y registrar handlers
+    all_texts: dict = {}
+    action_to_handler: dict = {}
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php") or scanned >= _MAX_SCAN_FILES:
+                continue
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            scanned += 1
+            all_texts[fp] = text
+            for m in _AJAX_ACTION_RE.finditer(text):
+                action = m.group(1)
+                if action in action_to_handler:
+                    continue
+                # buscar el handler en el resto de la llamada add_action (hasta el ')' de cierre)
+                after = text[m.end():]
+                close = after.find(");")
+                chunk = after[:close + 2] if close != -1 else after[:300]
+                # forma array($this, 'method') -- la ultima cadena antes del ')' de cierre del array
+                am = _METHOD_FROM_ARRAY_RE.search(chunk)
+                if am:
+                    action_to_handler[action] = am.group(1)
+                else:
+                    # forma simple 'function_name'
+                    sm = _METHOD_SIMPLE_RE.search(chunk)
+                    if sm:
+                        action_to_handler[action] = sm.group(1)
+        if scanned >= _MAX_SCAN_FILES:
+            break
+
+    if not action_to_handler:
+        return None
+
+    # Paso 2: encontrar funciones que usan el parametro
+    funcs_with_param: set = set()
+    for _fp, text in all_texts.items():
+        for pat in param_pats:
+            for m in pat.finditer(text):
+                pre = text[:m.start()]
+                fn_matches = list(_FUNC_NAME_RE.finditer(pre))
+                if fn_matches:
+                    funcs_with_param.add(fn_matches[-1].group(1))
+
+    if not funcs_with_param:
+        return None
+
+    # Paso 3: cruzar
+    for action, handler in action_to_handler.items():
+        if handler in funcs_with_param:
+            return action
+    return None
+
+
 def find_ajax_handler_function(local_path: str, action: str) -> Optional[dict]:
     """Busca el handler REAL registrado para una accion AJAX ya conocida
     (add_action('wp_ajax[_nopriv]_<action>', <callback>)) -- al reves que grep_vulnerable_functions

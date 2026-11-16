@@ -2935,14 +2935,45 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                  f"no add_action registration for '{known_action}' was found in "
                                  f"the fetched source"))
                             # Fallback: el LLM adivino un nombre de accion que no existe en el
-                            # codigo real -- escanear TODAS las acciones AJAX registradas y elegir
-                            # la mas similar al nombre propuesto por el LLM (distancia minima de
-                            # Levenshtein simplificada: se busca la que comparta mas fragmentos de
-                            # palabras). Si se encuentra una buena candidata, se actualiza el
-                            # endpoint para que la verificacion use la accion real.
-                            from .websource import find_all_ajax_actions
+                            # codigo real. Estrategia en dos niveles:
+                            # 1) Si el LLM propuso un sqli_param conocido, buscar la accion cuyo
+                            #    handler usa ese parametro POST directamente en el codigo real
+                            #    (find_ajax_action_for_param: el metodo mas fiable, no depende de
+                            #    la similitud de nombres).
+                            # 2) Si no hay sqli_param o no dio resultado, caer al scoring de
+                            #    similitud de nombres entre known_action y las acciones reales.
+                            from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                            _sqli_p = (notes.get("sqli_param") or
+                                       notes.get("vulnerable_parameter") or "").strip()
+                            _param_action = None
+                            if _sqli_p:
+                                _param_action = find_ajax_action_for_param(fr.local_path, _sqli_p)
+                                if _param_action:
+                                    step((f"accion AJAX encontrada directamente en el codigo "
+                                          f"real por el parametro POST '{_sqli_p}': "
+                                          f"'{_param_action}' -- actualizando endpoint" if es else
+                                          (f"AJAX action found directly in source by POST param "
+                                          f"'{_sqli_p}': '{_param_action}' -- updating endpoint")))
+                                    old_ep = notes.get("endpoint") or ""
+                                    if "action=" in old_ep:
+                                        import urllib.parse as _up
+                                        _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
+                                        _qs["action"] = _param_action
+                                        _base = old_ep.split("?", 1)[0]
+                                        notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                    else:
+                                        notes["endpoint"] = (old_ep.rstrip("?&") +
+                                                             ("?" if "?" not in old_ep else "&") +
+                                                             f"action={_param_action}")
+                                    notes["ajax_action"] = _param_action
+                                    inv.llm_notes["ajax_action"] = _param_action
+                                    inv.llm_notes["endpoint"] = notes["endpoint"]
+                                    _rec2 = find_ajax_handler_function(fr.local_path, _param_action)
+                                    if _rec2:
+                                        inv.source_grounding["found"] = {
+                                            _rec2["function"]: [_rec2["location"]]}
                             all_actions = find_all_ajax_actions(fr.local_path)
-                            if all_actions:
+                            if all_actions and not _param_action:
                                 step((f"escaneando las {len(all_actions)} acciones AJAX reales "
                                      f"del plugin para encontrar la mas parecida a "
                                      f"'{known_action}'..." if es else
