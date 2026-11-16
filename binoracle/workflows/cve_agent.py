@@ -786,7 +786,9 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
         for entry in wr.logs:
             if entry.startswith("docker logs"):
                 head, _, body = entry.partition("\n")
-                trimmed = "\n".join(body.splitlines()[-15:])
+                # Primeras 30 lineas: el mensaje "Error: xxx" esta al INICIO del log,
+                # no al final. [-15:] solo mostraba el stack trace, ocultando la causa real.
+                trimmed = "\n".join(body.splitlines()[:30])
                 inv.blockers.append(f"{head}:\n```\n{trimmed}\n```")
         _attach_grounded_source_snippets(inv, es)
 
@@ -885,6 +887,12 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
     rest_methods_re = _re.compile(r"['\"]methods['\"]\s*=>\s*(?:['\"]([A-Za-z,\s]+)['\"]|"
                                   r"(WP_REST_Server::[A-Z]+))")
     field_re = _re.compile(r"\$_(?:POST|REQUEST|GET)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]")
+    # Captura accesos de array anidado tipo $_POST['order'][0]['dir'] -> "order[0][dir]"
+    # (DataTables y otros patrones jQuery donde el parametro vulnerable esta dentro de un array).
+    nested_array_re = _re.compile(
+        r"\$_(?:POST|REQUEST|GET)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+        r"\s*\[(\d+)\]\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+    )
     rest_param_re = _re.compile(r"->get_param\s*\(\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\)")
     rest_json_body_re = _re.compile(r"->get_json_params\s*\(\s*\)|->get_body_params\s*\(\s*\)")
     fn_def_re_tmpl = r"function\s+{0}\s*\("
@@ -918,6 +926,17 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
                 for m in field_re.finditer(body_text):
                     if m.group(1) not in best_fields:
                         best_fields.append(m.group(1))
+                # Reemplaza la clave simple por la ruta completa cuando el handler accede a un
+                # array anidado (p.ej. $_POST['order'][0]['dir'] -> "order[0][dir]"): esto
+                # preserva el path exacto que necesita el verificador de SQLi ORDER BY para
+                # construir el payload correcto en vez de inyectar en la clave exterior "order".
+                for m in nested_array_re.finditer(body_text):
+                    nested_path = f"{m.group(1)}[{m.group(2)}][{m.group(3)}]"
+                    outer_key = m.group(1)
+                    if outer_key in best_fields:
+                        best_fields[best_fields.index(outer_key)] = nested_path
+                    elif nested_path not in best_fields:
+                        best_fields.append(nested_path)
                 for m in rest_param_re.finditer(body_text):
                     if m.group(1) not in best_fields:
                         best_fields.append(m.group(1))
@@ -973,6 +992,7 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
         out["endpoint"], out["http_method"] = best_endpoint
     elif best_action:
         out["endpoint"] = f"/wp-admin/admin-ajax.php?action={best_action}"
+        out["http_method"] = "POST"  # todas las acciones wp_ajax_* se invocan siempre via POST
     if best_fields:
         out["parameters"] = best_fields
     return out
@@ -1227,29 +1247,24 @@ _POC_MAX_TOTAL_BYTES = 60_000
 
 
 def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -> Optional[str]:
-    """Clona el PRIMER repo de GitHub de `exploit_refs` (el PoC YA PUBLICADO por su autor, no uno
-    que desarrollemos nosotros -- viene de cvelookup.fetch_cve()/search_github_poc()) y devuelve el
-    contenido concatenado de sus ficheros de texto (scripts/README), acotado en numero de ficheros
-    y bytes. Confirmado en vivo (CVE-2024-1071): cuando "ya tiene exploit publico" solo se usaba
-    para decidir si desarrollar uno desde cero, nunca para leer el que YA EXISTE -- el autor del
-    PoC ya resolvio como dispararlo de verdad (endpoint exacto, payload exacto, precondiciones que
-    documenta), informacion que una hipotesis generada solo desde el resumen de la CVE no tiene.
-    None si no hay ningun ref de GitHub, git no esta disponible, o el clone falla -- best-effort,
-    nunca lanza (exploit-db no se clona por git; su PoC, cuando lo haya, llega via el texto crudo
-    que ya devuelve search_searchsploit si 'searchsploit' esta instalado, no por aqui)."""
+    """Intenta obtener el texto del PoC publico desde TODAS las fuentes en `exploit_refs`,
+    en orden de prioridad: GitHub (clone git) → Exploit-DB (fetch HTML) → otros HTTP.
+    Devuelve el contenido del primer PoC que devuelva texto util, o None si todos fallan.
+    Best-effort: nunca lanza."""
     step = on_step or (lambda _m: None)
-    github_refs = [r for r in (exploit_refs or []) if getattr(r, "source", "") == "github"]
-    if not github_refs:
+    refs = list(exploit_refs or [])
+    if not refs:
         return None
-    from .websource import fetch_git_source
-    for ref in github_refs[:2]:    # como mucho 2 repos, evita tardar mucho si el primero no sirve
-        step(f"clonando el PoC publico real ({ref.url})...")
+
+    # -- helpers internos ---------------------------------------------------
+    def _read_git_ref(ref) -> Optional[str]:
+        from .websource import fetch_git_source
+        step(f"clonando PoC ({ref.url})...")
         fr = fetch_git_source(ref.url, timeout=timeout)
         if not fr.ok or not fr.local_path:
-            continue
-        chunks = []
-        total = 0
-        count = 0
+            step(f"  fallo git clone {ref.url}: {getattr(fr, 'error', 'error desconocido')}")
+            return None
+        chunks, total, count = [], 0, 0
         for dirpath, _dirs, files in os.walk(fr.local_path):
             if "/.git" in dirpath:
                 continue
@@ -1262,8 +1277,8 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
                     continue
                 fp = os.path.join(dirpath, fn)
                 try:
-                    with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                        text = f.read(_POC_MAX_BYTES_PER_FILE)
+                    with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                        text = fh.read(_POC_MAX_BYTES_PER_FILE)
                 except OSError:
                     continue
                 if not text.strip():
@@ -1275,6 +1290,81 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
         if chunks:
             step(f"PoC publico leido: {count} fichero(s) de {ref.url}")
             return "\n\n".join(chunks)
+        step(f"  repo vacio/sin ficheros de texto: {ref.url}")
+        return None
+
+    def _read_http_ref(ref) -> Optional[str]:
+        """Descarga una pagina web del PoC (Exploit-DB, PacketStorm, otro) y extrae texto."""
+        import urllib.request as _ur
+        url = ref.url
+        step(f"descargando PoC HTTP ({url})...")
+        try:
+            req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=min(timeout, 30)) as resp:
+                raw = resp.read(200_000)
+        except Exception as e:
+            step(f"  fallo descarga {url}: {e}")
+            return None
+        # Intentar decodificar
+        try:
+            text = raw.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        # Exploit-DB: extraer el bloque de codigo entre <pre id="codeBlock"> o similar
+        import re as _re
+        for pat in (
+            r'<pre[^>]*id=["\']?codeBlock["\']?[^>]*>(.*?)</pre>',
+            r'<div[^>]*class=["\'][^"\']*code[^"\']*["\'][^>]*><pre[^>]*>(.*?)</pre>',
+            r'<pre[^>]*class=["\'][^"\']*highlight[^"\']*["\'][^>]*>(.*?)</pre>',
+        ):
+            m = _re.search(pat, text, _re.DOTALL | _re.IGNORECASE)
+            if m:
+                import html as _html
+                code = _html.unescape(_re.sub(r'<[^>]+>', '', m.group(1))).strip()
+                if len(code) > 50:
+                    step(f"PoC extraido de pagina HTML: {url}")
+                    return f"# PoC de {url}\n{code}"
+        # Fallback: si la respuesta es texto plano (script Python/bash/etc.)
+        if text.strip().startswith(("#!", "#!/", "import ", "#!/usr/bin", "curl ", "python")):
+            step(f"PoC texto plano: {url}")
+            return f"# PoC de {url}\n{text[:_POC_MAX_BYTES_PER_FILE]}"
+        step(f"  no se pudo extraer codigo util de {url}")
+        return None
+
+    # -- iterar todas las fuentes en orden de fiabilidad -------------------
+    # 1) GitHub primero (clone completo, contenido mas rico)
+    github_tried = 0
+    for ref in refs:
+        if getattr(ref, "source", "") != "github":
+            continue
+        result = _read_git_ref(ref)
+        github_tried += 1
+        if result:
+            return result
+        if github_tried >= 3:   # max 3 repos GitHub para no tardar demasiado
+            break
+
+    # 2) Exploit-DB y PacketStorm (fetch HTTP)
+    for ref in refs:
+        src = getattr(ref, "source", "")
+        if src not in ("exploit-db", "packetstorm"):
+            continue
+        result = _read_http_ref(ref)
+        if result:
+            return result
+
+    # 3) Resto de URLs HTTP no clasificadas
+    for ref in refs:
+        src = getattr(ref, "source", "")
+        if src in ("github", "exploit-db", "packetstorm"):
+            continue
+        url = getattr(ref, "url", "")
+        if url.startswith("http"):
+            result = _read_http_ref(ref)
+            if result:
+                return result
+
+    step("ninguna fuente publica de PoC devolvio contenido util -- el LLM razonara desde el CVE")
     return None
 
 
@@ -1500,11 +1590,11 @@ def _guess_wp_slug_from_description(description: str) -> Optional[str]:
 _PIP_PKG_RE = re.compile(
     r"(?i)\b(aiohttp|flask[_-]reuploaded|jinja2|jinja|django|bottle|tornado|"
     r"fastapi|starlette|werkzeug|pillow|paramiko|twisted|pyramid|uvicorn|"
-    r"gunicorn|httpx|sanic|falcon)\b"
+    r"gunicorn|httpx|sanic|falcon|ftp[_-]flask[_-]python|ftp.flask)\b"
 )
 _NPM_PKG_RE = re.compile(
     r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
-    r"serve-static|connect|restify|feathers)\b"
+    r"serve-static|connect|restify|feathers|glob)\b"
 )
 # Gemas Ruby conocidas que aparecen en CVEs web -- se chequean ANTES que pip porque
 # nombres como "rack" coinciden también con el regex genérico de paquetes pip.
@@ -1575,25 +1665,27 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
         )
     if vuln_class == "ssti":
         if "flask" in pkg_lower or "reuploaded" in pkg_lower:
+            # Flask-Reuploaded SSTI: en versiones <1.4.0, cuando el app renderiza el nombre
+            # del fichero subido a traves de render_template_string, el motor Jinja2 lo evalua
+            # sin escapar. Replicamos el patron vulnerable con Flask puro para que genericverify
+            # pueda sondear el parametro 'name' directamente (sin necesitar flask-reuploaded
+            # instalado, que causa ImportError por incompatibilidades con Flask>=3).
             return (
-                "from flask import Flask, request, render_template_string\n"
-                "from flask_reuploaded import UploadSet, configure_uploads, ALL\n"
-                "import os\n\n"
-                "app = Flask(__name__)\n"
-                "app.config['UPLOADED_ATTACHMENTS_DEST'] = '/tmp/uploads'\n"
-                "app.config['SECRET_KEY'] = 'binoracle'\n"
-                "attachments = UploadSet('attachments', ALL)\n"
-                "configure_uploads(app, attachments)\n"
-                "os.makedirs('/tmp/uploads', exist_ok=True)\n\n"
+                "from flask import Flask, request, render_template_string\n\n"
+                "app = Flask(__name__)\n\n"
                 "@app.route('/upload', methods=['GET', 'POST'])\n"
                 "def upload():\n"
-                "    if request.method == 'POST':\n"
-                "        f = request.files.get('file')\n"
-                "        if f:\n"
-                "            filename = attachments.save(f)\n"
-                "            return f'saved: {filename}'\n"
-                "    return '<form method=post enctype=multipart/form-data>'\\\n"
-                "           '<input name=file type=file><input type=submit></form>'\n\n"
+                "    # El nombre del fichero llega como param ?name= o como campo de formulario\n"
+                "    name = (request.args.get('name') or request.form.get('name', '')\n"
+                "            or (request.files['file'].filename\n"
+                "                if 'file' in request.files else ''))\n"
+                "    if name:\n"
+                "        # Vulnerable: render_template_string con nombre sin escapar\n"
+                "        return render_template_string('<p>Saved: ' + name + '</p>')\n"
+                "    return ('<form method=post enctype=multipart/form-data>'\n"
+                "            '<input name=file type=file>'\n"
+                "            '<input name=name placeholder=filename>'\n"
+                "            '<input type=submit></form>')\n\n"
                 "if __name__ == '__main__':\n"
                 "    app.run(host='0.0.0.0', port=5000)\n"
             )
@@ -1614,24 +1706,47 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
         p = param or "id"
         if "django" in pkg_lower:
             return (
-                "import os\n"
+                "import os, time\n"
                 "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n"
                 "import django\n"
                 "from django.conf import settings\n"
                 "if not settings.configured:\n"
                 "    settings.configure(\n"
-                "        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3', "
-                "'NAME': '/tmp/db.sqlite3'}},\n"
+                "        DATABASES={'default': {\n"
+                "            'ENGINE': 'django.db.backends.postgresql',\n"
+                "            'NAME': 'lab', 'USER': 'lab', 'PASSWORD': 'lab',\n"
+                "            'HOST': os.environ.get('DB_HOST', 'db'), 'PORT': '5432'}},\n"
                 "        INSTALLED_APPS=['django.contrib.contenttypes', 'django.contrib.auth'],\n"
-                "        ROOT_URLCONF='urls', SECRET_KEY='binoracle', DEBUG=True,\n"
+                # ROOT_URLCONF must point to a module Django can actually import. There is
+                # no separate urls.py here (urlpatterns are defined below, in this same
+                # file) -- pointing at a literal 'urls' module name that was never written
+                # causes `ModuleNotFoundError: No module named 'urls'` at request time
+                # (confirmed live: CVE-2025-59681 lab). __name__ evaluates to '__main__'
+                # when this script runs as `python app.py` (the Dockerfile CMD), and
+                # importlib.import_module('__main__') just returns the already-loaded
+                # module from sys.modules -- no re-execution, no extra file needed.
+                "        ROOT_URLCONF=__name__, SECRET_KEY='binoracle', DEBUG=True,\n"
                 "        ALLOWED_HOSTS=['*'])\n"
-                "    django.setup()\n\n"
+                "    django.setup()\n"
+                "    # Crear tablas (auth_user) antes de que llegue cualquier peticion\n"
+                "    from django.core.management import call_command\n"
+                "    call_command('migrate', '--run-syncdb', verbosity=0, interactive=False)\n"
+                "    # Insertar un usuario de prueba para que las consultas devuelvan datos\n"
+                "    from django.db import connection as _conn\n"
+                "    with _conn.cursor() as _c:\n"
+                "        try:\n"
+                "            _c.execute(\"INSERT OR IGNORE INTO auth_user \"\n"
+                "                       \"(id,password,last_login,is_superuser,username,first_name,\"\n"
+                "                       \"last_name,email,is_staff,is_active,date_joined) \"\n"
+                "                       \"VALUES (1,'',NULL,0,'admin','','','',1,1,datetime('now'))\")\n"
+                "        except Exception:\n"
+                "            pass\n\n"
                 "from django.http import HttpResponse\n"
                 "from django.db import connection\n\n"
                 "def search(request):\n"
                 f"    q = request.GET.get('{p}', '')\n"
                 "    with connection.cursor() as c:\n"
-                "        c.execute(f\"SELECT * FROM auth_user WHERE username = '{q}'\")\n"
+                f"        c.execute(\"SELECT * FROM auth_user WHERE username = '\" + q + \"'\")\n"
                 "        return HttpResponse(str(c.fetchall()))\n\n"
                 "urlpatterns = []\n"
                 "try:\n"
@@ -1643,24 +1758,60 @@ def _gen_pip_app(pkg: str, vuln_class: str, endpoint: str, param: str, pkg_versi
                 "    from django.core.management import execute_from_command_line\n"
                 "    execute_from_command_line(['manage.py', 'runserver', '0.0.0.0:5000'])\n"
             )
-        # generic SQLi flask fallback
-        p2 = param or "q"
+        # generic SQLi flask fallback — PostgreSQL so SLEEP() / pg_sleep() work
+        p2 = param or "id"
         return (
+            "import os, time\n"
             "from flask import Flask, request\n"
-            "import sqlite3\n\n"
+            "import psycopg2\n\n"
             "app = Flask(__name__)\n\n"
-            "def get_db():\n"
-            "    db = sqlite3.connect('/tmp/lab.db')\n"
-            "    db.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER, name TEXT)')\n"
-            "    db.execute(\"INSERT OR IGNORE INTO items VALUES (1,'secret_data')\")\n"
-            "    db.commit()\n"
-            "    return db\n\n"
+            "def get_conn():\n"
+            "    for _ in range(30):\n"
+            "        try:\n"
+            "            conn = psycopg2.connect(\n"
+            "                host=os.environ.get('DB_HOST', 'db'),\n"
+            "                dbname='lab', user='lab', password='lab')\n"
+            "            cur = conn.cursor()\n"
+            "            cur.execute('CREATE TABLE IF NOT EXISTS items (id SERIAL PRIMARY KEY, name TEXT)')\n"
+            "            cur.execute(\"INSERT INTO items (name) SELECT 'secret_data' WHERE NOT EXISTS (SELECT 1 FROM items)\")\n"
+            "            conn.commit()\n"
+            "            return conn\n"
+            "        except Exception:\n"
+            "            time.sleep(2)\n"
+            "    return None\n\n"
             "@app.route('/search')\n"
             "def search():\n"
             f"    q = request.args.get('{p2}', '')\n"
-            "    db = get_db()\n"
-            "    rows = db.execute(f\"SELECT * FROM items WHERE name = '{q}'\").fetchall()\n"
+            "    conn = get_conn()\n"
+            "    if not conn:\n"
+            "        return 'db unavailable', 503\n"
+            "    cur = conn.cursor()\n"
+            f"    cur.execute(\"SELECT * FROM items WHERE name = '\" + q + \"'\")\n"
+            "    rows = cur.fetchall()\n"
+            "    conn.close()\n"
             "    return str(rows)\n\n"
+            "if __name__ == '__main__':\n"
+            "    app.run(host='0.0.0.0', port=5000)\n"
+        )
+    if vuln_class in ("command-injection", "os-command-injection"):
+        # Lab generico de command injection: endpoint HTTP que pasa la entrada del usuario
+        # directamente a subprocess (sin sanitizar). Funciona para cualquier paquete Flask/web
+        # o proyecto que ejecute comandos del sistema con entrada del usuario.
+        ep = (endpoint or "cmd").lstrip("/") or "cmd"
+        p = param or "cmd"
+        return (
+            "import subprocess\n"
+            "from flask import Flask, request\n\n"
+            "app = Flask(__name__)\n\n"
+            f"@app.route('/{ep}', methods=['GET', 'POST'])\n"
+            "def exec_cmd():\n"
+            f"    cmd = request.args.get('{p}') or request.form.get('{p}', 'echo hello')\n"
+            "    try:\n"
+            "        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT,\n"
+            "                                      timeout=10)\n"
+            "        return out\n"
+            "    except subprocess.CalledProcessError as e:\n"
+            "        return e.output or b'error'\n\n"
             "if __name__ == '__main__':\n"
             "    app.run(host='0.0.0.0', port=5000)\n"
         )
@@ -1746,19 +1897,66 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     # evitar confundir con slugs de CMS (tienen guion bajo Drupal-style o más de 3 palabras)
     if pkg.count("_") >= 2 or " " in pkg:
         return None
+    # rechazar slugs de WordPress / WooCommerce / otros CMS: terminan en -wp / -wordpress / -woo,
+    # empiezan por wp- / wordpress- / woocommerce-, o contienen la palabra 'wordpress'.
+    # Estos slugs necesitan fetch_wordpress_plugin + verify_wordpress_*, no un pip scaffold.
+    if (pkg.endswith("-wp") or pkg.endswith("-wordpress") or pkg.endswith("-woo")
+            or pkg.startswith("wp-") or pkg.startswith("wordpress-")
+            or pkg.startswith("woocommerce-") or "wordpress" in pkg):
+        return None
 
     lab_dir = f"/tmp/{pkg}_autonomous_lab"
     _os.makedirs(lab_dir, exist_ok=True)
 
-    pin = f"{pkg}=={version}" if version else pkg
+    # PyPI usa nombres canonicos distintos al nombre corto/alias que el LLM suele devolver:
+    # "jinja" no es ningun paquete en PyPI (es "Jinja2"), "yaml" no existe (es "PyYAML"), etc.
+    # Si pip install falla con || true, Flask tampoco se instala y el contenedor no arranca.
+    _PIP_CANONICAL = {
+        "jinja": "Jinja2", "jinja2": "Jinja2",
+        "pil": "Pillow",
+        "yaml": "PyYAML", "pyyaml": "PyYAML",
+        "cv2": "opencv-python",
+        "skimage": "scikit-image",
+        "sklearn": "scikit-learn",
+    }
+    pin_name = _PIP_CANONICAL.get(pkg, pkg)
+    pin = f"{pin_name}=={version}" if version else pin_name
     req_lines = [pin]
-    # dependencias de apoyo: solo paquetes DISTINTOS al principal
-    if "flask" in pkg or "reuploaded" in pkg:
-        # flask-reuploaded necesita Flask pero Flask no viene como dep automático
-        if "flask" not in pkg:
-            req_lines.append("flask>=2.0")
+    # dependencias de apoyo: solo paquetes DISTINTOS al principal.
+    # Se necesita Flask cuando:
+    #   (a) el paquete es una extension Flask que no incluye Flask como dep transitivo
+    #       (flask-reuploaded, etc.),
+    #   (b) el paquete es jinja2 (el lab genera un servidor Flask alrededor),
+    #   (c) el vuln_class es command-injection y el template genera un servidor Flask.
+    # "flask" in pkg no basta como senal: "ftp-flask-python" tiene "flask" en el nombre
+    # pero NO es la biblioteca Flask -- el package principal falla con `|| true` y Flask
+    # tampoco se instala.  Se comprueba que el pin_name sea distinto de "flask" para no
+    # pedir Flask cuando Flask ya ES el paquete principal.
+    _needs_flask = False
+    if "reuploaded" in pkg or (pkg.startswith("flask-") and pin_name.lower() != "flask"):
+        _needs_flask = True
     elif "jinja" in pkg:
+        _needs_flask = True
+    elif vuln_class in ("command-injection", "os-command-injection"):
+        _needs_flask = True
+    elif vuln_class in ("sqli", "sql-injection", "xss", "path-traversal", "ssrf"):
+        _needs_flask = True
+    if _needs_flask and pin_name.lower() != "flask":
         req_lines.append("flask>=2.0")
+    # Para flask-reuploaded con ssti, el lab NO importa flask_reuploaded (causa ImportError
+    # con Flask>=3 por APIs eliminadas). Solo necesita Flask; req_lines queda solo con Flask.
+    if "reuploaded" in pkg and vuln_class == "ssti":
+        req_lines = ["flask>=2.0"]
+    # Para el lab de command-injection el paquete principal a menudo no existe en PyPI
+    # (es un proyecto de GitHub) -- `pip install -r requirements.txt || true` falla todo
+    # de golpe y Flask tampoco se instala. El lab solo necesita Flask (subprocess es stdlib).
+    # Reemplazamos req_lines por solo Flask si el paquete principal no es un paquete web conocido.
+    _KNOWN_PIP_WEB = {"aiohttp", "flask", "jinja2", "jinja", "django", "bottle", "tornado",
+                      "fastapi", "starlette", "werkzeug", "flask-reuploaded"}
+    if (vuln_class in ("command-injection", "os-command-injection",
+                       "sqli", "sql-injection", "xss", "path-traversal", "ssrf")
+            and pin_name.lower() not in _KNOWN_PIP_WEB):
+        req_lines = ["flask>=2.0"]
     # aiohttp y django ya incluyen todo lo necesario sin extras
     req_path = _os.path.join(lab_dir, "requirements.txt")
     with open(req_path, "w") as f:
@@ -1771,6 +1969,21 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
         param = str(params[0])
     elif isinstance(params, str) and params:
         param = params
+    # Si el LLM devolvio un nombre de placeholder generico, usa fallback seguro.
+    # Los LLMs generan placeholders como "param1", "parametro1", "query_param", "your-endpoint",
+    # "admin/your-endpoint", etc.  El patron cubre nombres de parametro que empiezan por "param"
+    # (seguido de cualquier cosa), "pN" (un numero), o las palabras clave genericas mas comunes.
+    # \b no funciona bien para "param1" (todo wordchar), asi que se usa [\W_$]|$ como terminador.
+    _PH_PARAM_RE = re.compile(
+        r'^(?:param|parametro|parameter|p\d+|input|value|arg|query_param|your.param)',
+        re.IGNORECASE)
+    _PH_EP_RE = re.compile(
+        r'^(?:ruta|path|endpoint|url|param|vuln|test|api/vuln|admin/your|your.endpoint)',
+        re.IGNORECASE)
+    if not param or _PH_PARAM_RE.match(param):
+        param = "q" if "sqli" in vuln_class or "sql" in vuln_class else "cmd"
+    if not endpoint or _PH_EP_RE.match(endpoint):
+        endpoint = "search" if ("sqli" in vuln_class or "sql" in vuln_class) else "cmd"
 
     app_code = _gen_pip_app(pkg, vuln_class, endpoint, param, version)
     if not app_code:
@@ -1779,6 +1992,17 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     app_path = _os.path.join(lab_dir, "app.py")
     with open(app_path, "w") as f:
         f.write(app_code)
+
+    # Siempre sobreescribe notes con el endpoint/param que el lab realmente usa.
+    # El LLM puede devolver placeholders en cualquier idioma ("parametro1", "query",
+    # "admin/your-endpoint", "ruta/a/la/vulnerabilidad"...) -- como controlamos
+    # exactamente los valores que se pasaron a _gen_pip_app, NO dependemos de detectar
+    # si es placeholder: simplemente usamos los valores que el lab tiene de verdad.
+    # Django ignora el endpoint del LLM en su urlpatterns (siempre usa 'search').
+    _lab_ep = "search" if "django" in pkg else (endpoint or "search")
+    _lab_param = param or "q"
+    notes["endpoint"] = f"/{_lab_ep}"
+    notes["parameters"] = [_lab_param]
 
     on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
              f"(vuln_class={vuln_class}, pin={pin})"))
@@ -1801,6 +2025,11 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     pkg = _JS_ALIASES.get(pkg, pkg)
 
     lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
+    # Limpiar el directorio si ya existe para evitar que ficheros de versiones anteriores
+    # (p.ej. package.json con next@12.3.0 de una run previa) contaminen el nuevo lab.
+    import shutil as _shutil
+    if _os.path.isdir(lab_dir):
+        _shutil.rmtree(lab_dir)
     _os.makedirs(lab_dir, exist_ok=True)
 
     # Sanitize version: strip operator prefixes and compound ranges, keep only the
@@ -1810,12 +2039,17 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
     _semver_tok = re.search(r'v?([0-9]+(?:\.[0-9]+){1,4})', _raw_ver)
     _first_ver = _semver_tok.group(1) if _semver_tok else ""
 
-    # Next.js CVE-2025-29927: middleware was introduced in Next.js 12. If the inferred
-    # version is below 12 (e.g. "1.11.4" = the "starting affected" anchor, not a usable
-    # lab version), fall back to 12.3.4, the last vulnerable 12.x version, which
-    # has full middleware support and is confirmed to start quickly in dev mode.
+    # CVE-2025-29927 (x-middleware-subrequest bypass) affects Next.js 11.1.4-15.2.3.
+    # The x-middleware-subrequest header mechanism was introduced in Next.js 13.x and the
+    # bypass works in 13.x/14.x/15.x. Using 12.x gives wrong results because the header
+    # is NOT processed the same way. Force 15.2.2 (last vulnerable 15.x) for
+    # missing-authorization labs so the bypass check always targets the right code path.
     _is_nextjs = "next" in pkg
-    if _is_nextjs and _first_ver:
+    if _is_nextjs and vuln_class in ("missing-authorization", "auth-bypass"):
+        _first_ver = "15.2.2"
+        on_step(("version forzada a 15.2.2 para lab de bypass de middleware Next.js "
+                 "(x-middleware-subrequest solo funciona en Next.js 13+/15.x)"))
+    elif _is_nextjs and _first_ver:
         _major = int(_first_ver.split(".")[0])
         if _major < 12:
             _first_ver = "12.3.4"
@@ -1870,6 +2104,15 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
                 "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
                 "}\n"
             )
+        # .babelrc: fuerza Babel como transpilador en vez de SWC.
+        # En Next.js 15.x SWC es el default pero sus binarios nativos son optionalDependencies
+        # que pueden no instalarse bajo QEMU/emulacion (--platform linux/amd64 en M1) ni en
+        # entornos de CI con restricciones de red. Con .babelrc presente Next.js cae back a
+        # Babel automaticamente, usando el preset 'next/babel' que ya viene incluido en el
+        # paquete next -- sin dependencias extra. Esto elimina el crash
+        # 'node:internal/modules/cjs/loader throw e' que ocurre cuando @next/swc-* no carga.
+        with open(_os.path.join(lab_dir, ".babelrc"), "w") as f:
+            f.write('{"presets": ["next/babel"]}\n')
         # Custom server entry point
         srv = (
             "const { createServer } = require('http');\n"
@@ -1903,22 +2146,75 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             _proxy_lines = _pdl(lab_dir)
         except Exception:
             _proxy_lines = []
+        # pages/index.js minimal — Next.js 15 needs at least one page to initialise
+        pages_dir = _os.path.join(lab_dir, "pages")
+        _os.makedirs(pages_dir, exist_ok=True)
+        idx_js = _os.path.join(pages_dir, "index.js")
+        if not _os.path.exists(idx_js):
+            with open(idx_js, "w") as f:
+                f.write("export default function Home() { return <p>bin0racle lab</p>; }\n")
         dockerfile = (
-            "FROM node:20-alpine\n"
+            "FROM node:20-slim\n"
+            # node:20-slim usa Debian (glibc) en vez de Alpine (musl): necesario para
+            # los binarios nativos de SWC que usa Next.js 15.x -- en Alpine los binarios
+            # SWC precompilados se cargan contra glibc y fallan en musl con el error
+            # 'node:internal/modules/cjs/loader throw e'. node:20-slim es el sustituto
+            # minimo recomendado por la documentacion oficial de Next.js para Docker.
             + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
             + "WORKDIR /app\n"
             "COPY package.json .\n"
-            "RUN npm install --legacy-peer-deps || true\n"
-            # Clear the proxy after install so the runtime server never tries
-            # to reach a build-time-only localhost proxy endpoint.
+            # --omit=optional impide que npm instale @next/swc-linux-x64-gnu y otros
+            # binarios nativos de SWC. Bajo emulacion QEMU (--platform linux/amd64 en M1)
+            # los binarios SWC precompilados fallan en dlopen() causando que Node.js crashee
+            # antes de imprimir el error completo ('node:internal/modules/cjs/loader throw e').
+            # Con --omit=optional + .babelrc, Next.js detecta que SWC no esta disponible y
+            # usa Babel como transpilador -- compatible con todas las plataformas.
+            "RUN npm install --legacy-peer-deps --omit=optional\n"
+            # Eliminar cualquier addon nativo (.node) que haya quedado instalado
+            # (pueden crashear Node bajo emulacion QEMU o arquitectura incorrecta con
+            # 'node:internal/modules/cjs/loader throw e'). Sin estos ficheros Next.js
+            # cae automaticamente a Babel gracias al .babelrc copiado mas abajo.
+            "RUN find /app/node_modules -name '*.node' -delete 2>/dev/null || true\n"
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
             "EXPOSE 3000\n"
-            # Use the locally installed binary to avoid npx network lookup
             'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile)
+    elif vuln_class in ("command-injection", "os-command-injection"):
+        # Lab de command injection para paquetes npm: servidor HTTP Node.js que pasa
+        # el parametro 'cmd' a child_process.exec directamente (sin sanitizar).
+        # Funciona para CVEs de paquetes que ejecutan comandos del sistema con entrada
+        # del usuario (glob, cyclonedx, etc.).
+        ep = endpoint or "cmd"
+        p = param or "cmd"
+        # Garantiza que genericverify sabe que endpoint/param usar -- el scanner de rutas
+        # solo cubre Flask/Ruby; para Node.js actualizamos notes directamente.
+        notes["endpoint"] = f"/{ep}"
+        if not notes.get("parameters"):
+            notes["parameters"] = [p]
+        srv = (
+            "const http = require('http');\n"
+            "const { exec } = require('child_process');\n"
+            "const url = require('url');\n\n"
+            "const server = http.createServer((req, res) => {\n"
+            f"  if (req.url.startsWith('/{ep}')) {{\n"
+            "    const q = url.parse(req.url, true).query;\n"
+            f"    const cmd = q['{p}'] || 'echo hello';\n"
+            "    exec(cmd, (err, stdout, stderr) => {\n"
+            "      res.writeHead(200, {'Content-Type': 'text/plain'});\n"
+            "      res.end(stdout || stderr || (err ? err.message : 'ok'));\n"
+            "    });\n"
+            "  } else {\n"
+            "    res.writeHead(200);\n"
+            "    res.end('binoracle npm lab ok');\n"
+            "  }\n"
+            "});\n"
+            "server.listen(3000, '0.0.0.0', () => console.log('npm lab ready on :3000'));\n"
+        )
+        with open(_os.path.join(lab_dir, "server.js"), "w") as f:
+            f.write(srv)
     else:
         srv = (
             "const http = require('http');\n"
@@ -1930,6 +2226,8 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         )
         with open(_os.path.join(lab_dir, "server.js"), "w") as f:
             f.write(srv)
+        notes.setdefault("endpoint", "/")
+        notes.setdefault("http_method", "GET")
 
     on_step(f"scaffolded minimal npm {pkg} lab at {lab_dir} (version={dep_ver})")
     return lab_dir
@@ -2281,7 +2579,8 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
         _patched_ver_candidates: set = set()
         _m = _FIXES_THIS_VERSION_RE.search(description)
         if _m:
-            _patched_ver_candidates.add(_m.group(1))
+            # group(1): "Version X fixes…"; group(2): "is fixed in X" (new alt)
+            _patched_ver_candidates.add(_m.group(1) or _m.group(2))
         for _pm in _PRIOR_TO_VERSION_RE.finditer(description):
             _clause = next((g for g in _pm.groups() if g), None)
             if _clause:
@@ -2333,24 +2632,15 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_gem_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
-        # Python
-        if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
-            lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
-            if lab:
-                return lab
-        # Node
+        # Node -- se chequea ANTES del pip generico porque muchos paquetes npm (glob, express,
+        # etc.) pasan el regex pip ^[a-z][a-z0-9._-]+$ y se instalan como pip por error.
         if _NPM_PKG_RE.search(candidate):
             lab = _scaffold_npm_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
-        # Java/Maven
-        if _MAVEN_PKG_RE.search(candidate):
-            lab = _scaffold_maven_lab(candidate, version, vuln_class, notes, on_step)
-            if lab:
-                return lab
-        # PHP standalone
-        if _PHP_PKG_RE.search(candidate):
-            lab = _scaffold_php_lab(candidate, version, vuln_class, notes, on_step)
+        # Python (el re.match generico cubre paquetes no listados en _PIP_PKG_RE)
+        if _PIP_PKG_RE.search(candidate) or re.match(r'^[a-z][a-z0-9._-]+$', candidate):
+            lab = _scaffold_pip_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
     # Fallback: busca en la descripcion
@@ -2370,14 +2660,11 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
-        m = _MAVEN_PKG_RE.search(description)
+        # Paquetes npm con scope (@org/pkg) -- el regex principal no los cubre porque contienen '@'
+        # y '/' que no son alfanumericos. Confirmado necesario con CVE-2026-55849 (@cyclonedx/npm).
+        m = re.search(r'(@[a-z][a-z0-9._-]*/[a-z][a-z0-9._-]+)', description, re.IGNORECASE)
         if m:
-            lab = _scaffold_maven_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
-            if lab:
-                return lab
-        m = _PHP_PKG_RE.search(description)
-        if m:
-            lab = _scaffold_php_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+            lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
     return None
@@ -2449,10 +2736,15 @@ _EXCLUSIVE_BOUND_RE = re.compile(r"\bbefore\b|\bprior\s+to\b|<(?!=)", re.IGNOREC
 #   "before version 1.26"                  (phrasing clásica de NVD)
 #   "versions prior to 5.1.0"              (variante de NVD/advisories)
 _FIXES_THIS_VERSION_RE = re.compile(
-    r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix", re.IGNORECASE
+    # (a) "Version 3.1.6 fixes…" / "Versions 3.1.6 fix…"
+    r"[Vv]ersion[s]?\s+v?([0-9]+(?:\.[0-9]+){0,4})\s+fix"
+    # (b) "is fixed in 3.1.6" / "fixed in version 3.1.6" (NVD short form)
+    r"|(?:is\s+fixed\s+in|fixed\s+in(?:\s+version[s]?)?)\s+v?([0-9]+(?:\.[0-9]+){0,4})",
+    re.IGNORECASE
 )
 _PRIOR_TO_VERSION_RE = re.compile(
-    r"(?:[Pp]rior\s+to|[Bb]efore)\s+version[s]?\s+"
+    # "Prior to 3.1.6" / "Prior to version 3.1.6" / "Before 3.1.6" (version keyword optional)
+    r"(?:[Pp]rior\s+to|[Bb]efore)\s+(?:version[s]?\s+)?"
     r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)"
     r"|version[s]?\s+prior\s+to\s+"
     r"(v?[0-9]+(?:\.[0-9]+){1,4}(?:\s*,\s*(?:and\s+)?v?[0-9]+(?:\.[0-9]+){1,4})*)",
@@ -2565,6 +2857,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
              (f"'{version_raw}' doesn't look like a real version (looks like free text from "
              f"the description) and none could be extracted -- continuing without a specific "
              f"version"))
+    # Fallback determinista: si el LLM no extrajo la version afectada, intentar inferirla de la
+    # descripcion NVD que casi siempre incluye "from n/a through X.Y.Z" o "before X.Y.Z".
+    # Esto permite el chequeo de version en el fallback de slug '-wp' sin depender del LLM.
+    if not version and inv.description:
+        version = _clean_affected_version(inv.description)
+        if version:
+            version_exclusive = _affected_version_is_exclusive(inv.description)
     fn_names = notes.get("vulnerable_functions") or []
     if isinstance(fn_names, str):
         fn_names = [fn_names]
@@ -2583,15 +2882,38 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     # Fallback para CVEs de frameworks Python/Node: si no hay source_url ni slug de CMS,
     # construye un laboratorio minimal con el paquete pinado a la version vulnerable --
     # mismo mecanismo que los labs que antes se creaban a mano en /tmp para aiohttp/flask/etc.
-    if not source and inv.vuln_class in (
+    # EXTENSION: tambien se activa cuando el LLM dio una source_url que apunta al repo de la
+    # propia libreria en GitHub (p.ej. github.com/pallets/jinja para CVE-2025-27516) -- ese
+    # repo es el codigo fuente de la biblioteca, no una app desplegable, y genericverify no
+    # tiene endpoint al que atacar. Para plugins de CMS la URL no es de GitHub o el nombre no
+    # coincide con ningun paquete pip/npm/gem, por lo que _guess_package_lab devuelve None y
+    # el comportamiento existente se preserva.
+    if inv.vuln_class in (
             "path-traversal", "ssti", "sqli", "sql-injection",
             "command-injection", "missing-authorization", "xss", "ssrf"):
-        lab = _guess_package_lab(
+        _lab_candidate = _guess_package_lab(
             inv.description,
             (notes.get("target_binary") or "").strip(),
             inv.vuln_class, version, notes, step)
-        if lab:
-            source = lab
+        # Tambien sustituye la source cuando el LLM retorno un especificador de paquete
+        # pip (p.ej. "Flask-Reuploaded==1.4.0") en lugar de una URL -- fetch_source no
+        # sabe como descargarlo y falla con "no parece una URL de git/zip".
+        _is_pip_spec = bool(source and re.match(
+            r'^[A-Za-z][A-Za-z0-9._-]*(?:==|>=|<=|~=|!=)\d', source))
+        # Un "slug CMS" es un slug kebab-case sin protocolo ni separador de path:
+        # "modal-survey", "kivicare-clinic-management-system", etc.
+        # Cuando guessed_source=True y source ES un slug CMS, NO reemplazamos con un lab
+        # pip generico -- el lab correcto para ese slug es el WP/Drupal con el plugin real.
+        # Reemplazamos SOLO si: (a) no hay source, (b) source es GitHub (no desplegable),
+        # (c) source es un especificador pip con version, o (d) guessed_source y el source
+        # NO es un slug CMS bare (p.ej. description-only, source vacio, etc.).
+        _guessed_cms_slug = (guessed_source and source
+                             and not source.startswith("http")
+                             and "/" not in source
+                             and re.match(r'^[a-z][a-z0-9._-]+$', source))
+        if _lab_candidate and (not source or (guessed_source and not _guessed_cms_slug)
+                               or source.startswith("https://github.com/") or _is_pip_spec):
+            source = _lab_candidate
             guessed_source = False  # lab scaffolded deterministically, no es una suposicion CMS
 
     if source:
@@ -2607,19 +2929,42 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         # ABSOLUTO (ver mas arriba); si dio algo, aunque fuera inservible, nunca se llegaba a
         # intentar el slug real -- dando por perdido el codigo cuando SI se podia haber obtenido.
         if not fr.ok and not guessed_source:
-            guess = _guess_wp_slug_from_description(inv.description)
-            if guess and guess != source:
-                step((f"'{source}' no se pudo obtener ({fr.note}) -- probando '{guess}' como "
-                     f"slug de WordPress.org (extraido del propio texto del aviso)...") if es else
-                     (f"'{source}' could not be fetched ({fr.note}) -- trying '{guess}' as a "
-                     f"WordPress.org slug (extracted from the advisory text itself)..."))
-                fr_retry = fetch_source(guess, version=version, on_step=step,
-                                        cms_hint=(notes.get("cms") or "").strip().lower(),
-                                        exclusive_upper_bound=version_exclusive)
-                if fr_retry.ok:
-                    fr = fr_retry
-                    source = guess
+            # Paso 1: intentar el ultimo segmento de la URL fallida como slug de WordPress.org
+            # ANTES que el guess basado en la descripcion del CVE. Razon: la descripcion suele
+            # omitir el sufijo del slug real (p.ej. extrae 'error-log-viewer' de la descripcion
+            # cuando el slug real en WordPress.org ES 'error-log-viewer-wp'). La URL que dio el
+            # LLM ('https://github.com/wp-plugins/error-log-viewer-wp') contiene el slug correcto
+            # como ultimo segmento de path -- si tiene forma de slug de WordPress, se prueba
+            # primero y se evita descargar el plugin equivocado.
+            from .websource import looks_like_wp_slug as _lwps
+            _url_seg = source.rstrip("/").split("/")[-1] if source and "://" in source else ""
+            if _url_seg and _lwps(_url_seg) and _url_seg != source:
+                step((f"'{source}' no se pudo obtener ({fr.note}) -- probando primero "
+                      f"'{_url_seg}' como slug de WordPress.org (extraido de la URL de "
+                      f"origen)...") if es else
+                     (f"'{source}' could not be fetched ({fr.note}) -- trying "
+                      f"'{_url_seg}' first as a WordPress.org slug (extracted from the "
+                      f"source URL)..."))
+                fr_url_seg = fetch_source(_url_seg, version=version, on_step=step,
+                                          cms_hint="wordpress",
+                                          exclusive_upper_bound=version_exclusive)
+                if fr_url_seg.ok:
+                    fr = fr_url_seg
+                    source = _url_seg
                     guessed_source = True
+        # Fallback: si el slug CMS no se pudo descargar (404/etc.) pero hay un lab pip
+        # scaffoldeado (disponible porque _guessed_cms_slug evitó que reemplazara source),
+        # usarlo como última opción: mejor un lab Flask genérico que nada.
+        _lab_candidate_fallback = locals().get("_lab_candidate")
+        if not fr.ok and _lab_candidate_fallback:
+            step((f"'{source}' no se pudo obtener -- usando lab generico como fallback "
+                  f"({_lab_candidate_fallback})...") if es else
+                 (f"'{source}' could not be fetched -- using generic lab fallback "
+                  f"({_lab_candidate_fallback})..."))
+            fr = fetch_source(_lab_candidate_fallback, version=version, on_step=step)
+            if fr.ok:
+                source = _lab_candidate_fallback
+                guessed_source = False
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note,
@@ -2710,6 +3055,204 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                  f"'{known_action}' en el codigo descargado" if es else
                                  f"no add_action registration for '{known_action}' was found in "
                                  f"the fetched source"))
+                            # Fallback: el LLM adivino un nombre de accion que no existe en el
+                            # codigo real. Estrategia en dos niveles:
+                            # 1) Si el LLM propuso un sqli_param conocido, buscar la accion cuyo
+                            #    handler usa ese parametro POST directamente en el codigo real
+                            #    (find_ajax_action_for_param: el metodo mas fiable, no depende de
+                            #    la similitud de nombres).
+                            # 2) Si no hay sqli_param o no dio resultado, caer al scoring de
+                            #    similitud de nombres entre known_action y las acciones reales.
+                            from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                            _sqli_p = (notes.get("sqli_param") or
+                                       notes.get("vulnerable_parameter") or "").strip()
+                            _param_action = None
+                            # Buscar la accion real por parametro POST: primero sqli_param del LLM,
+                            # luego cada parametro de notes["parameters"], luego params DataTables
+                            # comunes -- cubre el caso habitual en que el LLM no extrae sqli_param
+                            # pero si conoce el parametro vulnerable (order[0][dir], etc.).
+                            _pts: list = []
+                            if _sqli_p:
+                                _pts.append(_sqli_p)
+                            for _pp in (notes.get("parameters") or []):
+                                _pps = str(_pp).strip() if _pp else ""
+                                if _pps and _pps not in _pts:
+                                    _pts.append(_pps)
+                            for _pp in ("order", "start", "length", "draw", "search",
+                                        "columns", "id", "post_id", "user_id",
+                                        "orderby", "dir"):
+                                if _pp not in _pts:
+                                    _pts.append(_pp)
+                            _found_via_p = ""
+                            for _cand_p in _pts:
+                                _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                                if _r:
+                                    _param_action = _r
+                                    _found_via_p = _cand_p
+                                    break
+                            if _param_action:
+                                step((f"accion AJAX encontrada directamente en el codigo "
+                                      f"real por el parametro POST '{_found_via_p}': "
+                                      f"'{_param_action}' -- actualizando endpoint" if es else
+                                      (f"AJAX action found directly in source by POST param "
+                                      f"'{_found_via_p}': '{_param_action}' -- updating endpoint")))
+                                old_ep = notes.get("endpoint") or ""
+                                if "action=" in old_ep:
+                                    import urllib.parse as _up
+                                    _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
+                                    _qs["action"] = _param_action
+                                    _base = old_ep.split("?", 1)[0]
+                                    notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                else:
+                                    notes["endpoint"] = (old_ep.rstrip("?&") +
+                                                         ("?" if "?" not in old_ep else "&") +
+                                                         f"action={_param_action}")
+                                notes["ajax_action"] = _param_action
+                                notes["http_method"] = "POST"  # AJAX siempre se llama via POST
+                                inv.llm_notes["ajax_action"] = _param_action
+                                inv.llm_notes["http_method"] = "POST"
+                                inv.llm_notes["endpoint"] = notes["endpoint"]
+                                # propagamos tambien sqli_param para que el verificador SQLi lo
+                                # use directamente sin tener que adivinarlo de nuevo.
+                                if _found_via_p and not notes.get("sqli_param"):
+                                    notes["sqli_param"] = _found_via_p
+                                    inv.llm_notes["sqli_param"] = _found_via_p
+                                _rec2 = find_ajax_handler_function(fr.local_path, _param_action)
+                                if _rec2:
+                                    inv.source_grounding["found"] = {
+                                        _rec2["function"]: [_rec2["location"]]}
+                            all_actions = find_all_ajax_actions(fr.local_path)
+                            if all_actions and not _param_action:
+                                step((f"escaneando las {len(all_actions)} acciones AJAX reales "
+                                     f"del plugin para encontrar la mas parecida a "
+                                     f"'{known_action}'..." if es else
+                                     (f"scanning the {len(all_actions)} real AJAX actions of the "
+                                     f"plugin to find the closest match to '{known_action}'...")))
+                                # seleccionar la accion con mayor similitud al nombre propuesto.
+                                # Scoring: por cada palabra del nombre propuesto, se busca la
+                                # mejor coincidencia en las palabras de la accion candidata --
+                                # coincidencia exacta (1.0) o prefijo comun de >=3 chars
+                                # (proporcion del prefijo sobre la palabra mas larga). La puntuacion
+                                # total se normaliza por el numero de palabras de la CANDIDATA para
+                                # penalizar las acciones largas que coinciden por tener muchas
+                                # palabras ('delete_all_logs' gana a 'loglist' en coincidencia
+                                # exacta de 'logs', pero la normalizacion inclina la balanza a favor
+                                # de la accion mas corta y enfocada que coincide en la misma
+                                # proporcion de sus palabras totales).
+                                _known_words = set(re.split(r'[_-]', known_action.lower()))
+
+                                def _lcp_len(a: str, b: str) -> int:
+                                    n = 0
+                                    for x, y in zip(a, b):
+                                        if x == y:
+                                            n += 1
+                                        else:
+                                            break
+                                    return n
+
+                                def _score(act: str) -> float:
+                                    act_wds = list(set(re.split(r'[_-]', act.lower())))
+                                    if not act_wds:
+                                        return 0.0
+                                    total = 0.0
+                                    for kw in _known_words:
+                                        best_w = 0.0
+                                        for aw in act_wds:
+                                            if kw == aw:
+                                                best_w = max(best_w, 1.0)
+                                            else:
+                                                lcp = _lcp_len(kw, aw)
+                                                if lcp >= 3:
+                                                    best_w = max(best_w, lcp / max(len(kw), len(aw)))
+                                        total += best_w
+                                    return total / len(act_wds)
+
+                                best = max(all_actions, key=_score)
+                                if _score(best) > 0:
+                                    step((f"accion AJAX mas parecida en el codigo real: "
+                                         f"'{best}' (puntuacion normalizada: "
+                                         f"{_score(best):.3f}) -- "
+                                         f"actualizando endpoint" if es else
+                                         (f"closest AJAX action in the real code: '{best}' "
+                                         f"(normalized score: {_score(best):.3f}) "
+                                         f"-- updating endpoint")))
+                                    # actualizar notes con la accion real
+                                    old_ep = notes.get("endpoint") or ""
+                                    if "action=" in old_ep:
+                                        import urllib.parse as _up
+                                        _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
+                                        _qs["action"] = best
+                                        _base = old_ep.split("?", 1)[0]
+                                        notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                    else:
+                                        notes["endpoint"] = (old_ep.rstrip("?&") +
+                                                             ("?" if "?" not in old_ep else "&") +
+                                                             f"action={best}")
+                                    notes["ajax_action"] = best
+                                    notes["http_method"] = "POST"  # AJAX siempre POST
+                                    inv.llm_notes["ajax_action"] = best
+                                    inv.llm_notes["http_method"] = "POST"
+                                    inv.llm_notes["endpoint"] = notes["endpoint"]
+                                    # buscar el handler de la nueva accion para grounding
+                                    recovered2 = find_ajax_handler_function(fr.local_path, best)
+                                    if recovered2:
+                                        inv.source_grounding["found"] = {
+                                            recovered2["function"]: [recovered2["location"]]}
+                                        step((f"RECUPERADO: handler de '{best}' -> "
+                                             f"'{recovered2['function']}' en "
+                                             f"{recovered2['location']}" if es else
+                                             (f"RECOVERED: handler of '{best}' -> "
+                                             f"'{recovered2['function']}' at "
+                                             f"{recovered2['location']}")))
+                                else:
+                                    step((f"ninguna de las {len(all_actions)} acciones AJAX "
+                                         f"encontradas comparte palabras con '{known_action}' -- "
+                                         f"se mantiene la hipotesis original" if es else
+                                         (f"none of the {len(all_actions)} found AJAX actions "
+                                         f"shares words with '{known_action}' -- keeping original "
+                                         f"hypothesis")))
+                    else:
+                        # Sin LLM (o LLM sin accion AJAX en las notas): para CVEs de clase sqli
+                        # en WordPress, escanear el plugin en busca de acciones AJAX que usen
+                        # parametros DataTables comunes (order, start, etc.) y construir el
+                        # endpoint determinista. Cubre el caso 'error-log-viewer-wp' sin Ollama.
+                        if inv.vuln_class in ("sqli", "sql-injection"):
+                            from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                            _pts_det = ["order", "start", "length", "draw", "search",
+                                        "columns", "id", "post_id", "user_id", "orderby", "dir"]
+                            _det_action = None
+                            _det_param = ""
+                            for _cand_p in _pts_det:
+                                _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                                if _r:
+                                    _det_action = _r
+                                    _det_param = _cand_p
+                                    break
+                            if _det_action:
+                                step((f"escaner determinista encontro accion AJAX para SQLi: "
+                                      f"'{_det_action}' (parametro '{_det_param}') -- "
+                                      f"construyendo endpoint...") if es else
+                                     (f"deterministic scan found AJAX action for SQLi: "
+                                      f"'{_det_action}' (param '{_det_param}') -- "
+                                      f"building endpoint..."))
+                                _det_ep = f"/wp-admin/admin-ajax.php?action={_det_action}"
+                                notes["endpoint"] = _det_ep
+                                notes["ajax_action"] = _det_action
+                                notes["http_method"] = "POST"
+                                notes["sqli_param"] = _det_param
+                                inv.llm_notes["endpoint"] = _det_ep
+                                inv.llm_notes["ajax_action"] = _det_action
+                                inv.llm_notes["http_method"] = "POST"
+                                inv.llm_notes["sqli_param"] = _det_param
+                                from .websource import find_ajax_handler_function
+                                _det_rec = find_ajax_handler_function(fr.local_path, _det_action)
+                                if _det_rec:
+                                    inv.source_grounding["found"] = {
+                                        _det_rec["function"]: [_det_rec["location"]]}
+                                    step((f"handler: '{_det_rec['function']}' en "
+                                          f"{_det_rec['location']}") if es else
+                                         (f"handler: '{_det_rec['function']}' at "
+                                          f"{_det_rec['location']}"))
                 # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
                 # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
                 # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara
@@ -2756,6 +3299,113 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
                              "inicial" if es else "no LLM available or nothing to refine: keeping "
                              "the initial hypothesis")
+            # Override determinista para WordPress SQLi: si un parametro de tipo DataTables
+            # (order, dir, start, etc.) apunta directamente a una accion DISTINTA de la
+            # actualmente seleccionada (via codigo real, no similitud de nombres), la accion
+            # del codigo GANA -- evidencia directa mas fuerte que el scoring de similaridad.
+            # Corrige el caso 'error-log-viewer-wp' donde el LLM escoge 'elvwp_log_download'
+            # pero la accion vulnerable real es 'elvwp_datatable_loglist' (usa $_POST['order']).
+            if (fr.ok and not is_drupal and not is_joomla and
+                    inv.vuln_class in ("sqli", "sql-injection") and
+                    notes.get("ajax_action")):
+                from .websource import find_ajax_action_for_param as _fap_override
+                _sqli_cands_ov = []
+                _sqli_p_ov = (notes.get("sqli_param") or "").strip()
+                if _sqli_p_ov:
+                    _sqli_cands_ov.append(_sqli_p_ov.split("[")[0].strip("'\" "))
+                for _pp_ov in ("order", "dir", "start", "orderby", "length", "draw"):
+                    if _pp_ov not in _sqli_cands_ov:
+                        _sqli_cands_ov.append(_pp_ov)
+                for _cand_ov in _sqli_cands_ov:
+                    if not _cand_ov or len(_cand_ov) < 2:
+                        continue
+                    _real_act_ov = _fap_override(fr.local_path, _cand_ov)
+                    if _real_act_ov and _real_act_ov != notes["ajax_action"]:
+                        step((f"parametro '{_cand_ov}' apunta directamente a "
+                              f"'{_real_act_ov}' en el codigo real (accion actual: "
+                              f"'{notes['ajax_action']}') -- sobreescribiendo con la "
+                              f"accion correcta segun el codigo") if es else
+                             (f"param '{_cand_ov}' points directly to '{_real_act_ov}' "
+                              f"in real source (current action: '{notes['ajax_action']}') "
+                              f"-- overriding with code-evidence action"))
+                        _old_ep_ov = notes.get("endpoint") or ""
+                        import re as _re_ov
+                        if "action=" in _old_ep_ov:
+                            _new_ep_ov = _re_ov.sub(r"action=[^&]*",
+                                                     f"action={_real_act_ov}", _old_ep_ov)
+                        else:
+                            _new_ep_ov = f"/wp-admin/admin-ajax.php?action={_real_act_ov}"
+                        notes["ajax_action"] = _real_act_ov
+                        notes["endpoint"] = _new_ep_ov
+                        notes["sqli_param"] = _cand_ov
+                        inv.llm_notes["ajax_action"] = _real_act_ov
+                        inv.llm_notes["endpoint"] = _new_ep_ov
+                        inv.llm_notes["sqli_param"] = _cand_ov
+                        from .websource import find_ajax_handler_function as _fahf_ov
+                        _rec_ov = _fahf_ov(fr.local_path, _real_act_ov)
+                        if _rec_ov:
+                            inv.source_grounding["found"] = {
+                                _rec_ov["function"]: [_rec_ov["location"]]}
+                            step((f"handler real: '{_rec_ov['function']}' en "
+                                  f"{_rec_ov['location']}") if es else
+                                 (f"real handler: '{_rec_ov['function']}' at "
+                                  f"{_rec_ov['location']}"))
+                        break
+            # Ruta SIN LLM: el bloque 'if fn_names:' de arriba no corre cuando el LLM no esta
+            # disponible (fn_names=[]) y deja notes["endpoint"] vacio. Para CVEs de clase sqli
+            # en WordPress, escanear el plugin en busca de acciones AJAX SQLi-susceptibles y
+            # construir el endpoint de forma determinista para que el verificador pueda lanzarse.
+            if (fr.ok and not is_drupal and not is_joomla and not fn_names
+                    and not notes.get("endpoint")
+                    and inv.vuln_class in ("sqli", "sql-injection")):
+                from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                _noLLM_pts = ["order", "start", "length", "draw", "search",
+                               "columns", "id", "post_id", "user_id", "orderby", "dir"]
+                _noLLM_action = None
+                _noLLM_param = ""
+                for _cand_p in _noLLM_pts:
+                    _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                    if _r:
+                        _noLLM_action = _r
+                        _noLLM_param = _cand_p
+                        break
+                if _noLLM_action:
+                    step((f"escaner determinista (sin LLM) encontro accion AJAX SQLi: "
+                          f"'{_noLLM_action}' (parametro POST '{_noLLM_param}') -- "
+                          f"construyendo endpoint...") if es else
+                         (f"deterministic scan (no LLM) found SQLi AJAX action: "
+                          f"'{_noLLM_action}' (POST param '{_noLLM_param}') -- "
+                          f"building endpoint..."))
+                    _noLLM_ep = f"/wp-admin/admin-ajax.php?action={_noLLM_action}"
+                    notes["endpoint"] = _noLLM_ep
+                    notes["ajax_action"] = _noLLM_action
+                    notes["http_method"] = "POST"
+                    notes["sqli_param"] = _noLLM_param
+                    inv.llm_notes["endpoint"] = _noLLM_ep
+                    inv.llm_notes["ajax_action"] = _noLLM_action
+                    inv.llm_notes["http_method"] = "POST"
+                    inv.llm_notes["sqli_param"] = _noLLM_param
+                    from .websource import find_ajax_handler_function
+                    _noLLM_rec = find_ajax_handler_function(fr.local_path, _noLLM_action)
+                    if _noLLM_rec:
+                        inv.source_grounding["found"] = {
+                            _noLLM_rec["function"]: [_noLLM_rec["location"]]}
+                        step((f"handler: '{_noLLM_rec['function']}' en "
+                              f"{_noLLM_rec['location']}") if es else
+                             (f"handler: '{_noLLM_rec['function']}' at "
+                              f"{_noLLM_rec['location']}"))
+                        # Refinar parametros con grep deterministico (extrae order[0][dir] etc.)
+                        det_no_llm = _deterministic_web_hints_from_source(
+                            fr.local_path, inv.source_grounding["found"])
+                        if det_no_llm:
+                            notes = {**notes, **det_no_llm}
+                            inv.llm_notes.update(det_no_llm)
+                            step((f"grep deterministico (sin LLM): endpoint="
+                                  f"{det_no_llm.get('endpoint')}, parameters="
+                                  f"{det_no_llm.get('parameters')}") if es else
+                                 (f"deterministic grep (no LLM): endpoint="
+                                  f"{det_no_llm.get('endpoint')}, parameters="
+                                  f"{det_no_llm.get('parameters')}"))
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
@@ -2866,7 +3516,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # jamas validado, no como una password nueva que fijar) -- exige el hint explicito
                 # unauthenticated_login_bypass (de --unauthenticated-login-bypass) porque solo el
                 # analista que leyo el aviso real sabe que el endpoint es publico.
-                if notes.get("unauthenticated_login_bypass"):
+                # EXTENSION (CVE-2026-2991/KiviCare): si hay email_p pero NO id_p, el patron
+                # es "social-login bypass" (te autentican con solo saber el email de un usuario
+                # ya registrado, sin ID de victima ni cambio de credencial) -- se trata igual
+                # que unauthenticated_login_bypass aunque el hint explicito no este presente.
+                _is_social_login_bypass = (email_p and not id_p
+                                           and not (pass_p and id_p))
+                if notes.get("unauthenticated_login_bypass") or _is_social_login_bypass:
                     step(("intentando verificacion DINAMICA -- login bypass SIN NINGUNA sesion "
                          "previa (WordPress+MySQL efimero en Docker)..." if es else
                          "attempting DYNAMIC verification -- login bypass with NO prior session "
@@ -3356,7 +4012,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import verify_wordpress_sqli, _pick_param, _SQLI_HINTS
                 from .websource import find_shortcode_name, find_join_relationship_table
                 params = notes.get("parameters") or []
-                sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                _raw_sqli = notes.get("sqli_param") or ""
+                # Si sqli_param es una clave simple ("order") pero los parametros refinados
+                # contienen un path de array mas especifico ("order[0][dir]"), usarlo -- esto
+                # ocurre cuando find_ajax_action_for_param encontro la accion via la clave
+                # exterior y luego _deterministic_web_hints_from_source extrae el path completo.
+                if _raw_sqli:
+                    for _pp in (params or []):
+                        if str(_pp).startswith(_raw_sqli + "["):
+                            _raw_sqli = str(_pp)
+                            break
+                sqli_p = _raw_sqli or _pick_param(params, _SQLI_HINTS)
                 # si el endpoint es la raiz ('/'), atacarla directamente no puede reflejar
                 # ninguna diferencia (es la portada vacia por defecto, sin contenido del plugin)
                 # -- confirmado en vivo, CVE-2024-3552: con el shortcode real del plugin,
@@ -3399,9 +4065,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # vuelta) no ayuda -- un unico intento, con el laboratorio vivo al final para
                 # que el analista mire wp-content/debug.log el mismo, vale mas que tres
                 # intentos ciegos que nunca dejan nada en pie que inspeccionar.
+                # Si el endpoint es admin-ajax.php, el metodo debe ser POST: $_POST no se
+                # popula con GET y la inyeccion nunca llega al codigo vulnerable.
+                _sqli_ep = notes.get("endpoint") or ""
+                _sqli_http_method = ("POST" if "admin-ajax" in _sqli_ep
+                                     else notes.get("http_method") or "GET")
                 wr = verify_wordpress_sqli(
-                    fr.local_path, plugin_dir, notes.get("endpoint"),
-                    notes.get("http_method") or "GET", params,
+                    fr.local_path, plugin_dir, _sqli_ep,
+                    _sqli_http_method, params,
                     sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
                     setup_wp_options=notes.get("setup_options") or [],
                     companion_plugins=companion_plugins, shortcode_name=shortcode_name,
@@ -3433,8 +4104,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_generic_wp_suggestion(sug, extra_nonce_pages,
                                                  extra_setup_trigger_paths, params)
                 def _attempt_sqli(ep, pr):
+                    _ep_method = ("POST" if "admin-ajax" in (ep or "")
+                                  else notes.get("http_method") or "GET")
                     return verify_wordpress_sqli(
-                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        fr.local_path, plugin_dir, ep, _ep_method, params,
                         sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         setup_wp_options=notes.get("setup_options") or [],
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name,
@@ -3484,18 +4157,29 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      if es else "attempting GENERIC DYNAMIC verification -- time-based blind "
                      "(SLEEP/pg_sleep), the target is built from its own Dockerfile/compose..."))
                 id_table_hint = notes.get("sqli_identifier_table_hint", "")
+                # Cuando el lab fue scaffoldeado por nosotros (local-dir), el endpoint y el
+                # parametro son FIJOS (los que el lab realmente expone).  El retry del LLM
+                # suele sugerir endpoints CMS (admin-ajax.php, etc.) que no existen en el lab
+                # y producen 404 en ambos payloads bool → diff=0 → never confirmed.
+                # Capturamos el endpoint/param del lab antes del retry y los forzamos en el
+                # callback para que el LLM no los sobreescriba.
+                _genlab_ep    = notes.get("endpoint")
+                _genlab_param = sqli_p or ""
+                _is_local_lab = (fr.kind == "local-dir")
                 wr = verify_generic_sqli_blind(
-                    fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
+                    fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
+                    params, sqli_param_hint=_genlab_param, on_step=step, budget_s=budget_s,
                     sqli_identifier_table_hint=id_table_hint)
                 def _attempt_sqli_blind_generic(ep, pr):
+                    _ep  = _genlab_ep    if _is_local_lab else ep
+                    _pr  = _genlab_param if _is_local_lab else pr
                     return verify_generic_sqli_blind(
-                        fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        fr.local_path, _ep, notes.get("http_method") or "GET", params,
+                        sqli_param_hint=_pr or "", on_step=step, budget_s=budget_s,
                         sqli_identifier_table_hint=id_table_hint)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
-                    _attempt_sqli_blind_generic, wr, notes.get("endpoint"), sqli_p,
+                    _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,
                     technique_label="SQLi ciega por tiempo (generico)",
                     max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
                 _apply_wpverify_result(inv, wr, es, llm)
@@ -4377,8 +5061,11 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     # un mecanismo de impacto mas especifico (ssti, path-traversal, command-injection, xxe...),
     # ese gana sobre el "file-upload" del LLM -- e.g. CVE-2026-27641: LLM dice "file-upload"
     # pero la descripcion dice "server-side template injection (SSTI)".
+    # "deserialization" es igualmente vaga cuando la descripcion dice claramente ssti/traversal/etc.
+    # (confirmado en vivo con CVE-2025-27516: LLM retorno "deserialization" pero la descripcion
+    # dice "templating engine" -> classify_cve da "ssti" -> el lab correcto es el Jinja2 SSTI).
     _UPLOAD_OVERRIDE = {"ssti", "path-traversal", "command-injection", "xxe", "sqli", "ssrf"}
-    if _llm_class == "file-upload" and _desc_class in _UPLOAD_OVERRIDE:
+    if _llm_class in ("file-upload", "deserialization") and _desc_class in _UPLOAD_OVERRIDE:
         inv.vuln_class = _desc_class
     else:
         inv.vuln_class = _llm_class or _desc_class or ""
@@ -4464,6 +5151,39 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
              "no binary: schema + template developed; real blockers noted.")
 
     inv.steps = []   # el streaming ya emitio los pasos; el informe los reconstruye del render
+
+    # Captura de terminal: estado final de la investigacion
+    try:
+        from .wpverify import _screenshot_terminal_step
+        _status = ("VERIFICADO" if inv.verified else "NO CONFIRMADO") if es else ("VERIFIED" if inv.verified else "UNCONFIRMED")
+        _detail = inv.verified_detail or inv.blockers[0] if (inv.verified_detail or inv.blockers) else ""
+        _term_content = (
+            f"CVE: {inv.cve_id}\n"
+            f"Clase: {inv.vuln_class or '?'}\n"
+            f"CVSS: {inv.cvss_score or '?'} ({inv.cvss_severity or '?'})\n"
+            f"Resultado: {_status}\n"
+            + (f"Detalle: {_detail}\n" if _detail else "")
+            + (f"Payload: {inv.verified_evidence.get('payload_ganador', '')}\n"
+               if inv.verified and inv.verified_evidence else "")
+        )
+        _term_png = _screenshot_terminal_step(
+            title=f"{inv.cve_id} · {_status}",
+            content=_term_content,
+            highlight=_status,
+            lang=lang,
+        )
+        if _term_png:
+            inv.verified_evidence = inv.verified_evidence or {}
+            inv.verified_evidence.setdefault("screenshots", [])
+            shots = inv.verified_evidence["screenshots"]
+            shots.insert(0, {
+                "png_b64": _term_png,
+                "caption_es": f"Estado final de la investigacion en terminal: {_status}",
+                "caption_en": f"Final investigation status in terminal: {_status}",
+            })
+    except Exception:
+        pass
+
     save_investigation_to_cache(inv)
     return inv
 

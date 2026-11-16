@@ -67,6 +67,14 @@ _MYSQL_IMAGE = "mysql:8.0"           # Joomla 5 exige >=8.0.13 -- confirmado en 
 _JOOMLA_IMAGE = "joomla:5-apache"
 
 
+def _add_shot(boot, url: str, method: str, status: int, body: str,
+              caption_es: str, caption_en: str = "", highlight: str = "") -> None:
+    png = _screenshot_response(url, method, status, (body or "")[:2000], highlight=highlight)
+    if png:
+        boot.shots.append({"png_b64": png, "caption_es": caption_es,
+                           "caption_en": caption_en or caption_es, "url": url})
+
+
 def _run(cmd: List[str], timeout: float = 60.0, input_text=None,
         input_bytes: Optional[bytes] = None) -> subprocess.CompletedProcess:
     if input_bytes is not None:
@@ -420,9 +428,8 @@ def verify_joomla_account_takeover(
                                data=payload if m != "GET" else None,
                                params=payload if m == "GET" else None, timeout=20)
             res.evidence["status_code_respuesta"] = resp.status_code
-            boot.shots.append(_screenshot_response(
-                boot.base_url + endpoint, m, resp.status_code, resp.text or "",
-                "petición atacante → endpoint (account takeover Joomla)", lang="es"))
+            _add_shot(boot, boot.base_url + endpoint, m, resp.status_code, resp.text or "",
+                      "petición atacante → endpoint (account takeover Joomla)")
         except Exception as e:
             res.detail = f"la peticion fallo: {e}"
             return res
@@ -450,10 +457,9 @@ def verify_joomla_account_takeover(
                           f"(id={boot.admin_id}) -- confirmado por un SEGUNDO login/lectura "
                           f"independiente, no por el codigo de la respuesta")
             step("VERIFICADO: account takeover confirmado en Joomla.")
-            boot.shots.append(_screenshot_response(
-                boot.base_url + endpoint, m, 200,
-                "account takeover confirmado en Joomla",
-                "VERIFICADO — account takeover Joomla confirmado", lang="es"))
+            _add_shot(boot, boot.base_url + endpoint, m, 200,
+                      "account takeover confirmado en Joomla",
+                      "VERIFICADO — account takeover Joomla confirmado")
         else:
             res.ok = True
             res.detail = ("se envio la peticion pero el efecto no se confirmo -- el account "
@@ -538,9 +544,8 @@ def verify_joomla_deserialization(
                 resp_d = boot.sub_sess.request(m, boot.base_url + endpoint, timeout=20, **kwargs)
                 if not first_jdeser_sent:
                     first_jdeser_sent.append(True)
-                    boot.shots.append(_screenshot_response(
-                        boot.base_url + endpoint, m, resp_d.status_code, resp_d.text or "",
-                        f"petición deserialización Joomla — {label}", lang="es"))
+                    _add_shot(boot, boot.base_url + endpoint, m, resp_d.status_code,
+                              resp_d.text or "", f"petición deserialización Joomla — {label}")
             except Exception as e:
                 tried.append({"modo": label, "error": str(e)})
                 return
@@ -555,11 +560,10 @@ def verify_joomla_deserialization(
                 res.evidence["contenido_fichero"] = content[:500]
                 step(f"VERIFICADO: el fichero {canary_path} contiene el secreto exacto -- "
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
-                boot.shots.append(_screenshot_response(
-                    boot.base_url + endpoint, m, 200,
-                    f"canary: {content[:300]}",
-                    f"VERIFICADO — deserialization Joomla, gadget={gadget.full_class_name}",
-                    highlight=secret, lang="es"))
+                _add_shot(boot, boot.base_url + endpoint, m, 200,
+                          f"canary: {content[:300]}",
+                          f"VERIFICADO — deserialization Joomla, gadget={gadget.full_class_name}",
+                          highlight=secret)
 
         if serial_param:
             payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -1087,10 +1091,11 @@ def verify_joomla_legacy_module_sqli_cookie(
                     f"linea_base: {round(base_median, 3)}s\n"
                     f"tiempo_1: {t1_w}s  tiempo_2: {t2_w}s\n"
                     f"threshold: {round(threshold, 3)}s")
-            shots.append(_screenshot_response(
-                f"php-cli://{slug}/{entry_relpath}", "PHP-CLI", 0, body,
-                f"VERIFICADO — SQLi ciega por tiempo (cookie), payload={res.evidence['payload_ganador_crudo']!r}",
-                lang="es"))
+            _png = _screenshot_response(f"php-cli://{slug}/{entry_relpath}", "PHP-CLI", 0, body)
+            if _png:
+                shots.append({"png_b64": _png,
+                               "caption_es": f"VERIFICADO — SQLi ciega por tiempo (cookie), payload={res.evidence['payload_ganador_crudo']!r}",
+                               "url": f"php-cli://{slug}/{entry_relpath}"})
             res.detail = (f"SQLI CIEGA POR TIEMPO (via cookie) confirmada: la cookie "
                           f"{cookie_name} con valor crudo {res.evidence['payload_ganador_crudo']!r} "
                           f"retraso la ejecucion real del codigo fuente SIN MODIFICAR de forma "
@@ -1100,9 +1105,11 @@ def verify_joomla_legacy_module_sqli_cookie(
             res.ok = True
             body = (f"linea_base: {round(base_median, 3)}s  threshold: {round(threshold, 3)}s\n"
                     f"intentos: {len(tried)}")
-            shots.append(_screenshot_response(
-                f"php-cli://{slug}/{entry_relpath}", "PHP-CLI", 0, body,
-                "SQLi ciega cookie no confirmada — línea base y resultados", lang="es"))
+            _png = _screenshot_response(f"php-cli://{slug}/{entry_relpath}", "PHP-CLI", 0, body)
+            if _png:
+                shots.append({"png_b64": _png,
+                               "caption_es": "SQLi ciega cookie no confirmada — línea base y resultados",
+                               "url": f"php-cli://{slug}/{entry_relpath}"})
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/comentario y "
                           f"ninguna retraso la ejecucion de forma consistente -- la SQLi ciega "
                           f"via cookie no se confirmo")

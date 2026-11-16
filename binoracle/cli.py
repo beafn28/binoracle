@@ -1,6 +1,9 @@
 """binoracle command line interface."""
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
+
 import argparse
 import json
 import sys
@@ -1290,7 +1293,7 @@ def _make_cve_step_printer():
         # "corrigiendo version: '3.9.2' es la version PARCHEADA" → resaltar en amarillo
         if _re.search(r"corrigiendo version|PARCHEADA|ultima vulnerable", msg, _re.I):
             if _col:
-                print(f"  {DIM}{ts}{R}  {YLW}⚡{R} {YLW}{B}[CORR]{R}{YLW} {msg}{R}")
+                print(f"  {DIM}{ts}{R}  {YLW}{B}[CORR]{R}{YLW} {msg}{R}")
             else:
                 print(f"  {ts}  [CORR] {msg}")
             return
@@ -1312,6 +1315,84 @@ def _make_cve_step_printer():
             print(f"  {ts}  [{label}] {msg}")
 
     return on_step
+
+
+def _md_to_plain(text: str) -> str:
+    """Convierte markdown a texto plano legible en terminal.
+
+    Reglas aplicadas en orden estricto:
+    1. Bloques de codigo (```) → detectados ANTES de cualquier sub; contenido indentado.
+    2. Cabeceras #/##/### → texto en mayusculas con subrayado o sin el.
+    3. Separadores de tabla |---|  → omitidos.
+    4. Filas de tabla → celdas separadas por espacios, backticks en celdas eliminados.
+    5. Reglas horizontales (---/===/***/~~~) → linea en blanco.
+    6. Blockquote > → indentado.
+    7. Negrita/cursiva, backticks inline, enlaces → texto plano.
+    8. Backtick suelto residual al inicio/fin de linea → eliminado.
+    """
+    import re as _re
+
+    _inline_code = _re.compile(r'`+([^`]+)`+')
+    _bold_italic = _re.compile(r'\*{1,3}([^*\n]+)\*{1,3}|_{1,3}([^_\n]+)_{1,3}')
+    _link        = _re.compile(r'\[([^\]]+)\]\([^)]*\)')
+    _hr          = _re.compile(r'^(\s*[-*_~=]{3,}\s*)$')
+
+    def _strip_inline(s: str) -> str:
+        s = _inline_code.sub(r'\1', s)
+        s = _bold_italic.sub(lambda m: m.group(1) or m.group(2), s)
+        s = _link.sub(r'\1', s)
+        return s.strip('`')
+
+    out: list[str] = []
+    inside_code = False
+
+    for raw in text.splitlines():
+        # --- 1. Valla de codigo (``` o ~~~) — ANTES de cualquier transformacion ---
+        if _re.match(r'^(`{3,}|~{3,})', raw):
+            inside_code = not inside_code
+            continue
+        if inside_code:
+            out.append('  ' + raw)
+            continue
+
+        # --- 2. Cabeceras ---
+        hm = _re.match(r'^(#{1,6})\s+(.*)', raw)
+        if hm:
+            level = len(hm.group(1))
+            title = _strip_inline(hm.group(2).strip())
+            if level <= 2:
+                out.append('')
+                out.append(title.upper())
+                out.append('─' * min(len(title), 60))
+            else:
+                out.append('')
+                out.append(title)
+            continue
+
+        # --- 3. Separador de tabla |---|---|  → omitir ---
+        if _re.match(r'^\|[\s\-|:]+\|', raw):
+            continue
+
+        # --- 4. Fila de tabla | a | b | ---
+        if raw.startswith('|') and raw.endswith('|'):
+            cells = [_strip_inline(c.strip()) for c in raw[1:-1].split('|')]
+            out.append('  ' + '   '.join(cells))
+            continue
+
+        # --- 5. Regla horizontal ---/===/***  → linea en blanco ---
+        if _hr.match(raw):
+            out.append('')
+            continue
+
+        # --- 6. Blockquote ---
+        line = _re.sub(r'^>\s*', '  ', raw)
+
+        # --- 7. Inline: negrita, cursiva, backticks, enlaces ---
+        line = _strip_inline(line)
+
+        out.append(line)
+
+    return '\n'.join(out)
 
 
 def cmd_cve(args, config):
@@ -1342,14 +1423,49 @@ def cmd_cve(args, config):
     _ac = "\033[1;96m" if _use_col else ""   # cyan brillante
     _mc = "\033[1;35m" if _use_col else ""   # magenta → CVE ID
     _gc = "\033[1;32m" if _use_col else ""   # verde → OK
-    bar = "═" * 62
+    _oc = "\033[1;33m" if _use_col else ""   # ámbar → el "0" de bin0racle y hex values
+    _W  = 62   # visible width between ║ borders
+    bar = "═" * _W
+
+    def _brow(vis, txt):
+        return f"{_ac}║{_r}{txt}{' ' * max(0, _W - vis)}{_ac}║{_r}"
+
+    # Header: "  bin0racle" (11) + 13 spaces + subtitle (36) + 2 spaces = 62
+    _hdr = (f"  {_b}bin{_r}{_oc}{_b}0{_r}{_ac}{_b}racle{_r}"
+            f"             {_d}oracle de investigación CVE autónoma  {_r}")
+
+    # Crystal ball rows (left 16 visible) + info right column
+    _cv  = len(cve_id)
+    _rows = [
+        (f"   {_ac}╭───────────╮{_r}", 16, "", 0),
+        (f"   {_ac}│{_r} 1001 {_oc}0xE9{_r} {_ac}│{_r}", 16,
+         f"   {_d}▸ {_r}{_mc}{_b}{cve_id}{_r}", 5 + _cv),
+        (f"   {_ac}│{_r} 0110 1011 {_ac}│{_r}", 16,
+         f"   {_d}investigación autónoma{_r}", 25),
+        (f"   {_ac}│{_r} {_oc}{_b}RCE{_r}  0101 {_ac}│{_r}", 16, "", 0),
+        (f"   {_ac}│{_r} 1100 {_oc}0x90{_r} {_ac}│{_r}", 16, "", 0),
+        (f"   {_ac}╰─────┬─────╯{_r}", 16, "", 0),
+        (f"        {_ac}═╧═{_r}", 11, "", 0),
+    ]
+
+    # Footer: "creado por @beafn28" right-aligned (40 pad + 19 text + 3 margin = 62)
+    _ft  = f"{_d}creado por {_r}{_oc}{_b}@beafn28{_r}"
+    _ftr = " " * (_W - 3 - 19) + _ft + "   "
+
     print(f"\n{_ac}╔{bar}╗{_r}")
-    print(f"{_ac}║{_r}  {_d}◈{_r} {_b}BINORACLE{_r}  {_d}·{_r}  {_mc}{_b}{cve_id}{_r}"
-          f"  {_d}·{_r}  {_d}investigación autónoma{_r}")
+    print(_brow(62, _hdr))
+    print(f"{_ac}╠{bar}╣{_r}")
+    for la, lv, ra, rv in _rows:
+        print(_brow(lv + rv, la + ra))
+    print(f"{_ac}╠{bar}╣{_r}")
+    print(_brow(62, _ftr))
     print(f"{_ac}╚{bar}╝{_r}\n")
 
     t_start = _time.time()
-    on_step = _make_cve_step_printer()
+    if getattr(args, "quiet", False):
+        on_step = lambda _m: None  # silencio total; solo veredicto final
+    else:
+        on_step = _make_cve_step_printer()
 
     inv = investigate_cve(
         cve_id,
@@ -1413,7 +1529,15 @@ def cmd_cve(args, config):
         if blockers:
             print(f"\n  {_b}Bloqueadores:{_r}")
             for bl in blockers[:3]:
-                print(f"    {vc}▸{_r} {bl[:100]}")
+                # Sin truncar a 100: los logs de docker contienen el error real de Node/Python
+                # que necesitamos ver entero para diagnosticar. Se limita a 800 chars para no
+                # llenar la terminal, pero es suficiente para ver el 'Error: Cannot find module'.
+                bl_txt = bl[:800]
+                # Indentar las líneas internas del bloque de logs para que se lean bien
+                lines = bl_txt.splitlines()
+                print(f"    {vc}▸{_r} {lines[0]}")
+                for ln in lines[1:]:
+                    print(f"      {ln}")
 
     print(f"\n  {_b}Tiempo total{_r}: {_tm_c}{elapsed_total:.1f}s{_r}")
     # Resumen rápido de clase + CVSS
@@ -1475,8 +1599,8 @@ def cmd_cve(args, config):
                     print(f"      {_d}[~{_kb} KB — usa -o report.html para ver la imagen]{_r}")
     print()
 
-    # Siempre imprime el resumen en terminal (sin imágenes base64)
-    print(render_investigation(inv, config.lang, embed_images=False))
+    # El informe completo solo va al HTML (-o/--html); en terminal no se imprime nada mas
+    # despues del cuadro VERIFICADO / NO CONFIRMADO (ya se ve todo lo relevante ahi).
 
     if getattr(args, "html", None):
         from .report.html import render_investigation_page
@@ -2296,7 +2420,7 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("cve", help="CVE id (e.g. CVE-2025-59681)")
     cv.add_argument("--source", help="source dir / plugin slug / git URL for the vulnerable code")
     cv.add_argument("--endpoint", help="vulnerable HTTP endpoint")
-    cv.add_argument("--method", default="GET", help="HTTP method (default GET)")
+    cv.add_argument("--method", help="HTTP method override (omit to let binoracle detect it)")
     cv.add_argument("--params", help="comma-separated request parameters (name or name=value)")
     cv.add_argument("--vuln-class", help="known vuln class (sqli, rce, xxe, missing-authorization...)")
     cv.add_argument("--budget", type=float, default=600,
@@ -2304,6 +2428,8 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
     cv.add_argument("-o", "--html", help="export full HTML report (with screenshots) to this path")
     cv.add_argument("--json", dest="json_out", help="dump full evidence JSON to this path")
+    cv.add_argument("-q", "--quiet", action="store_true",
+                    help="no imprime pasos en vivo; solo muestra el veredicto final")
     cv.set_defaults(func=cmd_cve)
 
     ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "

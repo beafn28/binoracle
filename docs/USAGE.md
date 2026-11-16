@@ -186,6 +186,44 @@ reconstrúyelo cuando cambie cualquier `.md` fuente.
 
 ---
 
+## 9. Pipeline CVE — investigación autónoma de vulnerabilidades web
+
+binoracle incluye un segundo pipeline, independiente del análisis de binarios, que toma un
+CVE-ID y ejecuta una investigación completa de forma autónoma: consulta NVD, genera una
+hipótesis de explotación con el LLM local, levanta un laboratorio Docker efímero con la
+versión vulnerable y verifica la vulnerabilidad con evidencia real.
+
+```bash
+# Investigación básica (resultado en terminal)
+binoracle cve CVE-2021-41773
+
+# Con informe HTML
+binoracle cve CVE-2021-41773 --html informe.html --open-report
+
+# Lote de CVEs con informes paralelos
+binoracle cve-batch CVE-2021-41773 CVE-2024-23334 --html-dir ./informes/ --workers 2
+```
+
+Configuración mínima (Ollama local recomendado):
+
+```bash
+export BINORACLE_BACKEND=openai
+export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
+export BINORACLE_MODEL=qwen2.5-coder:7b
+export BINORACLE_API_KEY=ollama
+```
+
+Documentación completa del pipeline CVE:
+
+| Documento | Contenido |
+|---|---|
+| [CVE_QUICKSTART.md](CVE_QUICKSTART.md) | Primera ejecución paso a paso, de cero a VERIFICADO |
+| [CVE_PIPELINE.md](CVE_PIPELINE.md) | Arquitectura interna: NVD → LLM → Docker → verificación → HTML |
+| [CVE_REFERENCE.md](CVE_REFERENCE.md) | Todos los flags, opciones y variables de entorno |
+| [CVE_TROUBLESHOOTING.md](CVE_TROUBLESHOOTING.md) | Qué hacer cuando el resultado es NO CONFIRMADO |
+
+---
+
 ## Plataformas soportadas
 
 | Plataforma | Núcleo estático (lectores) | Verificación de exploits por ejecución |
