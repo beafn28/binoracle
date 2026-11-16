@@ -1322,7 +1322,33 @@ def fetch_public_poc_source(exploit_refs, on_step=None, timeout: float = 60.0) -
     def _read_http_ref(ref) -> Optional[str]:
         """Descarga una pagina web del PoC (Exploit-DB, PacketStorm, otro) y extrae texto."""
         import urllib.request as _ur
+        import json as _json
         url = ref.url
+        # GitHub issue/PR URLs: use the REST API to get the body as Markdown (no HTML).
+        _gh_issue_m = re.search(
+            r"github\.com/([^/]+)/([^/]+)/(issues|pull)/(\d+)", url, re.IGNORECASE
+        )
+        if _gh_issue_m:
+            owner, repo_name = _gh_issue_m.group(1), _gh_issue_m.group(2)
+            kind = "pulls" if _gh_issue_m.group(3).lower() == "pull" else "issues"
+            num = _gh_issue_m.group(4)
+            api_url = f"https://api.github.com/repos/{owner}/{repo_name}/{kind}/{num}"
+            step(f"GitHub {kind[:-1]} API ({api_url})...")
+            try:
+                req = _ur.Request(
+                    api_url,
+                    headers={"User-Agent": "binoracle/1.0", "Accept": "application/vnd.github+json"},
+                )
+                with _ur.urlopen(req, timeout=min(timeout, 20)) as resp:
+                    data = _json.loads(resp.read(200_000))
+                body = (data.get("body") or "").strip()
+                if len(body) > 30:
+                    step(f"PoC extraido de GitHub {kind[:-1]} body: {url}")
+                    return f"# PoC de {url}\n{body[:_POC_MAX_BYTES_PER_FILE]}"
+            except Exception as e:
+                step(f"  fallo GitHub API {api_url}: {e}")
+            # fall through to HTML scrape
+
         step(f"descargando PoC HTTP ({url})...")
         try:
             req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
