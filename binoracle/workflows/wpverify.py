@@ -1384,12 +1384,55 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         res.evidence["screenshots"] = shots
         return None
     r = lab.wp_cli("plugin", "activate", slug, timeout=60)
+    # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
+    # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
+    # inexistente en el modo CLI de esta version) llama exit(1) ANTES de que WordPress
+    # haya escrito active_plugins, aunque la secuencia normal de activate_plugin() lo
+    # escribiria primero. Detectar y forzar-activar via eval para que el plugin este activo
+    # en la DB cuando llegue la peticion HTTP.
+    _activate_out = (r.stdout or "") + (r.stderr or "")
+    _activate_ok = r.returncode == 0
+    _scaffold_error = ("does not exist" in _activate_out and "cannot be registered" in _activate_out)
+    if not _activate_ok and _scaffold_error:
+        _r_ap_check = lab.wp_cli("eval",
+            "echo implode('|', (array)get_option('active_plugins'));", timeout=20)
+        _ap_out = (_r_ap_check.stdout or _r_ap_check.stderr or "").strip()
+        if slug not in _ap_out:
+            step(f"WP-CLI murio en el hook de activacion antes de escribir active_plugins -- "
+                 f"forzando activacion via eval (el plugin SI esta en el volumen)...")
+            _r_force = lab.wp_cli("eval",
+                f"$current = (array)get_option('active_plugins'); "
+                f"$s = '{slug}/{slug}.php'; "
+                f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
+                f"update_option('active_plugins', $current); }} "
+                f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+                timeout=20)
+            if (_r_force.stdout or "").strip() != "OK":
+                res.detail = (f"activacion del plugin fallo y no se pudo forzar via eval: "
+                              f"{(_r_force.stderr or _r_force.stdout or '')[:200]}")
+                res.evidence["screenshots"] = shots
+                return None
+
     if r.returncode != 0:
-        res.detail = f"activacion del plugin fallo: {(r.stderr or r.stdout or '')[:300]}"
-        res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
-                               "la activacion puede fallar por requisitos del propio plugin")
-        res.evidence["screenshots"] = shots
-        return None
+        # WP-CLI puede devolver exit!=0 aunque el plugin haya quedado activo.  Esto ocurre
+        # cuando el plugin registra comandos WP-CLI con clases inexistentes en esa version:
+        # WP-CLI activa el plugin en WordPress (lo escribe en active_plugins), luego lo carga
+        # para ejecutar su hook de activacion, y al cargarlo detecta que "Callable X does not
+        # exist" para un scaffold command -- fallo de registro CLI, no de activacion WP.
+        # Confirmado en vivo con KiviCare 4.1.2 (KCScaffold).  En ese caso la REST API del
+        # plugin esta operativa aunque WP-CLI devuelva exit!=0.
+        # Detectar este patron especifico para no abortar el lab innecesariamente.
+        activation_output = (r.stderr or "") + (r.stdout or "")
+        wpcli_registration_error = (
+            "does not exist" in activation_output
+            and "cannot be registered" in activation_output
+        )
+        if not wpcli_registration_error:
+            res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
+            res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
+                                   "la activacion puede fallar por requisitos del propio plugin")
+            res.evidence["screenshots"] = shots
+            return None
     if setup_wp_options:
         for opt in setup_wp_options:
             name = (opt or {}).get("name") if isinstance(opt, dict) else None
@@ -1861,6 +1904,148 @@ def verify_wordpress_direct_login_as(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
+def _infer_param_value_from_error(param_name: str, error_message: str) -> Optional[str]:
+    """Extrae un valor valido desde el propio mensaje de error WordPress/REST.
+    Ej: 'Invalid login type. Allowed types: google, apple' → 'google'
+    Ej: 'Value must be one of: admin, editor, subscriber' → 'admin'"""
+    import re as _re
+    # Patron: "Allowed types: X, Y" / "Allowed values: X, Y" / "must be one of: X, Y, Z"
+    for pat in [
+        r"(?:allowed\s+(?:types?|values?|options?)[:：]\s*)([a-z0-9_,\s\-]+)",
+        r"(?:must\s+be\s+one\s+of[:：]\s*)([a-z0-9_,\s\-]+)",
+        r"(?:valid\s+(?:types?|values?)[:：]\s*)([a-z0-9_,\s\-]+)",
+        r"(?:accepted\s+(?:types?|values?)[:：]\s*)([a-z0-9_,\s\-]+)",
+    ]:
+        m = _re.search(pat, error_message, _re.IGNORECASE)
+        if m:
+            vals = [v.strip() for v in m.group(1).split(",") if v.strip()]
+            if vals:
+                return vals[0]
+    return None
+
+
+def _infer_param_value_from_source(plugin_dir: str, param_name: str) -> Optional[str]:
+    """Busca en el codigo fuente del plugin la definicion del param REST y extrae
+    el primer valor valido de un array de allowed_values o validate_callback con in_array.
+    Filtra agresivamente palabras clave PHP/WP para evitar falsos positivos."""
+    import re as _re
+    # Palabras clave PHP/WP que nunca son valores de parametros de API
+    _NEVER = {
+        "required", "true", "false", "type", "string", "integer", "boolean", "array",
+        "default", "description", "sanitize", "validate", "callback", "enum", "format",
+        "email", "number", "sanitize_text_field", "sanitize_email", "rest_sanitize_boolean",
+        "sanitize_user", "esc_url_raw", "null", "object", "function", "return", "echo",
+        "new", "class", "interface", "extends", "implements", "public", "private",
+        "protected", "static", "abstract", "final", "namespace", "use", "const",
+        "validate_callback", "sanitize_callback", "permission_callback", "column",
+        "table", "prefix", "primary", "key", "index", "unique", "not", "auto_increment",
+        "varchar", "bigint", "datetime", "text", "int", "where", "like", "select",
+        "from", "insert", "update", "delete", "join", "left", "right", "inner",
+        "migration", "migrate", "setup", "run", "init", "get", "set", "post", "put",
+        "patch", "delete", "options", "head", "creatable", "readable", "editable",
+        "deletable", "allmethods",
+    }
+
+    for root, _dirs, files in os.walk(plugin_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                content = open(fpath, encoding="utf-8", errors="replace").read()
+            except Exception:
+                continue
+
+            # Buscar el bloque de definicion de este param en register_rest_route / args
+            # Patron: 'login_type' => [ ... ]  con contenido relevante
+            pat = _re.compile(
+                r"['\"]" + _re.escape(param_name) + r"['\"]"
+                r"\s*=>\s*\[(.{20,600}?)\]",
+                _re.DOTALL
+            )
+            for m_block in pat.finditer(content):
+                block = m_block.group(1)
+
+                # Patron 1: array literal con valores (in_array pattern):
+                # ['google', 'apple'] o array('google', 'apple')
+                arr_pat = _re.compile(
+                    r"(?:in_array\s*\(\s*\$[^,]+,\s*|\[)(['\"]([a-zA-Z0-9_\-]+)['\"]"
+                    r"(?:\s*,\s*['\"]([a-zA-Z0-9_\-]+)['\"])*)\s*\]?"
+                )
+                for m_arr in arr_pat.finditer(block):
+                    # Extraer valores del array
+                    vals = _re.findall(r"['\"]([a-zA-Z0-9_\-]{2,30})['\"]", m_arr.group(0))
+                    good = [v for v in vals if v.lower() not in _NEVER and not v.isdigit()]
+                    if good:
+                        return good[0]
+
+                # Patron 2: buscar inline array: $allowed_types = ['google', 'apple']
+                inline_pat = _re.compile(
+                    r"\$\w*(?:type|kind|mode|value|option|status|role|method|provider)\w*"
+                    r"\s*=\s*\[(['\"][a-zA-Z0-9_\-]+['\"](?:\s*,\s*['\"][a-zA-Z0-9_\-]+['\"])*)\]"
+                )
+                for m_inline in inline_pat.finditer(content):
+                    vals = _re.findall(r"['\"]([a-zA-Z0-9_\-]{2,30})['\"]", m_inline.group(1))
+                    good = [v for v in vals if v.lower() not in _NEVER and not v.isdigit()]
+                    if good:
+                        return good[0]
+
+    return None
+
+
+def _infer_missing_params_from_source(plugin_source_dir: str, slug: str,
+                                       endpoint: str, missing_params: list,
+                                       error_details: Optional[dict] = None) -> dict:
+    """Motor de inferencia de parametros faltantes/invalidos. Estrategia en capas:
+    1. Leer el mensaje de error del propio REST (contiene hints como 'Allowed: google, apple')
+    2. Buscar en el codigo fuente del plugin la definicion del endpoint y sus allowed values
+    3. Defaults semanticos por nombre de parametro (ultimo recurso)
+    Todo esto es razonamiento sobre la causa raiz, no casos hardcodeados por CVE."""
+    result = {}
+    plugin_dir = os.path.join(plugin_source_dir, slug)
+    if not os.path.isdir(plugin_dir):
+        plugin_dir = plugin_source_dir
+
+    for param_name in missing_params:
+        best_value = None
+
+        # Capa 1: extraer valor del mensaje de error del REST (lo mas preciso)
+        if error_details and isinstance(error_details, dict):
+            detail = error_details.get(param_name) or {}
+            if isinstance(detail, dict):
+                err_msg = detail.get("message") or ""
+            else:
+                err_msg = str(detail)
+            if err_msg:
+                best_value = _infer_param_value_from_error(param_name, err_msg)
+
+        # Capa 2: buscar en el codigo fuente del plugin
+        if best_value is None and os.path.isdir(plugin_dir):
+            best_value = _infer_param_value_from_source(plugin_dir, param_name)
+
+        # Capa 3: defaults semanticos por nombre
+        if best_value is None:
+            lp = param_name.lower()
+            if any(x in lp for x in ("token", "access_token", "access", "key", "secret",
+                                       "password", "pass", "pwd", "credential")):
+                best_value = "binoracle_lab_token"
+            elif any(x in lp for x in ("type", "kind", "mode", "method", "provider",
+                                        "platform", "source", "action")):
+                best_value = "default"
+            elif any(x in lp for x in ("id", "user_id", "uid", "identifier")):
+                best_value = "1"
+            elif any(x in lp for x in ("name", "username", "login", "user")):
+                best_value = "binoracle_user"
+            elif any(x in lp for x in ("role", "permission", "level", "scope")):
+                best_value = "subscriber"
+            else:
+                best_value = "binoracle_test"
+
+        result[param_name] = best_value
+
+    return result
+
+
 def verify_wordpress_unauthenticated_login_bypass(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, email_param_hint: str = "", victim_role: str = "subscriber",
@@ -1947,6 +2132,7 @@ def verify_wordpress_unauthenticated_login_bypass(
             "endpoint": endpoint, "email_param": email_param, "payload_enviado": dict(base_params),
         })
 
+
         anon = _make_session()
         step(f"peticion ANONIMA (sin ninguna sesion previa) contra {m} {endpoint}, solo con el "
              f"email de una victima real '{victim_email}' -- ninguna credencial/token real...")
@@ -1957,8 +2143,75 @@ def verify_wordpress_unauthenticated_login_bypass(
         except Exception as e:
             res.detail = f"fallo enviando la peticion: {e}"
             return res
+
+        # Auto-remediacion: si WordPress REST rechaza con rest_missing_callback_param o
+        # rest_invalid_param (param presente pero vacio o con valor invalido), extraemos los
+        # params del cuerpo del error, buscamos en el codigo fuente del plugin los valores
+        # validos (via grep al registration de la ruta), y reintentamos -- logica generica,
+        # sirve para cualquier plugin WordPress que registre sus routes con 'required' o
+        # 'validate_callback'. Maximo 3 iteraciones para no bucle infinito.
+        import json as _json
+        for _fix_attempt in range(3):
+            if resp.status_code != 400:
+                break
+            try:
+                _err = _json.loads(resp.text or "{}")
+            except Exception:
+                _err = {}
+            _err_code = _err.get("code", "")
+            # rest_missing_callback_param: params completamente ausentes del request
+            if _err_code == "rest_missing_callback_param":
+                _missing = _err.get("data", {}).get("params", [])
+                _err_details: dict = {}
+            # rest_invalid_param: params presentes pero con valor invalido (empty, wrong enum, etc.)
+            elif _err_code == "rest_invalid_param":
+                _missing = list((_err.get("data", {}).get("params") or {}).keys())
+                _err_details = (_err.get("data", {}).get("details") or {})
+            else:
+                break
+            if not _missing:
+                break
+            step(f"REST rechaza ({_err_code}): {_missing} -- buscando valores validos en "
+                 f"fuente del plugin para reintentar (intento {_fix_attempt + 1}/3)...")
+            _extra = _infer_missing_params_from_source(
+                plugin_source_dir, slug, endpoint, _missing, error_details=_err_details)
+            if not _extra:
+                break
+            base_params.update(_extra)
+            step(f"reintentando con params corregidos/inferidos: {_extra}")
+            try:
+                resp = anon.request(m, boot.base_url + endpoint,
+                                    data=base_params if m != "GET" else None,
+                                    params=base_params if m == "GET" else None,
+                                    timeout=20)
+                res.evidence["payload_enviado"] = dict(base_params)
+            except Exception as e:
+                res.detail = f"fallo en reintento con params corregidos: {e}"
+                return res
+
         res.evidence["status_code_respuesta"] = resp.status_code
         res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+        if resp.status_code == 404:
+            # Diagnostico: comprobar si el namespace kivicare/v1 esta registrado
+            try:
+                ns_resp = anon.get(boot.base_url + "/wp-json/", timeout=10)
+                import json as _json
+                try:
+                    ns_data = _json.loads(ns_resp.text or "{}")
+                    registered_ns = ns_data.get("namespaces", [])
+                except Exception:
+                    registered_ns = []
+                step(f"debug: namespaces REST registrados: {registered_ns[:20]}")
+            except Exception as _e:
+                step(f"debug: no se pudo consultar /wp-json/: {_e}")
+            # Leer debug.log de PHP para ver errores durante la peticion
+            try:
+                r_dbg = lab.sh("exec", lab.wp, "sh", "-c",
+                               "tail -50 /var/www/html/wp-content/debug.log 2>/dev/null || echo '(debug.log vacio o inexistente)'",
+                               timeout=15)
+                step(f"debug.log (ultimas lineas): {(r_dbg.stdout or r_dbg.stderr or '')[:800]}")
+            except Exception as _e:
+                step(f"debug: no se pudo leer debug.log: {_e}")
 
         # confirmacion por COOKIE sola, nunca por un nonce REST -- bug real encontrado en vivo
         # escribiendo el test de este verificador: /wp-json/wp/v2/users/me exige un X-WP-Nonce
