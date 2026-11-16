@@ -2948,18 +2948,53 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                      f"'{known_action}'..." if es else
                                      (f"scanning the {len(all_actions)} real AJAX actions of the "
                                      f"plugin to find the closest match to '{known_action}'...")))
-                                # seleccionar la accion con mas palabras en comun con known_action
+                                # seleccionar la accion con mayor similitud al nombre propuesto.
+                                # Scoring: por cada palabra del nombre propuesto, se busca la
+                                # mejor coincidencia en las palabras de la accion candidata --
+                                # coincidencia exacta (1.0) o prefijo comun de >=3 chars
+                                # (proporcion del prefijo sobre la palabra mas larga). La puntuacion
+                                # total se normaliza por el numero de palabras de la CANDIDATA para
+                                # penalizar las acciones largas que coinciden por tener muchas
+                                # palabras ('delete_all_logs' gana a 'loglist' en coincidencia
+                                # exacta de 'logs', pero la normalizacion inclina la balanza a favor
+                                # de la accion mas corta y enfocada que coincide en la misma
+                                # proporcion de sus palabras totales).
                                 _known_words = set(re.split(r'[_-]', known_action.lower()))
-                                def _score(act: str) -> int:
-                                    return len(set(re.split(r'[_-]', act.lower())) & _known_words)
+
+                                def _lcp_len(a: str, b: str) -> int:
+                                    n = 0
+                                    for x, y in zip(a, b):
+                                        if x == y:
+                                            n += 1
+                                        else:
+                                            break
+                                    return n
+
+                                def _score(act: str) -> float:
+                                    act_wds = list(set(re.split(r'[_-]', act.lower())))
+                                    if not act_wds:
+                                        return 0.0
+                                    total = 0.0
+                                    for kw in _known_words:
+                                        best_w = 0.0
+                                        for aw in act_wds:
+                                            if kw == aw:
+                                                best_w = max(best_w, 1.0)
+                                            else:
+                                                lcp = _lcp_len(kw, aw)
+                                                if lcp >= 3:
+                                                    best_w = max(best_w, lcp / max(len(kw), len(aw)))
+                                        total += best_w
+                                    return total / len(act_wds)
+
                                 best = max(all_actions, key=_score)
                                 if _score(best) > 0:
                                     step((f"accion AJAX mas parecida en el codigo real: "
-                                         f"'{best}' (coincidencia de palabras: "
-                                         f"{_score(best)}/{len(_known_words)}) -- "
+                                         f"'{best}' (puntuacion normalizada: "
+                                         f"{_score(best):.3f}) -- "
                                          f"actualizando endpoint" if es else
                                          (f"closest AJAX action in the real code: '{best}' "
-                                         f"(word overlap: {_score(best)}/{len(_known_words)}) "
+                                         f"(normalized score: {_score(best):.3f}) "
                                          f"-- updating endpoint")))
                                     # actualizar notes con la accion real
                                     old_ep = notes.get("endpoint") or ""
