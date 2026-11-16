@@ -1201,8 +1201,9 @@ def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[
 _AJAX_ACTION_HANDLER_RE_TMPL = (
     r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_{action}['\"]\s*,\s*"
     r"(?:['\"]([A-Za-z0-9_]+)['\"]"
-    r"|array\s*\(\s*\$this\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*\)"
-    r"|array\s*\(\s*self::class\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*\))"
+    # callback como array($this, 'metodo') -- con o sin coma final (formato multilinea):
+    r"|array\s*\(\s*\$this\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\)"
+    r"|array\s*\(\s*self::class\s*,\s*['\"]([A-Za-z0-9_]+)['\"]\s*,?\s*\))"
 )
 
 

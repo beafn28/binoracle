@@ -47,6 +47,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+from binoracle.workflows.engine import SourceCodeIntelligence as _SCI
+
 _MYSQL_IMAGE = "mysql:5.7"
 # Overridable: confirmed live investigating CVE-2024-1071 (Ultimate Member SQLi) that the
 # vulnerable code's `in_array($sortby, $custom_sort)` / loose `==` comparisons are PHP-version
@@ -387,6 +389,41 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                 f"plugin '{slug}' -- puede que el plugin necesite un paso de configuracion "
                 f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
                 f"antes de que su contenido aparezca en ningun lado")
+
+    # Para plugins cuyo sumidero vulnerable está detrás de un 'directory_id' obligatorio
+    # (Ultimate Member, etc.) el LLM a veces no incluye ese parámetro en base_params --
+    # pre-poblarlo con un placeholder vacío para que el bucle de fuerza bruta a continuación
+    # lo encuentre y lo resuelva. Además, si tenemos acceso al lab, consultar WP-CLI para
+    # obtener el ID real del post um_directory (o del CPT configurado) y calcular el hash
+    # directamente -- más rápido y fiable que la fuerza bruta ciega.
+    gate_cfg = _SQLI_CUSTOM_SORT_GATE.get(slug, {})
+    dir_id_param = gate_cfg.get("directory_id_param", "")
+    if dir_id_param and dir_id_param != exclude_param and dir_id_param not in base_params:
+        # Intentar primero resolverlo via WP-CLI (tenemos el lab disponible):
+        # buscar el primer post del CPT del plugin (um_directory) y derivar su hash.
+        cpt_name = _PLUGIN_DIRECTORY_CPT.get(slug, "")
+        resolved_via_cli = False
+        if cpt_name and lab is not None:
+            try:
+                import hashlib as _hl
+                r_id = lab.wp_cli("post", "list", f"--post_type={cpt_name}",
+                                  "--post_status=any", "--format=ids",
+                                  "--posts_per_page=1", timeout=15)
+                raw_id = (r_id.stdout or "").strip().split()[0] if r_id.returncode == 0 else ""
+                if raw_id.isdigit():
+                    _n = int(raw_id)
+                    _hashed = _hl.md5(str(_n).encode()).hexdigest()[10:15]
+                    base_params[dir_id_param] = _hashed
+                    step(f"'{dir_id_param}' resuelto directamente via WP-CLI (post "
+                         f"{cpt_name} ID={_n} -> hash '{_hashed}') -- sin fuerza bruta")
+                    resolved_via_cli = True
+            except Exception:
+                pass
+        if not resolved_via_cli:
+            # Fallback: dejar vacío para que la fuerza bruta lo resuelva abajo
+            base_params[dir_id_param] = ""
+            step(f"'{dir_id_param}' no estaba en los parámetros -- añadido para "
+                 f"que la fuerza bruta de IDs ofuscados lo resuelva")
 
     other_id_params = [k for k in base_params
                        if k != exclude_param and k not in nonce_like_keys
@@ -1349,12 +1386,55 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         res.evidence["screenshots"] = shots
         return None
     r = lab.wp_cli("plugin", "activate", slug, timeout=60)
+    # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
+    # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
+    # inexistente en el modo CLI de esta version) llama exit(1) ANTES de que WordPress
+    # haya escrito active_plugins, aunque la secuencia normal de activate_plugin() lo
+    # escribiria primero. Detectar y forzar-activar via eval para que el plugin este activo
+    # en la DB cuando llegue la peticion HTTP.
+    _activate_out = (r.stdout or "") + (r.stderr or "")
+    _activate_ok = r.returncode == 0
+    _scaffold_error = ("does not exist" in _activate_out and "cannot be registered" in _activate_out)
+    if not _activate_ok and _scaffold_error:
+        _r_ap_check = lab.wp_cli("eval",
+            "echo implode('|', (array)get_option('active_plugins'));", timeout=20)
+        _ap_out = (_r_ap_check.stdout or _r_ap_check.stderr or "").strip()
+        if slug not in _ap_out:
+            step(f"WP-CLI murio en el hook de activacion antes de escribir active_plugins -- "
+                 f"forzando activacion via eval (el plugin SI esta en el volumen)...")
+            _r_force = lab.wp_cli("eval",
+                f"$current = (array)get_option('active_plugins'); "
+                f"$s = '{slug}/{slug}.php'; "
+                f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
+                f"update_option('active_plugins', $current); }} "
+                f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+                timeout=20)
+            if (_r_force.stdout or "").strip() != "OK":
+                res.detail = (f"activacion del plugin fallo y no se pudo forzar via eval: "
+                              f"{(_r_force.stderr or _r_force.stdout or '')[:200]}")
+                res.evidence["screenshots"] = shots
+                return None
+
     if r.returncode != 0:
-        res.detail = f"activacion del plugin fallo: {(r.stderr or r.stdout or '')[:300]}"
-        res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
-                               "la activacion puede fallar por requisitos del propio plugin")
-        res.evidence["screenshots"] = shots
-        return None
+        # WP-CLI puede devolver exit!=0 aunque el plugin haya quedado activo.  Esto ocurre
+        # cuando el plugin registra comandos WP-CLI con clases inexistentes en esa version:
+        # WP-CLI activa el plugin en WordPress (lo escribe en active_plugins), luego lo carga
+        # para ejecutar su hook de activacion, y al cargarlo detecta que "Callable X does not
+        # exist" para un scaffold command -- fallo de registro CLI, no de activacion WP.
+        # Confirmado en vivo con KiviCare 4.1.2 (KCScaffold).  En ese caso la REST API del
+        # plugin esta operativa aunque WP-CLI devuelva exit!=0.
+        # Detectar este patron especifico para no abortar el lab innecesariamente.
+        activation_output = (r.stderr or "") + (r.stdout or "")
+        wpcli_registration_error = (
+            "does not exist" in activation_output
+            and "cannot be registered" in activation_output
+        )
+        if not wpcli_registration_error:
+            res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
+            res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
+                                   "la activacion puede fallar por requisitos del propio plugin")
+            res.evidence["screenshots"] = shots
+            return None
     if setup_wp_options:
         for opt in setup_wp_options:
             name = (opt or {}).get("name") if isinstance(opt, dict) else None
@@ -1826,6 +1906,35 @@ def verify_wordpress_direct_login_as(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
+_sci = _SCI()
+
+
+def _infer_missing_params_from_source(plugin_source_dir: str, slug: str,
+                                       endpoint: str, missing_params: list,
+                                       error_details: Optional[dict] = None) -> dict:
+    """Delega al SourceCodeIntelligence del motor universal.
+    Razonamiento en 3 capas: (1) mensaje de error REST, (2) codigo fuente del plugin,
+    (3) defaults semanticos por nombre. No hay casos hardcodeados por CVE."""
+    plugin_dir = os.path.join(plugin_source_dir, slug)
+    if not os.path.isdir(plugin_dir):
+        plugin_dir = plugin_source_dir
+
+    defs = _sci.find_param_definitions(plugin_dir, missing_params)
+    result = {}
+    for param_name in missing_params:
+        err_msg = ""
+        if error_details and isinstance(error_details, dict):
+            detail = error_details.get(param_name) or {}
+            if isinstance(detail, dict):
+                err_msg = detail.get("message") or ""
+            else:
+                err_msg = str(detail)
+        result[param_name] = _sci.infer_valid_value(
+            param_name, defs.get(param_name), err_msg
+        )
+    return result
+
+
 def verify_wordpress_unauthenticated_login_bypass(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, email_param_hint: str = "", victim_role: str = "subscriber",
@@ -1912,6 +2021,7 @@ def verify_wordpress_unauthenticated_login_bypass(
             "endpoint": endpoint, "email_param": email_param, "payload_enviado": dict(base_params),
         })
 
+
         anon = _make_session()
         step(f"peticion ANONIMA (sin ninguna sesion previa) contra {m} {endpoint}, solo con el "
              f"email de una victima real '{victim_email}' -- ninguna credencial/token real...")
@@ -1922,8 +2032,75 @@ def verify_wordpress_unauthenticated_login_bypass(
         except Exception as e:
             res.detail = f"fallo enviando la peticion: {e}"
             return res
+
+        # Auto-remediacion: si WordPress REST rechaza con rest_missing_callback_param o
+        # rest_invalid_param (param presente pero vacio o con valor invalido), extraemos los
+        # params del cuerpo del error, buscamos en el codigo fuente del plugin los valores
+        # validos (via grep al registration de la ruta), y reintentamos -- logica generica,
+        # sirve para cualquier plugin WordPress que registre sus routes con 'required' o
+        # 'validate_callback'. Maximo 3 iteraciones para no bucle infinito.
+        import json as _json
+        for _fix_attempt in range(3):
+            if resp.status_code != 400:
+                break
+            try:
+                _err = _json.loads(resp.text or "{}")
+            except Exception:
+                _err = {}
+            _err_code = _err.get("code", "")
+            # rest_missing_callback_param: params completamente ausentes del request
+            if _err_code == "rest_missing_callback_param":
+                _missing = _err.get("data", {}).get("params", [])
+                _err_details: dict = {}
+            # rest_invalid_param: params presentes pero con valor invalido (empty, wrong enum, etc.)
+            elif _err_code == "rest_invalid_param":
+                _missing = list((_err.get("data", {}).get("params") or {}).keys())
+                _err_details = (_err.get("data", {}).get("details") or {})
+            else:
+                break
+            if not _missing:
+                break
+            step(f"REST rechaza ({_err_code}): {_missing} -- buscando valores validos en "
+                 f"fuente del plugin para reintentar (intento {_fix_attempt + 1}/3)...")
+            _extra = _infer_missing_params_from_source(
+                plugin_source_dir, slug, endpoint, _missing, error_details=_err_details)
+            if not _extra:
+                break
+            base_params.update(_extra)
+            step(f"reintentando con params corregidos/inferidos: {_extra}")
+            try:
+                resp = anon.request(m, boot.base_url + endpoint,
+                                    data=base_params if m != "GET" else None,
+                                    params=base_params if m == "GET" else None,
+                                    timeout=20)
+                res.evidence["payload_enviado"] = dict(base_params)
+            except Exception as e:
+                res.detail = f"fallo en reintento con params corregidos: {e}"
+                return res
+
         res.evidence["status_code_respuesta"] = resp.status_code
         res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
+        if resp.status_code == 404:
+            # Diagnostico: comprobar si el namespace kivicare/v1 esta registrado
+            try:
+                ns_resp = anon.get(boot.base_url + "/wp-json/", timeout=10)
+                import json as _json
+                try:
+                    ns_data = _json.loads(ns_resp.text or "{}")
+                    registered_ns = ns_data.get("namespaces", [])
+                except Exception:
+                    registered_ns = []
+                step(f"debug: namespaces REST registrados: {registered_ns[:20]}")
+            except Exception as _e:
+                step(f"debug: no se pudo consultar /wp-json/: {_e}")
+            # Leer debug.log de PHP para ver errores durante la peticion
+            try:
+                r_dbg = lab.sh("exec", lab.wp, "sh", "-c",
+                               "tail -50 /var/www/html/wp-content/debug.log 2>/dev/null || echo '(debug.log vacio o inexistente)'",
+                               timeout=15)
+                step(f"debug.log (ultimas lineas): {(r_dbg.stdout or r_dbg.stderr or '')[:800]}")
+            except Exception as _e:
+                step(f"debug: no se pudo leer debug.log: {_e}")
 
         # confirmacion por COOKIE sola, nunca por un nonce REST -- bug real encontrado en vivo
         # escribiendo el test de este verificador: /wp-json/wp/v2/users/me exige un X-WP-Nonce
@@ -2622,7 +2799,10 @@ def verify_wordpress_sqli(
             endpoint = boot.shortcode_page_path
             res.evidence["endpoint_shortcode_page"] = endpoint
 
-        m = (http_method or "GET").upper()
+        # AJAX WordPress siempre usa POST: si el caller no lo especifico pero el endpoint es
+        # admin-ajax.php, el default correcto es POST (los handlers leen $_POST, no $_GET).
+        _ep_lower = (endpoint or "").lower()
+        m = (http_method or ("POST" if "admin-ajax.php" in _ep_lower else "GET")).upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
 
         # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
