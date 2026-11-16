@@ -5855,3 +5855,159 @@ def render_batch_summary(items: List["BatchItem"], lang: str = "es") -> str:
     if error_n:
         summary += (f", {error_n} con error" if es else f", {error_n} errored")
     return "## " + ("Resumen del lote" if es else "Batch summary") + f"\n\n{table}\n\n{summary}"
+
+
+# ─── Autonomous CVE discovery + investigation ──────────────────────────────────
+
+@dataclass
+class AutodiscoverResult:
+    """Result of one autonomous discovery + investigation run."""
+    scope:          str
+    candidates:     int               # CVEs found by NVD search
+    investigated:   int               # CVEs actually investigated (after filters)
+    verified:       List[str]         # CVE IDs confirmed VERIFICADO
+    not_confirmed:  List[str]         # CVE IDs investigated but not confirmed
+    errors:         List[str]         # CVE IDs that errored
+    items:          List["BatchItem"] = field(default_factory=list)
+    elapsed_s:      float = 0.0
+
+
+def autodiscover_and_investigate(
+    scope:            str,
+    min_cvss:         float = 8.5,
+    days_back:        int   = 90,
+    max_candidates:   int   = 20,
+    parallel:         int   = 2,
+    require_exploit:  bool  = True,
+    severity_filter:  str   = "CRITICAL",
+    budget_s:         float = 600.0,
+    config=None,
+    lang:             str   = "es",
+    custom_keywords:  Optional[List[str]] = None,
+    on_event:         Optional[Callable[[dict], None]] = None,
+    use_cache:        bool  = True,
+) -> AutodiscoverResult:
+    """Full autonomous exploit research loop:
+
+    1. Query NVD for recent high-CVSS CVEs matching ``scope``.
+    2. Filter by ``min_cvss``, ``require_exploit``, ``severity_filter``.
+    3. Run ``investigate_cves_batch()`` on all candidates in parallel.
+    4. Return structured results with verified / not-confirmed / errored split.
+
+    This is the engine's fully autonomous mode — no CVE ID input required.
+    Call it with a technology scope and let the engine discover, reason about,
+    and verify exploits without human intervention::
+
+        results = autodiscover_and_investigate(
+            scope="wordpress-plugin",
+            min_cvss=9.0,
+            days_back=60,
+            require_exploit=True,
+        )
+        for cve_id in results.verified:
+            print(f"VERIFIED: {cve_id}")
+    """
+    import time as _time
+    from .cvelookup import search_nvd_by_scope
+
+    t0 = _time.time()
+
+    def _emit(event: dict):
+        if on_event:
+            try:
+                on_event(event)
+            except Exception:
+                pass
+
+    _emit({"type": "discover_start", "scope": scope, "min_cvss": min_cvss})
+
+    candidates = search_nvd_by_scope(
+        scope=scope,
+        min_cvss=min_cvss,
+        days_back=days_back,
+        max_results=max_candidates,
+        require_exploit=require_exploit,
+        severity_filter=severity_filter,
+        custom_keywords=custom_keywords,
+        enrich=True,
+    )
+
+    _emit({"type": "discover_done", "count": len(candidates),
+           "cve_ids": [c.cve_id for c in candidates]})
+
+    if not candidates:
+        return AutodiscoverResult(
+            scope=scope, candidates=0, investigated=0,
+            verified=[], not_confirmed=[], errors=[],
+            elapsed_s=_time.time() - t0,
+        )
+
+    cve_ids = [c.cve_id for c in candidates]
+
+    items = investigate_cves_batch(
+        cve_ids=cve_ids,
+        config=config,
+        lang=lang,
+        budget_s=budget_s,
+        parallel=parallel,
+        on_event=on_event,
+        use_cache=use_cache,
+    )
+
+    verified_ids:    List[str] = []
+    not_conf_ids:    List[str] = []
+    error_ids:       List[str] = []
+
+    for item in items:
+        if item.status == "error" or item.error:
+            error_ids.append(item.cve_id)
+        elif item.investigation and item.investigation.verified:
+            verified_ids.append(item.cve_id)
+        else:
+            not_conf_ids.append(item.cve_id)
+
+    return AutodiscoverResult(
+        scope=scope,
+        candidates=len(candidates),
+        investigated=len(items),
+        verified=verified_ids,
+        not_confirmed=not_conf_ids,
+        errors=error_ids,
+        items=items,
+        elapsed_s=_time.time() - t0,
+    )
+
+
+def render_autodiscover_result(result: AutodiscoverResult, lang: str = "es") -> str:
+    """Human-readable summary of an autodiscover run."""
+    es = lang == "es"
+    lines = []
+    scope_label = f"scope={result.scope!r}"
+    lines.append("## " + ("Descubrimiento autónomo" if es else "Autonomous discovery") +
+                 f" — {scope_label}")
+    lines.append("")
+    lines.append(("Candidatos NVD: " if es else "NVD candidates: ") + str(result.candidates))
+    lines.append(("Investigados:   " if es else "Investigated:   ") + str(result.investigated))
+    lines.append(("Verificados:    " if es else "Verified:       ") +
+                 str(len(result.verified)))
+    lines.append(("No confirmados: " if es else "Not confirmed:  ") +
+                 str(len(result.not_confirmed)))
+    if result.errors:
+        lines.append(("Con error:      " if es else "Errored:        ") +
+                     str(len(result.errors)))
+    elapsed = f"{result.elapsed_s:.0f}s"
+    lines.append(("Tiempo total:   " if es else "Total time:     ") + elapsed)
+    if result.verified:
+        lines.append("")
+        lines.append("### " + ("VERIFICADOS" if es else "VERIFIED"))
+        for cid in result.verified:
+            lines.append(f"  ✓  {cid}")
+    if result.not_confirmed:
+        lines.append("")
+        lines.append("### " + ("No confirmados" if es else "Not confirmed"))
+        for cid in result.not_confirmed[:10]:
+            lines.append(f"  ✗  {cid}")
+        if len(result.not_confirmed) > 10:
+            rest = len(result.not_confirmed) - 10
+            lines.append(f"  ... +{rest}")
+    return "\n".join(lines)

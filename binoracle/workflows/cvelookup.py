@@ -286,3 +286,164 @@ def lookup_and_develop(cve_id: str, config=None, lang: str = "es", verify: bool 
     else:
         pl = plan(desc, {}, cve=info.cve_id, lang=lang)
     return info, pl
+
+
+# ─── NVD scope search ─────────────────────────────────────────────────────────
+
+NVD_SEARCH_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+_SCOPE_PRESETS: dict = {
+    # Technology scopes → NVD keyword hints that reliably narrow results
+    "wordpress-plugin":  ["wordpress plugin"],
+    "wordpress":         ["wordpress"],
+    "python-flask":      ["flask python", "flask"],
+    "python-django":     ["django"],
+    "python":            ["python"],
+    "nodejs":            ["node.js", "nodejs", "npm"],
+    "php":               ["php"],
+    "java-spring":       ["spring boot", "spring framework"],
+    "ruby-rails":        ["ruby on rails", "rails"],
+    "apache":            ["apache httpd", "apache http server"],
+    "nginx":             ["nginx"],
+    "docker":            ["docker"],
+    "kubernetes":        ["kubernetes"],
+    "linux-kernel":      ["linux kernel"],
+}
+
+
+@dataclass
+class NvdSearchResult:
+    """One CVE entry returned by search_nvd_by_scope()."""
+    cve_id:            str
+    cvss_score:        Optional[float]
+    cvss_severity:     str
+    published:         str            # ISO date YYYY-MM-DD
+    description:       str
+    has_public_exploit: bool
+    exploit_refs:      List[ExploitRef] = field(default_factory=list)
+    keyword_matched:   str = ""
+
+
+def search_nvd_by_scope(
+    scope: str,
+    min_cvss:          float    = 7.0,
+    max_results:       int      = 50,
+    days_back:         int      = 180,
+    require_exploit:   bool     = False,
+    severity_filter:   str      = "",   # "CRITICAL" | "HIGH" | "" (all)
+    custom_keywords:   Optional[List[str]] = None,
+    timeout:           float    = 20.0,
+    enrich:            bool     = True,
+) -> List[NvdSearchResult]:
+    """Query NVD's keyword search API and return high-signal CVE candidates for autonomous
+    exploit research. Rate-aware: sleeps between keyword pages, respects NVD's 5 req/30s limit.
+
+    Args:
+        scope:           Technology scope (key in _SCOPE_PRESETS) or a free-form keyword.
+        min_cvss:        Minimum CVSS base score to include.
+        max_results:     Hard cap on returned CVEs (NVD cap: 2000 per page).
+        days_back:       Search window in days from today backward.
+        require_exploit: If True, only return CVEs with a confirmed public PoC.
+        severity_filter: NVD severity string to pass as cvssV3Severity filter ("CRITICAL", "HIGH").
+        custom_keywords: Override the scope preset with these exact keywords (tried in order).
+        timeout:         HTTP timeout per request.
+        enrich:          Cross-check GitHub PoC database for each result.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    keywords = custom_keywords or _SCOPE_PRESETS.get(scope, [scope])
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    pub_start = cutoff.strftime("%Y-%m-%dT%H:%M:%S.000")
+
+    seen_ids: set = set()
+    results:  List[NvdSearchResult] = []
+
+    for kw in keywords:
+        if len(results) >= max_results:
+            break
+        params: List[str] = [
+            f"keywordSearch={urllib.request.quote(kw)}",
+            f"pubStartDate={urllib.request.quote(pub_start)}",
+            f"resultsPerPage={min(max_results - len(results), 100)}",
+            "noRejected",
+        ]
+        if severity_filter:
+            params.append(f"cvssV3Severity={severity_filter}")
+
+        url = NVD_SEARCH_API + "?" + "&".join(params)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            continue
+
+        for item in (data.get("vulnerabilities") or []):
+            cve = item.get("cve", {})
+            cid = cve.get("id", "")
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+
+            # Description
+            desc = ""
+            for d in cve.get("descriptions", []):
+                if d.get("lang") == "en":
+                    desc = (d.get("value") or "").strip()
+                    break
+
+            # CVSS
+            score: Optional[float] = None
+            severity = ""
+            metrics = cve.get("metrics", {})
+            for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                if metrics.get(key):
+                    m0 = metrics[key][0].get("cvssData", {})
+                    score = m0.get("baseScore")
+                    severity = (m0.get("baseSeverity") or
+                                m0.get("cvssV4Severity") or "").upper()
+                    break
+
+            if score is not None and score < min_cvss:
+                continue
+
+            published = (cve.get("published") or "")[:10]
+
+            # Exploit references
+            has_exploit = False
+            exploit_refs: List[ExploitRef] = []
+            for ref in cve.get("references", []):
+                ref_url = ref.get("url", "")
+                if "Exploit" in (ref.get("tags") or []):
+                    has_exploit = True
+                    exploit_refs.append(_classify_ref(ref_url))
+
+            if enrich and not has_exploit:
+                gh_refs = search_github_poc(cid)
+                if gh_refs:
+                    has_exploit = True
+                    exploit_refs.extend(gh_refs)
+
+            if require_exploit and not has_exploit:
+                continue
+
+            results.append(NvdSearchResult(
+                cve_id=cid,
+                cvss_score=score,
+                cvss_severity=severity,
+                published=published,
+                description=desc,
+                has_public_exploit=has_exploit,
+                exploit_refs=exploit_refs,
+                keyword_matched=kw,
+            ))
+
+            if len(results) >= max_results:
+                break
+
+        # NVD rate limit: 5 req/30s. Sleep briefly between keyword sweeps.
+        time.sleep(0.7)
+
+    # Sort by CVSS desc, then by date desc
+    results.sort(key=lambda r: (r.cvss_score or 0, r.published), reverse=True)
+    return results[:max_results]

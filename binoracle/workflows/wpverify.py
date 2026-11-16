@@ -1334,6 +1334,18 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png,
                          "url": ctx["base_url"] + url_path})
 
+    # Launch source analysis in background while Docker spins up (60-80s).
+    # By the time the plugin is activated the analysis is done and its gating
+    # hints can be applied before the first probe — zero extra wall-clock cost.
+    import concurrent.futures as _cfe
+    _src_executor = _cfe.ThreadPoolExecutor(max_workers=1, thread_name_prefix="binoracle-src")
+    try:
+        from .engine import UniversalEngine as _UE
+        _src_future: Optional[_cfe.Future] = _src_executor.submit(
+            _UE().analyze_plugin_source, plugin_source_dir, slug)
+    except Exception:
+        _src_future = None
+
     step("levantando laboratorio WordPress+MySQL aislado en Docker (red/volumen propios)...")
     lab.setup_network_and_volume()
     lab.start_mysql(root_pw, db_pw)
@@ -1490,6 +1502,28 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     f"no se pudo activar la opcion requerida '{name}': "
                     f"{(r_opt.stderr or r_opt.stdout or '')[:200]} -- el ataque puede no "
                     f"alcanzar el codigo vulnerable")
+
+    # Apply source-analysis hints collected while Docker was spinning up.
+    # Only applies options not already in setup_wp_options (caller-supplied ones take precedence).
+    _already_set = {(o.get("name") if isinstance(o, dict) else None)
+                    for o in (setup_wp_options or [])}
+    if _src_future is not None:
+        try:
+            _hint = _src_future.result(timeout=5)
+            _src_executor.shutdown(wait=False)
+            for _opt_key, _opt_val in (_hint.gating_options or {}).items():
+                if _opt_key in _already_set:
+                    continue
+                step(f"[source-analysis] activando opcion detectada estaticamente: "
+                     f"'{_opt_key}'={_opt_val!r}...")
+                if "." in _opt_key:
+                    _opt_name, _sub_key = _opt_key.split(".", 1)
+                    lab.wp_cli("option", "patch", "insert", _opt_name, _sub_key, str(_opt_val),
+                               timeout=15)
+                else:
+                    lab.wp_cli("option", "update", _opt_key, str(_opt_val), timeout=15)
+        except Exception:
+            _src_executor.shutdown(wait=False)
 
     shortcode_page_path = None
     # Create the CPT post FIRST so its ID is available when building the shortcode content.

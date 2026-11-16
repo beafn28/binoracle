@@ -1621,6 +1621,95 @@ def cmd_cve(args, config):
         colorlog.ok(f"evidencia JSON escrita en {args.json_out}")
 
 
+def cmd_autodiscover(args, config):
+    """binoracle autodiscover — NVD keyword search + autonomous batch investigation."""
+    import sys as _sys
+    from .workflows.cve_agent import autodiscover_and_investigate, render_autodiscover_result
+    from . import colorlog
+
+    scope          = args.scope
+    min_cvss       = args.min_cvss
+    days_back      = args.days
+    max_candidates = args.max_candidates
+    parallel       = args.parallel
+    budget         = args.budget
+    severity       = (args.severity or "").upper()
+    keywords       = args.keywords or None
+    require_exploit = not args.no_exploit_filter
+    lang           = config.lang if hasattr(config, "lang") else "es"
+    quiet          = getattr(args, "quiet", False)
+
+    _b  = "\033[1m"  if not quiet else ""
+    _r  = "\033[0m"  if not quiet else ""
+    _ok = "\033[32m" if not quiet else ""
+    _d  = "\033[90m" if not quiet else ""
+
+    if not quiet:
+        print(f"\n  {_b}Autonomous CVE discovery{_r}  scope={scope!r}  "
+              f"cvss>={min_cvss}  days={days_back}  parallel={parallel}")
+        print(f"  {_d}querying NVD → filtering → batch investigation{_r}\n")
+
+    def _on_event(ev: dict):
+        if quiet:
+            return
+        t = ev.get("type", "")
+        if t == "discover_done":
+            n = ev.get("count", 0)
+            ids = ev.get("cve_ids") or []
+            print(f"  {_d}[NVD] {n} candidate(s): {', '.join(ids[:8])}"
+                  + (f" +{n-8} more" if n > 8 else "") + _r)
+        elif t == "start":
+            print(f"  {_d}[→] {ev.get('cve_id','?')}{_r}", flush=True)
+        elif t == "step":
+            msg = (ev.get("message") or "")[:100]
+            print(f"       {_d}{msg}{_r}", flush=True)
+        elif t == "finish":
+            cid  = ev.get("cve_id", "?")
+            stat = ev.get("status", "?")
+            ela  = ev.get("elapsed_s", 0)
+            tag  = (_ok + "VERIFIED" + _r) if stat == "done" else stat
+            print(f"  [{tag}] {cid} ({ela:.0f}s)")
+
+    result = autodiscover_and_investigate(
+        scope=scope,
+        min_cvss=min_cvss,
+        days_back=days_back,
+        max_candidates=max_candidates,
+        parallel=parallel,
+        require_exploit=require_exploit,
+        severity_filter=severity,
+        budget_s=budget,
+        config=config,
+        lang=lang,
+        custom_keywords=keywords,
+        on_event=_on_event,
+        use_cache=not getattr(args, "no_cache", False),
+    )
+
+    summary = render_autodiscover_result(result, lang=lang)
+    print("\n" + summary)
+
+    if getattr(args, "json_out", None):
+        import json as _json
+        from pathlib import Path as _Path
+        payload = {
+            "scope": result.scope,
+            "candidates": result.candidates,
+            "investigated": result.investigated,
+            "verified": result.verified,
+            "not_confirmed": result.not_confirmed,
+            "errors": result.errors,
+            "elapsed_s": result.elapsed_s,
+        }
+        _Path(args.json_out).write_text(_json.dumps(payload, indent=2, ensure_ascii=False))
+        colorlog.ok(f"resultados JSON escritos en {args.json_out}")
+
+    if result.verified:
+        _sys.exit(0)
+    elif result.errors and not result.not_confirmed:
+        _sys.exit(2)
+
+
 def cmd_scan(args, config):
     """binoracle scan <source_dir> — static vuln scan + OSV dep audit + CVE test strategies."""
     import json as _json
@@ -2471,6 +2560,37 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("-q", "--quiet", action="store_true",
                     help="no imprime pasos en vivo; solo muestra el veredicto final")
     cv.set_defaults(func=cmd_cve)
+
+    ad = sub.add_parser("autodiscover",
+                        help="Autonomous CVE discovery: NVD keyword search + batch investigation "
+                             "without specifying individual CVE IDs")
+    ad.add_argument("scope",
+                    help="Technology scope: wordpress-plugin, python-flask, python-django, nodejs, "
+                         "php, java-spring, ruby-rails, apache, nginx, docker, kubernetes, "
+                         "linux-kernel — or any free-form keyword")
+    ad.add_argument("--min-cvss",  type=float, default=8.5, dest="min_cvss",
+                    help="Minimum CVSS base score (default 8.5)")
+    ad.add_argument("--days",      type=int,   default=90,
+                    help="Search window in days back from today (default 90)")
+    ad.add_argument("--max-candidates", type=int, default=20, dest="max_candidates",
+                    help="Max CVEs to investigate (default 20)")
+    ad.add_argument("--parallel",  type=int,   default=2,
+                    help="Parallel investigation workers (default 2)")
+    ad.add_argument("--severity",  default="CRITICAL",
+                    help="NVD severity filter: CRITICAL|HIGH|MEDIUM|LOW (default CRITICAL)")
+    ad.add_argument("--budget",    type=float, default=600,
+                    help="Verification budget per CVE in seconds (default 600)")
+    ad.add_argument("--no-exploit-filter", action="store_true",
+                    help="Include CVEs without a confirmed public PoC")
+    ad.add_argument("--keywords",  nargs="+",
+                    help="Override scope preset with custom NVD keyword(s)")
+    ad.add_argument("--no-cache",  action="store_true",
+                    help="Force fresh investigation (skip cache)")
+    ad.add_argument("--json", dest="json_out",
+                    help="Dump results JSON to this path")
+    ad.add_argument("-q", "--quiet", action="store_true",
+                    help="Only print the final summary")
+    ad.set_defaults(func=cmd_autodiscover)
 
     ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "
                                             "reason + develop + (with --binary) verify in sandbox")
