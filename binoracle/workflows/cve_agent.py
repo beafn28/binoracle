@@ -2873,17 +2873,35 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         # afectada en el CVE, puede ser un plugin DISTINTO con nombre similar (p.ej.
         # 'error-log-viewer' existe y es 1.1.8, pero el CVE afecta 'error-log-viewer-wp' <=1.0.5).
         # Se intenta la variante con sufijo '-wp' antes de seguir con el plugin equivocado.
-        if fr.ok and guessed_source and version and fr.resolved_version:
+        if fr.ok and guessed_source and not source.endswith("-wp"):
             try:
                 def _vt(v):
                     import re as _re
                     return tuple(int(x) for x in _re.split(r"[.\-]", v or "") if x.isdigit())
-                if _vt(fr.resolved_version) > _vt(version) and not source.endswith("-wp"):
+                _version_too_new = (version and fr.resolved_version and
+                                    _vt(fr.resolved_version) > _vt(version))
+                # Tambien intentar variante '-wp' cuando el plugin descargado no tiene
+                # ninguna accion AJAX registrada y el CVE es SQLi en WordPress: indica que
+                # el slug adivinado corresponde a un plugin DISTINTO del vulnerable (p.ej.
+                # 'error-log-viewer' != 'error-log-viewer-wp' aunque tengan la misma version).
+                _zero_ajax = False
+                if (not _version_too_new and
+                        inv.vuln_class in ("sqli", "sql-injection", "missing-authorization",
+                                           "auth-bypass", "idor")):
+                    from .websource import find_all_ajax_actions as _faa_check
+                    _zero_ajax = not _faa_check(fr.local_path)
+                if _version_too_new or _zero_ajax:
                     _wp_slug = source + "-wp"
-                    step((f"'{source}' descargo version {fr.resolved_version} pero el CVE "
-                          f"afecta <={version} -- probando variante '{_wp_slug}'...") if es else
-                         (f"'{source}' downloaded version {fr.resolved_version} but CVE affects "
-                          f"<={version} -- trying variant '{_wp_slug}'..."))
+                    if _version_too_new:
+                        step((f"'{source}' descargo version {fr.resolved_version} pero el CVE "
+                              f"afecta <={version} -- probando variante '{_wp_slug}'...") if es else
+                             (f"'{source}' downloaded version {fr.resolved_version} but CVE affects "
+                              f"<={version} -- trying variant '{_wp_slug}'..."))
+                    else:
+                        step((f"'{source}' no tiene acciones AJAX registradas; puede ser un plugin "
+                              f"distinto al vulnerable -- probando variante '{_wp_slug}'...") if es
+                             else (f"'{source}' has no registered AJAX actions; may be a different "
+                                   f"plugin than the vulnerable one -- trying variant '{_wp_slug}'..."))
                     fr_wp = fetch_source(_wp_slug, version=version, on_step=step,
                                          cms_hint="wordpress",
                                          exclusive_upper_bound=version_exclusive)
@@ -3139,6 +3157,48 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          (f"none of the {len(all_actions)} found AJAX actions "
                                          f"shares words with '{known_action}' -- keeping original "
                                          f"hypothesis")))
+                    else:
+                        # Sin LLM (o LLM sin accion AJAX en las notas): para CVEs de clase sqli
+                        # en WordPress, escanear el plugin en busca de acciones AJAX que usen
+                        # parametros DataTables comunes (order, start, etc.) y construir el
+                        # endpoint determinista. Cubre el caso 'error-log-viewer-wp' sin Ollama.
+                        if inv.vuln_class in ("sqli", "sql-injection"):
+                            from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                            _pts_det = ["order", "start", "length", "draw", "search",
+                                        "columns", "id", "post_id", "user_id", "orderby", "dir"]
+                            _det_action = None
+                            _det_param = ""
+                            for _cand_p in _pts_det:
+                                _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                                if _r:
+                                    _det_action = _r
+                                    _det_param = _cand_p
+                                    break
+                            if _det_action:
+                                step((f"escaner determinista encontro accion AJAX para SQLi: "
+                                      f"'{_det_action}' (parametro '{_det_param}') -- "
+                                      f"construyendo endpoint...") if es else
+                                     (f"deterministic scan found AJAX action for SQLi: "
+                                      f"'{_det_action}' (param '{_det_param}') -- "
+                                      f"building endpoint..."))
+                                _det_ep = f"/wp-admin/admin-ajax.php?action={_det_action}"
+                                notes["endpoint"] = _det_ep
+                                notes["ajax_action"] = _det_action
+                                notes["http_method"] = "POST"
+                                notes["sqli_param"] = _det_param
+                                inv.llm_notes["endpoint"] = _det_ep
+                                inv.llm_notes["ajax_action"] = _det_action
+                                inv.llm_notes["http_method"] = "POST"
+                                inv.llm_notes["sqli_param"] = _det_param
+                                from .websource import find_ajax_handler_function
+                                _det_rec = find_ajax_handler_function(fr.local_path, _det_action)
+                                if _det_rec:
+                                    inv.source_grounding["found"] = {
+                                        _det_rec["function"]: [_det_rec["location"]]}
+                                    step((f"handler: '{_det_rec['function']}' en "
+                                          f"{_det_rec['location']}") if es else
+                                         (f"handler: '{_det_rec['function']}' at "
+                                          f"{_det_rec['location']}"))
                 # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
                 # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
                 # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara
@@ -3185,6 +3245,61 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
                              "inicial" if es else "no LLM available or nothing to refine: keeping "
                              "the initial hypothesis")
+            # Ruta SIN LLM: el bloque 'if fn_names:' de arriba no corre cuando el LLM no esta
+            # disponible (fn_names=[]) y deja notes["endpoint"] vacio. Para CVEs de clase sqli
+            # en WordPress, escanear el plugin en busca de acciones AJAX SQLi-susceptibles y
+            # construir el endpoint de forma determinista para que el verificador pueda lanzarse.
+            if (fr.ok and not is_drupal and not is_joomla and not fn_names
+                    and not notes.get("endpoint")
+                    and inv.vuln_class in ("sqli", "sql-injection")):
+                from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                _noLLM_pts = ["order", "start", "length", "draw", "search",
+                               "columns", "id", "post_id", "user_id", "orderby", "dir"]
+                _noLLM_action = None
+                _noLLM_param = ""
+                for _cand_p in _noLLM_pts:
+                    _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                    if _r:
+                        _noLLM_action = _r
+                        _noLLM_param = _cand_p
+                        break
+                if _noLLM_action:
+                    step((f"escaner determinista (sin LLM) encontro accion AJAX SQLi: "
+                          f"'{_noLLM_action}' (parametro POST '{_noLLM_param}') -- "
+                          f"construyendo endpoint...") if es else
+                         (f"deterministic scan (no LLM) found SQLi AJAX action: "
+                          f"'{_noLLM_action}' (POST param '{_noLLM_param}') -- "
+                          f"building endpoint..."))
+                    _noLLM_ep = f"/wp-admin/admin-ajax.php?action={_noLLM_action}"
+                    notes["endpoint"] = _noLLM_ep
+                    notes["ajax_action"] = _noLLM_action
+                    notes["http_method"] = "POST"
+                    notes["sqli_param"] = _noLLM_param
+                    inv.llm_notes["endpoint"] = _noLLM_ep
+                    inv.llm_notes["ajax_action"] = _noLLM_action
+                    inv.llm_notes["http_method"] = "POST"
+                    inv.llm_notes["sqli_param"] = _noLLM_param
+                    from .websource import find_ajax_handler_function
+                    _noLLM_rec = find_ajax_handler_function(fr.local_path, _noLLM_action)
+                    if _noLLM_rec:
+                        inv.source_grounding["found"] = {
+                            _noLLM_rec["function"]: [_noLLM_rec["location"]]}
+                        step((f"handler: '{_noLLM_rec['function']}' en "
+                              f"{_noLLM_rec['location']}") if es else
+                             (f"handler: '{_noLLM_rec['function']}' at "
+                              f"{_noLLM_rec['location']}"))
+                        # Refinar parametros con grep deterministico (extrae order[0][dir] etc.)
+                        det_no_llm = _deterministic_web_hints_from_source(
+                            fr.local_path, inv.source_grounding["found"])
+                        if det_no_llm:
+                            notes = {**notes, **det_no_llm}
+                            inv.llm_notes.update(det_no_llm)
+                            step((f"grep deterministico (sin LLM): endpoint="
+                                  f"{det_no_llm.get('endpoint')}, parameters="
+                                  f"{det_no_llm.get('parameters')}") if es else
+                                 (f"deterministic grep (no LLM): endpoint="
+                                  f"{det_no_llm.get('endpoint')}, parameters="
+                                  f"{det_no_llm.get('parameters')}"))
             # verificacion DINAMICA: solo para el caso concreto que wpverify.py sabe confirmar de
             # verdad (account-takeover por missing-authorization/idor en un plugin de WordPress).
             # Cualquier fuente que de verdad trajo codigo de un plugin sirve -- no solo
