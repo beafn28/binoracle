@@ -2081,7 +2081,7 @@ def verify_generic_sqli_blind(
                 step(f"probando boolean in-band: size_true={len(_bt)}, size_false={len(_bf)}, "
                      f"diff={_size_diff} (true={_true_pl!r})")
                 if (_st in range(200, 300) and _sf in range(200, 300)
-                        and _size_diff > 20 and _bt != _bf):
+                        and _size_diff >= 10 and _bt != _bf):
                     found = True
                     res.evidence["payload_ganador"] = _true_pl
                     res.evidence["payload_false"] = _false_pl
