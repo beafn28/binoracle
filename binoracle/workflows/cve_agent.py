@@ -2774,6 +2774,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
              (f"'{version_raw}' doesn't look like a real version (looks like free text from "
              f"the description) and none could be extracted -- continuing without a specific "
              f"version"))
+    # Fallback determinista: si el LLM no extrajo la version afectada, intentar inferirla de la
+    # descripcion NVD que casi siempre incluye "from n/a through X.Y.Z" o "before X.Y.Z".
+    # Esto permite el chequeo de version en el fallback de slug '-wp' sin depender del LLM.
+    if not version and inv.description:
+        version = _clean_affected_version(inv.description)
+        if version:
+            version_exclusive = _affected_version_is_exclusive(inv.description)
     fn_names = notes.get("vulnerable_functions") or []
     if isinstance(fn_names, str):
         fn_names = [fn_names]
@@ -2862,6 +2869,30 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr = fr_retry
                         source = guess
                         guessed_source = True
+        # Si el slug adivinado descargo bien pero la version descargada es MAS NUEVA que la
+        # afectada en el CVE, puede ser un plugin DISTINTO con nombre similar (p.ej.
+        # 'error-log-viewer' existe y es 1.1.8, pero el CVE afecta 'error-log-viewer-wp' <=1.0.5).
+        # Se intenta la variante con sufijo '-wp' antes de seguir con el plugin equivocado.
+        if fr.ok and guessed_source and version and fr.resolved_version:
+            try:
+                def _vt(v):
+                    import re as _re
+                    return tuple(int(x) for x in _re.split(r"[.\-]", v or "") if x.isdigit())
+                if _vt(fr.resolved_version) > _vt(version) and not source.endswith("-wp"):
+                    _wp_slug = source + "-wp"
+                    step((f"'{source}' descargo version {fr.resolved_version} pero el CVE "
+                          f"afecta <={version} -- probando variante '{_wp_slug}'...") if es else
+                         (f"'{source}' downloaded version {fr.resolved_version} but CVE affects "
+                          f"<={version} -- trying variant '{_wp_slug}'..."))
+                    fr_wp = fetch_source(_wp_slug, version=version, on_step=step,
+                                         cms_hint="wordpress",
+                                         exclusive_upper_bound=version_exclusive)
+                    if fr_wp.ok:
+                        fr = fr_wp
+                        source = _wp_slug
+                        guessed_source = True
+            except Exception:
+                pass
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note,
