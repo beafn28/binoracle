@@ -47,6 +47,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+from binoracle.workflows.engine import SourceCodeIntelligence as _SCI
+
 _MYSQL_IMAGE = "mysql:5.7"
 # Overridable: confirmed live investigating CVE-2024-1071 (Ultimate Member SQLi) that the
 # vulnerable code's `in_array($sortby, $custom_sort)` / loose `==` comparisons are PHP-version
@@ -1904,145 +1906,32 @@ def verify_wordpress_direct_login_as(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
-def _infer_param_value_from_error(param_name: str, error_message: str) -> Optional[str]:
-    """Extrae un valor valido desde el propio mensaje de error WordPress/REST.
-    Ej: 'Invalid login type. Allowed types: google, apple' → 'google'
-    Ej: 'Value must be one of: admin, editor, subscriber' → 'admin'"""
-    import re as _re
-    # Patron: "Allowed types: X, Y" / "Allowed values: X, Y" / "must be one of: X, Y, Z"
-    for pat in [
-        r"(?:allowed\s+(?:types?|values?|options?)[:：]\s*)([a-z0-9_,\s\-]+)",
-        r"(?:must\s+be\s+one\s+of[:：]\s*)([a-z0-9_,\s\-]+)",
-        r"(?:valid\s+(?:types?|values?)[:：]\s*)([a-z0-9_,\s\-]+)",
-        r"(?:accepted\s+(?:types?|values?)[:：]\s*)([a-z0-9_,\s\-]+)",
-    ]:
-        m = _re.search(pat, error_message, _re.IGNORECASE)
-        if m:
-            vals = [v.strip() for v in m.group(1).split(",") if v.strip()]
-            if vals:
-                return vals[0]
-    return None
-
-
-def _infer_param_value_from_source(plugin_dir: str, param_name: str) -> Optional[str]:
-    """Busca en el codigo fuente del plugin la definicion del param REST y extrae
-    el primer valor valido de un array de allowed_values o validate_callback con in_array.
-    Filtra agresivamente palabras clave PHP/WP para evitar falsos positivos."""
-    import re as _re
-    # Palabras clave PHP/WP que nunca son valores de parametros de API
-    _NEVER = {
-        "required", "true", "false", "type", "string", "integer", "boolean", "array",
-        "default", "description", "sanitize", "validate", "callback", "enum", "format",
-        "email", "number", "sanitize_text_field", "sanitize_email", "rest_sanitize_boolean",
-        "sanitize_user", "esc_url_raw", "null", "object", "function", "return", "echo",
-        "new", "class", "interface", "extends", "implements", "public", "private",
-        "protected", "static", "abstract", "final", "namespace", "use", "const",
-        "validate_callback", "sanitize_callback", "permission_callback", "column",
-        "table", "prefix", "primary", "key", "index", "unique", "not", "auto_increment",
-        "varchar", "bigint", "datetime", "text", "int", "where", "like", "select",
-        "from", "insert", "update", "delete", "join", "left", "right", "inner",
-        "migration", "migrate", "setup", "run", "init", "get", "set", "post", "put",
-        "patch", "delete", "options", "head", "creatable", "readable", "editable",
-        "deletable", "allmethods",
-    }
-
-    for root, _dirs, files in os.walk(plugin_dir):
-        for fname in files:
-            if not fname.endswith(".php"):
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                content = open(fpath, encoding="utf-8", errors="replace").read()
-            except Exception:
-                continue
-
-            # Buscar el bloque de definicion de este param en register_rest_route / args
-            # Patron: 'login_type' => [ ... ]  con contenido relevante
-            pat = _re.compile(
-                r"['\"]" + _re.escape(param_name) + r"['\"]"
-                r"\s*=>\s*\[(.{20,600}?)\]",
-                _re.DOTALL
-            )
-            for m_block in pat.finditer(content):
-                block = m_block.group(1)
-
-                # Patron 1: array literal con valores (in_array pattern):
-                # ['google', 'apple'] o array('google', 'apple')
-                arr_pat = _re.compile(
-                    r"(?:in_array\s*\(\s*\$[^,]+,\s*|\[)(['\"]([a-zA-Z0-9_\-]+)['\"]"
-                    r"(?:\s*,\s*['\"]([a-zA-Z0-9_\-]+)['\"])*)\s*\]?"
-                )
-                for m_arr in arr_pat.finditer(block):
-                    # Extraer valores del array
-                    vals = _re.findall(r"['\"]([a-zA-Z0-9_\-]{2,30})['\"]", m_arr.group(0))
-                    good = [v for v in vals if v.lower() not in _NEVER and not v.isdigit()]
-                    if good:
-                        return good[0]
-
-                # Patron 2: buscar inline array: $allowed_types = ['google', 'apple']
-                inline_pat = _re.compile(
-                    r"\$\w*(?:type|kind|mode|value|option|status|role|method|provider)\w*"
-                    r"\s*=\s*\[(['\"][a-zA-Z0-9_\-]+['\"](?:\s*,\s*['\"][a-zA-Z0-9_\-]+['\"])*)\]"
-                )
-                for m_inline in inline_pat.finditer(content):
-                    vals = _re.findall(r"['\"]([a-zA-Z0-9_\-]{2,30})['\"]", m_inline.group(1))
-                    good = [v for v in vals if v.lower() not in _NEVER and not v.isdigit()]
-                    if good:
-                        return good[0]
-
-    return None
+_sci = _SCI()
 
 
 def _infer_missing_params_from_source(plugin_source_dir: str, slug: str,
                                        endpoint: str, missing_params: list,
                                        error_details: Optional[dict] = None) -> dict:
-    """Motor de inferencia de parametros faltantes/invalidos. Estrategia en capas:
-    1. Leer el mensaje de error del propio REST (contiene hints como 'Allowed: google, apple')
-    2. Buscar en el codigo fuente del plugin la definicion del endpoint y sus allowed values
-    3. Defaults semanticos por nombre de parametro (ultimo recurso)
-    Todo esto es razonamiento sobre la causa raiz, no casos hardcodeados por CVE."""
-    result = {}
+    """Delega al SourceCodeIntelligence del motor universal.
+    Razonamiento en 3 capas: (1) mensaje de error REST, (2) codigo fuente del plugin,
+    (3) defaults semanticos por nombre. No hay casos hardcodeados por CVE."""
     plugin_dir = os.path.join(plugin_source_dir, slug)
     if not os.path.isdir(plugin_dir):
         plugin_dir = plugin_source_dir
 
+    defs = _sci.find_param_definitions(plugin_dir, missing_params)
+    result = {}
     for param_name in missing_params:
-        best_value = None
-
-        # Capa 1: extraer valor del mensaje de error del REST (lo mas preciso)
+        err_msg = ""
         if error_details and isinstance(error_details, dict):
             detail = error_details.get(param_name) or {}
             if isinstance(detail, dict):
                 err_msg = detail.get("message") or ""
             else:
                 err_msg = str(detail)
-            if err_msg:
-                best_value = _infer_param_value_from_error(param_name, err_msg)
-
-        # Capa 2: buscar en el codigo fuente del plugin
-        if best_value is None and os.path.isdir(plugin_dir):
-            best_value = _infer_param_value_from_source(plugin_dir, param_name)
-
-        # Capa 3: defaults semanticos por nombre
-        if best_value is None:
-            lp = param_name.lower()
-            if any(x in lp for x in ("token", "access_token", "access", "key", "secret",
-                                       "password", "pass", "pwd", "credential")):
-                best_value = "binoracle_lab_token"
-            elif any(x in lp for x in ("type", "kind", "mode", "method", "provider",
-                                        "platform", "source", "action")):
-                best_value = "default"
-            elif any(x in lp for x in ("id", "user_id", "uid", "identifier")):
-                best_value = "1"
-            elif any(x in lp for x in ("name", "username", "login", "user")):
-                best_value = "binoracle_user"
-            elif any(x in lp for x in ("role", "permission", "level", "scope")):
-                best_value = "subscriber"
-            else:
-                best_value = "binoracle_test"
-
-        result[param_name] = best_value
-
+        result[param_name] = _sci.infer_valid_value(
+            param_name, defs.get(param_name), err_msg
+        )
     return result
 
 
