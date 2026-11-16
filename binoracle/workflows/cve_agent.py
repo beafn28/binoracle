@@ -2946,32 +2946,58 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _sqli_p = (notes.get("sqli_param") or
                                        notes.get("vulnerable_parameter") or "").strip()
                             _param_action = None
+                            # Buscar la accion real por parametro POST: primero sqli_param del LLM,
+                            # luego cada parametro de notes["parameters"], luego params DataTables
+                            # comunes -- cubre el caso habitual en que el LLM no extrae sqli_param
+                            # pero si conoce el parametro vulnerable (order[0][dir], etc.).
+                            _pts: list = []
                             if _sqli_p:
-                                _param_action = find_ajax_action_for_param(fr.local_path, _sqli_p)
-                                if _param_action:
-                                    step((f"accion AJAX encontrada directamente en el codigo "
-                                          f"real por el parametro POST '{_sqli_p}': "
-                                          f"'{_param_action}' -- actualizando endpoint" if es else
-                                          (f"AJAX action found directly in source by POST param "
-                                          f"'{_sqli_p}': '{_param_action}' -- updating endpoint")))
-                                    old_ep = notes.get("endpoint") or ""
-                                    if "action=" in old_ep:
-                                        import urllib.parse as _up
-                                        _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
-                                        _qs["action"] = _param_action
-                                        _base = old_ep.split("?", 1)[0]
-                                        notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
-                                    else:
-                                        notes["endpoint"] = (old_ep.rstrip("?&") +
-                                                             ("?" if "?" not in old_ep else "&") +
-                                                             f"action={_param_action}")
-                                    notes["ajax_action"] = _param_action
-                                    inv.llm_notes["ajax_action"] = _param_action
-                                    inv.llm_notes["endpoint"] = notes["endpoint"]
-                                    _rec2 = find_ajax_handler_function(fr.local_path, _param_action)
-                                    if _rec2:
-                                        inv.source_grounding["found"] = {
-                                            _rec2["function"]: [_rec2["location"]]}
+                                _pts.append(_sqli_p)
+                            for _pp in (notes.get("parameters") or []):
+                                _pps = str(_pp).strip() if _pp else ""
+                                if _pps and _pps not in _pts:
+                                    _pts.append(_pps)
+                            for _pp in ("order", "start", "length", "draw", "search",
+                                        "columns", "id", "post_id", "user_id",
+                                        "orderby", "dir"):
+                                if _pp not in _pts:
+                                    _pts.append(_pp)
+                            _found_via_p = ""
+                            for _cand_p in _pts:
+                                _r = find_ajax_action_for_param(fr.local_path, _cand_p)
+                                if _r:
+                                    _param_action = _r
+                                    _found_via_p = _cand_p
+                                    break
+                            if _param_action:
+                                step((f"accion AJAX encontrada directamente en el codigo "
+                                      f"real por el parametro POST '{_found_via_p}': "
+                                      f"'{_param_action}' -- actualizando endpoint" if es else
+                                      (f"AJAX action found directly in source by POST param "
+                                      f"'{_found_via_p}': '{_param_action}' -- updating endpoint")))
+                                old_ep = notes.get("endpoint") or ""
+                                if "action=" in old_ep:
+                                    import urllib.parse as _up
+                                    _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
+                                    _qs["action"] = _param_action
+                                    _base = old_ep.split("?", 1)[0]
+                                    notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                else:
+                                    notes["endpoint"] = (old_ep.rstrip("?&") +
+                                                         ("?" if "?" not in old_ep else "&") +
+                                                         f"action={_param_action}")
+                                notes["ajax_action"] = _param_action
+                                inv.llm_notes["ajax_action"] = _param_action
+                                inv.llm_notes["endpoint"] = notes["endpoint"]
+                                # propagamos tambien sqli_param para que el verificador SQLi lo
+                                # use directamente sin tener que adivinarlo de nuevo.
+                                if _found_via_p and not notes.get("sqli_param"):
+                                    notes["sqli_param"] = _found_via_p
+                                    inv.llm_notes["sqli_param"] = _found_via_p
+                                _rec2 = find_ajax_handler_function(fr.local_path, _param_action)
+                                if _rec2:
+                                    inv.source_grounding["found"] = {
+                                        _rec2["function"]: [_rec2["location"]]}
                             all_actions = find_all_ajax_actions(fr.local_path)
                             if all_actions and not _param_action:
                                 step((f"escaneando las {len(all_actions)} acciones AJAX reales "
@@ -3749,9 +3775,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # vuelta) no ayuda -- un unico intento, con el laboratorio vivo al final para
                 # que el analista mire wp-content/debug.log el mismo, vale mas que tres
                 # intentos ciegos que nunca dejan nada en pie que inspeccionar.
+                # Si el endpoint es admin-ajax.php, el metodo debe ser POST: $_POST no se
+                # popula con GET y la inyeccion nunca llega al codigo vulnerable.
+                _sqli_ep = notes.get("endpoint") or ""
+                _sqli_http_method = ("POST" if "admin-ajax" in _sqli_ep
+                                     else notes.get("http_method") or "GET")
                 wr = verify_wordpress_sqli(
-                    fr.local_path, plugin_dir, notes.get("endpoint"),
-                    notes.get("http_method") or "GET", params,
+                    fr.local_path, plugin_dir, _sqli_ep,
+                    _sqli_http_method, params,
                     sqli_param_hint=sqli_p or "", on_step=step, budget_s=budget_s,
                     setup_wp_options=notes.get("setup_options") or [],
                     companion_plugins=companion_plugins, shortcode_name=shortcode_name,
@@ -3783,8 +3814,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _apply_generic_wp_suggestion(sug, extra_nonce_pages,
                                                  extra_setup_trigger_paths, params)
                 def _attempt_sqli(ep, pr):
+                    _ep_method = ("POST" if "admin-ajax" in (ep or "")
+                                  else notes.get("http_method") or "GET")
                     return verify_wordpress_sqli(
-                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "GET", params,
+                        fr.local_path, plugin_dir, ep, _ep_method, params,
                         sqli_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         setup_wp_options=notes.get("setup_options") or [],
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name,
