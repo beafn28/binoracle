@@ -105,6 +105,17 @@ _PLUGIN_SETUP_TRIGGER_PATHS = {
 _PLUGIN_DIRECTORY_CPT = {
     "ultimate-member": "um_directory",
 }
+# Plugins whose correct shortcode for triggering the VULNERABLE code path is NOT the first
+# shortcode found by find_shortcode_name() (which uses a simple $wpdb heuristic).  Map
+# slug -> shortcode BASE name (without id/attrs — those are appended dynamically in
+# _bootstrap_lab once the CPT post ID is known).
+_PLUGIN_SHORTCODE_OVERRIDE = {
+    # UM's main 'ultimatemember' shortcode renders login/registration, NOT the member
+    # directory. 'ultimatemember_directory' renders the directory listing and injects the
+    # members nonce needed for um_get_members AJAX calls. Without the right shortcode, every
+    # request returns "Wrong Nonce" or "Wrong member directory data".
+    "ultimate-member": "ultimatemember_directory",
+}
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
@@ -414,8 +425,15 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                     _n = int(raw_id)
                     _hashed = _hl.md5(str(_n).encode()).hexdigest()[10:15]
                     base_params[dir_id_param] = _hashed
+                    # UM's get_directory_by_hash() looks up '_um_hash' post meta, NOT the
+                    # hash we compute — if the post was created programmatically (not via
+                    # the UM admin UI), that meta is never written and every request returns
+                    # "Wrong member directory data". Write it explicitly here.
+                    lab.wp_cli("post", "meta", "update", raw_id, "_um_hash", _hashed,
+                               timeout=15)
                     step(f"'{dir_id_param}' resuelto directamente via WP-CLI (post "
-                         f"{cpt_name} ID={_n} -> hash '{_hashed}') -- sin fuerza bruta")
+                         f"{cpt_name} ID={_n} -> hash '{_hashed}'); "
+                         f"_um_hash meta sincronizado en el post")
                     resolved_via_cli = True
             except Exception:
                 pass
@@ -1451,13 +1469,60 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     f"alcanzar el codigo vulnerable")
 
     shortcode_page_path = None
-    if shortcode_name:
-        step(f"creando una pagina real con el shortcode del plugin ([{shortcode_name}]) -- "
+    # Create the CPT post FIRST so its ID is available when building the shortcode content.
+    # (Original code created CPT after the shortcode page, making it impossible to embed
+    # the real directory ID in the shortcode for UM-style plugins.)
+    directory_cpt = _PLUGIN_DIRECTORY_CPT.get(slug)
+    dir_post_id: Optional[str] = None
+    if directory_cpt:
+        step(f"creando un '{directory_cpt}' real (no solo una pagina con el shortcode pegado) "
+             f"-- este plugin guarda su configuracion de directorio/listado como su propio "
+             f"custom post type, y la resolucion de IDs de recurso necesita uno real al que "
+             f"apuntar...")
+        r_dir = lab.wp_cli("post", "create", f"--post_type={directory_cpt}",
+                           "--post_status=publish", "--post_title=binoracle-lab-directory",
+                           "--porcelain", timeout=30)
+        dir_post_id = (r_dir.stdout or "").strip()
+        if r_dir.returncode != 0 or not dir_post_id.isdigit():
+            res.limitations.append(
+                f"no se pudo crear un '{directory_cpt}' real "
+                f"({(r_dir.stderr or r_dir.stdout or '')[:200]}) -- la resolucion de "
+                f"directory_id/resource_id puede no encontrar nada valido, y el ataque puede "
+                f"rechazarse antes de llegar al codigo vulnerable")
+            dir_post_id = None
+        elif slug == "ultimate-member" and dir_post_id:
+            # UM's get_directory_by_hash() looks up '_um_hash' post meta. When the post is
+            # created programmatically (not via the UM admin UI), that meta is never written
+            # and every AJAX request returns "Wrong member directory data". Write it here so
+            # the hash lookup succeeds from the first request.
+            import hashlib as _hl_boot
+            _um_hashed = _hl_boot.md5(dir_post_id.encode()).hexdigest()[10:15]
+            lab.wp_cli("post", "meta", "update", dir_post_id, "_um_hash", _um_hashed,
+                       timeout=15)
+            step(f"_um_hash='{_um_hashed}' escrito en el post {dir_post_id} (UM: get_directory_by_hash)")
+
+    # For UM-style plugins the shortcode that embeds the DIRECTORY (not the login form)
+    # must reference the actual CPT post ID so the AJAX nonce for um_get_members is
+    # injected into the page. Generic shortcode_name (e.g. 'ultimatemember') renders only
+    # the login/registration form and never includes the members nonce.
+    # Apply plugin-specific shortcode overrides. find_shortcode_name() uses a $wpdb
+    # heuristic that often picks the wrong shortcode for plugins whose vulnerable path is
+    # in an AJAX handler, not the shortcode file. The override map gives the correct one.
+    _sc_override = _PLUGIN_SHORTCODE_OVERRIDE.get(slug)
+    _effective_shortcode = _sc_override if _sc_override else shortcode_name
+    if _effective_shortcode and dir_post_id:
+        _sc_base = _effective_shortcode.split()[0]
+        # Append the real CPT post ID for directory-type shortcodes.
+        if _sc_base.endswith("_directory"):
+            _effective_shortcode = f'{_sc_base} id="{dir_post_id}"'
+
+    if _effective_shortcode:
+        step(f"creando una pagina real con el shortcode del plugin ([{_effective_shortcode}]) -- "
              f"atacar la portada vacia no puede reflejar ninguna diferencia, con o sin "
              f"inyeccion real...")
         r_page = lab.wp_cli("post", "create", "--post_type=page", "--post_status=publish",
                             "--post_title=binoracle-lab-listing",
-                            f"--post_content=[{shortcode_name}]", "--porcelain", timeout=30)
+                            f"--post_content=[{_effective_shortcode}]", "--porcelain", timeout=30)
         page_id = (r_page.stdout or "").strip()
         if r_page.returncode == 0 and page_id.isdigit():
             shortcode_page_path = f"/?page_id={page_id}"
@@ -1509,26 +1574,9 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                         f"seguir sin encontrar nada para la pagina atacada")
         else:
             res.limitations.append(
-                f"no se pudo crear una pagina real con el shortcode '{shortcode_name}' "
+                f"no se pudo crear una pagina real con el shortcode '{_effective_shortcode}' "
                 f"({(r_page.stderr or r_page.stdout or '')[:200]}) -- se sigue atacando el "
                 f"endpoint dado, que puede no mostrar ninguna superficie visible del plugin")
-
-    directory_cpt = _PLUGIN_DIRECTORY_CPT.get(slug)
-    if directory_cpt:
-        step(f"creando un '{directory_cpt}' real (no solo una pagina con el shortcode pegado) "
-             f"-- este plugin guarda su configuracion de directorio/listado como su propio "
-             f"custom post type, y la resolucion de IDs de recurso necesita uno real al que "
-             f"apuntar...")
-        r_dir = lab.wp_cli("post", "create", f"--post_type={directory_cpt}",
-                           "--post_status=publish", "--post_title=binoracle-lab-directory",
-                           "--porcelain", timeout=30)
-        dir_post_id = (r_dir.stdout or "").strip()
-        if r_dir.returncode != 0 or not dir_post_id.isdigit():
-            res.limitations.append(
-                f"no se pudo crear un '{directory_cpt}' real "
-                f"({(r_dir.stderr or r_dir.stdout or '')[:200]}) -- la resolucion de "
-                f"directory_id/resource_id puede no encontrar nada valido, y el ataque puede "
-                f"rechazarse antes de llegar al codigo vulnerable")
 
     step("plugin activo. capturando pantalla: panel de plugins como admin (el plugin "
          "vulnerable, activo)...")
