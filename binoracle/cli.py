@@ -1462,7 +1462,10 @@ def cmd_cve(args, config):
     print(f"{_ac}╚{bar}╝{_r}\n")
 
     t_start = _time.time()
-    on_step = _make_cve_step_printer()
+    if getattr(args, "quiet", False):
+        on_step = lambda _m: None  # silencio total; solo veredicto final
+    else:
+        on_step = _make_cve_step_printer()
 
     inv = investigate_cve(
         cve_id,
@@ -2425,6 +2428,8 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
     cv.add_argument("-o", "--html", help="export full HTML report (with screenshots) to this path")
     cv.add_argument("--json", dest="json_out", help="dump full evidence JSON to this path")
+    cv.add_argument("-q", "--quiet", action="store_true",
+                    help="no imprime pasos en vivo; solo muestra el veredicto final")
     cv.set_defaults(func=cmd_cve)
 
     ip = sub.add_parser("investigate", help="LLM-driven exploitation research agent: from a CVE, "
