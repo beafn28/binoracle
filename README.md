@@ -305,14 +305,14 @@ pip install binoracle[all]         # everything
 
 ## Roadmap
 
-- [ ] Kernel exploit chains (ret2usr, UAF in drivers)
-- [ ] Firmware analysis (UEFI, embedded Linux)
-- [ ] LibFuzzer corpus seeded from CVE PoCs
-- [ ] Multi-CVE chains (web RCE -> local privilege escalation)
-- [ ] CVSS v4 scoring
-- [ ] Burp Suite MCP bridge
+- [x] Kernel exploit chains (ret2usr, UAF in drivers)
+- [x] Firmware analysis (UEFI, embedded Linux)
+- [x] LibFuzzer corpus seeded from CVE PoCs
+- [x] Multi-CVE chains (web RCE → local privilege escalation)
+- [x] CVSS v4 scoring
+- [x] Burp Suite MCP bridge
 - [ ] JEB decompiler (Android native)
-- [ ] Fine-tuned model for exploit hypothesis generation
+- [ ] Fine-tuned model checkpoint distribution
 
 ---
 

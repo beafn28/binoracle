@@ -514,6 +514,25 @@ document.addEventListener('click',function(e){
   <span><span class="rm-item-effort rm-eff-l">L</span> multi-week / research</span>
 </div>
     <hr style="border:none;border-top:1px solid var(--brd);margin:1.5rem 0;">
+    <div class="rm-card" id="shipped" style="border-color:rgba(63,185,80,.4)">
+  <div class="rm-card-header">
+    <span class="rm-badge" style="background:rgba(63,185,80,.18);color:var(--grn);border:1px solid rgba(63,185,80,.4)">shipped</span>
+    <span class="rm-card-title">Already shipped</span>
+  </div>
+  <div class="rm-card-body">
+    <p class="rm-desc">Features from the original roadmap that are now in the codebase.</p>
+    <div class="rm-items">
+      <div class="rm-item"><span class="rm-item-effort rm-eff-l">✓</span><span class="rm-item-name">Kernel exploit chains — ret2usr, UAF in drivers, SMEP/SMAP/KASLR bypass (<code>kernel_exploit.py</code>)</span></div>
+      <div class="rm-item"><span class="rm-item-effort rm-eff-l">✓</span><span class="rm-item-name">Firmware analysis — UEFI, embedded Linux, squashfs/cramfs extraction (<code>firmware.py</code>)</span></div>
+      <div class="rm-item"><span class="rm-item-effort rm-eff-m">✓</span><span class="rm-item-name">LibFuzzer corpus seeded from CVE PoCs — minimised crash inputs per CVE (<code>libfuzzer_corpus.py</code>)</span></div>
+      <div class="rm-item"><span class="rm-item-effort rm-eff-m">✓</span><span class="rm-item-name">Multi-CVE chains — web RCE → LPE chaining with pivot analysis (<code>cve_chain.py</code>)</span></div>
+      <div class="rm-item"><span class="rm-item-effort rm-eff-s">✓</span><span class="rm-item-name">CVSS v4.0 scoring — NVD <code>cvssMetricV40</code> prioritised over v3.1 / v3.0 / v2</span></div>
+      <div class="rm-item"><span class="rm-item-effort rm-eff-m">✓</span><span class="rm-item-name">Burp Suite MCP bridge — 26 tools exposing Burp's REST API as MCP (<code>burpmcp.py</code>)</span></div>
+      <div class="rm-item"><span class="rm-item-effort rm-eff-m">✓</span><span class="rm-item-name">LoRA fine-tuning pipeline — JSONL dataset generation + SFT workflow (<code>finetune.py</code>)</span></div>
+    </div>
+  </div>
+</div>
+    <hr style="border:none;border-top:1px solid var(--brd);margin:1.5rem 0;">
     <div class="rm-card" id="v02">
   <div class="rm-card-header">
     <span class="rm-badge version">v0.2</span>

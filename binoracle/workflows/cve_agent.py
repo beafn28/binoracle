@@ -2970,6 +2970,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             "local_path": fr.local_path, "note": fr.note,
                             "source_guessed_from_description": guessed_source}
         if fr.ok:
+            # Si el LLM dio una URL de GitHub que sí existe (fr.kind="git") pero la descripción
+            # del CVE menciona "WordPress plugin", el routing correcto es wordpress-plugin.
+            # Intentar re-obtener usando el último segmento de la URL como slug de WordPress.org.
+            # Confirmado necesario en vivo: CVE-2023-6567 (LearnPress) -- el LLM devuelve
+            # github.com/LearnPress/learnpress, fetch_source clona ok con kind="git",
+            # nunca llega a wpverify y cae al lab genérico de Python/PostgreSQL.
+            if (fr.kind == "git"
+                    and "wordpress" in inv.description.lower()
+                    and "plugin" in inv.description.lower()):
+                from .websource import looks_like_wp_slug as _lwps
+                _url_seg = source.rstrip("/").split("/")[-1] if source and "://" in source else ""
+                if _url_seg and _lwps(_url_seg) and _url_seg != source:
+                    _fr_wp = fetch_source(_url_seg, version=version, on_step=step,
+                                          cms_hint="wordpress",
+                                          exclusive_upper_bound=version_exclusive)
+                    if _fr_wp.ok and _fr_wp.kind == "wordpress-plugin":
+                        step((f"re-ruteado a WordPress.org/{_url_seg} (la URL de GitHub se "
+                              f"clono como 'git' pero el CVE es de un plugin de WordPress)") if es else
+                             (f"re-routed to WordPress.org/{_url_seg} (GitHub URL cloned as "
+                              f"'git' but CVE is a WordPress plugin CVE)"))
+                        fr = _fr_wp
+                        source = _url_seg
             step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
                  f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
             # calculado AQUI (no solo mas abajo, donde lo usa el despacho de verificacion

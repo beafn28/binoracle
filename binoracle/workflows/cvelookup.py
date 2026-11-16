@@ -203,15 +203,18 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
             info.description = (d.get("value") or "").strip()
             break
     info.published = (cve.get("published") or "")[:10]
-    # CVSS (prioriza v3.1 > v3.0 > v2)
+    # CVSS — prioriza v4.0 > v3.1 > v3.0 > v2 (NVD expone v4 desde 2023 como cvssMetricV40)
     metrics = cve.get("metrics", {})
-    for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
         if metrics.get(key):
             m0 = metrics[key][0].get("cvssData", {})
             info.cvss_score = m0.get("baseScore")
             info.cvss_severity = (m0.get("baseSeverity") or
                                   metrics[key][0].get("baseSeverity") or "")
             info.cvss_vector = m0.get("vectorString", "")
+            # para CVSSv4 el campo de severity esta en el top-level del metric item
+            if not info.cvss_severity and key == "cvssMetricV40":
+                info.cvss_severity = metrics[key][0].get("cvssV4Severity", "")
             break
     # referencias + deteccion de exploit publico (1) por las etiquetas de la NVD
     for ref in cve.get("references", []):
