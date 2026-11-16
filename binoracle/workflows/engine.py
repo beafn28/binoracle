@@ -1153,6 +1153,259 @@ class RemediationEngine:
         )
 
 
+# ─────────────── 3b. Exploit Reasoning Engine ────────────────────────────────
+#
+# General-purpose exploit-research reasoning layer.  Unlike RemediationEngine
+# (which fixes parameter validation errors), this module thinks like an exploit
+# developer: given a failed or unexpected HTTP/process response it asks WHY the
+# payload did not land, then proposes the most likely root cause + targeted fix.
+#
+# Design principle: ALL reasoning must be driven by evidence in the response body
+# (status code, error text, known guard patterns) — never hardcoded per CVE.  A
+# finding that applies to CVE-2024-1071 must equally apply to any OTHER SQLi with
+# an equivalent guard pattern.
+#
+# Five reasoning chains (each language/framework-agnostic):
+#   1. AUTH_GATE_FIRED      — a capability / role / login guard short-circuited
+#   2. RESOURCE_NOT_FOUND   — the resource ID / hash / slug didn't resolve
+#   3. NONCE_MISMATCH       — CSRF / nonce token was for wrong user/session
+#   4. INJECTION_CONTEXT    — payload was sanitised or hit wrong SQL context
+#   5. FRAMEWORK_PROTECTION — framework-level output or query escaping fired
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ExploitHypothesis:
+    """A single reasoned hypothesis about why an exploit attempt failed."""
+    chain:      str         # one of the five chain names above
+    summary:    str         # one sentence: what the engine thinks happened
+    evidence:   List[str]   # substrings in the response that support this
+    confidence: float       # 0.0 – 1.0
+    fix_hint:   str         # what to change in the next attempt
+    fix_params: Dict[str, Any] = field(default_factory=dict)   # concrete param overrides
+
+
+@dataclass
+class ExploitAnalysis:
+    """Result of ExploitReasoningEngine.analyze_response()."""
+    succeeded:    bool
+    hypotheses:   List[ExploitHypothesis]  = field(default_factory=list)
+    best:         Optional[ExploitHypothesis] = None
+    raw_response: str = ""
+
+
+class ExploitReasoningEngine:
+    """
+    Reasons about failed exploit attempts from HTTP/process responses.
+
+    Usage::
+
+        era = ExploitReasoningEngine()
+        analysis = era.analyze_response(
+            response_body   = '{"success":false,"data":"Wrong member directory data"}',
+            status_code     = 200,
+            vuln_class      = "sqli",
+            payload_sent    = ",(SELECT SLEEP(5))",
+            param_name      = "sorting",
+            source_evidence = {},   # optional: code snippets / known guard patterns
+        )
+        if not analysis.succeeded and analysis.best:
+            print(analysis.best.fix_hint)
+
+    All reasoning is pattern-based and language-agnostic: a "guard fired" signal
+    in a PHP JSON response looks the same as one in a Python DRF response.
+    """
+
+    # ── Signal dictionaries ───────────────────────────────────────────────────
+    # Each entry: (regex_to_match_in_body, chain, weight, fix_hint_template)
+    # Regexes are case-insensitive and applied to the FULL response body.
+    _SIGNALS: List[Tuple[str, str, float, str]] = [
+        # AUTH_GATE_FIRED signals
+        (r"\b(?:wrong\s+member\s+directory\s+data|no\s+directory\s+found|"
+         r"directory\s+not\s+found|invalid\s+directory)\b",
+         "RESOURCE_NOT_FOUND", 0.85,
+         "resolve the resource ID/hash to a real object — the server cannot find the "
+         "target resource; check that the identifier sent matches one that exists"),
+
+        (r"\b(?:wrong\s+nonce|invalid\s+nonce|nonce\s+verification\s+failed|"
+         r"security\s+check\s+failed|bad\s+nonce|token\s+mismatch)\b",
+         "NONCE_MISMATCH", 0.90,
+         "re-scrape the nonce with the same session/user that will send the attack; "
+         "nonces are user-specific — a nonce generated for user A does not verify for user B"),
+
+        (r"\b(?:permission\s+denied|access\s+denied|forbidden|insufficient\s+(?:permissions?|"
+         r"privilege)|you\s+do\s+not\s+have\s+(?:permission|access)|capability\s+check\s+failed|"
+         r"not\s+allowed|unauthorized|auth(?:orization)?\s+required)\b",
+         "AUTH_GATE_FIRED", 0.88,
+         "bypass the auth gate: use an anonymous session if the endpoint is unauthenticated, "
+         "or escalate to a role that passes the capability check"),
+
+        (r"\b(?:predefined_no_caps|can_view_all|no\s+caps?|empty\s+users|"
+         r"users.*\[\s*\]|\"users\":\s*\[\s*\])\b",
+         "AUTH_GATE_FIRED", 0.92,
+         "predefined_no_caps guard fired — use an anonymous session (no cookies) so "
+         "is_user_logged_in() returns false and the guard is skipped"),
+
+        (r"\b(?:not\s+a\s+valid\s+(?:table|column|field)|unknown\s+column|"
+         r"you\s+have\s+an\s+error\s+in\s+your\s+sql|sql\s+syntax|syntax\s+error.*sql|"
+         r"unrecognized\s+token)\b",
+         "INJECTION_CONTEXT", 0.80,
+         "SQL syntax error from the server — the payload was injected but the context is wrong; "
+         "try different quoting (', \", none) or comment styles (-- -, #, /**/"),
+
+        (r"\b(?:extractvalue|updatexml|xpath.*error|xpath.*invalid|"
+         r"xpath.*[0-9a-f]{5,})\b",
+         "INJECTION_CONTEXT", 0.95,
+         "XPath error signature found — error-based injection landed; "
+         "extract the substring between the delimiters for the data"),
+
+        (r"(?:[0-9]+\.[0-9]+\.[0-9]+-(?:MariaDB|MySQL|ubuntu|debian))",
+         "INJECTION_CONTEXT", 0.98,
+         "MySQL/MariaDB version string found in response — UNION or error-based injection "
+         "confirmed; extract data from subsequent payloads"),
+
+        (r"\b(?:sanitize_text_field|wpdb->prepare|esc_sql|addslashes|"
+         r"mysqli_real_escape|pg_escape_string|htmlspecialchars)\b",
+         "FRAMEWORK_PROTECTION", 0.75,
+         "framework sanitization function name appeared in response/error — verify whether "
+         "it applies to the specific vulnerable parameter or only to surrounding ones"),
+
+        (r"\b(?:timed?\s+out|connection\s+timed?\s+out|read\s+timed?\s+out|"
+         r"gateway\s+timed?\s+out|504|408)\b",
+         "INJECTION_CONTEXT", 0.80,
+         "timeout detected — time-based blind injection likely landed; "
+         "confirm with a CASE WHEN (1=1) THEN SLEEP(N) ELSE 0 END conditional pair"),
+    ]
+
+    # Signals derived from HTTP status code alone
+    _STATUS_SIGNALS: Dict[int, Tuple[str, float, str]] = {
+        200: ("INJECTION_CONTEXT", 0.10, "200 OK — baseline established, check body diff"),
+        302: ("AUTH_GATE_FIRED", 0.70, "redirect likely to login — the endpoint requires auth"),
+        401: ("AUTH_GATE_FIRED", 0.90, "401 Unauthorized — missing or invalid credentials"),
+        403: ("AUTH_GATE_FIRED", 0.90, "403 Forbidden — insufficient role or capability"),
+        500: ("INJECTION_CONTEXT", 0.60, "500 error — possible injection syntax error; "
+              "check debug output for SQL trace"),
+    }
+
+    def analyze_response(
+        self,
+        response_body:    str,
+        status_code:      int           = 200,
+        vuln_class:       str           = "",
+        payload_sent:     str           = "",
+        param_name:       str           = "",
+        source_evidence:  Dict[str, Any] = None,
+        baseline_body:    str           = "",
+    ) -> ExploitAnalysis:
+        """
+        Reason about a single attempt's response and return a ranked list of
+        hypotheses about why it failed (or succeeded).
+
+        `baseline_body`: if provided, the diff length between baseline and
+        this response is used as a boolean-blind signal.
+        """
+        body = response_body or ""
+        lower = body.lower()
+        hyps: List[ExploitHypothesis] = []
+
+        # Check for immediate success indicators
+        succeeded = False
+        if vuln_class == "sqli":
+            # Version string in body → confirmed extraction
+            if re.search(r"[0-9]+\.[0-9]+\.[0-9]+-(?:MariaDB|MySQL|ubuntu|debian)",
+                         body, re.I):
+                succeeded = True
+            # XPath error with version data
+            elif re.search(r"XPATH syntax error.*[0-9a-f]{5,}", body, re.I):
+                succeeded = True
+            # Noticeable length diff compared to baseline (boolean-blind)
+            elif baseline_body and abs(len(body) - len(baseline_body)) >= 10:
+                succeeded = True
+
+        # Apply all signal patterns
+        for sig_re, chain, weight, fix_hint in self._SIGNALS:
+            m = re.search(sig_re, lower, re.I)
+            if m:
+                hyps.append(ExploitHypothesis(
+                    chain=chain,
+                    summary=f"Response matched guard pattern: {m.group(0)!r}",
+                    evidence=[m.group(0)],
+                    confidence=weight,
+                    fix_hint=fix_hint,
+                ))
+
+        # HTTP status signal
+        if status_code in self._STATUS_SIGNALS:
+            sc_chain, sc_weight, sc_hint = self._STATUS_SIGNALS[status_code]
+            # Only add if no higher-confidence signal already covers the same chain
+            existing_chains = {h.chain for h in hyps}
+            if sc_chain not in existing_chains or sc_weight > 0.5:
+                hyps.append(ExploitHypothesis(
+                    chain=sc_chain,
+                    summary=f"HTTP {status_code} status",
+                    evidence=[f"HTTP {status_code}"],
+                    confidence=sc_weight,
+                    fix_hint=sc_hint,
+                ))
+
+        # Boolean-blind diff signal
+        if baseline_body and not succeeded:
+            diff = abs(len(body) - len(baseline_body))
+            if diff >= 10:
+                hyps.append(ExploitHypothesis(
+                    chain="INJECTION_CONTEXT",
+                    summary=f"Response length diff={diff} vs baseline — possible boolean signal",
+                    evidence=[f"len(response)={len(body)} len(baseline)={len(baseline_body)}"],
+                    confidence=min(0.9, 0.3 + diff / 200),
+                    fix_hint="boolean-blind differential detected; test TRUE/FALSE condition pair "
+                             "to confirm, then extract data with binary search",
+                ))
+
+        # Sort by confidence desc
+        hyps.sort(key=lambda h: h.confidence, reverse=True)
+
+        return ExploitAnalysis(
+            succeeded=succeeded,
+            hypotheses=hyps,
+            best=hyps[0] if hyps else None,
+            raw_response=body[:500],
+        )
+
+    def reason_about_lab_blocker(
+        self,
+        blocker_description: str,
+        source_snippets:     List[str] = None,
+    ) -> List[ExploitHypothesis]:
+        """
+        Given a human-readable blocker description (e.g. from wpverify's limitation list)
+        and optional source code snippets, return hypotheses with targeted fix hints.
+
+        Useful when the pipeline detected a code-level guard (e.g. predefined_no_caps)
+        rather than an HTTP-level signal.
+        """
+        source_snippets = source_snippets or []
+        all_text = blocker_description + "\n" + "\n".join(source_snippets)
+        return self.analyze_response(
+            response_body=all_text,
+            status_code=200,
+        ).hypotheses
+
+    def summarize_analysis(self, analysis: ExploitAnalysis, lang: str = "en") -> str:
+        """Return a one-paragraph human-readable summary of the analysis."""
+        if analysis.succeeded:
+            return ("Payload landed successfully. "
+                    "Confirm with a data-extraction follow-up.")
+        if not analysis.hypotheses:
+            return "No signal detected in response — payload had no visible effect."
+        lines = []
+        for i, h in enumerate(analysis.hypotheses[:3], 1):
+            conf_pct = int(h.confidence * 100)
+            lines.append(
+                f"  {i}. [{h.chain}] {h.summary} (confidence {conf_pct}%) — "
+                f"fix: {h.fix_hint}"
+            )
+        return "Top hypotheses for why payload failed:\n" + "\n".join(lines)
+
+
 # ─────────────────────── 4. CVE Intelligence ──────────────────────────────────
 
 @dataclass
@@ -2240,9 +2493,9 @@ class DependencyAnalysis:
 
 class UniversalEngine:
     """
-    Orchestrates all five capabilities:
+    Orchestrates all six capabilities:
       SourceCodeIntelligence, VulnerabilityIntelligence, CveIntelligence,
-      DependencyAnalysis, RemediationEngine.
+      DependencyAnalysis, RemediationEngine, ExploitReasoningEngine.
 
     Public entry points:
       .analyze_request_error(...)    — fix a failed HTTP request
@@ -2250,6 +2503,8 @@ class UniversalEngine:
       .assess_security(...)          — static security analysis of source
       .profile_cve(...)             — reason about a CVE description
       .analyze_dependencies(...)    — inventory a project's dependencies
+      .analyze_exploit_response(...) — reason about a failed exploit attempt
+      .reason_about_blocker(...)     — reason about a code-level lab blocker
     """
 
     def __init__(self):
@@ -2258,6 +2513,7 @@ class UniversalEngine:
         self.cve_intel     = CveIntelligence()
         self.dep_analysis  = DependencyAnalysis()
         self.remediation   = RemediationEngine(self.source_intel)
+        self.exploit_reasoning = ExploitReasoningEngine()
 
     def analyze_request_error(
         self,
@@ -2288,6 +2544,53 @@ class UniversalEngine:
         for fix in result.fixes_applied:
             params.update(fix.changes)
         return result, params
+
+    def analyze_exploit_response(
+        self,
+        response_body:    str,
+        status_code:      int           = 200,
+        vuln_class:       str           = "",
+        payload_sent:     str           = "",
+        param_name:       str           = "",
+        baseline_body:    str           = "",
+        source_evidence:  Dict[str, Any] = None,
+    ) -> "ExploitAnalysis":
+        """
+        Reason about a single exploit attempt's response as an exploit developer would.
+
+        Returns an ExploitAnalysis with ranked hypotheses explaining WHY the payload
+        did not land (or confirming it did), with concrete fix hints.
+
+        This is a general engine capability — the reasoning chains (AUTH_GATE_FIRED,
+        RESOURCE_NOT_FOUND, NONCE_MISMATCH, INJECTION_CONTEXT, FRAMEWORK_PROTECTION)
+        are language and framework agnostic.  They apply to any HTTP response from any
+        target, not just WordPress or specific CVEs.
+        """
+        return self.exploit_reasoning.analyze_response(
+            response_body=response_body,
+            status_code=status_code,
+            vuln_class=vuln_class,
+            payload_sent=payload_sent,
+            param_name=param_name,
+            source_evidence=source_evidence or {},
+            baseline_body=baseline_body,
+        )
+
+    def reason_about_blocker(
+        self,
+        blocker_description: str,
+        source_snippets:     List[str] = None,
+    ) -> List["ExploitHypothesis"]:
+        """
+        Given a human-readable description of a lab blocker (e.g. 'predefined_no_caps fired')
+        and optional source code excerpts, return ranked hypotheses with fix hints.
+
+        Useful when the blocker was detected at code level, not from an HTTP response.
+        """
+        return self.exploit_reasoning.reason_about_lab_blocker(
+            blocker_description=blocker_description,
+            source_snippets=source_snippets or [],
+        )
 
     def analyze_process_error(
         self,
