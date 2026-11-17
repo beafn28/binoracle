@@ -4782,6 +4782,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xss, _pick_param, _XSS_HINTS
+                # XSS hook: escaner deterministico para encontrar el par injection→view
+                # cuando el LLM no incluye stored_xss_view_path en sus notas o elige el
+                # endpoint equivocado. Solo anula si encontramos algo mejor (endpoint y
+                # view_path determinados del codigo real).
+                if fr.local_path and not str(notes.get("stored_xss_view_path") or "").strip():
+                    from .websource import find_stored_xss_endpoint as _xss_scan
+                    _xss_code_hit = _xss_scan(fr.local_path)
+                    if _xss_code_hit:
+                        _xss_act = _xss_code_hit["inject_action"]
+                        _xss_p_hint = _xss_code_hit["inject_param"]
+                        _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
+                        _xss_view = _xss_code_hit["view_path"]
+                        step((f"escaner deterministico (XSS, pre-verificacion): "
+                              f"action='{_xss_act}' param='{_xss_p_hint}' "
+                              f"view='{_xss_view}'") if es else
+                             (f"deterministic XSS pre-scan: action='{_xss_act}' "
+                              f"param='{_xss_p_hint}' view='{_xss_view}'"))
+                        notes["endpoint"] = _xss_ep_new
+                        notes["ajax_action"] = _xss_act
+                        notes["http_method"] = "POST"
+                        notes["xss_param"] = _xss_p_hint
+                        notes["stored_xss_view_path"] = _xss_view
                 params = notes.get("parameters") or []
                 xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
                 step(("intentando verificacion DINAMICA -- ejecucion real en navegador headless "
