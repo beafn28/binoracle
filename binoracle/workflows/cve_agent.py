@@ -4785,6 +4785,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "attempting DYNAMIC verification -- real headless-browser execution "
                      "(ephemeral WordPress+MySQL in Docker)..."))
                 _stored_view = str(notes.get("stored_xss_view_path") or "").strip()
+                if _stored_view:
+                    step((f"XSS ALMACENADO (dos pasos): payload via endpoint -> admin ve '{_stored_view}'") if es else
+                         (f"STORED XSS (two-step): payload via endpoint -> admin views '{_stored_view}'"))
+                else:
+                    step(("XSS REFLEJADO: probando en el mismo endpoint de inyeccion") if es else
+                         ("REFLECTED XSS: testing on the same injection endpoint"))
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,

@@ -1454,7 +1454,10 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
     )
     _URL_KEYS = {"url", "uri", "src", "source", "link", "feed", "webhook",
                  "callback", "image", "avatar", "file_url", "endpoint",
-                 "redirect", "remote", "import", "fetch", "proxy", "target"}
+                 "redirect", "remote", "import", "fetch", "proxy", "target",
+                 "request_url", "external_url", "api_url", "notify_url",
+                 "download_url", "remote_url", "import_url", "webhook_url",
+                 "site_url", "ping_url", "iframe_url", "embed_url", "hook_url"}
 
     _AJAX_REG_RE = re.compile(
         r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['\"]",
@@ -1489,23 +1492,35 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
     if not action_positions:
         return None
 
+    # patron de asignacion: $varname = ... $_POST/GET[key] ...
+    # captura tanto la clave del superglobal como el nombre de la variable que lo recibe
+    _VAR_ASSIGN_RE = re.compile(
+        r'\$(\w+)\s*=\s*[^\n;]{0,120}\$_(?:GET|POST|REQUEST)\s*\[\s*[\'"]([A-Za-z0-9_\-]+)[\'"]\s*\]'
+    )
+    # patron del argumento pasado a la funcion de fetch: captura el primer argumento
+    _FETCH_ARG_RE = re.compile(
+        r"\b(?:wp_remote_get|wp_remote_post|wp_safe_remote_get|wp_safe_remote_post"
+        r"|wp_remote_request|curl_exec|file_get_contents)\s*\(\s*\$(\w+)"
+    )
+
     best: Optional[tuple] = None  # (action, url_param, fp, line_no, url_score)
     for fp, text in all_texts.items():
         fetch_matches = list(_FETCH_RE.finditer(text))
         if not fetch_matches:
             continue
 
+        # --- paso 1: ventana amplia (3000 chars) alrededor de cada fetch ---
+        # SOLO cuenta si la clave del superglobal es un hint de URL (reduce falsos positivos
+        # de variables como 'action', 'post_ID', 'nonce' que aparecen cerca de cualquier fetch)
         for fm in fetch_matches:
             fetch_pos = fm.start()
-            # ventana de 500 chars antes del fetch para capturar asignaciones locales
-            window_start = max(0, fetch_pos - 500)
+            window_start = max(0, fetch_pos - 3000)
             window = text[window_start: fetch_pos + 200]
-            # buscar parametros de superglobal leidos dentro de la ventana
             for pm in _PARAM_RE.finditer(window):
                 pname = pm.group(1)
-                url_score = 2 if pname.lower() in _URL_KEYS else 1
-                # encontrar la accion AJAX registrada justo ANTES de esta posicion en el
-                # mismo fichero (la ultima accion cuya posicion <= fetch_pos en fp)
+                if pname.lower() not in _URL_KEYS:
+                    continue  # ignorar claves no-URL
+                url_score = 2
                 containing_action = None
                 best_dist: Optional[int] = None
                 for act, act_fp, act_start in action_positions:
@@ -1515,12 +1530,46 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
                     if best_dist is None or dist < best_dist:
                         best_dist = dist
                         containing_action = act
-                # fallback: primera accion de cualquier fichero
                 if containing_action is None and action_positions:
                     containing_action = action_positions[0][0]
                 if best is None or url_score > best[4]:
                     line_no = text.count("\n", 0, fm.start()) + 1
                     best = (containing_action, pname, fp, line_no, url_score)
+
+        # --- paso 2: taint a nivel de fichero: $var = $_POST[key] ... fetch($var) ---
+        # une el nombre de variable para encontrar chains mas largas no captadas por la ventana
+        file_assigns: dict = {}  # varname -> (key, pos)
+        for am in _VAR_ASSIGN_RE.finditer(text):
+            vname, key = am.group(1), am.group(2)
+            file_assigns[vname] = (key, am.start())
+        if file_assigns:
+            for fm in _FETCH_ARG_RE.finditer(text):
+                fetch_var = fm.group(1)
+                if fetch_var not in file_assigns:
+                    continue
+                key, assign_pos = file_assigns[fetch_var]
+                # solo promover si la clave parece una URL (evita falsos positivos como
+                # post_ID, action, nonce que tambien se pasan a funciones de fetch)
+                if key.lower() not in _URL_KEYS:
+                    continue
+                if True:
+                    url_score = 3  # bonus: coincidencia de variable + clave URL
+                    if best is not None and url_score <= best[4]:
+                        continue
+                    fetch_pos = fm.start()
+                    containing_action = None
+                    best_dist = None
+                    for act, act_fp, act_start in action_positions:
+                        if act_fp != fp or act_start > fetch_pos:
+                            continue
+                        dist = fetch_pos - act_start
+                        if best_dist is None or dist < best_dist:
+                            best_dist = dist
+                            containing_action = act
+                    if containing_action is None and action_positions:
+                        containing_action = action_positions[0][0]
+                    line_no = text.count("\n", 0, fetch_pos) + 1
+                    best = (containing_action, key, fp, line_no, url_score)
 
     if best is None:
         return None
