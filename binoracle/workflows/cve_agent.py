@@ -350,9 +350,20 @@ _RESEARCH_SYS = (
     "timeout_means_vulnerable (true si el CVE es un DoS/bucle-infinito: timeout = VULNERABLE, "
     "p.ej. true para CVE-2022-0778; false o vacio para crashes normales), "
     "setup_cmds (lista de comandos de shell a ejecutar ANTES del PoC en el contenedor: "
-    "instalar paquetes, crear ficheros de entrada, configurar el entorno, "
-    "p.ej. ['apt-get update && apt-get install -y sudo python3', 'touch /tmp/testfile']; "
+    "instalar paquetes, crear ficheros de entrada, configurar el entorno; "
     "solo para CVEs de binarios nativos donde la imagen Docker base no tiene todo pre-instalado), "
+    "dockerfile_body (contenido COMPLETO de un Dockerfile para construir la imagen vulnerable "
+    "LOCALMENTE cuando no existe imagen Docker Hub con la version exacta del binario afectado "
+    "o cuando apt-get install descargaria la version parcheada; usar formato multi-linea con \\n; "
+    "DEBE incluir la linea FROM; ejemplo para CVE-2022-0778 con OpenSSL 1.1.1f vulnerable: "
+    "'FROM ubuntu:focal-20220302\\nENV DEBIAN_FRONTEND=noninteractive\\n"
+    "RUN apt-get update -qq && apt-get install -y -qq wget\\n"
+    "RUN ARCH=$(dpkg --print-architecture) && "
+    "if [ $ARCH = amd64 ]; then BASE=http://archive.ubuntu.com/ubuntu/pool/main/o/openssl; "
+    "else BASE=http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl; fi && "
+    "wget -q $BASE/libssl1.1_1.1.1f-1ubuntu2_${ARCH}.deb $BASE/openssl_1.1.1f-1ubuntu2_${ARCH}.deb && "
+    "dpkg -i libssl1.1_*.deb openssl_*.deb'; "
+    "usar dockerfile_body en lugar de docker_image cuando la imagen base siempre tiene el parche), "
     "strategy (una frase), steps (lista de pasos concretos). "
     "Se tecnico y breve; deja vacio lo que no sepas."
 )
@@ -5379,13 +5390,47 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         inv.steps = []
         return inv
 
-    # 4-DOCKER) CVE en BINARIO NATIVO con imagen Docker conocida: heap/stack/UAF/privesc en
-    # utilidades del sistema (sudo, bash, openssl...). Sin binario local, sin endpoint HTTP.
-    # La verificacion levanta un contenedor efimero con el binario a la version vulnerable y
-    # ejecuta el PoC dentro -- el crash (exit 139/134 o patron en stderr) confirma la vuln.
+    # 4-DOCKER) CVE en BINARIO NATIVO con imagen Docker conocida O Dockerfile personalizado.
+    # Cubre heap/stack/UAF/privesc en utilidades del sistema (sudo, bash, openssl...).
+    # Sin binario local, sin endpoint HTTP.
+    # Dos variantes:
+    #   a) dockerfile_body: construye la imagen localmente (para CVEs donde la imagen base ya
+    #      tiene el parche y necesitamos instalar la version vulnerable exacta via .deb archivado)
+    #   b) docker_image + poc_cmd: imagen pre-existente en Docker Hub con el binario vulnerable
     _docker_img = (notes.get("docker_image") or "").strip()
     _poc_cmd = (notes.get("poc_cmd") or "").strip()
-    if not has_bin and _docker_img and _poc_cmd and not is_web_class(inv.vuln_class):
+    _dockerfile_body = (notes.get("dockerfile_body") or "").strip()
+    if not has_bin and _dockerfile_body and _poc_cmd and not is_web_class(inv.vuln_class):
+        from .binaryverify import verify_binary_crash_via_dockerfile
+        step((f"construyendo imagen Docker con binario vulnerable (Dockerfile personalizado)..."
+              if es else
+              f"building custom Docker image with vulnerable binary (Dockerfile approach)..."))
+        _crash_pats = notes.get("crash_patterns") or None
+        _patched_pats = notes.get("patched_patterns") or None
+        _tmv = bool(notes.get("timeout_means_vulnerable"))
+        bvr = verify_binary_crash_via_dockerfile(
+            dockerfile_body=_dockerfile_body,
+            poc_cmd=_poc_cmd,
+            crash_patterns=_crash_pats,
+            patched_patterns=_patched_pats,
+            timeout_means_vulnerable=_tmv,
+            on_step=step,
+            budget_s=budget_s,
+        )
+        inv.verified_evidence = bvr.evidence
+        if bvr.verified:
+            inv.verified = True
+            inv.verified_detail = bvr.detail
+            step(("VERIFICADO (Dockerfile personalizado): binario nativo vulnerable." if es else
+                  "VERIFIED (custom Dockerfile): vulnerable native binary."))
+        else:
+            inv.blockers.append((f"verificacion dinamica (Dockerfile) no confirmada: "
+                                 f"{bvr.detail}" if es else
+                                 f"dynamic verification (custom Dockerfile) not confirmed: "
+                                 f"{bvr.detail}"))
+            for lim in bvr.limitations:
+                inv.blockers.append(lim)
+    elif not has_bin and _docker_img and _poc_cmd and not is_web_class(inv.vuln_class):
         from .binaryverify import verify_binary_crash_in_docker
         step((f"intentando verificacion DINAMICA -- contenedor Docker efimero con binario "
              f"nativo vulnerable ({_docker_img})..." if es else
