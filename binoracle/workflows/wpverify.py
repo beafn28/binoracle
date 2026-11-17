@@ -3321,6 +3321,21 @@ def verify_wordpress_sqli(
             if delayed:
                 timing_consistent += 1
         res.evidence["timing_intentos"] = timing_tried
+        # Diagnostic: if all slow payloads resolved much faster than SLEEP would take,
+        # SLEEP is not executing at all — likely because the SQL query uses INNER JOINs
+        # over empty tables (no plugin fixture data in the lab) so the WHERE clause is
+        # never evaluated.  Add a targeted hint so the analyst knows exactly why.
+        _slow_times = [t.get("slow_s", 0) for t in timing_tried if "slow_s" in t]
+        if _slow_times and max(_slow_times) < 2.0 and timing_consistent == 0:
+            res.limitations.append(
+                "time-based: todos los payloads SLEEP(5) respondieron en < 2s -- SLEEP "
+                "probablemente no se evalua; causa tipica: la consulta SQL usa INNER JOINs "
+                "sobre tablas de contenido del plugin (posts, term_relationships) que estan "
+                "vacias en el lab sin datos de prueba. Considera: (a) crear contenido del "
+                "plugin via wp-cli antes del ataque, o (b) usar --setup-wp-option para "
+                "activar una ruta de codigo que consulte una tabla siempre poblada "
+                "(p.ej. wp_term_taxonomy)."
+            )
 
         if timing_consistent >= 2:
             res.verified = True
