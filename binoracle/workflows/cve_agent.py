@@ -4979,6 +4979,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
                         technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion))
+                # Fallback SSRF: si el verificador de file-upload no confirmo Y los parametros
+                # incluyen una pista de URL (el LLM puede haber clasificado mal un SSRF como
+                # file-upload cuando la funcion vulnerable fetcha una URL aportada por el atacante).
+                if not wr.verified:
+                    from .wpverify import _pick_param, _URL_HINTS
+                    _params_fu = notes.get("parameters") or []
+                    _url_p_fu = _pick_param(_params_fu, _URL_HINTS)
+                    if _url_p_fu:
+                        from .wpverify import verify_wordpress_ssrf
+                        step(("file-upload no confirmado pero los parametros incluyen pista de "
+                             "URL -- intentando tambien SSRF como clase alternativa..."))
+                        wr_ssrf = verify_wordpress_ssrf(
+                            fr.local_path, plugin_dir, notes.get("endpoint"),
+                            notes.get("http_method") or "POST", _params_fu,
+                            url_param_hint=_url_p_fu, on_step=step,
+                            budget_s=min(budget_s, 300.0),
+                            companion_plugins=companion_plugins,
+                            shortcode_name=shortcode_name_generic)
+                        if wr_ssrf.verified:
+                            inv.vuln_class = "ssrf"
+                            wr = wr_ssrf
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
