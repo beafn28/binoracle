@@ -1666,6 +1666,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
 
     all_texts: dict = {}
     action_positions: list = []  # (action, fp)
+    best_inject: Optional[dict] = None
     scanned = 0
     for dirpath, _dirs, files in os.walk(local_path):
         for fn in sorted(files):
@@ -1684,11 +1685,189 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             for m in _AJAX_REG_RE.finditer(text):
                 action_positions.append((m.group(1), fp))
 
-    if not action_positions:
+    # -- Segunda pasada: REST API routes (register_rest_route) sin autenticacion --
+    # Detecta rutas REST abiertas (permission_callback = __return_true / return true)
+    # que almacenan params de la request sin sanitizar.
+    # Detecta rutas REST abiertas (permission_callback = __return_true / lambda return true)
+    # Soporta tanto namespaces literales como referencias a self::$namespace (busca la
+    # propiedad en el mismo fichero o en ficheros del mismo directorio api/).
+    _REST_ROUTE_RE = re.compile(
+        r"register_rest_route\s*\("
+        r"([^,]+),\s*"           # 1er arg: namespace (literal o self::$prop)
+        r"'/?([^']+)'|"          # 2do arg: route literal
+        r"register_rest_route\s*\("
+        r"([^,]+),\s*"
+        r'"/?([^"]+)"'           # 2do arg: route literal doble comilla
+    )
+    # Patron alternativo para rutas con endpoint en variable: busca solo la perm callback
+    _REST_ROUTE_ANY_RE = re.compile(r"register_rest_route\s*\(")
+    _REST_PARAM_RE = re.compile(
+        r"\$request\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+        r"|\$request\s*->\s*get_param\s*\(\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\)"
+    )
+    # args array en la definicion del route: 'param_name' => array('required' => true ...)
+    _ROUTE_ARG_RE = re.compile(
+        r"['\"]([A-Za-z0-9_\-]{2,40})['\"]\s*=>\s*array\s*\(\s*['\"](?:required|type)['\"]"
+    )
+    _OPEN_PERM_RE = re.compile(
+        r"['\"]permission_callback['\"]\s*=>\s*['\"]__return_true['\"]"
+        r"|['\"]permission_callback['\"]\s*=>\s*function[^{]{0,80}\{\s*return\s+true"
+    )
+    # Namespace estatico: public static $namespace = 'wp-statistics/v2'
+    _NS_STATIC_RE = re.compile(
+        r"(?:public\s+)?static\s+\$namespace\s*=\s*['\"]([^'\"]+)['\"]"
+    )
+    # Endpoint estatico: public static $endpoint = 'hit'
+    _EP_STATIC_RE = re.compile(
+        r"(?:public\s+)?static\s+\$endpoint\s*=\s*['\"]([^'\"]+)['\"]"
+    )
+
+    _SKIP = {"nonce", "id", "action", "_wpnonce", "type", "security", "verify"}
+
+    for fp, text in all_texts.items():
+        for rm in _REST_ROUTE_ANY_RE.finditer(text):
+            window_start = rm.start()
+            window = text[window_start: window_start + 3000]
+            if not _OPEN_PERM_RE.search(window):
+                continue
+            # Extraer namespace: literal en el texto o buscar la propiedad estatica
+            ns_literal_m = re.search(r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"]", text[window_start:window_start+200])
+            if ns_literal_m:
+                ns = ns_literal_m.group(1).strip("/")
+            else:
+                ns_prop_m = _NS_STATIC_RE.search(text)
+                if not ns_prop_m:
+                    # Buscar en cualquier fichero del plugin (el namespace suele estar en la clase base)
+                    ns = ""
+                    for ofp2, otext2 in all_texts.items():
+                        nm2 = _NS_STATIC_RE.search(otext2)
+                        if nm2 and "/" in nm2.group(1):
+                            ns = nm2.group(1).strip("/")
+                            break
+                else:
+                    ns = ns_prop_m.group(1).strip("/")
+            if not ns:
+                continue
+            # Extraer route: literal de >= 2 chars O endpoint estatico
+            route_literal_m = re.search(
+                r"register_rest_route\s*\([^,]+,\s*['\"][/]?([^'\"]{2,80})['\"]",
+                text[window_start:window_start+300]
+            )
+            if route_literal_m:
+                route = route_literal_m.group(1).strip("/")
+            else:
+                ep_m = _EP_STATIC_RE.search(text)
+                route = ep_m.group(1).strip("/") if ep_m else ""
+            if not route:
+                continue
+            # Params: desde args del route O desde $request[] en todo el fichero
+            rest_params = [m.group(1) or m.group(2)
+                           for m in _REST_PARAM_RE.finditer(window)
+                           if m.group(1) or m.group(2)]
+            if not rest_params:
+                # Buscar en el arg definition de todo el fichero
+                rest_params = [m.group(1) for m in _ROUTE_ARG_RE.finditer(text)
+                               if m.group(1).lower() not in _SKIP]
+            if not rest_params:
+                continue
+            text_params = [p for p in rest_params if p.lower() not in _SKIP]
+            _URI_HINTS = ("uri", "url", "path", "page", "query", "search",
+                          "message", "content", "text", "title", "name")
+            uri_params = [p for p in text_params
+                          if any(h in p.lower() for h in _URI_HINTS)]
+            inject_param = uri_params[0] if uri_params else (text_params[0] if text_params else rest_params[0])
+            table_m = _TABLE_NAME_RE.search(window)
+            table_hint = table_m.group(1) or table_m.group(2) if table_m else ""
+            rest_endpoint = f"/wp-json/{ns}/{route}"
+            # Detectar si el param se pasa por base64_decode (bypass de sanitize_url)
+            # Busca en TODOS los ficheros del plugin, no solo el que registra la ruta
+            _B64_PAT = re.compile(
+                rf"base64_decode\s*\([^){{}}]*{re.escape(inject_param)}[^){{}}]*\)"
+                rf"|base64_decode\s*\(\s*\$(?:request|this->[a-zA-Z_]+)->{re.escape(inject_param)}"
+                rf"|base64_decode\s*\(\s*\$_(?:GET|REQUEST|POST)\s*\[\s*['\"]?{re.escape(inject_param)}['\"]?\s*\]"
+            )
+            payload_transform = ""
+            if _B64_PAT.search(text):
+                payload_transform = "base64"
+            else:
+                for _ofp2, _otext2 in all_texts.items():
+                    if _B64_PAT.search(_otext2):
+                        payload_transform = "base64"
+                        break
+            best_inject = {
+                "action": None,
+                "inject_param": inject_param,
+                "table_hint": table_hint,
+                "fp": fp,
+                "rest_endpoint": rest_endpoint,
+                "rest_params": rest_params,
+                "payload_transform": payload_transform,
+            }
+            break
+        if best_inject is not None:
+            break
+
+    if not action_positions and best_inject is None:
         return None
 
-    # Paso 1: buscar action que hace db-write con POST sin sanitizar
-    best_inject: Optional[dict] = None
+    if action_positions and best_inject is None:
+        pass  # sigue con la logica AJAX abajo
+
+    if best_inject is not None and best_inject.get("rest_endpoint"):
+        # Buscar view_path para el REST result.
+        # Estrategia 1: add_menu_page con slug literal
+        # Estrategia 2: patron de slug dinamico 'prefix_[slug]_suffix' + primera clave de pagina
+        view_path = ""
+        slug_template = ""
+        first_page_key = ""
+        for vfp, vtext in all_texts.items():
+            # Buscar patron de slug dinamico: static $X = 'prefix_[slug]_suffix'
+            tpl_m = re.search(
+                r"static\s+\$\w+\s*=\s*['\"]([A-Za-z0-9_]*\[slug\][A-Za-z0-9_]*)['\"]",
+                vtext
+            )
+            if tpl_m and not slug_template:
+                slug_template = tpl_m.group(1)
+            # Buscar primera clave de pagina (overview/main/stats/etc.)
+            key_m = re.search(
+                r"['\"](?:overview|main|stats|dashboard|report|home)['\"]",
+                vtext
+            )
+            if key_m and not first_page_key:
+                first_page_key = key_m.group(0).strip("'\"")
+        if slug_template and first_page_key:
+            page_slug = slug_template.replace("[slug]", first_page_key)
+            view_path = f"/wp-admin/admin.php?page={page_slug}"
+        if not view_path:
+            for vfp, vtext in all_texts.items():
+                is_admin = ("admin" in vfp.lower() or "dashboard" in vfp.lower()
+                            or "page" in vfp.lower() or "entries" in vfp.lower()
+                            or bool(re.search(r"add_(?:menu|submenu)_page\s*\(", vtext)))
+                if not is_admin:
+                    continue
+                if not _SELECT_RE.search(vtext):
+                    continue
+                slug_m = re.search(
+                    r"add_(?:menu|submenu)_page\s*\([^;]{5,400}?['\"]([A-Za-z0-9_\-]{3,60})['\"]",
+                    vtext
+                )
+                if slug_m:
+                    view_path = f"/wp-admin/admin.php?page={slug_m.group(1)}"
+                    break
+        if not view_path:
+            view_path = "/wp-admin/admin.php"
+        return {
+            "inject_action": None,
+            "inject_endpoint": best_inject["rest_endpoint"],
+            "inject_params_all": best_inject.get("rest_params", []),
+            "inject_param": best_inject["inject_param"],
+            "table_hint": best_inject["table_hint"],
+            "view_path": view_path,
+            "http_method": "GET",
+            "payload_transform": best_inject.get("payload_transform", ""),
+        }
+
+    # Paso 1: buscar action AJAX que hace db-write con POST sin sanitizar
     for action, fp in action_positions:
         text = all_texts[fp]
         # Encontrar inicio del handler para esta accion (dentro de ~5000 chars)

