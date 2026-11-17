@@ -747,7 +747,7 @@ class _Lab:
         for kind, name in reversed(self._created):
             try:
                 if kind == "container":
-                    self.sh("rm", "-f", name, timeout=30)
+                    self.sh("rm", "-fv", name, timeout=30)
                 elif kind == "network":
                     self.sh("network", "rm", name, timeout=15)
                 elif kind == "volume":
@@ -2915,7 +2915,11 @@ def verify_wordpress_sqli(
         )
         for _cname in (_prune_c.stdout or "").splitlines():
             if _cname.startswith("binoracle-wpverify-") or _cname.startswith("binoracle-lab-"):
-                _sp.run(["docker", "rm", "-f", _cname], capture_output=True, timeout=10)
+                _sp.run(["docker", "rm", "-fv", _cname], capture_output=True, timeout=10)
+        # Prune anonymous volumes left by MySQL containers from crashed runs where teardown
+        # never executed. These volumes have no name and cannot be matched by prefix, but
+        # docker volume prune -f removes only dangling (unused) volumes — safe to call here.
+        _sp.run(["docker", "volume", "prune", "-f"], capture_output=True, timeout=30)
     except Exception:
         pass
     pre = _check_prereqs(plugin_source_dir, slug)
