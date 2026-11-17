@@ -4081,6 +4081,7 @@ def verify_wordpress_xss(
     keep_lab_on_failure: bool = False,
     stored_xss_view_path: str = "",
     payload_transform: str = "",
+    extra_inject_params: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica XSS en dos modos:
 
@@ -4136,6 +4137,11 @@ def verify_wordpress_xss(
 
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        # Params de activacion de hook que se envian con TODOS los intentos de inyeccion
+        # (ej: wp_statistics_hit_rest=1, current_page_type=home, current_page_id=0)
+        if extra_inject_params:
+            base_params.update({k: v for k, v in extra_inject_params.items()
+                                 if k not in base_params})
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, xss_param, res, step,
             extra_nonce_pages=extra_nonce_pages)

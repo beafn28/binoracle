@@ -4813,6 +4813,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             notes["http_method"] = _xss_method
                             if _xss_transform:
                                 notes["payload_transform"] = _xss_transform
+                            # Params de activacion de hook (ej. wp_statistics_hit_rest=1)
+                            _base_p = _xss_code_hit.get("inject_base_params") or {}
+                            if _base_p:
+                                notes["base_params"] = _base_p
                         else:
                             _xss_act = _xss_code_hit["inject_action"]
                             _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
@@ -4847,13 +4851,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 else:
                     step(("XSS REFLEJADO: probando en el mismo endpoint de inyeccion") if es else
                          ("REFLECTED XSS: testing on the same injection endpoint"))
+                _xss_base_params = notes.get("base_params") or {}
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
                                           companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                                           keep_lab_on_failure=keep_lab_on_failure,
                                           stored_xss_view_path=_stored_view,
-                                          payload_transform=str(notes.get("payload_transform") or ""))
+                                          payload_transform=str(notes.get("payload_transform") or ""),
+                                          extra_inject_params=_xss_base_params)
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):

