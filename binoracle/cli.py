@@ -1415,6 +1415,14 @@ def cmd_cve(args, config):
         hints["parameters"] = _parse_cli_params(args.params)
     if getattr(args, "vuln_class", None):
         hints["vuln_class"] = args.vuln_class
+    if getattr(args, "custom_headers", None):
+        import json as _json
+        try:
+            _ch = _json.loads(args.custom_headers)
+            if isinstance(_ch, dict) and _ch:
+                hints["custom_headers"] = _ch
+        except (ValueError, TypeError):
+            pass
     if getattr(args, "setup_wp_options", None):
         _parsed_opts = []
         import re as _re
@@ -2565,6 +2573,9 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--method", help="HTTP method override (omit to let binoracle detect it)")
     cv.add_argument("--params", help="comma-separated request parameters (name or name=value)")
     cv.add_argument("--vuln-class", help="known vuln class (sqli, rce, xxe, missing-authorization...)")
+    cv.add_argument("--custom-headers", dest="custom_headers",
+                    help="JSON dict of custom HTTP headers the attack needs "
+                         '(e.g. \'{"X-Wcpay-Platform-Checkout-User":"1"}\' for CVE-2023-28121)')
     cv.add_argument("--setup-wp-option", action="append", dest="setup_wp_options",
                     metavar="OPTION=VALUE or OPTION[KEY]=VALUE",
                     help="set a WordPress option before the SQLi test (repeatable). "

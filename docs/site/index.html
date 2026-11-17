@@ -513,7 +513,7 @@ document.addEventListener('click',function(e){
     <p class="page-lead">Autonomous CVE exploit research and binary reverse engineering tool. All analysis runs locally — no data is sent to external services.</p>
 
     <div class="doc-metrics">
-      <div class="doc-metric"><div class="metric-value">14</div><div class="metric-label">CVEs verified</div></div>
+      <div class="doc-metric"><div class="metric-value">21</div><div class="metric-label">CVEs verified</div></div>
       <div class="doc-metric"><div class="metric-value">~95s</div><div class="metric-label">Avg per CVE</div></div>
       <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Binary formats</div></div>
       <div class="doc-metric"><div class="metric-value">~100</div><div class="metric-label">MCP tools</div></div>
@@ -526,8 +526,9 @@ document.addEventListener('click',function(e){
 
     <h2 id="quick-start">Quick Start</h2>
     <p>Prerequisites: Python 3.10+, Docker 20.x+, Ollama 0.3+.</p>
-    <pre><code># 1. Install binoracle
-pip install binoracle
+    <pre><code># 1. Install binoracle WITH screenshot support (required for HTML report images)
+pip install binoracle[screenshots]
+playwright install chromium          # ← REQUIRED for lab screenshots in HTML reports
 
 # 2. Install Ollama and pull the model (Linux / macOS)
 curl -fsSL https://ollama.com/install.sh | sh
@@ -544,6 +545,9 @@ binoracle cve CVE-2025-27516
 # 5. Analyse a binary
 binoracle triage ./target_binary</code></pre>
 
+    <div class="doc-callout warn">
+      <strong>Screenshots require Playwright.</strong> Without <code>playwright install chromium</code>, the CVE pipeline verifies vulnerabilities correctly but HTML reports will contain no visual evidence screenshots. Always install it for full report output.
+    </div>
     <div class="doc-callout tip">
       <strong>Persist configuration.</strong> Add the three <code>export</code> lines to <code>~/.bashrc</code> or <code>~/.zshrc</code> so they survive shell restarts.
     </div>
