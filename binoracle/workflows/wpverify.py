@@ -4053,17 +4053,24 @@ def verify_wordpress_xss(
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
+    stored_xss_view_path: str = "",
 ) -> WpVerifyResult:
-    """Verifica XSS (reflejado, o almacenado cuando la propia respuesta lo renderiza de vuelta)
-    cargando la respuesta del endpoint en un Chromium headless REAL (ver _xss_render): el payload
-    pide cambiar document.title a un marcador aleatorio, y solo se marca verificado si el title
-    final del navegador coincide EXACTO con ese marcador -- prueba de EJECUCION real de JS, no de
-    que el payload simplemente aparezca en el HTML crudo de la respuesta (lo que no demuestra nada
-    por si solo, ya mucho WAF/plugin escapa el eco sin impedir que aparezca literal en la pagina).
-    Alcance: solo cubre el caso en que la MISMA respuesta a la peticion del ataque ya renderiza el
-    payload (reflejado, o almacenado-y-mostrado-de-inmediato); un XSS almacenado que solo se ve en
-    una pagina DISTINTA (p.ej. el panel del admin, en otra visita) necesitaria un segundo paso que
-    esta version no automatiza."""
+    """Verifica XSS en dos modos:
+
+    MODO 1 — Reflected/same-response (modo por defecto, stored_xss_view_path vacío):
+      Carga la respuesta del endpoint de inyeccion directamente en Chromium (sesion de
+      subscriber). El payload pide cambiar document.title a un marcador aleatorio; solo se
+      marca verificado si el title del navegador coincide EXACTO con ese marcador -- prueba
+      de EJECUCION real de JS, no de reflexion de texto.
+
+    MODO 2 — Stored XSS con vista separada (stored_xss_view_path != ''):
+      Paso 1: subscriber envia el payload al endpoint de inyeccion (peticion HTTP normal,
+              sin cargar la respuesta en el navegador).
+      Paso 2: sesion de ADMIN carga stored_xss_view_path en Chromium (el panel del plugin,
+              la lista de entradas, el log de comentarios, etc.) -- si el payload almacenado
+              se renderiza ahi y ejecuta, el navegador cambia document.title al marcador.
+      Esto cubre todos los XSS almacenados tipicos de WordPress donde el efecto solo se ve
+      en la pagina del admin que muestra el contenido inyectado."""
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
@@ -4154,63 +4161,133 @@ def verify_wordpress_xss(
 
         found = False
         tried = []
-        # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
-        # Chromium por payload, confirmado en vivo, tarda minutos -- el coste real es el arranque
-        # del propio navegador. Tambien se captura pantalla SOLO del intento ganador (un segundo
-        # render con capture=True), no de cada intento fallido.
-        step(f"arrancando Chromium headless (se reutiliza para los {len(attempts)} intentos)...")
-        with _XssBrowserSession() as xb:
-            for payload_value in attempts:
-                params = dict(base_params)
-                params[xss_param] = payload_value
-                title, _ = xb.render(boot.base_url, endpoint, m, params, cookies)
-                tried.append({"payload": payload_value, "title_resultante": title})
-                if title == marker:
-                    found = True
-                    res.evidence["payload_ganador"] = payload_value
-                    step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- document.title "
-                         f"cambio exactamente a '{marker}'.")
-                    _, png = xb.render(boot.base_url, endpoint, m, params, cookies, capture=True)
-                    if png:
-                        boot.shots.append({
-                            "caption_es": (f"Paso 5: XSS confirmado -- el navegador REAL ejecuto el "
-                                          f"script inyectado en '{xss_param}', cambiando document.title "
-                                          f"al marcador '{marker}' (no es texto reflejado, es codigo JS "
-                                          f"ejecutandose)."),
-                            "caption_en": (f"Step 5: XSS confirmed -- the REAL browser executed the "
-                                          f"script injected in '{xss_param}', changing document.title "
-                                          f"to the marker '{marker}' (not reflected text, actual JS "
-                                          f"running)."),
-                            "png_b64": png, "url": boot.base_url + endpoint})
-                    break
+
+        from urllib.parse import urlsplit as _urlsplit
+        host_admin = _urlsplit(boot.base_url).hostname or "127.0.0.1"
+        admin_cookies = [{"name": c.name, "value": c.value, "domain": host_admin, "path": "/"}
+                         for c in boot.admin_sess.cookies] if boot.admin_sess else []
+
+        # ── MODO 2: Stored XSS con vista separada ───────────────────────────────────────────
+        if stored_xss_view_path:
+            step(f"modo stored-XSS (dos pasos): inyectando via subscriber -> admin carga "
+                 f"'{stored_xss_view_path}'...")
+            step(f"arrancando Chromium headless (modo stored-XSS, {len(attempts)} payloads)...")
+            with _XssBrowserSession() as xb:
+                for payload_value in attempts:
+                    params_inject = dict(base_params)
+                    params_inject[xss_param] = payload_value
+                    # PASO 1: subscriber inyecta (peticion HTTP, sin render)
+                    try:
+                        boot.sub_sess.request(
+                            m, boot.base_url + endpoint, timeout=20,
+                            data=params_inject if m != "GET" else None,
+                            params=params_inject if m == "GET" else None)
+                    except Exception as e:
+                        tried.append({"payload": payload_value, "paso1_error": str(e)})
+                        continue
+                    # PASO 2: admin abre la pagina de vista -- si el payload se renderiza ahi
+                    # y ejecuta JS, document.title cambia al marcador
+                    title, _ = xb.render(boot.base_url, stored_xss_view_path,
+                                         "GET", {}, admin_cookies)
+                    tried.append({"payload": payload_value, "title_tras_vista_admin": title})
+                    if title == marker:
+                        found = True
+                        res.evidence["payload_ganador"] = payload_value
+                        res.evidence["stored_xss_view_path"] = stored_xss_view_path
+                        step(f"VERIFICADO (stored XSS): el admin cargo '{stored_xss_view_path}' "
+                             f"y el navegador ejecuto el script inyectado -- document.title = "
+                             f"'{marker}'.")
+                        _, png = xb.render(boot.base_url, stored_xss_view_path,
+                                           "GET", {}, admin_cookies, capture=True)
+                        if png:
+                            boot.shots.append({
+                                "caption_es": (f"Paso 5: Stored XSS confirmado -- el admin cargo "
+                                              f"'{stored_xss_view_path}' y el navegador REAL ejecuto "
+                                              f"el script inyectado en '{xss_param}', cambiando "
+                                              f"document.title al marcador '{marker}'."),
+                                "caption_en": (f"Step 5: Stored XSS confirmed -- admin loaded "
+                                              f"'{stored_xss_view_path}' and the REAL browser executed "
+                                              f"the script injected via '{xss_param}', changing "
+                                              f"document.title to marker '{marker}'."),
+                                "png_b64": png, "url": boot.base_url + stored_xss_view_path})
+                        break
+                    # limpiar el payload inyectado antes del siguiente intento si es posible
+                    # (opcional -- si el plugin no tiene delete endpoint simplemente se acumula)
+
+        # ── MODO 1: Reflected / same-response ───────────────────────────────────────────────
+        if not found and not stored_xss_view_path:
+            # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
+            # Chromium por payload, confirmado en vivo, tarda minutos -- el coste real es el
+            # arranque del propio navegador. Pantalla SOLO del intento ganador.
+            step(f"arrancando Chromium headless (modo reflected, {len(attempts)} intentos)...")
+            with _XssBrowserSession() as xb:
+                for payload_value in attempts:
+                    params = dict(base_params)
+                    params[xss_param] = payload_value
+                    title, _ = xb.render(boot.base_url, endpoint, m, params, cookies)
+                    tried.append({"payload": payload_value, "title_resultante": title})
+                    if title == marker:
+                        found = True
+                        res.evidence["payload_ganador"] = payload_value
+                        step(f"VERIFICADO: el navegador EJECUTO el script inyectado -- "
+                             f"document.title cambio exactamente a '{marker}'.")
+                        _, png = xb.render(boot.base_url, endpoint, m, params, cookies,
+                                           capture=True)
+                        if png:
+                            boot.shots.append({
+                                "caption_es": (f"Paso 5: XSS confirmado -- el navegador REAL ejecuto "
+                                              f"el script inyectado en '{xss_param}', cambiando "
+                                              f"document.title al marcador '{marker}' (no es texto "
+                                              f"reflejado, es codigo JS ejecutandose)."),
+                                "caption_en": (f"Step 5: XSS confirmed -- the REAL browser executed the "
+                                              f"script injected in '{xss_param}', changing document.title "
+                                              f"to the marker '{marker}' (not reflected text, actual JS "
+                                              f"running)."),
+                                "png_b64": png, "url": boot.base_url + endpoint})
+                        break
+
         res.evidence.update({"login_bajo_privilegio": boot.sub_user,
                              "login_bajo_privilegio_password": boot.sub_pass,
                              "xss_param": xss_param, "token": token, "metodo": m,
-                             "endpoint": endpoint, "intentos": tried})
+                             "endpoint": endpoint, "intentos": tried,
+                             "modo_xss": "stored-two-step" if stored_xss_view_path else "reflected"})
         if found:
             res.verified = True
             res.ok = True
-            res.detail = (f"XSS confirmado: el navegador real EJECUTO el script inyectado en "
-                          f"{xss_param} -- document.title cambio exactamente a '{marker}', algo "
-                          f"que solo el motor JS del navegador pudo hacer, no una coincidencia de "
-                          f"texto reflejado")
+            if stored_xss_view_path:
+                res.detail = (f"Stored XSS confirmado (dos pasos): subscriber inyecto en "
+                              f"{xss_param}, el admin cargo '{stored_xss_view_path}' y el "
+                              f"navegador REAL ejecuto el script -- document.title = '{marker}', "
+                              f"prueba inequivoca de XSS almacenado, no reflexion de texto")
+            else:
+                res.detail = (f"XSS (reflected) confirmado: el navegador real EJECUTO el script "
+                              f"inyectado en {xss_param} -- document.title cambio exactamente a "
+                              f"'{marker}', algo que solo el motor JS del navegador pudo hacer, "
+                              f"no una coincidencia de texto reflejado")
         else:
             res.ok = True
-            res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
-                          f"ninguna el navegador ejecuto el script (document.title nunca cambio a "
-                          f"'{marker}') -- el XSS no se confirmo (puede que el contexto de "
-                          f"reflexion sea distinto, que haya sanitizacion real, o que el efecto "
-                          f"solo se vea en OTRA pagina que esta version no visita)")
-            try:
-                sample_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
-                sample_params[xss_param] = attempts[0] if attempts else ""
-                sample_resp = boot.sub_sess.request(
-                    m, boot.base_url + endpoint,
-                    data=sample_params if m != "GET" else None,
-                    params=sample_params if m == "GET" else None, timeout=15)
-                res.evidence["respuesta_cuerpo_recorte"] = (sample_resp.text or "")[:500]
-            except Exception:
-                pass
+            if stored_xss_view_path:
+                res.detail = (f"se probaron {len(tried)} payloads en modo stored-XSS (inyeccion "
+                              f"via subscriber + vista del admin en '{stored_xss_view_path}') y "
+                              f"en ninguno el navegador ejecuto el script -- el XSS almacenado "
+                              f"no se confirmo (puede que el parametro o la ruta de vista no "
+                              f"sean los reales, o que haya sanitizacion)")
+            else:
+                res.detail = (f"se probaron {len(tried)} variantes de XSS para {xss_param} y en "
+                              f"ninguna el navegador ejecuto el script (document.title nunca cambio "
+                              f"a '{marker}') -- el XSS no se confirmo (puede que el contexto de "
+                              f"reflexion sea distinto, que haya sanitizacion real, o que el efecto "
+                              f"solo se vea en OTRA pagina -- prueba con stored_xss_view_path)")
+                try:
+                    sample_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+                    sample_params[xss_param] = attempts[0] if attempts else ""
+                    sample_resp = boot.sub_sess.request(
+                        m, boot.base_url + endpoint,
+                        data=sample_params if m != "GET" else None,
+                        params=sample_params if m == "GET" else None, timeout=15)
+                    res.evidence["respuesta_cuerpo_recorte"] = (sample_resp.text or "")[:500]
+                except Exception:
+                    pass
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
