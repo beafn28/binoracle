@@ -1428,3 +1428,105 @@ def find_ajax_handler_function(local_path: str, action: str) -> Optional[dict]:
         if scanned >= _MAX_SCAN_FILES:
             break
     return None
+
+
+def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
+    """Busca la accion AJAX mas probable de producir SSRF: un handler que
+    (a) lee una URL de $_GET/$_POST/$_REQUEST y
+    (b) la pasa a wp_remote_get / wp_remote_post / wp_safe_remote_get /
+        wp_safe_remote_post / curl_exec / file_get_contents.
+
+    Devuelve {"action": nombre, "url_param": nombre_del_param, "location": "file:line"}
+    o None si no encuentra nada.  Usado como fallback deterministico para CVEs de clase
+    ssrf cuando el LLM no identifica el endpoint correcto.
+    """
+    if not local_path or not os.path.isdir(local_path):
+        return None
+
+    # patrones de fetch de URL en PHP
+    _FETCH_RE = re.compile(
+        r"\b(?:wp_remote_get|wp_remote_post|wp_safe_remote_get|wp_safe_remote_post"
+        r"|wp_remote_request|curl_exec|file_get_contents)\s*\("
+    )
+    # patron de lectura de parametro desde superglobal: captura el nombre de la clave
+    _PARAM_RE = re.compile(
+        r"\$_(?:GET|POST|REQUEST)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+    )
+    _URL_KEYS = {"url", "uri", "src", "source", "link", "feed", "webhook",
+                 "callback", "image", "avatar", "file_url", "endpoint",
+                 "redirect", "remote", "import", "fetch", "proxy", "target"}
+
+    _AJAX_REG_RE = re.compile(
+        r"add_action\s*\(\s*['\"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['\"]",
+        re.DOTALL
+    )
+    # file -> text map + action -> file positions
+    action_positions: list = []  # list of (action, fp, start_in_file)
+    all_texts: dict = {}
+
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in sorted(files):
+            if not fn.lower().endswith(".php"):
+                continue
+            if scanned >= _MAX_SCAN_FILES:
+                break
+            scanned += 1
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            all_texts[fp] = text
+            for m in _AJAX_REG_RE.finditer(text):
+                action_positions.append((m.group(1), fp, m.start()))
+        if scanned >= _MAX_SCAN_FILES:
+            break
+
+    if not action_positions:
+        return None
+
+    best: Optional[tuple] = None  # (action, url_param, fp, line_no, url_score)
+    for fp, text in all_texts.items():
+        fetch_matches = list(_FETCH_RE.finditer(text))
+        if not fetch_matches:
+            continue
+
+        for fm in fetch_matches:
+            fetch_pos = fm.start()
+            # ventana de 500 chars antes del fetch para capturar asignaciones locales
+            window_start = max(0, fetch_pos - 500)
+            window = text[window_start: fetch_pos + 200]
+            # buscar parametros de superglobal leidos dentro de la ventana
+            for pm in _PARAM_RE.finditer(window):
+                pname = pm.group(1)
+                url_score = 2 if pname.lower() in _URL_KEYS else 1
+                # encontrar la accion AJAX registrada justo ANTES de esta posicion en el
+                # mismo fichero (la ultima accion cuya posicion <= fetch_pos en fp)
+                containing_action = None
+                best_dist: Optional[int] = None
+                for act, act_fp, act_start in action_positions:
+                    if act_fp != fp or act_start > fetch_pos:
+                        continue
+                    dist = fetch_pos - act_start
+                    if best_dist is None or dist < best_dist:
+                        best_dist = dist
+                        containing_action = act
+                # fallback: primera accion de cualquier fichero
+                if containing_action is None and action_positions:
+                    containing_action = action_positions[0][0]
+                if best is None or url_score > best[4]:
+                    line_no = text.count("\n", 0, fm.start()) + 1
+                    best = (containing_action, pname, fp, line_no, url_score)
+
+    if best is None:
+        return None
+    action, url_param, fp, line_no, _score = best
+    return {
+        "action": action,
+        "url_param": url_param,
+        "location": f"{os.path.relpath(fp, local_path)}:{line_no}",
+    }
