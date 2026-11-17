@@ -3996,6 +3996,23 @@ def verify_wordpress_ssrf(
                     # equivocado, aunque el listener nunca confirme nada.
                     res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                     first_resp_captured = True
+                # fallback admin: si el endpoint requiere privilegio de admin (respuesta
+                # vacia, -1, 0, o 4xx/5xx) reintenta con admin_sess -- muchos SSRF son
+                # admin-only pero siguen siendo vulnerabilidades reales
+                _sub_body = (resp.text or "").strip()
+                _sub_ok = resp.status_code < 400 and _sub_body not in ("", "-1", "0", "false")
+                if not _sub_ok:
+                    try:
+                        resp_admin = boot.admin_sess.request(
+                            m, boot.base_url + endpoint,
+                            data=payload if m != "GET" else None,
+                            params=payload if m == "GET" else None, timeout=20)
+                        entry["status_admin"] = resp_admin.status_code
+                        if not first_resp_captured:
+                            res.evidence["respuesta_cuerpo_recorte"] = (resp_admin.text or "")[:500]
+                            first_resp_captured = True
+                    except Exception:
+                        pass
             except Exception as e:
                 entry["peticion_error"] = str(e)
             time.sleep(2)
