@@ -1558,13 +1558,70 @@ _RAW_HTTP_REQUEST_RE = re.compile(
 _RAW_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
 
+_STATIC_FILE_EXTS = {".txt", ".md", ".html", ".htm", ".css", ".js", ".json", ".xml",
+                     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".woff2",
+                     ".readme", ".log", ".yaml", ".yml", ".cfg", ".conf", ".lock"}
+_STANDARD_HTTP_HEADERS = {"host", "content-type", "content-length", "user-agent",
+                           "accept", "accept-encoding", "accept-language", "connection",
+                           "referer", "origin", "cache-control", "pragma", "cookie",
+                           "authorization", "transfer-encoding", "upgrade-insecure-requests"}
+
+
+def _extract_custom_headers_from_poc_code(text: str) -> dict:
+    """Extrae cabeceras HTTP no-estandar de scripts Python/bash/curl en el texto de un PoC.
+    Busca patrones como:
+      headers = {"X-Custom": "val", ...}
+      -H "X-Custom: val"
+      "X-Custom": "val"   (dentro de un dict de requests.*)
+    Devuelve solo las cabeceras no-estandar (no en _STANDARD_HTTP_HEADERS)."""
+    result: dict = {}
+    # Patron 1: clave:valor entre comillas en cualquier dict (incluye headers= {...}).
+    # Solo acepta claves que contienen al menos un guion '-' (convecion HTTP: los nombres de
+    # cabecera usan guion; los parametros de body no). Esto evita capturar "roles", "username",
+    # "password", etc. que son parametros de body, no cabeceras.
+    for m in re.finditer(
+            r"""["\']([A-Za-z][A-Za-z0-9\-]{2,})["\'][ \t]*:[ \t]*["\']([^"'\n]{1,120})["\']""",
+            text):
+        hname = m.group(1)
+        hval = m.group(2)
+        if "-" not in hname:
+            continue  # nombres sin guion son probablemente parametros de body, no cabeceras
+        if hname.lower() not in _STANDARD_HTTP_HEADERS:
+            result[hname] = hval
+    # Patron 2: curl -H "X-Custom: value" o --header "X-Custom: value"
+    for m in re.finditer(
+            r'-H[ \t]+["\']([A-Za-z][A-Za-z0-9\-]{2,}):\s*([^"\']{1,120})["\']',
+            text):
+        hname = m.group(1)
+        hval = m.group(2).strip()
+        if hname.lower() not in _STANDARD_HTTP_HEADERS:
+            result[hname] = hval
+    return result
+
+
+def _path_is_static_file(path: str) -> bool:
+    """True si la ruta apunta a un fichero estatico (extension conocida), no a un endpoint de
+    API o accion PHP. Muchos PoCs incluyen primero un GET al readme.txt del plugin para
+    comprobar si esta instalado; eso NO es el endpoint de ataque."""
+    p = path.split("?")[0].lower()
+    for ext in _STATIC_FILE_EXTS:
+        if p.endswith(ext):
+            return True
+    return False
+
+
 def parse_raw_http_poc_request(text: str) -> Optional[dict]:
     """Busca un bloque de peticion HTTP/1.x CRUDA dentro del texto de un PoC (el formato que la
     mayoria de los write-ups/README de GitHub usan: 'METODO /ruta HTTP/1.1', cabeceras, linea en
     blanco, cuerpo) y lo parsea DETERMINISTICAMENTE -- sin LLM de por medio, cero riesgo de que
-    alucine un valor. Devuelve {"method", "path", "headers", "body_params"} (body_params es un
-    dict name->VALOR REAL si el cuerpo es application/x-www-form-urlencoded, None si no se pudo
-    interpretar como tal) o None si no se encontro ningun bloque reconocible.
+    alucine un valor. Devuelve {"method", "path", "headers", "custom_headers", "body_params"}
+    (body_params es un dict name->VALOR REAL si el cuerpo es x-www-form-urlencoded, None si no;
+    custom_headers es un dict con las cabeceras NO-ESTANDAR del bloque, p.ej.
+    {"X-WCPAY-PLATFORM-CHECKOUT-USER": "1"}) o None si no se encontro ningun bloque reconocible.
+
+    Usa finditer para evaluar TODOS los bloques: descarta los que apuntan a ficheros estaticos
+    (p.ej. readme.txt -- check de version del PoC, no el ataque real) y prefiere el ULTIMO
+    bloque valido (el ataque suele ir al final del PoC, el check de instalacion al principio).
 
     Confirmado en vivo (CVE-2024-50508): el PoC real traia justo este bloque -- 'action='
     'pc_added_uploaded_image&file[path]=/etc/passwd' -- con los valores REALES de TODOS los
@@ -1575,36 +1632,40 @@ def parse_raw_http_poc_request(text: str) -> Optional[dict]:
     LLM: es, literalmente, la peticion que su autor confirmo que dispara la vulnerabilidad."""
     if not text:
         return None
-    m = _RAW_HTTP_REQUEST_RE.search(text)
-    if not m:
-        return None
-    method, path, header_block, rest = m.groups()
-    method = method.upper()
-    if method not in _RAW_HTTP_METHODS:
-        return None
-    headers = {}
-    for line in header_block.splitlines():
-        if ":" in line:
-            k, _, v = line.partition(":")
-            headers[k.strip()] = v.strip()
-    # el cuerpo es solo la PRIMERA linea no vacia tras la cabecera en blanco -- lo que venga
-    # despues en un README (la respuesta del servidor, el siguiente bloque de texto...) no es
-    # parte del cuerpo de ESTA peticion.
-    body_line = ""
-    for line in rest.splitlines():
-        if line.strip():
-            body_line = line.strip()
-            break
-    content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
-    body_params = None
-    if body_line and ("application/x-www-form-urlencoded" in content_type or
-                      (not content_type and "=" in body_line and not body_line.startswith("{"))):
-        from urllib.parse import parse_qsl
-        pairs = parse_qsl(body_line, keep_blank_values=True)
-        if pairs:
-            body_params = dict(pairs)
-    return {"method": method, "path": path, "headers": headers, "body_params": body_params,
-           "raw_body": body_line}
+    best = None
+    for m in _RAW_HTTP_REQUEST_RE.finditer(text):
+        method, path, header_block, rest = m.groups()
+        method = method.upper()
+        if method not in _RAW_HTTP_METHODS:
+            continue
+        if _path_is_static_file(path):
+            continue
+        headers = {}
+        for line in header_block.splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                headers[k.strip()] = v.strip()
+        # el cuerpo es solo la PRIMERA linea no vacia tras la cabecera en blanco
+        body_line = ""
+        for line in rest.splitlines():
+            if line.strip():
+                body_line = line.strip()
+                break
+        content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
+        body_params = None
+        if body_line and ("application/x-www-form-urlencoded" in content_type or
+                          (not content_type and "=" in body_line and not body_line.startswith("{"))):
+            from urllib.parse import parse_qsl
+            pairs = parse_qsl(body_line, keep_blank_values=True)
+            if pairs:
+                body_params = dict(pairs)
+        # cabeceras NO-ESTANDAR del bloque -> custom_headers (p.ej. X-WCPAY-PLATFORM-CHECKOUT-USER)
+        custom_headers = {k: v for k, v in headers.items()
+                          if k.lower() not in _STANDARD_HTTP_HEADERS}
+        best = {"method": method, "path": path, "headers": headers,
+                "custom_headers": custom_headers, "body_params": body_params,
+                "raw_body": body_line}
+    return best
 
 
 _EXTRACT_POC_SYS = (
@@ -1627,7 +1688,11 @@ _EXTRACT_POC_SYS = (
     "vulnerable, tal cual aparece en su codigo -- no lo resumas ni lo traduzcas), setup_options "
     "(lista de objetos {\"name\":..., \"value\":...} -- SOLO si el PoC/README dice explicitamente "
     "que hay que activar algun ajuste/opcion del plugin ANTES de que el ataque funcione, p.ej. "
-    "'first enable X in plugin settings'; vacio si no menciona nada de eso), notes (una frase con "
+    "'first enable X in plugin settings'; vacio si no menciona nada de eso), "
+    "custom_headers (dict de cabeceras HTTP NO-ESTANDAR que el PoC envía junto con la peticion "
+    "de ataque, p.ej. {\"X-WCPAY-PLATFORM-CHECKOUT-USER\": \"1\"} para CVE-2023-28121 donde "
+    "la cabecera HTTP es el mecanismo de bypass; vacio si el ataque solo usa parametros normales), "
+    "notes (una frase con "
     "cualquier precondicion o detalle importante que el PoC mencione y no quepa en los campos "
     "anteriores). Deja vacio lo que el PoC no diga explicitamente -- nunca inventes."
 )
@@ -2320,15 +2385,12 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
                 "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
                 "}\n"
             )
-        # .babelrc: fuerza Babel como transpilador en vez de SWC.
-        # En Next.js 15.x SWC es el default pero sus binarios nativos son optionalDependencies
-        # que pueden no instalarse bajo QEMU/emulacion (--platform linux/amd64 en M1) ni en
-        # entornos de CI con restricciones de red. Con .babelrc presente Next.js cae back a
-        # Babel automaticamente, usando el preset 'next/babel' que ya viene incluido en el
-        # paquete next -- sin dependencias extra. Esto elimina el crash
-        # 'node:internal/modules/cjs/loader throw e' que ocurre cuando @next/swc-* no carga.
-        with open(_os.path.join(lab_dir, ".babelrc"), "w") as f:
-            f.write('{"presets": ["next/babel"]}\n')
+        # SWC (el transpilador nativo de Next.js) funciona correctamente bajo --platform
+        # linux/amd64 en Docker incluso en M1: el contenedor corre como x86_64 Linux y los
+        # binarios SWC precompilados para glibc/linux-x64 se cargan sin problemas.
+        # NO se usa .babelrc ni --omit=optional: Babel en Next.js 15.x falla con webpack
+        # errors en los modulos internos de Next (router.js), mientras que SWC compila
+        # correctamente tanto el codigo del usuario como los internos de Next.
         # Custom server entry point
         srv = (
             "const { createServer } = require('http');\n"
@@ -2348,7 +2410,13 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         # have the canary. The bypass_header / bypass_value have known values too.
         notes["endpoint"] = "/api/secret"
         notes["bypass_header"] = "x-middleware-subrequest"
-        notes["bypass_value"] = "middleware"
+        # CVE-2025-29927: Next.js ≤15.2.3 comprueba si la profundidad de subrequests
+        # supera MAX_RECURSION_DEPTH (5). Si el header contiene N>=5 copias del nombre
+        # del middleware separadas por ':', el guard asume que ya se alcanzo la profundidad
+        # maxima y NO ejecuta el middleware -- silenciando la proteccion de acceso.
+        # El formato 'middleware:middleware:middleware:middleware:middleware' (5 copias)
+        # es el payload minimal confirmado en las PoCs publicas (Watchtower, EQSTLab).
+        notes["bypass_value"] = "middleware:middleware:middleware:middleware:middleware"
         notes["confirm_string"] = "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
         # Dockerfile: dev mode — no pre-build step needed; Next.js compiles on the
         # first request. Middleware runs in dev mode exactly as in production for the
@@ -2379,22 +2447,19 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
             + "WORKDIR /app\n"
             "COPY package.json .\n"
-            # --omit=optional impide que npm instale @next/swc-linux-x64-gnu y otros
-            # binarios nativos de SWC. Bajo emulacion QEMU (--platform linux/amd64 en M1)
-            # los binarios SWC precompilados fallan en dlopen() causando que Node.js crashee
-            # antes de imprimir el error completo ('node:internal/modules/cjs/loader throw e').
-            # Con --omit=optional + .babelrc, Next.js detecta que SWC no esta disponible y
-            # usa Babel como transpilador -- compatible con todas las plataformas.
-            "RUN npm install --legacy-peer-deps --omit=optional\n"
-            # Eliminar cualquier addon nativo (.node) que haya quedado instalado
-            # (pueden crashear Node bajo emulacion QEMU o arquitectura incorrecta con
-            # 'node:internal/modules/cjs/loader throw e'). Sin estos ficheros Next.js
-            # cae automaticamente a Babel gracias al .babelrc copiado mas abajo.
-            "RUN find /app/node_modules -name '*.node' -delete 2>/dev/null || true\n"
+            "RUN npm install --legacy-peer-deps\n"
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
+            # next build es necesario en Next.js 15.x: en modo production (next start)
+            # el runtime espera /app/.next/fallback-build-manifest.json y otros artefactos
+            # que solo existen tras el build. next dev tambien los necesita en 15.x para
+            # el modo turbopack/incremental. Sin este paso el contenedor arranca pero cada
+            # peticion devuelve 500 con ENOENT en ese manifiesto.
+            # El bypass x-middleware-subrequest funciona igual en production que en dev
+            # (el middleware se ejecuta en el edge runtime compilado en ambos modos).
+            "RUN ./node_modules/.bin/next build\n"
             "EXPOSE 3000\n"
-            'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
+            'CMD ["./node_modules/.bin/next", "start", "-p", "3000", "-H", "0.0.0.0"]\n'
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile)
@@ -2403,8 +2468,11 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         # el parametro 'cmd' a child_process.exec directamente (sin sanitizar).
         # Funciona para CVEs de paquetes que ejecutan comandos del sistema con entrada
         # del usuario (glob, cyclonedx, etc.).
-        ep = endpoint or "cmd"
-        p = param or "cmd"
+        _ep_raw = (notes.get("endpoint") or "").lstrip("/").split("?")[0]
+        _params_raw = notes.get("parameters") or []
+        ep = _ep_raw or "cmd"
+        p = (_params_raw[0] if isinstance(_params_raw, list) and _params_raw
+             else str(_params_raw) if _params_raw else "cmd")
         # Garantiza que genericverify sabe que endpoint/param usar -- el scanner de rutas
         # solo cubre Flask/Ruby; para Node.js actualizamos notes directamente.
         notes["endpoint"] = f"/{ep}"
@@ -2414,18 +2482,16 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             "const http = require('http');\n"
             "const { exec } = require('child_process');\n"
             "const url = require('url');\n\n"
+            # El servidor acepta CUALQUIER ruta para que el LLM pueda iterar el endpoint
+            # sin que la ruta cause 'binoracle npm lab ok' en vez del resultado de cmd.
+            # El parametro de inyeccion es configurable (ep/p), con alias adicionales.
             "const server = http.createServer((req, res) => {\n"
-            f"  if (req.url.startsWith('/{ep}')) {{\n"
-            "    const q = url.parse(req.url, true).query;\n"
-            f"    const cmd = q['{p}'] || 'echo hello';\n"
-            "    exec(cmd, (err, stdout, stderr) => {\n"
-            "      res.writeHead(200, {'Content-Type': 'text/plain'});\n"
-            "      res.end(stdout || stderr || (err ? err.message : 'ok'));\n"
-            "    });\n"
-            "  } else {\n"
-            "    res.writeHead(200);\n"
-            "    res.end('binoracle npm lab ok');\n"
-            "  }\n"
+            "  const q = url.parse(req.url, true).query;\n"
+            f"  const cmd = q['{p}'] || q['cmd'] || q['command'] || q['exec'] || q['input'] || 'echo hello';\n"
+            "  exec(cmd, (err, stdout, stderr) => {\n"
+            "    res.writeHead(200, {'Content-Type': 'text/plain'});\n"
+            "    res.end(stdout || stderr || (err ? err.message : 'ok'));\n"
+            "  });\n"
             "});\n"
             "server.listen(3000, '0.0.0.0', () => console.log('npm lab ready on :3000'));\n"
         )
@@ -4831,12 +4897,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         notes["xss_param"] = _xss_p_hint
                         # Sobreescribir view_path solo si el LLM no tiene uno especifico
                         # o si tiene uno generico/incorrecto (edit-comments, edit.php, etc.)
+                        # El scanner es mas fiable que el LLM para la vista de verificacion:
+                        # si el scanner encontro un REST endpoint (analisis de codigo real),
+                        # su view_path SIEMPRE gana sobre el LLM.
+                        # Para AJAX, solo sobreescribir si el LLM eligio un path claramente malo.
+                        _scanner_found_rest = bool(_xss_code_hit.get("inject_endpoint"))
                         _BAD_VIEW_PATHS = {
                             "/wp-admin/edit-comments.php", "/wp-admin/edit.php",
                             "/wp-admin/edit-posts.php", "/wp-admin/posts.php",
                         }
                         _llm_view_now = str(notes.get("stored_xss_view_path") or "").strip()
-                        if not _llm_view_now or _llm_view_now in _BAD_VIEW_PATHS:
+                        if _scanner_found_rest or not _llm_view_now or _llm_view_now in _BAD_VIEW_PATHS:
                             notes["stored_xss_view_path"] = _xss_view
                 params = notes.get("parameters") or []
                 xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
@@ -5587,12 +5658,28 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 inv.llm_notes["http_method"] = raw_req["method"]
                 if raw_req["body_params"]:
                     inv.llm_notes["parameters"] = raw_req["body_params"]
+                if raw_req.get("custom_headers"):
+                    inv.llm_notes["custom_headers"] = raw_req["custom_headers"]
                 step((f"bloque de peticion HTTP cruda encontrado en el PoC -- usando "
                      f"{raw_req['method']} {raw_req['path']} con los parametros y valores REALES "
-                     f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)") if es else
+                     f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)"
+                     + (f"; custom_headers detectadas: {list(raw_req['custom_headers'].keys())}"
+                        if raw_req.get('custom_headers') else "")) if es else
                      (f"raw HTTP request block found in the PoC -- using {raw_req['method']} "
                      f"{raw_req['path']} with the REAL parameters and values as-is (no LLM "
-                     f"involved, zero hallucination risk)"))
+                     f"involved, zero hallucination risk)"
+                     + (f"; custom_headers detected: {list(raw_req['custom_headers'].keys())}"
+                        if raw_req.get('custom_headers') else "")))
+            # Si no hay raw HTTP block O si el raw block no trajo custom_headers:
+            # buscar cabeceras no-estandar en el codigo fuente del PoC (Python/bash/curl).
+            if poc_text and not inv.llm_notes.get("custom_headers"):
+                _code_headers = _extract_custom_headers_from_poc_code(poc_text)
+                if _code_headers:
+                    inv.llm_notes["custom_headers"] = _code_headers
+                    step((f"cabeceras no-estandar detectadas en el codigo del PoC: "
+                         f"{list(_code_headers.keys())}") if es else
+                         (f"non-standard headers found in PoC code: "
+                          f"{list(_code_headers.keys())}"))
 
     # 2b) hechos conocidos del analista: PISAN la hipotesis del LLM en esas claves (el analista
     # que tiene el aviso oficial delante sabe el slug/endpoint reales mejor que una adivinanza).

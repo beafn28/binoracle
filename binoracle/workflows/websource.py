@@ -107,8 +107,14 @@ def _looks_like_version(v: str) -> bool:
     digitos/letras/puntos/guiones) -- rechaza frases libres como 'from n/a through 3.92.0' que
     a veces llegan como affected_version desde la hipotesis del LLM (texto de la descripcion del
     CVE, no un campo estructurado), y que romperian la URL de descarga si se usaran tal cual
-    (espacios -> 'URL can't contain control characters', confirmado en vivo)."""
-    return bool(v) and bool(_VERSION_RE.match(v.strip()))
+    (espacios -> 'URL can't contain control characters', confirmado en vivo).
+    Tambien rechaza enteros sueltos sin punto ('1', '2') que el LLM a veces alucina copiando
+    el numero de version principal del titulo del CVE -- ningun plugin real de WordPress.org
+    tiene un numero de version sin al menos un punto."""
+    if not v:
+        return False
+    s = v.strip()
+    return bool(_VERSION_RE.match(s)) and "." in s
 
 
 def _version_sort_key(v: str):
@@ -212,7 +218,8 @@ def detect_module_folder(local_path: str, hint: str = "") -> str:
     return detect_plugin_folder(local_path, hint=hint)
 
 
-def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[str]:
+def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0,
+                            display_name: str = "") -> Optional[str]:
     """Gap real encontrado en vivo (CVE-2026-2991, KiviCare): la hipotesis del LLM a veces trae
     un slug CASI correcto (una palabra de mas o de menos, p.ej. 'kivicare-clinic-PATIENT-
     management-system' en vez del real 'kivicare-clinic-management-system') -- la API de info
@@ -222,12 +229,21 @@ def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[s
     del directorio usa), usando el propio slug con guiones->espacios como consulta, y solo acepta
     el primer resultado si comparte al menos la mitad de sus palabras con el slug original
     (Jaccard sobre el split por '-') -- para no sustituir silenciosamente un plugin NO relacionado
-    que simplemente aparezca primero en una busqueda demasiado generica. None si no hay API
-    disponible, no hay resultados, o el mejor resultado no se parece lo bastante."""
+    que simplemente aparezca primero en una busqueda demasiado generica.
+
+    `display_name`: nombre de producto original (antes de transformarlo a slug), p.ej. "GiveWP"
+    para CVE-2024-5932. Cuando se da se usa como texto de busqueda y se acepta el primer
+    resultado si el nombre/slug del plugin encontrado contiene cualquiera de las palabras de
+    display_name (> 3 letras) -- cubre el caso "GiveWP" -> slug "give" donde el Jaccard sobre el
+    slug es 0 pero la palabra "give" aparece en el nombre del resultado "GiveWP – Donation Plugin".
+
+    None si no hay API disponible, no hay resultados, o el mejor resultado no se parece bastante."""
     try:
         import json
         from urllib.parse import urlencode
-        q = wrong_slug.replace("-", " ").replace("_", " ")
+        # Cuando tenemos el nombre de producto original, usarlo para buscar (da mejores resultados
+        # que el slug slugificado).
+        q = (display_name or wrong_slug).replace("-", " ").replace("_", " ")
         url = f"{_WP_SEARCH}?{urlencode({'action': 'query_plugins', 'request[search]': q, 'request[per_page]': 3})}"
         with _urlopen(url, timeout=timeout) as r:
             data = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
@@ -239,12 +255,33 @@ def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[s
     candidate = (plugins[0].get("slug") or "").strip().lower()
     if not candidate or candidate == wrong_slug:
         return None
+    # Metodo 1: Jaccard sobre el split por '-' (funciona para slugs casi-correctos)
     orig_words = set(wrong_slug.split("-"))
     cand_words = set(candidate.split("-"))
-    if not orig_words or not cand_words:
-        return None
-    overlap = len(orig_words & cand_words) / len(orig_words | cand_words)
-    return candidate if overlap >= 0.5 else None
+    if orig_words and cand_words:
+        overlap = len(orig_words & cand_words) / len(orig_words | cand_words)
+        if overlap >= 0.5:
+            return candidate
+    # Metodo 2: si hay display_name, aceptar si alguna palabra significativa del display_name
+    # (>3 letras) aparece en el slug o en el nombre del resultado. Cubre el caso "GiveWP" -> "give"
+    # donde el Jaccard es 0 pero "give" esta en "GiveWP" y en el nombre "GiveWP - Donation Plugin".
+    if display_name:
+        dn_lower = display_name.lower()
+        plugin_name = (plugins[0].get("name") or "").lower()
+        dn_words = [w for w in re.split(r'[^a-z0-9]+', dn_lower) if len(w) > 3]
+        if dn_words:
+            # acepta si el candidato es un prefijo/sufijo significativo del display_name o viceversa
+            if (candidate in dn_lower or dn_lower.startswith(candidate)
+                    or any(w in candidate or w in plugin_name for w in dn_words)):
+                return candidate
+    # Metodo 3: subset check -- el slug del LLM es el nombre completo del plugin (p.ej.
+    # "hash-form-drag-drop-form-builder") mientras el slug real es una version abreviada
+    # ("hash-form"). Acepta si TODAS las palabras del candidato aparecen en el slug original.
+    # Esto cubre slugs abreviados sin sustituir plugins no relacionados (un slug ajeno no
+    # tendria todas sus palabras en el slug largo del LLM).
+    if cand_words and cand_words <= orig_words:
+        return candidate
+    return None
 
 
 def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
@@ -826,6 +863,30 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     is_wp_shaped = looks_like_wp_slug(target)
     is_drupal_shaped = looks_like_drupal_slug(target)
     if not (is_wp_shaped or is_drupal_shaped):
+        # Ultimo intento: target puede ser un nombre de producto en CamelCase o con mayusculas
+        # (p.ej. "GiveWP" para CVE-2024-5932, donde el slug real es "give") -- el LLM a veces
+        # pone el nombre del producto en vez del slug de WP.org. Se slugifica (lowercase +
+        # sustituir no-alphanumerico por guion) y se busca en WP.org con el nombre original.
+        if "/" not in target and "." not in target:
+            display_name = target
+            slugified = re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")
+            if looks_like_wp_slug(slugified):
+                step = on_step or (lambda _m: None)
+                # Intentar primero el slug slugificado directamente
+                r_direct = fetch_wordpress_plugin(slugified, version=version, on_step=on_step,
+                                                  timeout=timeout,
+                                                  exclusive_upper_bound=exclusive_upper_bound)
+                if r_direct.ok:
+                    step(f"'{display_name}' resolvio como slug '{slugified}' en WordPress.org")
+                    return r_direct
+                # Si falla, buscar en WP.org con el nombre original para encontrar el slug real
+                corrected = _search_wp_plugin_slug(slugified, timeout=timeout,
+                                                   display_name=display_name)
+                if corrected:
+                    step(f"'{display_name}' resolvio como slug '{corrected}' via busqueda WP.org")
+                    return fetch_wordpress_plugin(corrected, version=version, on_step=on_step,
+                                                  timeout=timeout,
+                                                  exclusive_upper_bound=exclusive_upper_bound)
         return SourceFetchResult(source=target,
                                  note=f"'{target}' no parece una URL de git, un .zip (local o "
                                      f"URL), ni un slug/machine-name de WordPress.org o "
@@ -1821,6 +1882,13 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                         re.search(r"add_filter\s*\(", _atext)):
                     activation_params.setdefault("current_page_type", "home")
                     activation_params.setdefault("current_page_id", "0")
+                # Patron: isset($this->rest_hits->X) and $this->rest_hits->X == 1
+                # -> necesita X=1 para activar el filtro correspondiente
+                for _m in re.finditer(
+                    r"isset\s*\(\s*\$this->rest_hits->(\w+)\s*\)\s*and\s*\$this->rest_hits->\1\s*==\s*1",
+                    _atext
+                ):
+                    activation_params.setdefault(_m.group(1), "1")
             # Merge rest_params: activation_params primero (base), luego rest_params (incluye inject_param)
             merged_params = list(activation_params.keys()) + [
                 p for p in rest_params if p not in activation_params

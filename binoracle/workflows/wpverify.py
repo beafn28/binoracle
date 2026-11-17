@@ -1059,9 +1059,12 @@ class _XssBrowserSession:
         return False
 
     def render(self, base_url: str, endpoint: str, method: str, params: dict, cookies: list,
-              timeout_ms: int = 15000, capture: bool = False):
+              timeout_ms: int = 15000, capture: bool = False,
+              wait_for_xss_title: str = ""):
         """Misma semantica que _xss_render (navega, devuelve (title, png)) pero sobre el
-        navegador YA arrancado -- `png` es None salvo que `capture=True`."""
+        navegador YA arrancado -- `png` es None salvo que `capture=True`.
+        `wait_for_xss_title`: si se da, espera hasta que document.title empiece por ese
+        prefijo (o pase el timeout); utill para stored-XSS con AJAX (ej. WP Statistics)."""
         import html as _html
         from urllib.parse import quote, urlencode
         try:
@@ -1082,7 +1085,16 @@ class _XssBrowserSession:
                                 f'<script>document.getElementById("f").submit()</script>'
                                 f'</body></html>')
                     page.goto("data:text/html," + quote(form_html), timeout=timeout_ms)
-                page.wait_for_timeout(400)
+                if wait_for_xss_title:
+                    _pfx = wait_for_xss_title.replace("'", "\\'")
+                    try:
+                        page.wait_for_function(
+                            f"document.title.startsWith('{_pfx}')",
+                            timeout=8000)
+                    except Exception:
+                        pass
+                else:
+                    page.wait_for_timeout(400)
                 title = page.title()
                 png = None
                 if capture:
@@ -4140,8 +4152,12 @@ def verify_wordpress_xss(
         # Params de activacion de hook que se envian con TODOS los intentos de inyeccion
         # (ej: wp_statistics_hit_rest=1, current_page_type=home, current_page_id=0)
         if extra_inject_params:
+            # Sobreescribir valores vacios: dict.fromkeys(params, "") inicializa todos a "".
+            # La condicion `k not in base_params` bloquearia TODOS los activation params
+            # porque ya estan en base_params con valor "". Se sobreescriben solo los que
+            # tienen valor vacio/falsy para no pisar valores explicitamente pasados por el LLM.
             base_params.update({k: v for k, v in extra_inject_params.items()
-                                 if k not in base_params})
+                                 if not base_params.get(k)})
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, xss_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -4240,9 +4256,13 @@ def verify_wordpress_xss(
                         tried.append({"payload": payload_value, "paso1_error": str(e)})
                         continue
                     # PASO 2: admin abre la pagina de vista -- si el payload se renderiza ahi
-                    # y ejecuta JS, document.title cambia al marcador
+                    # y ejecuta JS, document.title cambia al marcador.
+                    # wait_for_xss_title: espera activamente hasta que el titulo cambie a
+                    # algo que empiece por 'binoracle-xss-' (cubre AJAX-lazy views como
+                    # WP Statistics overview que carga los datos post-load-event).
                     title, _ = xb.render(boot.base_url, stored_xss_view_path,
-                                         "GET", {}, admin_cookies)
+                                         "GET", {}, admin_cookies,
+                                         wait_for_xss_title="binoracle-xss-")
                     tried.append({"payload": payload_value, "title_tras_vista_admin": title})
                     if title == marker:
                         found = True
