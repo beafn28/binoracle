@@ -41,6 +41,7 @@ body {
   border-bottom: 1px solid var(--brd);
 }
 .nav-brand { display: flex; align-items: center; gap: .6rem; text-decoration: none; color: var(--tx); font-weight: 700; font-size: 1.05rem; }
+.nav-brand img { height: 34px; width: auto; }
 .nav-links { display: flex; gap: 1.25rem; margin-left: auto; }
 .nav-links a { color: var(--muted); text-decoration: none; font-size: .9rem; transition: color .15s; }
 .nav-links a:hover, .nav-links a.active { color: var(--tx); }
@@ -109,6 +110,21 @@ tr:nth-child(even) td { background: rgba(22,27,34,.4); }
 @media (max-width: 768px) {
   .doc-layout { flex-direction: column; padding: 1rem; gap: 1rem; }
   .doc-sidebar { width: 100%; position: static; height: auto; border-bottom: 1px solid var(--brd); padding-bottom: .75rem; }
+/* collapsible sidebar */
+.sidebar-toggle {
+  display: flex; align-items: center; gap: .35rem;
+  padding: .25rem .5rem; margin-bottom: .75rem;
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 5px;
+  color: var(--muted); cursor: pointer; font-size: .78rem; font-family: inherit;
+  transition: color .15s, border-color .15s; white-space: nowrap;
+}
+.sidebar-toggle:hover { color: var(--acc); border-color: var(--acc); }
+.sidebar-toggle svg { flex-shrink: 0; transition: transform .2s; }
+body.sb-collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+.sidebar-inner { overflow: hidden; transition: max-height .2s ease, opacity .2s ease; }
+body.sb-collapsed .doc-sidebar { width: 36px !important; padding: .6rem .3rem !important; overflow: hidden; }
+body.sb-collapsed .sidebar-inner { max-height: 0 !important; opacity: 0; }
+
   h1 { font-size: 1.6rem; }
   .cve-payload { font-size: .72rem; }
 }
@@ -121,7 +137,7 @@ footer a { color: var(--acc); text-decoration: none; }
 
 <nav class="nav">
   <a class="nav-brand" href="index.html">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+    <img src="assets/logo.svg" alt="binoracle logo">
     binoracle
   </a>
   <div class="nav-links">
@@ -138,6 +154,10 @@ footer a { color: var(--acc); text-decoration: none; }
 
 <div class="doc-layout">
   <aside class="doc-sidebar">
+<button class="sidebar-toggle" id="sb-toggle" aria-label="Toggle sidebar">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+<span class="sb-label">Collapse</span></button>
+<div class="sidebar-inner">
     <p class="sidebar-section">On this page</p>
     <a href="#overview">Overview</a>
     <a href="#wp-verified">WordPress (11 CVEs)</a>
@@ -156,7 +176,8 @@ footer a { color: var(--acc); text-decoration: none; }
     <p class="sidebar-section">Links</p>
     <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
     <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
-  </aside>
+  
+</div><!-- sidebar-inner --></aside>
 
   <main class="doc-content">
 
@@ -607,5 +628,20 @@ binoracle cve CVE-2025-29927</code></pre>
 <footer>
   MIT © 2024–2026 Beatriz Fresno Naumova · <a href="https://github.com/beafn28/binoracle">github.com/beafn28/binoracle</a>
 </footer>
+<script>
+(function(){
+  var btn = document.getElementById('sb-toggle');
+  if (!btn) return;
+  var label = btn.querySelector('.sb-label');
+  var collapsed = false;
+  try { collapsed = localStorage.getItem('sb-collapsed') === '1'; } catch(e) {}
+  if (collapsed) { document.body.classList.add('sb-collapsed'); if(label) label.textContent='Expand'; }
+  btn.addEventListener('click', function(){
+    var c = document.body.classList.toggle('sb-collapsed');
+    if(label) label.textContent = c ? 'Expand' : 'Collapse';
+    try { localStorage.setItem('sb-collapsed', c ? '1' : '0'); } catch(e) {}
+  });
+})();
+</script>
 </body>
 </html>
