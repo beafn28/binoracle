@@ -3515,15 +3515,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                              f"{det_refined.get('parameters')} (wins over the LLM's guess if "
                              f"they disagree)"))
                     if refined:
-                        # Si el analista fijo el endpoint Y proporciono parametros concretos
-                        # (dict, no lista de nombres), los parametros del analista ganan sobre el
-                        # grep -- el lock del analista cubre tambien los parametros que el mismo
-                        # proporciono explicitamente (bug: antes el grep los sobreescribia siempre).
-                        if notes.get("analyst_endpoint_lock") and isinstance(
-                                notes.get("parameters"), dict):
-                            refined_safe = {k: v for k, v in refined.items()
-                                           if k != "parameters"}
-                            notes = {**notes, **refined_safe}
+                        # El grep fue disenado para encontrar parametros DataTables (order,
+                        # order_by, start...) en CVEs SQLi -- no debe sobreescribir un parametro
+                        # de tipo path-hint que el PoC ya identifico explicitamente como el vector
+                        # real del ataque (p.ej. template=../../../../../etc/passwd en CVE-2024-3673).
+                        # Automatico: si las notas actuales ya contienen algun param que coincide
+                        # con _PATH_HINTS Y la clase es path-traversal, el grep pierde en params.
+                        _skip_params_override = False
+                        if det_refined and "parameters" in det_refined:
+                            _cur_params = notes.get("parameters") or []
+                            _cur_param_names = (list(_cur_params.keys())
+                                               if isinstance(_cur_params, dict)
+                                               else list(_cur_params))
+                            # _PATH_HINTS se importa localmente mas abajo en la misma
+                            # funcion (lineas 3904+), lo que lo convierte en cell variable
+                            # de Python -- usar alias para evitar UnboundLocalError en el
+                            # generador antes de que ese import se ejecute.
+                            from .wpverify import _PATH_HINTS as _ph_const
+                            if (any(p in _ph_const for p in _cur_param_names)
+                                    and inv.vuln_class == "path-traversal"):
+                                _skip_params_override = True
+                        # Tambien: si el analista fijo el endpoint Y proporciono params concretos
+                        # (dict, no lista), esos params tambien ganan sobre el grep.
+                        if (notes.get("analyst_endpoint_lock")
+                                and isinstance(notes.get("parameters"), dict)):
+                            _skip_params_override = True
+                        if _skip_params_override:
+                            notes = {**notes,
+                                     **{k: v for k, v in refined.items() if k != "parameters"}}
                         else:
                             notes = {**notes, **refined}
                         inv.llm_notes.update(refined)
