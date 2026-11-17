@@ -332,8 +332,29 @@ _RESEARCH_SYS = (
     "un nombre de parametro suelto en 'parameters' sin su valor: sin el valor REAL de accion, "
     "WordPress no enruta la peticion a ningun manejador y la vulnerabilidad nunca se alcanza, "
     "sea cual sea el resto del payload), parameters (lista de parametros relevantes DISTINTOS de "
-    "'action', que ya va en el endpoint), auth_required (true/false/rol minimo), strategy (una "
-    "frase), steps (lista de pasos concretos). Se tecnico y breve; deja vacio lo que no sepas."
+    "'action', que ya va en el endpoint), auth_required (true/false/rol minimo), "
+    "docker_image (para CVEs en BINARIOS NATIVOS del sistema -sudo, bash, openssl, curl...- "
+    "pon la imagen Docker que tiene ese binario a la version vulnerable, p.ej. "
+    "'ubuntu:focal-20210119' para sudo 1.8.31 (CVE-2021-3156), "
+    "'ubuntu:focal-20220302' para OpenSSL 1.1.1f (CVE-2022-0778), "
+    "'curlimages/curl:7.83.1' para curl 7.83.1 (CVE-2022-32206); "
+    "si no sabes la imagen exacta con la version vulnerable pre-instalada deja vacio), "
+    "poc_cmd (para CVEs en binarios nativos: comando de shell EXACTO que reproduce el bug "
+    "en el contenedor Docker, p.ej. "
+    "'sudoedit -s \"\\\\\\\\\" \"$(python3 -c \\'print(chr(65)*65536)\\')\"' para CVE-2021-3156; "
+    "deja vacio si es web), "
+    "crash_patterns (lista de cadenas que, si aparecen en stdout/stderr, confirman VULNERABLE, "
+    "p.ej. ['malloc(): corrupted', 'Segmentation fault']; solo para CVEs de binarios nativos), "
+    "patched_patterns (cadenas que indican que el binario YA ESTA PARCHEADO, "
+    "p.ej. ['sudoedit: only one file may be edited']; solo para CVEs de binarios nativos), "
+    "timeout_means_vulnerable (true si el CVE es un DoS/bucle-infinito: timeout = VULNERABLE, "
+    "p.ej. true para CVE-2022-0778; false o vacio para crashes normales), "
+    "setup_cmds (lista de comandos de shell a ejecutar ANTES del PoC en el contenedor: "
+    "instalar paquetes, crear ficheros de entrada, configurar el entorno, "
+    "p.ej. ['apt-get update && apt-get install -y sudo python3', 'touch /tmp/testfile']; "
+    "solo para CVEs de binarios nativos donde la imagen Docker base no tiene todo pre-instalado), "
+    "strategy (una frase), steps (lista de pasos concretos). "
+    "Se tecnico y breve; deja vacio lo que no sepas."
 )
 
 
@@ -5357,6 +5378,49 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                                budget_s=budget_s)
         inv.steps = []
         return inv
+
+    # 4-DOCKER) CVE en BINARIO NATIVO con imagen Docker conocida: heap/stack/UAF/privesc en
+    # utilidades del sistema (sudo, bash, openssl...). Sin binario local, sin endpoint HTTP.
+    # La verificacion levanta un contenedor efimero con el binario a la version vulnerable y
+    # ejecuta el PoC dentro -- el crash (exit 139/134 o patron en stderr) confirma la vuln.
+    _docker_img = (notes.get("docker_image") or "").strip()
+    _poc_cmd = (notes.get("poc_cmd") or "").strip()
+    if not has_bin and _docker_img and _poc_cmd and not is_web_class(inv.vuln_class):
+        from .binaryverify import verify_binary_crash_in_docker
+        step((f"intentando verificacion DINAMICA -- contenedor Docker efimero con binario "
+             f"nativo vulnerable ({_docker_img})..." if es else
+             f"attempting DYNAMIC verification -- ephemeral Docker container with vulnerable "
+             f"native binary ({_docker_img})..."))
+        _crash_pats = notes.get("crash_patterns") or None
+        _patched_pats = notes.get("patched_patterns") or None
+        _tmv = bool(notes.get("timeout_means_vulnerable"))
+        # setup_cmds: lista de comandos a ejecutar ANTES del PoC (p.ej. instalar paquetes)
+        _setup_cmds = notes.get("setup_cmds") or []
+        if isinstance(_setup_cmds, str):
+            _setup_cmds = [_setup_cmds]
+        bvr = verify_binary_crash_in_docker(
+            docker_image=_docker_img,
+            poc_cmd=_poc_cmd,
+            crash_patterns=_crash_pats,
+            patched_patterns=_patched_pats,
+            setup_cmds=_setup_cmds,
+            timeout_means_vulnerable=_tmv,
+            on_step=step,
+            budget_s=budget_s,
+        )
+        inv.verified_evidence = bvr.evidence
+        if bvr.verified:
+            inv.verified = True
+            inv.verified_detail = bvr.detail
+            step(("VERIFICADO en contenedor Docker: binario nativo vulnerable." if es else
+                  "VERIFIED in Docker container: vulnerable native binary."))
+        else:
+            inv.blockers.append((f"verificacion dinamica (Docker binary) no confirmada: "
+                                 f"{bvr.detail}" if es else
+                                 f"dynamic verification (Docker binary) not confirmed: "
+                                 f"{bvr.detail}"))
+            for lim in bvr.limitations:
+                inv.blockers.append(lim)
 
     if has_bin:
         # 4a) AUTO-FUZZING: descubre dinamicamente el disparador (stdin/argv/format-string)
