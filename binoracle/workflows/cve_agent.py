@@ -3515,7 +3515,17 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                              f"{det_refined.get('parameters')} (wins over the LLM's guess if "
                              f"they disagree)"))
                     if refined:
-                        notes = {**notes, **refined}
+                        # Si el analista fijo el endpoint Y proporciono parametros concretos
+                        # (dict, no lista de nombres), los parametros del analista ganan sobre el
+                        # grep -- el lock del analista cubre tambien los parametros que el mismo
+                        # proporciono explicitamente (bug: antes el grep los sobreescribia siempre).
+                        if notes.get("analyst_endpoint_lock") and isinstance(
+                                notes.get("parameters"), dict):
+                            refined_safe = {k: v for k, v in refined.items()
+                                           if k != "parameters"}
+                            notes = {**notes, **refined_safe}
+                        else:
+                            notes = {**notes, **refined}
                         inv.llm_notes.update(refined)
                         step((f"refinado con el codigo real: endpoint={notes.get('endpoint')}, "
                              f"parameters={notes.get('parameters')}") if es else
