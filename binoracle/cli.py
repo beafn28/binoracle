@@ -2565,6 +2565,12 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--method", help="HTTP method override (omit to let binoracle detect it)")
     cv.add_argument("--params", help="comma-separated request parameters (name or name=value)")
     cv.add_argument("--vuln-class", help="known vuln class (sqli, rce, xxe, missing-authorization...)")
+    cv.add_argument("--setup-wp-option", action="append", dest="setup_wp_options",
+                    metavar="OPTION=VALUE or OPTION[KEY]=VALUE",
+                    help="set a WordPress option before the SQLi test (repeatable). "
+                         "Use OPTION=VALUE for top-level options or OPTION[KEY]=VALUE for "
+                         "nested options in a serialised array -- e.g. "
+                         "\"learnpress[get_courses_of_subcategory]=yes\"")
     cv.add_argument("--budget", type=float, default=600,
                     help="verification budget in seconds (default 600)")
     cv.add_argument("--no-cache", action="store_true", help="force fresh investigation (no cache)")
