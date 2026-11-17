@@ -320,6 +320,21 @@ body {
 .doc-sidebar .toc li { margin: 0; }
 .doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
 .doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
+/* collapsible sidebar */
+.sidebar-toggle {
+  display: flex; align-items: center; gap: .35rem;
+  padding: .25rem .5rem; margin-bottom: .75rem;
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 5px;
+  color: var(--muted); cursor: pointer; font-size: .78rem; font-family: inherit;
+  transition: color .15s, border-color .15s; white-space: nowrap;
+}
+.sidebar-toggle:hover { color: var(--acc); border-color: var(--acc); }
+.sidebar-toggle svg { flex-shrink: 0; transition: transform .2s; }
+body.sb-collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+.sidebar-inner { overflow: hidden; transition: max-height .2s ease, opacity .2s ease; }
+body.sb-collapsed .doc-sidebar { width: 36px !important; padding: .6rem .3rem !important; overflow: hidden; }
+body.sb-collapsed .sidebar-inner { max-height: 0 !important; opacity: 0; }
+
 .page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
 .doc-callout{border-radius:var(--r);padding:.75rem 1.1rem;margin:1.1rem 0;border-left:3px solid var(--acc);background:rgba(88,166,255,.07);font-size:.9rem}
 .doc-callout.warn{border-color:var(--yel);background:rgba(210,153,34,.07)}
@@ -474,6 +489,10 @@ document.addEventListener('click',function(e){
 
 <div class="doc-layout">
 <aside class="doc-sidebar">
+<button class="sidebar-toggle" id="sb-toggle" aria-label="Toggle sidebar">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+<span class="sb-label">Collapse</span></button>
+<div class="sidebar-inner">
 <p class="sidebar-section">On this page</p>
 <a href="#overview">Overview</a>
 <a href="#components">Components</a>
@@ -481,6 +500,7 @@ document.addEventListener('click',function(e){
 <a href="#data-flow">Data Flow</a>
 <a href="#cli-layer">CLI Layer</a>
 <a href="#agent-layer">Agent Layer</a>
+<a href="#verifier-layer">Verifier Layer</a>
 <a href="#oracle-layer">Oracle Layer</a>
 <a href="#report-layer">Report Layer</a>
 <a href="#store">Session Store</a>
@@ -501,7 +521,8 @@ document.addEventListener('click',function(e){
 <p class="sidebar-section">Links</p>
 <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
 <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
-</aside>
+
+</div><!-- sidebar-inner --></aside>
 <main class="doc-content" style="max-width:860px">
   <h1 id="overview">Architecture</h1>
   <p class="page-lead">binoracle is built as a layered, modular Python package. Each layer has a single responsibility — the CLI wires them together, but every component can be imported and used independently.</p>
@@ -635,14 +656,45 @@ binoracle mcp-server</code></pre>
   <p>The <code>config</code> object is built from environment variables and <code>~/.config/binoracle/config.toml</code>. No config file is required — sensible defaults apply for everything except the LLM backend URL.</p>
 
   <h2 id="agent-layer">Agent Layer</h2>
-  <p><code>workflows/cve_agent.py</code> is the largest file (~4500 lines). It contains:</p>
+  <p><code>workflows/cve_agent.py</code> (~5000 lines) orchestrates every CVE investigation:</p>
   <ul>
-    <li>The <code>Investigation</code> dataclass — the central data model for a CVE investigation.</li>
-    <li><code>investigate_cve()</code> — the main orchestrator. It is a plain function, not a class. All state lives in the <code>Investigation</code> object passed by reference through helpers.</li>
-    <li>All the step functions: <code>fetch_cve()</code>, <code>query_llm_hypothesis()</code>, <code>fetch_public_poc()</code>, <code>ground_in_source()</code>, <code>scaffold_lab()</code>, <code>run_poc()</code>, <code>capture_screenshots()</code>, <code>render_investigation()</code>.</li>
-    <li>The investigation cache (read/write JSON to <code>~/.cache/binoracle/investigations/</code>).</li>
+    <li>The <code>Investigation</code> dataclass — the central data model (CVE metadata, hypothesis, evidence, verdict).</li>
+    <li><code>investigate_cve()</code> — the main orchestrator. Plain function, not a class. All state lives in the <code>Investigation</code> object.</li>
+    <li>Step functions: <code>fetch_cve()</code>, <code>query_llm_hypothesis()</code>, <code>fetch_public_poc()</code>, <code>ground_in_source()</code>, then a <strong>routing block</strong> that dispatches to the matching verifier based on <code>vuln_class</code> and target type (WordPress / generic).</li>
+    <li>Vuln classes the agent knows: <code>sqli</code>, <code>xss</code>, <code>ssrf</code>, <code>command-injection</code>, <code>rce</code>, <code>path-traversal</code>, <code>lfi</code>, <code>file-upload</code>, <code>deserialization</code>, <code>xxe</code>, <code>ssti</code>, <code>csrf</code>, <code>open-redirect</code>, <code>auth-bypass</code>, <code>idor</code>.</li>
+    <li>Evidence-retry loop (<code>_run_evidence_retry_loop</code>) — after a failed attempt the LLM reads the real HTTP evidence and suggests a refined endpoint/parameter for a second try.</li>
+    <li>The investigation cache (JSON to <code>~/.cache/binoracle/investigations/</code>).</li>
   </ul>
-  <p>The agent never calls the CLI or the MCP server. It only knows about the <code>Investigation</code> dataclass and the step functions. This keeps it testable in isolation.</p>
+
+  <h2 id="verifier-layer">Verifier Layer</h2>
+  <p><code>workflows/wpverify.py</code> (~6000 lines) implements every WordPress-specific dynamic verifier. <code>workflows/genericverify.py</code> implements the generic (non-WordPress) equivalents.</p>
+
+  <table>
+    <thead>
+      <tr><th>Verifier</th><th>Vuln class</th><th>Proof of exploitation</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>verify_wordpress_sqli</code></td><td>sqli</td><td>Real MySQL <code>version()</code> in response body, or ≥3.5 s delay on <code>SLEEP(5)</code></td></tr>
+      <tr><td><code>verify_wordpress_path_traversal</code></td><td>path-traversal</td><td>Unique canary secret planted at known path appears in HTTP response</td></tr>
+      <tr><td><code>verify_wordpress_lfi</code></td><td>lfi</td><td>Level 1: <code>/etc/passwd</code> or <code>wp-config.php</code> patterns; Level 2: PHP log-poisoning RCE marker executes</td></tr>
+      <tr><td><code>verify_wordpress_file_upload</code></td><td>file-upload</td><td>Uploaded PHP file computes unique sum marker (not reflected); 14 extension/magic-bytes variants tried</td></tr>
+      <tr><td><code>verify_wordpress_command_injection</code></td><td>command-injection</td><td>Injected <code>echo {marker}</code> appears in response without shell metacharacters</td></tr>
+      <tr><td><code>verify_wordpress_ssrf</code></td><td>ssrf</td><td>Canary HTTP request reaches internal server listener</td></tr>
+      <tr><td><code>verify_wordpress_xxe</code></td><td>xxe</td><td>Canary file contents appear in XML parse response</td></tr>
+      <tr><td><code>verify_wordpress_header_auth_bypass</code></td><td>auth-bypass</td><td>Protected endpoint returns success only with bypass header present</td></tr>
+      <tr><td><code>verify_wordpress_open_redirect</code></td><td>open-redirect</td><td>Response redirects to attacker-controlled domain</td></tr>
+      <tr><td><code>verify_wordpress_deserialization</code></td><td>deserialization</td><td>Gadget chain triggers DNS/HTTP ping-back or code execution marker</td></tr>
+      <tr><td><code>verify_generic_sqli</code></td><td>sqli</td><td>DB version string extracted</td></tr>
+      <tr><td><code>verify_generic_path_traversal</code></td><td>path-traversal</td><td>Canary file read</td></tr>
+      <tr><td><code>verify_generic_ssti</code></td><td>ssti</td><td><code>{{22*32}}</code> evaluates to <code>704</code></td></tr>
+      <tr><td><code>verify_generic_command_injection</code></td><td>command-injection</td><td>Injected marker written to file, then read back</td></tr>
+      <tr><td><code>verify_generic_lfi_rce</code></td><td>lfi</td><td>Log-poisoning PHP payload executes</td></tr>
+      <tr><td><code>verify_generic_auth_bypass</code></td><td>auth-bypass</td><td>Header/cookie bypass returns protected-resource body</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Companion-plugin auto-detection</h3>
+  <p>The agent scans the target plugin's PHP source for <code>function_exists('WC')</code>, <code>is_plugin_active()</code>, and similar dependency checks. When a dependency is detected, the lab bootstrapper automatically downloads and activates the companion plugin from WordPress.org before the verifier runs. This prevents false negatives where the target plugin fails silently because a required dependency is not installed.</p>
 
   <h2 id="oracle-layer">Oracle Layer</h2>
   <p>Oracles are thin wrappers around external tools that return structured data:</p>
@@ -687,5 +739,20 @@ binoracle mcp-server</code></pre>
     </div>
   </div>
 </footer>
+<script>
+(function(){
+  var btn = document.getElementById('sb-toggle');
+  if (!btn) return;
+  var label = btn.querySelector('.sb-label');
+  var collapsed = false;
+  try { collapsed = localStorage.getItem('sb-collapsed') === '1'; } catch(e) {}
+  if (collapsed) { document.body.classList.add('sb-collapsed'); if(label) label.textContent='Expand'; }
+  btn.addEventListener('click', function(){
+    var c = document.body.classList.toggle('sb-collapsed');
+    if(label) label.textContent = c ? 'Expand' : 'Collapse';
+    try { localStorage.setItem('sb-collapsed', c ? '1' : '0'); } catch(e) {}
+  });
+})();
+</script>
 </body>
 </html>

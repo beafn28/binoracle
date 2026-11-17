@@ -80,6 +80,11 @@ _IMPACT_BY_CLASS = {
                        "directorio previsto, incluyendo configuracion con credenciales.", "HIGH",
                        "Read (and sometimes write) of arbitrary files outside the intended "
                        "directory, including configuration files with credentials."),
+    "lfi": ("CRITICO", "El servidor incluye un fichero del sistema de ficheros local como codigo PHP "
+            "ejecutable (include()/require() con parametro controlado por el atacante). Puede "
+            "escalar a RCE via envenenamiento del log de acceso (log poisoning).", "CRITICAL",
+            "The server includes a local filesystem file as executable PHP code (include()/require() "
+            "with attacker-controlled parameter). Can escalate to RCE via access log poisoning."),
     "xss": ("MEDIO", "Ejecucion de JavaScript arbitrario en el navegador de otros usuarios: robo "
            "de sesion, phishing dentro del propio sitio, acciones en su nombre.", "MEDIUM",
            "Arbitrary JavaScript execution in other users' browsers: session theft, phishing "
@@ -187,6 +192,11 @@ _REMEDIATION_BY_CLASS = {
         "Resolve the final path and verify it stays within the allowed base directory (canonical "
         "path comparison, not just filtering '../'); use an indirect identifier (database ID) "
         "instead of the real filename where possible."),
+    "lfi": (
+        "Nunca pasar input del usuario directamente a include()/require(); usar una lista blanca "
+        "estricta de ficheros permitidos o sustituir la ruta por un ID que se resuelva internamente.",
+        "Never pass user input directly to include()/require(); use a strict allow-list of "
+        "permitted files or replace the path with an ID resolved internally."),
     "xss": (
         "Escapar la salida segun el contexto (HTML/atributo/JS) en el punto donde se imprime, "
         "nunca solo al guardar; usar las funciones de escape del framework "
@@ -315,13 +325,15 @@ _RESEARCH_SYS = (
     "una vulnerabilidad y propones un plan tecnico. Responde SOLO con JSON valido con las claves: "
     "vuln_class (memoria: stack-overflow, heap-overflow, uaf, double-free, format-string, oob-write, "
     "oob-read, integer-overflow, type-confusion; WEB/APP: missing-authorization, idor, auth-bypass, "
-    "sqli, xss, ssrf, command-injection, rce, path-traversal, file-upload, deserialization, xxe, "
+    "sqli, xss, ssrf, command-injection, rce, path-traversal, lfi, file-upload, deserialization, xxe, "
     "ssti, csrf, open-redirect; u otra; NOTA CRITICA DE CLASIFICACION: usa 'ssrf' cuando el "
     "SERVIDOR hace una peticion HTTP a una URL que CONTROLA EL ATACANTE (fetch remoto, import de "
     "URL, webhook, proxy, carga de recurso desde URL arbitraria) -- esto incluye 'zip upload via "
     "URL' si el servidor fetcha la URL del zip, incluso si la descripcion dice 'file upload'; "
     "usa 'file-upload' solo cuando el CLIENTE sube directamente un fichero al servidor sin que "
-    "el servidor haga ninguna peticion saliente adicional), "
+    "el servidor haga ninguna peticion saliente adicional; usa 'lfi' cuando el servidor incluye "
+    "un fichero como codigo PHP con include()/require() sobre un parametro controlado por el "
+    "atacante -- distinto de path-traversal puro que solo LEE el fichero como texto), "
     "primitive (que concede), target_binary (binario/componente "
     "a obtener; para paquetes pip/npm/gem/maven/php pon el nombre EXACTO del paquete tal como "
     "aparece en la descripcion: p.ej. 'log4j-core', 'spring-webmvc', 'jackson-databind', "
@@ -4157,6 +4169,39 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s)
                     _apply_wpverify_result(inv, wr_rce, es, llm)
+            # LFI (Local File Inclusion) en WordPress: include()/require() con parametro
+            # controlado por el atacante. Dos niveles: lectura de fichero (/etc/passwd,
+            # wp-config.php) y escalada a RCE via log poisoning (ver verify_wordpress_lfi).
+            elif (not is_drupal and not is_joomla
+                  and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "lfi" and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_lfi, _pick_param, _PATH_HINTS
+                params = notes.get("parameters") or []
+                path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                step(("intentando verificacion DINAMICA -- LFI lectura y escalada a RCE via "
+                     "log poisoning (WordPress+MySQL efimero en Docker)..." if es else
+                     "attempting DYNAMIC verification -- LFI read and RCE escalation via "
+                     "log poisoning (ephemeral WordPress+MySQL in Docker)..."))
+                wr = verify_wordpress_lfi(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "GET", params,
+                    path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins,
+                    shortcode_name=shortcode_name_generic,
+                    keep_lab_on_failure=keep_lab_on_failure)
+                def _attempt_lfi(ep, pr):
+                    return verify_wordpress_lfi(
+                        fr.local_path, plugin_dir, ep,
+                        notes.get("http_method") or "GET", params,
+                        path_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins,
+                        shortcode_name=shortcode_name_generic)
+                wr = _run_evidence_retry_loop(
+                    llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
+                    _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS,
+                    _attempt_lfi, wr, notes.get("endpoint"), path_p,
+                    technique_label="LFI WordPress")
+                _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de IDOR (ver genericverify.py) para cuando
             # el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
             # docker-compose.yml -- DELIBERADAMENTE mas debil que el IDOR de WordPress/Drupal/

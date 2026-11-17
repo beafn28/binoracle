@@ -320,6 +320,21 @@ body {
 .doc-sidebar .toc li { margin: 0; }
 .doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
 .doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
+/* collapsible sidebar */
+.sidebar-toggle {
+  display: flex; align-items: center; gap: .35rem;
+  padding: .25rem .5rem; margin-bottom: .75rem;
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 5px;
+  color: var(--muted); cursor: pointer; font-size: .78rem; font-family: inherit;
+  transition: color .15s, border-color .15s; white-space: nowrap;
+}
+.sidebar-toggle:hover { color: var(--acc); border-color: var(--acc); }
+.sidebar-toggle svg { flex-shrink: 0; transition: transform .2s; }
+body.sb-collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+.sidebar-inner { overflow: hidden; transition: max-height .2s ease, opacity .2s ease; }
+body.sb-collapsed .doc-sidebar { width: 36px !important; padding: .6rem .3rem !important; overflow: hidden; }
+body.sb-collapsed .sidebar-inner { max-height: 0 !important; opacity: 0; }
+
 .page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
 .doc-callout{border-radius:var(--r);padding:.75rem 1.1rem;margin:1.1rem 0;border-left:3px solid var(--acc);background:rgba(88,166,255,.07);font-size:.9rem}
 .doc-callout.warn{border-color:var(--yel);background:rgba(210,153,34,.07)}
@@ -474,6 +489,10 @@ document.addEventListener('click',function(e){
 
 <div class="doc-layout">
   <aside class="doc-sidebar">
+<button class="sidebar-toggle" id="sb-toggle" aria-label="Toggle sidebar">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+<span class="sb-label">Collapse</span></button>
+<div class="sidebar-inner">
 <p class="sidebar-section">On this page</p>
 <a href="#v02">v0.2</a>
 <a href="#v03">v0.3</a>
@@ -497,7 +516,8 @@ document.addEventListener('click',function(e){
 <p class="sidebar-section">Links</p>
 <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
 <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
-</aside>
+
+</div><!-- sidebar-inner --></aside>
   <main class="doc-content">
     <h1>Roadmap</h1>
     <p class="page-lead">Direction for versions after 0.1.0. Every item ships as a verified attack path — never a prompt.</p>
@@ -624,5 +644,20 @@ document.addEventListener('click',function(e){
     </div>
   </div>
 </footer>
+<script>
+(function(){
+  var btn = document.getElementById('sb-toggle');
+  if (!btn) return;
+  var label = btn.querySelector('.sb-label');
+  var collapsed = false;
+  try { collapsed = localStorage.getItem('sb-collapsed') === '1'; } catch(e) {}
+  if (collapsed) { document.body.classList.add('sb-collapsed'); if(label) label.textContent='Expand'; }
+  btn.addEventListener('click', function(){
+    var c = document.body.classList.toggle('sb-collapsed');
+    if(label) label.textContent = c ? 'Expand' : 'Collapse';
+    try { localStorage.setItem('sb-collapsed', c ? '1' : '0'); } catch(e) {}
+  });
+})();
+</script>
 </body>
 </html>

