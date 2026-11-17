@@ -1506,44 +1506,66 @@ class ExploitReasoningEngine:
         if not all_source:
             return hint
 
-        # 1. Gating options — get_option('key') inside a conditional
+        # 1. Gating options — get_option('key') in a GUARD that short-circuits.
+        # Only flag when the get_option() result is checked in a block that exits
+        # (return / wp_die / die / exit) if the option is falsy.  Avoids applying
+        # every plugin config key that happens to appear in an if-statement.
+        _GUARD_EXITS = re.compile(
+            r"\b(?:return|wp_die|die|exit|wp_send_json_error|wp_send_json)\b",
+            re.I
+        )
+        _SKIP_OPTS = re.compile(
+            r"^(?:blog|site|admin|template|active_plugins|upload|blogname|siteurl|"
+            r"home|timezone|charset|lang|widget_|sidebars_widgets|"
+            r".*(?:width|height|format|email|slug|notification|renewal|"
+            r"expiration|comments|thumb|style|order|page|per.?page|"
+            r"category|tag|cpt|rewrite|show_on_front|permalink))$",
+            re.I
+        )
         for m in re.finditer(
             r"get_option\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", all_source, re.I
         ):
             opt_name = m.group(1)
-            snippet = all_source[max(0, m.start() - 120): m.end() + 120]
-            if re.search(r"\b(?:if|while|&&|\|\|)\b", snippet):
-                val_m = re.search(r"(?:==|===)\s*['\"]?([01])['\"]?", snippet)
+            if _SKIP_OPTS.match(opt_name):
+                continue
+            # Look for: if (!get_option('x')) { return; }
+            # Window before: 80 chars (the if), after: 200 chars (the return/die)
+            pre = all_source[max(0, m.start() - 80): m.start()]
+            post = all_source[m.end(): m.end() + 200]
+            # Must be inside a negative guard (!, ==0, =='', ==false, empty())
+            is_negative_guard = bool(
+                re.search(r"(?:!\s*$|\bempty\s*\($|==\s*(?:0|false|''|\"\"))", pre)
+                or re.search(r"(?:^[^;{]*(?:==|===|!=)\s*(?:0|false|''|\"\"))", post)
+            )
+            # Must have an exit within the same clause
+            has_exit = bool(_GUARD_EXITS.search(post[:150]))
+            if is_negative_guard and has_exit:
+                val_m = re.search(r"(?:==|===)\s*['\"]?([01])['\"]?", pre + post[:60])
                 expected = val_m.group(1) if val_m else "1"
-                # Skip generic WP core options
-                if not re.match(
-                    r"^(?:blog|site|admin|template|active_plugins|upload|"
-                    r"blogname|siteurl|home|timezone|charset|lang)$",
-                    opt_name, re.I
-                ):
-                    if opt_name not in hint.gating_options:
-                        hint.gating_options[opt_name] = expected
-                        evidence.append(
-                            f"gating_option: {opt_name}={expected} "
-                            f"(near: {snippet[:60]!r})"
-                        )
+                if opt_name not in hint.gating_options:
+                    hint.gating_options[opt_name] = expected
+                    evidence.append(
+                        f"gating_option: {opt_name}={expected} "
+                        f"(guard+exit near offset {m.start()})"
+                    )
 
-        # 2. Array sub-key access that gates a code path
+        # 2. Array sub-key access that acts as a hard gate (early return/die)
         for m in re.finditer(
             r"\$(?:options?|settings?|config)\s*\[\s*['\"]([^'\"]+)['\"]\s*\]",
             all_source, re.I
         ):
             opt_name = m.group(1)
-            snippet = all_source[max(0, m.start() - 80): m.end() + 80]
-            if re.search(r"\b(?:if|while|&&|\|\|)\b", snippet):
-                if not re.match(
-                    r"^(?:blog|site|admin|template|active|upload|home|lang)$",
-                    opt_name, re.I
-                ) and opt_name not in hint.gating_options:
-                    hint.gating_options[opt_name] = "1"
-                    evidence.append(
-                        f"gating_array_key: {opt_name} (near: {snippet[:60]!r})"
-                    )
+            if _SKIP_OPTS.match(opt_name) or opt_name in hint.gating_options:
+                continue
+            pre = all_source[max(0, m.start() - 80): m.start()]
+            post = all_source[m.end(): m.end() + 200]
+            is_negative_guard = bool(re.search(r"(?:!\s*$|\bempty\s*\($)", pre))
+            has_exit = bool(_GUARD_EXITS.search(post[:150]))
+            if is_negative_guard and has_exit:
+                hint.gating_options[opt_name] = "1"
+                evidence.append(
+                    f"gating_array_key: {opt_name} (guard+exit near offset {m.start()})"
+                )
 
         # 3. Anonymous session guard patterns
         anon_guards = [

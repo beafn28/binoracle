@@ -351,9 +351,10 @@ def search_nvd_by_scope(
     """
     from datetime import datetime, timedelta, timezone
 
-    keywords = custom_keywords or _SCOPE_PRESETS.get(scope, [scope])
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-    pub_start = cutoff.strftime("%Y-%m-%dT%H:%M:%S.000")
+    keywords  = custom_keywords or _SCOPE_PRESETS.get(scope, [scope])
+    now       = datetime.now(timezone.utc)
+    cutoff_dt = now - timedelta(days=days_back)
+    cutoff_str = cutoff_dt.strftime("%Y-%m-%d")   # for client-side date filter
 
     seen_ids: set = set()
     results:  List[NvdSearchResult] = []
@@ -361,24 +362,60 @@ def search_nvd_by_scope(
     for kw in keywords:
         if len(results) >= max_results:
             break
-        params: List[str] = [
-            f"keywordSearch={urllib.request.quote(kw)}",
-            f"pubStartDate={urllib.request.quote(pub_start)}",
-            f"resultsPerPage={min(max_results - len(results), 100)}",
-            "noRejected",
-        ]
+        # NVD 2.0 API does NOT support keywordSearch + pubDate range + severity
+        # simultaneously — combining all three returns 404.  Fetch up to 2000
+        # results per keyword (paginating in batches of 100) and apply date and
+        # CVSS score filters client-side.  Results are sorted by CVE ID (oldest
+        # first), so we reverse-paginate: fetch the LAST pages first.
+        base_params = [f"keywordSearch={urllib.request.quote(kw)}"]
         if severity_filter:
-            params.append(f"cvssV3Severity={severity_filter}")
+            base_params.append(f"cvssV3Severity={severity_filter}")
 
-        url = NVD_SEARCH_API + "?" + "&".join(params)
+        # Probe first page to get totalResults, then jump to the last pages.
+        total_results = 0
+        all_items: List[dict] = []
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0"})
+            probe_url = (NVD_SEARCH_API + "?" +
+                         "&".join(base_params + ["resultsPerPage=1"]))
+            req = urllib.request.Request(probe_url,
+                                         headers={"User-Agent": "binoracle/1.0"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.loads(r.read().decode("utf-8", "replace"))
+                probe_data = json.loads(r.read().decode("utf-8", "replace"))
+            total_results = int(probe_data.get("totalResults") or 0)
         except Exception:
             continue
 
-        for item in (data.get("vulnerabilities") or []):
+        # Reverse-paginate: last page first (most recently assigned CVE IDs).
+        # Cap at 500 candidates to avoid overloading the API.
+        _page_size = 100
+        _max_items = min(total_results, 500)
+        _start_indices = list(range(
+            max(0, total_results - _page_size),  # start from last page
+            max(0, total_results - _max_items) - 1,
+            -_page_size,
+        ))
+
+        for start_idx in _start_indices:
+            if len(all_items) >= _max_items:
+                break
+            page_params = base_params + [
+                f"resultsPerPage={_page_size}",
+                f"startIndex={start_idx}",
+            ]
+            try:
+                page_url = NVD_SEARCH_API + "?" + "&".join(page_params)
+                req = urllib.request.Request(page_url,
+                                             headers={"User-Agent": "binoracle/1.0"})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    page_data = json.loads(r.read().decode("utf-8", "replace"))
+                # Reverse so newest CVE IDs come first
+                page_items = list(reversed(page_data.get("vulnerabilities") or []))
+                all_items.extend(page_items)
+            except Exception:
+                break
+            time.sleep(0.4)   # NVD rate limit: 5 req/30s
+
+        for item in all_items:
             cve = item.get("cve", {})
             cid = cve.get("id", "")
             if not cid or cid in seen_ids:
@@ -408,6 +445,9 @@ def search_nvd_by_scope(
                 continue
 
             published = (cve.get("published") or "")[:10]
+            # Client-side date filter (NVD can't combine it with keyword+severity)
+            if published and published < cutoff_str:
+                continue
 
             # Exploit references
             has_exploit = False
