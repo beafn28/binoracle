@@ -3240,6 +3240,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             companion_plugins = []
             if not is_drupal and not is_joomla:
                 companion_plugins = detect_required_companion_plugins(fr.local_path, plugin_dir)
+                # Merge with analyst-provided companion plugins (--companion-plugins CLI flag).
+                # Needed when the dependency uses function_exists('WC') instead of
+                # is_plugin_active() — the auto-scanner only catches the latter.
+                _analyst_companions = notes.get("companion_plugins") or []
+                for _ac in _analyst_companions:
+                    if _ac and _ac not in companion_plugins:
+                        companion_plugins.append(_ac)
                 if companion_plugins:
                     step((f"el plugin requiere que {', '.join(companion_plugins)} este(n) "
                          f"activo(s) para cargar su propia funcionalidad (detectado en el "

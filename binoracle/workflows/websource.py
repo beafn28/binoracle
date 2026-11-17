@@ -1165,7 +1165,7 @@ def find_plugin_main_file(local_path: str, plugin_dir: str, max_head_bytes: int 
 # WordPress.org exige que una dependencia de OTRO plugin se comprueba via 'active_plugins'
 # (la opcion que wp-cli tambien usa) contra la ruta '<slug>/<slug-principal>.php' -- asi la
 # comprueban in_array()/array_key_exists() (patron clasico, 'active_plugins') y la funcion de
-# core is_plugin_active() (que hace exactamente lo mismo por dentro). Confirmado en vivo,
+# core is_plugin_active() (que hace exactamente por dentro). Confirmado en vivo,
 # CVE-2024-50508: el constructor del plugin corta en seco ANTES de registrar ningun hook AJAX
 # si WooCommerce no esta activo -- sin esto, cualquier verificacion dinamica contra un plugin
 # asi falla siempre, sea cual sea el payload, porque el codigo vulnerable nunca llega a cargarse.
@@ -1181,6 +1181,22 @@ _COMPANION_PLUGIN_RE = re.compile(
 # usan los constructores de WordPress para decir 'no sigas inicializando') o exit()/die()/
 # wp_die(), que SI paran la ejecucion de verdad.
 _BLOCKING_NEARBY_RE = re.compile(r"\breturn\s+false\b|\bexit\s*\(|\bdie\s*\(|\bwp_die\s*\(")
+
+# Algunos plugins detectan WooCommerce via function_exists('WC') en lugar de is_plugin_active().
+# El patron clasico de WooCommerce extensions: `if ( ! function_exists( 'WC' ) ) { return; }`.
+# El 'return;' simple no cumple _BLOCKING_NEARBY_RE (excluido para evitar falsos positivos), pero
+# en este contexto -- un condicional que solo comprueba function_exists sin hacer nada mas -- SI
+# es una comprobacion bloqueante. Mapeamos las funciones globales conocidas a su slug.
+_KNOWN_GLOBAL_FN_TO_SLUG: dict = {
+    "WC": "woocommerce",
+    "WooCommerce": "woocommerce",
+    "EDD": "easy-digital-downloads",
+    "GFFormsModel": "gravityforms",
+    "bbp_get_version": "bbpress",
+    "bp_core_install": "buddypress",
+}
+_COMPANION_FUNCTION_RE = re.compile(
+    r"function_exists\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]")
 
 
 def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[str]:
@@ -1210,6 +1226,19 @@ def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[
         if _BLOCKING_NEARBY_RE.search(nearby):
             seen.add(slug)
             slugs.append(slug)
+    # Detecta tambien el patron function_exists('WC') / function_exists('EDD') etc.
+    # que usan extensiones de WooCommerce/EDD en lugar de is_plugin_active().
+    # Solo se cuenta cuando el condicional usa negacion (!function_exists) y va seguido
+    # de return/exit dentro de las primeras lineas -- comprobacion bloqueante real.
+    _fn_block_re = re.compile(
+        r"!\s*function_exists\s*\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
+        r"[^)]*\).*?\{[^}]*?\breturn\b", re.DOTALL)
+    for m in _fn_block_re.finditer(text):
+        fn_name = m.group(1)
+        mapped = _KNOWN_GLOBAL_FN_TO_SLUG.get(fn_name)
+        if mapped and mapped not in seen and mapped != (plugin_dir or "").lower():
+            seen.add(mapped)
+            slugs.append(mapped)
     return slugs
 
 

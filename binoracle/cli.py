@@ -1423,6 +1423,10 @@ def cmd_cve(args, config):
                 hints["custom_headers"] = _ch
         except (ValueError, TypeError):
             pass
+    if getattr(args, "companion_plugins", None):
+        _slugs = [s.strip() for s in args.companion_plugins.split(",") if s.strip()]
+        if _slugs:
+            hints["companion_plugins"] = _slugs
     if getattr(args, "setup_wp_options", None):
         _parsed_opts = []
         import re as _re
@@ -2576,6 +2580,11 @@ def build_parser() -> argparse.ArgumentParser:
     cv.add_argument("--custom-headers", dest="custom_headers",
                     help="JSON dict of custom HTTP headers the attack needs "
                          '(e.g. \'{"X-Wcpay-Platform-Checkout-User":"1"}\' for CVE-2023-28121)')
+    cv.add_argument("--companion-plugins", dest="companion_plugins",
+                    help="Comma-separated WordPress.org plugin slugs to install BEFORE the main "
+                         "plugin in the lab (e.g. 'woocommerce' for WooCommerce extensions). "
+                         "Auto-detected from source, but needed when the dependency uses "
+                         "function_exists() instead of is_plugin_active().")
     cv.add_argument("--setup-wp-option", action="append", dest="setup_wp_options",
                     metavar="OPTION=VALUE or OPTION[KEY]=VALUE",
                     help="set a WordPress option before the SQLi test (repeatable). "
