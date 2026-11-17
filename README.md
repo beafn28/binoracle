@@ -25,13 +25,16 @@
 ## Install
 
 ```bash
-pip install binoracle
+pip install binoracle[screenshots]        # includes Playwright for HTML report screenshots
+playwright install chromium               # required: downloads browser for screenshot capture
 curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5-coder:7b
 
 export BINORACLE_BACKEND=openai
 export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 ```
+
+> **Without `playwright install chromium`** the CVE pipeline runs and verifies vulnerabilities normally, but HTML reports will have no visual screenshots at each step.
 
 ---
 
@@ -268,8 +271,8 @@ export BINORACLE_LANG=en    # default: es
 pip install binoracle[elf]         # pyelftools extras
 pip install binoracle[pwn]         # pwntools + ROPgadget
 pip install binoracle[symbolic]    # angr
-pip install binoracle[screenshots] # Playwright
-pip install binoracle[all]         # everything
+pip install binoracle[screenshots] # Playwright — also run: playwright install chromium
+pip install binoracle[all]         # everything — also run: playwright install chromium
 ```
 
 **System requirements**

