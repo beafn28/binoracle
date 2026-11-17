@@ -3911,9 +3911,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # CUARTA forma: header-based auth bypass (p.ej. CVE-2023-28121 WooCommerce
                 # Payments: cabecera X-Wcpay-Platform-Checkout-User: 1 autentica como admin
                 # sin credenciales). Se dispara cuando el LLM identifica custom_headers en
-                # lugar de parametros ID/email/pass.
+                # lugar de parametros ID/email/pass, O cuando el analista los pasa con
+                # --custom-headers. Corre incluso si login-as ya intento y fallo (wr no None
+                # pero wr.verified False), porque el mecanismo es completamente distinto.
                 _custom_headers = notes.get("custom_headers")
-                if wr is None and _custom_headers and isinstance(_custom_headers, dict):
+                if _custom_headers and isinstance(_custom_headers, dict) and not (wr and wr.verified):
                     from .wpverify import verify_wordpress_header_auth_bypass
                     step(("intentando verificacion DINAMICA -- header-based auth bypass "
                          "(WordPress+MySQL efimero en Docker)..." if es else
