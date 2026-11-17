@@ -395,7 +395,15 @@ _RESEARCH_SYS = (
     "dpkg -i sudo_*.deb || true\\n"
     "RUN echo \"ALL ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers'; "
     "usar dockerfile_body en lugar de docker_image para binarios del sistema), "
-    "strategy (una frase), steps (lista de pasos concretos). "
+    "strategy (una frase), steps (lista de pasos concretos), "
+    "stored_xss_view_path (SOLO para XSS ALMACENADO en WordPress: la ruta del panel de admin "
+    "donde el admin VERA el payload inyectado por el atacante -- p.ej. "
+    "'/wp-admin/edit-comments.php' si el XSS es en comentarios, "
+    "'/wp-admin/admin.php?page=nombre-del-plugin' si es en la pagina del plugin en el panel, "
+    "'/wp-admin/users.php' si es en la lista de usuarios, "
+    "'/wp-admin/edit.php' si es en la lista de entradas/formularios; "
+    "SOLO cuando el payload inyectado NO se renderiza en la misma respuesta del endpoint de "
+    "inyeccion sino que lo ve el admin en OTRA visita; vacio si es XSS reflejado o si no sabes). "
     "Se tecnico y breve; deja vacio lo que no sepas."
 )
 
@@ -4724,11 +4732,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(WordPress+MySQL efimero en Docker)..." if es else
                      "attempting DYNAMIC verification -- real headless-browser execution "
                      "(ephemeral WordPress+MySQL in Docker)..."))
+                _stored_view = str(notes.get("stored_xss_view_path") or "").strip()
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
                                           companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
-                                          keep_lab_on_failure=keep_lab_on_failure)
+                                          keep_lab_on_failure=keep_lab_on_failure,
+                                          stored_xss_view_path=_stored_view)
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):
@@ -4741,7 +4751,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                         keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(xss_wp_extra_nonce_pages),
-                        extra_setup_trigger_paths=list(xss_wp_extra_setup_trigger_paths))
+                        extra_setup_trigger_paths=list(xss_wp_extra_setup_trigger_paths),
+                        stored_xss_view_path=_stored_view)
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
