@@ -4648,6 +4648,28 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "ssrf" and notes.get("endpoint")):
+                # SSRF hook: escaner deterministico para encontrar la accion AJAX correcta
+                # (el LLM frecuentemente propone una accion erronea para SSRF porque la
+                # descripcion de la CVE no menciona el nombre exacto del action). Este escaner
+                # busca calls a wp_remote_get/wp_remote_post/etc. con un parametro de $_GET/POST
+                # y anula el endpoint del LLM si encuentra algo mejor.
+                if fr.local_path:
+                    from .websource import find_ajax_action_for_ssrf as _ssrf_scan
+                    _ssrf_code_hit = _ssrf_scan(fr.local_path)
+                    if _ssrf_code_hit:
+                        _ssrf_act = _ssrf_code_hit["action"]
+                        _ssrf_p = _ssrf_code_hit["url_param"]
+                        _ssrf_ep_new = f"/wp-admin/admin-ajax.php?action={_ssrf_act}"
+                        step((f"escaner deterministico (SSRF, pre-verificacion): "
+                              f"overriding endpoint -> '{_ssrf_act}' (url_param='{_ssrf_p}') "
+                              f"a partir de wp_remote_get en {_ssrf_code_hit['location']}") if es else
+                             (f"deterministic SSRF pre-scan: overriding endpoint -> '{_ssrf_act}' "
+                              f"(url_param='{_ssrf_p}') from wp_remote_get at "
+                              f"{_ssrf_code_hit['location']}"))
+                        notes["endpoint"] = _ssrf_ep_new
+                        notes["ajax_action"] = _ssrf_act
+                        notes["http_method"] = "POST"
+                        notes["url_param"] = _ssrf_p
                 from .wpverify import verify_wordpress_ssrf, _pick_param, _URL_HINTS
                 params = notes.get("parameters") or []
                 url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
