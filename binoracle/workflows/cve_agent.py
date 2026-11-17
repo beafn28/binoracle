@@ -622,6 +622,7 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                              technique_label: str = "", max_attempts: int = _RETRY_MAX_ATTEMPTS,
                              on_suggestion: Optional[Callable[[dict], None]] = None,
                              ere_nonce_pages: Optional[List[str]] = None,
+                             lock_endpoint: bool = False,
                              ) -> Any:
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
@@ -638,7 +639,8 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     llamada suele usarlo para mutar una lista en su propio scope que su `attempt_fn` ya captura por
     closure, en vez de ampliar la firma de endpoint/param (que SI cambiaria los ~20 sitios donde ya
     se usa este bucle). Nunca lanza si `on_suggestion` falla -- un fallo ahi no debe tirar abajo un
-    reintento que de otro modo iria bien."""
+    reintento que de otro modo iria bien. `lock_endpoint=True` preserva el endpoint del analista
+    entre reintentos -- el LLM solo puede cambiar el parametro, no la ruta base."""
     retry_endpoint, retry_param = endpoint, param
     for attempt_n in range(1, max_attempts):
         if wr.verified or not wr.available:
@@ -683,7 +685,8 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                 on_suggestion(suggestion)
             except Exception:
                 pass
-        retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
+        if not lock_endpoint:
+            retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
         retry_param = suggestion.get("parametro_alternativo") or retry_param
         step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/{max_attempts}) y "
              f"sugiere reintentar con endpoint={retry_endpoint!r} parametro={retry_param!r} -- "
@@ -4211,7 +4214,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_drupal, wr, notes.get("endpoint"), sqli_p,
-                    technique_label="SQLi Drupal", max_attempts=_SQLI_RETRY_MAX_ATTEMPTS)
+                    technique_label="SQLi Drupal", max_attempts=_SQLI_RETRY_MAX_ATTEMPTS,
+                    lock_endpoint=bool(notes.get("analyst_endpoint_lock")))
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
             # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
@@ -4333,7 +4337,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
                         max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
-                        ere_nonce_pages=extra_nonce_pages))
+                        ere_nonce_pages=extra_nonce_pages,
+                        lock_endpoint=bool(notes.get("analyst_endpoint_lock"))))
                 # Teardown the persistent lab now that all retries are done.
                 # _lab_ref[0] is the _Lab object; _boot_ref[0] is the _LabSession.
                 # If the first attempt failed before bootstrap, refs are empty — no-op.

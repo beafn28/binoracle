@@ -1408,6 +1408,7 @@ def cmd_cve(args, config):
         hints["source_url"] = args.source
     if getattr(args, "endpoint", None):
         hints["endpoint"] = args.endpoint
+        hints["analyst_endpoint_lock"] = True
     if getattr(args, "method", None):
         hints["http_method"] = args.method
     if getattr(args, "params", None):
@@ -1770,6 +1771,7 @@ def cmd_investigate(args, config):
         hints["affected_version"] = args.version
     if getattr(args, "endpoint", None):
         hints["endpoint"] = args.endpoint
+        hints["analyst_endpoint_lock"] = True
     if getattr(args, "method", None):
         hints["http_method"] = args.method
     if getattr(args, "params", None):
