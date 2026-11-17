@@ -1605,3 +1605,189 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
     if bypass_fragment:
         result["bypass_fragment"] = bypass_fragment
     return result
+
+
+def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
+    """Busca un par injection-point/view-path de XSS almacenado de forma deterministica:
+
+    Paso 1 — Injection point: accion AJAX sin restriccion de privilegio (wp_ajax_nopriv_X
+    o wp_ajax_ registrada y abierta a suscriptores) que pasa $_POST['param'] a
+    $wpdb->insert() o $wpdb->update() sin sanitize_text_field / esc_sql / intval.
+
+    Paso 2 — View path: pagina de admin PHP en el mismo plugin (add_menu_page /
+    add_submenu_page o fichero en admin/) que hace SELECT sobre la misma tabla y
+    hace echo/print del resultado sin esc_html / esc_attr.
+
+    Devuelve {"inject_action", "inject_param", "view_path", "table_hint"} o None.
+    """
+    if not local_path or not os.path.isdir(local_path):
+        return None
+
+    _MAX_FILES = 6000
+    _MAX_BYTES = 500_000
+
+    # -- Patrones injection side --
+    # registro de accion AJAX
+    _AJAX_REG_RE = re.compile(
+        r"add_action\s*\(\s*['\"]wp_ajax_(?:nopriv_)?(\w+)['\"]"
+    )
+    # lectura POST sin sanitizar
+    _POST_READ_RE = re.compile(
+        r"\$_(?:POST|REQUEST)\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+    )
+    # insercion en BD
+    _WPDB_WRITE_RE = re.compile(
+        r"\$wpdb\s*->\s*(?:insert|update|query)\s*\("
+    )
+    # sanitizacion
+    _SANITIZE_RE = re.compile(
+        r"\b(?:sanitize_text_field|sanitize_textarea_field|esc_sql|intval|absint"
+        r"|wp_kses|wp_kses_post|strip_tags|htmlspecialchars)\s*\("
+    )
+    # nombre de tabla heuristica ($wpdb->prefix.'tabla' o tabla directa)
+    _TABLE_NAME_RE = re.compile(
+        r"""\$wpdb\s*->\s*(?:prefix\s*\.\s*)?['"]([\w]{3,40})['"]"""
+        r"""|""" r"""\$wpdb\s*->\s*(?:insert|update)\s*\(\s*\$(?:wpdb\s*->\s*prefix\s*\.\s*)?['\"]?([\w_]{3,40})['\"]?"""
+    )
+
+    # -- Patrones view side --
+    # registro de pagina de admin
+    _MENU_PAGE_RE = re.compile(
+        r"add_(?:menu|submenu)_page\s*\([^;]{0,400}['\"]([A-Za-z0-9_\-]+/[^'\"]{1,100}\.(php))['\"]"
+        r"|['\"]page=([A-Za-z0-9_\-]+)['\"]"
+    )
+    # echo/print sin escapar (heuristica: echo $row o echo $result sin esc_)
+    _UNSAFE_ECHO_RE = re.compile(
+        r"\becho\b[^;]{0,80}\$(?:row|result|data|entry|item|record)\b"
+        r"|\bprint\b[^;]{0,80}\$(?:row|result|data|entry|item|record)\b"
+    )
+    # get_results / query de lectura
+    _SELECT_RE = re.compile(r"\$wpdb\s*->\s*(?:get_results|get_row|query)\s*\(")
+
+    all_texts: dict = {}
+    action_positions: list = []  # (action, fp)
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(local_path):
+        for fn in sorted(files):
+            if not fn.lower().endswith(".php"):
+                continue
+            scanned += 1
+            if scanned > _MAX_FILES:
+                break
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_BYTES)
+            except OSError:
+                continue
+            all_texts[fp] = text
+            for m in _AJAX_REG_RE.finditer(text):
+                action_positions.append((m.group(1), fp))
+
+    if not action_positions:
+        return None
+
+    # Paso 1: buscar action que hace db-write con POST sin sanitizar
+    best_inject: Optional[dict] = None
+    for action, fp in action_positions:
+        text = all_texts[fp]
+        # Encontrar inicio del handler para esta accion (dentro de ~5000 chars)
+        for arm in re.finditer(re.escape(action), text):
+            pos = arm.start()
+            # Buscar la funcion handler cerca (600 chars despues)
+            handler_window = text[pos: pos + 600]
+            func_m = re.search(r"['\"]([A-Za-z0-9_]+)['\"\s]*\)", handler_window)
+            if not func_m:
+                continue
+            func_name = func_m.group(1)
+            # Buscar el body de la funcion
+            func_re = re.compile(
+                rf"function\s+{re.escape(func_name)}\s*\([^)]*\)\s*\{{", re.DOTALL
+            )
+            func_def = func_re.search(text)
+            if func_def is None:
+                # buscar en otros ficheros del plugin
+                for ofp, otext in all_texts.items():
+                    func_def2 = func_re.search(otext)
+                    if func_def2:
+                        func_body_text = otext
+                        func_body_start = func_def2.end()
+                        break
+                else:
+                    continue
+                func_body_end = func_body_start + 3000
+                func_body = func_body_text[func_body_start:func_body_end]
+            else:
+                func_body_start = func_def.end()
+                func_body = text[func_body_start: func_body_start + 3000]
+
+            # ¿hace db-write?
+            if not _WPDB_WRITE_RE.search(func_body):
+                continue
+            # ¿sin sanitizacion inmediata?
+            if _SANITIZE_RE.search(func_body):
+                continue
+            # ¿lee POST?
+            post_params = _POST_READ_RE.findall(func_body)
+            if not post_params:
+                continue
+            # coger la primera tabla mencionada
+            table_m = _TABLE_NAME_RE.search(func_body)
+            table_hint = table_m.group(1) or table_m.group(2) if table_m else ""
+            best_inject = {
+                "action": action,
+                "inject_param": post_params[0],
+                "table_hint": table_hint,
+                "fp": fp,
+            }
+            break
+        if best_inject:
+            break
+
+    if best_inject is None:
+        return None
+
+    # Paso 2: buscar pagina admin que muestra esa tabla sin escapar
+    table_hint = best_inject["table_hint"]
+    view_path: str = ""
+    for fp, text in all_texts.items():
+        # paginas admin: ficheros en admin/ o que tengan add_menu_page
+        is_admin = ("admin" in fp.lower() or "dashboard" in fp.lower()
+                    or "page" in fp.lower() or "entries" in fp.lower()
+                    or bool(re.search(r"add_(?:menu|submenu)_page\s*\(", text)))
+        if not is_admin:
+            continue
+        # tiene SELECT
+        if not _SELECT_RE.search(text):
+            continue
+        # tiene echo sin esc_ (heuristica)
+        if not _UNSAFE_ECHO_RE.search(text):
+            if not re.search(r"\becho\b[^;]{0,60}\$row\b|\becho\b[^;]{0,60}\$item\b", text):
+                continue
+        # intenta extraer page slug del menu registration
+        slug_m = re.search(
+            r"add_(?:menu|submenu)_page\s*\([^;]{5,400}?['\"]([A-Za-z0-9_\-]{3,60})['\"]",
+            text
+        )
+        if slug_m:
+            page_slug = slug_m.group(1)
+            view_path = f"/wp-admin/admin.php?page={page_slug}"
+        else:
+            # fallback: nombre del fichero como view_path
+            rel = os.path.relpath(fp, local_path)
+            if "admin" in rel.lower():
+                # e.g. give/includes/admin/entries.php -> /wp-admin/admin.php?page=give-entries
+                view_path = f"/wp-admin/admin.php?page=plugin-entries"
+        if view_path:
+            break
+
+    if not view_path:
+        # fallback generico: edit-comments o dashboard
+        view_path = "/wp-admin/edit.php"
+
+    return {
+        "inject_action": best_inject["action"],
+        "inject_param": best_inject["inject_param"],
+        "table_hint": best_inject["table_hint"],
+        "view_path": view_path,
+    }
