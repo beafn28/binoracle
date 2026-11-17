@@ -339,6 +339,9 @@ _RESEARCH_SYS = (
     "WordPress no enruta la peticion a ningun manejador y la vulnerabilidad nunca se alcanza, "
     "sea cual sea el resto del payload), parameters (lista de parametros relevantes DISTINTOS de "
     "'action', que ya va en el endpoint), auth_required (true/false/rol minimo), "
+    "custom_headers (dict de cabeceras HTTP adicionales que el ataque necesita enviar, p.ej. "
+    "{'X-Wcpay-Platform-Checkout-User': '1'} para un bypass de autenticacion via cabecera HTTP "
+    "como CVE-2023-28121 WooCommerce Payments; vacio si el ataque solo usa parametros normales), "
     "docker_image (para CVEs en BINARIOS NATIVOS del sistema -sudo, bash, openssl, curl...- "
     "pon la imagen Docker que tiene ese binario a la version vulnerable, p.ej. "
     "'ubuntu:focal-20210119' para sudo 1.8.31 (CVE-2021-3156), "
@@ -3895,14 +3898,33 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _attempt_lia, wr, notes.get("endpoint"), id_p,
                             technique_label="direct login-as WordPress",
                             on_suggestion=_on_lia_suggestion))
+                # CUARTA forma: header-based auth bypass (p.ej. CVE-2023-28121 WooCommerce
+                # Payments: cabecera X-Wcpay-Platform-Checkout-User: 1 autentica como admin
+                # sin credenciales). Se dispara cuando el LLM identifica custom_headers en
+                # lugar de parametros ID/email/pass.
+                _custom_headers = notes.get("custom_headers")
+                if wr is None and _custom_headers and isinstance(_custom_headers, dict):
+                    from .wpverify import verify_wordpress_header_auth_bypass
+                    step(("intentando verificacion DINAMICA -- header-based auth bypass "
+                         "(WordPress+MySQL efimero en Docker)..." if es else
+                         "attempting DYNAMIC verification -- header-based auth bypass "
+                         "(ephemeral WordPress+MySQL in Docker)..."))
+                    wr = verify_wordpress_header_auth_bypass(
+                        fr.local_path, plugin_dir, notes.get("endpoint"),
+                        notes.get("http_method") or "GET", _custom_headers,
+                        on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
+                        shortcode_name=shortcode_name_generic,
+                        keep_lab_on_failure=keep_lab_on_failure)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
-                                         "reconocible; afina 'parameters' en la hipotesis del LLM "
-                                         "o pasalos a mano" if es else
+                                         "reconocible ni custom_headers; afina 'parameters' o "
+                                         "'custom_headers' en la hipotesis del LLM o pasalos "
+                                         "a mano" if es else
                                          "dynamic verification not attempted: the hypothesis has "
                                          "neither a recognizable email/password parameter nor an "
-                                         "ID one; refine 'parameters' in the LLM hypothesis or "
+                                         "ID one nor custom_headers; refine 'parameters' or "
+                                         "'custom_headers' in the LLM hypothesis or "
                                          "pass them by hand"))
                 else:
                     inv.dynamic_verify = {"attempted": True, "available": wr.available,
@@ -5487,12 +5509,89 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             step(("VERIFICADO en contenedor Docker: binario nativo vulnerable." if es else
                   "VERIFIED in Docker container: vulnerable native binary."))
         else:
-            inv.blockers.append((f"verificacion dinamica (Docker binary) no confirmada: "
-                                 f"{bvr.detail}" if es else
+            # AUTO-FALLBACK A DOCKERFILE cuando exit 127 indica que el binario no esta en la
+            # imagen base. Pide al LLM un dockerfile_body que instale la version vulnerable
+            # exacta (p.ej. sudo 1.8.31-1ubuntu1 para CVE-2021-3156) y reintenta con el.
+            _exit_127 = bvr.evidence.get("exit_code") == 127
+            if _exit_127 and llm_on and llm is not None and getattr(llm, "available", lambda: False)():
+                step(("exit 127 -- el binario no esta en la imagen base; pidiendo al LLM que "
+                     "genere un Dockerfile con la version vulnerable instalada..." if es else
+                     "exit 127 -- binary not in base image; asking LLM for a Dockerfile that "
+                     "installs the vulnerable version..."))
+                _dockerfile_retry_prompt = (
+                    f"El PoC para {cve_id} en la imagen Docker '{_docker_img}' fallo con "
+                    f"exit 127 porque el binario objetivo no esta instalado en esa imagen. "
+                    f"Genera un dockerfile_body completo (empezando por FROM {_docker_img}) "
+                    f"que instale la version ESPECIFICA VULNERABLE del binario objetivo usando "
+                    f"wget + dpkg -i de los archivos .deb del pool de Ubuntu/Debian para esa "
+                    f"version exacta. No uses apt-get install sin especificar version; "
+                    f"descarga el .deb especifico del pool. Devuelve SOLO JSON con la clave "
+                    f"'dockerfile_body' con el contenido completo del Dockerfile como string."
+                )
+                from ..llm.base import Message
+                try:
+                    _raw_df = llm.chat(
+                        [Message("system", _RESEARCH_SYS),
+                         Message("user", _dockerfile_retry_prompt)],
+                        json_mode=True)
+                    _df_data = json.loads(_raw_df)
+                    _new_dockerfile = (_df_data.get("dockerfile_body") or "").strip()
+                    if _new_dockerfile and _new_dockerfile.lower().startswith("from"):
+                        step(("Dockerfile generado por el LLM -- reintentando verificacion..." if es
+                              else "Dockerfile generated by LLM -- retrying verification..."))
+                        from .binaryverify import verify_binary_crash_via_dockerfile
+                        bvr2 = verify_binary_crash_via_dockerfile(
+                            dockerfile_body=_new_dockerfile,
+                            poc_cmd=_poc_cmd,
+                            crash_patterns=_crash_pats,
+                            patched_patterns=_patched_pats,
+                            timeout_means_vulnerable=_tmv,
+                            on_step=step,
+                            budget_s=budget_s,
+                        )
+                        inv.verified_evidence = bvr2.evidence
+                        if bvr2.verified:
+                            inv.verified = True
+                            inv.verified_detail = bvr2.detail
+                            step(("VERIFICADO (Dockerfile LLM-fallback): binario nativo "
+                                  "vulnerable." if es else
+                                  "VERIFIED (LLM-fallback Dockerfile): vulnerable native "
+                                  "binary."))
+                            # no anyadir bloqueadores si se confirmo en el reintento
+                        else:
+                            inv.blockers.append(
+                                (f"verificacion dinamica (Docker binary) no confirmada: "
+                                 f"{bvr.detail}; reintento con Dockerfile LLM tambien fallo: "
+                                 f"{bvr2.detail}" if es else
                                  f"dynamic verification (Docker binary) not confirmed: "
-                                 f"{bvr.detail}"))
-            for lim in bvr.limitations:
-                inv.blockers.append(lim)
+                                 f"{bvr.detail}; LLM-Dockerfile retry also failed: "
+                                 f"{bvr2.detail}"))
+                            for lim in bvr2.limitations:
+                                inv.blockers.append(lim)
+                    else:
+                        inv.blockers.append(
+                            (f"verificacion dinamica (Docker binary) no confirmada: "
+                             f"{bvr.detail}; LLM no genero un Dockerfile valido para "
+                             f"el reintento" if es else
+                             f"dynamic verification (Docker binary) not confirmed: "
+                             f"{bvr.detail}; LLM did not produce a valid Dockerfile for "
+                             f"the retry"))
+                except Exception:
+                    inv.blockers.append(
+                        (f"verificacion dinamica (Docker binary) no confirmada: "
+                         f"{bvr.detail}" if es else
+                         f"dynamic verification (Docker binary) not confirmed: "
+                         f"{bvr.detail}"))
+                    for lim in bvr.limitations:
+                        inv.blockers.append(lim)
+            else:
+                inv.blockers.append(
+                    (f"verificacion dinamica (Docker binary) no confirmada: "
+                     f"{bvr.detail}" if es else
+                     f"dynamic verification (Docker binary) not confirmed: "
+                     f"{bvr.detail}"))
+                for lim in bvr.limitations:
+                    inv.blockers.append(lim)
 
     if has_bin:
         # 4a) AUTO-FUZZING: descubre dinamicamente el disparador (stdin/argv/format-string)
