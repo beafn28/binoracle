@@ -3520,6 +3520,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         # en WordPress, escanear el plugin en busca de acciones AJAX que usen
                         # parametros DataTables comunes (order, start, etc.) y construir el
                         # endpoint determinista. Cubre el caso 'error-log-viewer-wp' sin Ollama.
+                        if inv.vuln_class == "ssrf":
+                            from .websource import find_ajax_action_for_ssrf
+                            _ssrf_det = find_ajax_action_for_ssrf(fr.local_path)
+                            if _ssrf_det:
+                                _ssrf_action = _ssrf_det["action"]
+                                _ssrf_param = _ssrf_det["url_param"]
+                                step((f"escaner determinista (SSRF) encontro accion AJAX: "
+                                      f"'{_ssrf_action}' (parametro URL '{_ssrf_param}') -- "
+                                      f"construyendo endpoint...") if es else
+                                     (f"deterministic SSRF scan found AJAX action: "
+                                      f"'{_ssrf_action}' (url param '{_ssrf_param}') -- "
+                                      f"building endpoint..."))
+                                _ssrf_ep = f"/wp-admin/admin-ajax.php?action={_ssrf_action}"
+                                notes["endpoint"] = _ssrf_ep
+                                notes["ajax_action"] = _ssrf_action
+                                notes["http_method"] = "POST"
+                                notes["url_param"] = _ssrf_param
+                                inv.llm_notes["endpoint"] = _ssrf_ep
+                                inv.llm_notes["ajax_action"] = _ssrf_action
+                                inv.llm_notes["http_method"] = "POST"
+                                inv.llm_notes["url_param"] = _ssrf_param
+                                from .websource import find_ajax_handler_function
+                                _ssrf_rec = find_ajax_handler_function(fr.local_path, _ssrf_action)
+                                if _ssrf_rec:
+                                    inv.source_grounding["found"] = {
+                                        _ssrf_rec["function"]: [_ssrf_rec["location"]]}
+                                    step((f"handler SSRF: '{_ssrf_rec['function']}' en "
+                                          f"{_ssrf_rec['location']}") if es else
+                                         (f"SSRF handler: '{_ssrf_rec['function']}' at "
+                                          f"{_ssrf_rec['location']}"))
                         if inv.vuln_class in ("sqli", "sql-injection"):
                             from .websource import find_all_ajax_actions, find_ajax_action_for_param
                             _pts_det = ["order", "start", "length", "draw", "search",
