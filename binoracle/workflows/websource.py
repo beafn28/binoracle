@@ -349,7 +349,22 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
     else:
         url = info.get("download_link") or _WP_DOWNLOAD_LATEST.format(slug=slug)
         res.resolved_version = info.get("version", "")
-    return _download_wp_zip(slug, url, res.resolved_version, dest_dir, step, timeout, res)
+    r = _download_wp_zip(slug, url, res.resolved_version, dest_dir, step, timeout, res)
+    # Fallback: si se pidio una version concreta (que el LLM puede haber alucinado) y la URL
+    # versionada 404, intenta con la ultima estable de la API -- al menos el motor tendra codigo
+    # real para analizar aunque no sea exactamente la version vulnerable. Confirmado en vivo con
+    # varios CVEs donde el LLM da un numero de version que nunca existio en wordpress.org.
+    if not r.ok and version and res.resolved_version:
+        latest_url = info.get("download_link") or _WP_DOWNLOAD_LATEST.format(slug=slug)
+        latest_ver = info.get("version", "")
+        if latest_url != url:
+            step(f"version '{version}' no descargable -- probando la ultima estable ({latest_ver}) "
+                 f"como alternativa para analizar el codigo real...")
+            r2 = _download_wp_zip(slug, latest_url, latest_ver, dest_dir, step, timeout,
+                                   SourceFetchResult(kind="wordpress-plugin", source=slug))
+            if r2.ok:
+                return r2
+    return r
 
 
 def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, step,
