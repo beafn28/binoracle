@@ -308,6 +308,23 @@ footer a { color: var(--acc); text-decoration: none; }
 
     <div class="cve-card">
       <div class="cve-card-header">
+        <span class="cve-card-title">CVE-2025-24670</span>
+        <div class="cve-card-badges">
+          <span class="badge badge-verified">★ verified</span>
+          <span class="badge badge-high">CVSS 7.1</span>
+        </div>
+      </div>
+      <p class="cve-card-desc"><strong>Ninja Forms</strong> — boolean in-band SQLi via the <code>term_id</code> parameter. The engine confirmed a consistent 18-byte response differential between the TRUE and FALSE payloads, demonstrating that the value reaches the SQL engine unsanitised.</p>
+      <div class="cve-meta">
+        <span><strong>Technique:</strong> boolean in-band</span>
+        <span><strong>Auth:</strong> admin</span>
+        <span><strong>Endpoint:</strong> <code>POST /wp-admin/admin.php</code></span>
+        <span><strong>Payload:</strong> <code>term_id=1' OR '1'='1</code> → 20B vs 2B</span>
+      </div>
+    </div>
+
+    <div class="cve-card">
+      <div class="cve-card-header">
         <span class="cve-card-title">CVE-2023-23488</span>
         <div class="cve-card-badges">
           <span class="badge badge-verified">★ verified</span>

