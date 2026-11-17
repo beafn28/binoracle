@@ -1503,7 +1503,7 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
         r"|wp_remote_request|curl_exec|file_get_contents)\s*\(\s*\$(\w+)"
     )
 
-    best: Optional[tuple] = None  # (action, url_param, fp, line_no, url_score)
+    best: Optional[tuple] = None  # (action, url_param, fp, line_no, url_score, fetch_char_pos)
     for fp, text in all_texts.items():
         fetch_matches = list(_FETCH_RE.finditer(text))
         if not fetch_matches:
@@ -1534,7 +1534,7 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
                     containing_action = action_positions[0][0]
                 if best is None or url_score > best[4]:
                     line_no = text.count("\n", 0, fm.start()) + 1
-                    best = (containing_action, pname, fp, line_no, url_score)
+                    best = (containing_action, pname, fp, line_no, url_score, fm.start())
 
         # --- paso 2: taint a nivel de fichero: $var = $_POST[key] ... fetch($var) ---
         # une el nombre de variable para encontrar chains mas largas no captadas por la ventana
@@ -1569,13 +1569,39 @@ def find_ajax_action_for_ssrf(local_path: str) -> Optional[dict]:
                     if containing_action is None and action_positions:
                         containing_action = action_positions[0][0]
                     line_no = text.count("\n", 0, fetch_pos) + 1
-                    best = (containing_action, key, fp, line_no, url_score)
+                    best = (containing_action, key, fp, line_no, url_score, fetch_pos)
 
     if best is None:
         return None
-    action, url_param, fp, line_no, _score = best
-    return {
+    action, url_param, fp, line_no, _score, _fetch_char_pos = best
+
+    # Detectar bypass de fragmento URL: si hay un preg_match cercano al fetch que filtra
+    # la URL a un patron especifico, se puede hacer bypass con un fragmento URL
+    # (#fragment es ignorado por wp_remote_get pero si aparece en la cadena evaluada por
+    # el regex -- util cuando el regex no tiene ancla inicial y acepta el patron en cualquier
+    # posicion de la cadena).
+    bypass_fragment: str = ""
+    _PREG_RE = re.compile(r"preg_match\s*\(\s*['\"]([^'\"]{10,300})['\"]", re.DOTALL)
+    best_text = all_texts.get(fp, "")
+    # buscar preg_match en las 1500 chars alrededor del fetch donde se encontro el mejor hit
+    _search_start = max(0, _fetch_char_pos - 1500)
+    _search_end = min(len(best_text), _fetch_char_pos + 1500)
+    for preg_m in _PREG_RE.finditer(best_text[_search_start:_search_end]):
+        pat = preg_m.group(1).lstrip("^").rstrip("$^").strip()
+        # extraer prefijo URL (hasta el primer wildcard) y sufijo literal (despues del ultimo)
+        parts = re.split(r"\(\.\*\??\)", pat)
+        if len(parts) >= 2:
+            prefix = parts[0].lstrip("^")          # e.g. "https://givewp.com/downloads/plugins/"
+            suffix = parts[-1].rstrip("$^").strip() # e.g. "/readme.txt"
+            if prefix.startswith("http") and suffix:
+                bypass_fragment = f"#{prefix}evil{suffix}"
+                break
+
+    result: dict = {
         "action": action,
         "url_param": url_param,
         "location": f"{os.path.relpath(fp, local_path)}:{line_no}",
     }
+    if bypass_fragment:
+        result["bypass_fragment"] = bypass_fragment
+    return result

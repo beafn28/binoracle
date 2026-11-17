@@ -4653,6 +4653,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # descripcion de la CVE no menciona el nombre exacto del action). Este escaner
                 # busca calls a wp_remote_get/wp_remote_post/etc. con un parametro de $_GET/POST
                 # y anula el endpoint del LLM si encuentra algo mejor.
+                _ssrf_bypass_fragment: str = ""
                 if fr.local_path:
                     from .websource import find_ajax_action_for_ssrf as _ssrf_scan
                     _ssrf_code_hit = _ssrf_scan(fr.local_path)
@@ -4660,12 +4661,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _ssrf_act = _ssrf_code_hit["action"]
                         _ssrf_p = _ssrf_code_hit["url_param"]
                         _ssrf_ep_new = f"/wp-admin/admin-ajax.php?action={_ssrf_act}"
+                        _ssrf_bypass_fragment = _ssrf_code_hit.get("bypass_fragment", "")
+                        _bypass_note = (f" (bypass_fragment={_ssrf_bypass_fragment!r})"
+                                        if _ssrf_bypass_fragment else "")
                         step((f"escaner deterministico (SSRF, pre-verificacion): "
-                              f"overriding endpoint -> '{_ssrf_act}' (url_param='{_ssrf_p}') "
-                              f"a partir de wp_remote_get en {_ssrf_code_hit['location']}") if es else
+                              f"overriding endpoint -> '{_ssrf_act}' (url_param='{_ssrf_p}')"
+                              f"{_bypass_note}") if es else
                              (f"deterministic SSRF pre-scan: overriding endpoint -> '{_ssrf_act}' "
-                              f"(url_param='{_ssrf_p}') from wp_remote_get at "
-                              f"{_ssrf_code_hit['location']}"))
+                              f"(url_param='{_ssrf_p}'){_bypass_note}"))
                         notes["endpoint"] = _ssrf_ep_new
                         notes["ajax_action"] = _ssrf_act
                         notes["http_method"] = "POST"
@@ -4682,7 +4685,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     notes.get("http_method") or "GET", params,
                     url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
                     companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
-                    keep_lab_on_failure=keep_lab_on_failure)
+                    keep_lab_on_failure=keep_lab_on_failure,
+                    url_bypass_fragment=_ssrf_bypass_fragment)
                 ssrf_wp_extra_nonce_pages: List[str] = []
                 ssrf_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_ssrf_wp_suggestion(sug):
