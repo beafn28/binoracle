@@ -343,11 +343,11 @@ _RESEARCH_SYS = (
     "{'X-Wcpay-Platform-Checkout-User': '1'} para un bypass de autenticacion via cabecera HTTP "
     "como CVE-2023-28121 WooCommerce Payments; vacio si el ataque solo usa parametros normales), "
     "docker_image (para CVEs en BINARIOS NATIVOS del sistema -sudo, bash, openssl, curl...- "
-    "pon la imagen Docker que tiene ese binario a la version vulnerable, p.ej. "
-    "'ubuntu:focal-20210119' para sudo 1.8.31 (CVE-2021-3156), "
-    "'ubuntu:focal-20220302' para OpenSSL 1.1.1f (CVE-2022-0778), "
-    "'curlimages/curl:7.83.1' para curl 7.83.1 (CVE-2022-32206); "
-    "si no sabes la imagen exacta con la version vulnerable pre-instalada deja vacio), "
+    "pon la imagen Docker Hub OFICIAL que tiene ese binario a la version vulnerable PRE-INSTALADO; "
+    "SOLO si conoces una imagen real que ya lo incluye: p.ej. 'curlimages/curl:7.83.1' para curl, "
+    "'debian:buster-20200803' para ssh/bash vulnerables de Buster; "
+    "las imagenes ubuntu:focal-* NO tienen sudo ni openssl pre-instalados, NO uses docker_image "
+    "para sudo/openssl -- usa dockerfile_body en su lugar; deja vacio si no existe imagen Hub real), "
     "poc_cmd (para CVEs en binarios nativos: comando de shell EXACTO que reproduce el bug "
     "en el contenedor Docker, p.ej. "
     "'sudoedit -s \"\\\\\\\\\" \"$(python3 -c \\'print(chr(65)*65536)\\')\"' para CVE-2021-3156; "
@@ -362,17 +362,27 @@ _RESEARCH_SYS = (
     "instalar paquetes, crear ficheros de entrada, configurar el entorno; "
     "solo para CVEs de binarios nativos donde la imagen Docker base no tiene todo pre-instalado), "
     "dockerfile_body (contenido COMPLETO de un Dockerfile para construir la imagen vulnerable "
-    "LOCALMENTE cuando no existe imagen Docker Hub con la version exacta del binario afectado "
-    "o cuando apt-get install descargaria la version parcheada; usar formato multi-linea con \\n; "
-    "DEBE incluir la linea FROM; ejemplo para CVE-2022-0778 con OpenSSL 1.1.1f vulnerable: "
-    "'FROM ubuntu:focal-20220302\\nENV DEBIAN_FRONTEND=noninteractive\\n"
-    "RUN apt-get update -qq && apt-get install -y -qq wget\\n"
+    "LOCALMENTE; usar SIEMPRE para sudo, openssl, bash, zip, zlib u otros binarios del sistema "
+    "donde apt-get install en una imagen moderna daría el parche; usar formato multi-linea con \\n; "
+    "DEBE incluir la linea FROM; "
+    "EJEMPLO para CVE-2022-0778 OpenSSL 1.1.1f (infinite loop, timeout=vulnerable): "
+    "'FROM ubuntu:focal\\nENV DEBIAN_FRONTEND=noninteractive\\n"
+    "RUN apt-get update -qq && apt-get install -y -qq wget python3\\n"
     "RUN ARCH=$(dpkg --print-architecture) && "
     "if [ $ARCH = amd64 ]; then BASE=http://archive.ubuntu.com/ubuntu/pool/main/o/openssl; "
     "else BASE=http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl; fi && "
     "wget -q $BASE/libssl1.1_1.1.1f-1ubuntu2_${ARCH}.deb $BASE/openssl_1.1.1f-1ubuntu2_${ARCH}.deb && "
     "dpkg -i libssl1.1_*.deb openssl_*.deb'; "
-    "usar dockerfile_body en lugar de docker_image cuando la imagen base siempre tiene el parche), "
+    "(el poc_cmd para CVE-2022-0778 debe crear la PEM artesanal con un script Python y luego "
+    "ejecutar openssl verify, con timeout_means_vulnerable=true); "
+    "EJEMPLO para CVE-2021-3156 sudo 1.8.31-1ubuntu1 (heap overflow): "
+    "'FROM ubuntu:focal\\nENV DEBIAN_FRONTEND=noninteractive\\n"
+    "RUN apt-get update -qq && apt-get install -y -qq wget\\n"
+    "RUN ARCH=$(dpkg --print-architecture) && "
+    "wget -q http://archive.ubuntu.com/ubuntu/pool/main/s/sudo/sudo_1.8.31-1ubuntu1_${ARCH}.deb && "
+    "dpkg -i sudo_*.deb || true\\n"
+    "RUN echo \"ALL ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers'; "
+    "usar dockerfile_body en lugar de docker_image para binarios del sistema), "
     "strategy (una frase), steps (lista de pasos concretos). "
     "Se tecnico y breve; deja vacio lo que no sepas."
 )
@@ -5509,24 +5519,37 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             step(("VERIFICADO en contenedor Docker: binario nativo vulnerable." if es else
                   "VERIFIED in Docker container: vulnerable native binary."))
         else:
-            # AUTO-FALLBACK A DOCKERFILE cuando exit 127 indica que el binario no esta en la
-            # imagen base. Pide al LLM un dockerfile_body que instale la version vulnerable
-            # exacta (p.ej. sudo 1.8.31-1ubuntu1 para CVE-2021-3156) y reintenta con el.
+            # AUTO-FALLBACK A DOCKERFILE cuando:
+            #   a) exit 127 (binario no instalado en la imagen base)
+            #   b) el contenedor no pudo arrancar (imagen Docker no existe en Docker Hub --
+            #      p.ej. 'openssl:1.1.1n' no es una imagen Hub real) y necesitamos construir
+            #      la imagen localmente con el binario vulnerable instalado.
             _exit_127 = bvr.evidence.get("exit_code") == 127
-            if _exit_127 and llm_on and llm is not None and getattr(llm, "available", lambda: False)():
-                step(("exit 127 -- el binario no esta en la imagen base; pidiendo al LLM que "
+            _image_not_found = (not bvr.verified and not _exit_127
+                                and bvr.evidence.get("exit_code") is None
+                                and ("no se pudo arrancar" in bvr.detail
+                                     or "Unable to find image" in bvr.detail
+                                     or "pull access denied" in bvr.detail))
+            if (_exit_127 or _image_not_found) and llm_on and llm is not None and getattr(llm, "available", lambda: False)():
+                _reason = ("imagen Docker no existe en Docker Hub" if _image_not_found
+                          else "el binario no esta en la imagen base")
+                step((f"{_reason} -- pidiendo al LLM que "
                      "genere un Dockerfile con la version vulnerable instalada..." if es else
-                     "exit 127 -- binary not in base image; asking LLM for a Dockerfile that "
+                     f"{_reason} -- asking LLM for a Dockerfile that "
                      "installs the vulnerable version..."))
+                _base_from = "ubuntu:focal" if _image_not_found else _docker_img
                 _dockerfile_retry_prompt = (
-                    f"El PoC para {cve_id} en la imagen Docker '{_docker_img}' fallo con "
-                    f"exit 127 porque el binario objetivo no esta instalado en esa imagen. "
-                    f"Genera un dockerfile_body completo (empezando por FROM {_docker_img}) "
+                    f"El PoC para {cve_id} {'con la imagen Docker inexistente' if _image_not_found else f'en la imagen Docker {_docker_img!r}'} "
+                    f"fallo{'porque la imagen no existe en Docker Hub' if _image_not_found else ' con exit 127 porque el binario objetivo no esta instalado'}. "
+                    f"El CVE afecta al binario '{_poc_cmd.split()[0]}'. "
+                    f"Genera un dockerfile_body completo (empezando por FROM {_base_from}) "
                     f"que instale la version ESPECIFICA VULNERABLE del binario objetivo usando "
                     f"wget + dpkg -i de los archivos .deb del pool de Ubuntu/Debian para esa "
-                    f"version exacta. No uses apt-get install sin especificar version; "
-                    f"descarga el .deb especifico del pool. Devuelve SOLO JSON con la clave "
-                    f"'dockerfile_body' con el contenido completo del Dockerfile como string."
+                    f"version exacta. No uses apt-get install sin especificar version exacta; "
+                    f"descarga el .deb especifico del pool de archive.ubuntu.com o ports.ubuntu.com. "
+                    f"El PoC a ejecutar en el contenedor es: '{_poc_cmd}'. "
+                    f"Devuelve SOLO JSON con la clave 'dockerfile_body' con el contenido completo "
+                    f"del Dockerfile como string (sin bloques de codigo, solo el JSON)."
                 )
                 from ..llm.base import Message
                 try:
