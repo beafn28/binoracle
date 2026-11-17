@@ -369,18 +369,23 @@ _REFINE_SYS = (
     "objetivo, vacio si ninguno), email_param (cual es el nuevo email, vacio si ninguno), pass_param "
     "(cual es la nueva password, vacio si ninguno O si el codigo exige la password ACTUAL antes de "
     "aceptar una password nueva -- en ese caso no sirve para un ataque sin credenciales, dejalo vacio "
-    "y el ataque se centra solo en el email), setup_options (lista de objetos {\"name\":..., "
-    "\"value\":...} -- SOLO si el fragmento muestra el codigo vulnerable DENTRO de un condicional "
-    "que depende de una opcion de WordPress/del plugin, p.ej. "
-    "'if ( get_option(\"X\") ) { ...codigo vulnerable... }' o "
-    "'if ( UM()->options()->get(\"X\") ) { ... }' -- en ese caso el ataque NO llega a ese codigo "
-    "con la configuracion de fabrica del plugin, y hay que activar esa opcion ANTES de probarlo; "
-    "'name' es el string EXACTO del nombre de la opcion tal cual aparece en el codigo, 'value' el "
-    "valor que activa esa rama (normalmente '1' para un booleano, pero usa lo que el codigo "
-    "compare de verdad si lo ves, p.ej. comparar contra 'yes' en vez de 1). Lista vacia si no ves "
-    "ningun condicional de este tipo -- no inventes una opcion que no este literalmente en el "
-    "codigo que te doy). Se exacto: un nombre de parametro mal copiado hace que la peticion real "
-    "falle."
+    "y el ataque se centra solo en el email), setup_options (lista de objetos -- SOLO si el "
+    "fragmento muestra el codigo vulnerable DENTRO de un condicional que depende de una opcion "
+    "de WordPress/del plugin, p.ej. 'if ( get_option(\"X\") ) { ...codigo vulnerable... }' o "
+    "'if ( UM()->options()->get(\"X\") ) { ... }' o "
+    "'if ( LP_Settings::get_option(\"X\") !== \"y\" ) { ... }' -- en ese caso el ataque NO llega "
+    "a ese codigo con la configuracion de fabrica del plugin; hay dos formatos de objeto: "
+    "(1) opcion de nivel raiz: {\"name\": \"option_name\", \"value\": \"1\"} -- para opciones que "
+    "se leen directamente con get_option('option_name'); "
+    "(2) opcion anidada dentro de un array serializado: {\"name\": \"option_name\", "
+    "\"patch_key\": \"sub_key\", \"value\": \"yes\"} -- cuando el codigo lee "
+    "get_option('option_name')['sub_key'] o Plugin_Settings::get_option('sub_key') donde los "
+    "valores se guardan bajo la clave 'option_name' en la base de datos; en este caso 'name' es "
+    "el nombre de la opcion raiz (p.ej. 'learnpress', 'um_options', 'give_settings') y "
+    "'patch_key' es la clave dentro del array (p.ej. 'get_courses_of_subcategory'). "
+    "'value' es el valor que activa esa rama (normalmente '1' para booleano, o 'yes' si el "
+    "codigo compara contra 'yes'). Lista vacia si no ves ningun condicional de este tipo -- "
+    "no inventes. Se exacto: un nombre mal copiado hace que la peticion real falle."
 )
 
 
@@ -623,6 +628,7 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                              on_suggestion: Optional[Callable[[dict], None]] = None,
                              ere_nonce_pages: Optional[List[str]] = None,
                              lock_endpoint: bool = False,
+                             lock_param: bool = False,
                              ) -> Any:
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
@@ -687,7 +693,8 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                 pass
         if not lock_endpoint:
             retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
-        retry_param = suggestion.get("parametro_alternativo") or retry_param
+        if not lock_param:
+            retry_param = suggestion.get("parametro_alternativo") or retry_param
         step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/{max_attempts}) y "
              f"sugiere reintentar con endpoint={retry_endpoint!r} parametro={retry_param!r} -- "
              f"razon: {suggestion.get('razon')}") if es else
@@ -1281,7 +1288,11 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
             if not name:
                 continue
             value = opt.get("value")
-            cleaned.append({"name": name, "value": "1" if value in (None, "") else str(value)})
+            entry: dict = {"name": name, "value": "1" if value in (None, "") else str(value)}
+            patch_key = str(opt.get("patch_key") or "").strip()
+            if patch_key:
+                entry["patch_key"] = patch_key
+            cleaned.append(entry)
         if cleaned:
             out["setup_options"] = cleaned
     return out or None
@@ -1632,7 +1643,11 @@ def _extract_hints_from_real_poc(llm, poc_text: str) -> Optional[dict]:
             if not name:
                 continue
             value = opt.get("value")
-            cleaned.append({"name": name, "value": "1" if value in (None, "") else str(value)})
+            entry: dict = {"name": name, "value": "1" if value in (None, "") else str(value)}
+            patch_key = str(opt.get("patch_key") or "").strip()
+            if patch_key:
+                entry["patch_key"] = patch_key
+            cleaned.append(entry)
         if cleaned:
             out["setup_options"] = cleaned
     return out or None
@@ -4338,7 +4353,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
                         max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
                         ere_nonce_pages=extra_nonce_pages,
-                        lock_endpoint=bool(notes.get("analyst_endpoint_lock"))))
+                        lock_endpoint=bool(notes.get("analyst_endpoint_lock")),
+                        lock_param=bool(notes.get("analyst_endpoint_lock") and sqli_p)))
                 # Teardown the persistent lab now that all retries are done.
                 # _lab_ref[0] is the _Lab object; _boot_ref[0] is the _LabSession.
                 # If the first attempt failed before bootstrap, refs are empty — no-op.
