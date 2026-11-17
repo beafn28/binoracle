@@ -1494,9 +1494,15 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             if not name:
                 continue
             value = (opt or {}).get("value", "1")
-            step(f"activando opcion requerida '{name}'={value!r} (el codigo vulnerable solo se "
-                 f"usa con esta activada)...")
-            r_opt = lab.wp_cli("option", "update", name, str(value), timeout=30)
+            patch_key = (opt or {}).get("patch_key") if isinstance(opt, dict) else None
+            if patch_key:
+                # Nested option: wp option patch insert <option> <key> <value>
+                step(f"activando opcion anidada requerida '{name}[{patch_key}]'={value!r}...")
+                r_opt = lab.wp_cli("option", "patch", "insert", name, patch_key, str(value), timeout=30)
+            else:
+                step(f"activando opcion requerida '{name}'={value!r} (el codigo vulnerable solo se "
+                     f"usa con esta activada)...")
+                r_opt = lab.wp_cli("option", "update", name, str(value), timeout=30)
             if r_opt.returncode != 0:
                 res.limitations.append(
                     f"no se pudo activar la opcion requerida '{name}': "

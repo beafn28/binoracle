@@ -1415,6 +1415,17 @@ def cmd_cve(args, config):
         hints["parameters"] = _parse_cli_params(args.params)
     if getattr(args, "vuln_class", None):
         hints["vuln_class"] = args.vuln_class
+    if getattr(args, "setup_wp_options", None):
+        _parsed_opts = []
+        import re as _re
+        for _raw in (args.setup_wp_options or []):
+            _m = _re.match(r'^([^\[=]+)\[([^\]]+)\]=(.*)$', _raw)
+            if _m:
+                _parsed_opts.append({"name": _m.group(1), "patch_key": _m.group(2), "value": _m.group(3)})
+            else:
+                _k, _, _v = _raw.partition("=")
+                _parsed_opts.append({"name": _k.strip(), "value": _v or "1"})
+        hints["setup_options"] = _parsed_opts
 
     # ── Banner ────────────────────────────────────────────────────────────────
     _use_col = colorlog._use_color(_sys.stdout)
@@ -2627,6 +2638,13 @@ def build_parser() -> argparse.ArgumentParser:
                                          "validates before reaching the vulnerable sink) whose "
                                          "name would otherwise be picked over the real "
                                          "injectable one by the generic id/search/sort heuristic")
+    ip.add_argument("--setup-wp-option", action="append", dest="setup_wp_options",
+                    metavar="OPTION=VALUE or OPTION[KEY]=VALUE",
+                    help="set a WordPress option before the SQLi test (repeatable). "
+                         "Use OPTION=VALUE for top-level options (wp option update) or "
+                         "OPTION[KEY]=VALUE for nested options in a serialised array "
+                         "(wp option patch insert) -- e.g. "
+                         "\"learnpress[get_courses_of_subcategory]=yes\"")
     ip.add_argument("--cli-setup-cmd", help="for a command-injection CVE in a LOCAL CLI tool "
                                             "(no HTTP endpoint at all, e.g. a CVE in an npm/pip "
                                             "package's own CLI): shell command that prepares a "
