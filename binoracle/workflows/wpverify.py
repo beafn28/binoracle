@@ -1329,6 +1329,14 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     def capture(sess_, url_path, es_caption, en_caption):
         if "base_url" not in ctx:
             return
+        # Always visit the page as admin — without this, plugins that gate their
+        # table creation on is_admin() && current_user_can('manage_options') (e.g.
+        # Events Manager em_install()) never create their DB tables, because the
+        # screenshot-only path is a no-op when Playwright is not installed.
+        try:
+            sess_.get(ctx["base_url"] + url_path, timeout=20)
+        except Exception:
+            pass
         png = _screenshot_authenticated(ctx["base_url"], sess_, url_path)
         if png:
             shots.append({"caption_es": es_caption, "caption_en": en_caption, "png_b64": png,
