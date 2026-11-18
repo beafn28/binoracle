@@ -1225,7 +1225,7 @@ main {
         <button class="tab-btn" data-tab="screenshots">Screenshots</button>
         <button class="tab-btn" data-tab="binlab">Binary Lab</button>
         <button class="tab-btn" data-tab="recon">Recon</button>
-        <button class="tab-btn" data-tab="ask">Ask Oracle</button>
+        <button class="tab-btn" data-tab="ask">Exploit Plan</button>
         <button class="tab-btn" data-tab="system">System</button>
         <button class="tab-btn" data-tab="tools">All Tools</button>
       </div>
@@ -1332,12 +1332,12 @@ main {
       </div>
       <div id="tab-ask" class="tab-pane">
         <div class="ask-wrap">
-          <div class="ask-desc">Ask the Oracle a free-form question about a binary, CVE, or security concept. Runs <code>binoracle ask</code>.</div>
+          <div class="ask-desc">Generate an exploitation plan for any CVE or vulnerability description. For binary-specific questions, upload a file in the Binary Lab and use <code>ask</code> from there. Runs <code>binoracle cveplan</code>.</div>
           <div class="ask-row">
-            <input id="ask-input" class="ask-input" type="text" placeholder="What protections does this binary have? How does CVE-2024-1071 work?" autocomplete="off" spellcheck="false">
-            <button id="ask-btn" class="ask-btn">Ask</button>
+            <input id="ask-input" class="ask-input" type="text" placeholder="CVE-2024-1071 or describe the vulnerability in plain text…" autocomplete="off" spellcheck="false">
+            <button id="ask-btn" class="ask-btn">Plan</button>
           </div>
-          <div id="ask-terminal" class="ask-terminal"><div class="empty-msg">Type a question above and press Ask</div></div>
+          <div id="ask-terminal" class="ask-terminal"><div class="empty-msg">Type a CVE ID or vulnerability description above and press Plan</div></div>
         </div>
       </div>
 
@@ -2277,7 +2277,7 @@ main {
       fetch('/api/binary/run', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({file_id: '__ask__', cmd: '__ask__', extra: [q]}),
+        body: JSON.stringify({file_id: '__nofile__', cmd: 'cveplan', extra: [q]}),
       }).then(r => r.json()).then(d => {
         if (!d.job_id) { appendAskLine('Error: ' + JSON.stringify(d)); askBtn.disabled = false; return; }
         const es = new EventSource('/api/binary/stream/' + d.job_id);
