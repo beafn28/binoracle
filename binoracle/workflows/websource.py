@@ -1709,6 +1709,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
     _TABLE_NAME_RE = re.compile(
         r"""\$wpdb\s*->\s*(?:prefix\s*\.\s*)?['"]([\w]{3,40})['"]"""
         r"""|""" r"""\$wpdb\s*->\s*(?:insert|update)\s*\(\s*\$(?:wpdb\s*->\s*prefix\s*\.\s*)?['\"]?([\w_]{3,40})['\"]?"""
+        r"""|(?:[\w\\]*::)?table\s*\(\s*['"]([\w_]{2,40})['"]\s*\)"""
     )
 
     # -- Patrones view side --
@@ -1838,7 +1839,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                           if any(h in p.lower() for h in _URI_HINTS)]
             inject_param = uri_params[0] if uri_params else (text_params[0] if text_params else rest_params[0])
             table_m = _TABLE_NAME_RE.search(window)
-            table_hint = table_m.group(1) or table_m.group(2) if table_m else ""
+            table_hint = (table_m.group(1) or table_m.group(2) or table_m.group(3)) if table_m else ""
             rest_endpoint = f"/wp-json/{ns}/{route}"
             # Detectar si el param se pasa por base64_decode (bypass de sanitize_url)
             # Busca en TODOS los ficheros del plugin, no solo el que registra la ruta
@@ -1938,13 +1939,33 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 slug_template = tpl_m.group(1)
                 break
 
-        # Estrategia 0: si conocemos table_hint, buscar en qué archivos se hace SELECT
-        # de esa tabla y recoger las page-keys SOLO de esos archivos — son los que
-        # renderizan los datos almacenados por la inyección.
+        # Estrategia 0: trazado de tabla — buscar en qué archivos se hace SELECT de la
+        # tabla donde se inyecta y recoger page-keys SOLO de esos archivos.
+        # Si table_hint viene vacío del window local del endpoint (ocurre cuando el plugin
+        # usa un helper abstracto como DB::table('x') en un método distinto), hacer un
+        # scan global de todos los archivos del plugin para extraerlo.
         _view_candidate_keys: list = []
+        # Si table_hint sigue vacío, buscar la tabla en los archivos que contienen el
+        # inject_param (nombre de columna) cerca de una escritura en DB — esos son los
+        # que realmente almacenan el valor inyectado, no cualquier archivo del plugin.
+        if not table_hint:
+            _ip_name = best_inject.get("inject_param", "")
+            _ip_re = re.compile(re.escape(_ip_name), re.IGNORECASE) if _ip_name else None
+            _WRITE_RE = re.compile(r"\$wpdb\s*->\s*(?:insert|update|replace)\b", re.IGNORECASE)
+            for _gfp, _gtext in all_texts.items():
+                if _ip_re and not _ip_re.search(_gtext):
+                    continue
+                if not _WRITE_RE.search(_gtext):
+                    continue
+                _gm = _TABLE_NAME_RE.search(_gtext)
+                if _gm:
+                    table_hint = (_gm.group(1) or _gm.group(2) or _gm.group(3)) or ""
+                    if table_hint:
+                        break
+
         if table_hint and slug_template:
             _sel_tbl_re = re.compile(
-                rf"SELECT\b.{{0,300}}{re.escape(table_hint)}\b",
+                rf"SELECT\b.{{0,500}}{re.escape(table_hint)}\b",
                 re.IGNORECASE | re.DOTALL,
             )
             for vfp, vtext in all_texts.items():
@@ -1954,9 +1975,37 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                         if key not in _view_candidate_keys:
                             _view_candidate_keys.append(key)
 
+        # Estrategia 0.5: si la tabla no estrechó la lista, trazar el nombre del inject_param
+        # como nombre de columna en los SELECT de archivos admin — esos son los que muestran
+        # exactamente el campo que se inyecta.
+        # Requiere que el SELECT contenga TODOS los parts del inject_param (AND lógico)
+        # para evitar matches demasiado amplios (ej. "uri" solo matchea demasiados archivos).
+        if not _view_candidate_keys and slug_template:
+            _ip_parts = [p for p in re.split(r"[_\s]+", best_inject.get("inject_param", ""))
+                         if len(p) >= 3 and p.lower() not in ("get", "set", "has", "the", "new")]
+            if _ip_parts:
+                for vfp, vtext in all_texts.items():
+                    # El archivo debe tener un SELECT que contenga TODOS los parts
+                    _select_blocks = re.findall(r"SELECT\b.{0,800}", vtext, re.IGNORECASE | re.DOTALL)
+                    for _blk in _select_blocks:
+                        if all(re.search(r"\b" + re.escape(p) + r"\b", _blk, re.IGNORECASE)
+                               for p in _ip_parts):
+                            for km in _PAGE_KEY_RE.finditer(vtext):
+                                key = km.group(0).strip("'\"")
+                                if key not in _view_candidate_keys:
+                                    _view_candidate_keys.append(key)
+                            break
+
         if slug_template and _view_candidate_keys:
-            # Usar la primera clave encontrada en archivos que leen de la tabla inyectada
-            view_path = f"/wp-admin/admin.php?page={slug_template.replace('[slug]', _view_candidate_keys[0])}"
+            # Priorizar la clave que más se parece al nombre de la tabla inyectada:
+            # coincidencia exacta > prefijo/sufijo > primera encontrada.
+            _best_key = _view_candidate_keys[0]
+            if table_hint:
+                for _ck in _view_candidate_keys:
+                    if _ck == table_hint or table_hint.startswith(_ck) or _ck.startswith(table_hint):
+                        _best_key = _ck
+                        break
+            view_path = f"/wp-admin/admin.php?page={slug_template.replace('[slug]', _best_key)}"
 
         # Estrategia 1 (fallback): recoger todas las page-keys de todos los archivos
         if not view_path and slug_template:
@@ -2083,7 +2132,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 continue
             # coger la primera tabla mencionada
             table_m = _TABLE_NAME_RE.search(func_body)
-            table_hint = table_m.group(1) or table_m.group(2) if table_m else ""
+            table_hint = (table_m.group(1) or table_m.group(2) or table_m.group(3)) if table_m else ""
             best_inject = {
                 "action": action,
                 "inject_param": post_params[0],
