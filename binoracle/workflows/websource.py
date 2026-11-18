@@ -1988,6 +1988,42 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                     break
         if not view_path:
             view_path = "/wp-admin/admin.php"
+
+        # Detectar contexto de renderizado del valor inyectado en los archivos de vista.
+        # Traza: archivos que SELECT de table_hint → buscar echo/print del inject_param
+        # o de columnas con nombre similar → ver qué HTML rodea ese echo.
+        # Resultado: "href" | "html" | "js_string" | "url" | "unknown"
+        render_context = "unknown"
+        _inject_col = best_inject.get("inject_param", "").replace("_", "").lower()
+        if table_hint:
+            _sel_tbl_re2 = re.compile(
+                rf"SELECT\b.{{0,300}}{re.escape(table_hint)}\b",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for vfp, vtext in all_texts.items():
+                if not _sel_tbl_re2.search(vtext):
+                    continue
+                # Buscar fragmentos de ~200 chars alrededor de cada echo del valor
+                _echo_re = re.compile(
+                    rf"(?:echo|print)\s+.*?(?:{re.escape(best_inject['inject_param'])}|"
+                    rf"{re.escape(_inject_col)})[^;]{{0,120}};",
+                    re.IGNORECASE | re.DOTALL,
+                )
+                for em in _echo_re.finditer(vtext):
+                    start = max(0, em.start() - 200)
+                    snippet = vtext[start: em.end() + 100]
+                    if re.search(r"""href\s*=\s*['"]""", snippet, re.IGNORECASE):
+                        render_context = "href"
+                    elif re.search(r"<script\b", snippet, re.IGNORECASE):
+                        render_context = "js_string"
+                    elif re.search(r"""(?:src|action|data)\s*=\s*['"]""", snippet, re.IGNORECASE):
+                        render_context = "url"
+                    else:
+                        render_context = "html"
+                    break
+                if render_context != "unknown":
+                    break
+
         _act_p = best_inject.get("activation_params", {})
         return {
             "inject_action": None,
@@ -1999,6 +2035,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             "view_path": view_path,
             "http_method": "GET",
             "payload_transform": best_inject.get("payload_transform", ""),
+            "render_context": render_context,
         }
 
     # Paso 1: buscar action AJAX que hace db-write con POST sin sanitizar

@@ -5007,6 +5007,10 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _base_p = _xss_code_hit.get("inject_base_params") or {}
                             if _base_p:
                                 notes["base_params"] = _base_p
+                            # Contexto de renderizado detectado por trazado de codigo
+                            _rctx = _xss_code_hit.get("render_context", "unknown")
+                            if _rctx and _rctx != "unknown":
+                                notes["render_context"] = _rctx
                         else:
                             _xss_act = _xss_code_hit["inject_action"]
                             _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
@@ -5054,7 +5058,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                           keep_lab_on_failure=keep_lab_on_failure,
                                           stored_xss_view_path=_stored_view,
                                           payload_transform=str(notes.get("payload_transform") or ""),
-                                          extra_inject_params=_xss_base_params)
+                                          extra_inject_params=_xss_base_params,
+                                          render_context=str(notes.get("render_context") or "unknown"))
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):

