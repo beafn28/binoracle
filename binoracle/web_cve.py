@@ -323,7 +323,7 @@ _HTML_PAGE = r"""<!DOCTYPE html>
 <title>bin0racle CVE Lab</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet"
-  href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600&display=swap">
+  href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap">
 <style>
 :root {
   --bg:     #0a0b10;
@@ -410,14 +410,15 @@ main {
 /* ── tabs ── */
 .tabs-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .tab-bar {
-  display: flex; gap: 2px; padding-bottom: 0;
+  display: flex; gap: 2px; padding-bottom: 0; overflow-x: auto;
   border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
+.tab-bar::-webkit-scrollbar { height: 2px; }
 .tab-btn {
   background: none; border: none; color: var(--dim);
   font-family: var(--sans); font-size: 13px; font-weight: 500;
   padding: 7px 14px; cursor: pointer; border-bottom: 2px solid transparent;
-  margin-bottom: -1px; transition: color .15s, border-color .15s;
+  margin-bottom: -1px; transition: color .15s, border-color .15s; white-space: nowrap;
 }
 .tab-btn:hover { color: var(--text); }
 .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
@@ -438,6 +439,75 @@ main {
 .log-err  { color: var(--red); }
 .log-info { color: var(--text); }
 .log-sep  { color: var(--cyan); opacity: .6; letter-spacing: .2em; }
+.log-phase-header {
+  display: flex; align-items: center; gap: 10px; margin: 8px 0 4px;
+  font-size: 11px; font-weight: 600; letter-spacing: .1em; color: var(--cyan);
+  text-transform: uppercase;
+}
+.log-phase-header::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ── report tab ── */
+.report-wrap { display: flex; flex-direction: column; gap: 20px; padding-bottom: 20px; }
+.report-header {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 20px; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
+}
+.report-header img { width: 56px; height: 56px; object-fit: contain; flex-shrink: 0; }
+.report-header-text h1 { font-family: var(--mono); font-size: 20px; font-weight: 600; }
+.report-header-text .rh-meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.report-verdict-ok  { color: var(--green); }
+.report-verdict-fail { color: var(--yellow); }
+
+.report-section { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.report-section-title {
+  padding: 10px 16px; font-size: 11px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--cyan); background: rgba(0,212,255,.05);
+  border-bottom: 1px solid var(--border);
+}
+.report-section-body { padding: 14px 16px; }
+
+.report-step {
+  display: flex; gap: 14px; align-items: flex-start; padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.report-step:last-child { border-bottom: none; }
+.report-step-num {
+  min-width: 28px; height: 28px; border-radius: 50%;
+  background: rgba(0,212,255,.12); color: var(--cyan); border: 1px solid rgba(0,212,255,.3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 1px;
+}
+.report-step-content h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.report-step-content p  { font-size: 12px; color: var(--dim); line-height: 1.6; margin: 0; }
+.report-step-content code {
+  font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.06);
+  padding: 2px 6px; border-radius: 3px; color: var(--orange); word-break: break-all;
+}
+
+.report-evidence-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(260px,1fr)); gap: 10px; }
+.report-ev-card { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.report-ev-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin-bottom: 4px; }
+.report-ev-val   { font-family: var(--mono); font-size: 12px; color: var(--cyan); word-break: break-all; }
+
+.report-shots { display: flex; flex-direction: column; gap: 12px; }
+.report-shot  { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.report-shot-label { padding: 6px 12px; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); background: rgba(255,255,255,.03); border-bottom: 1px solid var(--border); }
+.report-shot img { width: 100%; display: block; }
+
+/* ── binary analysis tab ── */
+.binary-wrap { display: flex; flex-direction: column; gap: 12px; }
+.binary-finding {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+}
+.binary-finding-head {
+  padding: 8px 12px; background: rgba(255,158,44,.06); border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--orange);
+}
+.binary-finding-body {
+  padding: 10px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.65; white-space: pre-wrap; color: var(--text);
+}
 
 /* ── evidence cards ── */
 .evidence-grid { display: flex; flex-direction: column; gap: 8px; }
@@ -495,19 +565,20 @@ main {
 /* ── print styles ── */
 @media print {
   #app { height: auto; overflow: visible; }
-  .run-panel, .tab-bar, #export-btn, #status-badge { display: none !important; }
-  #verdict { display: flex !important; }
-  .tab-pane { display: flex !important; break-inside: avoid; }
+  header, .run-panel, .tab-bar, #export-btn, #status-badge, #verdict { display: none !important; }
+  /* hide every tab except the report */
+  .tab-pane { display: none !important; }
+  #tab-report { display: flex !important; padding: 0 !important; }
   .tabs-wrap { overflow: visible; }
-  #log-terminal { max-height: none; overflow: visible; border: none; background: white; color: black; }
-  .log-t { color: #666; }
-  .ev-card { border: 1px solid #ccc; }
-  .shot-wrap { break-inside: avoid; }
-  header img { width: 56px; height: 56px; }
-  body { background: white; color: black; }
-  :root { --bg: white; --bg2: #f5f5f5; --bg3: #f0f0f0; --border: #ddd;
-          --text: #111; --dim: #666; --cyan: #0066cc; --orange: #cc6600;
-          --green: #006600; --yellow: #996600; }
+  #print-report { display: block !important; }
+  body { background: white; color: #111; font-family: 'Inter', system-ui, sans-serif; }
+  :root { --bg: white; --bg2: #f7f8fa; --bg3: #f0f2f5; --border: #d8dce6;
+          --text: #111; --dim: #555; --cyan: #0055cc; --orange: #c05000;
+          --green: #006622; --yellow: #7a5c00; }
+  .report-section-title { background: #eef2ff; color: #0055cc; border-bottom: 1px solid #c8d4f0; }
+  .report-step-num { background: #eef2ff; color: #0055cc; border-color: #c8d4f0; }
+  .report-finding { break-inside: avoid; }
+  .report-shot { break-inside: avoid; page-break-inside: avoid; }
 }
 
 @media (max-width: 600px) {
@@ -540,8 +611,10 @@ main {
 
     <div class="tabs-wrap">
       <div class="tab-bar">
-        <button class="tab-btn active" data-tab="log">Log</button>
+        <button class="tab-btn active" data-tab="log">Live Log</button>
+        <button class="tab-btn" data-tab="report">Report</button>
         <button class="tab-btn" data-tab="evidence">Evidence</button>
+        <button class="tab-btn" data-tab="binary" id="tab-btn-binary" style="display:none">Binary Analysis</button>
         <button class="tab-btn" data-tab="http">HTTP Requests</button>
         <button class="tab-btn" data-tab="screenshots">Screenshots</button>
       </div>
@@ -549,9 +622,19 @@ main {
       <div id="tab-log" class="tab-pane active">
         <div id="log-terminal"><div class="empty-msg">Enter a CVE ID and press Run</div></div>
       </div>
+      <div id="tab-report" class="tab-pane">
+        <div id="report-content">
+          <div class="empty-msg">Run a CVE investigation to generate the report</div>
+        </div>
+      </div>
       <div id="tab-evidence" class="tab-pane">
         <div id="evidence-content" class="evidence-grid">
           <div class="empty-msg">Run a CVE investigation to see evidence</div>
+        </div>
+      </div>
+      <div id="tab-binary" class="tab-pane">
+        <div id="binary-content" class="binary-wrap">
+          <div class="empty-msg">No binary analysis data for this CVE</div>
         </div>
       </div>
       <div id="tab-http" class="tab-pane">
@@ -599,10 +682,14 @@ main {
 
     // Reset UI
     if (currentEs) { currentEs.close(); currentEs = null; }
+    _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '';
+    $('report-content').innerHTML = '<div class="empty-msg">Run a CVE investigation to generate the report</div>';
     $('evidence-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
     $('http-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
     $('shots-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
+    $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
+    $('tab-btn-binary').style.display = 'none';
     $('verdict').style.display = 'none';
     $('verdict').className = '';
     setStatus('running', 'Running…');
@@ -668,6 +755,35 @@ main {
     } catch {}
   }
 
+  // ── phase name translations ───────────────────────────────────────────────
+  const PHASE_LABELS = {
+    'CONSULTA NVD':     'Vulnerability Intelligence',
+    'HIPÓTESIS LLM':    'Hypothesis & Planning',
+    'ANÁLISIS DE CÓDIGO': 'Source Code Analysis',
+    'ENDPOINT':         'Endpoint Discovery',
+    'VERIFICACIÓN':     'Dynamic Verification',
+    'LABORATORIO':      'Lab Environment Setup',
+    'BOOTSTRAP':        'Lab Bootstrap',
+    'EXPLOIT':          'Exploit Execution',
+    'EVIDENCIA':        'Evidence Collection',
+    'RESULTADO':        'Result',
+    'ANÁLISIS BINARIO': 'Binary Analysis',
+    'REVERSING':        'Binary Reversing',
+    'DECOMPILACIÓN':    'Decompilation',
+    'ANÁLISIS NATIVO':  'Native Code Analysis',
+    'GROUNDING':        'Code Grounding',
+    'NONCE':            'Nonce Resolution',
+    'PAYLOAD':          'Payload Testing',
+  };
+
+  function translatePhase(raw) {
+    const key = raw.replace(/^──+\s*|\s*──+$/g,'').trim().toUpperCase();
+    for (const [k, v] of Object.entries(PHASE_LABELS)) {
+      if (key.includes(k)) return v;
+    }
+    return raw.replace(/^──+\s*|\s*──+$/g,'').trim();
+  }
+
   // ── log rendering ─────────────────────────────────────────────────────────
   const terminal = $('log-terminal');
   let autoScroll = true;
@@ -676,21 +792,53 @@ main {
     autoScroll = atBottom;
   });
 
+  // Store phases for the report
+  let _logPhases = [];   // [{name, label, entries:[{t,msg}]}]
+  let _currentPhase = null;
+
   function appendLog(t, msg) {
-    // detect log level
+    // detect phase headers (── PHASE NAME ──────)
+    const isSep = msg.startsWith('──') || msg.startsWith('╠') || msg.startsWith('╚');
+    if (isSep && msg.includes('──')) {
+      const label = translatePhase(msg);
+      _currentPhase = {name: msg, label, entries: []};
+      _logPhases.push(_currentPhase);
+      // render phase header
+      const hdr = document.createElement('div');
+      hdr.className = 'log-phase-header';
+      hdr.textContent = label;
+      terminal.appendChild(hdr);
+      if (autoScroll) terminal.scrollTop = terminal.scrollHeight;
+      return;
+    }
+
+    if (_currentPhase) _currentPhase.entries.push({t, msg});
+
     let cls = 'log-info';
-    if (msg.startsWith('[OK]'))   cls = 'log-ok';
+    if (msg.startsWith('[OK]'))    cls = 'log-ok';
     else if (msg.startsWith('[WARN]')) cls = 'log-warn';
     else if (msg.startsWith('[ERR]'))  cls = 'log-err';
-    else if (msg.startsWith('──') || msg.startsWith('╠') || msg.startsWith('╚')) cls = 'log-sep';
+    else if (isSep)                   cls = 'log-sep';
+
+    // Humanize common verbose patterns
+    const display = humanizeLog(msg);
 
     const line = document.createElement('div');
     line.className = 'log-line';
     line.innerHTML =
       `<span class="log-t">${t}s</span>` +
-      `<span class="${cls}">${escHtml(msg)}</span>`;
+      `<span class="${cls}">${escHtml(display)}</span>`;
     terminal.appendChild(line);
     if (autoScroll) terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  function humanizeLog(msg) {
+    // Strip verbose prefixes for readability
+    return msg
+      .replace(/^\[OK\]\s*/,    '✓ ')
+      .replace(/^\[WARN\]\s*/, '⚠ ')
+      .replace(/^\[ERR\]\s*/,  '✗ ')
+      .replace(/^\[INFO\]\s*/, '');
   }
 
   // ── result rendering ──────────────────────────────────────────────────────
@@ -699,10 +847,10 @@ main {
     const vEl = $('verdict');
     if (d.verified) {
       vEl.className = 'verdict-ok';
-      vEl.textContent = '★  VERIFICADO — ' + d.cve_id;
+      vEl.textContent = '★  CONFIRMED — ' + d.cve_id;
     } else {
       vEl.className = 'verdict-fail';
-      vEl.textContent = '✖  NO CONFIRMADO — ' + d.cve_id;
+      vEl.textContent = '✖  NOT CONFIRMED — ' + d.cve_id;
     }
     vEl.style.display = 'flex';
 
@@ -717,6 +865,121 @@ main {
 
     // screenshots
     renderScreenshots(d.evidence || {});
+
+    // professional report
+    buildReport(d);
+
+    // binary analysis
+    renderBinary(d);
+  }
+
+  // ── professional report builder ──────────────────────────────────────────
+  function buildReport(d) {
+    const ev = d.evidence || {};
+    const ve = d.verified_evidence || {};
+    const shots = ev.screenshots || [];
+    const now = new Date().toISOString().slice(0,10);
+
+    // Key evidence values for the technical findings section
+    const techFields = [
+      ['Winning Payload',     ve.payload_ganador],
+      ['Strategy',            ve.estrategia],
+      ['Baseline Response',   ve.tiempo_base_mediana_s != null ? ve.tiempo_base_mediana_s + 's' : null],
+      ['Delayed Response 1',  ve.tiempo_1_ganador_s != null ? ve.tiempo_1_ganador_s + 's' : null],
+      ['Delayed Response 2',  ve.tiempo_2_ganador_s != null ? ve.tiempo_2_ganador_s + 's' : null],
+      ['Container',           ve.contenedor],
+    ];
+    const skip = new Set(['screenshots','http_log','http_requests','nonce_scraping_diagnostico',
+                          'laboratorio_vivo','parametros_resueltos_con_valor_real']);
+    for (const [k, v] of Object.entries(ev)) {
+      if (!skip.has(k) && v != null && typeof v !== 'object')
+        techFields.push([k.replace(/_/g,' '), String(v)]);
+    }
+    const techCards = techFields.filter(([,v]) => v != null);
+
+    // Build investigation steps from phases collected during streaming
+    const stepItems = _logPhases.map((ph, i) => {
+      // Pick the most significant log line from the phase (OK > WARN > last)
+      const best = ph.entries.find(e => e.msg.startsWith('[OK]'))
+                || ph.entries.find(e => e.msg.startsWith('[WARN]'))
+                || ph.entries[ph.entries.length - 1]
+                || {msg: ''};
+      return {num: i + 1, label: ph.label, detail: humanizeLog(best.msg)};
+    });
+
+    const verdictCls = d.verified ? 'report-verdict-ok' : 'report-verdict-fail';
+    const verdictTxt = d.verified
+      ? '★ CONFIRMED — vulnerability reproduced in isolated lab'
+      : '✖ NOT CONFIRMED — dynamic reproduction did not succeed';
+
+    const shotsHtml = shots.map((s, i) => {
+      const path  = typeof s === 'string' ? s : (s.path || '');
+      const label = typeof s === 'object' ? (s.label || s.title || `Screenshot ${i+1}`) : `Screenshot ${i+1}`;
+      if (!path) return '';
+      const b64 = btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+      return `<div class="report-shot">
+        <div class="report-shot-label">${escHtml(label)}</div>
+        <img src="/api/screenshot/${b64}" alt="${escHtml(label)}" loading="lazy">
+      </div>`;
+    }).join('');
+
+    const techHtml = techCards.map(([label, val]) => `
+      <div class="report-ev-card">
+        <div class="report-ev-label">${escHtml(label)}</div>
+        <div class="report-ev-val">${escHtml(String(val))}</div>
+      </div>`).join('');
+
+    const stepsHtml = stepItems.map(s => `
+      <div class="report-step">
+        <div class="report-step-num">${s.num}</div>
+        <div class="report-step-content">
+          <h4>${escHtml(s.label)}</h4>
+          <p>${escHtml(s.detail)}</p>
+        </div>
+      </div>`).join('');
+
+    $('report-content').innerHTML = `
+      <div class="report-wrap">
+        <div class="report-header">
+          <img src="/static/logo.png" alt="bin0racle">
+          <div class="report-header-text">
+            <h1>${escHtml(d.cve_id)} — Verification Report</h1>
+            <div class="rh-meta">bin0racle Autonomous CVE Lab · ${now} · @beafn28</div>
+            <div class="rh-meta ${verdictCls}" style="margin-top:6px;font-weight:600">${verdictTxt}</div>
+          </div>
+        </div>
+
+        ${stepsHtml ? `<div class="report-section">
+          <div class="report-section-title">Investigation Steps</div>
+          <div class="report-section-body">${stepsHtml}</div>
+        </div>` : ''}
+
+        ${techCards.length ? `<div class="report-section">
+          <div class="report-section-title">Technical Evidence</div>
+          <div class="report-section-body">
+            <div class="report-evidence-grid">${techHtml}</div>
+          </div>
+        </div>` : ''}
+
+        ${shots.length ? `<div class="report-section">
+          <div class="report-section-title">Screenshots</div>
+          <div class="report-section-body">
+            <div class="report-shots">${shotsHtml}</div>
+          </div>
+        </div>` : ''}
+
+        <div class="report-section">
+          <div class="report-section-title">Conclusion</div>
+          <div class="report-section-body">
+            <p style="font-size:13px;line-height:1.7;color:var(--text)">
+              ${d.verified
+                ? `The vulnerability <strong>${escHtml(d.cve_id)}</strong> was successfully reproduced in an isolated lab environment. The evidence above confirms that the described attack vector is exploitable under the documented conditions. Detailed reproduction steps and proof-of-concept payloads are included in this report.`
+                : `Dynamic reproduction of <strong>${escHtml(d.cve_id)}</strong> was attempted but could not be confirmed in the automated lab. This may indicate that the lab conditions do not fully match the target environment, that additional configuration is required, or that the vulnerability requires manual interaction. The investigation steps and collected data above provide context for further manual testing.`
+              }
+            </p>
+          </div>
+        </div>
+      </div>`;
   }
 
   function renderEvidence(ve, ev) {
@@ -786,6 +1049,38 @@ main {
     }).join('');
   }
 
+  function renderBinary(d) {
+    const ev = d.evidence || {};
+    const binaryKeys = ['binary_analysis','static_analysis','decompilation',
+                        'native_analysis','android_analysis','strings_analysis',
+                        'checksec','disassembly','jadx_output','ghidra_output'];
+    const findings = [];
+    for (const k of binaryKeys) {
+      if (ev[k]) findings.push([k.replace(/_/g,' '), ev[k]]);
+    }
+    // also collect any log lines that look binary-related
+    const binPatterns = /disasm|decompil|jadx|ghidra|objdump|checksec|strings|native|\.so\b|\.apk\b|\.dex\b|reversing|IDA|radare|r2\b|firmware/i;
+    const binLogs = (_logPhases || []).flatMap(ph =>
+      ph.entries.filter(e => binPatterns.test(e.msg))
+    );
+    if (binLogs.length) {
+      findings.push(['Reversing Log Entries', binLogs.map(e => `[${e.t}s] ${e.msg}`).join('\n')]);
+    }
+
+    const btn = $('tab-btn-binary');
+    if (findings.length) {
+      btn.style.display = '';
+      $('binary-content').innerHTML = findings.map(([label, val]) => `
+        <div class="binary-finding">
+          <div class="binary-finding-head">${escHtml(label)}</div>
+          <div class="binary-finding-body">${escHtml(String(val))}</div>
+        </div>`).join('');
+    } else {
+      btn.style.display = 'none';
+      $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
+    }
+  }
+
   function renderScreenshots(ev) {
     const shots = ev.screenshots || [];
     const container = $('shots-content');
@@ -815,7 +1110,14 @@ main {
   }
 
   // ── PDF export ────────────────────────────────────────────────────────────
-  $('export-btn').addEventListener('click', () => window.print());
+  $('export-btn').addEventListener('click', () => {
+    // Switch to report tab so print CSS picks it up
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelector('[data-tab="report"]').classList.add('active');
+    $('tab-report').classList.add('active');
+    setTimeout(() => window.print(), 80);
+  });
 
   // ── utils ─────────────────────────────────────────────────────────────────
   function escHtml(s) {
