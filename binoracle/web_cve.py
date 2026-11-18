@@ -262,6 +262,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._bin_upload()
         elif p.path == "/api/binary/run":
             self._bin_run()
+        elif p.path == "/api/export-pdf":
+            self._export_pdf()
         else:
             self._404()
 
@@ -490,6 +492,64 @@ class _Handler(BaseHTTPRequestHandler):
         if job.status != "done":
             self._send_json(202, {"status": "running"}); return
         self._send_json(200, {"lines": job.lines, "cmd": job.cmd_label})
+
+    def _export_pdf(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(body)
+            html = str(data.get("html", ""))
+            cve_id = str(data.get("cve_id", "report")).strip() or "report"
+        except Exception:
+            self._send_json(400, {"error": "bad json"})
+            return
+
+        if not html:
+            self._send_json(400, {"error": "html required"})
+            return
+
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1100, "height": 1400})
+                page.set_content(html, wait_until="domcontentloaded")
+                # Wait for Google Fonts (IBM Plex) to load
+                page.wait_for_timeout(1800)
+                # Show report tab, hide navigation chrome
+                page.evaluate("""() => {
+                    document.querySelectorAll('.tab-pane')
+                        .forEach(p => p.classList.remove('active'));
+                    const rp = document.getElementById('tab-report');
+                    if (rp) rp.classList.add('active');
+                    ['header', '.run-panel', '.tab-bar', '#verdict',
+                     '#status-badge', '#hist-panel', '#hist-overlay',
+                     '#cve-info-panel', '#phase-tracker'].forEach(sel => {
+                        const el = document.querySelector(sel);
+                        if (el) el.style.display = 'none';
+                    });
+                    document.body.style.background = '#0d0f14';
+                }""")
+                pdf_bytes = page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "14mm", "bottom": "14mm",
+                            "left": "16mm", "right": "16mm"},
+                )
+                browser.close()
+
+            safe_id = cve_id.replace("/", "_").replace(" ", "_")
+            filename = f"{safe_id}_report.pdf"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(pdf_bytes)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(pdf_bytes)
+        except Exception as exc:
+            self._send_json(500, {"error": f"PDF generation failed: {exc}"})
 
     def _send_json(self, code: int, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -1993,13 +2053,49 @@ main {
   }
 
   // ── PDF export ────────────────────────────────────────────────────────────
-  $('export-btn').addEventListener('click', () => {
-    // Switch to report tab so print CSS picks it up
+  $('export-btn').addEventListener('click', async () => {
+    const btn = $('export-btn');
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+
+    // Switch to report tab so its content is in the DOM
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
     document.querySelector('[data-tab="report"]').classList.add('active');
     $('tab-report').classList.add('active');
-    setTimeout(() => window.print(), 80);
+    // Allow one render frame before serialising
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    const cveId = ($('cve-input').value.trim() || 'report').toUpperCase()
+                    .replace(/[^A-Z0-9_-]/g, '_');
+    try {
+      const r = await fetch('/api/export-pdf', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          cve_id: cveId,
+          html: document.documentElement.outerHTML,
+        }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert('PDF export failed: ' + (err.error || r.status));
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = cveId + '_report.pdf';
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 8000);
+    } catch (e) {
+      alert('PDF export error: ' + e);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHTML;
+    }
   });
 
   // ── history panel ─────────────────────────────────────────────────────────
