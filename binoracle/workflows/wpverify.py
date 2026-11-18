@@ -3713,6 +3713,21 @@ def verify_wordpress_sqli(
                     r"if(strpos($fc,'function '.$cb_method)===false)continue;"
                     r"if(preg_match($nonce_extract,$fc,$m)){$nonce_action=$m[1];break;}"
                     r"}}}"
+                    # Pass 2.5: files that contain a significant part of the action name (>3 chars)
+                    # AND a nonce check -- handles plugins that register actions dynamically
+                    # so no literal 'wp_ajax_nopriv_ACTION' string exists in any file.
+                    # E.g. UM registers via apply_filters, so $reg_files is empty; but the
+                    # handler file (class-ajax-common.php) contains 'members' (from the method
+                    # name ajax_get_members) AND check_ajax_referer('um-frontend-nonce').
+                    r"if(!$nonce_action){"
+                    r"$aparts=array_filter(explode('_',$nopriv_action),function($p){return strlen($p)>3;});"
+                    r"if($aparts){"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(!preg_match($nonce_extract,$fc,$m))continue;"
+                    r"$has_part=false;"
+                    r"foreach($aparts as $ap){if(stripos($fc,$ap)!==false){$has_part=true;break;}}"
+                    r"if($has_part){$nonce_action=$m[1];break;}"
+                    r"}}}"
                     # Pass 3: global scan - prefer files whose name contains action keyword
                     r"if(!$nonce_action){"
                     r"$kw=str_replace('_','-',$nopriv_action);"
