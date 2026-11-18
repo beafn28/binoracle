@@ -3710,6 +3710,7 @@ def verify_wordpress_sqli(
                     r"$kw2=implode('_',array_slice($aparts2,-2));$win=3000;"
                     r"if(!$kw2)$kw2=$nopriv_action;"
                     r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
                     r"$pos=0;"
                     r"while(($kpos=stripos($fc,$kw2,$pos))!==false){"
                     r"$seg=substr($fc,max(0,$kpos-$win),min(strlen($fc),$kpos+$win)-max(0,$kpos-$win));"
@@ -3741,6 +3742,7 @@ def verify_wordpress_sqli(
                     r"$aparts=array_filter(explode('_',$nopriv_action),function($p){return strlen($p)>3;});"
                     r"if($aparts){"
                     r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
                     r"if(!preg_match($nonce_extract,$fc,$m))continue;"
                     r"$has_part=false;"
                     r"foreach($aparts as $ap){if(stripos($fc,$ap)!==false){$has_part=true;break;}}"
@@ -3796,27 +3798,6 @@ def verify_wordpress_sqli(
                     r"}catch(Exception $e){}"
                     r"echo $nonce_action;"
                 )
-                # Diagnostic: show which files have wp_localize_script + wp_create_nonce
-                # and which have wp_verify_nonce with variable args + ternary default.
-                # Remove this block once the nonce detection is confirmed working.
-                _diag_eval = (
-                    f"$slug='{slug}';"
-                    r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
-                    r"$it=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
-                    r"$loc=[];$ind=[];$cre=[];"
-                    r"foreach($it as $f){"
-                    r"if($f->getExtension()!=='php')continue;"
-                    r"$fp=$f->getPathname();$fc=@file_get_contents($fp);"
-                    r"if(!$fc)continue;"
-                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
-                    r"if(stripos($fc,'wp_localize_script')!==false)$loc[]=basename($fp);"
-                    r"if(preg_match('/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*\$\w+/is',$fc))$ind[]=basename($fp);"
-                    r"if(preg_match('/empty\s*\([^\)]+\)\s*\?\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i',$fc,$m))$cre[]=basename($fp).':'.$m[1];"
-                    r"}"
-                    r"echo 'LOC:'.implode(',',array_slice($loc,0,5)).'|IND:'.implode(',',array_slice($ind,0,5)).'|CRE:'.implode(',',array_slice($cre,0,5));"
-                )
-                _r_diag = lab.wp_cli("eval", _diag_eval, timeout=15)
-                step(f"[DIAG nonce scan] {(_r_diag.stdout or '').strip()}")
                 r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
                 _nonce_act = (r_act.stdout or "").strip()
                 # Sanity-check: a nopriv (unauthenticated) endpoint's nonce action
