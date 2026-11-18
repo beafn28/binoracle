@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Web UI — binoracle docs</title>
-<meta name="description" content="binoracle Web UI — browser-based interface for CVE exploit development and binary reversing.">
+<title>Web UI Reference — binoracle docs</title>
+<meta name="description" content="binoracle — autonomous CVE exploit research and binary reverse engineering, fully local.">
 <style>
 :root {
   --bg:    #0d1117;
@@ -32,340 +32,6 @@ body {
   line-height: 1.6;
   min-height: 100vh;
 }
-
-/* NAV */
-.nav {
-  position: sticky; top: 0; z-index: 100;
-  display: flex; align-items: center; gap: 1.5rem;
-  padding: .75rem 2rem;
-  background: rgba(13,17,23,.92);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--brd);
-}
-.nav-brand { display: flex; align-items: center; gap: .6rem; text-decoration: none; color: var(--tx); font-weight: 700; font-size: 1.05rem; }
-.nav-brand img { height: 34px; width: auto; }
-.nav-links { display: flex; gap: 1.25rem; margin-left: auto; }
-.nav-links a { color: var(--muted); text-decoration: none; font-size: .9rem; transition: color .15s; }
-.nav-links a:hover, .nav-links a.active { color: var(--tx); }
-.nav-gh { display: flex; align-items: center; gap: .4rem; padding: .35rem .85rem; background: var(--surf2); border: 1px solid var(--brd); border-radius: 6px; color: var(--tx); text-decoration: none; font-size: .85rem; transition: border-color .15s; }
-.nav-gh:hover { border-color: var(--acc); }
-.nav-lang { display: flex; align-items: center; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .8rem; font-weight: 600; flex-shrink: 0; }
-.nav-lang span { padding: .3rem .7rem; background: var(--acc2); color: #fff; }
-.nav-lang a { padding: .3rem .7rem; color: var(--muted); text-decoration: none; transition: all .15s; }
-.nav-lang a:hover { color: var(--tx); background: var(--surf2); }
-/* search wrap — always in nav, outside collapsible links */
-.nav-search-wrap { position: relative; display: flex; align-items: center; flex-shrink: 0; }
-.nav-search-wrap input {
-  background: var(--surf2); border: 1px solid var(--brd); border-radius: 8px;
-  color: var(--tx); font-size: .85rem; padding: .38rem 2.6rem .38rem 2.1rem;
-  outline: none; width: 220px; transition: border-color .2s, width .25s, box-shadow .2s;
-  font-family: inherit;
-}
-.nav-search-wrap input::placeholder { color: var(--muted); }
-.nav-search-wrap input:focus { border-color: var(--acc); width: 300px; box-shadow: 0 0 0 3px rgba(88,166,255,.15); }
-.nav-search-wrap .s-ico { position: absolute; left: .6rem; color: var(--muted); pointer-events: none; display: flex; }
-.nav-search-wrap .s-kbd {
-  position: absolute; right: .55rem; display: flex; gap: 2px; pointer-events: none;
-  font-size: .68rem; color: var(--muted); font-family: ui-monospace, monospace;
-}
-.nav-search-wrap .s-kbd kbd {
-  background: var(--surf); border: 1px solid var(--brd); border-radius: 3px;
-  padding: 1px 4px; font-size: .68rem; line-height: 1.4;
-}
-.nav-search-wrap input:focus + .s-kbd { opacity: 0; }
-#search-results {
-  display: none; position: absolute; top: calc(100% + 8px); left: 0;
-  background: var(--surf); border: 1px solid var(--brd); border-radius: 10px;
-  min-width: 360px; max-height: 400px; overflow-y: auto;
-  box-shadow: 0 12px 32px rgba(0,0,0,.45); z-index: 300; padding: .5rem 0;
-}
-#search-results.open { display: block; }
-.sr-header { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em;
-  color: var(--acc); padding: .5rem 1rem .25rem; }
-.sr-item { display: flex; align-items: center; gap: .65rem; padding: .5rem 1rem;
-  color: var(--tx); text-decoration: none; font-size: .88rem; cursor: pointer; transition: background .1s; }
-.sr-item:hover, .sr-item.active { background: var(--surf2); }
-.sr-item .sr-icon { flex-shrink: 0; color: var(--acc); opacity: .7; display: flex; }
-.sr-item .sr-title { flex: 1; font-weight: 500; }
-.sr-item .sr-title mark { background: none; color: var(--acc); font-weight: 700; }
-.sr-item .sr-tags { font-size: .75rem; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sr-item .sr-enter { font-size: .7rem; color: var(--muted); background: var(--surf2); border: 1px solid var(--brd);
-  border-radius: 3px; padding: 1px 5px; opacity: 0; }
-.sr-item.active .sr-enter { opacity: 1; }
-.sr-empty { padding: .7rem 1rem; color: var(--muted); font-size: .88rem; }
-.sr-footer { padding: .4rem 1rem; border-top: 1px solid var(--brd); display: flex; gap: 1rem; margin-top: .3rem; }
-.sr-footer span { font-size: .7rem; color: var(--muted); display: flex; align-items: center; gap: 3px; }
-.sr-footer kbd { background: var(--surf2); border: 1px solid var(--brd); border-radius: 3px; padding: 1px 4px; font-size: .65rem; }
-
-/* HERO */
-.hero {
-  display: flex; flex-direction: column; align-items: center; text-align: center;
-  padding: 5rem 2rem 4rem;
-  background: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(31,107,235,.18), transparent);
-}
-.hero img { height: 90px; width: auto; margin-bottom: 1.5rem; }
-.hero h1 { font-size: 3rem; font-weight: 800; letter-spacing: -.03em; color: var(--tx); }
-.hero .tagline { margin-top: .6rem; font-size: 1.15rem; color: var(--muted); max-width: 560px; }
-.hero .install-box {
-  margin: 2rem 0 1.5rem;
-  display: flex; align-items: center; gap: .75rem;
-  background: var(--surf); border: 1px solid var(--brd);
-  border-radius: var(--r); padding: .75rem 1.25rem;
-  font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: .9rem;
-  color: var(--code);
-}
-.install-box .prompt { color: var(--muted); user-select: none; }
-.hero-cta { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
-.btn { display: inline-flex; align-items: center; gap: .4rem; padding: .6rem 1.25rem; border-radius: var(--r); font-size: .9rem; font-weight: 600; text-decoration: none; transition: all .15s; }
-.btn-primary { background: var(--acc2); color: #fff; border: 1px solid var(--acc2); }
-.btn-primary:hover { background: #388bfd; border-color: #388bfd; }
-.btn-secondary { background: transparent; color: var(--tx); border: 1px solid var(--brd); }
-.btn-secondary:hover { border-color: var(--muted); }
-.badges { margin-top: 1.5rem; display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center; }
-.badges img { height: 20px; }
-
-/* SECTIONS */
-.section { padding: 4rem 2rem; max-width: 1100px; margin: 0 auto; }
-.section-title { font-size: 1.5rem; font-weight: 700; color: var(--tx); margin-bottom: .5rem; }
-.section-sub { color: var(--muted); margin-bottom: 2.5rem; font-size: .95rem; }
-.divider { border: none; border-top: 1px solid var(--brd); margin: 0; }
-
-/* FEATURE CARDS */
-.feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; }
-.feature-card {
-  background: var(--surf); border: 1px solid var(--brd);
-  border-radius: var(--r); padding: 1.5rem;
-  display: flex; flex-direction: column; gap: .75rem;
-}
-.feature-card:hover { border-color: var(--acc); }
-.feature-icon { width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
-.feature-icon.blue { background: rgba(88,166,255,.12); color: var(--acc); }
-.feature-icon.purple { background: rgba(188,140,255,.12); color: var(--pur); }
-.feature-icon.green { background: rgba(63,185,80,.12); color: var(--grn); }
-.feature-card h3 { font-size: 1.05rem; font-weight: 700; color: var(--tx); }
-.feature-card p { font-size: .9rem; color: var(--muted); line-height: 1.55; }
-.tag-list { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .25rem; }
-.tag { font-size: .75rem; padding: .2rem .55rem; border-radius: 20px; background: var(--surf2); border: 1px solid var(--brd); color: var(--muted); font-family: monospace; }
-
-/* CVE PIPELINE STEPS */
-.pipeline-diagram { width: 100%; border-radius: var(--r); overflow: hidden; border: 1px solid var(--brd); margin-bottom: 2rem; }
-.pipeline-diagram img { width: 100%; display: block; }
-.steps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1rem; }
-.step { background: var(--surf); border-radius: var(--r); padding: 1.1rem 1.25rem; border-left: 3px solid var(--brd); }
-.step.s1 { border-color: var(--muted); }
-.step.s2 { border-color: var(--pur); }
-.step.s3 { border-color: var(--acc); }
-.step.s4 { border-color: var(--yel); }
-.step.s5 { border-color: var(--grn); }
-.step-num { font-size: .7rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: .4rem; }
-.step h4 { font-size: .95rem; font-weight: 700; color: var(--tx); margin-bottom: .3rem; }
-.step p { font-size: .82rem; color: var(--muted); line-height: 1.4; }
-
-/* TABLES */
-.table-wrap { overflow-x: auto; border-radius: var(--r); border: 1px solid var(--brd); margin-bottom: 1.5rem; }
-.table-wrap table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-.table-wrap th { background: var(--surf2); color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; font-size: .75rem; padding: .7rem 1rem; text-align: left; border-bottom: 1px solid var(--brd); }
-.table-wrap td { padding: .65rem 1rem; border-bottom: 1px solid var(--brd); color: var(--tx); vertical-align: top; }
-.table-wrap tr:last-child td { border-bottom: none; }
-.table-wrap tr:hover td { background: var(--surf2); }
-.table-wrap code { background: var(--surf2); padding: .1em .35em; border-radius: 4px; font-size: .85em; color: var(--code); font-family: monospace; }
-
-/* TWO-COLUMN TABLE LAYOUT */
-.table-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-
-/* ZERO CLOUD */
-.zero-cloud {
-  background: linear-gradient(135deg, rgba(5,46,22,.8) 0%, rgba(13,17,23,1) 100%);
-  border: 1px solid rgba(63,185,80,.3); border-radius: 12px;
-  padding: 2.5rem 2rem; text-align: center; margin: 2rem 0;
-  display: flex; flex-direction: column; align-items: center; gap: 1rem;
-}
-.zero-cloud .lock-icon { width: 48px; height: 48px; background: rgba(63,185,80,.12); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--grn); }
-.zero-cloud h3 { font-size: 1.3rem; font-weight: 700; color: var(--grn); }
-.zero-cloud p { color: var(--muted); max-width: 500px; font-size: .95rem; }
-.zero-cloud ul { list-style: none; display: flex; flex-wrap: wrap; gap: .75rem; justify-content: center; }
-.zero-cloud li { display: flex; align-items: center; gap: .4rem; font-size: .88rem; color: var(--tx); }
-.zero-cloud li svg { color: var(--grn); }
-
-/* QUICK START */
-.code-card {
-  background: var(--surf); border: 1px solid var(--brd);
-  border-radius: var(--r); overflow: hidden;
-}
-.code-header { display: flex; align-items: center; gap: .5rem; padding: .65rem 1rem; background: var(--surf2); border-bottom: 1px solid var(--brd); }
-.code-header .dot { width: 10px; height: 10px; border-radius: 50%; }
-.dot-red { background: #f85149; }
-.dot-yel { background: #d29922; }
-.dot-grn { background: #3fb950; }
-.code-header span { font-size: .82rem; color: var(--muted); margin-left: .25rem; font-family: monospace; }
-.code-card pre { padding: 1.25rem 1.5rem; overflow-x: auto; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: .85rem; line-height: 1.65; color: var(--tx); }
-.code-card pre .comment { color: var(--muted); }
-.code-card pre .cmd { color: var(--code); }
-.code-card pre .kw { color: var(--acc); }
-.code-card pre .val { color: var(--pur); }
-
-/* ARCHITECTURE */
-.arch-diagram { width: 100%; border-radius: var(--r); overflow: hidden; border: 1px solid var(--brd); }
-.arch-diagram img { width: 100%; display: block; }
-
-/* FOOTER */
-.footer {
-  border-top: 1px solid var(--brd);
-  padding: 2rem;
-  display: flex; justify-content: space-between; align-items: center;
-  flex-wrap: wrap; gap: 1rem;
-  color: var(--muted); font-size: .85rem;
-  max-width: 1100px; margin: 0 auto;
-}
-.footer a { color: var(--muted); text-decoration: none; }
-.footer a:hover { color: var(--tx); }
-.footer-links { display: flex; gap: 1.25rem; }
-
-/* DOC PAGE */
-.doc-layout { display: flex; gap: 0; min-height: calc(100vh - 54px); }
-.doc-sidebar {
-  width: 220px; flex-shrink: 0;
-  padding: 1.5rem 1rem;
-  border-right: 1px solid var(--brd);
-  position: sticky; top: 54px; height: calc(100vh - 54px); overflow-y: auto;
-}
-.doc-sidebar h4 { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: .75rem; }
-.doc-sidebar a { display: block; padding: .3rem .5rem; color: var(--muted); text-decoration: none; font-size: .88rem; border-radius: 5px; }
-.doc-sidebar a:hover { color: var(--tx); background: var(--surf2); }
-.doc-content { flex: 1; padding: 2.5rem 2rem; max-width: 820px; }
-.doc-content h1 { font-size: 2rem; font-weight: 800; margin-bottom: .5rem; color: var(--tx); }
-.doc-content h2 { font-size: 1.3rem; font-weight: 700; margin: 2rem 0 .75rem; padding-bottom: .4rem; border-bottom: 1px solid var(--brd); color: var(--tx); }
-.doc-content h3 { font-size: 1.05rem; font-weight: 700; margin: 1.5rem 0 .5rem; color: var(--tx); }
-.doc-content p { margin-bottom: 1.1rem; color: var(--tx); line-height: 1.7; }
-.doc-content ul, .doc-content ol { margin: .75rem 0 1.25rem 1.75rem; color: var(--tx); }
-.doc-content li { margin-bottom: .5rem; line-height: 1.65; }
-.doc-content hr { border: none; border-top: 1px solid var(--brd); margin: 2rem 0; }
-.doc-content del { text-decoration: line-through; color: var(--muted); }
-.doc-content code { background: var(--surf2); padding: .15em .4em; border-radius: 4px; font-size: .88em; color: var(--code); font-family: monospace; }
-.doc-content pre { background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r); padding: 1rem 1.25rem; overflow-x: auto; margin: 1rem 0; }
-.doc-content pre code { background: none; padding: 0; color: var(--tx); font-size: .88rem; }
-.doc-content blockquote { border-left: 3px solid var(--acc2); padding: .5rem 1rem; color: var(--muted); background: var(--surf); border-radius: 0 var(--r) var(--r) 0; margin: 1rem 0; }
-.doc-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .9rem; }
-.doc-content th { background: var(--surf2); color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; padding: .6rem .9rem; text-align: left; border-bottom: 1px solid var(--brd); }
-.doc-content td { padding: .6rem .9rem; border-bottom: 1px solid var(--brd); }
-.doc-content img { max-width: 100%; border-radius: var(--r); border: 1px solid var(--brd); }
-.doc-content a { color: var(--acc); }
-.doc-content a:hover { text-decoration: underline; }
-
-/* ROADMAP PAGE */
-.rm-hero {
-  text-align: center; padding: 3rem 2rem 2rem;
-  background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(31,107,235,.1), transparent);
-}
-.rm-hero h1 { font-size: 2.2rem; font-weight: 800; margin-bottom: .5rem; color: var(--tx); }
-.rm-hero p { color: var(--muted); max-width: 580px; margin: 0 auto .5rem; font-size: .95rem; }
-.rm-principles { display: flex; gap: .9rem; flex-wrap: wrap; justify-content: center; margin-top: 1.25rem; }
-.rm-principle {
-  background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r);
-  padding: .85rem 1.1rem; font-size: .88rem; color: var(--muted); max-width: 310px; text-align: left;
-}
-.rm-principle strong { color: var(--acc); display: block; margin-bottom: .25rem; font-size: .9rem; }
-.rm-effort-legend {
-  display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; margin-top: 1.1rem; font-size: .8rem; color: var(--muted);
-}
-.rm-effort-legend span { display: flex; align-items: center; gap: .4rem; }
-.rm-timeline { max-width: 900px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
-.rm-card { border: 1px solid var(--brd); border-radius: 10px; overflow: hidden; margin-bottom: 1.5rem; background: var(--surf); }
-.rm-card-header {
-  display: flex; align-items: center; gap: 1rem; padding: 1rem 1.5rem;
-  background: var(--surf2); border-bottom: 1px solid var(--brd);
-}
-.rm-badge {
-  font-size: .7rem; font-weight: 700; padding: .25rem .65rem;
-  border-radius: 20px; white-space: nowrap; letter-spacing: .05em; text-transform: uppercase;
-}
-.rm-badge.version { background: rgba(88,166,255,.15); color: var(--acc); border: 1px solid rgba(88,166,255,.3); }
-.rm-badge.ongoing { background: rgba(210,153,34,.15); color: var(--yel); border: 1px solid rgba(210,153,34,.3); }
-.rm-badge.scope { background: rgba(139,148,158,.12); color: var(--muted); border: 1px solid var(--brd); }
-.rm-card-title { font-size: 1.05rem; font-weight: 700; color: var(--tx); }
-.rm-card-body { padding: 1.25rem 1.5rem; }
-.rm-desc { font-size: .9rem; color: var(--muted); margin-bottom: 1rem; line-height: 1.55; }
-.rm-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: .6rem; }
-.rm-item {
-  display: flex; align-items: flex-start; gap: .6rem;
-  background: var(--bg); border: 1px solid var(--brd); border-radius: 7px; padding: .6rem .9rem; font-size: .86rem;
-}
-.rm-item-effort {
-  font-size: .67rem; font-weight: 700; padding: .15rem .45rem; border-radius: 4px;
-  white-space: nowrap; flex-shrink: 0; margin-top: .1rem; letter-spacing: .03em;
-}
-.rm-eff-s { background: rgba(63,185,80,.15); color: var(--grn); }
-.rm-eff-m { background: rgba(88,166,255,.15); color: var(--acc); }
-.rm-eff-l { background: rgba(188,140,255,.15); color: var(--pur); }
-.rm-item-name { color: var(--tx); line-height: 1.45; }
-
-@media (max-width: 700px) {
-  .nav-links { display: none; }
-  .hero h1 { font-size: 2.2rem; }
-  .table-pair { grid-template-columns: 1fr; }
-  .doc-layout { flex-direction: column; }
-  .doc-sidebar { width: 100%; position: static; height: auto; border-right: none; border-bottom: 1px solid var(--brd); }
-  .rm-timeline { padding: 1rem; }
-  .rm-items { grid-template-columns: 1fr; }
-}
-/* WIKI SIDEBAR */
-.wiki-lang { display: flex; border: 1px solid var(--brd); border-radius: 6px; overflow: hidden; font-size: .78rem; font-weight: 700; margin-bottom: 1.25rem; }
-.wiki-lang .active-lang { padding: .3rem .65rem; background: var(--surf2); color: var(--tx); }
-.wiki-lang a { padding: .3rem .65rem; color: var(--muted); text-decoration: none; transition: all .15s; }
-.wiki-lang a:hover { color: var(--tx); background: var(--surf); }
-.sidebar-section { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: .9rem 0 .4rem; padding: 0 .5rem; }
-.sidebar-sep { border: none; border-top: 1px solid var(--brd); margin: .9rem 0; }
-.doc-sidebar a.active { color: var(--acc) !important; background: rgba(88,166,255,.08); }
-.doc-sidebar .toc ul { list-style: none; padding: 0; margin: 0; }
-.doc-sidebar .toc li { margin: 0; }
-.doc-sidebar .toc a { display: block; padding: .25rem .5rem; color: var(--muted); text-decoration: none; font-size: .85rem; border-radius: 5px; }
-.doc-sidebar .toc a:hover { color: var(--tx); background: var(--surf2); }
-
-/* ── collapsible sidebar ─────────────────────────────── */
-.doc-sidebar { transition: width .25s ease, padding .25s ease, min-width .25s ease, border-width .25s ease; overflow: hidden; }
-body.sb-collapsed .doc-sidebar { width: 0 !important; min-width: 0 !important; padding: 0 !important; border: none !important; }
-.sb-toggle {
-  position: sticky; top: 1.25rem; align-self: flex-start; flex-shrink: 0;
-  width: 20px; min-width: 20px; height: 32px; margin-top: 1.25rem;
-  background: var(--surf2); border: 1px solid var(--brd);
-  border-left: none; border-radius: 0 6px 6px 0;
-  color: var(--muted); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  padding: 0; z-index: 10; transition: color .15s, border-color .15s, background .15s;
-}
-.sb-toggle:hover { color: var(--acc); border-color: var(--acc); background: var(--surf); }
-.sb-toggle svg { transition: transform .25s ease; }
-body.sb-collapsed .sb-toggle { border-left: 1px solid var(--brd); border-radius: 6px; }
-body.sb-collapsed .sb-toggle svg { transform: rotate(180deg); }
-@media (max-width: 768px) { .sb-toggle { display: none; } }
-/* ───────────────────────────────────────────────────── */
-
-
-
-
-
-.page-lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.5rem; line-height: 1.65; border-bottom: 1px solid var(--brd); padding-bottom: 1.25rem; }
-.doc-callout{border-radius:var(--r);padding:.75rem 1.1rem;margin:1.1rem 0;border-left:3px solid var(--acc);background:rgba(88,166,255,.07);font-size:.9rem}
-.doc-callout.warn{border-color:var(--yel);background:rgba(210,153,34,.07)}
-.doc-callout.tip{border-color:var(--grn);background:rgba(63,185,80,.07)}
-.doc-callout.danger{border-color:var(--red);background:rgba(248,81,73,.07)}
-.doc-callout strong{color:inherit}
-.doc-pipeline{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem 1.5rem;margin:1rem 0;overflow-x:auto;font-family:'Courier New',monospace;font-size:.82rem;line-height:1.8;color:var(--code);white-space:pre}
-.cmp-yes{color:var(--grn);font-weight:600}
-.cmp-partial{color:var(--yel);font-weight:600}
-.cmp-no{color:var(--muted)}
-.doc-metrics{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0 1.5rem}
-.doc-metric{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:.9rem 1.25rem;text-align:center;min-width:120px}
-.doc-metric .metric-value{font-size:1.8rem;font-weight:800;color:var(--acc);line-height:1.1}
-.doc-metric .metric-label{font-size:.75rem;color:var(--muted);margin-top:.25rem}
-.doc-two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1rem 0}
-.doc-two-col>div{background:var(--surf);border:1px solid var(--brd);border-radius:var(--r);padding:1.25rem}
-.doc-two-col h4{font-size:.85rem;font-weight:700;color:var(--acc);margin-bottom:.75rem;padding-bottom:.4rem;border-bottom:1px solid var(--brd);text-transform:uppercase;letter-spacing:.06em}
-.doc-badge{display:inline-block;font-size:.72rem;font-weight:700;padding:.2rem .55rem;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;margin:.1rem}
-.doc-badge.green{background:rgba(63,185,80,.15);color:var(--grn);border:1px solid rgba(63,185,80,.3)}
-.doc-badge.blue{background:rgba(88,166,255,.15);color:var(--acc);border:1px solid rgba(88,166,255,.3)}
-.doc-badge.yellow{background:rgba(210,153,34,.15);color:var(--yel);border:1px solid rgba(210,153,34,.3)}
-@media(max-width:700px){{.doc-two-col{{grid-template-columns:1fr}}.doc-metrics{{gap:.6rem}}}}
 </style>
 </head>
 <body>
@@ -417,7 +83,6 @@ var idx=[
   {title:"Kernel Exploits",href:"kernel-exploits.html",kw:["kernel", "exploit", "ret2usr", "smep", "kaslr", "lpe", "privilege escalation", "lkm"],icon:"lock",desc:"Kernel LPE, ret2usr, SMEP bypass"},
   {title:"LoRA Fine-tuning",href:"finetune.html",kw:["finetune", "lora", "sft", "dataset", "jsonl", "training", "model", "fine-tuning"],icon:"cpu",desc:"LoRA fine-tuning on security data"},
   {title:"MCP Tools Reference",href:"mcp-tools.html",kw:["mcp", "tools", "claude desktop", "vscode", "server", "api", "tools reference"],icon:"server",desc:"Claude Desktop / VS Code MCP tools"},
-  {title:"Web UI",href:"web-ui.html",kw:["web ui", "browser", "interface", "exploit dev", "binary lab", "recon", "cve", "streaming", "sse"],icon:"zap",desc:"Browser-based interface for exploit dev & binary reversing"},
 ];
 var inp=document.getElementById('nav-search-input');
 var box=document.getElementById('search-results');
@@ -499,15 +164,14 @@ document.addEventListener('click',function(e){
 
 <div class="doc-layout">
 <aside class="doc-sidebar">
-
 <p class="sidebar-section">On this page</p>
 <a href="#overview">Overview</a>
-<a href="#start">Start the UI</a>
-<a href="#dev-exploit">Dev Exploit</a>
-<a href="#exploit-plan">Exploit Plan</a>
+<a href="#start">Starting the UI</a>
+<a href="#exploit-dev">Exploit Dev</a>
 <a href="#binary-lab">Binary Lab</a>
-<a href="#recon">Recon Tab</a>
-<a href="#system">System Tab</a>
+<a href="#recon">Recon</a>
+<a href="#system">System</a>
+<a href="#exploit-plan">Exploit Plan</a>
 <a href="#all-tools">All Tools</a>
 <hr class="sidebar-sep">
 <p class="sidebar-section">Navigation</p>
@@ -526,161 +190,116 @@ document.addEventListener('click',function(e){
 <p class="sidebar-section">Links</p>
 <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub ↗</a>
 <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues ↗</a>
-
 </aside>
-<button class="sb-toggle" id="sb-toggle" aria-label="Toggle sidebar" title="Toggle sidebar">
-<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-</button>
-<main class="doc-content" style="max-width:860px">
-  <h1 id="overview">Web UI</h1>
-  <p class="page-lead">binoracle ships a browser-based interface that covers both pillars: <strong>CVE exploit development</strong> and <strong>binary reversing</strong>. All output streams live via SSE — no page reloads, no polling. Everything runs locally on port 8000; no data leaves your machine.</p>
+<div class="doc-content">
+<h1 id="overview">Web UI</h1>
+<p>binoracle ships a full visual interface that exposes every CLI capability — no terminal needed. Launch it with:</p>
+<pre><code>binoracle web</code></pre>
+<p>Then open <strong>http://localhost:8000</strong> in your browser. The server streams all output live via Server-Sent Events (SSE), so the page updates in real time as an investigation runs.</p>
 
-  <h2 id="start">Start the UI</h2>
-  <p>Launch the web server from any terminal:</p>
-  <pre><code>binoracle web</code></pre>
-  <p>Open <code>http://localhost:8000</code> in your browser. The terminal prints <code>bin0racle Exploit Dev → http://localhost:8000</code> when ready. All tabs and tools are immediately available; no login or API key is required beyond your local LLM configuration.</p>
+<h2 id="start">Starting the UI</h2>
+<div class="code-card">
+<div class="code-header"><span class="dot dot-red"></span><span class="dot dot-yel"></span><span class="dot dot-grn"></span><span style="font-family:monospace;font-size:.82rem;color:var(--muted)">terminal</span></div>
+<pre><span class="comment"># default: port 8000</span>
+<span class="cmd">binoracle web</span>
 
-  <div class="doc-callout tip"><strong>Tip:</strong> Run <code>binoracle doctor</code> in the System tab first to verify your environment (Ghidra, radare2, Python deps) before starting a session.</div>
+<span class="comment"># custom port</span>
+<span class="cmd">binoracle web --port 9090</span></pre>
+</div>
 
-  <h2 id="dev-exploit">Dev Exploit tab</h2>
-  <p>The main run panel at the top of the page drives CVE exploit research. Select a mode and enter a CVE ID or description, then click <strong>Run</strong>.</p>
+<h2 id="tabs">Tabs Reference</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Tab</th><th>Purpose</th><th>Key inputs</th></tr></thead>
+<tbody>
+<tr><td><strong>Live Log</strong></td><td>Real-time streaming output from any running job</td><td>Auto-populated</td></tr>
+<tr><td><strong>Report</strong></td><td>Professional investigation report with CVSS badge, phases, evidence</td><td>Auto-generated on result</td></tr>
+<tr><td><strong>Evidence</strong></td><td>All collected evidence with copy-to-clipboard buttons</td><td>Auto-populated</td></tr>
+<tr><td><strong>HTTP Requests</strong></td><td>Captured HTTP traffic from the lab container</td><td>Auto-populated</td></tr>
+<tr><td><strong>Screenshots</strong></td><td>Lab screenshots captured during exploitation</td><td>Auto-populated</td></tr>
+<tr><td><strong>Binary Lab</strong></td><td>File upload + all binary analysis and exploitation tools</td><td>Upload file, pick tool</td></tr>
+<tr><td><strong>Recon</strong></td><td>Autonomous recon: CVE discovery, PHP inventory, source scan</td><td>Scope/URL/path</td></tr>
+<tr><td><strong>Exploit Plan</strong></td><td>Generate a structured exploitation plan from a CVE or description</td><td>CVE ID or text</td></tr>
+<tr><td><strong>System</strong></td><td>Doctor check, MCP config, batch investigation</td><td>None / CVE IDs</td></tr>
+<tr><td><strong>All Tools</strong></td><td>Searchable catalog of all 50+ CLI commands</td><td>Search bar</td></tr>
+</tbody>
+</table>
+</div>
 
-  <table>
-    <thead><tr><th>Mode</th><th>CLI command</th><th>What it does</th></tr></thead>
-    <tbody>
-      <tr><td><code>Dev Exploit</code></td><td><code>binoracle cve &lt;CVE-ID&gt;</code></td><td>Full autonomous exploit research: NVD lookup → LLM hypothesis → source download → code analysis → PoC generation → verification</td></tr>
-      <tr><td><code>Exploit Plan</code></td><td><code>binoracle cveplan &lt;query&gt;</code></td><td>Generate an exploitation plan for a CVE ID or plain-text vulnerability description without running a full exploit attempt</td></tr>
-    </tbody>
-  </table>
+<h2 id="exploit-dev">Exploit Dev tab</h2>
+<p>The main tab. Enter a CVE ID (<code>CVE-2024-1071</code>) and pick a mode from the dropdown:</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Mode</th><th>Command</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><strong>Dev Exploit</strong></td><td><code>binoracle cve</code></td><td>Full autonomous exploit development — spins up a Docker lab, generates PoC, verifies, exports report</td></tr>
+<tr><td><strong>Exploit Plan</strong></td><td><code>binoracle cveplan</code></td><td>Structured exploitation plan from a CVE ID or description (no lab needed)</td></tr>
+</tbody>
+</table>
+</div>
+<p>The phase progress bar tracks NVD lookup → LLM hypothesis → code analysis → lab → PoC → verify → report as the investigation runs. The CVSS badge, description, affected version, and PoC source link appear in the result panel.</p>
 
-  <p>Output streams to the <strong>Live Log</strong> tab in real time. When a run completes, switch to <strong>Report</strong> for the structured markdown writeup, <strong>Evidence</strong> for extracted artefacts, <strong>HTTP Requests</strong> for captured traffic, and <strong>Screenshots</strong> if the run captured browser evidence. The <strong>Export PDF</strong> button activates once a report is ready.</p>
+<h2 id="binary-lab">Binary Lab tab</h2>
+<p>Drag and drop any binary file (ELF, PE, APK, Mach-O, WASM, JAR, .NET, Go, Rust, firmware, HAR, SQLite, EVM, JS, core dump) or use the Browse button. The file is uploaded to the server and auto-identified. Then pick a tool group:</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Group</th><th>Tools</th></tr></thead>
+<tbody>
+<tr><td><strong>Static Analysis</strong></td><td>identify, elf, pe, macho, apk, java, wasm, dotnet, go, rust, firmware, har, sqlite, evm, asar, plist, js, rawshellcode, core, jeb</td></tr>
+<tr><td><strong>Analysis</strong></td><td>secrets, funcid, analyze, explain, audit, heap, triage, hunt</td></tr>
+<tr><td><strong>Exploitation</strong></td><td>gadgets, arsenal, rop, shellcode, fmtstring, primitives, autopoc, autopwn</td></tr>
+<tr><td><strong>Fuzzing</strong></td><td>fuzz, exploit-skeleton, cve-corpus</td></tr>
+<tr><td><strong>Utilities</strong></td><td>cyclic (pattern generation), shellcode (arch), kernel-exploit (technique) — no file required, prompts for argument</td></tr>
+</tbody>
+</table>
+</div>
+<p>All output streams live to the terminal below the tool buttons. The running button is highlighted in orange.</p>
 
-  <h2 id="exploit-plan">Exploit Plan tab</h2>
-  <p>Use this tab to generate an exploitation plan interactively, without uploading a binary or running a full CVE pipeline. Type a CVE ID or describe the vulnerability in plain text and press <strong>Plan</strong>.</p>
+<h2 id="recon">Recon tab</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Section</th><th>Command</th><th>Input</th></tr></thead>
+<tbody>
+<tr><td><strong>Auto-Discover</strong></td><td><code>binoracle autodiscover SCOPE</code></td><td>Technology scope: <code>wordpress-plugin</code>, <code>python-flask</code>, <code>nodejs</code>, <code>php</code>, <code>linux-kernel</code>, <code>apache</code></td></tr>
+<tr><td><strong>PHP Estate</strong></td><td><code>binoracle phpestate [URL]</code></td><td>Leave empty for local PHP inventory; add a URL to also probe remote headers</td></tr>
+<tr><td><strong>Scan</strong></td><td><code>binoracle scan PATH</code></td><td>Absolute path to a local source directory</td></tr>
+</tbody>
+</table>
+</div>
 
-  <pre><code># Examples
-CVE-2024-1071
-SQL injection in WordPress plugin via unauthenticated REST endpoint
-Stored XSS in comment field, no sanitisation before wp_kses
-</code></pre>
+<h2 id="system">System tab</h2>
+<ul>
+<li><strong>Environment Check</strong> — runs <code>binoracle doctor</code>: verifies LLM backend, all oracle modules, RAG knowledge base, and tool availability</li>
+<li><strong>MCP Server</strong> — config snippet for Claude Desktop, Continue, or any MCP client. Launch with <code>binoracle mcp</code></li>
+<li><strong>Watch CVE Feed</strong> — instructions for running <code>binoracle investigate-watch</code> in a terminal to auto-investigate new CVEs from Telegram</li>
+<li><strong>Batch Investigation</strong> — enter CVE IDs separated by spaces, runs <code>binoracle investigate-batch</code> in parallel</li>
+</ul>
 
-  <div class="doc-callout warn"><strong>Note:</strong> For binary-specific questions (e.g. "what gadgets are available in this ELF?"), upload the file in Binary Lab and use the <code>ask</code> command there instead.</div>
+<h2 id="exploit-plan">Exploit Plan tab</h2>
+<p>Runs <code>binoracle cveplan</code>. Enter a CVE ID (<code>CVE-2024-1071</code>) or a plain-text description ("SQL injection in Ultimate Member") to get a structured exploitation plan including:</p>
+<ul>
+<li>Vulnerability class and primitive</li>
+<li>Phase-by-phase approach (recon, primitive, objective)</li>
+<li>Pwntools skeleton when a binary is involved</li>
+</ul>
+<p>For binary-specific questions, upload the file in Binary Lab and use the <strong>Explain</strong> or <strong>Audit</strong> buttons there.</p>
 
-  <h2 id="binary-lab">Binary Lab tab</h2>
-  <p>Upload any supported binary (ELF, PE, Mach-O, APK, firmware, WASM, …) and run the full reversing toolkit. After upload a file ID is assigned and all subsequent commands target that file until you upload another.</p>
-
-  <h3>Static Analysis</h3>
-  <table>
-    <thead><tr><th>Button</th><th>Command</th><th>Output</th></tr></thead>
-    <tbody>
-      <tr><td>Identify</td><td><code>identify</code></td><td>File format, arch, compiler, stripped, PIE, NX, stack canaries</td></tr>
-      <tr><td>ELF / PE / Mach-O / APK …</td><td><code>elf</code> / <code>pe</code> / <code>macho</code> / <code>apk</code> …</td><td>Format-specific deep analysis</td></tr>
-      <tr><td>Secrets</td><td><code>secrets</code></td><td>Hardcoded keys, tokens, URLs, credentials</td></tr>
-      <tr><td>Function ID</td><td><code>funcid</code></td><td>Identify library functions in stripped binaries</td></tr>
-      <tr><td>Analyze</td><td><code>analyze</code></td><td>Control-flow graph, complexity, interesting functions</td></tr>
-      <tr><td>Explain</td><td><code>explain</code></td><td>High-level natural-language description of the binary</td></tr>
-      <tr><td>Audit</td><td><code>audit</code></td><td>Security audit: memory bugs, format strings, integer issues</td></tr>
-      <tr><td>Heap Analysis</td><td><code>heap</code></td><td>Heap layout, allocator type, UAF/double-free candidates</td></tr>
-      <tr><td>Triage</td><td><code>triage</code></td><td>Quick crash triage — identify vulnerability class and control flow</td></tr>
-      <tr><td>Hunt</td><td><code>hunt</code></td><td>Pattern-driven vulnerability hunt across all functions</td></tr>
-    </tbody>
-  </table>
-
-  <h3>Exploitation</h3>
-  <table>
-    <thead><tr><th>Button</th><th>Command</th><th>Output</th></tr></thead>
-    <tbody>
-      <tr><td>Gadgets</td><td><code>gadgets</code></td><td>ROP/JOP gadget catalogue</td></tr>
-      <tr><td>Arsenal</td><td><code>arsenal</code></td><td>Recommended exploit primitives and techniques</td></tr>
-      <tr><td>ROP Chain</td><td><code>rop</code></td><td>Automated ROP chain assembly</td></tr>
-      <tr><td>Format String</td><td><code>fmtstring</code></td><td>Format-string exploit skeleton</td></tr>
-      <tr><td>Primitives</td><td><code>primitives</code></td><td>Read/write/execute primitive candidates</td></tr>
-      <tr><td>Auto PoC</td><td><code>autopoc</code></td><td>Automated proof-of-concept generation</td></tr>
-      <tr><td>Auto Pwn</td><td><code>autopwn</code></td><td>End-to-end automated exploitation attempt</td></tr>
-    </tbody>
-  </table>
-
-  <h3>Fuzzing &amp; CVE corpus</h3>
-  <table>
-    <thead><tr><th>Button</th><th>Command</th><th>Output</th></tr></thead>
-    <tbody>
-      <tr><td>Fuzz</td><td><code>fuzz</code></td><td>Generate fuzzing harness and seed corpus</td></tr>
-      <tr><td>Exploit Skeleton</td><td><code>exploit-skeleton</code></td><td>Template exploit script for the target binary</td></tr>
-      <tr><td>CVE Corpus</td><td><code>cve-corpus</code></td><td>Map binary to known CVE patterns</td></tr>
-    </tbody>
-  </table>
-
-  <h3>Utilities (no file needed)</h3>
-  <p>These buttons prompt for a parameter and run without an uploaded binary.</p>
-  <table>
-    <thead><tr><th>Button</th><th>Command</th><th>Parameter</th></tr></thead>
-    <tbody>
-      <tr><td>Cyclic Pattern</td><td><code>cyclic &lt;N&gt;</code></td><td>Pattern length (e.g. <code>100</code>)</td></tr>
-      <tr><td>Generate Shellcode</td><td><code>shellcode &lt;arch&gt;</code></td><td>Architecture (e.g. <code>amd64</code>, <code>arm64</code>)</td></tr>
-      <tr><td>Kernel Exploit</td><td><code>kernel-exploit &lt;type&gt;</code></td><td>Technique (e.g. <code>ret2usr</code>, <code>UAF</code>, <code>dirty-pipe</code>)</td></tr>
-    </tbody>
-  </table>
-
-  <h2 id="recon">Recon tab</h2>
-  <p>Surface-level recon tools for discovering vulnerabilities before diving into exploit dev.</p>
-
-  <table>
-    <thead><tr><th>Tool</th><th>Command</th><th>Parameter</th><th>What it does</th></tr></thead>
-    <tbody>
-      <tr><td>Auto-Discover</td><td><code>binoracle autodiscover &lt;scope&gt;</code></td><td>Technology scope keyword</td><td>Autonomously discovers vulnerabilities in a codebase or running service matching the scope (e.g. <code>wordpress-plugin</code>, <code>python-flask</code>, <code>nodejs</code>, <code>linux-kernel</code>)</td></tr>
-      <tr><td>PHP Estate</td><td><code>binoracle phpestate [url]</code></td><td>Target URL (optional)</td><td>Maps PHP files, routes, sinks, and input sources for a PHP application</td></tr>
-      <tr><td>Scan</td><td><code>binoracle scan &lt;path&gt;</code></td><td>Local directory or file path</td><td>Static security scan: finds dangerous functions, injection sinks, and common patterns</td></tr>
-    </tbody>
-  </table>
-
-  <p>All output streams to the Recon terminal panel inside the tab. Each tool can be re-run with different parameters without leaving the page.</p>
-
-  <h2 id="system">System tab</h2>
-  <p>System-level tools for environment health, CVE feed monitoring, and batch investigation.</p>
-
-  <table>
-    <thead><tr><th>Tool</th><th>Command</th><th>Notes</th></tr></thead>
-    <tbody>
-      <tr><td>Doctor</td><td><code>binoracle doctor</code></td><td>Checks Python version, optional tools (Ghidra, r2, semgrep, …), LLM connectivity, and cache state</td></tr>
-      <tr><td>MCP Server</td><td><code>binoracle mcp</code></td><td>Starts the stdio MCP server. Config snippet is shown for Claude Desktop and VS Code</td></tr>
-      <tr><td>Watch CVE Feed</td><td><code>binoracle investigate-watch</code></td><td>Subscribes to NVD/OSV feed and runs autonomous research on new CVEs matching your filters</td></tr>
-      <tr><td>Batch Investigation</td><td><code>binoracle investigate-batch CVE-1 CVE-2 …</code></td><td>Run the full CVE pipeline on multiple CVE IDs in sequence</td></tr>
-    </tbody>
-  </table>
-
-  <h2 id="all-tools">All Tools tab</h2>
-  <p>A searchable catalogue of every binoracle command. Use it as a quick reference or click any entry to copy the full CLI invocation.</p>
-  <pre><code>binoracle tools        # same list in the terminal</code></pre>
-
-  <hr>
-
-  <h2>Architecture note</h2>
-  <p>The web server (<code>binoracle web</code>) spawns <code>python -m binoracle &lt;cmd&gt; [args]</code> as a subprocess for every run. Output is streamed back to the browser over <strong>Server-Sent Events (SSE)</strong> — a persistent HTTP connection where the server pushes newline-delimited <code>data:</code> frames. Each job gets a <code>job_id</code>; the browser subscribes to <code>/api/stream/&lt;job_id&gt;</code> and renders lines as they arrive.</p>
-  <p>No WebSocket, no polling. The binary upload endpoint (<code>/api/binary/upload</code>) stores the file under a session-scoped <code>file_id</code> that subsequent commands reference. Commands that need no binary (ask, cveplan, cyclic, shellcode, …) use the reserved <code>__nofile__</code> identifier.</p>
-</main>
+<h2 id="all-tools">All Tools catalog</h2>
+<p>A searchable grid of every CLI command. Use the search box to filter by name, description, or category. Click a card to jump to the right tab: CVE tools switch to Exploit Dev, binary tools switch to Binary Lab, Exploit Plan opens that tab.</p>
+<p>Categories: CVE, BINARY, EXPLOIT, ANALYSIS, DATA, DYNAMIC, LEARN, SYSTEM.</p>
+</div>
+</div>
 
 <footer>
-  <span>binoracle · <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">github.com/beafn28/binoracle</a></span>
-  <div class="footer-links">
-    <a href="index.html">Docs</a>
-    <a href="tutorial.html">Tutorial</a>
-    <a href="roadmap.html">Roadmap</a>
-    <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues</a>
+  <div class="footer">
+    <span>MIT &copy; 2024&ndash;2026 Beatriz Fresno Naumova</span>
+    <div class="footer-links">
+      <a href="index.html">Home</a>
+      <a href="roadmap.html">Roadmap</a>
+      <a href="https://github.com/beafn28/binoracle/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/beafn28/binoracle" target="_blank" rel="noopener">GitHub</a>
+    </div>
   </div>
 </footer>
-
-<script>
-(function(){
-  var btn = document.getElementById('sb-toggle');
-  if (!btn) return;
-  var collapsed = false;
-  try { collapsed = localStorage.getItem('sb-collapsed') === '1'; } catch(e) {}
-  if (collapsed) document.body.classList.add('sb-collapsed');
-  btn.addEventListener('click', function(){
-    var c = document.body.classList.toggle('sb-collapsed');
-    try { localStorage.setItem('sb-collapsed', c ? '1' : '0'); } catch(e) {}
-  });
-})();
-</script>
 </body>
 </html>

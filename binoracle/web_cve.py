@@ -797,14 +797,13 @@ main {
 
 /* ── export btn ── */
 #export-btn {
-  margin-top: 4px; align-self: flex-start;
-  background: none; border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-family: var(--sans); font-size: 13px;
-  padding: 7px 16px; cursor: pointer; display: flex; align-items: center; gap: 7px;
-  transition: border-color .15s;
+  background: rgba(0,212,255,.08); border: 1px solid rgba(0,212,255,.4); border-radius: 6px;
+  color: var(--cyan); font-family: var(--sans); font-size: 13px; font-weight: 600;
+  padding: 7px 16px; cursor: pointer; display: flex; align-items: center;
+  transition: background .15s, border-color .15s; white-space: nowrap; flex-shrink: 0;
 }
-#export-btn:hover { border-color: var(--cyan); color: var(--cyan); }
-#export-btn:disabled { opacity: .4; cursor: not-allowed; }
+#export-btn:hover { background: rgba(0,212,255,.18); border-color: var(--cyan); }
+#export-btn:disabled { opacity: .35; cursor: not-allowed; }
 
 /* ── history panel ── */
 #history-btn {
@@ -995,6 +994,23 @@ main {
 .binlab-util-btn { border-color: var(--dim) !important; color: var(--dim) !important; }
 .binlab-util-btn:hover { border-color: var(--cyan) !important; color: var(--cyan) !important; }
 
+/* ── binary lab sub-nav ── */
+.binlab-subnav {
+  display: flex; gap: 2px; padding: 0 20px 0;
+  border-bottom: 1px solid var(--border); margin-bottom: 0;
+}
+.binlab-subbtn {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  letter-spacing: .07em; padding: 10px 18px; cursor: pointer;
+  background: none; border: none; color: var(--dim);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .15s, border-color .15s;
+}
+.binlab-subbtn:hover { color: var(--text); }
+.binlab-subbtn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+.binlab-panel { display: none; }
+.binlab-panel.active { display: block; }
+
 /* ── ask oracle ── */
 .ask-wrap { padding: 16px 20px; display: flex; flex-direction: column; height: 100%; }
 .ask-desc { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
@@ -1174,7 +1190,7 @@ main {
     <img src="/static/logo.png" alt="bin0racle logo" id="logo-img">
     <div>
       <div class="h-title">bin<span class="o">0</span>racle</div>
-      <div class="h-sub">EXPLOIT DEV &amp; BINARY REVERSING · @beafn28</div>
+      <div class="h-sub">AUTONOMOUS EXPLOIT DEV · @beafn28</div>
     </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
@@ -1209,7 +1225,11 @@ main {
       </select>
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
       <button id="run-btn">Run</button>
-      <button id="export-btn" disabled>Export PDF</button>
+      <button id="export-btn" disabled title="Save as PDF">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
+          <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>
+        </svg>Export PDF
+      </button>
     </div>
 
     <div id="verdict"></div>
@@ -1221,13 +1241,11 @@ main {
         <button class="tab-btn" data-tab="report">Report</button>
         <button class="tab-btn" data-tab="evidence">Evidence</button>
         <button class="tab-btn" data-tab="binary" id="tab-btn-binary" style="display:none">Binary Analysis</button>
-        <button class="tab-btn" data-tab="http">HTTP Requests</button>
         <button class="tab-btn" data-tab="screenshots">Screenshots</button>
         <button class="tab-btn" data-tab="binlab">Binary Lab</button>
         <button class="tab-btn" data-tab="recon">Recon</button>
         <button class="tab-btn" data-tab="ask">Exploit Plan</button>
         <button class="tab-btn" data-tab="system">System</button>
-        <button class="tab-btn" data-tab="tools">All Tools</button>
       </div>
 
       <div id="tab-log" class="tab-pane active">
@@ -1242,15 +1260,11 @@ main {
         <div id="evidence-content" class="evidence-grid">
           <div class="empty-msg">Run a CVE investigation to see evidence</div>
         </div>
+        <div id="http-content" style="margin-top:8px"></div>
       </div>
       <div id="tab-binary" class="tab-pane">
         <div id="binary-content" class="binary-wrap">
           <div class="empty-msg">No binary analysis data for this CVE</div>
-        </div>
-      </div>
-      <div id="tab-http" class="tab-pane">
-        <div id="http-content">
-          <div class="empty-msg">HTTP requests will appear here after the run</div>
         </div>
       </div>
       <div id="tab-screenshots" class="tab-pane">
@@ -1260,7 +1274,8 @@ main {
       </div>
       <div id="tab-binlab" class="tab-pane">
         <div id="binlab-content">
-          <div class="binlab-upload-zone" id="binlab-drop">
+          <!-- Upload zone (hidden after file load) -->
+          <div class="binlab-upload-zone" id="binlab-drop" style="margin:16px 20px 0">
             <div class="binlab-drop-inner">
               <div class="binlab-drop-icon">[ DROP BINARY HERE ]</div>
               <div class="binlab-drop-sub">ELF · PE · APK · Mach-O · WASM · JAR · .NET · Firmware · HAR · SQLite · EVM · JS</div>
@@ -1270,61 +1285,75 @@ main {
               </label>
             </div>
           </div>
+          <!-- File info + tools (shown after upload) -->
           <div id="binlab-info" style="display:none">
-            <div class="binlab-file-row">
+            <div class="binlab-file-row" style="margin:12px 20px 0;padding-bottom:12px;border-bottom:1px solid var(--border)">
               <span id="binlab-fname" class="binlab-fname"></span>
               <span id="binlab-fsize" class="binlab-fsize"></span>
               <button class="binlab-clear-btn" id="binlab-clear">Remove</button>
             </div>
-            <div class="binlab-tools" id="binlab-tools">
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">STATIC ANALYSIS</div>
-                <div class="binlab-tool-row" id="binlab-static-row"></div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">EXPLOITATION</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn" data-cmd="gadgets">ROP Gadgets</button>
-                  <button class="binlab-tool-btn" data-cmd="arsenal">ROP Arsenal</button>
-                  <button class="binlab-tool-btn" data-cmd="rop">Build ROP Chain</button>
-                  <button class="binlab-tool-btn" data-cmd="shellcode">Shellcode</button>
-                  <button class="binlab-tool-btn" data-cmd="fmtstring">Format String</button>
-                  <button class="binlab-tool-btn" data-cmd="primitives">Primitives</button>
-                  <button class="binlab-tool-btn" data-cmd="autopoc" style="border-color:var(--orange);color:var(--orange)">Auto-PoC</button>
-                  <button class="binlab-tool-btn" data-cmd="autopwn" style="border-color:#ff4444;color:#ff4444">Auto-Pwn</button>
+            <!-- Sub-nav -->
+            <div class="binlab-subnav">
+              <button class="binlab-subbtn active" data-panel="exploit">EXPLOIT DEV AUTÓNOMO</button>
+              <button class="binlab-subbtn" data-panel="analysis">ANÁLISIS DE BINARIOS</button>
+            </div>
+            <!-- Panel 1: Exploit Dev -->
+            <div class="binlab-panel active" id="binlab-panel-exploit" style="padding:14px 20px 0">
+              <div class="binlab-tools">
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">EXPLOITATION</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn" data-cmd="gadgets">ROP Gadgets</button>
+                    <button class="binlab-tool-btn" data-cmd="arsenal">ROP Arsenal</button>
+                    <button class="binlab-tool-btn" data-cmd="rop">Build ROP Chain</button>
+                    <button class="binlab-tool-btn" data-cmd="shellcode">Shellcode</button>
+                    <button class="binlab-tool-btn" data-cmd="fmtstring">Format String</button>
+                    <button class="binlab-tool-btn" data-cmd="primitives">Primitives</button>
+                    <button class="binlab-tool-btn" data-cmd="autopoc" style="border-color:var(--orange);color:var(--orange)">Auto-PoC</button>
+                    <button class="binlab-tool-btn" data-cmd="autopwn" style="border-color:#ff4444;color:#ff4444">Auto-Pwn</button>
+                  </div>
                 </div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">ANALYSIS</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn" data-cmd="secrets">Secrets Scan</button>
-                  <button class="binlab-tool-btn" data-cmd="funcid">Function ID</button>
-                  <button class="binlab-tool-btn" data-cmd="analyze">Full Analysis</button>
-                  <button class="binlab-tool-btn" data-cmd="explain">Explain</button>
-                  <button class="binlab-tool-btn" data-cmd="audit">Security Audit</button>
-                  <button class="binlab-tool-btn" data-cmd="heap">Heap Analysis</button>
-                  <button class="binlab-tool-btn" data-cmd="triage">Triage</button>
-                  <button class="binlab-tool-btn" data-cmd="hunt">Vuln Hunt</button>
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">FUZZING</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn" data-cmd="fuzz">Fuzz Harness</button>
+                    <button class="binlab-tool-btn" data-cmd="exploit-skeleton">Exploit Skeleton</button>
+                    <button class="binlab-tool-btn" data-cmd="cve-corpus">CVE Corpus</button>
+                  </div>
                 </div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">FUZZING</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn" data-cmd="fuzz">Fuzz Harness</button>
-                  <button class="binlab-tool-btn" data-cmd="exploit-skeleton">Exploit Skeleton</button>
-                  <button class="binlab-tool-btn" data-cmd="cve-corpus">CVE Corpus</button>
-                </div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">UTILITIES (no file needed)</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="cyclic" data-prompt="Pattern length (e.g. 100):">Cyclic Pattern</button>
-                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="shellcode" data-prompt="Architecture (e.g. amd64):">Generate Shellcode</button>
-                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="kernel-exploit" data-prompt="Kernel exploit type (e.g. ret2usr, UAF, dirty-pipe):">Kernel Exploit</button>
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">UTILITIES (no file needed)</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn binlab-util-btn" data-cmd="cyclic" data-prompt="Pattern length (e.g. 100):">Cyclic Pattern</button>
+                    <button class="binlab-tool-btn binlab-util-btn" data-cmd="shellcode" data-prompt="Architecture (e.g. amd64):">Generate Shellcode</button>
+                    <button class="binlab-tool-btn binlab-util-btn" data-cmd="kernel-exploit" data-prompt="Kernel exploit type (e.g. ret2usr, UAF, dirty-pipe):">Kernel Exploit</button>
+                  </div>
                 </div>
               </div>
             </div>
-            <div id="binlab-terminal" class="binlab-terminal">
+            <!-- Panel 2: Binary Analysis -->
+            <div class="binlab-panel" id="binlab-panel-analysis" style="padding:14px 20px 0">
+              <div class="binlab-tools">
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">STATIC ANALYSIS</div>
+                  <div class="binlab-tool-row" id="binlab-static-row"></div>
+                </div>
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">DEEP ANALYSIS</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn" data-cmd="secrets">Secrets Scan</button>
+                    <button class="binlab-tool-btn" data-cmd="funcid">Function ID</button>
+                    <button class="binlab-tool-btn" data-cmd="analyze">Full Analysis</button>
+                    <button class="binlab-tool-btn" data-cmd="explain">Explain</button>
+                    <button class="binlab-tool-btn" data-cmd="audit">Security Audit</button>
+                    <button class="binlab-tool-btn" data-cmd="heap">Heap Analysis</button>
+                    <button class="binlab-tool-btn" data-cmd="triage">Triage</button>
+                    <button class="binlab-tool-btn" data-cmd="hunt">Vuln Hunt</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="binlab-terminal" class="binlab-terminal" style="margin:14px 20px 20px">
               <div class="empty-msg">Select a tool above to run</div>
             </div>
           </div>
@@ -1408,14 +1437,6 @@ main {
         </div>
       </div>
 
-      <div id="tab-tools" class="tab-pane">
-        <div class="tools-catalog">
-          <div class="tools-search-row">
-            <input id="tools-search" class="tools-search" type="text" placeholder="Filter tools…" autocomplete="off">
-          </div>
-          <div class="tools-grid" id="tools-grid"></div>
-        </div>
-      </div>
     </div>
   </main>
 </div>
@@ -1495,7 +1516,7 @@ main {
     $('log-terminal').innerHTML = '';
     $('report-content').innerHTML = '<div class="empty-msg">Run a CVE investigation to generate the report</div>';
     $('evidence-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
-    $('http-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
+    $('http-content').innerHTML = '';
     $('shots-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
     $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
     $('tab-btn-binary').style.display = 'none';
@@ -1965,10 +1986,12 @@ main {
     const container = $('http-content');
     const reqs = ev.http_requests || ev.http_log || [];
     if (!reqs.length) {
-      container.innerHTML = '<div class="empty-msg">No HTTP requests captured</div>';
+      container.innerHTML = '';
       return;
     }
-    container.innerHTML = reqs.map(r => {
+    // Show HTTP requests as a section inside the Evidence tab
+    const header = `<div class="ev-card-head" style="background:rgba(255,158,44,.08);color:var(--orange);padding:7px 12px;font-size:10px;font-weight:700;letter-spacing:.08em;border:1px solid var(--border);border-bottom:none;border-radius:6px 6px 0 0;margin-top:8px">HTTP REQUESTS</div>`;
+    const rows = reqs.map(r => {
       const method = (r.method || 'POST').toUpperCase();
       const url    = r.url || r.endpoint || '';
       const status = r.status || r.status_code || '';
@@ -1986,6 +2009,7 @@ main {
           ${resp ? `<div class="http-line" style="color:var(--dim)">${escHtml(String(resp).slice(0,200))}</div>` : ''}
         </div>`;
     }).join('');
+    container.innerHTML = header + `<div style="border:1px solid var(--border);border-radius:0 0 6px 6px;padding:8px 12px">${rows}</div>`;
   }
 
   function renderBinary(d) {
@@ -2302,133 +2326,6 @@ main {
     askInput.addEventListener('keydown', e => { if (e.key === 'Enter') runAsk(); });
   })();
 
-  // ── Tools Catalog ─────────────────────────────────────────────────────────
-  (function () {
-    const TOOLS = [
-      // CVE
-      {name:'cve',       cat:'CVE',       cli:'binoracle cve CVE-XXXX-YYYY',   desc:'Full autonomous exploit development for a CVE in an isolated lab'},
-      {name:'cveplan',   cat:'CVE',       cli:'binoracle cveplan CVE-XXXX',    desc:'Plan exploitation strategy for a CVE without running it'},
-      {name:'triage',    cat:'CVE',       cli:'binoracle triage CVE-XXXX',     desc:'Quick triage: exploitability and impact assessment'},
-      {name:'hunt',      cat:'CVE',       cli:'binoracle hunt --target URL',   desc:'Autonomous vulnerability hunting against a target'},
-      {name:'scan',      cat:'CVE',       cli:'binoracle scan TARGET',         desc:'Broad vulnerability scan of a target application'},
-      {name:'cve-chain', cat:'CVE',       cli:'binoracle cve-chain ...',       desc:'Chain multiple CVEs into an exploit sequence'},
-      // Binary static
-      {name:'identify',  cat:'BINARY',    cli:'binoracle identify FILE',       desc:'Identify file type and architecture (ELF/PE/APK/…)'},
-      {name:'elf',       cat:'BINARY',    cli:'binoracle elf FILE',            desc:'ELF layout, sections, mitigations (NX/PIE/RELRO/canary)'},
-      {name:'pe',        cat:'BINARY',    cli:'binoracle pe FILE',             desc:'Windows PE/DLL: imports, exports, sections, mitigations'},
-      {name:'macho',     cat:'BINARY',    cli:'binoracle macho FILE',          desc:'Mach-O binary analysis (macOS/iOS)'},
-      {name:'apk',       cat:'BINARY',    cli:'binoracle apk FILE',            desc:'Android APK: permissions, manifest, native libs'},
-      {name:'java',      cat:'BINARY',    cli:'binoracle java FILE',           desc:'JAR/.class: manifest, entry points, hardcoded creds'},
-      {name:'dotnet',    cat:'BINARY',    cli:'binoracle dotnet FILE',         desc:'.NET/CLI managed assembly static analysis'},
-      {name:'wasm',      cat:'BINARY',    cli:'binoracle wasm FILE',           desc:'WebAssembly: sections, imports, exports, types'},
-      {name:'go',        cat:'BINARY',    cli:'binoracle go FILE',             desc:'Go binary: version, modules, build settings'},
-      {name:'rust',      cat:'BINARY',    cli:'binoracle rust FILE',           desc:'Rust binary: rustc version, Cargo dependencies'},
-      {name:'firmware',  cat:'BINARY',    cli:'binoracle firmware FILE',       desc:'Firmware: UEFI, SquashFS images'},
-      {name:'core',      cat:'BINARY',    cli:'binoracle core FILE',           desc:'ELF core dump: signal, threads, crash context'},
-      {name:'rawshellcode',cat:'BINARY',  cli:'binoracle rawshellcode FILE',   desc:'Disassemble raw shellcode (no ELF/PE wrapper)'},
-      {name:'jeb',       cat:'BINARY',    cli:'binoracle jeb FILE',            desc:'JEB decompiler integration for Android/Java'},
-      // Exploitation
-      {name:'gadgets',   cat:'EXPLOIT',   cli:'binoracle gadgets FILE',        desc:'Search ROP gadgets in a binary'},
-      {name:'arsenal',   cat:'EXPLOIT',   cli:'binoracle arsenal FILE',        desc:'Best gadget per arg register, syscall, pivot, one_gadget'},
-      {name:'rop',       cat:'EXPLOIT',   cli:'binoracle rop FILE',            desc:'Build a ROP chain (ret2libc / execve) with pwntools'},
-      {name:'shellcode', cat:'EXPLOIT',   cli:'binoracle shellcode ARCH',      desc:'Generate shellcode (execve /bin/sh, cat) with pwntools'},
-      {name:'fmtstring', cat:'EXPLOIT',   cli:'binoracle fmtstring FILE',      desc:'Format-string leak/write helper'},
-      {name:'primitives',cat:'EXPLOIT',   cli:'binoracle primitives FILE',     desc:'Binary exploitation primitives (UAF, ROP, dirty-pipe)'},
-      {name:'heap',      cat:'EXPLOIT',   cli:'binoracle heap FILE',           desc:'Heap analysis and exploit primitive finder'},
-      {name:'kernel-exploit',cat:'EXPLOIT',cli:'binoracle kernel-exploit ...',desc:'Kernel exploit strategy and helpers'},
-      {name:'autopoc',   cat:'EXPLOIT',   cli:'binoracle autopoc FILE',        desc:'Generate a proof-of-concept exploit automatically'},
-      {name:'autopwn',   cat:'EXPLOIT',   cli:'binoracle autopwn FILE',        desc:'Fully autonomous exploit generation and execution'},
-      {name:'fuzz',      cat:'EXPLOIT',   cli:'binoracle fuzz FILE',           desc:'Generate a fuzzing harness (libFuzzer / AFL)'},
-      {name:'cyclic',    cat:'EXPLOIT',   cli:'binoracle cyclic N',            desc:'Generate/lookup cyclic pattern for offset finding'},
-      {name:'exploit-skeleton',cat:'EXPLOIT',cli:'binoracle exploit-skeleton FILE',desc:'Pwntools exploit skeleton scaffolding'},
-      // Analysis
-      {name:'analyze',   cat:'ANALYSIS',  cli:'binoracle analyze FILE',        desc:'Full one-shot analysis: .c source or binary'},
-      {name:'explain',   cat:'ANALYSIS',  cli:'binoracle explain FILE',        desc:'Explain what a binary or function does in plain English'},
-      {name:'ask',       cat:'ANALYSIS',  cli:'binoracle ask "question"',      desc:'Ask a grounded question about a binary or CVE'},
-      {name:'chat',      cat:'ANALYSIS',  cli:'binoracle chat',                desc:'Interactive chat session with the Oracle'},
-      {name:'diff',      cat:'ANALYSIS',  cli:'binoracle diff A B',            desc:'Diff two binaries or versions to find the patch'},
-      {name:'funcid',    cat:'ANALYSIS',  cli:'binoracle funcid FILE',         desc:'Function identification via signature matching'},
-      {name:'audit',     cat:'ANALYSIS',  cli:'binoracle audit FILE',          desc:'Security audit of a binary or source file'},
-      {name:'secrets',   cat:'ANALYSIS',  cli:'binoracle secrets FILE',        desc:'Scan for hardcoded secrets, keys, tokens'},
-      {name:'verify',    cat:'ANALYSIS',  cli:'binoracle verify CVE FILE',     desc:'Verify a CVE against a specific binary'},
-      {name:'view',      cat:'ANALYSIS',  cli:'binoracle view FILE',           desc:'Build an interactive HTML report and open in browser'},
-      {name:'report',    cat:'ANALYSIS',  cli:'binoracle report FILE',         desc:'Generate a professional security report'},
-      // Data formats
-      {name:'evm',       cat:'DATA',      cli:'binoracle evm FILE',            desc:'EVM bytecode: selectors, opcodes, storage slots'},
-      {name:'har',       cat:'DATA',      cli:'binoracle har FILE',            desc:'HAR network capture: requests, hosts, auth headers'},
-      {name:'sqlite',    cat:'DATA',      cli:'binoracle sqlite FILE',         desc:'SQLite: schema, table contents (read-only)'},
-      {name:'asar',      cat:'DATA',      cli:'binoracle asar FILE',           desc:'Electron ASAR archive: file tree, entry point'},
-      {name:'plist',     cat:'DATA',      cli:'binoracle plist FILE',          desc:'Apple plist (Info.plist) static analysis'},
-      {name:'js',        cat:'DATA',      cli:'binoracle js FILE',             desc:'JavaScript static analysis'},
-      // Dynamic
-      {name:'dynamic',   cat:'DYNAMIC',   cli:'binoracle dynamic ...',         desc:'Dynamic analysis: ADB, Frida, browser instrumentation'},
-      // Learning
-      {name:'rag',       cat:'LEARN',     cli:'binoracle rag',                 desc:'Retrieval-augmented knowledge base'},
-      {name:'kb',        cat:'LEARN',     cli:'binoracle kb',                  desc:'Local knowledge base management'},
-      {name:'learn',     cat:'LEARN',     cli:'binoracle learn',               desc:'Feed new knowledge to the Oracle'},
-      {name:'doctor',    cat:'SYSTEM',    cli:'binoracle doctor',              desc:'Check environment, tools and dependencies'},
-    ];
-
-    const grid = document.getElementById('tools-grid');
-    const searchEl = document.getElementById('tools-search');
-    if (!grid) return;
-
-    const CATS_ORDER = ['CVE','BINARY','EXPLOIT','ANALYSIS','DATA','DYNAMIC','LEARN','SYSTEM'];
-
-    function renderCatalog(filter) {
-      const f = (filter || '').toLowerCase();
-      const matched = TOOLS.filter(t =>
-        !f || t.name.includes(f) || t.desc.toLowerCase().includes(f) || t.cat.toLowerCase().includes(f));
-      let html = '';
-      const bycat = {};
-      for (const t of matched) {
-        (bycat[t.cat] = bycat[t.cat]||[]).push(t);
-      }
-      for (const cat of CATS_ORDER) {
-        if (!bycat[cat]) continue;
-        html += `<div class="tool-cat-header">${cat}</div>`;
-        for (const t of bycat[cat]) {
-          html += `<div class="tool-card" data-name="${escHtml(t.name)}">
-            <div class="tool-card-name">${escHtml(t.name)}</div>
-            <div class="tool-card-desc">${escHtml(t.desc)}</div>
-            <div class="tool-card-cli">${escHtml(t.cli)}</div>
-          </div>`;
-        }
-      }
-      grid.innerHTML = html || '<div class="empty-msg">No tools match</div>';
-
-      // clicking a CVE tool fills the CVE input and switches tab
-      grid.querySelectorAll('.tool-card').forEach(card => {
-        card.addEventListener('click', () => {
-          const name = card.dataset.name;
-          if (name === 'cve' || name === 'cveplan' || name === 'triage') {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-            document.querySelector('[data-tab="log"]').classList.add('active');
-            $('tab-log').classList.add('active');
-            $('cve-input').focus();
-          } else if (['identify','elf','pe','macho','apk','java','dotnet','wasm','go','rust',
-                       'firmware','core','rawshellcode','jeb','gadgets','arsenal','rop',
-                       'shellcode','fmtstring','primitives','heap','autopoc','autopwn',
-                       'fuzz','analyze','funcid','secrets','evm','har','sqlite','asar','plist','js'].includes(name)) {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-            document.querySelector('[data-tab="binlab"]').classList.add('active');
-            $('tab-binlab').classList.add('active');
-          } else if (name === 'ask' || name === 'chat' || name === 'explain') {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-            document.querySelector('[data-tab="ask"]').classList.add('active');
-            $('tab-ask').classList.add('active');
-            $('ask-input').focus();
-          }
-        });
-      });
-    }
-
-    renderCatalog('');
-    if (searchEl) searchEl.addEventListener('input', () => renderCatalog(searchEl.value));
-  })();
 
   // ── Binary Lab ────────────────────────────────────────────────────────────
   (function () {
@@ -2474,6 +2371,17 @@ main {
     const terminal = document.getElementById('binlab-terminal');
 
     if (!drop) return;
+
+    // Sub-nav switching
+    document.querySelectorAll('#tab-binlab .binlab-subbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#tab-binlab .binlab-subbtn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('#tab-binlab .binlab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const panel = document.getElementById('binlab-panel-' + btn.dataset.panel);
+        if (panel) panel.classList.add('active');
+      });
+    });
 
     drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag-over'); });
     drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
