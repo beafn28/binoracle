@@ -3744,6 +3744,20 @@ def verify_wordpress_sqli(
                 )
                 r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
                 _nonce_act = (r_act.stdout or "").strip()
+                # Sanity-check: a nopriv (unauthenticated) endpoint's nonce action
+                # should NOT be from the admin/settings area. If the scan landed on a
+                # settings or admin file (happens when passes 1+2 fail and pass 2.5/3
+                # find an unrelated file first), the generated nonce will always fail
+                # check_ajax_referer for the frontend endpoint. Drop it and fall
+                # through to the fallback scraping which re-scrapes from the actual
+                # published page with the anonymous session.
+                _admin_nonce_words = {"settings", "admin", "config", "options",
+                                      "dashboard", "panel", "backend"}
+                if _nonce_act and any(w in _nonce_act.lower()
+                                      for w in _admin_nonce_words):
+                    step(f"nonce action '{_nonce_act}' descartado (parece area admin, "
+                         f"no frontend) -- usando fallback scraping anonimo en su lugar")
+                    _nonce_act = ""
                 if _nonce_act:
                     r_gen = lab.wp_cli("eval",
                         f"wp_set_current_user(0);echo wp_create_nonce('{_nonce_act}');",
