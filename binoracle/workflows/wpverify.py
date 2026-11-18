@@ -3687,7 +3687,7 @@ def verify_wordpress_sqli(
                     r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
                     r"$nonce_action='';"
                     r"$nonce_extract='/(?:wp_verify_nonce\s*\(\s*\$\w+\s*,|check_ajax_referer\s*\()\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
-                    r"$cb_re='/add_action\s*\([^\)]*nopriv_'+preg_quote($nopriv_action,'/')+'[^\)]*,\s*[\[\(]?[^\]\),]+,\s*[\x27\x22](\w+)[\x27\x22]/is';"
+                    r"$cb_re='/add_action\s*\([^\)]*nopriv_'.preg_quote($nopriv_action,'/').'[^\)]*,\s*[\[\(]?[^\]\),]+,\s*[\x27\x22](\w+)[\x27\x22]/is';"
                     r"try{$it=new RecursiveIteratorIterator("
                     r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
                     r"$reg_files=[];$all_php=[];"
