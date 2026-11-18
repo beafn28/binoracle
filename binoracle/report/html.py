@@ -2447,7 +2447,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         proof_title = "EXPLOTACIÓN CONFIRMADA EN SANDBOX AISLADO" if es else "EXPLOITATION CONFIRMED IN ISOLATED SANDBOX"
         proof_section = (
             f'<section id="sec-proof" style="margin-top:32px">'
-            f'<div class="section-hd proof-hd">&#9733; {proof_title}</div>'
+            f'<div class="section-hd proof-hd"><span class="sec-num" style="background:#166534">02</span>&#9733; {proof_title}</div>'
             f'<div class="proof-card">'
             f'<div class="proof-top">'
             f'<div class="proof-top-label">{"Laboratorio Docker efímero" if es else "Ephemeral Docker lab"}</div>'
@@ -2494,7 +2494,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         chain_title = "CADENA DE ATAQUE" if es else "ATTACK CHAIN"
         chain_section = (
             f'<section id="sec-chain" style="margin-top:32px">'
-            f'<div class="section-hd">{chain_title}</div>'
+            f'<div class="section-hd"><span class="sec-num">03</span>{chain_title}</div>'
             f'<div class="timeline">{items}</div>'
             f'</section>'
         )
@@ -2529,7 +2529,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         tech_title = "ANÁLISIS TÉCNICO" if es else "TECHNICAL ANALYSIS"
         tech_section = (
             f'<section id="sec-tech" style="margin-top:32px">'
-            f'<div class="section-hd">{tech_title}</div>'
+            f'<div class="section-hd"><span class="sec-num">04</span>{tech_title}</div>'
             f'<div class="tc-grid">{"".join(_tc_items)}</div>'
             f'</section>'
         )
@@ -2545,22 +2545,44 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             png = sh.get("png_b64")
             if not png:
                 continue
-            cap     = _esc(sh.get("caption_es" if es else "caption_en") or "")
-            url_txt = _esc(sh.get("url") or "")
-            step_lbl= f"PASO {i+1}" if es else f"STEP {i+1}"
+            cap      = _esc(sh.get("caption_es" if es else "caption_en") or "")
+            url_raw  = sh.get("url") or ""
+            url_txt  = _esc(url_raw)
+            step_num = str(i + 1).zfill(2)
+            # colour the circle: first shot = info, screenshots with error/500 = bad, final/ok = ok
+            cap_low = (sh.get("caption_es") or "").lower()
+            if any(x in cap_low for x in ("error", "500", "1064", "injection", "inyeccion")):
+                circ_cls = "bad"
+            elif any(x in cap_low for x in ("verificado", "verified", "confirmado", "sleep", "retraso")):
+                circ_cls = "ok"
+            else:
+                circ_cls = ""
+            # curl command hint from URL
+            curl_line = ""
+            if url_raw and url_raw.startswith("http"):
+                curl_line = (
+                    f'<div class="shot-cmd">'
+                    f'<span class="sh-prompt">$ </span>'
+                    f'curl "{url_txt}"'
+                    + ('  <span class="sh-comment"># &rarr; ver captura</span>' if not cap else '')
+                    + '</div>'
+                )
             shot_cards.append(
                 f'<div class="shot-card">'
+                f'<div class="shot-header">'
+                f'<div class="shot-num-circle {circ_cls}">{step_num}</div>'
+                f'<div class="shot-header-title">{cap}</div>'
+                + (f'<span class="shot-url-pill">{url_txt}</span>' if url_txt else "")
+                + '</div>'
                 f'<img class="shot-img" src="data:image/png;base64,{png}" alt="{cap}" loading="lazy">'
-                f'<div class="shot-meta">'
-                f'<div class="shot-step">{step_lbl}</div>'
-                + (f'<div class="shot-caption">{cap}</div>' if cap else "")
-                + (f'<div class="shot-url">{url_txt}</div>' if url_txt else "")
-                + '</div></div>')
+                + curl_line
+                + '</div>'
+            )
         if shot_cards:
             shots_title = "CAPTURAS DE EVIDENCIA" if es else "EVIDENCE SCREENSHOTS"
             shots_section = (
                 f'<section id="sec-shots" style="margin-top:32px">'
-                f'<div class="section-hd">{shots_title}</div>'
+                f'<div class="section-hd"><span class="sec-num">05</span>{shots_title}</div>'
                 f'<div class="shots-grid">{"".join(shot_cards)}</div>'
                 f'</section>')
 
@@ -2572,7 +2594,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         bl_title = "BLOQUEOS Y LIMITACIONES" if es else "BLOCKERS & LIMITATIONS"
         blockers_section = (
             f'<section id="sec-blockers" style="margin-top:32px">'
-            f'<div class="section-hd">{bl_title}</div>'
+            f'<div class="section-hd" style="color:var(--yel)"><span class="sec-num" style="background:var(--yel)">!</span>{bl_title}</div>'
             f'<div class="blockers-box">{items}</div>'
             f'</section>')
 
@@ -2605,7 +2627,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         poc_title = "PoC / EXPLOIT" if es else "PoC / EXPLOIT"
         poc_section = (
             f'<section id="sec-poc" style="margin-top:32px">'
-            f'<div class="section-hd">{poc_title}</div>'
+            f'<div class="section-hd"><span class="sec-num">06</span>{poc_title}</div>'
             + dl +
             f'<pre class="poc-inline">{inline_code}</pre>'
             + more_lbl +
@@ -2615,7 +2637,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     full_title = "INFORME COMPLETO" if es else "FULL REPORT"
     full_section = (
         f'<section id="sec-report" style="margin-top:32px">'
-        f'<div class="section-hd">{full_title}</div>'
+        f'<div class="section-hd"><span class="sec-num">07</span>{full_title}</div>'
         f'<div class="md-body">{_md_rich(markdown or "")}</div>'
         f'</section>')
 
@@ -2666,10 +2688,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
   --blocker-bg:#1c1700;--blocker-brd:#d29922;color-scheme:dark}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);
-  font-family:system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-family:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
   font-size:14px;line-height:1.6}
 a{color:var(--acc)}
-code,pre,kbd{font-family:ui-monospace,'JetBrains Mono','Cascadia Code','Fira Code',monospace}
+code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia Code',monospace}
 /* ── Topbar ── */
 .topbar{position:sticky;top:0;z-index:100;background:var(--surf);
   border-bottom:1px solid var(--brd);display:flex;align-items:center;
@@ -2779,16 +2801,7 @@ code,pre,kbd{font-family:ui-monospace,'JetBrains Mono','Cascadia Code','Fira Cod
   color:var(--mut);margin-bottom:5px}
 .tc-val{font-size:13px;color:var(--fg);word-break:break-word}
 /* ── Galeria capturas ── */
-.shots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));
-  gap:16px;margin-bottom:4px}
-.shot-card{background:var(--surf);border:1px solid var(--brd);border-radius:10px;overflow:hidden}
-.shot-img{width:100%;display:block;border-bottom:1px solid var(--brd)}
-.shot-meta{padding:10px 14px}
-.shot-step{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--acc);margin-bottom:4px}
-.shot-caption{font-size:12px;color:var(--fg);line-height:1.4}
-.shot-url{font-size:11px;color:var(--mut);font-family:ui-monospace,monospace;
-  margin-top:5px;word-break:break-all}
+.shots-grid{display:flex;flex-direction:column;gap:20px;margin-bottom:4px}
 /* ── Bloqueos ── */
 .blockers-box{background:var(--blocker-bg);border:1px solid var(--blocker-brd);
   border-radius:8px;overflow:hidden}
@@ -2842,10 +2855,53 @@ code,pre,kbd{font-family:ui-monospace,'JetBrains Mono','Cascadia Code','Fira Cod
   .proof-cols{grid-template-columns:1fr}
   .proof-col{border-right:none;border-bottom:1px solid var(--brd)}
   .proof-col:last-child{border-bottom:none}}
+/* ── Print button ── */
+.tb-print{background:var(--acc);color:#fff;border:none;border-radius:6px;
+  padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;
+  font-family:inherit;display:flex;align-items:center;gap:5px}
+.tb-print:hover{opacity:.85}
+/* ── Section numbers + icons ── */
+.section-hd{display:flex;align-items:center;gap:8px}
+.sec-num{font-size:9px;font-weight:800;background:var(--acc);color:#fff;
+  border-radius:3px;padding:1px 5px;letter-spacing:.08em;flex-shrink:0}
+/* ── Screenshot step cards ── */
+.shot-card{background:var(--surf);border:1px solid var(--brd);border-radius:10px;overflow:hidden}
+.shot-header{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--code-bg);border-bottom:1px solid var(--brd)}
+.shot-num-circle{width:26px;height:26px;border-radius:50%;background:var(--acc);color:#fff;
+  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.shot-num-circle.ok{background:var(--grn)}
+.shot-num-circle.bad{background:var(--red)}
+.shot-header-title{font-size:13px;font-weight:600;color:var(--fg);flex:1;line-height:1.3}
+.shot-url-pill{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--mut);
+  background:var(--surf);border:1px solid var(--brd);border-radius:4px;
+  padding:2px 7px;flex-shrink:0;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shot-img{width:100%;display:block;border-top:none}
+.shot-cmd{margin:10px 14px 14px;background:var(--code-bg);border:1px solid var(--brd);
+  border-radius:6px;padding:9px 12px;font-family:'IBM Plex Mono',monospace;
+  font-size:11.5px;color:#3fb950;overflow-x:auto;white-space:pre;line-height:1.6}
+.shot-cmd .sh-prompt{color:var(--mut);user-select:none}
+.shot-cmd .sh-comment{color:var(--mut)}
+/* ── Timing evidence pills ── */
+.time-fast{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;
+  font-weight:600;padding:1px 7px;border-radius:4px;
+  background:rgba(26,127,55,.18);color:var(--grn);border:1px solid rgba(26,127,55,.35)}
+.time-slow{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;
+  font-weight:600;padding:1px 7px;border-radius:4px;
+  background:rgba(207,34,46,.15);color:var(--red);border:1px solid rgba(207,34,46,.3)}
 @media print{
-  .topbar,.conf-banner,.sidenav{display:none!important}
+  .topbar,.conf-banner,.sidenav,.tb-print{display:none!important}
   .page-wrap{display:block}
-  body{background:#fff;color:#000}}
+  body{background:#fff!important;color:#000!important;font-size:11pt}
+  .hero{background:#f6f8fa!important}
+  pre,code{background:#f4f4f4!important;color:#111!important}
+  .shot-cmd{background:#f4f4f4!important;color:#111!important}
+  .poc-inline{background:#f4f4f4!important;color:#111!important;max-height:none}
+  section{break-inside:avoid}
+  .shot-card{break-inside:avoid}
+  .proof-card{break-inside:avoid}
+  a{color:inherit;text-decoration:none}}
 </style>"""
 
     # ── JS ────────────────────────────────────────────────────────────────────
@@ -2871,13 +2927,17 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
                      f'<span class="cvss-pill-score">{cvss_score:.1f}</span>'
                      f'<span class="cvss-pill-sev">{_esc(sev_up)}</span></a>')
 
+    _fonts = ("<link rel='stylesheet' href='https://fonts.googleapis.com/css2?"
+              "family=IBM+Plex+Mono:wght@400;500;600"
+              "&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400"
+              "&display=swap'>")
     head = (
         "<!doctype html>"
         f"<html lang='{lang}'><head>"
         "<meta charset='utf-8'>"
         f"<title>{_esc(cve or 'bin0racle')} — bin0racle</title>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        + css + js + "</head><body>"
+        + _fonts + css + js + "</head><body>"
     )
 
     topbar = (
@@ -2886,6 +2946,13 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
         f'<span class="tb-cve">{_esc(cve or "")}</span>'
         '<div class="tb-spacer"></div>'
         f'<span class="tb-meta">{_esc(generated_short)}</span>'
+        '<button class="tb-print" onclick="window.print()" title="Guardar como PDF">'
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<polyline points="6 9 6 2 18 2 18 9"/>'
+        '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>'
+        '<rect x="6" y="14" width="12" height="8"/>'
+        '</svg>'
+        'PDF</button>'
         '<button class="tb-toggle" onclick="_toggleTheme()">&#9711; Tema</button>'
         '</div>')
 
@@ -2905,7 +2972,7 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
 
     summary_section = (
         f'<section id="sec-summary">'
-        f'<div class="section-hd">{"RESUMEN EJECUTIVO" if es else "EXECUTIVE SUMMARY"}</div>'
+        f'<div class="section-hd"><span class="sec-num">01</span>{"RESUMEN EJECUTIVO" if es else "EXECUTIVE SUMMARY"}</div>'
         + grid_html
         + '</section>')
 
