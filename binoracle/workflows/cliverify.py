@@ -187,9 +187,17 @@ def verify_cli_argv_command_injection(
 
         step(f"ejecutando la herramienta en un contenedor AISLADO (--network none) con el valor "
              f"del argumento #{payload_index} como payload: {argv}")
+        # El contenedor de exploit es uno nuevo (sin red); la herramienta no puede reinstalarse.
+        # Incluimos /work/node_modules/.bin en el PATH para que las instalaciones locales (npm
+        # install sin -g, dentro de /work) se encuentren sin necesidad de red ni instalacion global.
+        import shlex as _shlex
+        exploit_sh = (
+            "export PATH=/work/node_modules/.bin:/usr/local/bin:/usr/bin:/bin && "
+            + _shlex.join(argv)
+        )
         run = subprocess.run(
             ["docker", "run", "--rm", "--network", "none", "-v", f"{work_dir}:/work",
-             "-w", "/work", image, *argv],
+             "-w", "/work", image, "sh", "-c", exploit_sh],
             capture_output=True, text=True, timeout=min(budget_s, 120.0))
         res.evidence["run_returncode"] = run.returncode
         res.evidence["run_stdout_recorte"] = (run.stdout or "")[:500]
