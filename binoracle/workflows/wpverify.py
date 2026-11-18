@@ -1913,18 +1913,40 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                      f"({len(_gating_opts_found)}) -- saltando auto-activacion para evitar "
                      f"efectos secundarios: {list(_gating_opts_found)[:5]}")
                 _gating_opts_found = {}
+            # Detect the plugin's options blob key from source (e.g. 'um_options' for
+            # Ultimate Member).  Plugins typically store settings in one serialized WP
+            # option; scanning for get_option('X') is cheaper than guessing the slug.
+            _blob_key_re = _re_boot.compile(
+                r"get_option\s*\(\s*['\"]([a-z][a-z0-9_]{2,40})['\"]",
+                _re_boot.IGNORECASE,
+            )
+            _blob_candidates: dict = {}
+            for _fc3 in _all_php_contents.values():
+                for _bm in _blob_key_re.finditer(_fc3):
+                    _bk = _bm.group(1)
+                    if _bk.endswith("_options") or "_option" in _bk:
+                        _blob_candidates[_bk] = _blob_candidates.get(_bk, 0) + 1
+            # Most-referenced plugin-options blob key (exclude generic WP keys)
+            _wp_generic = {"siteurl", "blogname", "blogdescription", "admin_email",
+                           "active_plugins", "template", "stylesheet", "wp_user_roles"}
+            _plugin_blob_key = max(
+                (_bk for _bk in _blob_candidates if _bk not in _wp_generic),
+                key=_blob_candidates.get,
+                default=slug.replace("-", "_") + "_options",
+            )
             for _go_key, _go_val in _gating_opts_found.items():
                 if _go_key in {o.get("name") for o in (setup_wp_options or [])
                                if isinstance(o, dict)}:
                     continue  # already set by caller
-                _r_opt2 = lab.wp_cli("option", "update", _go_key, _go_val, timeout=10)
-                if _r_opt2.returncode != 0:
-                    # Try as a nested key inside the plugin's options blob
-                    _plugin_opts_key = slug.replace("-", "_") + "_options"
-                    lab.wp_cli("option", "patch", "insert", _plugin_opts_key,
-                               _go_key, _go_val, timeout=10)
+                # Always try patching inside the plugin's options blob first (most reliable
+                # for plugins that use a serialized settings array like UM's um_options).
+                _r_patch = lab.wp_cli("option", "patch", "insert", _plugin_blob_key,
+                                      _go_key, _go_val, timeout=10)
+                if _r_patch.returncode != 0:
+                    # Blob not found or key already exists — also try as a top-level option
+                    lab.wp_cli("option", "update", _go_key, _go_val, timeout=10)
                 step(f"opcion detectada en source: '{_go_key}'={_go_val} activada "
-                     f"(branch vulnerable requiere esta opcion)")
+                     f"en '{_plugin_blob_key}' (branch vulnerable requiere esta opcion)")
 
     # Detect the directory-specific shortcode from source: for plugins that have multiple
     # shortcodes (e.g. login form + directory listing), find_shortcode_name() may return
