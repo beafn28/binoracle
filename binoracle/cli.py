@@ -708,6 +708,12 @@ def cmd_serve(args, config):
     serve(host=args.host, port=args.port, open_browser=not args.no_open)
 
 
+def cmd_cve_web(args, config):
+    from .web_cve import serve as cve_serve
+    cve_serve(host=args.host, port=args.port,
+              open_browser=not args.no_open, config=config)
+
+
 def cmd_mcp(args, config):
     # stdio MCP server: speaks JSON-RPC on stdin/stdout, so nothing must be printed to stdout here.
     from .mcp_server import serve
@@ -2313,6 +2319,12 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--port", type=int, default=8765)
     sv.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
     sv.set_defaults(func=cmd_serve)
+
+    wv = sub.add_parser("web", help="launch the CVE verification web UI with live log streaming and PDF export")
+    wv.add_argument("--host", default="127.0.0.1")
+    wv.add_argument("--port", type=int, default=8000)
+    wv.add_argument("--no-open", action="store_true", help="do not auto-open the browser")
+    wv.set_defaults(func=cmd_cve_web)
 
     mc = sub.add_parser("mcp", help="run the binoracle MCP server (stdio) so any agent can drive its tools")
     mc.set_defaults(func=cmd_mcp)

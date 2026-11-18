@@ -821,7 +821,7 @@ def verify_generic_command_injection(
     try:
         secret = _token() * 4
         canary_path = f"/tmp/binoracle_ci_{_token()}.txt"
-        m = (http_method or "POST").upper()
+        m = (http_method or "POST").upper().split("/")[0].split("|")[0].strip() or "POST"
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "canary_path": canary_path, "canary_secret": secret})
         # Captura: servidor arrancado, antes del ataque
@@ -1302,7 +1302,7 @@ def verify_generic_lfi_rce(
             return res
         time.sleep(1)
 
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         # rutas de log mas comunes de Apache/nginx en imagenes oficiales de Docker, con y sin
         # profundidad de traversal (el mismo parametro puede ser vulnerable a traversal Y a LFI
         # a la vez, o solo aceptar la ruta absoluta sin mas).
@@ -1420,7 +1420,7 @@ def verify_generic_idor(
         return res
     lab, base_url, container = boot
     try:
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "id_param": id_param, "own_id": own_id,
@@ -1626,7 +1626,7 @@ def verify_generic_ssrf(
             return res
 
         listener_ip = lab.container_ip(lab.listener)
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         found = False
         tried = []
 
@@ -1807,7 +1807,7 @@ def verify_generic_sqli_blind(
         return res
     lab, base_url, container = boot
     try:
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         # Strip the query string from the endpoint: params are always passed separately as a
         # dict via 'params=' in GET requests. If the endpoint includes '?k=<placeholder>' (a
         # common LLM output pattern), appending it to base_url while ALSO passing the same key
@@ -2182,7 +2182,7 @@ def verify_generic_xxe(
                         ("parametro-entidad", xxe_param_entity),
                         ("envuelta en SOAP", xxe_soap)]
 
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         res.evidence.update({"base_url": base_url, "contenedor": container, "endpoint": endpoint,
                              "metodo": m, "xml_param": xml_param or "(cuerpo crudo)",
                              "canary_path": canary_path, "canary_secret": secret})
@@ -2339,7 +2339,7 @@ def verify_generic_open_redirect(
         # ademas de las anteriores, las ~155 variantes generalizables de las 3 wordlists de Open
         # Redirect en PayloadsAllTheThings (ver payload_kb.load_open_redirect_templates).
         targets += load_open_redirect_templates(evil_host)
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         tried = []
         confirmed_entry = None
         for target in targets:
@@ -2463,7 +2463,7 @@ def verify_generic_xss(
         ]
         attempts += load_xss_payloads(js)
 
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         found = False
         tried = []
         # UN SOLO navegador para los ~500+ intentos (ver _XssBrowserSession): arrancar un
@@ -2601,7 +2601,7 @@ def verify_generic_ssti(
         ]
         attempt_pairs = [(p, expected) for p in hand_made] + load_ssti_arithmetic_payloads(a, b)
 
-        m = (http_method or "GET").upper()
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
 
         # Construir lista ordenada de candidatos: rutas del escaneo primero, luego LLM
         candidates: list = []
@@ -2849,7 +2849,7 @@ def verify_generic_header_bypass(
         return res
     lab, base_url, container = boot
     try:
-        m = http_method.upper() if http_method else "GET"
+        m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         url = base_url + endpoint
         step(f"probando SIN cabecera de bypass: {m} {url}")
         try:

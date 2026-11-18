@@ -107,8 +107,14 @@ def _looks_like_version(v: str) -> bool:
     digitos/letras/puntos/guiones) -- rechaza frases libres como 'from n/a through 3.92.0' que
     a veces llegan como affected_version desde la hipotesis del LLM (texto de la descripcion del
     CVE, no un campo estructurado), y que romperian la URL de descarga si se usaran tal cual
-    (espacios -> 'URL can't contain control characters', confirmado en vivo)."""
-    return bool(v) and bool(_VERSION_RE.match(v.strip()))
+    (espacios -> 'URL can't contain control characters', confirmado en vivo).
+    Tambien rechaza enteros sueltos sin punto ('1', '2') que el LLM a veces alucina copiando
+    el numero de version principal del titulo del CVE -- ningun plugin real de WordPress.org
+    tiene un numero de version sin al menos un punto."""
+    if not v:
+        return False
+    s = v.strip()
+    return bool(_VERSION_RE.match(s)) and "." in s
 
 
 def _version_sort_key(v: str):
@@ -212,7 +218,8 @@ def detect_module_folder(local_path: str, hint: str = "") -> str:
     return detect_plugin_folder(local_path, hint=hint)
 
 
-def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[str]:
+def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0,
+                            display_name: str = "") -> Optional[str]:
     """Gap real encontrado en vivo (CVE-2026-2991, KiviCare): la hipotesis del LLM a veces trae
     un slug CASI correcto (una palabra de mas o de menos, p.ej. 'kivicare-clinic-PATIENT-
     management-system' en vez del real 'kivicare-clinic-management-system') -- la API de info
@@ -222,12 +229,21 @@ def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[s
     del directorio usa), usando el propio slug con guiones->espacios como consulta, y solo acepta
     el primer resultado si comparte al menos la mitad de sus palabras con el slug original
     (Jaccard sobre el split por '-') -- para no sustituir silenciosamente un plugin NO relacionado
-    que simplemente aparezca primero en una busqueda demasiado generica. None si no hay API
-    disponible, no hay resultados, o el mejor resultado no se parece lo bastante."""
+    que simplemente aparezca primero en una busqueda demasiado generica.
+
+    `display_name`: nombre de producto original (antes de transformarlo a slug), p.ej. "GiveWP"
+    para CVE-2024-5932. Cuando se da se usa como texto de busqueda y se acepta el primer
+    resultado si el nombre/slug del plugin encontrado contiene cualquiera de las palabras de
+    display_name (> 3 letras) -- cubre el caso "GiveWP" -> slug "give" donde el Jaccard sobre el
+    slug es 0 pero la palabra "give" aparece en el nombre del resultado "GiveWP – Donation Plugin".
+
+    None si no hay API disponible, no hay resultados, o el mejor resultado no se parece bastante."""
     try:
         import json
         from urllib.parse import urlencode
-        q = wrong_slug.replace("-", " ").replace("_", " ")
+        # Cuando tenemos el nombre de producto original, usarlo para buscar (da mejores resultados
+        # que el slug slugificado).
+        q = (display_name or wrong_slug).replace("-", " ").replace("_", " ")
         url = f"{_WP_SEARCH}?{urlencode({'action': 'query_plugins', 'request[search]': q, 'request[per_page]': 3})}"
         with _urlopen(url, timeout=timeout) as r:
             data = json.loads(r.read(2 * 1024 * 1024).decode("utf-8", "replace"))
@@ -239,12 +255,33 @@ def _search_wp_plugin_slug(wrong_slug: str, timeout: float = 30.0) -> Optional[s
     candidate = (plugins[0].get("slug") or "").strip().lower()
     if not candidate or candidate == wrong_slug:
         return None
+    # Metodo 1: Jaccard sobre el split por '-' (funciona para slugs casi-correctos)
     orig_words = set(wrong_slug.split("-"))
     cand_words = set(candidate.split("-"))
-    if not orig_words or not cand_words:
-        return None
-    overlap = len(orig_words & cand_words) / len(orig_words | cand_words)
-    return candidate if overlap >= 0.5 else None
+    if orig_words and cand_words:
+        overlap = len(orig_words & cand_words) / len(orig_words | cand_words)
+        if overlap >= 0.5:
+            return candidate
+    # Metodo 2: si hay display_name, aceptar si alguna palabra significativa del display_name
+    # (>3 letras) aparece en el slug o en el nombre del resultado. Cubre el caso "GiveWP" -> "give"
+    # donde el Jaccard es 0 pero "give" esta en "GiveWP" y en el nombre "GiveWP - Donation Plugin".
+    if display_name:
+        dn_lower = display_name.lower()
+        plugin_name = (plugins[0].get("name") or "").lower()
+        dn_words = [w for w in re.split(r'[^a-z0-9]+', dn_lower) if len(w) > 3]
+        if dn_words:
+            # acepta si el candidato es un prefijo/sufijo significativo del display_name o viceversa
+            if (candidate in dn_lower or dn_lower.startswith(candidate)
+                    or any(w in candidate or w in plugin_name for w in dn_words)):
+                return candidate
+    # Metodo 3: subset check -- el slug del LLM es el nombre completo del plugin (p.ej.
+    # "hash-form-drag-drop-form-builder") mientras el slug real es una version abreviada
+    # ("hash-form"). Acepta si TODAS las palabras del candidato aparecen en el slug original.
+    # Esto cubre slugs abreviados sin sustituir plugins no relacionados (un slug ajeno no
+    # tendria todas sus palabras en el slug largo del LLM).
+    if cand_words and cand_words <= orig_words:
+        return candidate
+    return None
 
 
 def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
@@ -597,7 +634,26 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
         res.note = f"fallo git clone: {e}"
         return res
     if out.returncode != 0:
-        res.note = f"git clone fallo: {(out.stderr or '').strip()[:300]}"
+        err_text = (out.stderr or "").strip()
+        # Branch/tag not found: retry without --branch (clone default branch)
+        if ref and ("remote branch" in err_text.lower() or
+                    "not found in upstream" in err_text.lower() or
+                    "no encontrada" in err_text.lower()):
+            cmd2 = [git, "clone", "--depth", "1", url, dest_dir]
+            step(f"rama '{ref}' no existe, reintentando sin --branch ...")
+            try:
+                import shutil as _sh
+                _sh.rmtree(dest_dir, ignore_errors=True)
+                dest_dir2 = tempfile.mkdtemp(prefix="binoracle_git_")
+                out = subprocess.run(cmd2 + [dest_dir2], capture_output=True,
+                                     text=True, timeout=timeout, env=env)
+                if out.returncode == 0:
+                    res.ok = True
+                    res.local_path = dest_dir2
+                    return res
+            except Exception:
+                pass
+        res.note = f"git clone fallo: {err_text[:300]}"
         return res
     res.ok = True
     res.local_path = dest_dir
@@ -826,6 +882,30 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     is_wp_shaped = looks_like_wp_slug(target)
     is_drupal_shaped = looks_like_drupal_slug(target)
     if not (is_wp_shaped or is_drupal_shaped):
+        # Ultimo intento: target puede ser un nombre de producto en CamelCase o con mayusculas
+        # (p.ej. "GiveWP" para CVE-2024-5932, donde el slug real es "give") -- el LLM a veces
+        # pone el nombre del producto en vez del slug de WP.org. Se slugifica (lowercase +
+        # sustituir no-alphanumerico por guion) y se busca en WP.org con el nombre original.
+        if "/" not in target and "." not in target:
+            display_name = target
+            slugified = re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")
+            if looks_like_wp_slug(slugified):
+                step = on_step or (lambda _m: None)
+                # Intentar primero el slug slugificado directamente
+                r_direct = fetch_wordpress_plugin(slugified, version=version, on_step=on_step,
+                                                  timeout=timeout,
+                                                  exclusive_upper_bound=exclusive_upper_bound)
+                if r_direct.ok:
+                    step(f"'{display_name}' resolvio como slug '{slugified}' en WordPress.org")
+                    return r_direct
+                # Si falla, buscar en WP.org con el nombre original para encontrar el slug real
+                corrected = _search_wp_plugin_slug(slugified, timeout=timeout,
+                                                   display_name=display_name)
+                if corrected:
+                    step(f"'{display_name}' resolvio como slug '{corrected}' via busqueda WP.org")
+                    return fetch_wordpress_plugin(corrected, version=version, on_step=on_step,
+                                                  timeout=timeout,
+                                                  exclusive_upper_bound=exclusive_upper_bound)
         return SourceFetchResult(source=target,
                                  note=f"'{target}' no parece una URL de git, un .zip (local o "
                                      f"URL), ni un slug/machine-name de WordPress.org o "
@@ -1648,6 +1728,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
     _TABLE_NAME_RE = re.compile(
         r"""\$wpdb\s*->\s*(?:prefix\s*\.\s*)?['"]([\w]{3,40})['"]"""
         r"""|""" r"""\$wpdb\s*->\s*(?:insert|update)\s*\(\s*\$(?:wpdb\s*->\s*prefix\s*\.\s*)?['\"]?([\w_]{3,40})['\"]?"""
+        r"""|(?:[\w\\]*::)?table\s*\(\s*['"]([\w_]{2,40})['"]\s*\)"""
     )
 
     # -- Patrones view side --
@@ -1666,6 +1747,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
 
     all_texts: dict = {}
     action_positions: list = []  # (action, fp)
+    best_inject: Optional[dict] = None
     scanned = 0
     for dirpath, _dirs, files in os.walk(local_path):
         for fn in sorted(files):
@@ -1684,11 +1766,391 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             for m in _AJAX_REG_RE.finditer(text):
                 action_positions.append((m.group(1), fp))
 
-    if not action_positions:
+    # -- Segunda pasada: REST API routes (register_rest_route) sin autenticacion --
+    # Detecta rutas REST abiertas (permission_callback = __return_true / return true)
+    # que almacenan params de la request sin sanitizar.
+    # Detecta rutas REST abiertas (permission_callback = __return_true / lambda return true)
+    # Soporta tanto namespaces literales como referencias a self::$namespace (busca la
+    # propiedad en el mismo fichero o en ficheros del mismo directorio api/).
+    _REST_ROUTE_RE = re.compile(
+        r"register_rest_route\s*\("
+        r"([^,]+),\s*"           # 1er arg: namespace (literal o self::$prop)
+        r"'/?([^']+)'|"          # 2do arg: route literal
+        r"register_rest_route\s*\("
+        r"([^,]+),\s*"
+        r'"/?([^"]+)"'           # 2do arg: route literal doble comilla
+    )
+    # Patron alternativo para rutas con endpoint en variable: busca solo la perm callback
+    _REST_ROUTE_ANY_RE = re.compile(r"register_rest_route\s*\(")
+    _REST_PARAM_RE = re.compile(
+        r"\$request\s*\[\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\]"
+        r"|\$request\s*->\s*get_param\s*\(\s*['\"]([A-Za-z0-9_\-]+)['\"]\s*\)"
+    )
+    # args array en la definicion del route: 'param_name' => array('required' => true ...)
+    _ROUTE_ARG_RE = re.compile(
+        r"['\"]([A-Za-z0-9_\-]{2,40})['\"]\s*=>\s*array\s*\(\s*['\"](?:required|type)['\"]"
+    )
+    _OPEN_PERM_RE = re.compile(
+        r"['\"]permission_callback['\"]\s*=>\s*['\"]__return_true['\"]"
+        r"|['\"]permission_callback['\"]\s*=>\s*function[^{]{0,80}\{\s*return\s+true"
+    )
+    # Namespace estatico: public static $namespace = 'wp-statistics/v2'
+    _NS_STATIC_RE = re.compile(
+        r"(?:public\s+)?static\s+\$namespace\s*=\s*['\"]([^'\"]+)['\"]"
+    )
+    # Endpoint estatico: public static $endpoint = 'hit'
+    _EP_STATIC_RE = re.compile(
+        r"(?:public\s+)?static\s+\$endpoint\s*=\s*['\"]([^'\"]+)['\"]"
+    )
+
+    _SKIP = {"nonce", "id", "action", "_wpnonce", "type", "security", "verify"}
+
+    for fp, text in all_texts.items():
+        for rm in _REST_ROUTE_ANY_RE.finditer(text):
+            window_start = rm.start()
+            window = text[window_start: window_start + 3000]
+            if not _OPEN_PERM_RE.search(window):
+                continue
+            # Extraer namespace: literal en el texto o buscar la propiedad estatica
+            ns_literal_m = re.search(r"register_rest_route\s*\(\s*['\"]([^'\"]+)['\"]", text[window_start:window_start+200])
+            if ns_literal_m:
+                ns = ns_literal_m.group(1).strip("/")
+            else:
+                ns_prop_m = _NS_STATIC_RE.search(text)
+                if not ns_prop_m:
+                    # Buscar en cualquier fichero del plugin (el namespace suele estar en la clase base)
+                    ns = ""
+                    for ofp2, otext2 in all_texts.items():
+                        nm2 = _NS_STATIC_RE.search(otext2)
+                        if nm2 and "/" in nm2.group(1):
+                            ns = nm2.group(1).strip("/")
+                            break
+                else:
+                    ns = ns_prop_m.group(1).strip("/")
+            if not ns:
+                continue
+            # Extraer route: literal de >= 2 chars O endpoint estatico
+            route_literal_m = re.search(
+                r"register_rest_route\s*\([^,]+,\s*['\"][/]?([^'\"]{2,80})['\"]",
+                text[window_start:window_start+300]
+            )
+            if route_literal_m:
+                route = route_literal_m.group(1).strip("/")
+            else:
+                ep_m = _EP_STATIC_RE.search(text)
+                route = ep_m.group(1).strip("/") if ep_m else ""
+            if not route:
+                continue
+            # Params: desde args del route O desde $request[] en todo el fichero
+            rest_params = [m.group(1) or m.group(2)
+                           for m in _REST_PARAM_RE.finditer(window)
+                           if m.group(1) or m.group(2)]
+            if not rest_params:
+                # Buscar en el arg definition de todo el fichero
+                rest_params = [m.group(1) for m in _ROUTE_ARG_RE.finditer(text)
+                               if m.group(1).lower() not in _SKIP]
+            if not rest_params:
+                continue
+            text_params = [p for p in rest_params if p.lower() not in _SKIP]
+            _URI_HINTS = ("uri", "url", "path", "page", "query", "search",
+                          "message", "content", "text", "title", "name")
+            uri_params = [p for p in text_params
+                          if any(h in p.lower() for h in _URI_HINTS)]
+            inject_param = uri_params[0] if uri_params else (text_params[0] if text_params else rest_params[0])
+            table_m = _TABLE_NAME_RE.search(window)
+            table_hint = (table_m.group(1) or table_m.group(2) or table_m.group(3)) if table_m else ""
+            rest_endpoint = f"/wp-json/{ns}/{route}"
+            # Detectar si el param se pasa por base64_decode (bypass de sanitize_url)
+            # Busca en TODOS los ficheros del plugin, no solo el que registra la ruta
+            _B64_PAT = re.compile(
+                rf"base64_decode\s*\([^){{}}]*{re.escape(inject_param)}[^){{}}]*\)"
+                rf"|base64_decode\s*\(\s*\$(?:request|this->[a-zA-Z_]+)->{re.escape(inject_param)}"
+                rf"|base64_decode\s*\(\s*\$_(?:GET|REQUEST|POST)\s*\[\s*['\"]?{re.escape(inject_param)}['\"]?\s*\]"
+            )
+            payload_transform = ""
+            if _B64_PAT.search(text):
+                payload_transform = "base64"
+            else:
+                for _ofp2, _otext2 in all_texts.items():
+                    if _B64_PAT.search(_otext2):
+                        payload_transform = "base64"
+                        break
+            # Detectar params de activacion: algunos plugins comprueban un key adicional
+            # (p.ej. 'wp_statistics_hit_rest') en $_REQUEST para activar el filtro que
+            # decodifica page_uri; sin ese key el payload nunca se almacena.
+            # Patron: static $<var> = '<key>' + isset($_REQUEST[self::$<var>]) gateando
+            # add_filter() en el constructor (no en logica de exclusion).
+            _ACT_STATIC_RE = re.compile(
+                r"static\s+\$(\w+)\s*=\s*['\"]([A-Za-z0-9_]{3,60})['\"]"
+            )
+            # Solo activar cuando el isset esta directamente junto a add_filter/add_action
+            # o dentro de la definicion de is_rest_hit() — no en logica de exclusion
+            _REST_HIT_GATE_RE = re.compile(
+                r"isset\s*\(\s*\$_REQUEST\s*\[\s*self::\$[A-Za-z_]+\s*\]"
+            )
+            activation_params: dict = {}
+            for _afp, _atext in all_texts.items():
+                # Buscar gating key: static $key_var = 'key_name' + isset($_REQUEST[self::$key_var])
+                if _REST_HIT_GATE_RE.search(_atext):
+                    for vm in _ACT_STATIC_RE.finditer(_atext):
+                        var_name, key_val = vm.group(1), vm.group(2)
+                        # Confirmar que self::$var_name aparece en el isset
+                        if re.search(rf"self::\${re.escape(var_name)}", _atext):
+                            activation_params[key_val] = "1"
+                # Buscar current_page_type / current_page_id si se pasan como params del filtro
+                if (re.search(r"current_page_type", _atext) and
+                        re.search(r"add_filter\s*\(", _atext)):
+                    activation_params.setdefault("current_page_type", "home")
+                    activation_params.setdefault("current_page_id", "0")
+                # Patron: isset($this->rest_hits->X) and $this->rest_hits->X == 1
+                # -> necesita X=1 para activar el filtro correspondiente
+                for _m in re.finditer(
+                    r"isset\s*\(\s*\$this->rest_hits->(\w+)\s*\)\s*and\s*\$this->rest_hits->\1\s*==\s*1",
+                    _atext
+                ):
+                    activation_params.setdefault(_m.group(1), "1")
+            # Merge rest_params: activation_params primero (base), luego rest_params (incluye inject_param)
+            merged_params = list(activation_params.keys()) + [
+                p for p in rest_params if p not in activation_params
+            ]
+            best_inject = {
+                "action": None,
+                "inject_param": inject_param,
+                "table_hint": table_hint,
+                "fp": fp,
+                "rest_endpoint": rest_endpoint,
+                "rest_params": merged_params,
+                "activation_params": activation_params,
+                "payload_transform": payload_transform,
+            }
+            break
+        if best_inject is not None:
+            break
+
+    if not action_positions and best_inject is None:
         return None
 
-    # Paso 1: buscar action que hace db-write con POST sin sanitizar
-    best_inject: Optional[dict] = None
+    if action_positions and best_inject is None:
+        pass  # sigue con la logica AJAX abajo
+
+    if best_inject is not None and best_inject.get("rest_endpoint"):
+        # Buscar view_path para el REST result.
+        # Estrategia 0 (tabla): trazado de datos — qué archivos hacen SELECT de la misma
+        #   tabla donde se inyecta y qué slug de admin page registran/usan esos archivos.
+        # Estrategia 1: slug template dinamico 'prefix_[slug]_suffix' + primera clave de
+        #   los archivos que leen de esa tabla (o de todos si la tabla no matchea nada).
+        # Estrategia 2 (fallback): add_menu_page con slug literal en archivo con SELECT.
+        view_path = ""
+        slug_template = ""
+        table_hint = best_inject.get("table_hint", "")
+
+        _PAGE_KEY_RE = re.compile(
+            r"['\"](?:overview|main|stats|dashboard|report|home|"
+            r"pages|page|search|referrers|referrer|visits|visit|hit|hits|url|urls)['\"]"
+        )
+        # Recoger slug_template de cualquier archivo
+        for vfp, vtext in all_texts.items():
+            tpl_m = re.search(
+                r"static\s+\$\w+\s*=\s*['\"]([A-Za-z0-9_]*\[slug\][A-Za-z0-9_]*)['\"]",
+                vtext
+            )
+            if tpl_m and not slug_template:
+                slug_template = tpl_m.group(1)
+                break
+
+        # Estrategia 0: trazado de tabla — buscar en qué archivos se hace SELECT de la
+        # tabla donde se inyecta y recoger page-keys SOLO de esos archivos.
+        # Si table_hint viene vacío del window local del endpoint (ocurre cuando el plugin
+        # usa un helper abstracto como DB::table('x') en un método distinto), hacer un
+        # scan global de todos los archivos del plugin para extraerlo.
+        _view_candidate_keys: list = []
+        # Si table_hint sigue vacío, buscar la tabla en los archivos que contienen el
+        # inject_param (nombre de columna) cerca de una escritura en DB — esos son los
+        # que realmente almacenan el valor inyectado, no cualquier archivo del plugin.
+        if not table_hint:
+            _ip_name = best_inject.get("inject_param", "")
+            _ip_re = re.compile(re.escape(_ip_name), re.IGNORECASE) if _ip_name else None
+            _WRITE_RE = re.compile(r"\$wpdb\s*->\s*(?:insert|update|replace)\b", re.IGNORECASE)
+            for _gfp, _gtext in all_texts.items():
+                if _ip_re and not _ip_re.search(_gtext):
+                    continue
+                if not _WRITE_RE.search(_gtext):
+                    continue
+                _gm = _TABLE_NAME_RE.search(_gtext)
+                if _gm:
+                    table_hint = (_gm.group(1) or _gm.group(2) or _gm.group(3)) or ""
+                    if table_hint:
+                        break
+
+        if table_hint and slug_template:
+            _sel_tbl_re = re.compile(
+                rf"SELECT\b.{{0,500}}{re.escape(table_hint)}\b",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for vfp, vtext in all_texts.items():
+                if _sel_tbl_re.search(vtext):
+                    for km in _PAGE_KEY_RE.finditer(vtext):
+                        key = km.group(0).strip("'\"")
+                        if key not in _view_candidate_keys:
+                            _view_candidate_keys.append(key)
+
+        # Estrategia 0.5: si la tabla no estrechó la lista, trazar el nombre del inject_param
+        # como nombre de columna en los SELECT de archivos admin — esos son los que muestran
+        # exactamente el campo que se inyecta.
+        # Requiere que el SELECT contenga TODOS los parts del inject_param (AND lógico)
+        # para evitar matches demasiado amplios (ej. "uri" solo matchea demasiados archivos).
+        if not _view_candidate_keys and slug_template:
+            _ip_parts = [p for p in re.split(r"[_\s]+", best_inject.get("inject_param", ""))
+                         if len(p) >= 3 and p.lower() not in ("get", "set", "has", "the", "new")]
+            if _ip_parts:
+                for vfp, vtext in all_texts.items():
+                    # El archivo debe tener un SELECT que contenga TODOS los parts
+                    _select_blocks = re.findall(r"SELECT\b.{0,800}", vtext, re.IGNORECASE | re.DOTALL)
+                    for _blk in _select_blocks:
+                        if all(re.search(r"\b" + re.escape(p) + r"\b", _blk, re.IGNORECASE)
+                               for p in _ip_parts):
+                            for km in _PAGE_KEY_RE.finditer(vtext):
+                                key = km.group(0).strip("'\"")
+                                if key not in _view_candidate_keys:
+                                    _view_candidate_keys.append(key)
+                            break
+
+        if slug_template and _view_candidate_keys:
+            # Priorizar la clave que más se parece al nombre de la tabla inyectada:
+            # coincidencia exacta > prefijo/sufijo > primera encontrada.
+            _best_key = _view_candidate_keys[0]
+            if table_hint:
+                for _ck in _view_candidate_keys:
+                    if _ck == table_hint or table_hint.startswith(_ck) or _ck.startswith(table_hint):
+                        _best_key = _ck
+                        break
+            view_path = f"/wp-admin/admin.php?page={slug_template.replace('[slug]', _best_key)}"
+
+        # Estrategia 1 (fallback): recoger todas las page-keys de todos los archivos
+        if not view_path and slug_template:
+            _all_page_keys: list = []
+            for vfp, vtext in all_texts.items():
+                for km in _PAGE_KEY_RE.finditer(vtext):
+                    key = km.group(0).strip("'\"")
+                    if key not in _all_page_keys:
+                        _all_page_keys.append(key)
+            if _all_page_keys:
+                view_path = f"/wp-admin/admin.php?page={slug_template.replace('[slug]', _all_page_keys[0])}"
+
+        # Estrategia 2 (fallback): add_menu_page con slug literal en archivo que hace SELECT
+        if not view_path:
+            for vfp, vtext in all_texts.items():
+                is_admin = ("admin" in vfp.lower() or "dashboard" in vfp.lower()
+                            or "page" in vfp.lower() or "entries" in vfp.lower()
+                            or bool(re.search(r"add_(?:menu|submenu)_page\s*\(", vtext)))
+                if not is_admin:
+                    continue
+                if not _SELECT_RE.search(vtext):
+                    continue
+                slug_m = re.search(
+                    r"add_(?:menu|submenu)_page\s*\([^;]{5,400}?['\"]([A-Za-z0-9_\-]{3,60})['\"]",
+                    vtext
+                )
+                if slug_m:
+                    view_path = f"/wp-admin/admin.php?page={slug_m.group(1)}"
+                    break
+        if not view_path:
+            view_path = "/wp-admin/admin.php"
+
+        # Detectar contexto de renderizado del valor inyectado en los archivos de vista.
+        # Traza: archivos que SELECT de table_hint → buscar echo/print del inject_param
+        # o de columnas con nombre similar → ver qué HTML rodea ese echo.
+        # Resultado: "href" | "html" | "js_string" | "url" | "unknown"
+        render_context = "unknown"
+        _inject_col = best_inject.get("inject_param", "").replace("_", "").lower()
+        if table_hint:
+            _sel_tbl_re2 = re.compile(
+                rf"SELECT\b.{{0,300}}{re.escape(table_hint)}\b",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for vfp, vtext in all_texts.items():
+                if not _sel_tbl_re2.search(vtext):
+                    continue
+                # Buscar fragmentos de ~200 chars alrededor de cada echo del valor
+                _echo_re = re.compile(
+                    rf"(?:echo|print)\s+.*?(?:{re.escape(best_inject['inject_param'])}|"
+                    rf"{re.escape(_inject_col)})[^;]{{0,120}};",
+                    re.IGNORECASE | re.DOTALL,
+                )
+                for em in _echo_re.finditer(vtext):
+                    start = max(0, em.start() - 200)
+                    snippet = vtext[start: em.end() + 100]
+                    if re.search(r"""href\s*=\s*['"]""", snippet, re.IGNORECASE):
+                        render_context = "href"
+                    elif re.search(r"<script\b", snippet, re.IGNORECASE):
+                        render_context = "js_string"
+                    elif re.search(r"""(?:src|action|data)\s*=\s*['"]""", snippet, re.IGNORECASE):
+                        render_context = "url"
+                    else:
+                        render_context = "html"
+                    break
+                if render_context != "unknown":
+                    break
+
+        # Always scan JS files for template literals fed into .html()/innerHTML, even if the
+        # PHP scan already found a render_context. The PHP context ("url", "href") is for
+        # server-side echoes; the actual XSS sink may be in JS that reads from the DB and
+        # renders unescaped via jQuery.html() — a different render context that takes
+        # priority (js_innerHTML → 5 specific payloads instead of 532).
+        # Patron: `<a href="${siteUrl}${value['str_url']}"...` → jQuery.html() → XSS.
+        if True:
+            _col_name = best_inject.get("inject_param", "")
+            _col_variants = {_col_name.lower(), _col_name.replace("_", "").lower()}
+            _col_variants.update({"str_url", "uri", "url", "link", "href", "page_uri"})
+            _col_variants.discard("")
+            # Template literal que empieza con un tag HTML y contiene la columna
+            # de inject_param sin escapar — sin exigir cierre del template (puede ser largo)
+            _TMPL_VAR_RE = re.compile(
+                r"""[`]\s*<[a-z][^`]{0,3000}\$\{[^}]{0,100}(?:"""
+                + "|".join(re.escape(c) for c in sorted(_col_variants, key=len, reverse=True))
+                + r""")[^}]{0,50}\}""",
+                re.IGNORECASE | re.DOTALL,
+            )
+            _js_scanned = 0
+            for _jsdp, _jsdirs, _jsfiles in os.walk(local_path):
+                _jsdirs[:] = [d for d in _jsdirs
+                              if d not in ("vendor", "node_modules", "bower_components")]
+                for _jsfn in sorted(_jsfiles):
+                    if not _jsfn.lower().endswith(".js"):
+                        continue
+                    if _jsfn.lower().endswith(".min.js"):
+                        continue
+                    _js_scanned += 1
+                    if _js_scanned > 60:
+                        break
+                    _jsfp2 = os.path.join(_jsdp, _jsfn)
+                    try:
+                        with open(_jsfp2, "r", encoding="utf-8", errors="replace") as _jsh:
+                            _jstext = _jsh.read(200_000)
+                    except OSError:
+                        continue
+                    if _TMPL_VAR_RE.search(_jstext):
+                        render_context = "js_innerHTML"
+                    if render_context == "js_innerHTML":
+                        break
+                if _js_scanned >= 60 or render_context == "js_innerHTML":
+                    break
+
+        _act_p = best_inject.get("activation_params", {})
+        return {
+            "inject_action": None,
+            "inject_endpoint": best_inject["rest_endpoint"],
+            "inject_params_all": best_inject.get("rest_params", []),
+            "inject_param": best_inject["inject_param"],
+            "inject_base_params": _act_p,  # params fijos que activan el hook
+            "table_hint": best_inject["table_hint"],
+            "view_path": view_path,
+            "http_method": "GET",
+            "payload_transform": best_inject.get("payload_transform", ""),
+            "render_context": render_context,
+        }
+
+    # Paso 1: buscar action AJAX que hace db-write con POST sin sanitizar
     for action, fp in action_positions:
         text = all_texts[fp]
         # Encontrar inicio del handler para esta accion (dentro de ~5000 chars)
@@ -1733,7 +2195,7 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 continue
             # coger la primera tabla mencionada
             table_m = _TABLE_NAME_RE.search(func_body)
-            table_hint = table_m.group(1) or table_m.group(2) if table_m else ""
+            table_hint = (table_m.group(1) or table_m.group(2) or table_m.group(3)) if table_m else ""
             best_inject = {
                 "action": action,
                 "inject_param": post_params[0],

