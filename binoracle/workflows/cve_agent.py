@@ -415,8 +415,30 @@ _RESEARCH_SYS = (
     "--workspace), "
     "cli_payload_index (indice (0-based) en cli_argv del argumento cuyo VALOR es el vector -- "
     "p.ej. 2 si el token vulnerable es el tercero de la lista). "
+    "CRITICO para cli_argv_setup: el setup debe crear una estructura de proyecto VALIDA que la "
+    "herramienta pueda procesar sin salir antes de llegar al punto de inyeccion. "
+    "EJEMPLO CORRECTO para @cyclonedx/cyclonedx-npm@4.0.0 (CVE-2026-55849, bug en --workspace): "
+    "'npm install -g @cyclonedx/cyclonedx-npm@4.0.0 && "
+    "mkdir -p /work/root/packages/pkg-a && "
+    "printf \\'{\\'\\''name\\'\\'':\\'\\''ws\\'\\'',\\'\\''version\\'\\'':\\'\\''1.0.0\\'\\'',"
+    "\\'\\''workspaces\\'\\'':[\"packages/*\"]}\\'  > /work/root/package.json && "
+    "printf \\'{\\'\\''name\\'\\'':\\'\\''pkg-a\\'\\'',\\'\\''version\\'\\'':\\'\\''1.0.0\\'\\''}\\'  > /work/root/packages/pkg-a/package.json && "
+    "cd /work/root && npm install'; "
+    "con cli_argv=['cyclonedx-npm','--workspace','pkg-a'], cli_payload_index=2, cli_argv_image='node:18-alpine'. "
     "SOLO rellena estos keys cuando el trigger sea CLI/argumento y el objetivo sea una "
     "herramienta npm/pip; para CVEs web deja cli_argv_image/cli_argv_setup/cli_argv vacios. "
+    "Para CVEs de SUBIDA DE FICHEROS (vuln_class='file-upload' o 'arbitrary-file-upload'): "
+    "file_param (nombre del campo <input type=file> en el formulario, p.ej. 'file', 'upload', "
+    "'attachment', 'import'; si no lo sabes deja vacio y el motor lo intentara automaticamente). "
+    "Para CVEs de SSRF: ssrf_param (nombre del parametro que acepta la URL, p.ej. 'url', 'remote', "
+    "'source', 'fetch', 'link'; si no lo sabes deja vacio). "
+    "Para CVEs de PATH-TRAVERSAL: path_param (nombre del parametro con la ruta, p.ej. 'file', "
+    "'path', 'filename', 'dir'; si no lo sabes deja vacio). "
+    "Para CVEs de HEADER BYPASS (missing-authorization via cabecera): bypass_header (nombre de la "
+    "cabecera HTTP que activa el bypass, p.ej. 'X-Forwarded-For', 'X-Original-URL'), "
+    "bypass_value (valor concreto que activa el bypass, p.ej. '127.0.0.1'), "
+    "confirm_string (cadena en el body de respuesta que confirma que el bypass funciono, p.ej. "
+    "un dato privado que solo deberia verse autenticado). "
     "strategy (una frase), steps (lista de pasos concretos), "
     "stored_xss_view_path (SOLO para XSS ALMACENADO en WordPress: la ruta del panel de admin "
     "donde el admin VERA el payload inyectado por el atacante -- p.ej. "
@@ -645,6 +667,37 @@ _GENERIC_RETRY_SYS = (
     "\"parametro_alternativo\": \"...\" (opcional)}"
 )
 
+# Retry para herramientas CLI cuyo vector es el VALOR de un argumento (verify_cli_argv_*).
+# El LLM lee stdout/stderr del setup y de la ejecucion aislada y sugiere correcciones al argv
+# y/o al setup_cmd -- distinto del bucle generico de endpoint/param que opera sobre HTTP.
+_CLI_ARGV_RETRY_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/CTF/research). "
+    "Un intento de command injection via argumento CLI en una herramienta npm/pip no confirmo "
+    "el canario. El setup se ejecuto en Docker con red disponible; la herramienta se ejecuto "
+    "en un segundo contenedor AISLADO (--network none) con el elemento en payload_index "
+    "sustituido por '; touch <canario>;'. El canario nunca aparecio en el volumen compartido. "
+    "Lee la evidencia (returncode del setup, returncode y stdout de la ejecucion, argv usado) "
+    "y, si ves una pista concreta, sugiere UNA correccion: "
+    "(a) Si setup_returncode != 0 o hay error de instalacion: da un setup_alternativo valido. "
+    "(b) Si la herramienta no encontro el proyecto/workspace: el setup debe crear una estructura "
+    "npm COMPLETA (package.json con workspaces, subdirectorios, npm install). "
+    "(c) Si hay 'unknown option' o '--workspace is not recognized': corrige el arg en argv_alternativo. "
+    "(d) Si la herramienta termino con exit 0 pero sin el canario: el payload_index puede ser "
+    "incorrecto (prueba otro indice del argv). "
+    "Responde SOLO con JSON: {\"tiene_sugerencia\": true/false, "
+    "\"argv_alternativo\": [...] (si el argv es incorrecto), "
+    "\"setup_alternativo\": \"...\" (si el setup es incorrecto), "
+    "\"payload_index_alternativo\": N (si el indice es incorrecto), "
+    "\"razon\": \"una frase citando la pista concreta\"}"
+)
+_CLI_ARGV_RETRY_EVIDENCE_KEYS = {
+    "setup_returncode": "setup_returncode",
+    "setup_stderr_recorte": "setup_stderr_recorte",
+    "run_returncode": "run_returncode",
+    "run_stdout_recorte": "run_stdout_recorte",
+    "argv_usado": "argv",
+}
+
 # version de _GENERIC_RETRY_SYS CONSCIENTE de que el objetivo es WordPress -- para las tecnicas
 # WordPress que todavia usan el prompt generico (sin mencion de nonce/wp-admin, que no tendria
 # sentido para Drupal/Node/un contenedor Docker cualquiera, los otros objetivos que ese mismo
@@ -710,7 +763,9 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
         return None
     if not (data.get("endpoint_alternativo") or data.get("parametro_alternativo")
            or data.get("pagina_extra_para_nonce") or data.get("pagina_setup_admin_requerida")
-           or data.get("parametro_adicional_requerido")):
+           or data.get("parametro_adicional_requerido")
+           or data.get("argv_alternativo") or data.get("setup_alternativo")
+           or data.get("payload_index_alternativo") is not None):
         return None
     return data
 
@@ -3161,10 +3216,36 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
              "herramienta CLI cuyo vector es el VALOR de un argumento..." if es else
              "attempting DYNAMIC verification (isolated Docker, --network none) of a CLI tool "
              "whose vector is an argument's VALUE..."))
+        _cli_argv = list(notes["cli_argv"])
+        _cli_setup = notes["cli_argv_setup"]
+        _cli_pidx = int(notes["cli_payload_index"])
         wr = verify_cli_argv_command_injection(
-            notes["cli_argv_image"], notes["cli_argv_setup"], list(notes["cli_argv"]),
-            int(notes["cli_payload_index"]), on_step=step, budget_s=budget_s,
+            notes["cli_argv_image"], _cli_setup, _cli_argv, _cli_pidx,
+            on_step=step, budget_s=budget_s,
             setup_docker_args=notes.get("cli_argv_setup_docker_args"))
+        # Bucle de aprendizaje: si no se confirmo, el LLM lee stdout/stderr y sugiere
+        # correcciones al argv o al setup (igual que el bucle generico de HTTP pero
+        # los campos de sugerencia son distintos: argv_alternativo / setup_alternativo).
+        for _cli_attempt_n in range(1, min(_RETRY_MAX_ATTEMPTS, 4)):
+            if wr.verified or not wr.available:
+                break
+            _cli_sug = _llm_suggest_retry_from_evidence(
+                llm, _CLI_ARGV_RETRY_SYS, wr, _CLI_ARGV_RETRY_EVIDENCE_KEYS,
+                technique_label="cli-argv-injection")
+            if not _cli_sug:
+                break
+            if _cli_sug.get("argv_alternativo"):
+                _cli_argv = list(_cli_sug["argv_alternativo"])
+            if _cli_sug.get("setup_alternativo"):
+                _cli_setup = str(_cli_sug["setup_alternativo"])
+            if _cli_sug.get("payload_index_alternativo") is not None:
+                _cli_pidx = int(_cli_sug["payload_index_alternativo"])
+            step((f"el LLM reviso la evidencia CLI (intento {_cli_attempt_n + 1}/4): "
+                 f"{_cli_sug.get('razon', '')}"))
+            wr = verify_cli_argv_command_injection(
+                notes["cli_argv_image"], _cli_setup, _cli_argv, _cli_pidx,
+                on_step=step, budget_s=budget_s,
+                setup_docker_args=notes.get("cli_argv_setup_docker_args"))
         _apply_wpverify_result(inv, wr, es, llm)
         return
     source = (notes.get("source_url") or "").strip()
@@ -5259,7 +5340,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     technique_label="file upload Drupal")
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
-                  and inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                  and inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_file_upload, _pick_param, _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
                 file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
@@ -5317,7 +5398,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # docker-compose.yml -- confirma el ALMACENAMIENTO real (grep dentro del contenedor),
             # nunca la ejecucion (eso exigiria conocer la URL publica real, especifica del stack).
             elif (not plugin_dir and fr.local_path and
-                  inv.vuln_class == "file-upload" and notes.get("endpoint")):
+                  inv.vuln_class in ("file-upload", "arbitrary-file-upload") and notes.get("endpoint")):
                 from .genericverify import verify_generic_file_upload, _pick_param
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []

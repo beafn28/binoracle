@@ -168,7 +168,11 @@ def verify_cli_argv_command_injection(
             ["docker", "run", "--rm", "-v", f"{work_dir}:/work", "-w", "/work",
              *(setup_docker_args or []), image, "sh", "-c", setup_cmd],
             capture_output=True, text=True, timeout=min(budget_s, 240.0))
-        res.evidence.update({"setup_cmd": setup_cmd, "setup_returncode": setup.returncode})
+        res.evidence.update({
+            "setup_cmd": setup_cmd,
+            "setup_returncode": setup.returncode,
+            "setup_stderr_recorte": (setup.stderr or "")[:400],
+        })
         if setup.returncode != 0:
             res.detail = (f"el comando de preparacion fallo (codigo {setup.returncode}): "
                           f"{(setup.stderr or setup.stdout or '')[:500]}")
