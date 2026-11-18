@@ -2073,6 +2073,48 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 if render_context != "unknown":
                     break
 
+        # Fallback: escanear JS del plugin para template literals en .html()/innerHTML.
+        # Patron: `<a href="${siteUrl}${value['str_url']}"...` → jQuery.html() → XSS.
+        # Los templates PHP pueden estar todos escapados (esc_url/esc_attr) mientras
+        # el metabox JS renderiza el mismo valor sin sanitizar.
+        if render_context == "unknown":
+            _col_name = best_inject.get("inject_param", "")
+            _col_variants = {_col_name.lower(), _col_name.replace("_", "").lower()}
+            _col_variants.update({"str_url", "uri", "url", "link", "href", "page_uri"})
+            _col_variants.discard("")
+            # Template literal que empieza con un tag HTML y contiene la columna
+            # de inject_param sin escapar — sin exigir cierre del template (puede ser largo)
+            _TMPL_VAR_RE = re.compile(
+                r"""[`]\s*<[a-z][^`]{0,3000}\$\{[^}]{0,100}(?:"""
+                + "|".join(re.escape(c) for c in sorted(_col_variants, key=len, reverse=True))
+                + r""")[^}]{0,50}\}""",
+                re.IGNORECASE | re.DOTALL,
+            )
+            _js_scanned = 0
+            for _jsdp, _jsdirs, _jsfiles in os.walk(local_path):
+                _jsdirs[:] = [d for d in _jsdirs
+                              if d not in ("vendor", "node_modules", "bower_components")]
+                for _jsfn in sorted(_jsfiles):
+                    if not _jsfn.lower().endswith(".js"):
+                        continue
+                    if _jsfn.lower().endswith(".min.js"):
+                        continue
+                    _js_scanned += 1
+                    if _js_scanned > 60:
+                        break
+                    _jsfp2 = os.path.join(_jsdp, _jsfn)
+                    try:
+                        with open(_jsfp2, "r", encoding="utf-8", errors="replace") as _jsh:
+                            _jstext = _jsh.read(200_000)
+                    except OSError:
+                        continue
+                    if _TMPL_VAR_RE.search(_jstext):
+                        render_context = "js_innerHTML"
+                    if render_context != "unknown":
+                        break
+                if _js_scanned >= 60 or render_context != "unknown":
+                    break
+
         _act_p = best_inject.get("activation_params", {})
         return {
             "inject_action": None,

