@@ -448,10 +448,9 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                     _n = int(raw_id)
                     _hashed = _hl.md5(str(_n).encode()).hexdigest()[10:15]
                     base_params[dir_id_param] = _hashed
-                    # UM's get_directory_by_hash() looks up '_um_hash' post meta, NOT the
-                    # hash we compute — if the post was created programmatically (not via
-                    # the UM admin UI), that meta is never written and every request returns
-                    # "Wrong member directory data". Write it explicitly here.
+                    # UM's get_directory_by_hash() uses SUBSTRING(MD5(ID),11,5) directly
+                    # in SQL, not _um_hash post meta. Write the meta anyway for compatibility
+                    # with any future UM version that might change the lookup strategy.
                     lab.wp_cli("post", "meta", "update", raw_id, "_um_hash", _hashed,
                                timeout=15)
                     step(f"'{dir_id_param}' resuelto directamente via WP-CLI (post "

@@ -1162,10 +1162,15 @@ def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Option
             # `[$this, 'nombre']`), y se queda con el mas cercano a su definicion si hubiera
             # varios candidatos.
             candidates = []
+            _name_quoted_re = _re.compile(rf"""['\"]{_re.escape(name)}['\"]\s*\)""")
             for m in action_re.finditer(text):
-                call_end = text.find(")", m.end())
-                call_text = text[m.start():call_end if call_end != -1 else m.end() + 200]
-                if name in call_text:
+                # Buscar el nombre del callback entre comillas para evitar que ventanas
+                # largas capturen callbacks de add_action() vecinos en el mismo archivo.
+                # Se busca primero hasta el fin de la instruccion (';') o 350 chars.
+                _semi = text.find(";", m.end())
+                call_text = text[m.start(): _semi if 0 < _semi - m.end() < 350 else m.end() + 350]
+                _quoted_match = _name_quoted_re.search(call_text) or (name in call_text)
+                if _quoted_match:
                     hook_line = text[:m.start()].count("\n")
                     candidates.append((abs(hook_line - (body_start if body_start is not None else hook_line)),
                                        m.group(1)))
