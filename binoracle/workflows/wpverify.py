@@ -1850,34 +1850,63 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                      f"filtro de directorio")
 
             # Detect WP option keys used in gating branches (e.g. member_directory_own_table).
-            # Narrow scan: only PHP files that have BOTH a raw-SQL ORDER BY pattern
-            # (e.g. 'ORDER BY u.$sortby' — direct PHP variable interpolation in SQL, the
-            # actual injection sink) AND an option check. Files with safe ORM ORDER BY
-            # (WP_Query, WP_User_Query, $wpdb->prepare()) are excluded because there's no
-            # injectable sink to gate on.
+            # Two-pass scan:
+            # Pass A: files with raw-SQL ORDER BY $var injection sink — collect their class names.
+            # Pass B: scan ALL PHP files for `new ClassName()` gated by an option check, where
+            #   ClassName came from pass A. This catches gating options that live in init/factory
+            #   files rather than the injection-sink file itself (e.g. UM: class-init.php gates
+            #   `new Member_Directory_Meta()` via `member_directory_own_table`, while the actual
+            #   injection sink is in class-member-directory-meta.php).
             _gating_option_re = _re_boot.compile(
-                r"(?:um_option|get_option)\s*\(\s*['\"]([a-z_]{5,50})['\"]",
+                r"(?:um_option|get_option|->get)\s*\(\s*['\"]([a-z_]{5,50})['\"]",
                 _re_boot.IGNORECASE,
             )
             _raw_orderby_re = _re_boot.compile(
-                r"ORDER\s+BY\s+(?:\w+\.)?\$\w+",  # ORDER BY u.$var or ORDER BY $var
+                r"ORDER\s+BY\s+(?:\w+\.)?(?:\{)?\$\w+",  # ORDER BY u.$var, ORDER BY u.{$var}
                 _re_boot.IGNORECASE,
             )
-            _gating_opts_found: dict = {}
+            _class_re = _re_boot.compile(
+                r"class\s+(\w+)",
+                _re_boot.IGNORECASE,
+            )
+            # Pass A: collect class names from injection-sink files
+            _sink_classes: set = set()
+            _all_php_contents: dict = {}  # path -> content (reuse in pass B)
             for _root_b3, _, _files_b3 in os.walk(plugin_source_dir):
                 for _fn_b3 in _files_b3:
                     if not _fn_b3.endswith(".php"):
                         continue
                     try:
-                        with open(os.path.join(_root_b3, _fn_b3), "r", errors="replace") as _fh_b3:
+                        _fp_b3 = os.path.join(_root_b3, _fn_b3)
+                        with open(_fp_b3, "r", errors="replace") as _fh_b3:
                             _content_b3 = _fh_b3.read()
-                        # Only files with the raw ORDER BY $var injection sink pattern
-                        if not _raw_orderby_re.search(_content_b3):
-                            continue
-                        for _m_b3 in _gating_option_re.finditer(_content_b3):
-                            _gating_opts_found[_m_b3.group(1)] = "1"
+                        _all_php_contents[_fp_b3] = _content_b3
+                        if _raw_orderby_re.search(_content_b3):
+                            for _mc in _class_re.finditer(_content_b3):
+                                _sink_classes.add(_mc.group(1))
                     except Exception:
                         continue
+            # Pass B: find options that gate instantiation of sink classes.
+            # Locality filter: only count an option if it appears within 600 chars of a
+            # `new SinkClass()` call — this excludes unrelated option reads in the same file.
+            _gating_opts_found: dict = {}
+            _new_class_re = (_re_boot.compile(
+                r"new\s+(?:\w+\\)*(" + "|".join(_re_boot.escape(c) for c in _sink_classes) + r")\b",
+                _re_boot.IGNORECASE,
+            ) if _sink_classes else None)
+            _locality = 600  # chars before/after 'new SinkClass()' to consider
+            for _fp_b3, _content_b3 in _all_php_contents.items():
+                _has_sink = _raw_orderby_re.search(_content_b3)
+                _has_new = bool(_new_class_re and _new_class_re.search(_content_b3)) if _new_class_re else False
+                if not (_has_sink or _has_new):
+                    continue
+                # Apply locality filter for BOTH sink and factory files:
+                # collect options near the injection/instantiation point (not whole file).
+                _search_re = _raw_orderby_re if _has_sink else _new_class_re
+                for _mn in _search_re.finditer(_content_b3):
+                    _window = _content_b3[max(0, _mn.start() - _locality): _mn.end() + _locality]
+                    for _m_b3 in _gating_option_re.finditer(_window):
+                        _gating_opts_found[_m_b3.group(1)] = "1"
             # Safety cap: if more than 3 options found, the scan may be too broad — skip auto-enable
             if len(_gating_opts_found) > 3:
                 step(f"[source-analysis] demasiadas opciones detectadas en rama vulnerable "

@@ -634,7 +634,26 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
         res.note = f"fallo git clone: {e}"
         return res
     if out.returncode != 0:
-        res.note = f"git clone fallo: {(out.stderr or '').strip()[:300]}"
+        err_text = (out.stderr or "").strip()
+        # Branch/tag not found: retry without --branch (clone default branch)
+        if ref and ("remote branch" in err_text.lower() or
+                    "not found in upstream" in err_text.lower() or
+                    "no encontrada" in err_text.lower()):
+            cmd2 = [git, "clone", "--depth", "1", url, dest_dir]
+            step(f"rama '{ref}' no existe, reintentando sin --branch ...")
+            try:
+                import shutil as _sh
+                _sh.rmtree(dest_dir, ignore_errors=True)
+                dest_dir2 = tempfile.mkdtemp(prefix="binoracle_git_")
+                out = subprocess.run(cmd2 + [dest_dir2], capture_output=True,
+                                     text=True, timeout=timeout, env=env)
+                if out.returncode == 0:
+                    res.ok = True
+                    res.local_path = dest_dir2
+                    return res
+            except Exception:
+                pass
+        res.note = f"git clone fallo: {err_text[:300]}"
         return res
     res.ok = True
     res.local_path = dest_dir
