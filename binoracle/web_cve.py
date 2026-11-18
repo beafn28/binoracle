@@ -1103,7 +1103,7 @@ main {
     </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
-      <a class="wiki-link" href="https://github.com/beafn28/binoracle/wiki" target="_blank" rel="noopener">Docs</a>
+      <a class="wiki-link" href="https://beafn28.github.io/binoracle/" target="_blank" rel="noopener">Docs</a>
       <button id="history-btn" title="Session history">
         History <span class="hist-count" id="hist-count">0</span>
       </button>
