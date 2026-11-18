@@ -2073,11 +2073,13 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 if render_context != "unknown":
                     break
 
-        # Fallback: escanear JS del plugin para template literals en .html()/innerHTML.
+        # Always scan JS files for template literals fed into .html()/innerHTML, even if the
+        # PHP scan already found a render_context. The PHP context ("url", "href") is for
+        # server-side echoes; the actual XSS sink may be in JS that reads from the DB and
+        # renders unescaped via jQuery.html() — a different render context that takes
+        # priority (js_innerHTML → 5 specific payloads instead of 532).
         # Patron: `<a href="${siteUrl}${value['str_url']}"...` → jQuery.html() → XSS.
-        # Los templates PHP pueden estar todos escapados (esc_url/esc_attr) mientras
-        # el metabox JS renderiza el mismo valor sin sanitizar.
-        if render_context == "unknown":
+        if True:
             _col_name = best_inject.get("inject_param", "")
             _col_variants = {_col_name.lower(), _col_name.replace("_", "").lower()}
             _col_variants.update({"str_url", "uri", "url", "link", "href", "page_uri"})
@@ -2110,9 +2112,9 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                         continue
                     if _TMPL_VAR_RE.search(_jstext):
                         render_context = "js_innerHTML"
-                    if render_context != "unknown":
+                    if render_context == "js_innerHTML":
                         break
-                if _js_scanned >= 60 or render_context != "unknown":
+                if _js_scanned >= 60 or render_context == "js_innerHTML":
                     break
 
         _act_p = best_inject.get("activation_params", {})
