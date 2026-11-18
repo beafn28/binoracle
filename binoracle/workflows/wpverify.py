@@ -3698,6 +3698,24 @@ def verify_wordpress_sqli(
                     r"$all_php[$f->getPathname()]=$c;"
                     r"if(strpos($c,'wp_ajax_nopriv_'.$nopriv_action)!==false)$reg_files[$f->getPathname()]=$c;"
                     r"}"
+                    # Pass 0.5: proximity search — find check_ajax_referer NEAR the action keyword
+                    # (within 3000 chars). This handles plugins that register actions dynamically
+                    # so no literal 'wp_ajax_nopriv_ACTION' exists, AND avoids false positives
+                    # from unrelated files that happen to contain both keywords far apart.
+                    # For um_get_members: 'get_members' is in the function body of ajax_get_members
+                    # right next to check_ajax_referer('um-frontend-nonce') in class-member-
+                    # directory-meta.php, while settings files don't have 'get_members' anywhere.
+                    r"if(!$nonce_action){"
+                    r"$aparts2=array_values(array_filter(explode('_',$nopriv_action),function($p){return strlen($p)>3;}));"
+                    r"$kw2=implode('_',array_slice($aparts2,-2));$win=3000;"
+                    r"if(!$kw2)$kw2=$nopriv_action;"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"$pos=0;"
+                    r"while(($kpos=stripos($fc,$kw2,$pos))!==false){"
+                    r"$seg=substr($fc,max(0,$kpos-$win),min(strlen($fc),$kpos+$win)-max(0,$kpos-$win));"
+                    r"if(preg_match($nonce_extract,$seg,$m)){$nonce_action=$m[1];break 2;}"
+                    r"$pos=$kpos+1;"
+                    r"}}}"
                     # Pass 1: check registration files directly
                     r"foreach($reg_files as $rp=>$rc){"
                     r"if(preg_match($nonce_extract,$rc,$m)){$nonce_action=$m[1];break;}"
