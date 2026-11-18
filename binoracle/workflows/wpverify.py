@@ -1955,6 +1955,29 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 step(f"opcion detectada en source: '{_go_key}'={_go_val} activada "
                      f"en '{_plugin_blob_key}' (branch vulnerable requiere esta opcion)")
 
+    # Diagnostic: verify options + hash lookup work from within WordPress (WP-CLI context).
+    # Runs after all options are set so we see the actual live state.
+    if _um_hashed and _gating_opts_found:
+        _diag_hash = _um_hashed
+        _diag_blob = _plugin_blob_key if "_plugin_blob_key" in dir() else "um_options"
+        # Find the first gating key
+        _diag_key = next(iter(_gating_opts_found), "member_directory_own_table")
+        _diag_php = (
+            "global $wpdb;"
+            f"$h='{_diag_hash}';"
+            f"$id=$wpdb->get_var($wpdb->prepare("
+            f"\"SELECT ID FROM {{$wpdb->posts}} WHERE SUBSTRING(MD5(ID),11,5)=%s\",$h));"
+            f"$opt=um_option('{_diag_key}');"
+            f"$cls=get_class(UM()->member_directory());"
+            f"$cnt=$wpdb->get_var(\"SELECT COUNT(*) FROM {{$wpdb->posts}}\");"
+            f"echo 'hash_id:'.var_export($id,true)."
+            f"'|opt:{_diag_key}:'.var_export($opt,true)."
+            f"'|class:'.$cls.'|posts_total:'.$cnt;"
+        )
+        _r_diag = lab.wp_cli("eval", _diag_php, timeout=15)
+        _diag_out = (_r_diag.stdout or "").strip()
+        step(f"[DIAG] hash+opt+class check: {_diag_out!r}")
+
     # Detect the directory-specific shortcode from source: for plugins that have multiple
     # shortcodes (e.g. login form + directory listing), find_shortcode_name() may return
     # the wrong one. The correct one is the shortcode in the same PHP file(s) that handle
