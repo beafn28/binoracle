@@ -4229,6 +4229,24 @@ def verify_wordpress_xss(
         token = _token()
         marker = f"binoracle-xss-{token}"
         js = f"document.title='{marker}'"
+
+        # Payload-cache: si en un run anterior se confirmo con un payload concreto para
+        # este mismo endpoint+param+transform+view, probarlo primero antes de iterar los 500+.
+        # El payload se guarda como template con __BINORACLE_XSS_MARKER__ en lugar del marker
+        # especifico de cada run; al cargar se sustituye por el nuevo marker.
+        import json as _json
+        from pathlib import Path as _Path
+        _XSS_PL_PLACEHOLDER = "__BINORACLE_XSS_MARKER__"
+        _xss_cache_file = _Path.home() / ".cache" / "binoracle" / "xss_winning_payloads.json"
+        _xss_cache_key = f"{endpoint}|{xss_param}|{payload_transform}|{stored_xss_view_path}"
+        _cached_winner_template: Optional[str] = None
+        try:
+            if _xss_cache_file.exists():
+                _cached = _json.loads(_xss_cache_file.read_text())
+                _cached_winner_template = _cached.get(_xss_cache_key)
+        except Exception:
+            pass
+
         attempts = [
             # contexto HTML normal (el payload cae directo en el cuerpo de la pagina)
             f"<script>{js}</script>",
@@ -4271,6 +4289,21 @@ def verify_wordpress_xss(
         # comunes, trucos de entidades) con su alert(NNNN) fijo sustituido por este mismo `js`.
         from .payload_kb import load_xss_payloads
         attempts += load_xss_payloads(js)
+
+        # Prepend cached winner: reconstruir el payload con el nuevo marker y moverlo al frente.
+        if _cached_winner_template is not None:
+            try:
+                _reconstructed = _cached_winner_template.replace(_XSS_PL_PLACEHOLDER, marker)
+                # Si el payload reconstruido ya esta en la lista, moverlo al frente.
+                # Si no (payload de una version anterior), insertarlo igualmente -- merece intentarse.
+                try:
+                    _idx = attempts.index(_reconstructed)
+                    if _idx > 0:
+                        attempts.insert(0, attempts.pop(_idx))
+                except ValueError:
+                    attempts.insert(0, _reconstructed)
+            except Exception:
+                pass
 
         found = False
         tried = []
@@ -4327,6 +4360,17 @@ def verify_wordpress_xss(
                         found = True
                         res.evidence["payload_ganador"] = payload_value
                         res.evidence["stored_xss_view_path"] = stored_xss_view_path
+                        # Guardar payload ganador en cache para acelerar runs futuros.
+                        try:
+                            _pl_template = payload_value.replace(marker, _XSS_PL_PLACEHOLDER)
+                            _xss_cache_file.parent.mkdir(parents=True, exist_ok=True)
+                            _existing = {}
+                            if _xss_cache_file.exists():
+                                _existing = _json.loads(_xss_cache_file.read_text())
+                            _existing[_xss_cache_key] = _pl_template
+                            _xss_cache_file.write_text(_json.dumps(_existing, indent=2))
+                        except Exception:
+                            pass
                         step(f"VERIFICADO (stored XSS): el admin cargo '{stored_xss_view_path}' "
                              f"y el navegador ejecuto el script inyectado -- document.title = "
                              f"'{marker}'.")

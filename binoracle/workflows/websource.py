@@ -1916,10 +1916,14 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
     if best_inject is not None and best_inject.get("rest_endpoint"):
         # Buscar view_path para el REST result.
         # Estrategia 1: add_menu_page con slug literal
-        # Estrategia 2: patron de slug dinamico 'prefix_[slug]_suffix' + primera clave de pagina
+        # Estrategia 2: patron de slug dinamico 'prefix_[slug]_suffix' + clave de pagina relevante
         view_path = ""
         slug_template = ""
-        first_page_key = ""
+        _all_page_keys: list = []
+        _PAGE_KEY_RE = re.compile(
+            r"['\"](?:overview|main|stats|dashboard|report|home|"
+            r"pages|page|search|referrers|referrer|visits|visit|hit|hits|url|urls)['\"]"
+        )
         for vfp, vtext in all_texts.items():
             # Buscar patron de slug dinamico: static $X = 'prefix_[slug]_suffix'
             tpl_m = re.search(
@@ -1928,16 +1932,26 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
             )
             if tpl_m and not slug_template:
                 slug_template = tpl_m.group(1)
-            # Buscar primera clave de pagina (overview/main/stats/etc.)
-            key_m = re.search(
-                r"['\"](?:overview|main|stats|dashboard|report|home)['\"]",
-                vtext
-            )
-            if key_m and not first_page_key:
-                first_page_key = key_m.group(0).strip("'\"")
-        if slug_template and first_page_key:
-            page_slug = slug_template.replace("[slug]", first_page_key)
-            view_path = f"/wp-admin/admin.php?page={page_slug}"
+            # Recoger TODAS las claves de pagina unicas (no solo la primera)
+            for km in _PAGE_KEY_RE.finditer(vtext):
+                key = km.group(0).strip("'\"")
+                if key not in _all_page_keys:
+                    _all_page_keys.append(key)
+        if slug_template and _all_page_keys:
+            # Si el param inyectado contiene uri/url/page/path/ref/search, priorizar vistas
+            # de contenido (pages/search/referrers/url) sobre home/overview/main/dashboard.
+            _ip_lc = best_inject.get("inject_param", "").lower()
+            _page_related = any(h in _ip_lc for h in ("uri", "url", "page", "path", "ref", "search", "hit"))
+            _HOME_KEYS = {"overview", "main", "home", "dashboard", "report"}
+            if _page_related:
+                _ordered = [k for k in _all_page_keys if k not in _HOME_KEYS] + \
+                           [k for k in _all_page_keys if k in _HOME_KEYS]
+            else:
+                _ordered = _all_page_keys
+            first_page_key = _ordered[0] if _ordered else ""
+            if first_page_key:
+                page_slug = slug_template.replace("[slug]", first_page_key)
+                view_path = f"/wp-admin/admin.php?page={page_slug}"
         if not view_path:
             for vfp, vtext in all_texts.items():
                 is_admin = ("admin" in vfp.lower() or "dashboard" in vfp.lower()
