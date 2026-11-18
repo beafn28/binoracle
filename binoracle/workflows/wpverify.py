@@ -584,12 +584,47 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
     # any param that looks like a directory ID — avoids brute-force (which requires a valid
     # nonce and may fail if the nonce action isn't embedded in any published page).
     if getattr(boot, "directory_hash", None):
+        _hash_applied = False
         for k in other_id_params:
             if any(h in k.lower() for h in ("dir",)) or str(base_params.get(k, "")).isdigit():
                 base_params[k] = boot.directory_hash
                 step(f"parametro '{k}' asignado con hash MySQL confirmado '{boot.directory_hash}' "
                      f"(calculado en bootstrap, sin fuerza bruta)")
                 res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[k] = boot.directory_hash
+                _hash_applied = True
+        if not _hash_applied:
+            # LLM omitted the directory hash param: detect its name from source code.
+            # Scan for $_POST['X'] or $_REQUEST['X'] where X contains "dir" or "id"
+            # in files that also contain the hash lookup SQL (SUBSTRING(MD5) or get_directory_by_hash).
+            _dir_param_name = "directory_id"  # sensible default
+            if plugin_source_dir and os.path.isdir(plugin_source_dir):
+                _hash_sql_re = re.compile(r"SUBSTRING\s*\(MD5|get_directory_by_hash", re.I)
+                _post_param_re = re.compile(r"\$_(?:POST|REQUEST)\[['\"]([\w_]{3,40})['\"]\]", re.I)
+                for _root3, _, _files3 in os.walk(plugin_source_dir):
+                    for _fn3 in _files3:
+                        if not _fn3.endswith(".php"):
+                            continue
+                        try:
+                            _fc3 = open(os.path.join(_root3, _fn3), encoding="utf-8",
+                                        errors="replace").read()
+                        except Exception:
+                            continue
+                        if not _hash_sql_re.search(_fc3):
+                            continue
+                        for _pm in _post_param_re.finditer(_fc3):
+                            _pk = _pm.group(1)
+                            if any(h in _pk.lower() for h in ("dir",)):
+                                _dir_param_name = _pk
+                                break
+                    else:
+                        continue
+                    break
+            base_params.setdefault(_dir_param_name, boot.directory_hash)
+            if base_params[_dir_param_name] != boot.directory_hash:
+                base_params[_dir_param_name] = boot.directory_hash
+            step(f"parametro '{_dir_param_name}' (detectado en source, omitido por el LLM) "
+                 f"inyectado con hash MySQL '{boot.directory_hash}'")
+            res.evidence.setdefault("parametros_resueltos_con_valor_real", {})[_dir_param_name] = boot.directory_hash
         other_id_params = []  # already resolved — skip brute-force
     for k in other_id_params:
         def _probe_param_id(cand, _k=k):

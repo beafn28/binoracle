@@ -19,6 +19,48 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
+# ── History persistence ───────────────────────────────────────────────────────
+
+_HISTORY_DIR = os.path.expanduser("~/.binoracle/history")
+os.makedirs(_HISTORY_DIR, exist_ok=True)
+
+
+def _save_history(job: "_Job"):
+    if not job.result:
+        return
+    try:
+        path = os.path.join(_HISTORY_DIR, f"{job.id}.json")
+        record = {
+            "job_id": job.id,
+            "cve_id": job.cve_id,
+            "verified": job.result.get("verified", False),
+            "elapsed": job.result.get("elapsed", 0),
+            "created": job.created,
+            "result": job.result,
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _load_history(limit: int = 50) -> list:
+    records = []
+    try:
+        for fname in os.listdir(_HISTORY_DIR):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(_HISTORY_DIR, fname), encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                records.append(rec)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    records.sort(key=lambda r: r.get("created", 0), reverse=True)
+    return records[:limit]
+
 # ── Job store ─────────────────────────────────────────────────────────────────
 
 class _Job:
@@ -79,11 +121,13 @@ def _start_job(cve_id: str, config) -> _Job:
                 "evidence": evidence,
                 "logs": job.logs,
             }
+            _save_history(job)
             job._q.put(("done", job.result))
         except Exception as exc:
             job.status = "done"
             job.result = {"verified": False, "cve_id": job.cve_id,
                           "error": str(exc), "logs": job.logs}
+            _save_history(job)
             job._q.put(("done", job.result))
 
     threading.Thread(target=_run, daemon=True, name=f"cve-{job.id}").start()
@@ -112,6 +156,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/stream/"):
             job_id = path.split("/")[-1]
             self._sse(job_id)
+        elif path == "/api/history":
+            self._json_history()
         elif path.startswith("/api/result/"):
             job_id = path.split("/")[-1]
             self._json_result(job_id)
@@ -230,16 +276,37 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _json_history(self):
+        records = _load_history(50)
+        summary = [
+            {
+                "job_id": r["job_id"],
+                "cve_id": r["cve_id"],
+                "verified": r.get("verified", False),
+                "elapsed": r.get("elapsed", 0),
+                "created": r.get("created", 0),
+            }
+            for r in records
+        ]
+        self._send_json(200, summary)
+
     def _json_result(self, job_id: str):
         with _jobs_lock:
             job = _jobs.get(job_id)
-        if not job:
+        if job:
+            if job.status != "done" or not job.result:
+                self._send_json(202, {"status": "running"})
+                return
+            self._send_json(200, job.result)
+            return
+        # Fall back to persisted history
+        try:
+            path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+            with open(path, encoding="utf-8") as fh:
+                rec = json.load(fh)
+            self._send_json(200, rec.get("result", rec))
+        except Exception:
             self._send_json(404, {"error": "not found"})
-            return
-        if job.status != "done" or not job.result:
-            self._send_json(202, {"status": "running"})
-            return
-        self._send_json(200, job.result)
 
     def _send_json(self, code: int, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -556,6 +623,54 @@ main {
 #export-btn:hover { border-color: var(--cyan); color: var(--cyan); }
 #export-btn:disabled { opacity: .4; cursor: not-allowed; }
 
+/* ── history panel ── */
+#history-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--dim); font-family: var(--sans); font-size: 12px; font-weight: 500;
+  padding: 6px 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  transition: color .15s, border-color .15s; white-space: nowrap;
+}
+#history-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+#history-btn .hist-count {
+  background: rgba(0,212,255,.15); color: var(--cyan); border-radius: 10px;
+  padding: 1px 7px; font-size: 10px; font-weight: 700;
+}
+.hist-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 320px;
+  background: var(--bg2); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; z-index: 100;
+  transform: translateX(100%); transition: transform .22s ease;
+  box-shadow: -4px 0 20px rgba(0,0,0,.4);
+}
+.hist-panel.open { transform: translateX(0); }
+.hist-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 600; letter-spacing: .05em; color: var(--cyan);
+}
+.hist-panel-head button {
+  background: none; border: none; color: var(--dim); cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 2px 6px;
+}
+.hist-panel-head button:hover { color: var(--text); }
+.hist-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+.hist-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04);
+  transition: background .12s;
+}
+.hist-item:hover { background: rgba(255,255,255,.04); }
+.hist-item.active { background: rgba(0,212,255,.07); }
+.hist-icon { font-size: 14px; flex-shrink: 0; }
+.hist-cve { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.hist-meta { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.hist-empty { color: var(--dim); font-size: 13px; text-align: center; padding: 32px 16px; }
+.hist-overlay {
+  position: fixed; inset: 0; z-index: 99; background: rgba(0,0,0,.35);
+  display: none;
+}
+.hist-overlay.open { display: block; }
+
 /* ── empty state ── */
 .empty-msg {
   color: var(--dim); font-size: 13px; padding: 20px 0;
@@ -597,8 +712,23 @@ main {
     </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
+      <button id="history-btn" title="Session history">
+        ⌛ History <span class="hist-count" id="hist-count">0</span>
+      </button>
     </div>
   </header>
+
+  <!-- History panel -->
+  <div class="hist-overlay" id="hist-overlay"></div>
+  <div class="hist-panel" id="hist-panel">
+    <div class="hist-panel-head">
+      <span>Investigation History</span>
+      <button id="hist-close" title="Close">×</button>
+    </div>
+    <div class="hist-list" id="hist-list">
+      <div class="hist-empty">No previous investigations</div>
+    </div>
+  </div>
 
   <main>
     <div class="run-panel">
@@ -1118,6 +1248,103 @@ main {
     $('tab-report').classList.add('active');
     setTimeout(() => window.print(), 80);
   });
+
+  // ── history panel ─────────────────────────────────────────────────────────
+  let _historyData = [];
+  let _activeHistJobId = null;
+
+  async function loadHistory() {
+    try {
+      const r = await fetch('/api/history');
+      _historyData = await r.json();
+      renderHistoryList();
+      $('hist-count').textContent = _historyData.length;
+    } catch {}
+  }
+
+  function renderHistoryList() {
+    const list = $('hist-list');
+    if (!_historyData.length) {
+      list.innerHTML = '<div class="hist-empty">No previous investigations</div>';
+      return;
+    }
+    list.innerHTML = _historyData.map(rec => {
+      const icon = rec.verified ? '★' : '✖';
+      const iconColor = rec.verified ? 'var(--green)' : 'var(--yellow)';
+      const dt = new Date(rec.created * 1000);
+      const dtStr = dt.toLocaleDateString('en-GB', {month:'short',day:'numeric'})
+                  + ' ' + dt.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
+      const elapsed = rec.elapsed ? rec.elapsed.toFixed(1) + 's' : '';
+      const isActive = rec.job_id === _activeHistJobId ? ' active' : '';
+      return `<div class="hist-item${isActive}" data-jid="${escHtml(rec.job_id)}" data-cve="${escHtml(rec.cve_id)}">
+        <span class="hist-icon" style="color:${iconColor}">${icon}</span>
+        <div style="flex:1;min-width:0">
+          <div class="hist-cve">${escHtml(rec.cve_id)}</div>
+          <div class="hist-meta">${dtStr}${elapsed ? ' · ' + elapsed : ''}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    list.querySelectorAll('.hist-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const jobId = el.dataset.jid;
+        const cveId = el.dataset.cve;
+        openHistoryItem(jobId, cveId);
+      });
+    });
+  }
+
+  async function openHistoryItem(jobId, cveId) {
+    closeHistPanel();
+    _activeHistJobId = jobId;
+    // Reset UI for the loaded run
+    _logPhases = []; _currentPhase = null;
+    $('log-terminal').innerHTML = '<div class="empty-msg">Loading from history…</div>';
+    $('verdict').style.display = 'none';
+    $('export-btn').disabled = true;
+    $('cve-input').value = cveId;
+
+    try {
+      const r = await fetch('/api/result/' + jobId);
+      if (!r.ok) { alert('Could not load history item'); return; }
+      const d = await r.json();
+
+      // Replay logs
+      $('log-terminal').innerHTML = '';
+      (d.logs || []).forEach(entry => appendLog(entry.t, entry.msg));
+
+      renderResult(d);
+      $('export-btn').disabled = false;
+      setStatus(d.verified ? 'ok' : 'fail', d.verified ? `✓ ${cveId}` : `✗ ${cveId}`);
+    } catch (e) {
+      alert('Error loading history: ' + e);
+    }
+    renderHistoryList();  // refresh active highlight
+  }
+
+  function openHistPanel() {
+    $('hist-panel').classList.add('open');
+    $('hist-overlay').classList.add('open');
+    loadHistory();
+  }
+  function closeHistPanel() {
+    $('hist-panel').classList.remove('open');
+    $('hist-overlay').classList.remove('open');
+  }
+
+  $('history-btn').addEventListener('click', openHistPanel);
+  $('hist-close').addEventListener('click', closeHistPanel);
+  $('hist-overlay').addEventListener('click', closeHistPanel);
+
+  // Load count on page load
+  loadHistory();
+
+  // Also refresh history count after a run completes
+  const _origRenderResult = renderResult;
+  function renderResult(d) {
+    _origRenderResult(d);
+    setTimeout(loadHistory, 1500);
+  }
 
   // ── utils ─────────────────────────────────────────────────────────────────
   function escHtml(s) {
