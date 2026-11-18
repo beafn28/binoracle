@@ -112,6 +112,12 @@ def _start_job(cve_id: str, config) -> _Job:
             evidence = {}
             if wp_res and hasattr(wp_res, "evidence"):
                 evidence = dict(wp_res.evidence or {})
+            # Merge attempt_evidence screenshots/HTTP even when not confirmed
+            attempt_ev = getattr(inv, "attempt_evidence", None) or {}
+            for _k in ("screenshots", "http_requests", "http_log"):
+                if _k in attempt_ev and _k not in evidence:
+                    evidence[_k] = attempt_ev[_k]
+            sf = getattr(inv, "source_fetch", None) or {}
             job.result = {
                 "verified": inv.verified,
                 "cve_id": job.cve_id,
@@ -120,6 +126,15 @@ def _start_job(cve_id: str, config) -> _Job:
                 "verified_evidence": ve,
                 "evidence": evidence,
                 "logs": job.logs,
+                # CVE metadata
+                "description": getattr(inv, "description", ""),
+                "cvss_score": getattr(inv, "cvss_score", None),
+                "cvss_severity": getattr(inv, "cvss_severity", ""),
+                "cvss_vector": getattr(inv, "cvss_vector", ""),
+                "published": getattr(inv, "published", ""),
+                "vuln_class": getattr(inv, "vuln_class", ""),
+                "poc_source": getattr(inv, "poc_source_used", ""),
+                "affected_version": sf.get("resolved_version", ""),
             }
             _save_history(job)
             job._q.put(("done", job.result))
@@ -704,6 +719,92 @@ main {
   .run-panel { flex-wrap: wrap; }
   #cve-input { max-width: 100%; }
 }
+
+/* ── CVE info panel ── */
+#cve-info-panel {
+  margin: 0 24px 16px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 20px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 24px;
+  align-items: start;
+}
+.cve-info-desc {
+  font-size: 12px; color: var(--text); line-height: 1.6;
+  grid-column: 1 / -1; border-bottom: 1px solid var(--border);
+  padding-bottom: 10px; margin-bottom: 2px;
+}
+.cve-info-row {
+  display: flex; flex-wrap: wrap; gap: 10px; grid-column: 1 / -1;
+}
+.cve-info-chip {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  padding: 3px 10px; border-radius: 3px; border: 1px solid var(--border);
+  background: var(--bg3); color: var(--dim); letter-spacing: .04em;
+  display: flex; align-items: center; gap: 6px;
+}
+.cve-info-chip b { color: var(--text); font-weight: 600; }
+.cvss-crit  { color: #ff4444; border-color: rgba(255,68,68,.4);  background: rgba(255,68,68,.08); }
+.cvss-high  { color: var(--orange); border-color: rgba(255,158,44,.4); background: rgba(255,158,44,.08); }
+.cvss-med   { color: #ffd700; border-color: rgba(255,215,0,.4); background: rgba(255,215,0,.08); }
+.cvss-low   { color: var(--green); border-color: rgba(0,230,118,.4); background: rgba(0,230,118,.08); }
+.cve-poc-link {
+  font-family: var(--mono); font-size: 10px; color: var(--cyan);
+  text-decoration: none; padding: 3px 10px; border-radius: 3px;
+  border: 1px solid rgba(0,212,255,.3); background: rgba(0,212,255,.07);
+}
+.cve-poc-link:hover { background: rgba(0,212,255,.15); }
+.rerun-btn {
+  font-family: var(--mono); font-size: 11px; color: var(--dim);
+  background: none; border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 12px; cursor: pointer; transition: all .15s;
+  letter-spacing: .04em;
+}
+.rerun-btn:hover { color: var(--text); border-color: var(--cyan); }
+
+/* ── phase progress tracker ── */
+#phase-tracker {
+  margin: 0 24px 8px;
+  display: none;
+}
+.phase-track-inner {
+  display: flex; gap: 0; overflow-x: auto;
+}
+.pt-step {
+  display: flex; align-items: center; flex: 1; min-width: 0;
+  font-size: 9px; font-family: var(--mono); color: var(--dim);
+  letter-spacing: .04em; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pt-step.active { color: var(--cyan); }
+.pt-step.done   { color: var(--green); }
+.pt-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--bg3); border: 1px solid var(--border); margin-right: 5px;
+}
+.pt-step.active .pt-dot { background: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+.pt-step.done   .pt-dot { background: var(--green); border-color: var(--green); }
+.pt-line { flex: none; width: 16px; height: 1px; background: var(--border); margin: 0 2px; }
+.pt-step.done  ~ .pt-step .pt-line { background: var(--green); }
+
+/* ── copy button ── */
+.copy-btn {
+  font-size: 9px; font-family: var(--mono); letter-spacing: .04em;
+  background: none; border: 1px solid var(--border); border-radius: 3px;
+  color: var(--dim); padding: 2px 7px; cursor: pointer; transition: all .15s;
+  flex-shrink: 0;
+}
+.copy-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+.copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+/* ── evidence cards with copy button ── */
+.ev-card-body {
+  display: flex; align-items: flex-start; gap: 8px;
+}
+.ev-val { flex: 1; min-width: 0; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -734,6 +835,10 @@ main {
     </div>
   </div>
 
+  <div id="phase-tracker">
+    <div class="phase-track-inner" id="phase-track-inner"></div>
+  </div>
+
   <main>
     <div class="run-panel">
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
@@ -742,6 +847,7 @@ main {
     </div>
 
     <div id="verdict"></div>
+    <div id="cve-info-panel" style="display:none"></div>
 
     <div class="tabs-wrap">
       <div class="tab-bar">
@@ -826,6 +932,9 @@ main {
     $('tab-btn-binary').style.display = 'none';
     $('verdict').style.display = 'none';
     $('verdict').className = '';
+    $('cve-info-panel').style.display = 'none';
+    $('phase-track-inner').innerHTML = '';
+    $('phase-tracker').style.display = 'block';
     setStatus('running', 'Running…');
     $('run-btn').disabled = true;
     $('export-btn').disabled = true;
@@ -931,6 +1040,18 @@ main {
   let _logPhases = [];   // [{name, label, entries:[{t,msg}]}]
   let _currentPhase = null;
 
+  function _updatePhaseTracker() {
+    const inner = $('phase-track-inner');
+    if (!inner || !_logPhases.length) return;
+    inner.innerHTML = _logPhases.map((ph, i) => {
+      const isDone = i < _logPhases.length - 1;
+      const isActive = i === _logPhases.length - 1;
+      const cls = isDone ? 'done' : isActive ? 'active' : '';
+      const sep = i < _logPhases.length - 1 ? '<div class="pt-line"></div>' : '';
+      return `<div class="pt-step ${cls}"><div class="pt-dot"></div>${escHtml(ph.label)}</div>${sep}`;
+    }).join('');
+  }
+
   function appendLog(t, msg) {
     // detect phase headers (── PHASE NAME ──────)
     const isSep = msg.startsWith('──') || msg.startsWith('╠') || msg.startsWith('╚');
@@ -938,6 +1059,7 @@ main {
       const label = translatePhase(msg);
       _currentPhase = {name: msg, label, entries: []};
       _logPhases.push(_currentPhase);
+      _updatePhaseTracker();
       // render phase header
       const hdr = document.createElement('div');
       hdr.className = 'log-phase-header';
@@ -991,6 +1113,9 @@ main {
     setStatus(d.verified ? 'ok' : 'fail',
       d.verified ? `CONFIRMED: ${d.cve_id}` : `NOT CONFIRMED: ${d.cve_id}`);
 
+    // CVE info panel
+    renderCveInfo(d);
+
     // evidence
     renderEvidence(d.verified_evidence || {}, d.evidence || {});
 
@@ -1005,6 +1130,43 @@ main {
 
     // binary analysis
     renderBinary(d);
+
+    // stop phase tracker
+    $('phase-tracker').style.display = 'none';
+  }
+
+  function renderCveInfo(d) {
+    const panel = $('cve-info-panel');
+    if (!d.description && !d.cvss_score && !d.vuln_class && !d.affected_version && !d.poc_source) {
+      panel.style.display = 'none';
+      return;
+    }
+    const score = d.cvss_score;
+    let scoreCls = '';
+    if (score >= 9) scoreCls = 'cvss-crit';
+    else if (score >= 7) scoreCls = 'cvss-high';
+    else if (score >= 4) scoreCls = 'cvss-med';
+    else if (score > 0) scoreCls = 'cvss-low';
+
+    const chips = [];
+    if (score) chips.push(`<span class="cve-info-chip ${scoreCls}">CVSS <b>${score.toFixed(1)}</b>${d.cvss_severity ? ' · ' + escHtml(d.cvss_severity.toUpperCase()) : ''}</span>`);
+    if (d.vuln_class) chips.push(`<span class="cve-info-chip">Class <b>${escHtml(d.vuln_class.toUpperCase())}</b></span>`);
+    if (d.affected_version) chips.push(`<span class="cve-info-chip">Affected <b>${escHtml(d.affected_version)}</b></span>`);
+    if (d.published) chips.push(`<span class="cve-info-chip">Published <b>${escHtml(d.published.slice(0,10))}</b></span>`);
+    if (d.poc_source) chips.push(`<a class="cve-poc-link" href="${escHtml(d.poc_source)}" target="_blank" rel="noopener">PoC Source</a>`);
+    chips.push(`<button class="rerun-btn" id="rerun-btn">Run Again</button>`);
+
+    panel.innerHTML = `
+      ${d.description ? `<div class="cve-info-desc">${escHtml(d.description)}</div>` : ''}
+      <div class="cve-info-row">${chips.join('')}</div>
+    `;
+    panel.style.display = 'grid';
+
+    const rerunBtn = document.getElementById('rerun-btn');
+    if (rerunBtn) rerunBtn.addEventListener('click', () => {
+      $('cve-input').value = d.cve_id;
+      startRun();
+    });
   }
 
   // ── professional report builder ──────────────────────────────────────────
@@ -1086,6 +1248,21 @@ main {
         </div>
       </div>`).join('');
 
+    // CVE metadata for report
+    const rScore = d.cvss_score;
+    let rScoreColor = '#888';
+    if (rScore >= 9) rScoreColor = '#ff4444';
+    else if (rScore >= 7) rScoreColor = '#ff9e2c';
+    else if (rScore >= 4) rScoreColor = '#ffd700';
+    else if (rScore > 0) rScoreColor = '#00e676';
+    const metaChips = [];
+    if (rScore) metaChips.push(`<span style="font-family:monospace;font-size:11px;font-weight:700;color:${rScoreColor};padding:2px 8px;border:1px solid ${rScoreColor}44;border-radius:3px;background:${rScoreColor}11">CVSS ${rScore.toFixed(1)}${d.cvss_severity ? ' · ' + d.cvss_severity.toUpperCase() : ''}</span>`);
+    if (d.vuln_class) metaChips.push(`<span style="font-family:monospace;font-size:11px;padding:2px 8px;border:1px solid #333;border-radius:3px;background:#1a1a2a;color:#aaa">${escHtml(d.vuln_class.toUpperCase())}</span>`);
+    if (d.affected_version) metaChips.push(`<span style="font-family:monospace;font-size:11px;padding:2px 8px;border:1px solid #333;border-radius:3px;background:#1a1a2a;color:#aaa">Affected: ${escHtml(d.affected_version)}</span>`);
+    if (d.published) metaChips.push(`<span style="font-family:monospace;font-size:11px;padding:2px 8px;border:1px solid #333;border-radius:3px;background:#1a1a2a;color:#aaa">${escHtml(d.published.slice(0,10))}</span>`);
+    const metaHtml = metaChips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">${metaChips.join('')}</div>` : '';
+    const descHtml = d.description ? `<div style="margin-top:10px;font-size:12px;color:#aaa;line-height:1.6;border-top:1px solid #222;padding-top:10px">${escHtml(d.description)}</div>` : '';
+
     $('report-content').innerHTML = `
       <div class="report-wrap">
         <div class="report-header">
@@ -1094,6 +1271,8 @@ main {
             <h1>${escHtml(d.cve_id)} — Verification Report</h1>
             <div class="rh-meta">bin0racle Autonomous CVE Lab · ${now} · @beafn28</div>
             <div class="rh-meta ${verdictCls}" style="margin-top:6px;font-weight:600">${verdictTxt}</div>
+            ${metaHtml}
+            ${descHtml}
           </div>
         </div>
 
@@ -1185,11 +1364,32 @@ main {
       container.innerHTML = '<div class="empty-msg">No evidence keys found</div>';
       return;
     }
-    container.innerHTML = cards.map(([label, val]) => `
-      <div class="ev-card">
+    container.innerHTML = cards.map(([label, val]) => {
+      const id = 'cp-' + Math.random().toString(36).slice(2);
+      return `<div class="ev-card">
         <div class="ev-card-head">${escHtml(label)}</div>
-        <div class="ev-card-body"><span class="ev-val">${escHtml(String(val))}</span></div>
-      </div>`).join('');
+        <div class="ev-card-body">
+          <span class="ev-val">${escHtml(String(val))}</span>
+          <button class="copy-btn" data-val="${escHtml(String(val))}" data-id="${id}" id="${id}">COPY</button>
+        </div>
+      </div>`;
+    }).join('');
+    container.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const v = btn.dataset.val;
+        navigator.clipboard.writeText(v).then(() => {
+          btn.textContent = 'COPIED'; btn.classList.add('copied');
+          setTimeout(() => { btn.textContent = 'COPY'; btn.classList.remove('copied'); }, 1500);
+        }).catch(() => {
+          const sel = document.createElement('textarea');
+          sel.value = v; document.body.appendChild(sel);
+          sel.select(); document.execCommand('copy');
+          document.body.removeChild(sel);
+          btn.textContent = 'COPIED'; btn.classList.add('copied');
+          setTimeout(() => { btn.textContent = 'COPY'; btn.classList.remove('copied'); }, 1500);
+        });
+      });
+    });
   }
 
   function renderHttp(ev) {

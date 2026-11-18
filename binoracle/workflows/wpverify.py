@@ -3986,6 +3986,56 @@ def verify_wordpress_sqli(
         except Exception as e:
             res.detail = f"la peticion de control fallo: {e}"
             return res
+        # If the control response contains a MySQL ORDER BY error, the LLM-supplied default
+        # value for the sqli_param is not a valid column name. Scan the plugin source for the
+        # ORDER BY sink to find the right fallback values, then try them before giving up.
+        _ORDER_BY_ERR_RE = re.compile(
+            r"Unknown column|ORDER BY|You have an error in your SQL syntax|wpdb error", re.I)
+        if _ORDER_BY_ERR_RE.search(base_resp.text or ""):
+            # Build candidate safe values: scan plugin source for valid sortby options
+            _sort_candidates: list = []
+            if plugin_source_dir and os.path.isdir(plugin_source_dir):
+                _sortby_re = re.compile(
+                    r"(?:elseif|case|==|===)\s*[\(\s]*['\"]?([\w]+)['\"]?\s*[\)]*\s*(?:===|==)\s*\$sortby"
+                    r"|sortby.*?==.*?['\"](\w+)['\"]"
+                    r"|['\"](\w+)['\"].*?==.*?sortby",
+                    re.I)
+                _order_by_col_re = re.compile(
+                    r"ORDER BY u\.(\w+)", re.I)
+                for _root_s, _, _files_s in os.walk(plugin_source_dir):
+                    for _fn_s in _files_s:
+                        if not _fn_s.endswith(".php"): continue
+                        try:
+                            _fc_s = open(os.path.join(_root_s, _fn_s),
+                                         encoding="utf-8", errors="replace").read()
+                        except Exception: continue
+                        if "ORDER BY u." not in _fc_s: continue
+                        for _m_s in _order_by_col_re.finditer(_fc_s):
+                            _col = _m_s.group(1)
+                            if _col.isidentifier() and _col not in _sort_candidates:
+                                _sort_candidates.append(_col)
+            # universal fallback list for WP user tables
+            for _cand in ("user_login", "user_registered", "display_name", "ID",
+                          "registered", "username"):
+                if _cand not in _sort_candidates:
+                    _sort_candidates.append(_cand)
+            _fixed = False
+            for _cand in _sort_candidates:
+                try:
+                    _test_resp = send(_cand)
+                except Exception:
+                    continue
+                if not _ORDER_BY_ERR_RE.search(_test_resp.text or ""):
+                    orig_value = _cand
+                    base_resp = _test_resp
+                    step(f"valor de control para '{sqli_param}' corregido a '{_cand}' (valor LLM "
+                         f"causaba error ORDER BY; hallado escaneando el source del plugin)")
+                    _fixed = True
+                    break
+            if not _fixed:
+                step(f"[WARN] valor de control '{orig_value}' produce error ORDER BY en "
+                     f"'{sqli_param}' y ningun candidato lo corrigio -- continuando con la "
+                     f"respuesta de error como baseline (el diferencial puede ser invalido)")
         base_len = len(base_resp.text or "")
         # recorte del cuerpo real de la peticion de CONTROL (sin inyeccion) -- confirmado en
         # vivo, CVE-2024-3552: un negativo sin esto no se puede diagnosticar sin relanzar el
