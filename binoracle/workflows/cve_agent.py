@@ -288,9 +288,9 @@ def save_investigation_to_cache(inv: "Investigation") -> None:
     if _INVESTIGATION_CACHE_DISABLED:
         return
     # Only cache investigations that reached a real verdict; a run that ended
-    # with status=None (crashed, timed out, interrupted) would pollute the
-    # cache and cause binoracle to skip the CVE forever without --no-cache.
-    if inv.status not in ("CONFIRMADO", "NO CONFIRMADO"):
+    # early (crashed, timed out) would pollute the cache and cause binoracle
+    # to skip the CVE forever without --no-cache.
+    if not (inv.verified or inv.dynamic_verify.get("attempted", False)):
         return
     try:
         path = _investigation_cache_path(inv.cve_id)

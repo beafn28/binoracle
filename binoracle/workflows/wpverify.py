@@ -1632,9 +1632,15 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
              f"-- este plugin guarda su configuracion de directorio/listado como su propio "
              f"custom post type, y la resolucion de IDs de recurso necesita uno real al que "
              f"apuntar...")
-        r_dir = lab.wp_cli("post", "create", f"--post_type={directory_cpt}",
-                           "--post_status=publish", "--post_title=binoracle-lab-directory",
-                           "--porcelain", timeout=30)
+        # Create the directory CPT post via wp eval so it runs inside WordPress's PHP context
+        # where the CPT is properly registered (wp post create --post_type=X uses wp-cli's
+        # internal bootstrap which may miss the CPT registration if UM hasn't fully initialized).
+        _create_php = (
+            f"$id = wp_insert_post(['post_type'=>'{directory_cpt}',"
+            f"'post_status'=>'publish','post_title'=>'binoracle-lab-directory'],true);"
+            f"echo is_wp_error($id) ? 'ERR:'.$id->get_error_message() : (int)$id;"
+        )
+        r_dir = lab.wp_cli("eval", _create_php, timeout=30)
         dir_post_id = (r_dir.stdout or "").strip()
         if r_dir.returncode != 0 or not dir_post_id.isdigit():
             res.limitations.append(
@@ -1644,64 +1650,35 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 f"rechazarse antes de llegar al codigo vulnerable")
             dir_post_id = None
         elif slug == "ultimate-member" and dir_post_id:
-            # UM's get_directory_by_hash() looks up '_um_hash' post meta. When the post is
-            # created programmatically (not via the UM admin UI), that meta is never written
-            # and every AJAX request returns "Wrong member directory data". Write it here so
-            # the hash lookup succeeds from the first request.
             import hashlib as _hl_boot
-            _um_hashed = _hl_boot.md5(dir_post_id.encode()).hexdigest()[10:15]
-            lab.wp_cli("post", "meta", "update", dir_post_id, "_um_hash", _um_hashed,
-                       timeout=15)
-            step(f"_um_hash='{_um_hashed}' escrito en el post {dir_post_id} (UM: get_directory_by_hash)")
+            # Obtain the real hash the same way MySQL does so both sides agree.
+            # wp eval runs in PHP context where $wpdb prefix is correct.
+            _eval_hash = (
+                f"global $wpdb;"
+                f"$h=$wpdb->get_var($wpdb->prepare("
+                f"\"SELECT SUBSTRING(MD5(ID),11,5) FROM {{$wpdb->posts}} WHERE ID=%d\",{dir_post_id}));"
+                f"echo $h;"
+            )
+            r_hash = lab.wp_cli("eval", _eval_hash, timeout=10)
+            _mysql_hash = (r_hash.stdout or "").strip()
+            if _mysql_hash and len(_mysql_hash) == 5:
+                _um_hashed = _mysql_hash
+                step(f"hash MySQL confirmado para post {dir_post_id}: '{_um_hashed}'")
+            else:
+                # Fallback: Python computation
+                _um_hashed = _hl_boot.md5(dir_post_id.encode()).hexdigest()[10:15]
+                step(f"hash calculado por Python para post {dir_post_id}: '{_um_hashed}'")
             # Approve the admin user (ID=1) so the directory has at least one visible member.
-            # Without an approved user the ORDER BY clause is never evaluated — MySQL skips
-            # ORDER BY on empty result sets, so error-based and time-based injections both
-            # return nothing detectable. CVE-2024-1071 is unauthenticated; predefined_no_caps()
-            # is bypassed when the request arrives without cookies, but the query still needs
-            # rows to sort for extractvalue() / SLEEP() to execute.
             lab.wp_cli("user", "meta", "update", "1", "_um_status", "approved", timeout=10)
             lab.wp_cli("user", "meta", "update", "1", "account_status", "approved", timeout=10)
             step("admin (ID=1) marcado como UM-approved -- necesario para que ORDER BY se evalúe")
             # Enable UM's own metadata table (member_directory_own_table=1). Without this,
             # UM instantiates Member_Directory (uses WP_User_Query with validated orderby)
             # instead of Member_Directory_Meta (uses raw SQL: ORDER BY u.$sortby $order).
-            # CVE-2024-1071 is in Member_Directory_Meta — the injection is at line 820 of
-            # class-member-directory-meta.php. This option is off by default; real sites
-            # enable it via the UM admin → Settings → Users → "Own Metadata Table" toggle.
             lab.wp_cli("option", "patch", "insert", "um_options", "member_directory_own_table", "1",
                        timeout=10)
             step("member_directory_own_table=1 activado -- UM usara Member_Directory_Meta "
                  "(raw SQL: ORDER BY u.$sortby $order) en lugar de WP_User_Query")
-            # Verify that MySQL SUBSTRING(MD5(ID), 11, 5) can actually find the directory post
-            # from its hash. get_directory_by_hash() relies on this exact SQL, so if it returns
-            # nothing here the AJAX endpoint will always fail with "Wrong member directory data".
-            _sql_check = (f"SELECT CONCAT('hash_lookup_ok:',ID) FROM wp_posts "
-                          f"WHERE SUBSTRING(MD5(ID), 11, 5) = '{_um_hashed}'")
-            r_sqlck = lab.wp_cli("db", "query", _sql_check, "--skip-column-names", timeout=15)
-            _sqlck_out = (r_sqlck.stdout or "").strip()
-            if f"hash_lookup_ok:{dir_post_id}" in _sqlck_out:
-                step(f"MySQL hash lookup confirmado: SUBSTRING(MD5({dir_post_id}),11,5)='{_um_hashed}' OK")
-            else:
-                # The post exists (we just created it) but MySQL can't find it via the hash
-                # formula. Try computing the hash the same way MySQL does to find the right ID.
-                _r_ids = lab.wp_cli("db", "query",
-                                    "SELECT ID FROM wp_posts WHERE post_type='um_directory'",
-                                    "--skip-column-names", timeout=10)
-                _ids_out = (_r_ids.stdout or "").strip()
-                if _ids_out:
-                    for _real_id in _ids_out.split():
-                        if _real_id.isdigit():
-                            import hashlib as _hl2
-                            _real_hash = _hl2.md5(_real_id.encode()).hexdigest()[10:15]
-                            lab.wp_cli("post", "meta", "update", _real_id,
-                                       "_um_hash", _real_hash, timeout=10)
-                            dir_post_id = _real_id
-                            _um_hashed = _real_hash
-                            step(f"hash recalculado para um_directory real (ID={_real_id}): '{_real_hash}'")
-                            break
-                else:
-                    step(f"[WARN] MySQL hash lookup fallo (hash='{_um_hashed}', post={dir_post_id}) "
-                         f"-- get_directory_by_hash devolvera vacio; raw={_sqlck_out!r}")
 
     # For UM-style plugins the shortcode that embeds the DIRECTORY (not the login form)
     # must reference the actual CPT post ID so the AJAX nonce for um_get_members is
