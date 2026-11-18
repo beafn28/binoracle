@@ -3836,6 +3836,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if (notes.get("analyst_endpoint_lock")
                                 and isinstance(notes.get("parameters"), dict)):
                             _skip_params_override = True
+                        # Si el PoC tiene un inject_param concreto (p.ej. 'sorting') y ese
+                        # parametro NO aparece en los params que devuelve el grep, el grep ha
+                        # encontrado los params EQUIVOCADOS (p.ej. los DataTables del handler:
+                        # action/search/page) en vez del param vulnerable real.  En ese caso
+                        # los params del PoC ganan: si no se conservan, el inyector nunca
+                        # enviara el parametro correcto y todos los intentos fallaran.
+                        if not _skip_params_override and notes.get("inject_param"):
+                            _ip = notes["inject_param"]
+                            _orig_p = notes.get("parameters") or []
+                            _orig_names = (list(_orig_p.keys())
+                                           if isinstance(_orig_p, dict) else list(_orig_p))
+                            _ref_p = (refined or {}).get("parameters") or []
+                            _ref_names = (list(_ref_p.keys())
+                                          if isinstance(_ref_p, dict) else list(_ref_p))
+                            if _ip in _orig_names and _ip not in _ref_names:
+                                _skip_params_override = True
                         if _skip_params_override:
                             notes = {**notes,
                                      **{k: v for k, v in refined.items() if k != "parameters"}}
