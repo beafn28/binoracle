@@ -4051,6 +4051,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
                 email_p = notes.get("email_param") or _pick_param(params, _EMAIL_HINTS)
                 pass_p = notes.get("pass_param") or _pick_param(params, _PASS_HINTS)
+                # Leido aqui (antes del elif chain) para que la presencia de custom_headers
+                # pueda suprimir account-takeover: si el LLM da custom_headers es porque el
+                # bypass es via cabecera HTTP, no via cambio de credencial -- correr
+                # account-takeover primero desperdicia todo el presupuesto del lab (confirmado
+                # en vivo con CVE-2023-28121: 456s en account-takeover dejaban sin tiempo al
+                # header-bypass que era el path correcto).
+                _custom_headers = notes.get("custom_headers")
                 wr = None
                 # TERCERA forma, distinta de las dos de abajo: NINGUNA sesion previa hace falta
                 # (confirmado en vivo, CVE-2026-2991/KiviCare) -- nunca se adivina sola a partir
@@ -4079,7 +4086,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                         shortcode_name=shortcode_name_generic,
                         keep_lab_on_failure=keep_lab_on_failure)
-                elif email_p or pass_p:
+                elif (email_p or pass_p) and not _custom_headers:
                     step(("intentando verificacion DINAMICA -- patron de cambio de credencial "
                          "(WordPress+MySQL efimero en Docker)..." if es else
                          "attempting DYNAMIC verification -- credential-change pattern "
@@ -4152,7 +4159,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # lugar de parametros ID/email/pass, O cuando el analista los pasa con
                 # --custom-headers. Corre incluso si login-as ya intento y fallo (wr no None
                 # pero wr.verified False), porque el mecanismo es completamente distinto.
-                _custom_headers = notes.get("custom_headers")
+                # (_custom_headers ya definido arriba, antes del elif chain)
                 if _custom_headers and isinstance(_custom_headers, dict) and not (wr and wr.verified):
                     from .wpverify import verify_wordpress_header_auth_bypass
                     step(("intentando verificacion DINAMICA -- header-based auth bypass "

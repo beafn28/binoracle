@@ -904,25 +904,43 @@ def _screenshot_authenticated(base_url: str, session, path: str) -> Optional[str
     except Exception:
         return None
     import base64
+    import concurrent.futures as _cf
     import tempfile
     from urllib.parse import urlsplit
     host = urlsplit(base_url).hostname or "127.0.0.1"
     cookies = [{"name": c.name, "value": c.value, "domain": host, "path": "/"} for c in session.cookies]
     fd, out_path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
-    try:
+
+    def _do() -> Optional[str]:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
                 ctx = browser.new_context(viewport={"width": 1280, "height": 900})
                 ctx.add_cookies(cookies)
                 page = ctx.new_page()
-                page.goto(base_url + path, wait_until="load", timeout=15000)
-                page.screenshot(path=out_path, full_page=True)
+                # domcontentloaded fires before deferred AJAX; full_page=True triggers lazy
+                # loads that can keep pending HTTP requests open and hang browser.close().
+                page.goto(base_url + path, wait_until="domcontentloaded", timeout=12000)
+                page.screenshot(path=out_path)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
             finally:
                 browser.close()
-        with open(out_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("ascii")
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        # Hard timeout: wp-admin pages keep pending AJAX that can hang sync_playwright().__exit__
+        # indefinitely. Running in a thread lets us abandon the Playwright process cleanly.
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_do).result(timeout=30)
     except Exception:
         return None
     finally:
@@ -944,24 +962,39 @@ def _screenshot_failed_login(base_url: str, user: str, wrong_password: str) -> O
     except Exception:
         return None
     import base64
+    import concurrent.futures as _cf
     import tempfile
     fd, out_path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
-    try:
+
+    def _do() -> Optional[str]:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(**chromium_launch_kwargs())
             try:
-                page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
-                page.goto(base_url + "/wp-login.php", wait_until="load", timeout=15000)
+                _ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = _ctx.new_page()
+                page.goto(base_url + "/wp-login.php", wait_until="domcontentloaded", timeout=12000)
                 page.fill("#user_login", user)
                 page.fill("#user_pass", wrong_password)
                 page.click("#wp-submit")
-                page.wait_for_load_state("load", timeout=10000)
-                page.screenshot(path=out_path, full_page=True)
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                page.screenshot(path=out_path)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+                try:
+                    _ctx.close()
+                except Exception:
+                    pass
             finally:
                 browser.close()
-        with open(out_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("ascii")
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_do).result(timeout=30)
     except Exception:
         return None
     finally:
@@ -1014,6 +1047,14 @@ def _xss_render(base_url: str, endpoint: str, method: str, params: dict, cookies
                 page.wait_for_timeout(800)
                 title = page.title()
                 page.screenshot(path=out_path, full_page=True)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
             finally:
                 browser.close()
         with open(out_path, "rb") as f:
@@ -2529,7 +2570,8 @@ def verify_wordpress_header_auth_bypass(
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
-            _teardown_lab(lab, step)
+            step("desmontando el laboratorio (contenedores/red/volumen)...")
+            lab.teardown()
 
 
 def verify_wordpress_path_traversal(
