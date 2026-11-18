@@ -3676,33 +3676,53 @@ def verify_wordpress_sqli(
                 # register wp_ajax_nopriv_ACTION (the actual callback files), then fall
                 # back to global scan. This avoids picking up nonce actions from unrelated
                 # handlers that happen to appear first in directory order.
+                # Three-pass nonce action detection:
+                # 1. Find files registering wp_ajax_nopriv_ACTION → extract callback method name
+                # 2. Find files that define that method AND have check_ajax_referer/wp_verify_nonce
+                # 3. Global scan fallback, preferring files with the action word in their name
+                # This handles the common pattern where registration file ≠ callback class file.
                 _eval_find_action = (
                     f"$slug='{slug}';"
                     f"$nopriv_action='{_action_name}';"
                     r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
                     r"$nonce_action='';"
-                    # Match wp_verify_nonce($var, 'action') OR check_ajax_referer('action', ...)
                     r"$nonce_extract='/(?:wp_verify_nonce\s*\(\s*\$\w+\s*,|check_ajax_referer\s*\()\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
+                    r"$cb_re='/add_action\s*\([^\)]*nopriv_'+preg_quote($nopriv_action,'/')+'[^\)]*,\s*[\[\(]?[^\]\),]+,\s*[\x27\x22](\w+)[\x27\x22]/is';"
                     r"try{$it=new RecursiveIteratorIterator("
                     r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
-                    r"$handler_files=[];"
+                    r"$reg_files=[];$all_php=[];"
                     r"foreach($it as $f){"
                     r"if($f->getExtension()!=='php')continue;"
                     r"$c=@file_get_contents($f->getPathname());"
                     r"if(!$c)continue;"
-                    r"$nopriv_needle='wp_ajax_nopriv_'.$nopriv_action;"
-                    r"if(strpos($c,$nopriv_needle)!==false)$handler_files[]=['path'=>$f->getPathname(),'c'=>$c];"
+                    r"$all_php[$f->getPathname()]=$c;"
+                    r"if(strpos($c,'wp_ajax_nopriv_'.$nopriv_action)!==false)$reg_files[$f->getPathname()]=$c;"
                     r"}"
-                    r"foreach($handler_files as $hf){"
-                    r"if(preg_match($nonce_extract,$hf['c'],$m)){$nonce_action=$m[1];break;}"
+                    # Pass 1: check registration files directly
+                    r"foreach($reg_files as $rp=>$rc){"
+                    r"if(preg_match($nonce_extract,$rc,$m)){$nonce_action=$m[1];break;}"
                     r"}"
+                    # Pass 2: extract callback method name from registration, find defining file
                     r"if(!$nonce_action){"
-                    r"$it2=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
-                    r"foreach($it2 as $f2){"
-                    r"if($f2->getExtension()!=='php')continue;"
-                    r"$c2=@file_get_contents($f2->getPathname());"
-                    r"if(!$c2)continue;"
-                    r"if(preg_match($nonce_extract,$c2,$m)){$nonce_action=$m[1];break;}"
+                    r"$cb_method='';"
+                    r"foreach($reg_files as $rp=>$rc){"
+                    r"if(preg_match($cb_re,$rc,$m)){$cb_method=$m[1];break;}"
+                    r"}"
+                    r"if($cb_method){"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(strpos($fc,'function '.$cb_method)===false)continue;"
+                    r"if(preg_match($nonce_extract,$fc,$m)){$nonce_action=$m[1];break;}"
+                    r"}}}"
+                    # Pass 3: global scan - prefer files whose name contains action keyword
+                    r"if(!$nonce_action){"
+                    r"$kw=str_replace('_','-',$nopriv_action);"
+                    r"$prio=[];$rest=[];"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(strpos(strtolower(basename($fp)),$kw)!==false||strpos(strtolower(basename($fp)),str_replace('-','_',$kw))!==false)$prio[$fp]=$fc;"
+                    r"else $rest[$fp]=$fc;"
+                    r"}"
+                    r"foreach(array_merge($prio,$rest) as $fp=>$fc){"
+                    r"if(preg_match($nonce_extract,$fc,$m)){$nonce_action=$m[1];break;}"
                     r"}}"
                     r"}catch(Exception $e){}"
                     r"echo $nonce_action;"
