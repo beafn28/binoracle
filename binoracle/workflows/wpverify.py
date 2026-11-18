@@ -3746,6 +3746,24 @@ def verify_wordpress_sqli(
                     r"foreach($aparts as $ap){if(stripos($fc,$ap)!==false){$has_part=true;break;}}"
                     r"if($has_part){$nonce_action=$m[1];break;}"
                     r"}}}"
+                    # Pass 2.7: indirect wp_verify_nonce with ternary default.
+                    # Handles plugins that wrap nonce checks in a custom method where
+                    # the nonce action is a default parameter, e.g.:
+                    #   function check_ajax_nonce($action=false){
+                    #     $action = empty($action) ? 'um-frontend-nonce' : $action;
+                    #     wp_verify_nonce($nonce, $action);
+                    #   }
+                    # nonce_extract never matches because wp_verify_nonce gets a variable.
+                    # This pass finds non-admin files that have BOTH:
+                    #  - an indirect wp_verify_nonce call (variable as action arg)
+                    #  - a ternary/assignment defaulting to a nonce-like literal
+                    r"if(!$nonce_action){"
+                    r"$indirect_re='/wp_verify_nonce\s*\([^\x27\x22]{0,40},\s*\$\w+/is';"
+                    r"$ternary_re='/empty\s*\([^\)]+\)\s*\?\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
+                    r"foreach($all_php as $fp=>$fc){"
+                    r"if(stripos($fp,DIRECTORY_SEPARATOR.'admin'.DIRECTORY_SEPARATOR)!==false)continue;"
+                    r"if(preg_match($indirect_re,$fc)&&preg_match($ternary_re,$fc,$m)){$nonce_action=$m[1];break;}"
+                    r"}}"
                     # Pass 3: global scan - prefer files whose name contains action keyword
                     r"if(!$nonce_action){"
                     r"$kw=str_replace('_','-',$nopriv_action);"
