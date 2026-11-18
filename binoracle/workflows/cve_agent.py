@@ -3852,6 +3852,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                           if isinstance(_ref_p, dict) else list(_ref_p))
                             if _ip in _orig_names and _ip not in _ref_names:
                                 _skip_params_override = True
+                        # Comprobacion mas amplia (no requiere inject_param): si los params del
+                        # PoC y los refinados no tienen NINGUN solapamiento, el grep ha encontrado
+                        # el handler equivocado (p.ej. lee los params DataTables de un handler
+                        # de paginacion en vez del vulnerable).  Los params del PoC son mejor
+                        # evidencia cuando los conjuntos son completamente distintos.
+                        if not _skip_params_override:
+                            _orig_p2 = notes.get("parameters") or []
+                            _orig_set = set(list(_orig_p2.keys())
+                                            if isinstance(_orig_p2, dict) else list(_orig_p2))
+                            _ref_p2 = (refined or {}).get("parameters") or []
+                            _ref_set = set(list(_ref_p2.keys())
+                                           if isinstance(_ref_p2, dict) else list(_ref_p2))
+                            if _orig_set and _ref_set and not _orig_set.intersection(_ref_set):
+                                _skip_params_override = True
                         if _skip_params_override:
                             notes = {**notes,
                                      **{k: v for k, v in refined.items() if k != "parameters"}}
