@@ -472,20 +472,36 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
             # This is not hardcoded: it reads the actual source every time.
             _gen_nonce = None
             if lab is not None and nonce_like_keys:
+                _blocker_ajax_action = str(base_params.get("action", "") or "")
                 _eval_find_action = (
                     f"$slug='{slug}';"
                     r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
-                    r"$action='';"
+                    f"$ajax_action='{_blocker_ajax_action}';"
+                    r"$nonce_action='';"
+                    r"$nonce_re='/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*[\'\"]([\w\-]{3,60})[\'\"]\s*\)/i';"
                     r"try{$it=new RecursiveIteratorIterator("
                     r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"$handler_files=[];"
                     r"foreach($it as $f){"
                     r"if($f->getExtension()!=='php')continue;"
                     r"$c=@file_get_contents($f->getPathname());"
                     r"if(!$c)continue;"
-                    r"if(preg_match('/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*[\'\"]([\w\-]{3,60})[\'\"]\s*\)/',"
-                    r"$c,$m)){$action=$m[1];break;}"
-                    r"}}catch(Exception $e){}"
-                    r"echo $action;"
+                    r"if($ajax_action&&preg_match('/wp_ajax(?:_nopriv)?_'.preg_quote($ajax_action,'/').'/',$c))"
+                    r"$handler_files[]=['path'=>$f->getPathname(),'c'=>$c];"
+                    r"}"
+                    r"foreach($handler_files as $hf){"
+                    r"if(preg_match($nonce_re,$hf['c'],$m)){$nonce_action=$m[1];break;}"
+                    r"}"
+                    r"if(!$nonce_action){"
+                    r"$it2=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"foreach($it2 as $f2){"
+                    r"if($f2->getExtension()!=='php')continue;"
+                    r"$c2=@file_get_contents($f2->getPathname());"
+                    r"if(!$c2)continue;"
+                    r"if(preg_match($nonce_re,$c2,$m)){$nonce_action=$m[1];break;}"
+                    r"}}"
+                    r"}catch(Exception $e){}"
+                    r"echo $nonce_action;"
                 )
                 r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
                 _nonce_action = (r_act.stdout or "").strip()
@@ -3656,20 +3672,40 @@ def verify_wordpress_sqli(
                                 if any(h in nk.lower() for h in ("nonce", "security", "token"))]
             _anon_wp_eval_done = False
             if _anon_nonce_keys and lab is not None:
+                # Two-pass: first find the wp_verify_nonce action in the files that
+                # register wp_ajax_nopriv_ACTION (the actual callback files), then fall
+                # back to global scan. This avoids picking up nonce actions from unrelated
+                # handlers that happen to appear first in directory order.
                 _eval_find_action = (
                     f"$slug='{slug}';"
+                    f"$nopriv_action='{_action_name}';"
                     r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
-                    r"$action='';"
+                    r"$nonce_action='';"
+                    r"$nonce_re='/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*[^)]{1,80}/i';"
+                    r"$nonce_extract='/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*[\x27\x22]([\w\-]{3,60})[\x27\x22]/i';"
                     r"try{$it=new RecursiveIteratorIterator("
                     r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"$handler_files=[];"
                     r"foreach($it as $f){"
                     r"if($f->getExtension()!=='php')continue;"
                     r"$c=@file_get_contents($f->getPathname());"
                     r"if(!$c)continue;"
-                    r"if(preg_match('/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*[\'\"]([\w\-]{3,60})[\'\"]\s*\)/',"
-                    r"$c,$m)){$action=$m[1];break;}"
-                    r"}}catch(Exception $e){}"
-                    r"echo $action;"
+                    r"$nopriv_needle='wp_ajax_nopriv_'.$nopriv_action;"
+                    r"if(strpos($c,$nopriv_needle)!==false)$handler_files[]=['path'=>$f->getPathname(),'c'=>$c];"
+                    r"}"
+                    r"foreach($handler_files as $hf){"
+                    r"if(preg_match($nonce_extract,$hf['c'],$m)){$nonce_action=$m[1];break;}"
+                    r"}"
+                    r"if(!$nonce_action){"
+                    r"$it2=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"foreach($it2 as $f2){"
+                    r"if($f2->getExtension()!=='php')continue;"
+                    r"$c2=@file_get_contents($f2->getPathname());"
+                    r"if(!$c2)continue;"
+                    r"if(preg_match($nonce_extract,$c2,$m)){$nonce_action=$m[1];break;}"
+                    r"}}"
+                    r"}catch(Exception $e){}"
+                    r"echo $nonce_action;"
                 )
                 r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
                 _nonce_act = (r_act.stdout or "").strip()
