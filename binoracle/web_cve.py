@@ -661,7 +661,11 @@ main {
 }
 .hist-item:hover { background: rgba(255,255,255,.04); }
 .hist-item.active { background: rgba(0,212,255,.07); }
-.hist-icon { font-size: 14px; flex-shrink: 0; }
+.hist-icon {
+  font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  flex-shrink: 0; padding: 2px 6px; border-radius: 3px;
+  font-family: var(--mono); white-space: nowrap;
+}
 .hist-cve { font-family: var(--mono); font-size: 13px; font-weight: 600; }
 .hist-meta { font-size: 10px; color: var(--dim); margin-top: 2px; }
 .hist-empty { color: var(--dim); font-size: 13px; text-align: center; padding: 32px 16px; }
@@ -713,7 +717,7 @@ main {
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
       <button id="history-btn" title="Session history">
-        ⌛ History <span class="hist-count" id="hist-count">0</span>
+        History <span class="hist-count" id="hist-count">0</span>
       </button>
     </div>
   </header>
@@ -733,8 +737,8 @@ main {
   <main>
     <div class="run-panel">
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
-      <button id="run-btn">▶ Run</button>
-      <button id="export-btn" disabled>⬇ Export PDF</button>
+      <button id="run-btn">Run</button>
+      <button id="export-btn" disabled>Export PDF</button>
     </div>
 
     <div id="verdict"></div>
@@ -865,6 +869,7 @@ main {
       renderResult(d);
       $('run-btn').disabled = false;
       $('export-btn').disabled = false;
+      setTimeout(loadHistory, 1500);
     });
 
     es.onerror = () => {
@@ -963,11 +968,10 @@ main {
   }
 
   function humanizeLog(msg) {
-    // Strip verbose prefixes for readability
     return msg
-      .replace(/^\[OK\]\s*/,    '✓ ')
-      .replace(/^\[WARN\]\s*/, '⚠ ')
-      .replace(/^\[ERR\]\s*/,  '✗ ')
+      .replace(/^\[OK\]\s*/,    '')
+      .replace(/^\[WARN\]\s*/, 'WARNING: ')
+      .replace(/^\[ERR\]\s*/,  'ERROR: ')
       .replace(/^\[INFO\]\s*/, '');
   }
 
@@ -977,15 +981,15 @@ main {
     const vEl = $('verdict');
     if (d.verified) {
       vEl.className = 'verdict-ok';
-      vEl.textContent = '★  CONFIRMED — ' + d.cve_id;
+      vEl.textContent = 'CONFIRMED — ' + d.cve_id;
     } else {
       vEl.className = 'verdict-fail';
-      vEl.textContent = '✖  NOT CONFIRMED — ' + d.cve_id;
+      vEl.textContent = 'NOT CONFIRMED — ' + d.cve_id;
     }
     vEl.style.display = 'flex';
 
     setStatus(d.verified ? 'ok' : 'fail',
-      d.verified ? `✓ ${d.cve_id}` : `✗ ${d.cve_id}`);
+      d.verified ? `CONFIRMED: ${d.cve_id}` : `NOT CONFIRMED: ${d.cve_id}`);
 
     // evidence
     renderEvidence(d.verified_evidence || {}, d.evidence || {});
@@ -1027,9 +1031,23 @@ main {
     }
     const techCards = techFields.filter(([,v]) => v != null);
 
-    // Build investigation steps from phases collected during streaming
-    const stepItems = _logPhases.map((ph, i) => {
-      // Pick the most significant log line from the phase (OK > WARN > last)
+    // Build investigation steps from phases collected during streaming.
+    // If _logPhases is empty (fast run loaded from history), rebuild from raw logs.
+    let phases = _logPhases;
+    if (!phases.length && d.logs && d.logs.length) {
+      phases = [];
+      let cur = null;
+      for (const entry of d.logs) {
+        const isSep = entry.msg.startsWith('──') || entry.msg.startsWith('╠') || entry.msg.startsWith('╚');
+        if (isSep && entry.msg.includes('──')) {
+          cur = {name: entry.msg, label: translatePhase(entry.msg), entries: []};
+          phases.push(cur);
+        } else if (cur) {
+          cur.entries.push(entry);
+        }
+      }
+    }
+    const stepItems = phases.map((ph, i) => {
       const best = ph.entries.find(e => e.msg.startsWith('[OK]'))
                 || ph.entries.find(e => e.msg.startsWith('[WARN]'))
                 || ph.entries[ph.entries.length - 1]
@@ -1039,8 +1057,8 @@ main {
 
     const verdictCls = d.verified ? 'report-verdict-ok' : 'report-verdict-fail';
     const verdictTxt = d.verified
-      ? '★ CONFIRMED — vulnerability reproduced in isolated lab'
-      : '✖ NOT CONFIRMED — dynamic reproduction did not succeed';
+      ? 'CONFIRMED — vulnerability reproduced in isolated lab'
+      : 'NOT CONFIRMED — dynamic reproduction did not succeed';
 
     const shotsHtml = shots.map((s, i) => {
       const path  = typeof s === 'string' ? s : (s.path || '');
@@ -1097,6 +1115,28 @@ main {
             <div class="report-shots">${shotsHtml}</div>
           </div>
         </div>` : ''}
+
+        ${(()=>{
+          const reqs = ev.http_requests || ev.http_log || [];
+          if (!reqs.length) return '';
+          const reqHtml = reqs.slice(0,5).map(r => {
+            const method = (r.method||'POST').toUpperCase();
+            const url = r.url||r.endpoint||'';
+            const status = r.status||r.status_code||'';
+            const body = r.body||r.payload||'';
+            const resp = r.response||'';
+            return `<div style="margin-bottom:10px">
+              <div style="font-family:var(--mono);font-size:11px;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text)">
+                <span style="color:var(--orange);font-weight:600">${escHtml(method)}</span> ${escHtml(url)}${status ? ` <span style="color:var(--green)">${escHtml(String(status))}</span>` : ''}
+              </div>
+              ${body ? `<div style="font-family:var(--mono);font-size:11px;background:rgba(0,0,0,.12);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;padding:6px 10px;color:var(--dim)">${escHtml(String(body).slice(0,300))}</div>` : ''}
+            </div>`;
+          }).join('');
+          return `<div class="report-section">
+            <div class="report-section-title">HTTP Evidence</div>
+            <div class="report-section-body">${reqHtml}</div>
+          </div>`;
+        })()}
 
         <div class="report-section">
           <div class="report-section-title">Conclusion</div>
@@ -1269,15 +1309,17 @@ main {
       return;
     }
     list.innerHTML = _historyData.map(rec => {
-      const icon = rec.verified ? '★' : '✖';
+      const icon = rec.verified ? 'CONF' : 'FAIL';
       const iconColor = rec.verified ? 'var(--green)' : 'var(--yellow)';
       const dt = new Date(rec.created * 1000);
       const dtStr = dt.toLocaleDateString('en-GB', {month:'short',day:'numeric'})
                   + ' ' + dt.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
       const elapsed = rec.elapsed ? rec.elapsed.toFixed(1) + 's' : '';
       const isActive = rec.job_id === _activeHistJobId ? ' active' : '';
+      const iconBg = rec.verified ? 'rgba(0,230,118,.15)' : 'rgba(255,210,0,.12)';
+      const iconBorder = rec.verified ? 'rgba(0,230,118,.35)' : 'rgba(255,210,0,.3)';
       return `<div class="hist-item${isActive}" data-jid="${escHtml(rec.job_id)}" data-cve="${escHtml(rec.cve_id)}">
-        <span class="hist-icon" style="color:${iconColor}">${icon}</span>
+        <span class="hist-icon" style="color:${iconColor};background:${iconBg};border:1px solid ${iconBorder}">${icon}</span>
         <div style="flex:1;min-width:0">
           <div class="hist-cve">${escHtml(rec.cve_id)}</div>
           <div class="hist-meta">${dtStr}${elapsed ? ' · ' + elapsed : ''}</div>
@@ -1315,7 +1357,7 @@ main {
 
       renderResult(d);
       $('export-btn').disabled = false;
-      setStatus(d.verified ? 'ok' : 'fail', d.verified ? `✓ ${cveId}` : `✗ ${cveId}`);
+      setStatus(d.verified ? 'ok' : 'fail', d.verified ? `CONFIRMED: ${cveId}` : `NOT CONFIRMED: ${cveId}`);
     } catch (e) {
       alert('Error loading history: ' + e);
     }
@@ -1338,13 +1380,6 @@ main {
 
   // Load count on page load
   loadHistory();
-
-  // Also refresh history count after a run completes
-  const _origRenderResult = renderResult;
-  function renderResult(d) {
-    _origRenderResult(d);
-    setTimeout(loadHistory, 1500);
-  }
 
   // ── utils ─────────────────────────────────────────────────────────────────
   function escHtml(s) {

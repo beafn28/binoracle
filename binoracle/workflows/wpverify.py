@@ -405,7 +405,8 @@ def _resolve_endpoint_placeholders(endpoint: str, html_sources: list) -> tuple:
 def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_method: str,
                               endpoint: str, base_params: dict, exclude_param: str,
                               res: WpVerifyResult, step,
-                              extra_nonce_pages: Optional[list] = None) -> tuple:
+                              extra_nonce_pages: Optional[list] = None,
+                              plugin_source_dir: str = "") -> tuple:
     """Punto de entrada UNICO y compartido por CUALQUIER verificador dinamico de WordPress (no
     solo SQLi) para resolver, antes de construir el ataque real, los bloqueos de infraestructura
     mas comunes que no tienen nada que ver con la tecnica en si: un nonce/token sin resolver
@@ -3743,7 +3744,8 @@ def verify_wordpress_sqli(
         # para que todos los verify_* dinamicos lo compartan en vez de duplicar esta logica.
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, sqli_param, res, step,
-            extra_nonce_pages=extra_nonce_pages)
+            extra_nonce_pages=extra_nonce_pages,
+            plugin_source_dir=plugin_source_dir)
 
         orig_value = str(base_params.get(sqli_param) or "1")
 
