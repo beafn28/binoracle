@@ -287,6 +287,11 @@ def save_investigation_to_cache(inv: "Investigation") -> None:
     para que dos investigaciones de la MISMA CVE en un lote en paralelo no se pisen a medias."""
     if _INVESTIGATION_CACHE_DISABLED:
         return
+    # Only cache investigations that reached a real verdict; a run that ended
+    # with status=None (crashed, timed out, interrupted) would pollute the
+    # cache and cause binoracle to skip the CVE forever without --no-cache.
+    if inv.status not in ("CONFIRMADO", "NO CONFIRMADO"):
+        return
     try:
         path = _investigation_cache_path(inv.cve_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
