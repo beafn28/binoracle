@@ -1938,12 +1938,19 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 if _go_key in {o.get("name") for o in (setup_wp_options or [])
                                if isinstance(o, dict)}:
                     continue  # already set by caller
-                # Always try patching inside the plugin's options blob first (most reliable
-                # for plugins that use a serialized settings array like UM's um_options).
-                _r_patch = lab.wp_cli("option", "patch", "insert", _plugin_blob_key,
-                                      _go_key, _go_val, timeout=10)
-                if _r_patch.returncode != 0:
-                    # Blob not found or key already exists — also try as a top-level option
+                # Use PHP eval to update the option inside the blob — 100% reliable even
+                # when the key already exists (insert vs update confusion with wp-cli patch).
+                _php_set = (
+                    f"$opts=get_option('{_plugin_blob_key}',array());"
+                    f"$opts['{_go_key}']={_go_val};"
+                    f"update_option('{_plugin_blob_key}',$opts);"
+                    f"$v=get_option('{_plugin_blob_key}');"
+                    f"echo isset($v['{_go_key}'])?'ok:'.$v['{_go_key}']:'missing';"
+                )
+                _r_set = lab.wp_cli("eval", _php_set, timeout=10)
+                _set_out = (_r_set.stdout or "").strip()
+                if _r_set.returncode != 0 or not _set_out.startswith("ok:"):
+                    # Blob approach failed — fall back to top-level option
                     lab.wp_cli("option", "update", _go_key, _go_val, timeout=10)
                 step(f"opcion detectada en source: '{_go_key}'={_go_val} activada "
                      f"en '{_plugin_blob_key}' (branch vulnerable requiere esta opcion)")
