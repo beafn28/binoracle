@@ -1069,10 +1069,17 @@ class _XssBrowserSession:
         from urllib.parse import quote, urlencode
         try:
             ctx = self._browser.new_context(viewport={"width": 1280, "height": 900})
+            page = None
             try:
                 if cookies:
                     ctx.add_cookies(cookies)
                 page = ctx.new_page()
+                # Bound ALL navigation and wait calls so a stalled page can never
+                # block ctx.close() indefinitely (WPS stats overview keeps pending
+                # AJAX requests open; without page.close() first ctx.close() hangs
+                # forever waiting for network idle).
+                page.set_default_navigation_timeout(timeout_ms)
+                page.set_default_timeout(timeout_ms)
                 if method == "GET":
                     url = base_url + endpoint + ("&" if "?" in endpoint else "?") + urlencode(params)
                     page.goto(url, wait_until="load", timeout=timeout_ms)
@@ -1113,7 +1120,17 @@ class _XssBrowserSession:
                             pass
                 return title, png
             finally:
-                ctx.close()
+                # Close the page first (skipping unload handlers + aborting pending
+                # requests) so ctx.close() finds nothing pending and returns fast.
+                if page is not None:
+                    try:
+                        page.close(run_before_unload=False)
+                    except Exception:
+                        pass
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
         except Exception:
             return None, None
 
