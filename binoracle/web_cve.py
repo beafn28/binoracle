@@ -1174,7 +1174,7 @@ main {
     <img src="/static/logo.png" alt="bin0racle logo" id="logo-img">
     <div>
       <div class="h-title">bin<span class="o">0</span>racle</div>
-      <div class="h-sub">AUTONOMOUS EXPLOIT DEV · @beafn28</div>
+      <div class="h-sub">EXPLOIT DEV &amp; BINARY REVERSING · @beafn28</div>
     </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
