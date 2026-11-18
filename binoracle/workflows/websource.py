@@ -1915,43 +1915,61 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
 
     if best_inject is not None and best_inject.get("rest_endpoint"):
         # Buscar view_path para el REST result.
-        # Estrategia 1: add_menu_page con slug literal
-        # Estrategia 2: patron de slug dinamico 'prefix_[slug]_suffix' + clave de pagina relevante
+        # Estrategia 0 (tabla): trazado de datos — qué archivos hacen SELECT de la misma
+        #   tabla donde se inyecta y qué slug de admin page registran/usan esos archivos.
+        # Estrategia 1: slug template dinamico 'prefix_[slug]_suffix' + primera clave de
+        #   los archivos que leen de esa tabla (o de todos si la tabla no matchea nada).
+        # Estrategia 2 (fallback): add_menu_page con slug literal en archivo con SELECT.
         view_path = ""
         slug_template = ""
-        _all_page_keys: list = []
+        table_hint = best_inject.get("table_hint", "")
+
         _PAGE_KEY_RE = re.compile(
             r"['\"](?:overview|main|stats|dashboard|report|home|"
             r"pages|page|search|referrers|referrer|visits|visit|hit|hits|url|urls)['\"]"
         )
+        # Recoger slug_template de cualquier archivo
         for vfp, vtext in all_texts.items():
-            # Buscar patron de slug dinamico: static $X = 'prefix_[slug]_suffix'
             tpl_m = re.search(
                 r"static\s+\$\w+\s*=\s*['\"]([A-Za-z0-9_]*\[slug\][A-Za-z0-9_]*)['\"]",
                 vtext
             )
             if tpl_m and not slug_template:
                 slug_template = tpl_m.group(1)
-            # Recoger TODAS las claves de pagina unicas (no solo la primera)
-            for km in _PAGE_KEY_RE.finditer(vtext):
-                key = km.group(0).strip("'\"")
-                if key not in _all_page_keys:
-                    _all_page_keys.append(key)
-        if slug_template and _all_page_keys:
-            # Si el param inyectado contiene uri/url/page/path/ref/search, priorizar vistas
-            # de contenido (pages/search/referrers/url) sobre home/overview/main/dashboard.
-            _ip_lc = best_inject.get("inject_param", "").lower()
-            _page_related = any(h in _ip_lc for h in ("uri", "url", "page", "path", "ref", "search", "hit"))
-            _HOME_KEYS = {"overview", "main", "home", "dashboard", "report"}
-            if _page_related:
-                _ordered = [k for k in _all_page_keys if k not in _HOME_KEYS] + \
-                           [k for k in _all_page_keys if k in _HOME_KEYS]
-            else:
-                _ordered = _all_page_keys
-            first_page_key = _ordered[0] if _ordered else ""
-            if first_page_key:
-                page_slug = slug_template.replace("[slug]", first_page_key)
-                view_path = f"/wp-admin/admin.php?page={page_slug}"
+                break
+
+        # Estrategia 0: si conocemos table_hint, buscar en qué archivos se hace SELECT
+        # de esa tabla y recoger las page-keys SOLO de esos archivos — son los que
+        # renderizan los datos almacenados por la inyección.
+        _view_candidate_keys: list = []
+        if table_hint and slug_template:
+            _sel_tbl_re = re.compile(
+                rf"SELECT\b.{{0,300}}{re.escape(table_hint)}\b",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for vfp, vtext in all_texts.items():
+                if _sel_tbl_re.search(vtext):
+                    for km in _PAGE_KEY_RE.finditer(vtext):
+                        key = km.group(0).strip("'\"")
+                        if key not in _view_candidate_keys:
+                            _view_candidate_keys.append(key)
+
+        if slug_template and _view_candidate_keys:
+            # Usar la primera clave encontrada en archivos que leen de la tabla inyectada
+            view_path = f"/wp-admin/admin.php?page={slug_template.replace('[slug]', _view_candidate_keys[0])}"
+
+        # Estrategia 1 (fallback): recoger todas las page-keys de todos los archivos
+        if not view_path and slug_template:
+            _all_page_keys: list = []
+            for vfp, vtext in all_texts.items():
+                for km in _PAGE_KEY_RE.finditer(vtext):
+                    key = km.group(0).strip("'\"")
+                    if key not in _all_page_keys:
+                        _all_page_keys.append(key)
+            if _all_page_keys:
+                view_path = f"/wp-admin/admin.php?page={slug_template.replace('[slug]', _all_page_keys[0])}"
+
+        # Estrategia 2 (fallback): add_menu_page con slug literal en archivo que hace SELECT
         if not view_path:
             for vfp, vtext in all_texts.items():
                 is_admin = ("admin" in vfp.lower() or "dashboard" in vfp.lower()
