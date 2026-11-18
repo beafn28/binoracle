@@ -1959,24 +1959,21 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     # Runs after all options are set so we see the actual live state.
     if _um_hashed and _gating_opts_found:
         _diag_hash = _um_hashed
-        _diag_blob = _plugin_blob_key if "_plugin_blob_key" in dir() else "um_options"
-        # Find the first gating key
         _diag_key = next(iter(_gating_opts_found), "member_directory_own_table")
+        # Minimal PHP — no UM() calls that might fail in WP-CLI context
         _diag_php = (
-            "global $wpdb;"
-            f"$h='{_diag_hash}';"
-            f"$id=$wpdb->get_var($wpdb->prepare("
-            f"\"SELECT ID FROM {{$wpdb->posts}} WHERE SUBSTRING(MD5(ID),11,5)=%s\",$h));"
-            f"$opt=um_option('{_diag_key}');"
-            f"$cls=get_class(UM()->member_directory());"
-            f"$cnt=$wpdb->get_var(\"SELECT COUNT(*) FROM {{$wpdb->posts}}\");"
-            f"echo 'hash_id:'.var_export($id,true)."
-            f"'|opt:{_diag_key}:'.var_export($opt,true)."
-            f"'|class:'.$cls.'|posts_total:'.$cnt;"
+            "global $wpdb; "
+            f"$h='{_diag_hash}'; "
+            "$id=$wpdb->get_var($wpdb->prepare("
+            "'SELECT ID FROM '.$wpdb->posts.' WHERE SUBSTRING(MD5(ID),11,5)=%s',$h)); "
+            f"$opts=get_option('um_options',array()); "
+            f"$oval=isset($opts['{_diag_key}'])?$opts['{_diag_key}']:'NOT_SET'; "
+            "$cnt=$wpdb->get_var('SELECT COUNT(*) FROM '.$wpdb->posts); "
+            "echo 'id:'.var_export($id,true).'|opt:'.$oval.'|posts:'.$cnt;"
         )
         _r_diag = lab.wp_cli("eval", _diag_php, timeout=15)
-        _diag_out = (_r_diag.stdout or "").strip()
-        step(f"[DIAG] hash+opt+class check: {_diag_out!r}")
+        _diag_out = (_r_diag.stdout or _r_diag.stderr or "").strip()[:300]
+        step(f"[DIAG] hash+opt check: {_diag_out!r} (rc={_r_diag.returncode})")
 
     # Detect the directory-specific shortcode from source: for plugins that have multiple
     # shortcodes (e.g. login form + directory listing), find_shortcode_name() may return
