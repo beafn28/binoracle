@@ -421,8 +421,8 @@ class _Handler(BaseHTTPRequestHandler):
         # Special: commands that don't need a file path
         _NO_FILE_CMDS = {
             "ask", "chat", "doctor", "tools",
-            "cveplan", "triage", "autodiscover",
-            "hunt", "phpestate", "scan",
+            "cveplan", "autodiscover",
+            "phpestate", "scan",
             "cyclic", "shellcode", "kernel-exploit",
             "investigate-batch", "cve-chain",
         }
@@ -432,11 +432,7 @@ class _Handler(BaseHTTPRequestHandler):
             for a in (extra or []):
                 if isinstance(a, str) and len(a) < 1000:
                     safe_extra.append(a)
-            # Build command with correct flags
-            if cmd == "hunt" and safe_extra and not safe_extra[0].startswith("--"):
-                args = [cmd, "--target"] + safe_extra
-            else:
-                args = [cmd] + safe_extra
+            args = [cmd] + safe_extra
             job = _start_bin_job("__nofile__", args, f"{cmd} {safe_extra[0] if safe_extra else ''}".strip())
             self._send_json(200, {"job_id": job.id}); return
 
@@ -450,7 +446,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "go", "rust", "core", "js", "sqlite", "jeb", "secrets",
                     "gadgets", "arsenal", "rop", "shellcode", "fmtstring",
                     "rawshellcode", "analyze", "autopoc", "autopwn", "funcid",
-                    "heap", "primitives", "explain", "diff", "audit", "verify"}
+                    "heap", "primitives", "explain", "diff", "audit", "verify",
+                    "triage", "hunt", "fuzz", "exploit-skeleton", "cve-corpus"}
         if cmd not in _ALLOWED:
             self._send_json(400, {"error": f"cmd '{cmd}' not allowed"}); return
         # extra args whitelist: only safe strings
@@ -1177,7 +1174,7 @@ main {
     <img src="/static/logo.png" alt="bin0racle logo" id="logo-img">
     <div>
       <div class="h-title">bin<span class="o">0</span>racle</div>
-      <div class="h-sub">CVE VERIFICATION LAB · @beafn28</div>
+      <div class="h-sub">AUTONOMOUS EXPLOIT DEV · @beafn28</div>
     </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span id="status-badge"></span>
@@ -1209,8 +1206,6 @@ main {
       <select id="cve-mode" class="cve-mode-select" title="Command mode">
         <option value="cve">Dev Exploit</option>
         <option value="cveplan">Exploit Plan</option>
-        <option value="triage">Triage</option>
-        <option value="autodiscover">Auto-Discover</option>
       </select>
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
       <button id="run-btn">Run</button>
@@ -1308,6 +1303,8 @@ main {
                   <button class="binlab-tool-btn" data-cmd="explain">Explain</button>
                   <button class="binlab-tool-btn" data-cmd="audit">Security Audit</button>
                   <button class="binlab-tool-btn" data-cmd="heap">Heap Analysis</button>
+                  <button class="binlab-tool-btn" data-cmd="triage">Triage</button>
+                  <button class="binlab-tool-btn" data-cmd="hunt">Vuln Hunt</button>
                 </div>
               </div>
               <div class="binlab-tool-group">
@@ -1347,18 +1344,10 @@ main {
       <div id="tab-recon" class="tab-pane">
         <div class="recon-wrap">
           <div class="recon-section">
-            <div class="recon-section-title">Hunt — Autonomous Vulnerability Hunter</div>
-            <div class="recon-desc">Give binoracle a live URL and it will autonomously discover and verify vulnerabilities in that target. Runs <code>binoracle hunt --target URL</code>.</div>
+            <div class="recon-section-title">Auto-Discover — CVE Scope Discovery</div>
+            <div class="recon-desc">Search NVD for CVEs by technology scope and auto-investigate each one. Scope examples: <code>wordpress-plugin</code>, <code>python-flask</code>, <code>nodejs</code>, <code>php</code>, <code>linux-kernel</code>, <code>apache</code>. Runs <code>binoracle autodiscover SCOPE</code>.</div>
             <div class="recon-row">
-              <input id="hunt-input" class="recon-input" type="text" placeholder="https://target.example.com" autocomplete="off" spellcheck="false">
-              <button id="hunt-btn" class="recon-run-btn">Hunt</button>
-            </div>
-          </div>
-          <div class="recon-section">
-            <div class="recon-section-title">Auto-Discover — CVE Keyword Discovery</div>
-            <div class="recon-desc">Search NVD for CVEs by keyword and automatically run full investigations on each. Runs <code>binoracle autodiscover KEYWORDS</code>.</div>
-            <div class="recon-row">
-              <input id="autodiscover-input" class="recon-input" type="text" placeholder="wordpress SQLi 2024" autocomplete="off" spellcheck="false">
+              <input id="autodiscover-input" class="recon-input" type="text" placeholder="wordpress-plugin" autocomplete="off" spellcheck="false">
               <button id="autodiscover-btn" class="recon-run-btn">Discover</button>
             </div>
           </div>
@@ -1456,7 +1445,7 @@ main {
   // Update placeholder based on mode
   $('cve-mode').addEventListener('change', () => {
     const m = $('cve-mode').value;
-    const ph = {cve:'CVE-2024-1071', cveplan:'CVE-2024-1071 — full exploit plan', triage:'CVE-2024-1071', autodiscover:'wordpress SQLi 2024'};
+    const ph = {cve:'CVE-2024-1071', cveplan:'CVE-2024-1071 or "SQL injection in WordPress..."'};
     $('cve-input').placeholder = ph[m] || 'CVE-XXXX-YYYY';
   });
 
@@ -2204,13 +2193,6 @@ main {
       if (term.querySelector('.empty-msg')) term.innerHTML = '';
       term.appendChild(div);
       term.scrollTop = term.scrollHeight;
-    }
-
-    const huntBtn = $('hunt-btn');
-    const huntIn = $('hunt-input');
-    if (huntBtn) {
-      huntBtn.addEventListener('click', () => runReconCmd('hunt', huntIn.value.trim(), huntBtn));
-      huntIn.addEventListener('keydown', e => { if (e.key === 'Enter') runReconCmd('hunt', huntIn.value.trim(), huntBtn); });
     }
 
     const adBtn = $('autodiscover-btn');
