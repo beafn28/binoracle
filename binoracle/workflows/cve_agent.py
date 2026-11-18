@@ -2390,8 +2390,10 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         return None
 
     # Normalize common aliases: "next.js" → "next", "express.js" → "express", etc.
-    _JS_ALIASES = {"next.js": "next", "express.js": "express", "vue.js": "vue",
-                   "nuxt.js": "nuxt", "angular.js": "angular"}
+    _JS_ALIASES = {"next.js": "next", "nextjs": "next",
+                   "express.js": "express", "vue.js": "vue",
+                   "nuxt.js": "nuxt", "nuxtjs": "nuxt",
+                   "angular.js": "angular", "angularjs": "angular"}
     pkg = _JS_ALIASES.get(pkg, pkg)
 
     lab_dir = f"/tmp/{re.sub(r'[^a-z0-9]', '_', pkg)}_autonomous_lab"
