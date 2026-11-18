@@ -412,12 +412,51 @@ def _auto_resolve_wp_blockers(boot: "_LabSession", lab: "_Lab", slug: str, http_
                  f"(el que trajo el PoC/LLM es, como mucho, una adivinanza)")
             res.evidence["parametros_resueltos_con_valor_real"] = resolved_params
         if not nonces_found and not resolved:
-            res.evidence["nonce_scraping_diagnostico"] = (
-                f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
-                f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible del "
-                f"plugin '{slug}' -- puede que el plugin necesite un paso de configuracion "
-                f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
-                f"antes de que su contenido aparezca en ningun lado")
+            # Fallback: pages don't embed a nonce (plugin requires setup not yet done).
+            # Scan the installed plugin source via wp eval to find the nonce action used in
+            # wp_verify_nonce() calls, then generate a fresh nonce directly — no pages needed.
+            # This is not hardcoded: it reads the actual source every time.
+            _gen_nonce = None
+            if lab is not None and nonce_like_keys:
+                _eval_find_action = (
+                    f"$slug='{slug}';"
+                    r"$dir=WP_PLUGIN_DIR.'/'.$slug.'/';"
+                    r"$action='';"
+                    r"try{$it=new RecursiveIteratorIterator("
+                    r"new RecursiveDirectoryIterator($dir,FilesystemIterator::SKIP_DOTS));"
+                    r"foreach($it as $f){"
+                    r"if($f->getExtension()!=='php')continue;"
+                    r"$c=@file_get_contents($f->getPathname());"
+                    r"if(!$c)continue;"
+                    r"if(preg_match('/wp_verify_nonce\s*\(\s*\$\w+\s*,\s*[\'\"]([\w\-]{3,60})[\'\"]\s*\)/',"
+                    r"$c,$m)){$action=$m[1];break;}"
+                    r"}}catch(Exception $e){}"
+                    r"echo $action;"
+                )
+                r_act = lab.wp_cli("eval", _eval_find_action, timeout=15)
+                _nonce_action = (r_act.stdout or "").strip()
+                if _nonce_action:
+                    _eval_gen_nonce = (
+                        f"wp_set_current_user(0);"
+                        f"echo wp_create_nonce('{_nonce_action}');"
+                    )
+                    r_gen = lab.wp_cli("eval", _eval_gen_nonce, timeout=10)
+                    _gen_nonce = (r_gen.stdout or "").strip()
+                    if _gen_nonce and len(_gen_nonce) >= 10:
+                        for k in nonce_like_keys:
+                            base_params[k] = _gen_nonce
+                        step(f"nonce generado via wp eval (accion='{_nonce_action}', "
+                             f"user_id=0) -- las paginas publicadas no embeben el nonce "
+                             f"del plugin ({slug}) porque requieren configuracion previa")
+                        res.evidence["nonce_generado_via_eval"] = {
+                            "action": _nonce_action, "value": _gen_nonce}
+            if not _gen_nonce:
+                res.evidence["nonce_scraping_diagnostico"] = (
+                    f"se probaron {len(probe_urls)} pagina(s) reales ya publicadas del sitio "
+                    f"(incluida la portada) y NINGUNA tenia un nonce ni ningun rastro visible del "
+                    f"plugin '{slug}' -- puede que el plugin necesite un paso de configuracion "
+                    f"propio (p.ej. crear sus paginas por defecto via una accion de administrador) "
+                    f"antes de que su contenido aparezca en ningun lado")
 
     # Para plugins cuyo sumidero vulnerable está detrás de un 'directory_id' obligatorio
     # (Ultimate Member, etc.) el LLM a veces no incluye ese parámetro en base_params --
