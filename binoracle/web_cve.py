@@ -994,6 +994,23 @@ main {
 .binlab-util-btn { border-color: var(--dim) !important; color: var(--dim) !important; }
 .binlab-util-btn:hover { border-color: var(--cyan) !important; color: var(--cyan) !important; }
 
+/* ── binary lab sub-nav ── */
+.binlab-subnav {
+  display: flex; gap: 2px; padding: 0 20px 0;
+  border-bottom: 1px solid var(--border); margin-bottom: 0;
+}
+.binlab-subbtn {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  letter-spacing: .07em; padding: 10px 18px; cursor: pointer;
+  background: none; border: none; color: var(--dim);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .15s, border-color .15s;
+}
+.binlab-subbtn:hover { color: var(--text); }
+.binlab-subbtn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+.binlab-panel { display: none; }
+.binlab-panel.active { display: block; }
+
 /* ── ask oracle ── */
 .ask-wrap { padding: 16px 20px; display: flex; flex-direction: column; height: 100%; }
 .ask-desc { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
@@ -1257,7 +1274,8 @@ main {
       </div>
       <div id="tab-binlab" class="tab-pane">
         <div id="binlab-content">
-          <div class="binlab-upload-zone" id="binlab-drop">
+          <!-- Upload zone (hidden after file load) -->
+          <div class="binlab-upload-zone" id="binlab-drop" style="margin:16px 20px 0">
             <div class="binlab-drop-inner">
               <div class="binlab-drop-icon">[ DROP BINARY HERE ]</div>
               <div class="binlab-drop-sub">ELF · PE · APK · Mach-O · WASM · JAR · .NET · Firmware · HAR · SQLite · EVM · JS</div>
@@ -1267,61 +1285,75 @@ main {
               </label>
             </div>
           </div>
+          <!-- File info + tools (shown after upload) -->
           <div id="binlab-info" style="display:none">
-            <div class="binlab-file-row">
+            <div class="binlab-file-row" style="margin:12px 20px 0;padding-bottom:12px;border-bottom:1px solid var(--border)">
               <span id="binlab-fname" class="binlab-fname"></span>
               <span id="binlab-fsize" class="binlab-fsize"></span>
               <button class="binlab-clear-btn" id="binlab-clear">Remove</button>
             </div>
-            <div class="binlab-tools" id="binlab-tools">
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">STATIC ANALYSIS</div>
-                <div class="binlab-tool-row" id="binlab-static-row"></div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">EXPLOITATION</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn" data-cmd="gadgets">ROP Gadgets</button>
-                  <button class="binlab-tool-btn" data-cmd="arsenal">ROP Arsenal</button>
-                  <button class="binlab-tool-btn" data-cmd="rop">Build ROP Chain</button>
-                  <button class="binlab-tool-btn" data-cmd="shellcode">Shellcode</button>
-                  <button class="binlab-tool-btn" data-cmd="fmtstring">Format String</button>
-                  <button class="binlab-tool-btn" data-cmd="primitives">Primitives</button>
-                  <button class="binlab-tool-btn" data-cmd="autopoc" style="border-color:var(--orange);color:var(--orange)">Auto-PoC</button>
-                  <button class="binlab-tool-btn" data-cmd="autopwn" style="border-color:#ff4444;color:#ff4444">Auto-Pwn</button>
+            <!-- Sub-nav -->
+            <div class="binlab-subnav">
+              <button class="binlab-subbtn active" data-panel="exploit">EXPLOIT DEV AUTÓNOMO</button>
+              <button class="binlab-subbtn" data-panel="analysis">ANÁLISIS DE BINARIOS</button>
+            </div>
+            <!-- Panel 1: Exploit Dev -->
+            <div class="binlab-panel active" id="binlab-panel-exploit" style="padding:14px 20px 0">
+              <div class="binlab-tools">
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">EXPLOITATION</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn" data-cmd="gadgets">ROP Gadgets</button>
+                    <button class="binlab-tool-btn" data-cmd="arsenal">ROP Arsenal</button>
+                    <button class="binlab-tool-btn" data-cmd="rop">Build ROP Chain</button>
+                    <button class="binlab-tool-btn" data-cmd="shellcode">Shellcode</button>
+                    <button class="binlab-tool-btn" data-cmd="fmtstring">Format String</button>
+                    <button class="binlab-tool-btn" data-cmd="primitives">Primitives</button>
+                    <button class="binlab-tool-btn" data-cmd="autopoc" style="border-color:var(--orange);color:var(--orange)">Auto-PoC</button>
+                    <button class="binlab-tool-btn" data-cmd="autopwn" style="border-color:#ff4444;color:#ff4444">Auto-Pwn</button>
+                  </div>
                 </div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">ANALYSIS</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn" data-cmd="secrets">Secrets Scan</button>
-                  <button class="binlab-tool-btn" data-cmd="funcid">Function ID</button>
-                  <button class="binlab-tool-btn" data-cmd="analyze">Full Analysis</button>
-                  <button class="binlab-tool-btn" data-cmd="explain">Explain</button>
-                  <button class="binlab-tool-btn" data-cmd="audit">Security Audit</button>
-                  <button class="binlab-tool-btn" data-cmd="heap">Heap Analysis</button>
-                  <button class="binlab-tool-btn" data-cmd="triage">Triage</button>
-                  <button class="binlab-tool-btn" data-cmd="hunt">Vuln Hunt</button>
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">FUZZING</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn" data-cmd="fuzz">Fuzz Harness</button>
+                    <button class="binlab-tool-btn" data-cmd="exploit-skeleton">Exploit Skeleton</button>
+                    <button class="binlab-tool-btn" data-cmd="cve-corpus">CVE Corpus</button>
+                  </div>
                 </div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">FUZZING</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn" data-cmd="fuzz">Fuzz Harness</button>
-                  <button class="binlab-tool-btn" data-cmd="exploit-skeleton">Exploit Skeleton</button>
-                  <button class="binlab-tool-btn" data-cmd="cve-corpus">CVE Corpus</button>
-                </div>
-              </div>
-              <div class="binlab-tool-group">
-                <div class="binlab-tool-label">UTILITIES (no file needed)</div>
-                <div class="binlab-tool-row">
-                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="cyclic" data-prompt="Pattern length (e.g. 100):">Cyclic Pattern</button>
-                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="shellcode" data-prompt="Architecture (e.g. amd64):">Generate Shellcode</button>
-                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="kernel-exploit" data-prompt="Kernel exploit type (e.g. ret2usr, UAF, dirty-pipe):">Kernel Exploit</button>
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">UTILITIES (no file needed)</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn binlab-util-btn" data-cmd="cyclic" data-prompt="Pattern length (e.g. 100):">Cyclic Pattern</button>
+                    <button class="binlab-tool-btn binlab-util-btn" data-cmd="shellcode" data-prompt="Architecture (e.g. amd64):">Generate Shellcode</button>
+                    <button class="binlab-tool-btn binlab-util-btn" data-cmd="kernel-exploit" data-prompt="Kernel exploit type (e.g. ret2usr, UAF, dirty-pipe):">Kernel Exploit</button>
+                  </div>
                 </div>
               </div>
             </div>
-            <div id="binlab-terminal" class="binlab-terminal">
+            <!-- Panel 2: Binary Analysis -->
+            <div class="binlab-panel" id="binlab-panel-analysis" style="padding:14px 20px 0">
+              <div class="binlab-tools">
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">STATIC ANALYSIS</div>
+                  <div class="binlab-tool-row" id="binlab-static-row"></div>
+                </div>
+                <div class="binlab-tool-group">
+                  <div class="binlab-tool-label">DEEP ANALYSIS</div>
+                  <div class="binlab-tool-row">
+                    <button class="binlab-tool-btn" data-cmd="secrets">Secrets Scan</button>
+                    <button class="binlab-tool-btn" data-cmd="funcid">Function ID</button>
+                    <button class="binlab-tool-btn" data-cmd="analyze">Full Analysis</button>
+                    <button class="binlab-tool-btn" data-cmd="explain">Explain</button>
+                    <button class="binlab-tool-btn" data-cmd="audit">Security Audit</button>
+                    <button class="binlab-tool-btn" data-cmd="heap">Heap Analysis</button>
+                    <button class="binlab-tool-btn" data-cmd="triage">Triage</button>
+                    <button class="binlab-tool-btn" data-cmd="hunt">Vuln Hunt</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="binlab-terminal" class="binlab-terminal" style="margin:14px 20px 20px">
               <div class="empty-msg">Select a tool above to run</div>
             </div>
           </div>
@@ -2339,6 +2371,17 @@ main {
     const terminal = document.getElementById('binlab-terminal');
 
     if (!drop) return;
+
+    // Sub-nav switching
+    document.querySelectorAll('#tab-binlab .binlab-subbtn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#tab-binlab .binlab-subbtn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('#tab-binlab .binlab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const panel = document.getElementById('binlab-panel-' + btn.dataset.panel);
+        if (panel) panel.classList.add('active');
+      });
+    });
 
     drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag-over'); });
     drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
