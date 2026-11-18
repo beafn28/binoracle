@@ -49,7 +49,7 @@ from typing import Callable, List, Optional
 
 from binoracle.workflows.engine import SourceCodeIntelligence as _SCI
 
-_MYSQL_IMAGE = "mysql:5.7"
+_MYSQL_IMAGE = "mysql:8.0"
 # Overridable: confirmed live investigating CVE-2024-1071 (Ultimate Member SQLi) that the
 # vulnerable code's `in_array($sortby, $custom_sort)` / loose `==` comparisons are PHP-version
 # sensitive (PHP 8's stricter comparison semantics vs PHP 7.x's looser type juggling) -- a lab
@@ -587,7 +587,7 @@ class _Lab:
         self._created.append(("volume", self.vol))
 
     def start_mysql(self, root_pw: str, db_pw: str):
-        self.sh("run", "-d", "--name", self.mysql, "--network", self.net, "--platform", "linux/amd64",
+        self.sh("run", "-d", "--name", self.mysql, "--network", self.net,
                "-e", f"MYSQL_ROOT_PASSWORD={root_pw}", "-e", "MYSQL_DATABASE=wordpress",
                "-e", "MYSQL_USER=wordpress", "-e", f"MYSQL_PASSWORD={db_pw}", _MYSQL_IMAGE,
                timeout=90)
