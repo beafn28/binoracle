@@ -991,13 +991,6 @@ main {
 .bl-line-sep  { color: var(--cyan); font-weight: 600; }
 .bl-line-head { color: var(--cyan); font-weight: 700; }
 
-/* ── cve mode picker ── */
-.cve-mode-select {
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-family: var(--mono); font-size: 12px;
-  padding: 0 10px; height: 32px; outline: none; cursor: pointer; flex-shrink: 0;
-}
-.cve-mode-select:focus { border-color: var(--cyan); }
 
 /* ── recon tab ── */
 .recon-wrap { padding: 14px 20px; display: flex; flex-direction: column; gap: 0; }
@@ -1279,10 +1272,6 @@ main {
 
   <main>
     <div class="run-panel">
-      <select id="cve-mode" class="cve-mode-select" title="Command mode">
-        <option value="cve">Dev Exploit</option>
-        <option value="cveplan">Exploit Plan</option>
-      </select>
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
       <button id="run-btn">Run</button>
       <button id="export-btn" disabled title="Save as PDF">
@@ -1444,46 +1433,10 @@ main {
   $('cve-input').addEventListener('keydown', e => { if (e.key === 'Enter') startRun(); });
 
   // Update placeholder based on mode
-  $('cve-mode').addEventListener('change', () => {
-    const m = $('cve-mode').value;
-    const ph = {cve:'CVE-2024-1071', cveplan:'CVE-2024-1071 or "SQL injection in WordPress..."'};
-    $('cve-input').placeholder = ph[m] || 'CVE-XXXX-YYYY';
-  });
-
   async function startRun() {
-    const mode = $('cve-mode').value;
     const rawInput = $('cve-input').value.trim();
-    if (!rawInput) { alert('Enter a CVE ID or search term'); return; }
+    if (!rawInput) { alert('Enter a CVE ID, e.g. CVE-2024-1071'); return; }
     const cveId = rawInput.toUpperCase();
-
-    // For non-cve modes, run via binary/run API as a no-file command
-    if (mode !== 'cve') {
-      // Switch to log tab to show output
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      document.querySelector('[data-tab="log"]').classList.add('active');
-      $('tab-log').classList.add('active');
-      $('log-terminal').innerHTML = '';
-      $('phase-tracker').style.display = 'none';
-      $('verdict').style.display = 'none';
-      $('cve-info-panel').style.display = 'none';
-      $('run-btn').disabled = true;
-      setStatus('running', mode + '…');
-      try {
-        const r = await fetch('/api/binary/run', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({file_id: '__nofile__', cmd: mode, extra: [rawInput]}),
-        });
-        const d = await r.json();
-        if (!d.job_id) { appendLog('Error: ' + JSON.stringify(d)); $('run-btn').disabled = false; setStatus('error','Error'); return; }
-        const es = new EventSource('/api/binary/stream/' + d.job_id);
-        es.addEventListener('line', e => appendLog(JSON.parse(e.data)));
-        es.addEventListener('done', () => { es.close(); $('run-btn').disabled = false; setStatus('idle','Done'); });
-        es.onerror = () => { es.close(); $('run-btn').disabled = false; setStatus('error','Error'); };
-      } catch(e) { appendLog('Error: ' + e); $('run-btn').disabled = false; setStatus('error','Error'); }
-      return;
-    }
 
     if (!cveId.match(/^CVE-\d{4}-\d+$/i)) {
       alert('Enter a valid CVE ID, e.g. CVE-2024-1071');
