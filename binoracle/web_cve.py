@@ -523,7 +523,7 @@ def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True,
     _Handler.config = config
     server = ThreadingHTTPServer((host, port), _Handler)
     url = f"http://{host}:{port}"
-    print(f"\n  bin\033[1;33m0\033[0mracle CVE Lab → \033[1;96m{url}\033[0m")
+    print(f"\n  bin\033[1;33m0\033[0mracle Exploit Dev → \033[1;96m{url}\033[0m")
     print("  Ctrl+C to stop.\n")
     if open_browser:
         import webbrowser
@@ -573,7 +573,7 @@ _HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>bin0racle CVE Lab</title>
+<title>bin0racle Exploit Dev</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet"
   href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap">
@@ -1207,7 +1207,7 @@ main {
   <main>
     <div class="run-panel">
       <select id="cve-mode" class="cve-mode-select" title="Command mode">
-        <option value="cve">CVE Verify</option>
+        <option value="cve">Dev Exploit</option>
         <option value="cveplan">Exploit Plan</option>
         <option value="triage">Triage</option>
         <option value="autodiscover">Auto-Discover</option>
@@ -1236,7 +1236,7 @@ main {
       </div>
 
       <div id="tab-log" class="tab-pane active">
-        <div id="log-terminal"><div class="empty-msg">Enter a CVE ID and press Run</div></div>
+        <div id="log-terminal"><div class="empty-msg">Enter a CVE ID and press Run to develop an exploit</div></div>
       </div>
       <div id="tab-report" class="tab-pane">
         <div id="report-content">
@@ -1456,7 +1456,7 @@ main {
   // Update placeholder based on mode
   $('cve-mode').addEventListener('change', () => {
     const m = $('cve-mode').value;
-    const ph = {cve:'CVE-2024-1071', cveplan:'CVE-2024-1071 or vuln description', triage:'CVE-2024-1071', autodiscover:'wordpress SQLi 2024'};
+    const ph = {cve:'CVE-2024-1071', cveplan:'CVE-2024-1071 — full exploit plan', triage:'CVE-2024-1071', autodiscover:'wordpress SQLi 2024'};
     $('cve-input').placeholder = ph[m] || 'CVE-XXXX-YYYY';
   });
 
@@ -1849,7 +1849,7 @@ main {
           <img src="/static/logo.png" alt="bin0racle">
           <div class="report-header-text">
             <h1>${escHtml(d.cve_id)} — Verification Report</h1>
-            <div class="rh-meta">bin0racle Autonomous CVE Lab · ${now} · @beafn28</div>
+            <div class="rh-meta">bin0racle Autonomous Exploit Development · ${now} · @beafn28</div>
             <div class="rh-meta ${verdictCls}" style="margin-top:6px;font-weight:600">${verdictTxt}</div>
             ${metaHtml}
             ${descHtml}
@@ -2324,7 +2324,7 @@ main {
   (function () {
     const TOOLS = [
       // CVE
-      {name:'cve',       cat:'CVE',       cli:'binoracle cve CVE-XXXX-YYYY',   desc:'Full autonomous CVE verification in an isolated lab'},
+      {name:'cve',       cat:'CVE',       cli:'binoracle cve CVE-XXXX-YYYY',   desc:'Full autonomous exploit development for a CVE in an isolated lab'},
       {name:'cveplan',   cat:'CVE',       cli:'binoracle cveplan CVE-XXXX',    desc:'Plan exploitation strategy for a CVE without running it'},
       {name:'triage',    cat:'CVE',       cli:'binoracle triage CVE-XXXX',     desc:'Quick triage: exploitability and impact assessment'},
       {name:'hunt',      cat:'CVE',       cli:'binoracle hunt --target URL',   desc:'Autonomous vulnerability hunting against a target'},
