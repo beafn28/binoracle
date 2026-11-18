@@ -418,11 +418,26 @@ class _Handler(BaseHTTPRequestHandler):
             extra = data.get("extra", [])
         except Exception:
             self._send_json(400, {"error": "bad json"}); return
-        # Special: ask/chat — no file needed
-        _NO_FILE_CMDS = {"ask", "chat", "doctor", "tools"}
+        # Special: commands that don't need a file path
+        _NO_FILE_CMDS = {
+            "ask", "chat", "doctor", "tools",
+            "cveplan", "triage", "autodiscover",
+            "hunt", "phpestate", "scan",
+            "cyclic", "shellcode", "kernel-exploit",
+            "investigate-batch", "cve-chain",
+        }
         if cmd in _NO_FILE_CMDS:
-            safe_extra = [a for a in (extra or []) if isinstance(a, str) and len(a) < 500]
-            job = _start_bin_job("__ask__", [cmd] + safe_extra, f"{cmd}")
+            # Broader validation for these: allow URLs, CVE IDs, paths, keywords
+            safe_extra = []
+            for a in (extra or []):
+                if isinstance(a, str) and len(a) < 1000:
+                    safe_extra.append(a)
+            # Build command with correct flags
+            if cmd == "hunt" and safe_extra and not safe_extra[0].startswith("--"):
+                args = [cmd, "--target"] + safe_extra
+            else:
+                args = [cmd] + safe_extra
+            job = _start_bin_job("__nofile__", args, f"{cmd} {safe_extra[0] if safe_extra else ''}".strip())
             self._send_json(200, {"job_id": job.id}); return
 
         with _bin_files_lock:
@@ -920,6 +935,69 @@ main {
 .bl-line-sep  { color: var(--cyan); font-weight: 600; }
 .bl-line-head { color: var(--cyan); font-weight: 700; }
 
+/* ── cve mode picker ── */
+.cve-mode-select {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-family: var(--mono); font-size: 12px;
+  padding: 0 10px; height: 32px; outline: none; cursor: pointer; flex-shrink: 0;
+}
+.cve-mode-select:focus { border-color: var(--cyan); }
+
+/* ── recon tab ── */
+.recon-wrap { padding: 14px 20px; display: flex; flex-direction: column; gap: 0; }
+.recon-section {
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 14px 16px; margin-bottom: 10px; background: var(--bg2);
+}
+.recon-section-title { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--cyan); margin-bottom: 5px; letter-spacing: .05em; }
+.recon-desc { font-size: 11px; color: var(--dim); margin-bottom: 10px; line-height: 1.5; }
+.recon-desc code { font-family: var(--mono); color: var(--cyan); }
+.recon-row { display: flex; gap: 8px; }
+.recon-input {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 12px; color: var(--text);
+  font-family: var(--mono); font-size: 12px; outline: none;
+}
+.recon-input:focus { border-color: var(--cyan); }
+.recon-run-btn {
+  background: var(--cyan); color: #000; border: none; border-radius: 6px;
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  padding: 0 16px; cursor: pointer; transition: opacity .15s; flex-shrink: 0;
+}
+.recon-run-btn:disabled { opacity: .5; cursor: not-allowed; }
+.recon-terminal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+  color: var(--text); overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  min-height: 180px; max-height: 400px; margin-top: 2px;
+}
+
+/* ── system tab ── */
+.sys-wrap { padding: 14px 20px; display: flex; flex-direction: column; gap: 0; }
+.sys-section {
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 14px 16px; margin-bottom: 10px; background: var(--bg2);
+}
+.sys-section-title { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--orange); margin-bottom: 5px; letter-spacing: .05em; }
+.sys-desc { font-size: 11px; color: var(--dim); margin-bottom: 10px; line-height: 1.5; }
+.sys-desc code { font-family: var(--mono); color: var(--cyan); }
+.sys-run-btn {
+  background: transparent; color: var(--orange); border: 1px solid var(--orange);
+  border-radius: 6px; font-family: var(--mono); font-size: 12px; font-weight: 700;
+  padding: 5px 16px; cursor: pointer; transition: all .15s;
+}
+.sys-run-btn:hover { background: var(--orange); color: #000; }
+.sys-run-btn:disabled { opacity: .5; cursor: not-allowed; }
+.sys-code-block {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+  padding: 8px 12px; font-family: var(--mono); font-size: 11.5px; color: var(--cyan);
+  margin-bottom: 8px; overflow-x: auto;
+}
+
+/* ── binary lab utility buttons ── */
+.binlab-util-btn { border-color: var(--dim) !important; color: var(--dim) !important; }
+.binlab-util-btn:hover { border-color: var(--cyan) !important; color: var(--cyan) !important; }
+
 /* ── ask oracle ── */
 .ask-wrap { padding: 16px 20px; display: flex; flex-direction: column; height: 100%; }
 .ask-desc { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
@@ -1128,6 +1206,12 @@ main {
 
   <main>
     <div class="run-panel">
+      <select id="cve-mode" class="cve-mode-select" title="Command mode">
+        <option value="cve">CVE Verify</option>
+        <option value="cveplan">Exploit Plan</option>
+        <option value="triage">Triage</option>
+        <option value="autodiscover">Auto-Discover</option>
+      </select>
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
       <button id="run-btn">Run</button>
       <button id="export-btn" disabled>Export PDF</button>
@@ -1145,7 +1229,9 @@ main {
         <button class="tab-btn" data-tab="http">HTTP Requests</button>
         <button class="tab-btn" data-tab="screenshots">Screenshots</button>
         <button class="tab-btn" data-tab="binlab">Binary Lab</button>
+        <button class="tab-btn" data-tab="recon">Recon</button>
         <button class="tab-btn" data-tab="ask">Ask Oracle</button>
+        <button class="tab-btn" data-tab="system">System</button>
         <button class="tab-btn" data-tab="tools">All Tools</button>
       </div>
 
@@ -1214,11 +1300,30 @@ main {
                 </div>
               </div>
               <div class="binlab-tool-group">
-                <div class="binlab-tool-label">MISC</div>
+                <div class="binlab-tool-label">ANALYSIS</div>
                 <div class="binlab-tool-row">
                   <button class="binlab-tool-btn" data-cmd="secrets">Secrets Scan</button>
                   <button class="binlab-tool-btn" data-cmd="funcid">Function ID</button>
                   <button class="binlab-tool-btn" data-cmd="analyze">Full Analysis</button>
+                  <button class="binlab-tool-btn" data-cmd="explain">Explain</button>
+                  <button class="binlab-tool-btn" data-cmd="audit">Security Audit</button>
+                  <button class="binlab-tool-btn" data-cmd="heap">Heap Analysis</button>
+                </div>
+              </div>
+              <div class="binlab-tool-group">
+                <div class="binlab-tool-label">FUZZING</div>
+                <div class="binlab-tool-row">
+                  <button class="binlab-tool-btn" data-cmd="fuzz">Fuzz Harness</button>
+                  <button class="binlab-tool-btn" data-cmd="exploit-skeleton">Exploit Skeleton</button>
+                  <button class="binlab-tool-btn" data-cmd="cve-corpus">CVE Corpus</button>
+                </div>
+              </div>
+              <div class="binlab-tool-group">
+                <div class="binlab-tool-label">UTILITIES (no file needed)</div>
+                <div class="binlab-tool-row">
+                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="cyclic" data-prompt="Pattern length (e.g. 100):">Cyclic Pattern</button>
+                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="shellcode" data-prompt="Architecture (e.g. amd64):">Generate Shellcode</button>
+                  <button class="binlab-tool-btn binlab-util-btn" data-cmd="kernel-exploit" data-prompt="Kernel exploit type (e.g. ret2usr, UAF, dirty-pipe):">Kernel Exploit</button>
                 </div>
               </div>
             </div>
@@ -1236,6 +1341,81 @@ main {
             <button id="ask-btn" class="ask-btn">Ask</button>
           </div>
           <div id="ask-terminal" class="ask-terminal"><div class="empty-msg">Type a question above and press Ask</div></div>
+        </div>
+      </div>
+
+      <div id="tab-recon" class="tab-pane">
+        <div class="recon-wrap">
+          <div class="recon-section">
+            <div class="recon-section-title">Hunt — Autonomous Vulnerability Hunter</div>
+            <div class="recon-desc">Give binoracle a live URL and it will autonomously discover and verify vulnerabilities in that target. Runs <code>binoracle hunt --target URL</code>.</div>
+            <div class="recon-row">
+              <input id="hunt-input" class="recon-input" type="text" placeholder="https://target.example.com" autocomplete="off" spellcheck="false">
+              <button id="hunt-btn" class="recon-run-btn">Hunt</button>
+            </div>
+          </div>
+          <div class="recon-section">
+            <div class="recon-section-title">Auto-Discover — CVE Keyword Discovery</div>
+            <div class="recon-desc">Search NVD for CVEs by keyword and automatically run full investigations on each. Runs <code>binoracle autodiscover KEYWORDS</code>.</div>
+            <div class="recon-row">
+              <input id="autodiscover-input" class="recon-input" type="text" placeholder="wordpress SQLi 2024" autocomplete="off" spellcheck="false">
+              <button id="autodiscover-btn" class="recon-run-btn">Discover</button>
+            </div>
+          </div>
+          <div class="recon-section">
+            <div class="recon-section-title">PHP Estate — PHP Version Inventory</div>
+            <div class="recon-desc">Inventory PHP interpreters and classify EOL / behind / current status. Optionally probe a remote host's headers. Runs <code>binoracle phpestate [URL]</code>.</div>
+            <div class="recon-row">
+              <input id="phpestate-input" class="recon-input" type="text" placeholder="https://target.example.com (optional)" autocomplete="off" spellcheck="false">
+              <button id="phpestate-btn" class="recon-run-btn">Analyze</button>
+            </div>
+          </div>
+          <div class="recon-section">
+            <div class="recon-section-title">Scan — Static Security Scan</div>
+            <div class="recon-desc">Static security scan and dependency audit of a source directory. Provide an absolute path to a local directory. Runs <code>binoracle scan PATH</code>.</div>
+            <div class="recon-row">
+              <input id="scan-input" class="recon-input" type="text" placeholder="/path/to/project" autocomplete="off" spellcheck="false">
+              <button id="scan-btn" class="recon-run-btn">Scan</button>
+            </div>
+          </div>
+          <div id="recon-terminal" class="recon-terminal"><div class="empty-msg">Select a recon tool above</div></div>
+        </div>
+      </div>
+
+      <div id="tab-system" class="tab-pane">
+        <div class="sys-wrap">
+          <div class="sys-section">
+            <div class="sys-section-title">Environment Check</div>
+            <div class="sys-desc">Verify that the Oracle, all required tools, and LLM backends are reachable and correctly configured. Runs <code>binoracle doctor</code>.</div>
+            <button id="doctor-btn" class="sys-run-btn">Run Doctor</button>
+          </div>
+          <div class="sys-section">
+            <div class="sys-section-title">MCP Server</div>
+            <div class="sys-desc">binoracle exposes an MCP server so any AI agent (Claude, Continue, etc.) can drive all its tools. Launch with <code>binoracle mcp</code> (stdio transport) and point your client at it.</div>
+            <div class="sys-code-block"><code>binoracle mcp</code></div>
+            <div class="sys-code-block" id="mcp-config-block" style="font-size:11px;white-space:pre;overflow-x:auto">{
+  "mcpServers": {
+    "binoracle": {
+      "command": "python",
+      "args": ["-m", "binoracle", "mcp"]
+    }
+  }
+}</div>
+          </div>
+          <div class="sys-section">
+            <div class="sys-section-title">Watch CVE Feed</div>
+            <div class="sys-desc">Automatically watch a Telegram CVE feed and start full investigations as soon as new CVEs drop. Runs in the terminal: <code>binoracle investigate-watch</code>.</div>
+            <div class="sys-code-block"><code>binoracle investigate-watch</code></div>
+          </div>
+          <div class="sys-section">
+            <div class="sys-section-title">Batch Investigation</div>
+            <div class="sys-desc">Run multiple CVE investigations in parallel. Provide CVE IDs separated by spaces or commas. Runs <code>binoracle investigate-batch CVE-1 CVE-2 ...</code>.</div>
+            <div class="recon-row">
+              <input id="batch-input" class="recon-input" type="text" placeholder="CVE-2024-1071 CVE-2024-2194 CVE-2024-27956" autocomplete="off" spellcheck="false">
+              <button id="batch-btn" class="recon-run-btn">Batch Run</button>
+            </div>
+          </div>
+          <div id="sys-terminal" class="recon-terminal"><div class="empty-msg">Run a system command above</div></div>
         </div>
       </div>
 
@@ -1273,8 +1453,48 @@ main {
   $('run-btn').addEventListener('click', startRun);
   $('cve-input').addEventListener('keydown', e => { if (e.key === 'Enter') startRun(); });
 
+  // Update placeholder based on mode
+  $('cve-mode').addEventListener('change', () => {
+    const m = $('cve-mode').value;
+    const ph = {cve:'CVE-2024-1071', cveplan:'CVE-2024-1071 or vuln description', triage:'CVE-2024-1071', autodiscover:'wordpress SQLi 2024'};
+    $('cve-input').placeholder = ph[m] || 'CVE-XXXX-YYYY';
+  });
+
   async function startRun() {
-    const cveId = $('cve-input').value.trim().toUpperCase();
+    const mode = $('cve-mode').value;
+    const rawInput = $('cve-input').value.trim();
+    if (!rawInput) { alert('Enter a CVE ID or search term'); return; }
+    const cveId = rawInput.toUpperCase();
+
+    // For non-cve modes, run via binary/run API as a no-file command
+    if (mode !== 'cve') {
+      // Switch to log tab to show output
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelector('[data-tab="log"]').classList.add('active');
+      $('tab-log').classList.add('active');
+      $('log-terminal').innerHTML = '';
+      $('phase-tracker').style.display = 'none';
+      $('verdict').style.display = 'none';
+      $('cve-info-panel').style.display = 'none';
+      $('run-btn').disabled = true;
+      setStatus('running', mode + '…');
+      try {
+        const r = await fetch('/api/binary/run', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({file_id: '__nofile__', cmd: mode, extra: [rawInput]}),
+        });
+        const d = await r.json();
+        if (!d.job_id) { appendLog('Error: ' + JSON.stringify(d)); $('run-btn').disabled = false; setStatus('error','Error'); return; }
+        const es = new EventSource('/api/binary/stream/' + d.job_id);
+        es.addEventListener('line', e => appendLog(JSON.parse(e.data)));
+        es.addEventListener('done', () => { es.close(); $('run-btn').disabled = false; setStatus('idle','Done'); });
+        es.onerror = () => { es.close(); $('run-btn').disabled = false; setStatus('error','Error'); };
+      } catch(e) { appendLog('Error: ' + e); $('run-btn').disabled = false; setStatus('error','Error'); }
+      return;
+    }
+
     if (!cveId.match(/^CVE-\d{4}-\d+$/i)) {
       alert('Enter a valid CVE ID, e.g. CVE-2024-1071');
       return;
@@ -1948,6 +2168,117 @@ main {
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // ── Recon Tab ─────────────────────────────────────────────────────────────
+  (function () {
+    const term = $('recon-terminal');
+
+    function runReconCmd(cmd, argValue, btnEl) {
+      if (!argValue && cmd !== 'phpestate' && cmd !== 'doctor') {
+        alert('Enter a value first'); return;
+      }
+      if (btnEl) btnEl.disabled = true;
+      term.innerHTML = '';
+      appendReconLine('> binoracle ' + cmd + (argValue ? ' ' + argValue : ''), 'recon-q');
+      const extra = argValue ? [argValue] : [];
+      const needsTargetFlag = (cmd === 'hunt');
+      const body = needsTargetFlag
+        ? {file_id: '__nofile__', cmd, extra: ['--target', argValue]}
+        : {file_id: '__nofile__', cmd, extra};
+      fetch('/api/binary/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+        .then(r => r.json()).then(d => {
+          if (!d.job_id) { appendReconLine('Error: ' + JSON.stringify(d)); if (btnEl) btnEl.disabled = false; return; }
+          const es = new EventSource('/api/binary/stream/' + d.job_id);
+          es.addEventListener('line', e => appendReconLine(JSON.parse(e.data)));
+          es.addEventListener('done', () => { es.close(); if (btnEl) btnEl.disabled = false; });
+          es.onerror = () => { es.close(); if (btnEl) btnEl.disabled = false; };
+        }).catch(e => { appendReconLine('Error: ' + e); if (btnEl) btnEl.disabled = false; });
+    }
+
+    function appendReconLine(line, cls) {
+      const div = document.createElement('div');
+      if (cls) div.className = cls;
+      else if (line.startsWith('[OK]') || /CONFIRMADO/i.test(line)) div.style.color = 'var(--green)';
+      else if (line.startsWith('[ERR]') || /error/i.test(line)) div.style.color = '#ff4444';
+      else if (/\[INFO\]/.test(line)) div.style.color = 'var(--dim)';
+      div.textContent = line;
+      if (term.querySelector('.empty-msg')) term.innerHTML = '';
+      term.appendChild(div);
+      term.scrollTop = term.scrollHeight;
+    }
+
+    const huntBtn = $('hunt-btn');
+    const huntIn = $('hunt-input');
+    if (huntBtn) {
+      huntBtn.addEventListener('click', () => runReconCmd('hunt', huntIn.value.trim(), huntBtn));
+      huntIn.addEventListener('keydown', e => { if (e.key === 'Enter') runReconCmd('hunt', huntIn.value.trim(), huntBtn); });
+    }
+
+    const adBtn = $('autodiscover-btn');
+    const adIn = $('autodiscover-input');
+    if (adBtn) {
+      adBtn.addEventListener('click', () => runReconCmd('autodiscover', adIn.value.trim(), adBtn));
+      adIn.addEventListener('keydown', e => { if (e.key === 'Enter') runReconCmd('autodiscover', adIn.value.trim(), adBtn); });
+    }
+
+    const phpBtn = $('phpestate-btn');
+    const phpIn = $('phpestate-input');
+    if (phpBtn) {
+      phpBtn.addEventListener('click', () => runReconCmd('phpestate', phpIn.value.trim(), phpBtn));
+      phpIn.addEventListener('keydown', e => { if (e.key === 'Enter') runReconCmd('phpestate', phpIn.value.trim(), phpBtn); });
+    }
+
+    const scanBtn = $('scan-btn');
+    const scanIn = $('scan-input');
+    if (scanBtn) {
+      scanBtn.addEventListener('click', () => runReconCmd('scan', scanIn.value.trim(), scanBtn));
+      scanIn.addEventListener('keydown', e => { if (e.key === 'Enter') runReconCmd('scan', scanIn.value.trim(), scanBtn); });
+    }
+  })();
+
+  // ── System Tab ────────────────────────────────────────────────────────────
+  (function () {
+    const sysTerm = $('sys-terminal');
+
+    function runSysCmd(cmd, extra, btnEl) {
+      if (btnEl) btnEl.disabled = true;
+      sysTerm.innerHTML = '';
+      appendSysLine('> binoracle ' + cmd + (extra.length ? ' ' + extra.join(' ') : ''), 'recon-q');
+      fetch('/api/binary/run', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({file_id: '__nofile__', cmd, extra})})
+        .then(r => r.json()).then(d => {
+          if (!d.job_id) { appendSysLine('Error: ' + JSON.stringify(d)); if (btnEl) btnEl.disabled = false; return; }
+          const es = new EventSource('/api/binary/stream/' + d.job_id);
+          es.addEventListener('line', e => appendSysLine(JSON.parse(e.data)));
+          es.addEventListener('done', () => { es.close(); if (btnEl) btnEl.disabled = false; });
+          es.onerror = () => { es.close(); if (btnEl) btnEl.disabled = false; };
+        }).catch(e => { appendSysLine('Error: ' + e); if (btnEl) btnEl.disabled = false; });
+    }
+
+    function appendSysLine(line, cls) {
+      const div = document.createElement('div');
+      if (cls) div.className = cls;
+      else if (line.startsWith('[OK]')) div.style.color = 'var(--green)';
+      else if (line.startsWith('[ERR]') || /error/i.test(line)) div.style.color = '#ff4444';
+      div.textContent = line;
+      if (sysTerm.querySelector('.empty-msg')) sysTerm.innerHTML = '';
+      sysTerm.appendChild(div);
+      sysTerm.scrollTop = sysTerm.scrollHeight;
+    }
+
+    const docBtn = $('doctor-btn');
+    if (docBtn) docBtn.addEventListener('click', () => runSysCmd('doctor', [], docBtn));
+
+    const batchBtn = $('batch-btn');
+    const batchIn = $('batch-input');
+    if (batchBtn) {
+      batchBtn.addEventListener('click', () => {
+        const ids = batchIn.value.trim().split(/[\s,]+/).filter(Boolean);
+        if (!ids.length) { alert('Enter CVE IDs'); return; }
+        runSysCmd('investigate-batch', ids, batchBtn);
+      });
+    }
+  })();
+
   // ── Ask Oracle ───────────────────────────────────────────────────────────
   (function () {
     const askBtn = $('ask-btn');
@@ -2221,8 +2552,17 @@ main {
 
     document.querySelectorAll('#tab-binlab .binlab-tool-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        if (!_binFileId) { terminal.textContent = 'Upload a file first.'; return; }
-        runBinTool(btn.dataset.cmd);
+        const isUtil = btn.classList.contains('binlab-util-btn');
+        if (!isUtil && !_binFileId) { terminal.textContent = 'Upload a file first.'; return; }
+        if (isUtil) {
+          // utility tools: prompt for arg then run without a file
+          const promptText = btn.dataset.prompt || 'Argument:';
+          const arg = prompt(promptText);
+          if (arg === null) return;
+          runBinUtilTool(btn.dataset.cmd, arg.trim());
+        } else {
+          runBinTool(btn.dataset.cmd);
+        }
       });
     });
 
@@ -2246,6 +2586,28 @@ main {
           const line = JSON.parse(e.data);
           appendBinLine(line);
         });
+        es.addEventListener('done', () => {
+          es.close(); _binEs = null;
+          document.querySelectorAll('#tab-binlab .binlab-tool-btn').forEach(b => b.classList.remove('running'));
+        });
+        es.onerror = () => { es.close(); _binEs = null; };
+      }).catch(e => { terminal.textContent = 'Error: ' + e; });
+    }
+
+    function runBinUtilTool(cmd, arg) {
+      if (_binEs) { _binEs.close(); _binEs = null; }
+      terminal.innerHTML = '';
+      document.querySelectorAll('#tab-binlab .binlab-tool-btn').forEach(b => {
+        b.classList.toggle('running', b.dataset.cmd === cmd);
+      });
+      fetch('/api/binary/run', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file_id: '__nofile__', cmd, extra: arg ? [arg] : []}),
+      }).then(r => r.json()).then(d => {
+        if (!d.job_id) { terminal.textContent = 'Error: ' + JSON.stringify(d); return; }
+        const es = new EventSource('/api/binary/stream/' + d.job_id);
+        _binEs = es;
+        es.addEventListener('line', e => appendBinLine(JSON.parse(e.data)));
         es.addEventListener('done', () => {
           es.close(); _binEs = null;
           document.querySelectorAll('#tab-binlab .binlab-tool-btn').forEach(b => b.classList.remove('running'));
