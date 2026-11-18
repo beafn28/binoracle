@@ -3840,7 +3840,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             notes = {**notes,
                                      **{k: v for k, v in refined.items() if k != "parameters"}}
                         else:
-                            notes = {**notes, **refined}
+                            # Don't let the grep's None override the LLM's concrete parameter list:
+                            # grep returning parameters=None means "couldn't find them", not
+                            # "there are no parameters". Keeping the LLM result is always better
+                            # than discarding it in favor of a later fallback that guesses wrong.
+                            _safe_refined = {k: v for k, v in refined.items()
+                                             if not (k == "parameters" and v is None)}
+                            notes = {**notes, **_safe_refined}
                         inv.llm_notes.update(refined)
                         step((f"refinado con el codigo real: endpoint={notes.get('endpoint')}, "
                              f"parameters={notes.get('parameters')}") if es else
