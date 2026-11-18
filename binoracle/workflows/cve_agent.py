@@ -4985,7 +4985,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     bool(str(notes.get("xss_param") or "").strip()) or
                     bool(_pick_param(notes.get("parameters") or [], _XSS_HINTS))
                 )
-                if fr.local_path and not _llm_has_valid_xss_param:
+                if fr.local_path:
                     from .websource import find_stored_xss_endpoint as _xss_scan
                     _xss_code_hit = _xss_scan(fr.local_path)
                     if _xss_code_hit:
@@ -4998,36 +4998,50 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             _xss_all_params = _xss_code_hit.get("inject_params_all", [_xss_p_hint])
                             _xss_transform = _xss_code_hit.get("payload_transform", "")
                             _transform_note = f" transform={_xss_transform}" if _xss_transform else ""
-                            step((f"escaner deterministico (XSS REST, pre-verificacion): "
-                                  f"endpoint='{_xss_ep_new}' param='{_xss_p_hint}'"
-                                  f"{_transform_note} view='{_xss_view}'") if es else
-                                 (f"deterministic XSS pre-scan (REST API): endpoint='{_xss_ep_new}' "
-                                  f"param='{_xss_p_hint}'{_transform_note} view='{_xss_view}'"))
-                            notes["endpoint"] = _xss_ep_new
-                            notes["parameters"] = _xss_all_params
-                            notes["http_method"] = _xss_method
+                            if not _llm_has_valid_xss_param:
+                                # LLM didn't find the param: adopt the scanner's endpoint/params too.
+                                step((f"escaner deterministico (XSS REST, pre-verificacion): "
+                                      f"endpoint='{_xss_ep_new}' param='{_xss_p_hint}'"
+                                      f"{_transform_note} view='{_xss_view}'") if es else
+                                     (f"deterministic XSS pre-scan (REST API): endpoint='{_xss_ep_new}' "
+                                      f"param='{_xss_p_hint}'{_transform_note} view='{_xss_view}'"))
+                                notes["endpoint"] = _xss_ep_new
+                                notes["parameters"] = _xss_all_params
+                                notes["http_method"] = _xss_method
+                            else:
+                                # LLM already has a param; still enrich with payload_transform and
+                                # render_context from the scanner — these are independent of the param
+                                # and critical for correctness (e.g. base64 bypass, js_innerHTML).
+                                step((f"escaner deterministico (enriquecimiento): "
+                                      f"transform={_xss_transform or 'none'} "
+                                      f"render_context={_xss_code_hit.get('render_context','unknown')}") if es
+                                     else (f"deterministic XSS enrichment: "
+                                           f"transform={_xss_transform or 'none'} "
+                                           f"render_context={_xss_code_hit.get('render_context','unknown')}"))
                             if _xss_transform:
                                 notes["payload_transform"] = _xss_transform
                             # Params de activacion de hook (ej. wp_statistics_hit_rest=1)
                             _base_p = _xss_code_hit.get("inject_base_params") or {}
-                            if _base_p:
+                            if _base_p and not _llm_has_valid_xss_param:
                                 notes["base_params"] = _base_p
                             # Contexto de renderizado detectado por trazado de codigo
                             _rctx = _xss_code_hit.get("render_context", "unknown")
                             if _rctx and _rctx != "unknown":
                                 notes["render_context"] = _rctx
                         else:
-                            _xss_act = _xss_code_hit["inject_action"]
-                            _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
-                            step((f"escaner deterministico (XSS AJAX, pre-verificacion): "
-                                  f"action='{_xss_act}' param='{_xss_p_hint}' "
-                                  f"view='{_xss_view}'") if es else
-                                 (f"deterministic XSS pre-scan (AJAX): action='{_xss_act}' "
-                                  f"param='{_xss_p_hint}' view='{_xss_view}'"))
-                            notes["endpoint"] = _xss_ep_new
-                            notes["ajax_action"] = _xss_act
-                            notes["http_method"] = _xss_method
-                        notes["xss_param"] = _xss_p_hint
+                            if not _llm_has_valid_xss_param:
+                                _xss_act = _xss_code_hit["inject_action"]
+                                _xss_ep_new = f"/wp-admin/admin-ajax.php?action={_xss_act}"
+                                step((f"escaner deterministico (XSS AJAX, pre-verificacion): "
+                                      f"action='{_xss_act}' param='{_xss_p_hint}' "
+                                      f"view='{_xss_view}'") if es else
+                                     (f"deterministic XSS pre-scan (AJAX): action='{_xss_act}' "
+                                      f"param='{_xss_p_hint}' view='{_xss_view}'"))
+                                notes["endpoint"] = _xss_ep_new
+                                notes["ajax_action"] = _xss_act
+                                notes["http_method"] = _xss_method
+                        if not _llm_has_valid_xss_param:
+                            notes["xss_param"] = _xss_p_hint
                         # Sobreescribir view_path solo si el LLM no tiene uno especifico
                         # o si tiene uno generico/incorrecto (edit-comments, edit.php, etc.)
                         # El scanner es mas fiable que el LLM para la vista de verificacion:
