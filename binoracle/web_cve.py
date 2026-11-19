@@ -950,25 +950,6 @@ main {
 .done-banner-ok   { background: rgba(0,230,118,.1); color: var(--green); border: 1px solid rgba(0,230,118,.28); }
 .done-banner-fail { background: rgba(255,210,0,.07); color: var(--yellow); border: 1px solid rgba(255,210,0,.18); }
 .done-banner-msg  { flex: 1; min-width: 0; }
-.done-dl-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.done-dl-btn {
-  display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px;
-  font-family: var(--sans); font-size: 12px; font-weight: 600; cursor: pointer;
-  border: 1px solid; background: none; transition: background .15s;
-}
-.done-dl-btn:disabled { opacity: .4; cursor: not-allowed; }
-.done-dl-btn-html { color: var(--green); border-color: rgba(0,230,118,.35); }
-.done-dl-btn-html:hover:not(:disabled) { background: rgba(0,230,118,.12); }
-.done-dl-btn-pdf  { color: #bc8cff; border-color: rgba(188,140,255,.35); }
-.done-dl-btn-pdf:hover:not(:disabled)  { background: rgba(188,140,255,.12); }
-.done-shots-label {
-  font-size: 10px; font-weight: 700; letter-spacing: .12em; color: var(--dim);
-  text-transform: uppercase; margin-bottom: 4px;
-}
-.done-shots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 8px; }
-.done-shot { border-radius: 6px; overflow: hidden; border: 1px solid var(--border); background: var(--bg3); }
-.done-shot img { width: 100%; height: auto; display: block; max-height: 180px; object-fit: cover; }
-.done-shot-cap { font-size: 10px; color: var(--dim); padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── log terminal ── */
 #log-terminal {
@@ -1891,48 +1872,22 @@ main {
 
   function showDonePanel(d) {
     const panel = $('done-panel');
-    const ev = d.evidence || {};
-    const shots = ev.screenshots || [];
     const ok = !!d.verified;
     const elapsed = d.elapsed ? (' · ' + Math.round(d.elapsed) + 's') : '';
-
-    const dlSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
-    const pdfSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
     const icon = ok
       ? `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
       : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-    const statusTxt = ok ? 'CONFIRMADO' : 'NO CONFIRMADO';
-    const hint = ok ? 'Vulnerabilidad reproducida en lab · Informe listo para descarga' : 'No reproducido dinámicamente · Descarga el informe para ver los detalles';
-
-    const shotsHtml = shots.length ? `
-      <div>
-        <div class="done-shots-label">Capturas del laboratorio (${shots.length})</div>
-        <div class="done-shots-grid">${shots.map((s,i) => {
-          const src = _shotImgSrc(s, i);
-          if (!src) return '';
-          const lbl = _shotLabel(s, i);
-          return `<div class="done-shot"><img src="${src}" alt="${escHtml(lbl)}" loading="lazy"><div class="done-shot-cap">${escHtml(lbl)}</div></div>`;
-        }).join('')}</div>
-      </div>` : '';
+    const subline = ok
+      ? (d.cve_id || '') + escHtml(elapsed) + ' · Vulnerabilidad reproducida en lab aislado'
+      : (d.cve_id || '') + escHtml(elapsed) + ' · No reproducido dinámicamente';
 
     panel.innerHTML = `
       <div class="done-banner ${ok ? 'done-banner-ok' : 'done-banner-fail'}">
         ${icon}
-        <div class="done-banner-msg">${escHtml(statusTxt + ' — ' + (d.cve_id||''))}${escHtml(elapsed)}<br><span style="font-weight:400;font-size:11px;opacity:.75">${escHtml(hint)}</span></div>
-        <div class="done-dl-row">
-          <button class="done-dl-btn done-dl-btn-html" id="done-html-btn">${dlSvg} Descargar HTML</button>
-          <button class="done-dl-btn done-dl-btn-pdf" id="done-pdf-btn">${pdfSvg} Exportar PDF</button>
-        </div>
-      </div>
-      ${shotsHtml}`;
+        <div class="done-banner-msg">binOracle ha terminado — Informe hecho<br><span style="font-weight:400;font-size:11px;opacity:.75">${subline}</span></div>
+      </div>`;
 
     panel.classList.add('visible');
-
-    // Wire done-panel buttons to main download handlers
-    const dh = $('done-html-btn');
-    const dp = $('done-pdf-btn');
-    if (dh) dh.addEventListener('click', () => $('html-btn').click());
-    if (dp) dp.addEventListener('click', () => { const b = $('pdf-btn'); if(b) b.click(); });
   }
 
   function renderCveInfo(d) {

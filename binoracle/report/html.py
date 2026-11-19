@@ -3011,7 +3011,7 @@ body{background:var(--bg);color:var(--fg);
 a{color:var(--acc)}
 code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia Code',monospace}
 /* ── Print bar (sticky top) ── */
-.print-bar{position:sticky;top:0;z-index:200;background:rgba(13,17,23,.88);
+.print-bar{position:sticky;top:0;z-index:200;background:var(--surf);
   backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
   border-bottom:1px solid var(--brd);display:flex;align-items:center;
   gap:10px;padding:8px 24px}
@@ -3037,13 +3037,7 @@ code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia
 .conf-banner{background:var(--red);color:#fff;font-size:11px;font-weight:700;
   text-align:center;padding:5px 20px;letter-spacing:.08em}
 /* ── Cover ── */
-.cover{background:var(--surf);border-bottom:2px solid var(--brd);padding:52px 24px 44px;
-  background-image:repeating-linear-gradient(0deg,transparent,transparent 39px,var(--brd) 39px,var(--brd) 40px),
-    repeating-linear-gradient(90deg,transparent,transparent 39px,var(--brd) 39px,var(--brd) 40px);
-  background-size:40px 40px;position:relative}
-.cover::before{content:"";position:absolute;inset:0;
-  background:radial-gradient(ellipse 60% 60% at 55% 50%,rgba(13,17,23,.0) 0%,rgba(13,17,23,.92) 100%);
-  pointer-events:none}
+.cover{background:var(--surf);border-bottom:2px solid var(--brd);padding:52px 24px 44px}
 .cover-inner{max-width:1100px;margin:0 auto;position:relative;
   display:flex;align-items:flex-start;gap:32px}
 .cover-left{flex:1;min-width:0}
