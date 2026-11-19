@@ -3695,17 +3695,39 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
         # Intentar varias formas de INSERT, de menos a mas especulativo:
         # 1. Solo id=1 (PK explicita)
         # 2. Sin columnas (funciona con PKs auto-increment)
-        # 3. Con columnas comunes que suelen ser NOT NULL (uri, page, url, slug, etc.)
+        # 3. Usando DESCRIBE para construir un INSERT válido con valores por defecto
         inserted = False
         for q in [
             f"INSERT IGNORE INTO {full} (id) VALUES (1);",
             f"INSERT IGNORE INTO {full} () VALUES ();",
-            f"INSERT INTO {full} (id) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM {full} LIMIT 1);",
         ]:
             r = lab.exec_mysql(q, db_pw) or ""
             if "ERROR" not in r.upper() and "error" not in r.lower():
                 inserted = True
                 break
+        # Fallback: DESCRIBE para descubrir columnas NOT NULL y construir INSERT válido
+        if not inserted:
+            desc_r = lab.exec_mysql(f"DESCRIBE {full};", db_pw) or ""
+            nn_cols = {}
+            for line in desc_r.strip().split('\n')[1:]:  # skip header
+                parts = [p.strip() for p in line.split('\t')]
+                if len(parts) >= 4:
+                    col_name, col_type, nullable = parts[0], parts[1], parts[2]
+                    if nullable.upper() == 'NO' and 'auto_increment' not in line.lower():
+                        # columna NOT NULL sin auto_increment → necesita valor
+                        if 'int' in col_type.lower():
+                            nn_cols[col_name] = '1'
+                        elif 'char' in col_type.lower() or 'text' in col_type.lower():
+                            nn_cols[col_name] = "'seed'"
+                        elif 'datetime' in col_type.lower() or 'timestamp' in col_type.lower():
+                            nn_cols[col_name] = "NOW()"
+            if nn_cols:
+                cols = ', '.join(nn_cols.keys())
+                vals = ', '.join(nn_cols.values())
+                q_desc = f"INSERT IGNORE INTO {full} ({cols}) VALUES ({vals});"
+                r2 = lab.exec_mysql(q_desc, db_pw) or ""
+                if "ERROR" not in r2.upper():
+                    inserted = True
         # Si el sqli_param coincide con una columna de texto común, actualizar esa columna
         # para que la fila seeded tenga un valor consultable (diferencial booleano más limpio).
         if inserted and sqli_param:
