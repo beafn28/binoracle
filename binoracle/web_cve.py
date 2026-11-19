@@ -1986,13 +1986,12 @@ main {
       : 'NOT CONFIRMED — dynamic reproduction did not succeed';
 
     const shotsHtml = shots.map((s, i) => {
-      const path  = typeof s === 'string' ? s : (s.path || '');
-      const label = typeof s === 'object' ? (s.label || s.title || `Screenshot ${i+1}`) : `Screenshot ${i+1}`;
-      if (!path) return '';
-      const b64 = btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+      const src   = _shotImgSrc(s, i);
+      if (!src) return '';
+      const label = _shotLabel(s, i);
       return `<div class="report-shot">
         <div class="report-shot-label">${escHtml(label)}</div>
-        <img src="/api/screenshot/${b64}" alt="${escHtml(label)}" loading="lazy">
+        <img src="${src}" alt="${escHtml(label)}" loading="lazy">
       </div>`;
     }).join('');
 
@@ -2217,6 +2216,17 @@ main {
     }
   }
 
+  function _shotImgSrc(s, i) {
+    if (typeof s === 'object' && s.png_b64) return 'data:image/png;base64,' + s.png_b64;
+    const path = typeof s === 'string' ? s : (s.path || '');
+    if (!path) return '';
+    return '/api/screenshot/' + btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  }
+  function _shotLabel(s, i) {
+    if (typeof s === 'object') return s.caption_en || s.caption_es || s.label || s.title || `Screenshot ${i+1}`;
+    return `Screenshot ${i+1}`;
+  }
+
   function renderScreenshots(ev) {
     const shots = ev.screenshots || [];
     const container = $('shots-content');
@@ -2225,14 +2235,13 @@ main {
       return;
     }
     container.innerHTML = shots.map((s, i) => {
-      const path = typeof s === 'string' ? s : (s.path || '');
-      const label = typeof s === 'object' ? (s.label || s.title || `Screenshot ${i+1}`) : `Screenshot ${i+1}`;
-      if (!path) return '';
-      const b64 = btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+      const src = _shotImgSrc(s, i);
+      if (!src) return '';
+      const label = _shotLabel(s, i);
       return `
         <div class="shot-wrap">
           <div class="shot-label">${escHtml(label)}</div>
-          <img src="/api/screenshot/${b64}" alt="${escHtml(label)}" loading="lazy">
+          <img src="${src}" alt="${escHtml(label)}" loading="lazy">
         </div>`;
     }).join('');
   }
@@ -2382,11 +2391,14 @@ main {
   async function openHistoryItem(jobId, cveId) {
     closeHistPanel();
     _activeHistJobId = jobId;
+    currentJobId = jobId;
     // Reset UI for the loaded run
     _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '<div class="empty-msg">Loading from history…</div>';
     $('verdict').style.display = 'none';
     $('cve-input').value = cveId;
+    $('html-btn').disabled = false;
+    if ($('pdf-btn')) $('pdf-btn').disabled = false;
 
     try {
       const r = await fetch('/api/result/' + jobId);
@@ -2398,7 +2410,7 @@ main {
       (d.logs || []).forEach(entry => appendLog(entry.t, entry.msg));
 
       renderResult(d);
-        setStatus(d.verified ? 'ok' : 'fail', d.verified ? `CONFIRMED: ${cveId}` : `NOT CONFIRMED: ${cveId}`);
+      setStatus(d.verified ? 'ok' : 'fail', d.verified ? `CONFIRMED: ${cveId}` : `NOT CONFIRMED: ${cveId}`);
     } catch (e) {
       alert('Error loading history: ' + e);
     }
