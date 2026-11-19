@@ -1869,7 +1869,7 @@ def _drop_poc_self_referencing_source_url(poc_hints: dict, poc_repo_url: str) ->
 # Patrones de endpoint que indican que el PoC no tiene un exploit real (RandomRobbieBF usa /x*
 # y similares como placeholder en CVEs donde solo documenta la existencia del bug sin PoC real).
 _PLACEHOLDER_ENDPOINT_RE = re.compile(
-    r'^(/x\*|/x/|/ENDPOINT|/YOUR_ENDPOINT|/example|/api/PLACEHOLDER|/stub|/\*|/\?|/x$)',
+    r'^(/x\*|/x/|/ENDPOINT|/YOUR_ENDPOINT|/example|/api/PLACEHOLDER|/stub|/\*|/x$)',
     re.IGNORECASE)
 
 _PLACEHOLDER_PARAM_RE = re.compile(
