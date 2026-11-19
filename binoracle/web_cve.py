@@ -931,23 +931,44 @@ main {
 .verdict-ok   { background: rgba(0,230,118,.12); color: var(--green); border: 1px solid rgba(0,230,118,.3); }
 .verdict-fail { background: rgba(255,210,0,.08); color: var(--yellow); border: 1px solid rgba(255,210,0,.18); }
 
-/* ── tabs ── */
+/* ── log section (tabs removed) ── */
 .tabs-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.tab-bar {
-  display: flex; gap: 2px; padding-bottom: 0; overflow-x: auto;
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
+.tab-pane { display: none; }
+.tab-pane.active { display: flex; flex: 1; flex-direction: column; overflow: hidden; min-height: 0; }
+
+/* ── done panel ── */
+#done-panel {
+  flex-shrink: 0; display: none; flex-direction: column; gap: 10px;
+  padding-top: 10px; border-top: 1px solid var(--border); margin-top: 8px;
 }
-.tab-bar::-webkit-scrollbar { height: 2px; }
-.tab-btn {
-  background: none; border: none; color: var(--dim);
-  font-family: var(--sans); font-size: 13px; font-weight: 500;
-  padding: 7px 14px; cursor: pointer; border-bottom: 2px solid transparent;
-  margin-bottom: -1px; transition: color .15s, border-color .15s; white-space: nowrap;
+#done-panel.visible { display: flex; }
+.done-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 16px; border-radius: 7px; font-family: var(--mono);
+  font-size: 13px; font-weight: 700; letter-spacing: .05em;
 }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
-.tab-pane { display: none; flex: 1; overflow-y: auto; padding: 12px 0; }
-.tab-pane.active { display: flex; flex-direction: column; }
+.done-banner-ok   { background: rgba(0,230,118,.1); color: var(--green); border: 1px solid rgba(0,230,118,.28); }
+.done-banner-fail { background: rgba(255,210,0,.07); color: var(--yellow); border: 1px solid rgba(255,210,0,.18); }
+.done-banner-msg  { flex: 1; min-width: 0; }
+.done-dl-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.done-dl-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px;
+  font-family: var(--sans); font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 1px solid; background: none; transition: background .15s;
+}
+.done-dl-btn:disabled { opacity: .4; cursor: not-allowed; }
+.done-dl-btn-html { color: var(--green); border-color: rgba(0,230,118,.35); }
+.done-dl-btn-html:hover:not(:disabled) { background: rgba(0,230,118,.12); }
+.done-dl-btn-pdf  { color: #bc8cff; border-color: rgba(188,140,255,.35); }
+.done-dl-btn-pdf:hover:not(:disabled)  { background: rgba(188,140,255,.12); }
+.done-shots-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .12em; color: var(--dim);
+  text-transform: uppercase; margin-bottom: 4px;
+}
+.done-shots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 8px; }
+.done-shot { border-radius: 6px; overflow: hidden; border: 1px solid var(--border); background: var(--bg3); }
+.done-shot img { width: 100%; height: auto; display: block; max-height: 180px; object-fit: cover; }
+.done-shot-cap { font-size: 10px; color: var(--dim); padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── log terminal ── */
 #log-terminal {
@@ -964,12 +985,20 @@ main {
 .log-info { color: var(--text); }
 .log-sep  { color: var(--cyan); opacity: .6; letter-spacing: .2em; }
 .log-phase-header {
-  display: flex; align-items: center; gap: 10px; margin: 8px 0 4px;
-  font-size: 11px; font-weight: 600; letter-spacing: .1em; color: var(--cyan);
+  display: flex; align-items: center; gap: 8px; margin: 12px 0 5px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .12em; color: var(--cyan);
   text-transform: uppercase;
+}
+.log-phase-header::before {
+  content: ''; width: 3px; height: 11px; background: var(--cyan);
+  border-radius: 2px; flex-shrink: 0;
 }
 .log-phase-header::after {
   content: ''; flex: 1; height: 1px; background: var(--border);
+}
+.log-phase-time {
+  font-family: var(--mono); font-size: 10px; color: var(--dim);
+  font-weight: 400; letter-spacing: 0; white-space: nowrap;
 }
 
 /* ── report tab ── */
@@ -1522,39 +1551,20 @@ main {
     <div id="cve-info-panel" style="display:none"></div>
 
     <div class="tabs-wrap">
-      <div class="tab-bar">
-        <button class="tab-btn active" data-tab="log">Live Log</button>
-        <button class="tab-btn" data-tab="report">Report</button>
-        <button class="tab-btn" data-tab="evidence">Evidence</button>
-        <button class="tab-btn" data-tab="binary" id="tab-btn-binary" style="display:none">Binary Analysis</button>
-        <button class="tab-btn" data-tab="screenshots">Screenshots</button>
-        <button class="tab-btn" data-tab="binlab">Binary Lab</button>
-      </div>
-
+      <!-- Log section — no tab bar -->
       <div id="tab-log" class="tab-pane active">
         <div id="log-terminal"><div class="empty-msg">Enter a CVE ID and press Run to develop an exploit</div></div>
+        <div id="done-panel"></div>
       </div>
-      <div id="tab-report" class="tab-pane">
-        <div id="report-content">
-          <div class="empty-msg">Run a CVE investigation to generate the report</div>
-        </div>
-      </div>
+      <!-- Hidden panes kept for JS/Playwright compatibility — not visible in UI -->
+      <div id="tab-report" class="tab-pane"><div id="report-content"></div></div>
       <div id="tab-evidence" class="tab-pane">
-        <div id="evidence-content" class="evidence-grid">
-          <div class="empty-msg">Run a CVE investigation to see evidence</div>
-        </div>
-        <div id="http-content" style="margin-top:8px"></div>
+        <div id="evidence-content" class="evidence-grid"></div>
+        <div id="http-content"></div>
       </div>
-      <div id="tab-binary" class="tab-pane">
-        <div id="binary-content" class="binary-wrap">
-          <div class="empty-msg">No binary analysis data for this CVE</div>
-        </div>
-      </div>
-      <div id="tab-screenshots" class="tab-pane">
-        <div id="shots-content" class="shots-grid">
-          <div class="empty-msg">Screenshots will appear here after the run</div>
-        </div>
-      </div>
+      <div id="tab-binary" class="tab-pane"><div id="binary-content" class="binary-wrap"></div></div>
+      <div id="tab-btn-binary" style="display:none"></div>
+      <div id="tab-screenshots" class="tab-pane"><div id="shots-content" class="shots-grid"></div></div>
       <div id="tab-binlab" class="tab-pane">
         <div id="binlab-content">
           <!-- Upload zone (hidden after file load) -->
@@ -1655,16 +1665,6 @@ main {
   let currentJobId = null;
   let currentEs = null;
 
-  // ── tabs ──────────────────────────────────────────────────────────────────
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      $('tab-' + btn.dataset.tab).classList.add('active');
-    });
-  });
-
   // ── run ───────────────────────────────────────────────────────────────────
   $('run-btn').addEventListener('click', startRun);
   $('cve-input').addEventListener('keydown', e => { if (e.key === 'Enter') startRun(); });
@@ -1684,12 +1684,8 @@ main {
     if (currentEs) { currentEs.close(); currentEs = null; }
     _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '';
-    $('report-content').innerHTML = '<div class="empty-msg">Run a CVE investigation to generate the report</div>';
-    $('evidence-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
-    $('http-content').innerHTML = '';
-    $('shots-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
-    $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
-    $('tab-btn-binary').style.display = 'none';
+    $('done-panel').className = '';
+    $('done-panel').innerHTML = '';
     $('verdict').style.display = 'none';
     $('verdict').className = '';
     $('cve-info-panel').style.display = 'none';
@@ -1699,12 +1695,6 @@ main {
     $('run-btn').disabled = true;
     $('html-btn').disabled = true;
     if ($('pdf-btn')) $('pdf-btn').disabled = true;
-
-    // Switch to log tab
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelector('[data-tab="log"]').classList.add('active');
-    $('tab-log').classList.add('active');
 
     try {
       const res = await fetch('/api/run', {
@@ -1885,17 +1875,64 @@ main {
     // HTTP requests
     renderHttp(d.evidence || {});
 
-    // screenshots
+    // screenshots + done panel
+    showDonePanel(d);
+
+    // keep hidden evidence/report/binary data for export
+    renderEvidence(d.verified_evidence || {}, d.evidence || {});
+    renderHttp(d.evidence || {});
     renderScreenshots(d.evidence || {});
-
-    // professional report
     buildReport(d);
-
-    // binary analysis
     renderBinary(d);
 
     // stop phase tracker
     $('phase-tracker').style.display = 'none';
+  }
+
+  function showDonePanel(d) {
+    const panel = $('done-panel');
+    const ev = d.evidence || {};
+    const shots = ev.screenshots || [];
+    const ok = !!d.verified;
+    const elapsed = d.elapsed ? (' · ' + Math.round(d.elapsed) + 's') : '';
+
+    const dlSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+    const pdfSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    const icon = ok
+      ? `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+      : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    const statusTxt = ok ? 'CONFIRMADO' : 'NO CONFIRMADO';
+    const hint = ok ? 'Vulnerabilidad reproducida en lab · Informe listo para descarga' : 'No reproducido dinámicamente · Descarga el informe para ver los detalles';
+
+    const shotsHtml = shots.length ? `
+      <div>
+        <div class="done-shots-label">Capturas del laboratorio (${shots.length})</div>
+        <div class="done-shots-grid">${shots.map((s,i) => {
+          const src = _shotImgSrc(s, i);
+          if (!src) return '';
+          const lbl = _shotLabel(s, i);
+          return `<div class="done-shot"><img src="${src}" alt="${escHtml(lbl)}" loading="lazy"><div class="done-shot-cap">${escHtml(lbl)}</div></div>`;
+        }).join('')}</div>
+      </div>` : '';
+
+    panel.innerHTML = `
+      <div class="done-banner ${ok ? 'done-banner-ok' : 'done-banner-fail'}">
+        ${icon}
+        <div class="done-banner-msg">${escHtml(statusTxt + ' — ' + (d.cve_id||''))}${escHtml(elapsed)}<br><span style="font-weight:400;font-size:11px;opacity:.75">${escHtml(hint)}</span></div>
+        <div class="done-dl-row">
+          <button class="done-dl-btn done-dl-btn-html" id="done-html-btn">${dlSvg} Descargar HTML</button>
+          <button class="done-dl-btn done-dl-btn-pdf" id="done-pdf-btn">${pdfSvg} Exportar PDF</button>
+        </div>
+      </div>
+      ${shotsHtml}`;
+
+    panel.classList.add('visible');
+
+    // Wire done-panel buttons to main download handlers
+    const dh = $('done-html-btn');
+    const dp = $('done-pdf-btn');
+    if (dh) dh.addEventListener('click', () => $('html-btn').click());
+    if (dp) dp.addEventListener('click', () => { const b = $('pdf-btn'); if(b) b.click(); });
   }
 
   function renderCveInfo(d) {
@@ -2202,16 +2239,13 @@ main {
       findings.push(['Reversing Log Entries', binLogs.map(e => `[${e.t}s] ${e.msg}`).join('\n')]);
     }
 
-    const btn = $('tab-btn-binary');
     if (findings.length) {
-      btn.style.display = '';
       $('binary-content').innerHTML = findings.map(([label, val]) => `
         <div class="binary-finding">
           <div class="binary-finding-head">${escHtml(label)}</div>
           <div class="binary-finding-body">${escHtml(String(val))}</div>
         </div>`).join('');
     } else {
-      btn.style.display = 'none';
       $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
     }
   }
@@ -2395,6 +2429,8 @@ main {
     // Reset UI for the loaded run
     _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '<div class="empty-msg">Loading from history…</div>';
+    $('done-panel').className = '';
+    $('done-panel').innerHTML = '';
     $('verdict').style.display = 'none';
     $('cve-input').value = cveId;
     $('html-btn').disabled = false;

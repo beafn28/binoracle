@@ -2412,7 +2412,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 f'</div>')
 
     # ── Grid de metadata ────────────────────────────────────────────────────
-    def _mcard(label_es: str, value_html: str, label_en: str = ""):
+    def _mcard(label_es: str, label_en: str, value_html: str = ""):
         lbl = (f'<span class="l-es">{label_es}</span>'
                + (f'<span class="l-en">{label_en}</span>' if label_en else ""))
         return (f'<div class="info-card"><div class="info-label">{lbl}</div>'
@@ -3327,19 +3327,24 @@ code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia
 @media print{
   .print-bar,.conf-banner,.sidenav{display:none!important}
   .page-wrap{display:block}
-  body{background:#fff!important;color:#000!important;font-size:11pt}
-  .cover{background:#f6f8fa!important;background-image:none!important}
+  body{background:#fff!important;color:#000!important;font-size:10.5pt;line-height:1.4}
+  .cover{background:#f6f8fa!important;background-image:none!important;padding:24px 32px!important}
   .cover::before{display:none}
-  pre,code{background:#f4f4f4!important;color:#111!important}
+  pre,code{background:#f4f4f4!important;color:#111!important;font-size:9pt}
   .shot-cmd,.step-cmd{background:#f4f4f4!important;color:#111!important}
   .poc-inline{background:#f4f4f4!important;color:#111!important;max-height:none}
-  section{break-inside:avoid}
-  .shot-card,.step-card{break-inside:avoid;page-break-inside:avoid}
-  .step-screenshot{max-width:100%!important;width:100%!important;display:block!important;page-break-inside:avoid}
+  section{break-inside:auto;margin-bottom:12px!important}
+  h2,h3{break-after:avoid;page-break-after:avoid}
+  .shot-card,.step-card{break-inside:avoid;page-break-inside:avoid;margin-bottom:8px!important}
+  .shot-img{max-height:220px!important;object-fit:contain!important;width:auto!important;max-width:100%!important}
+  .step-screenshot{max-height:200px!important;object-fit:contain!important;width:auto!important;max-width:100%!important;page-break-inside:avoid}
   .proof-card{break-inside:avoid}
   img{max-width:100%!important;display:block!important}
   .rem-item,.refs-list li{background:#f6f8fa!important;border-color:#d0d7de!important}
-  a{color:#0969da;text-decoration:underline}}
+  .info-grid{gap:6px!important}
+  .info-card{padding:8px!important}
+  a{color:#0969da;text-decoration:underline}
+  .shots-section,.evidence-section{break-inside:auto}}
 </style>"""
 
     # ── JS ────────────────────────────────────────────────────────────────────
