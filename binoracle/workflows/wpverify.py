@@ -1612,6 +1612,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         return None
     lab.start_mysql(root_pw, db_pw)
     if not lab.mysql_ready(db_pw):
+        step("ERROR: MySQL no respondio a tiempo -- contenedor MySQL no paso el healthcheck "
+             "dentro del limite (posible contención de Docker si hay varios labs simultáneos)")
         res.detail = "MySQL no respondio a tiempo"
         res.logs.append("docker logs (mysql):\n" + lab.logs_tail(lab.mysql))
         res.evidence["screenshots"] = shots
@@ -1619,11 +1621,13 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     step("MySQL listo; arrancando WordPress...")
     port = lab.start_wordpress(db_pw)
     if not port:
+        step("ERROR: no se pudo publicar el puerto de WordPress -- start_wordpress devolvio None")
         res.detail = "no se pudo publicar el puerto de WordPress"
         res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
         res.evidence["screenshots"] = shots
         return None
     if not lab.http_ready(port):
+        step(f"ERROR: WordPress no respondio a tiempo en {port} -- HTTP no disponible dentro del limite")
         res.detail = "WordPress no respondio a tiempo"
         res.logs.append("docker logs (wordpress):\n" + lab.logs_tail(lab.wp))
         res.evidence["screenshots"] = shots
