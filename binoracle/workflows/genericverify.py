@@ -1753,6 +1753,53 @@ def _sqli_sleep_clause(op: str, sleep_expr: str) -> str:
     return sleep_expr
 
 
+def _screenshot_browser_navigate(url: str) -> Optional[str]:
+    """Abre la URL en un navegador Chromium headless real y toma una captura visual de la pagina
+    tal como la renderiza el navegador (captura tipo 'web', distinta de _screenshot_response que
+    muestra el visor HTTP). Devuelve PNG en base64, o None si Playwright no esta disponible."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
+    except Exception:
+        return None
+    import base64
+    import concurrent.futures as _cf
+    import tempfile
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+
+    def _do() -> Optional[str]:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    device_scale_factor=2,
+                ).new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                page.screenshot(path=out_path)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_do).result(timeout=30)
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _take_generic_screenshots_sqli(
     base_url: str, endpoint_path: str, m: str, base_params: dict,
     sqli_param: str, evidence: dict,
@@ -1807,6 +1854,27 @@ def _take_generic_screenshots_sqli(
                   f"{evidence.get('respuesta_false_len', '?')}B (contraste con payload TRUE)"),
                  (f"Boolean FALSE payload: {sqli_param}={pf!r} → "
                   f"{evidence.get('respuesta_false_len', '?')}B (contrast with TRUE payload)"))
+
+    # Web screenshot — navegador real apuntando al servidor del lab (complementa los shots
+    # de visor HTTP con una vista tal como la renderiza Chromium)
+    step_web = len(shots) + 1
+    try:
+        web_url = base_url + endpoint_path
+        # GET: añadir payload ganador en la URL para que el navegador muestre la respuesta
+        if m == "GET" and payload_ganador:
+            web_url += "?" + urllib.parse.urlencode({**base_params, sqli_param: payload_ganador})
+        web_png = _screenshot_browser_navigate(web_url)
+        if web_png:
+            shots.append({
+                "step": step_web,
+                "caption_es": (f"Vista web real: Chromium renderiza {endpoint_path} "
+                               f"— servidor vivo en {base_url}"),
+                "caption_en": (f"Real web view: Chromium renders {endpoint_path} "
+                               f"— live server at {base_url}"),
+                "png_b64": web_png,
+            })
+    except Exception:
+        pass
     return shots
 
 
@@ -1837,6 +1905,21 @@ def _take_generic_screenshots_bypass(
                                "caption_en": caption_en, "png_b64": png})
         except Exception:
             pass
+
+    # Web screenshot — navegador real apuntando al endpoint (vista complementaria al visor HTTP)
+    try:
+        web_png = _screenshot_browser_navigate(url)
+        if web_png:
+            shots.append({
+                "step": len(shots) + 1,
+                "caption_es": (f"Vista web real: Chromium renderiza {endpoint} "
+                               f"tras el bypass — servidor vivo en {url.split(endpoint)[0]}"),
+                "caption_en": (f"Real web view: Chromium renders {endpoint} "
+                               f"after bypass — live server at {url.split(endpoint)[0]}"),
+                "png_b64": web_png,
+            })
+    except Exception:
+        pass
     return shots
 
 
