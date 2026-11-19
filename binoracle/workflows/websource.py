@@ -310,6 +310,10 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
     # can't contain control characters", por el espacio). En vez de propagar eso, se valida aqui:
     # si no tiene pinta de version real, se ignora (se descarga la ultima estable) en vez de
     # construir una URL rota.
+    # Algunos plugins/LLMs dan versiones con prefijo 'v' (ej. 'v2.28.1'): quitarlo antes de
+    # construir la URL de descarga (WordPress.org sirve '2.28.1', no 'v2.28.1').
+    if version and version.startswith(("v", "V")) and _looks_like_version(version[1:]):
+        version = version[1:]
     if version and not _looks_like_version(version):
         step(f"'{version}' no tiene pinta de numero de version real (vino como texto libre de "
              f"la hipotesis) -- se ignora y se prueba con la ultima version estable en su lugar")
@@ -483,6 +487,8 @@ def fetch_drupal_module(slug: str, version: str = "", dest_dir: str = "",
     if not slug:
         res.note = "machine name de modulo vacio"
         return res
+    if version and version.startswith(("v", "V")) and _looks_like_version(version[1:]):
+        version = version[1:]
     if version and not _looks_like_version(version):
         step(f"'{version}' no tiene pinta de numero de version real -- se ignora y se prueba "
              f"con la ultima release estable en su lugar")

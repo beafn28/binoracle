@@ -1279,11 +1279,15 @@ def verify_generic_lfi_rce(
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     if not path_param:
-        res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
-        res.limitations.append("la verificacion de LFI-a-RCE necesita saber que parametro "
-                               "lleva la ruta/fichero; afina 'parameters' o pasalo a mano "
-                               "(path_param_hint)")
-        return res
+        _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+        if _params_list:
+            path_param = _params_list[0]
+        else:
+            res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
+            res.limitations.append("la verificacion de LFI-a-RCE necesita saber que parametro "
+                                   "lleva la ruta/fichero; afina 'parameters' o pasalo a mano "
+                                   "(path_param_hint)")
+            return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
     if boot is None:
