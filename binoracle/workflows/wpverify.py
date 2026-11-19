@@ -3902,7 +3902,8 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                         # columna NOT NULL sin auto_increment → necesita valor
                         if 'int' in col_type.lower():
                             nn_cols[col_name] = '1'
-                        elif 'char' in col_type.lower() or 'text' in col_type.lower():
+                        elif ('char' in col_type.lower() or 'text' in col_type.lower() or
+                              'blob' in col_type.lower() or 'binary' in col_type.lower()):
                             nn_cols[col_name] = "'seed'"
                         elif 'datetime' in col_type.lower() or 'timestamp' in col_type.lower():
                             nn_cols[col_name] = "NOW()"
