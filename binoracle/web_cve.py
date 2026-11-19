@@ -239,6 +239,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/export-pdf/"):
             job_id = path.split("/")[-1]
             self._export_pdf(job_id)
+        elif path.startswith("/api/delete-history/"):
+            job_id = path.split("/")[-1]
+            self._delete_history(job_id)
         elif path.startswith("/api/screenshot/"):
             b64 = path.split("/")[-1]
             self._serve_screenshot(b64)
@@ -377,6 +380,18 @@ class _Handler(BaseHTTPRequestHandler):
             for r in records
         ]
         self._send_json(200, summary)
+
+    def _delete_history(self, job_id: str):
+        import re
+        if not re.match(r'^[a-f0-9]{8}$', job_id):
+            self._send_json(400, {"error": "invalid job_id"})
+            return
+        path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+        if os.path.exists(path):
+            os.remove(path)
+            self._send_json(200, {"deleted": job_id})
+        else:
+            self._send_json(404, {"error": "not found"})
 
     def _json_result(self, job_id: str):
         with _jobs_lock:
@@ -1107,7 +1122,7 @@ main {
 .hist-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04);
-  transition: background .12s;
+  transition: background .12s; position: relative;
 }
 .hist-item:hover { background: rgba(255,255,255,.04); }
 .hist-item.active { background: rgba(0,212,255,.07); }
@@ -1119,6 +1134,15 @@ main {
 .hist-cve { font-family: var(--mono); font-size: 13px; font-weight: 600; }
 .hist-meta { font-size: 10px; color: var(--dim); margin-top: 2px; }
 .hist-empty { color: var(--dim); font-size: 13px; text-align: center; padding: 32px 16px; }
+.hist-del {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 5px; border: none;
+  background: transparent; cursor: pointer; opacity: 0;
+  color: var(--dim); transition: opacity .15s, background .12s, color .12s;
+}
+.hist-item:hover .hist-del { opacity: 1; }
+.hist-del:hover { background: rgba(248,81,73,.15); color: #f85149 !important; }
+.hist-del svg { pointer-events: none; }
 .hist-overlay {
   position: fixed; inset: 0; z-index: 99; background: rgba(0,0,0,.35);
   display: none;
@@ -2321,14 +2345,36 @@ main {
           <div class="hist-cve">${escHtml(rec.cve_id)}</div>
           <div class="hist-meta">${dtStr}${elapsed ? ' · ' + elapsed : ''}</div>
         </div>
+        <button class="hist-del" title="Delete from history" aria-label="Delete ${escHtml(rec.cve_id)} from history">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H2.506a.58.58 0 0 0-.01 0H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66H14.5a.5.5 0 0 0 0-1h-.995a.59.59 0 0 0-.01 0H11Zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5h9.916Zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-.998.06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-.998-.06l.5-8.5a.5.5 0 0 1 .528-.47ZM8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5Z"/>
+          </svg>
+        </button>
       </div>`;
     }).join('');
 
     list.querySelectorAll('.hist-item').forEach(el => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.hist-del')) return;
         const jobId = el.dataset.jid;
         const cveId = el.dataset.cve;
         openHistoryItem(jobId, cveId);
+      });
+      el.querySelector('.hist-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const jobId = el.dataset.jid;
+        const cveId = el.dataset.cve;
+        try {
+          const r = await fetch('/api/delete-history/' + jobId, {method: 'GET'});
+          if (r.ok) {
+            _historyData = _historyData.filter(x => x.job_id !== jobId);
+            renderHistoryList();
+          } else {
+            console.error('Delete failed', await r.text());
+          }
+        } catch (err) {
+          console.error('Delete error', err);
+        }
       });
     });
   }
