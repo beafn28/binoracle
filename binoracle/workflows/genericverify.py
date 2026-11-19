@@ -1753,6 +1753,93 @@ def _sqli_sleep_clause(op: str, sleep_expr: str) -> str:
     return sleep_expr
 
 
+def _take_generic_screenshots_sqli(
+    base_url: str, endpoint_path: str, m: str, base_params: dict,
+    sqli_param: str, evidence: dict,
+) -> List[dict]:
+    """Captura screenshots Playwright del lab generico para SQLi: control, payload, false (boolean)."""
+    import urllib.parse
+    shots: List[dict] = []
+    estrategia = evidence.get("estrategia", "tiempo")
+    payload_ganador = evidence.get("payload_ganador", "")
+    orig_value = str(base_params.get(sqli_param) or "1")
+
+    def _do_shot(params: dict, step_n: int, caption_es: str, caption_en: str,
+                 highlight: str = "", timeout: int = 20) -> None:
+        try:
+            resp = _http_request(m, base_url + endpoint_path, timeout=timeout,
+                                 data=params if m != "GET" else None,
+                                 params=params if m == "GET" else None)
+            body = getattr(resp, "text", "") or ""
+            status = getattr(resp, "status_code", 200)
+            url_disp = base_url + endpoint_path
+            if m == "GET":
+                url_disp += "?" + urllib.parse.urlencode(params)
+            png = _screenshot_response(url_disp, m, status, body, highlight=highlight)
+            if png:
+                shots.append({"step": step_n, "caption_es": caption_es,
+                               "caption_en": caption_en, "png_b64": png})
+        except Exception:
+            pass
+
+    _do_shot({**base_params, sqli_param: orig_value}, 1,
+             f"Control: {m} {endpoint_path} sin inyección → respuesta base del servidor",
+             f"Control: {m} {endpoint_path} without injection → baseline server response")
+
+    if payload_ganador:
+        if estrategia == "boolean-inband":
+            cap_es = (f"Payload boolean TRUE: {sqli_param}={payload_ganador!r} → "
+                      f"{evidence.get('respuesta_true_len', '?')}B (inyección confirmada)")
+            cap_en = (f"Boolean TRUE payload: {sqli_param}={payload_ganador!r} → "
+                      f"{evidence.get('respuesta_true_len', '?')}B (injection confirmed)")
+        else:
+            cap_es = (f"Payload SQLi ciega: {sqli_param}={payload_ganador!r} → "
+                      "respuesta retrasada (tiempo confirma inyección)")
+            cap_en = (f"Blind SQLi payload: {sqli_param}={payload_ganador!r} → "
+                      "delayed response (time-based injection confirmed)")
+        _do_shot({**base_params, sqli_param: payload_ganador}, 2,
+                 cap_es, cap_en, highlight=payload_ganador[:80])
+
+    if estrategia == "boolean-inband" and evidence.get("payload_false"):
+        pf = evidence["payload_false"]
+        _do_shot({**base_params, sqli_param: pf}, 3,
+                 (f"Payload boolean FALSE: {sqli_param}={pf!r} → "
+                  f"{evidence.get('respuesta_false_len', '?')}B (contraste con payload TRUE)"),
+                 (f"Boolean FALSE payload: {sqli_param}={pf!r} → "
+                  f"{evidence.get('respuesta_false_len', '?')}B (contrast with TRUE payload)"))
+    return shots
+
+
+def _take_generic_screenshots_bypass(
+    base_url: str, endpoint: str, m: str,
+    bypass_header: str, bypass_value: str,
+    status_normal: int, body_normal: str,
+    status_bypass: int, body_bypass: str,
+) -> List[dict]:
+    """Captura screenshots Playwright del lab generico para header bypass."""
+    shots: List[dict] = []
+    url = base_url + endpoint
+
+    for step_n, status, body, caption_es, caption_en, hl in [
+        (1, status_normal, body_normal,
+         f"Sin header de bypass → HTTP {status_normal} (middleware bloquea el acceso)",
+         f"Without bypass header → HTTP {status_normal} (middleware blocks access)",
+         ""),
+        (2, status_bypass, body_bypass,
+         f"CON {bypass_header}: {bypass_value[:60]!r} → HTTP {status_bypass} (acceso conseguido)",
+         f"WITH {bypass_header}: {bypass_value[:60]!r} → HTTP {status_bypass} (access gained)",
+         bypass_value[:80]),
+    ]:
+        try:
+            png = _screenshot_response(url, m, status, body, highlight=hl)
+            if png:
+                shots.append({"step": step_n, "caption_es": caption_es,
+                               "caption_en": caption_en, "png_b64": png})
+        except Exception:
+            pass
+    return shots
+
+
 def verify_generic_sqli_blind(
     source_dir: str, endpoint: str, http_method: str, parameters,
     sqli_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
@@ -2117,6 +2204,11 @@ def verify_generic_sqli_blind(
                               f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "
                               f"consistente en 2 peticiones independientes, por encima de la linea "
                               f"base + la mitad del retraso pedido -- no es ruido de red/Docker")
+            step("capturando evidencia visual (screenshots del laboratorio)...")
+            shots = _take_generic_screenshots_sqli(
+                base_url, endpoint_path, m, base_params, sqli_param, res.evidence)
+            if shots:
+                res.evidence["screenshots"] = shots
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/dialecto de "
@@ -2852,11 +2944,13 @@ def verify_generic_header_bypass(
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         url = base_url + endpoint
         step(f"probando SIN cabecera de bypass: {m} {url}")
+        body_normal = ""
         try:
             # allow_redirects=False: necesitamos el status REAL del servidor (3xx/401/403),
             # no el de la pagina de login/error a la que redirige -- igual que open_redirect.
             r_normal = _http_request(m, url, timeout=15, allow_redirects=False)
             status_normal = r_normal.status_code
+            body_normal = getattr(r_normal, "text", "") or ""
         except Exception as e:
             status_normal = -1
             step(f"error en peticion normal: {e}")
@@ -2900,6 +2994,12 @@ def verify_generic_header_bypass(
                 (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "") +
                 " -- el control de autorizacion fue eludido"
             )
+            step("capturando evidencia visual (screenshots del laboratorio)...")
+            shots = _take_generic_screenshots_bypass(
+                base_url, endpoint, m, bypass_header, bypass_value,
+                status_normal, body_normal, status_bypass, body_bypass)
+            if shots:
+                res.evidence["screenshots"] = shots
         else:
             res.ok = True
             # Diagnostico automatico: razona por que fallo el bypass
