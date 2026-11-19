@@ -70,6 +70,7 @@ _PATH_HINTS = (
     # filepath, dir, f, p, t -- cubre la mayoria de plugins RandomRobbieBF con LFI no-estandar)
     "source", "src", "data", "name", "fname", "filepath", "dir", "f", "p", "t",
     "load", "read", "fetch", "get", "open", "import", "url", "location",
+    "tab", "action", "module", "section", "panel",
 )
 # firma inequivoca de la primera linea de /etc/passwd en cualquier Linux (root, uid/gid 0) --
 # usada como fallback de path-traversal cuando el canario propio no se confirma (ver
@@ -1701,11 +1702,20 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     f"siempre independientemente del payload")
 
     step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
-    if not lab.install_plugin(plugin_source_dir, slug):
+    _install_ok = False
+    try:
+        _install_ok = lab.install_plugin(plugin_source_dir, slug)
+    except Exception as _inst_exc:
+        step(f"ERROR: install_plugin lanzó excepción para '{slug}': {type(_inst_exc).__name__}: {_inst_exc}")
+        res.detail = f"install_plugin excepción: {_inst_exc}"
+        res.evidence["screenshots"] = shots
+        return None
+    if not _install_ok:
         step(f"ERROR: install_plugin devolvio False para '{slug}' -- copia/timeout fallida")
         res.detail = "no se pudo copiar el plugin al laboratorio"
         res.evidence["screenshots"] = shots
         return None
+    step(f"plugin copiado al volumen; activando '{slug}' via wp-cli...")
     r = lab.wp_cli("plugin", "activate", slug, timeout=90)
     # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
     # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
@@ -1758,6 +1768,10 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                                    "la activacion puede fallar por requisitos del propio plugin")
             res.evidence["screenshots"] = shots
             return None
+        else:
+            step(f"plugin activo (rc!=0 pero patron WP-CLI registration-error -- el plugin SI esta registrado)")
+    else:
+        step(f"plugin activo. capturando pantalla: panel de plugins como admin (el plugin vulnerable, activo)...")
     if setup_wp_options:
         for opt in setup_wp_options:
             name = (opt or {}).get("name") if isinstance(opt, dict) else None
@@ -2164,7 +2178,10 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                f"user list view) -- the only access the attacker has before exploiting "
                f"anything.")
 
-    if budget_s - (time.time() - t0) < 30:
+    _remaining = budget_s - (time.time() - t0)
+    if _remaining < 30:
+        step(f"BUDGET AGOTADO: solo {_remaining:.0f}s de {budget_s:.0f}s restantes -- "
+             f"abortando verificacion antes del login/ataque")
         res.detail = "presupuesto de tiempo agotado antes de intentar el ataque"
         res.evidence["screenshots"] = shots
         return None
@@ -3018,6 +3035,42 @@ def verify_wordpress_path_traversal(
                     else:
                         base_params[_qk] = _orig_v  # valor real, preservar
             endpoint = _ep_parsed.path
+        # Si path_param (de hint o _PATH_HINTS) no existe en base_params (ej. hint="file" pero el
+        # endpoint QS tiene "tab=FILEHERE"), sobreescribirlo con el primer param placeholder de
+        # base_params — ese viene de la QS real del PoC y es el nombre correcto del parametro.
+        if path_param not in base_params:
+            _qs_placeholders = [k for k, v in base_params.items() if v == ""]
+            if _qs_placeholders:
+                _old_pp = path_param
+                path_param = _qs_placeholders[0]
+                step(f"path_param ajustado: '{_old_pp}' no esta en base_params -- "
+                     f"usando '{path_param}' (extraido de la QS del endpoint)")
+        # Fix 19: si endpoint es fichero PHP directo del plugin (wp-content/plugins/...)
+        # fuera de WordPress, buscamos la ruta admin real via add_menu_page en el codigo.
+        # Razon: los ficheros PHP del plugin usan funciones WordPress (esc_html, __(), etc.)
+        # que no estan disponibles en acceso HTTP directo -- PHP lanza Fatal Error y la
+        # respuesta esta vacia, haciendo imposible confirmar el LFI.
+        _ep_norm_lc = (endpoint or "").lstrip("/").lower()
+        if ("wp-content/plugins/" in _ep_norm_lc and
+                "wp-admin" not in _ep_norm_lc and
+                "wp-json" not in _ep_norm_lc and
+                plugin_source_dir and
+                os.path.isdir(plugin_source_dir)):
+            import re as _re_menu19
+            _grep19 = subprocess.run(
+                ["grep", "-rh", "add_menu_page", plugin_source_dir,
+                 "--include=*.php", "-m1"],
+                capture_output=True, text=True, timeout=10)
+            _slug19_m = _re_menu19.search(
+                r"add_menu_page\s*\([^,]+,[^,]+,[^,]+,\s*['\"]([^'\"]+)['\"]",
+                _grep19.stdout or "")
+            if _slug19_m:
+                _admin_slug19 = _slug19_m.group(1)
+                base_params["page"] = _admin_slug19
+                endpoint = "/wp-admin/admin.php"
+                step(f"endpoint es fichero PHP directo del plugin; acceso directo falla sin "
+                     f"WordPress (funciones WP no disponibles) -- redirigiendo a "
+                     f"/wp-admin/admin.php?page={_admin_slug19}")
         # mismos bloqueos de infraestructura que SQLi (nonce/token sin resolver, ID ofuscado) --
         # ver _auto_resolve_wp_blockers: cualquier tecnica contra WordPress puede necesitarlo, no
         # solo SQLi.
@@ -3320,6 +3373,44 @@ def verify_wordpress_lfi(
                         if not _inject_as_empty:
                             parameters[_qk] = _orig_v
             endpoint = _ep_parsed.path
+
+        # Si path_param (de hint o _PATH_HINTS) no existe en parameters tras QS normalization,
+        # usar el primer param placeholder extraido de la QS del endpoint.
+        _params_dict_lfi = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        if path_param not in _params_dict_lfi:
+            _qs_ph_lfi = [k for k, v in _params_dict_lfi.items() if v == ""]
+            if _qs_ph_lfi:
+                _old_pp_lfi = path_param
+                path_param = _qs_ph_lfi[0]
+                step(f"path_param ajustado: '{_old_pp_lfi}' no esta en parameters tras QS norm -- "
+                     f"usando '{path_param}' (extraido de la QS del endpoint)")
+        # Fix 19: si endpoint es fichero PHP directo del plugin, redirigir a ruta admin real.
+        _ep_norm_lfi_lc = (endpoint or "").lstrip("/").lower()
+        if ("wp-content/plugins/" in _ep_norm_lfi_lc and
+                "wp-admin" not in _ep_norm_lfi_lc and
+                "wp-json" not in _ep_norm_lfi_lc and
+                plugin_source_dir and
+                os.path.isdir(plugin_source_dir)):
+            import re as _re_menu19_lfi
+            _grep19_lfi = subprocess.run(
+                ["grep", "-rh", "add_menu_page", plugin_source_dir,
+                 "--include=*.php", "-m1"],
+                capture_output=True, text=True, timeout=10)
+            _slug19_lfi_m = _re_menu19_lfi.search(
+                r"add_menu_page\s*\([^,]+,[^,]+,[^,]+,\s*['\"]([^'\"]+)['\"]",
+                _grep19_lfi.stdout or "")
+            if _slug19_lfi_m:
+                _admin_slug19_lfi = _slug19_lfi_m.group(1)
+                if isinstance(parameters, dict):
+                    parameters = dict(parameters)
+                    parameters["page"] = _admin_slug19_lfi
+                else:
+                    parameters = dict.fromkeys(parameters or [], "")
+                    parameters["page"] = _admin_slug19_lfi
+                _params_dict_lfi = parameters
+                endpoint = "/wp-admin/admin.php"
+                step(f"endpoint es fichero PHP directo del plugin; acceso directo falla sin "
+                     f"WordPress -- redirigiendo a /wp-admin/admin.php?page={_admin_slug19_lfi}")
 
         # ficheros objetivo: /etc/passwd (prueba clasica, siempre existe en Linux) y
         # wp-config.php (credenciales de BD, muy relevante en contexto WordPress).
@@ -4900,9 +4991,11 @@ def verify_wordpress_sqli(
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:
+        step(f"TIMEOUT en verify_wordpress_sqli: {e}")
         res.detail = f"timeout de infraestructura: {e}"
         return res
     except Exception as e:
+        step(f"ERROR inesperado en verify_wordpress_sqli: {type(e).__name__}: {e}")
         res.detail = f"error inesperado: {e}"
         return res
     finally:

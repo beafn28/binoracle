@@ -44,7 +44,8 @@ def _save_history(job: "_Job"):
         pass
 
 
-def _load_history(limit: int = 50) -> list:
+def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False) -> tuple:
+    """Returns (records_page, total_count)."""
     records = []
     try:
         for fname in os.listdir(_HISTORY_DIR):
@@ -59,7 +60,10 @@ def _load_history(limit: int = 50) -> list:
     except Exception:
         pass
     records.sort(key=lambda r: r.get("created", 0), reverse=True)
-    return records[:limit]
+    if verified_only:
+        records = [r for r in records if r.get("verified", False)]
+    total = len(records)
+    return records[offset:offset + limit], total
 
 # ── Binary lab job store ──────────────────────────────────────────────────────
 
@@ -183,10 +187,11 @@ def _start_job(cve_id: str, config) -> _Job:
                 if _k in attempt_ev and _k not in evidence:
                     evidence[_k] = attempt_ev[_k]
             sf = getattr(inv, "source_fetch", None) or {}
+            _dv = getattr(inv, "dynamic_verify", None) or {}
             job.result = {
                 "verified": inv.verified,
                 "cve_id": job.cve_id,
-                "detail": getattr(inv, "detail", ""),
+                "detail": _dv.get("detail", "") or getattr(inv, "detail", ""),
                 "elapsed": round(time.time() - job.t0, 1),
                 "verified_evidence": ve,
                 "evidence": evidence,
@@ -376,7 +381,19 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def _json_history(self):
-        records = _load_history(50)
+        from urllib.parse import parse_qs, urlparse as _up
+        qs = parse_qs(_up(self.path).query)
+        try:
+            page = max(1, int(qs.get("page", ["1"])[0]))
+        except ValueError:
+            page = 1
+        try:
+            per = max(5, min(50, int(qs.get("limit", ["20"])[0])))
+        except ValueError:
+            per = 20
+        offset = (page - 1) * per
+        verified_only = qs.get("verified", ["0"])[0] == "1"
+        records, total = _load_history(per, offset, verified_only)
         summary = [
             {
                 "job_id": r["job_id"],
@@ -387,7 +404,14 @@ class _Handler(BaseHTTPRequestHandler):
             }
             for r in records
         ]
-        self._send_json(200, summary)
+        import math
+        self._send_json(200, {
+            "items": summary,
+            "total": total,
+            "page": page,
+            "pages": max(1, math.ceil(total / per)),
+            "per": per,
+        })
 
     def _delete_history(self, job_id: str):
         import re
@@ -1166,6 +1190,21 @@ main {
   display: none;
 }
 .hist-overlay.open { display: block; }
+.hist-pagination {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+  gap: 8px; flex-shrink: 0;
+}
+.hist-pagination button {
+  background: rgba(255,255,255,.05); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--sans); font-size: 11px; font-weight: 600;
+  padding: 5px 12px; border-radius: 5px; cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.hist-pagination button:hover:not(:disabled) { background: rgba(0,212,255,.12); border-color: rgba(0,212,255,.4); color: var(--cyan); }
+.hist-pagination button:disabled { opacity: .3; cursor: not-allowed; }
+.hist-page-info { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.hist-page-info span { color: var(--text); font-weight: 600; }
 
 /* ── empty state ── */
 .empty-msg {
@@ -1508,11 +1547,19 @@ main {
   <div class="hist-overlay" id="hist-overlay"></div>
   <div class="hist-panel" id="hist-panel">
     <div class="hist-panel-head">
-      <span>Investigation History</span>
-      <button id="hist-close" title="Close">×</button>
+      <span>Investigation History <span id="hist-total-badge" style="font-size:10px;font-weight:400;color:var(--dim)"></span></span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <button id="hist-filter-btn" title="Show only verified" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--dim);font-size:10px;padding:2px 7px;cursor:pointer;font-family:var(--sans);font-weight:600;transition:color .12s,border-color .12s">ALL</button>
+        <button id="hist-close" title="Close">×</button>
+      </div>
     </div>
     <div class="hist-list" id="hist-list">
       <div class="hist-empty">No previous investigations</div>
+    </div>
+    <div class="hist-pagination" id="hist-pagination" style="display:none">
+      <button id="hist-prev" disabled>← Prev</button>
+      <span class="hist-page-info">Page <span id="hist-page-cur">1</span> / <span id="hist-page-total">1</span></span>
+      <button id="hist-next" disabled>Next →</button>
     </div>
   </div>
 
@@ -2320,19 +2367,59 @@ main {
   let _historyData = [];
   let _activeHistJobId = null;
 
-  async function loadHistory() {
+  let _histPage = 1;
+  let _histPages = 1;
+  let _histTotal = 0;
+  let _histFilter = 'all'; // 'all' | 'verified'
+
+  async function loadHistory(page) {
+    page = page || _histPage;
     try {
-      const r = await fetch('/api/history');
-      _historyData = await r.json();
+      const filter = _histFilter === 'verified' ? '&verified=1' : '';
+      const r = await fetch(`/api/history?page=${page}&limit=20${filter}`);
+      const data = await r.json();
+      // Support both old (array) and new (object) response formats
+      if (Array.isArray(data)) {
+        _historyData = data;
+        _histPage = 1; _histPages = 1; _histTotal = data.length;
+      } else {
+        _historyData = data.items || [];
+        _histPage = data.page || 1;
+        _histPages = data.pages || 1;
+        _histTotal = data.total || 0;
+      }
       renderHistoryList();
-      $('hist-count').textContent = _historyData.length;
-    } catch {}
+      $('hist-count').textContent = _histTotal;
+    } catch(e) { console.error('loadHistory error', e); }
   }
 
   function renderHistoryList() {
     const list = $('hist-list');
+    const pgEl = $('hist-pagination');
+    const totalBadge = $('hist-total-badge');
+    if (totalBadge) totalBadge.textContent = _histTotal ? `(${_histTotal} total)` : '';
+
+    // Pagination controls
+    if (_histPages > 1) {
+      pgEl.style.display = '';
+      $('hist-page-cur').textContent = _histPage;
+      $('hist-page-total').textContent = _histPages;
+      $('hist-prev').disabled = _histPage <= 1;
+      $('hist-next').disabled = _histPage >= _histPages;
+    } else {
+      pgEl.style.display = 'none';
+    }
+
+    // Filter button label
+    const filterBtn = $('hist-filter-btn');
+    if (filterBtn) {
+      filterBtn.textContent = _histFilter === 'verified' ? 'CONF' : 'ALL';
+      filterBtn.style.color = _histFilter === 'verified' ? 'var(--green)' : 'var(--dim)';
+      filterBtn.style.borderColor = _histFilter === 'verified' ? 'rgba(0,230,118,.4)' : 'var(--border)';
+    }
+
     if (!_historyData.length) {
-      list.innerHTML = '<div class="hist-empty">No previous investigations</div>';
+      list.innerHTML = `<div class="hist-empty">${_histFilter === 'verified' ? 'No verified investigations' : 'No previous investigations'}</div>`;
       return;
     }
     list.innerHTML = _historyData.map(rec => {
@@ -2352,7 +2439,7 @@ main {
           <div class="hist-meta">${dtStr}${elapsed ? ' · ' + elapsed : ''}</div>
         </div>
         <button class="hist-del" title="Delete from history" aria-label="Delete ${escHtml(rec.cve_id)} from history">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H2.506a.58.58 0 0 0-.01 0H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66H14.5a.5.5 0 0 0 0-1h-.995a.59.59 0 0 0-.01 0H11Zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5h9.916Zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-.998.06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-.998-.06l.5-8.5a.5.5 0 0 1 .528-.47ZM8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5Z"/>
           </svg>
         </button>
@@ -2362,27 +2449,38 @@ main {
     list.querySelectorAll('.hist-item').forEach(el => {
       el.addEventListener('click', (e) => {
         if (e.target.closest('.hist-del')) return;
-        const jobId = el.dataset.jid;
-        const cveId = el.dataset.cve;
-        openHistoryItem(jobId, cveId);
+        openHistoryItem(el.dataset.jid, el.dataset.cve);
       });
       el.querySelector('.hist-del').addEventListener('click', async (e) => {
         e.stopPropagation();
         const jobId = el.dataset.jid;
-        const cveId = el.dataset.cve;
         try {
           const r = await fetch('/api/delete-history/' + jobId, {method: 'GET'});
           if (r.ok) {
             _historyData = _historyData.filter(x => x.job_id !== jobId);
+            _histTotal = Math.max(0, _histTotal - 1);
+            _histPages = Math.max(1, Math.ceil(_histTotal / 20));
+            if (_histPage > _histPages) _histPage = _histPages;
             renderHistoryList();
-          } else {
-            console.error('Delete failed', await r.text());
+            $('hist-count').textContent = _histTotal;
           }
-        } catch (err) {
-          console.error('Delete error', err);
-        }
+        } catch(err) { console.error('Delete error', err); }
       });
     });
+
+    // Pagination buttons
+    const prevBtn = $('hist-prev'), nextBtn = $('hist-next');
+    if (prevBtn) prevBtn.onclick = () => { if (_histPage > 1) loadHistory(_histPage - 1); };
+    if (nextBtn) nextBtn.onclick = () => { if (_histPage < _histPages) loadHistory(_histPage + 1); };
+
+    // Filter toggle
+    if (filterBtn) {
+      filterBtn.onclick = () => {
+        _histFilter = _histFilter === 'verified' ? 'all' : 'verified';
+        _histPage = 1;
+        loadHistory(1);
+      };
+    }
   }
 
   async function openHistoryItem(jobId, cveId) {
