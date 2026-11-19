@@ -2136,6 +2136,26 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
                 if _js_scanned >= 60 or render_context == "js_innerHTML":
                     break
 
+        # When render_context is js_innerHTML (the XSS fires via a JS meta-box loaded by
+        # AJAX), the meta-box renders on the plugin's OVERVIEW/main page, not on the
+        # table-specific sub-page (which may have the run_meta_box call commented out).
+        # Scan ALL plugin PHP files for a slug_template match whose key is overview/main
+        # so the engine loads the page where do_meta_boxes() renders the meta-box visibly.
+        if render_context == "js_innerHTML" and slug_template:
+            _OVERVIEW_PRIORITY = ('overview', 'main', 'stats', 'summary')
+            # Build a regex that matches slug_template with any _OVERVIEW_PRIORITY key
+            _overview_slug_re = re.compile(
+                r"\b(" + "|".join(
+                    re.escape(slug_template.replace("[slug]", k)) for k in _OVERVIEW_PRIORITY
+                ) + r")\b",
+                re.IGNORECASE,
+            )
+            for _avfp, _avtext in all_texts.items():
+                _om = _overview_slug_re.search(_avtext)
+                if _om:
+                    view_path = f"/wp-admin/admin.php?page={_om.group(1)}"
+                    break
+
         _act_p = best_inject.get("activation_params", {})
         return {
             "inject_action": None,
