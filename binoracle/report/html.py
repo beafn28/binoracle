@@ -2730,12 +2730,14 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             + more_lbl
             + f'</section>')
 
-    # ── Informe completo (markdown) ───────────────────────────────────────────
-    full_section = (
-        f'<section id="sec-report" style="margin-top:32px">'
-        + _sec_heading("07", "INFORME COMPLETO", "FULL REPORT", "report")
-        + f'<div class="md-body">{_md_rich(markdown or "")}</div>'
-        f'</section>')
+    # ── Informe completo (markdown) — solo si hay contenido ──────────────────
+    full_section = ""
+    if markdown and markdown.strip():
+        full_section = (
+            f'<section id="sec-report" style="margin-top:32px">'
+            + _sec_heading("07", "INFORME COMPLETO", "FULL REPORT", "report")
+            + f'<div class="md-body">{_md_rich(markdown)}</div>'
+            f'</section>')
 
     # ── Recomendaciones / Remediación ─────────────────────────────────────────
     _REMEDIATION = {
@@ -2930,6 +2932,58 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             f' <code>{_esc(raw_vec)}</code></div>'
             f'</div>')
 
+    def _owasp_cwe_refs(vc: str) -> str:
+        vc = (vc or "").lower().replace("-", "").replace("_", "")
+        _map = {
+            "sqli":               [("https://owasp.org/www-community/attacks/SQL_Injection",
+                                    "OWASP: SQL Injection"),
+                                   ("https://cwe.mitre.org/data/definitions/89.html",
+                                    "CWE-89: Improper Neutralization of SQL Commands")],
+            "xss":                [("https://owasp.org/www-community/attacks/xss/",
+                                    "OWASP: Cross-Site Scripting (XSS)"),
+                                   ("https://cwe.mitre.org/data/definitions/79.html",
+                                    "CWE-79: Improper Neutralization of Input During Web Page Generation")],
+            "ssrf":               [("https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/",
+                                    "OWASP A10:2021 — Server-Side Request Forgery"),
+                                   ("https://cwe.mitre.org/data/definitions/918.html",
+                                    "CWE-918: Server-Side Request Forgery")],
+            "ssti":               [("https://owasp.org/www-community/attacks/Server_Side_Template_Injection",
+                                    "OWASP: Server-Side Template Injection"),
+                                   ("https://cwe.mitre.org/data/definitions/94.html",
+                                    "CWE-94: Improper Control of Generation of Code")],
+            "commandinjection":   [("https://owasp.org/www-community/attacks/Command_Injection",
+                                    "OWASP: Command Injection"),
+                                   ("https://cwe.mitre.org/data/definitions/78.html",
+                                    "CWE-78: Improper Neutralization of Special Elements in an OS Command")],
+            "lfi":                [("https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+                                    "OWASP A01:2021 — Broken Access Control"),
+                                   ("https://cwe.mitre.org/data/definitions/22.html",
+                                    "CWE-22: Improper Limitation of a Pathname to a Restricted Directory")],
+            "pathtraversal":      [("https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+                                    "OWASP A01:2021 — Broken Access Control"),
+                                   ("https://cwe.mitre.org/data/definitions/22.html",
+                                    "CWE-22: Improper Limitation of a Pathname to a Restricted Directory")],
+            "missingauthorization": [("https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+                                    "OWASP A01:2021 — Broken Access Control"),
+                                   ("https://cwe.mitre.org/data/definitions/862.html",
+                                    "CWE-862: Missing Authorization")],
+            "authbypass":         [("https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+                                    "OWASP A01:2021 — Broken Access Control"),
+                                   ("https://cwe.mitre.org/data/definitions/862.html",
+                                    "CWE-862: Missing Authorization")],
+        }
+        # Try exact match, then prefix match
+        refs = _map.get(vc)
+        if not refs:
+            for k in _map:
+                if vc.startswith(k) or k.startswith(vc[:6]):
+                    refs = _map[k]; break
+        if not refs:
+            refs = [("https://owasp.org/Top10/", "OWASP Top 10")]
+        return "".join(
+            f'<li><a href="{url}" target="_blank" rel="noopener">{_esc(label)}</a></li>'
+            for url, label in refs)
+
     references_section = (
         f'<section id="sec-refs" style="margin-top:32px">'
         + _sec_heading("09", "REFERENCIAS", "REFERENCES", "refs")
@@ -2942,10 +2996,7 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         + f' — <span class="l-es">análisis de Wordfence</span><span class="l-en">Wordfence analysis</span></li>'
         + plugin_line
         + poc_line
-        + f'<li><a href="https://owasp.org/www-community/attacks/SQL_Injection" target="_blank" rel="noopener">'
-        + f'OWASP: SQL Injection</a></li>'
-        + f'<li><a href="https://cwe.mitre.org/data/definitions/89.html" target="_blank" rel="noopener">'
-        + f'CWE-89: Improper Neutralization of Special Elements used in an SQL Command</a></li>'
+        + _owasp_cwe_refs(vuln_class)
         + published_line
         + affected_line
         + f'</ul>'
@@ -2974,7 +3025,8 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         sidenav_links.append(_slink("#sec-blockers", "! Bloqueos", "! Blockers", "sidenav-warn"))
     if script:
         sidenav_links.append(_slink("#sec-poc", "06 PoC", "06 PoC"))
-    sidenav_links.append(_slink("#sec-report", "07 Informe", "07 Report"))
+    if markdown and markdown.strip():
+        sidenav_links.append(_slink("#sec-report", "07 Informe", "07 Report"))
     sidenav_links.append(_slink("#sec-remediation", "08 Remed.", "08 Remediation"))
     sidenav_links.append(_slink("#sec-refs", "09 Refs", "09 References"))
 
