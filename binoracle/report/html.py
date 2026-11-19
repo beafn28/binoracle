@@ -2384,47 +2384,79 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     if affected_ver:
         badges_html += f'<span class="ibadge ibadge-gray">{_esc(affected_ver)}</span>'
 
+    # ── Helper: bilingual section heading with SVG icon ──────────────────────
+    _SEC_ICONS = {
+        "summary": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6M9 17h4"/></svg>',
+        "proof":   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+        "chain":   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+        "tech":    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+        "shots":   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+        "poc":     '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+        "blocker": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>',
+        "report":  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+        "fix":     '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+        "refs":    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+    }
+    def _sec_heading(num: str, es_label: str, en_label: str, icon_key: str = "summary", extra_class: str = "") -> str:
+        icon = _SEC_ICONS.get(icon_key, "")
+        cls = f'section-heading{" " + extra_class if extra_class else ""}'
+        return (f'<div class="{cls}">'
+                f'{icon}'
+                f'<div class="section-heading-text">'
+                f'<span class="section-num">{num}</span>'
+                f'<span class="section-title">'
+                f'<span class="l-es">{es_label}</span>'
+                f'<span class="l-en">{en_label}</span>'
+                f'</span>'
+                f'</div>'
+                f'</div>')
+
     # ── Grid de metadata ────────────────────────────────────────────────────
-    def _mcard(label, value_html):
-        return (f'<div class="mc"><div class="mc-label">{label}</div>'
-                f'<div class="mc-val">{value_html}</div></div>')
+    def _mcard(label_es: str, value_html: str, label_en: str = ""):
+        lbl = (f'<span class="l-es">{label_es}</span>'
+               + (f'<span class="l-en">{label_en}</span>' if label_en else ""))
+        return (f'<div class="info-card"><div class="info-label">{lbl}</div>'
+                f'<div class="info-val">{value_html}</div></div>')
 
     mc_items = []
     if cvss_score is not None:
-        mc_items.append(_mcard("CVSS SCORE",
+        mc_items.append(_mcard("CVSS SCORE", "CVSS SCORE",
             f'<span style="color:{sev_bg};font-weight:800;font-size:22px">{cvss_score:.1f}</span>'
             f'<span style="color:{sev_bg};font-weight:600;margin-left:6px">{_esc(sev_up)}</span>'))
     if cvss_vector:
-        mc_items.append(_mcard("VECTOR CVSS",
+        mc_items.append(_mcard("VECTOR CVSS", "CVSS VECTOR",
             f'<code style="font-size:10px;word-break:break-all">{_esc(cvss_vector)}</code>'))
     if affected_ver:
-        mc_items.append(_mcard("VERSIONES AFECTADAS" if es else "AFFECTED VERSIONS",
+        mc_items.append(_mcard("VERSIONES AFECTADAS", "AFFECTED VERSIONS",
             f'<strong>{_esc(affected_ver)}</strong>'))
     if vuln_class:
-        mc_items.append(_mcard("CLASE" if es else "CLASS", _esc(vuln_class)))
+        mc_items.append(_mcard("CLASE", "CLASS", _esc(vuln_class)))
     _auth = str(llm_notes.get("auth") or llm_notes.get("authentication") or "").strip()
     if _auth:
-        mc_items.append(_mcard("AUTENTICACIÓN" if es else "AUTH", _esc(_auth)))
+        mc_items.append(_mcard("AUTENTICACIÓN", "AUTH", _esc(_auth)))
     if poc_source_used:
-        mc_items.append(_mcard("PoC PÚBLICO" if es else "PUBLIC PoC",
+        mc_items.append(_mcard("PoC PÚBLICO", "PUBLIC PoC",
             f'<a href="{_esc(poc_source_used)}" target="_blank" rel="noopener" '
             f'style="color:var(--acc);word-break:break-all;font-size:12px">'
             f'{_esc(poc_source_used[:55])}{"…" if len(poc_source_used)>55 else ""}</a>'))
     else:
-        mc_items.append(_mcard("PoC PÚBLICO" if es else "PUBLIC PoC",
-            f'<span style="color:var(--mut)">{"Ninguno conocido" if es else "None known"}</span>'))
+        mc_items.append(_mcard("PoC PÚBLICO", "PUBLIC PoC",
+            f'<span style="color:var(--mut)"><span class="l-es">Ninguno conocido</span>'
+            f'<span class="l-en">None known</span></span>'))
     if verified:
-        mc_items.append(_mcard("VERIFICADO" if es else "VERIFIED",
-            '<span style="color:#166534;font-weight:700">&#10003; '
-            + ("Sí &mdash; lab aislado" if es else "Yes &mdash; isolated lab") + '</span>'))
+        mc_items.append(_mcard("VERIFICADO", "VERIFIED",
+            '<span style="color:var(--grn);font-weight:700">&#10003; '
+            + '<span class="l-es">Sí &mdash; lab aislado</span>'
+            + '<span class="l-en">Yes &mdash; isolated lab</span></span>'))
     elif dynamic_verify.get("attempted"):
-        mc_items.append(_mcard("VERIFICADO" if es else "VERIFIED",
-            '<span style="color:#92400e;font-weight:600">'
-            + ("Intentado, sin confirmar" if es else "Attempted, unconfirmed") + '</span>'))
+        mc_items.append(_mcard("VERIFICADO", "VERIFIED",
+            '<span style="color:var(--yel);font-weight:600">'
+            + '<span class="l-es">Intentado, sin confirmar</span>'
+            + '<span class="l-en">Attempted, unconfirmed</span></span>'))
     if published:
-        mc_items.append(_mcard("PUBLICADO (NVD)" if es else "PUBLISHED (NVD)", _esc(published[:10])))
+        mc_items.append(_mcard("PUBLICADO (NVD)", "PUBLISHED (NVD)", _esc(published[:10])))
 
-    grid_html = ('<div class="mc-grid">' + "".join(mc_items) + '</div>') if mc_items else ""
+    grid_html = ('<div class="info-grid">' + "".join(mc_items) + '</div>') if mc_items else ""
 
     # ── Tarjeta de prueba de explotacion ────────────────────────────────────
     proof_section = ""
@@ -2444,13 +2476,15 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
 
         req_path  = (endpoint + payload) if payload else endpoint
 
-        proof_title = "EXPLOTACIÓN CONFIRMADA EN SANDBOX AISLADO" if es else "EXPLOITATION CONFIRMED IN ISOLATED SANDBOX"
         proof_section = (
             f'<section id="sec-proof" style="margin-top:32px">'
-            f'<div class="section-hd proof-hd"><span class="sec-num" style="background:#166534">02</span>&#9733; {proof_title}</div>'
-            f'<div class="proof-card">'
+            + _sec_heading("02",
+                           "★ EXPLOTACIÓN CONFIRMADA",
+                           "★ EXPLOITATION CONFIRMED",
+                           "proof", "proof-heading")
+            + f'<div class="proof-card">'
             f'<div class="proof-top">'
-            f'<div class="proof-top-label">{"Laboratorio Docker efímero" if es else "Ephemeral Docker lab"}</div>'
+            f'<div class="proof-top-label"><span class="l-es">Laboratorio Docker efímero</span><span class="l-en">Ephemeral Docker lab</span></div>'
             + (f'<code class="proof-container">{container}</code>' if container else "")
             + f'</div>'
             f'<div class="proof-cols">'
@@ -2478,8 +2512,72 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             f'</div>'  # proof-cols
             + (f'<div class="proof-detail">{_esc(verified_detail[:300])}</div>' if verified_detail else "")
             + f'</div>'  # proof-card
-            f'</section>'
         )
+
+        # Evidence differential table (SQLi boolean / SSRF token)
+        ev_table_html = ""
+        sqli_ev = verified_ev.get("sqli_differential") or verified_ev.get("differential") or {}
+        ssrf_token = verified_ev.get("ssrf_token") or verified_ev.get("canary_secret") or ""
+        if sqli_ev:
+            true_len  = sqli_ev.get("true_bytes") or sqli_ev.get("true_len") or "?"
+            false_len = sqli_ev.get("false_bytes") or sqli_ev.get("false_len") or "?"
+            diff      = sqli_ev.get("differential_bytes") or sqli_ev.get("diff") or "?"
+            true_q    = _esc(str(sqli_ev.get("true_query") or "'1' OR '1'='1'"))
+            false_q   = _esc(str(sqli_ev.get("false_query") or "'1' OR '1'='2'"))
+            ev_table_html = (
+                f'<div class="evtable-wrap" style="margin-top:14px">'
+                f'<div class="evtable-banner">'
+                f'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">'
+                f'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
+                f'<span class="l-es">Diferencial boolean in-band — prueba de inyección SQL</span>'
+                f'<span class="l-en">Boolean in-band differential — SQLi proof</span>'
+                f'</div>'
+                f'<table class="evtable">'
+                f'<thead><tr>'
+                f'<th><span class="l-es">Consulta</span><span class="l-en">Query</span></th>'
+                f'<th><span class="l-es">Bytes respuesta</span><span class="l-en">Response bytes</span></th>'
+                f'<th><span class="l-es">Resultado</span><span class="l-en">Result</span></th>'
+                f'</tr></thead><tbody>'
+                f'<tr><td><code>{true_q}</code></td>'
+                f'<td><code>{_esc(str(true_len))}</code></td>'
+                f'<td><span class="ev-ok">✓ TRUE</span></td></tr>'
+                f'<tr><td><code>{false_q}</code></td>'
+                f'<td><code>{_esc(str(false_len))}</code></td>'
+                f'<td><span class="ev-bad">✗ FALSE</span></td></tr>'
+                f'</tbody></table>'
+                f'<div class="evtable-note">'
+                f'<span class="l-es">Diferencial: {_esc(str(diff))} bytes — confirma evaluación de lógica SQL en servidor</span>'
+                f'<span class="l-en">Differential: {_esc(str(diff))} bytes — confirms server-side SQL logic evaluation</span>'
+                f'</div>'
+                f'</div>'
+            )
+        elif ssrf_token:
+            ev_table_html = (
+                f'<div class="evtable-wrap" style="margin-top:14px">'
+                f'<div class="evtable-banner">'
+                f'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">'
+                f'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
+                f'<span class="l-es">Token SSRF recibido por listener interno</span>'
+                f'<span class="l-en">SSRF token received by internal listener</span>'
+                f'</div>'
+                f'<table class="evtable">'
+                f'<thead><tr>'
+                f'<th><span class="l-es">Tipo</span><span class="l-en">Type</span></th>'
+                f'<th><span class="l-es">Valor</span><span class="l-en">Value</span></th>'
+                f'<th><span class="l-es">Resultado</span><span class="l-en">Result</span></th>'
+                f'</tr></thead><tbody>'
+                f'<tr><td class="ev-label">SSRF token</td>'
+                f'<td><code>{_esc(ssrf_token)}</code></td>'
+                f'<td><span class="ev-ok">✓ RECIBIDO</span></td></tr>'
+                f'</tbody></table>'
+                f'<div class="evtable-note">'
+                f'<span class="l-es">El servidor realizó la petición HTTP saliente con el token exacto — prueba inequívoca de SSRF</span>'
+                f'<span class="l-en">Server made outbound HTTP request with exact token — unambiguous SSRF proof</span>'
+                f'</div>'
+                f'</div>'
+            )
+
+        proof_section += ev_table_html + '</section>'
 
     # ── Timeline de cadena de ataque ─────────────────────────────────────────
     chain_section = ""
@@ -2491,11 +2589,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                       f'<div class="tl-num">{i+1}</div>'
                       f'<div class="tl-content">{_esc(str(paso))}</div>'
                       f'</div>')
-        chain_title = "CADENA DE ATAQUE" if es else "ATTACK CHAIN"
         chain_section = (
             f'<section id="sec-chain" style="margin-top:32px">'
-            f'<div class="section-hd"><span class="sec-num">03</span>{chain_title}</div>'
-            f'<div class="timeline">{items}</div>'
+            + _sec_heading("03", "CADENA DE ATAQUE", "ATTACK CHAIN", "chain")
+            + f'<div class="timeline">{items}</div>'
             f'</section>'
         )
 
@@ -2526,11 +2623,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             + f'</div><div class="tc-val">{_esc(str(_strat))}</div></div>')
 
     if _tc_items:
-        tech_title = "ANÁLISIS TÉCNICO" if es else "TECHNICAL ANALYSIS"
         tech_section = (
             f'<section id="sec-tech" style="margin-top:32px">'
-            f'<div class="section-hd"><span class="sec-num">04</span>{tech_title}</div>'
-            f'<div class="tc-grid">{"".join(_tc_items)}</div>'
+            + _sec_heading("04", "ANÁLISIS TÉCNICO", "TECHNICAL ANALYSIS", "tech")
+            + f'<div class="tc-grid">{"".join(_tc_items)}</div>'
             f'</section>'
         )
 
@@ -2567,23 +2663,26 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                     + ('  <span class="sh-comment"># &rarr; ver captura</span>' if not cap else '')
                     + '</div>'
                 )
+            cap_es = _esc(sh.get("caption_es") or "")
+            cap_en = _esc(sh.get("caption_en") or cap_es)
+            cap_bilingual = (f'<span class="l-es">{cap_es}</span>'
+                             f'<span class="l-en">{cap_en}</span>')
             shot_cards.append(
-                f'<div class="shot-card">'
-                f'<div class="shot-header">'
-                f'<div class="shot-num-circle {circ_cls}">{step_num}</div>'
-                f'<div class="shot-header-title">{cap}</div>'
-                + (f'<span class="shot-url-pill">{url_txt}</span>' if url_txt else "")
+                f'<div class="step-card">'
+                f'<div class="step-header">'
+                f'<div class="step-num {circ_cls}">{step_num}</div>'
+                f'<div class="step-title">{cap_bilingual}</div>'
+                + (f'<span class="step-url">{url_txt}</span>' if url_txt else "")
                 + '</div>'
-                f'<img class="shot-img" src="data:image/png;base64,{png}" alt="{cap}" loading="lazy">'
+                f'<img class="step-screenshot" src="data:image/png;base64,{png}" alt="{cap_es}" loading="eager">'
                 + curl_line
                 + '</div>'
             )
         if shot_cards:
-            shots_title = "CAPTURAS DE EVIDENCIA" if es else "EVIDENCE SCREENSHOTS"
             shots_section = (
                 f'<section id="sec-shots" style="margin-top:32px">'
-                f'<div class="section-hd"><span class="sec-num">05</span>{shots_title}</div>'
-                f'<div class="shots-grid">{"".join(shot_cards)}</div>'
+                + _sec_heading("05", "CAPTURAS DE EVIDENCIA", "EVIDENCE SCREENSHOTS", "shots")
+                + f'<div class="steps-grid">{"".join(shot_cards)}</div>'
                 f'</section>')
 
     # ── Bloqueos ──────────────────────────────────────────────────────────────
@@ -2591,11 +2690,10 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
     if blockers:
         items = "".join(f'<div class="blocker-item">&#9888; {_esc(b)}</div>'
                         for b in blockers[:6])
-        bl_title = "BLOQUEOS Y LIMITACIONES" if es else "BLOCKERS & LIMITATIONS"
         blockers_section = (
             f'<section id="sec-blockers" style="margin-top:32px">'
-            f'<div class="section-hd" style="color:var(--yel)"><span class="sec-num" style="background:var(--yel)">!</span>{bl_title}</div>'
-            f'<div class="blockers-box">{items}</div>'
+            + _sec_heading("!", "BLOQUEOS Y LIMITACIONES", "BLOCKERS & LIMITATIONS", "blocker")
+            + f'<div class="blockers-box">{items}</div>'
             f'</section>')
 
     # ── PoC download + inline ─────────────────────────────────────────────────
@@ -2624,138 +2722,409 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                         + ("… descarga el archivo para ver el script completo"
                            if es else "… download the file for the full script")
                         + '</div>')
-        poc_title = "PoC / EXPLOIT" if es else "PoC / EXPLOIT"
         poc_section = (
             f'<section id="sec-poc" style="margin-top:32px">'
-            f'<div class="section-hd"><span class="sec-num">06</span>{poc_title}</div>'
-            + dl +
-            f'<pre class="poc-inline">{inline_code}</pre>'
-            + more_lbl +
-            f'</section>')
+            + _sec_heading("06", "PoC / EXPLOIT", "PoC / EXPLOIT", "poc")
+            + dl
+            + f'<pre class="poc-inline">{inline_code}</pre>'
+            + more_lbl
+            + f'</section>')
 
     # ── Informe completo (markdown) ───────────────────────────────────────────
-    full_title = "INFORME COMPLETO" if es else "FULL REPORT"
     full_section = (
         f'<section id="sec-report" style="margin-top:32px">'
-        f'<div class="section-hd"><span class="sec-num">07</span>{full_title}</div>'
-        f'<div class="md-body">{_md_rich(markdown or "")}</div>'
+        + _sec_heading("07", "INFORME COMPLETO", "FULL REPORT", "report")
+        + f'<div class="md-body">{_md_rich(markdown or "")}</div>'
         f'</section>')
+
+    # ── Recomendaciones / Remediación ─────────────────────────────────────────
+    _REMEDIATION = {
+        "sqli": {
+            "es": [
+                "Usar consultas parametrizadas (prepared statements) en todas las interacciones con la base de datos — nunca interpolar datos del usuario directamente en SQL.",
+                "Validar y sanear todos los parámetros de entrada en el lado del servidor antes de cualquier operación de base de datos.",
+                "Aplicar el principio de mínimo privilegio: el usuario de base de datos del plugin no debe tener permisos de lectura en tablas sensibles (wp_users, wp_usermeta).",
+                "Actualizar el plugin a la versión parcheada de inmediato. Deshabilitar el plugin si no hay parche disponible hasta que se libere una versión segura.",
+                "Configurar un WAF (p. ej. Cloudflare, ModSecurity) con reglas SQLi como capa de defensa adicional.",
+                "Auditar todos los puntos de entrada HTTP del plugin (acciones AJAX, endpoints REST) con un escáner SAST/DAST."
+            ],
+            "en": [
+                "Use parameterized queries (prepared statements) for all database interactions — never interpolate user-supplied data directly into SQL.",
+                "Validate and sanitize all input parameters server-side before any database operation.",
+                "Apply the principle of least privilege: the plugin's database user must not have read access to sensitive tables (wp_users, wp_usermeta).",
+                "Update the plugin to the patched version immediately. Disable the plugin if no patch is available until a secure version is released.",
+                "Configure a WAF (e.g. Cloudflare, ModSecurity) with SQLi rules as an additional defense layer.",
+                "Audit all plugin HTTP entry points (AJAX actions, REST endpoints) with a SAST/DAST scanner."
+            ]
+        },
+        "xss": {
+            "es": [
+                "Escapar toda salida HTML usando wp_kses_post() o esc_html() antes de renderizar datos del usuario.",
+                "Implementar una Content Security Policy (CSP) estricta que bloquee scripts inline no autorizados.",
+                "Validar y limpiar los datos en el momento de la inserción (sanitize_text_field, sanitize_textarea_field) y en el de la salida (esc_html, esc_attr).",
+                "Actualizar el plugin a la versión parcheada de inmediato."
+            ],
+            "en": [
+                "Escape all HTML output using wp_kses_post() or esc_html() before rendering user-controlled data.",
+                "Implement a strict Content Security Policy (CSP) that blocks unauthorized inline scripts.",
+                "Validate and sanitize data at insert time (sanitize_text_field, sanitize_textarea_field) and at output time (esc_html, esc_attr).",
+                "Update the plugin to the patched version immediately."
+            ]
+        },
+        "ssrf": {
+            "es": [
+                "Validar y restringir las URLs aceptadas: solo permitir esquemas HTTPS y dominios en allowlist explícita.",
+                "Bloquear peticiones a rangos de IP privados (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16) y al metadata endpoint de AWS/GCP (169.254.169.254).",
+                "Realizar las peticiones HTTP salientes desde un worker aislado sin acceso a la red interna.",
+                "Actualizar el plugin a la versión parcheada de inmediato."
+            ],
+            "en": [
+                "Validate and restrict accepted URLs: allow only HTTPS scheme and an explicit domain allowlist.",
+                "Block requests to private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16) and cloud metadata endpoints (169.254.169.254).",
+                "Perform outbound HTTP requests from an isolated worker with no access to the internal network.",
+                "Update the plugin to the patched version immediately."
+            ]
+        },
+        "lfi": {
+            "es": [
+                "No pasar rutas de archivo controladas por el usuario a funciones include/require. Usar un mapa estático de identificadores a rutas permitidas.",
+                "Configurar open_basedir en PHP para limitar el acceso del proceso web al directorio del plugin.",
+                "Actualizar el plugin a la versión parcheada de inmediato."
+            ],
+            "en": [
+                "Never pass user-controlled file paths to include/require. Use a static map from identifiers to allowed paths.",
+                "Set open_basedir in PHP to restrict the web process to the plugin directory.",
+                "Update the plugin to the patched version immediately."
+            ]
+        },
+        "auth-bypass": {
+            "es": [
+                "Verificar autenticación y autorización en cada acción sensible con current_user_can() y check_ajax_referer().",
+                "No depender únicamente de parámetros ocultos o tokens predecibles para controlar el acceso.",
+                "Actualizar el plugin a la versión parcheada de inmediato."
+            ],
+            "en": [
+                "Verify authentication and authorization for every sensitive action using current_user_can() and check_ajax_referer().",
+                "Do not rely solely on hidden parameters or predictable tokens to control access.",
+                "Update the plugin to the patched version immediately."
+            ]
+        },
+    }
+    vc_key = (vuln_class or "").lower()
+    if vc_key not in _REMEDIATION:
+        for k in _REMEDIATION:
+            if k in vc_key:
+                vc_key = k
+                break
+    rem_items = _REMEDIATION.get(vc_key, {})
+    rem_es = rem_items.get("es", [
+        "Actualizar el plugin a la versión parcheada de inmediato.",
+        "Revisar todos los puntos de entrada HTTP del plugin para validar y sanear los parámetros de entrada.",
+        "Aplicar el principio de defensa en profundidad: WAF, mínimo privilegio y monitorización de logs."
+    ])
+    rem_en = rem_items.get("en", [
+        "Update the plugin to the patched version immediately.",
+        "Review all plugin HTTP entry points to validate and sanitize input parameters.",
+        "Apply defence-in-depth: WAF, least privilege, and log monitoring."
+    ])
+
+    def _rem_item(es_txt: str, en_txt: str, idx: int) -> str:
+        return (f'<div class="rem-item">'
+                f'<div class="rem-num">{idx}</div>'
+                f'<div class="rem-body">'
+                f'<span class="l-es">{_esc(es_txt)}</span>'
+                f'<span class="l-en">{_esc(en_txt)}</span>'
+                f'</div></div>')
+
+    rem_rows = "".join(_rem_item(e, n, i + 1) for i, (e, n) in enumerate(zip(rem_es, rem_en)))
+    remediation_section = (
+        f'<section id="sec-remediation" style="margin-top:32px">'
+        + _sec_heading("08", "RECOMENDACIONES", "REMEDIATION", "fix")
+        + f'<div class="rem-list">{rem_rows}</div>'
+        f'</section>')
+
+    # ── Referencias ───────────────────────────────────────────────────────────
+    # Build CVSS vector breakdown
+    _cvss_labels = {
+        "AV": {"N": "Network", "A": "Adjacent", "L": "Local", "P": "Physical"},
+        "AC": {"L": "Low", "H": "High"},
+        "PR": {"N": "None", "L": "Low", "H": "High"},
+        "UI": {"N": "None", "R": "Required"},
+        "S":  {"U": "Unchanged", "C": "Changed"},
+        "C":  {"N": "None", "L": "Low", "H": "High"},
+        "I":  {"N": "None", "L": "Low", "H": "High"},
+        "A":  {"N": "None", "L": "Low", "H": "High"},
+    }
+    _cvss_full = {
+        "AV": ("Attack Vector", "Vector de Ataque"),
+        "AC": ("Attack Complexity", "Complejidad"),
+        "PR": ("Privileges Required", "Privilegios Requeridos"),
+        "UI": ("User Interaction", "Interacción del Usuario"),
+        "S":  ("Scope", "Alcance"),
+        "C":  ("Confidentiality", "Confidencialidad"),
+        "I":  ("Integrity", "Integridad"),
+        "A":  ("Availability", "Disponibilidad"),
+    }
+    cvss_rows = ""
+    raw_vec = cvss_vector or ""
+    for part in raw_vec.replace("CVSS:3.1/", "").replace("CVSS:3.0/", "").split("/"):
+        if ":" not in part:
+            continue
+        metric, val = part.split(":", 1)
+        label_en, label_es = _cvss_full.get(metric, (metric, metric))
+        val_label = _cvss_labels.get(metric, {}).get(val, val)
+        cvss_rows += (f'<tr><td class="cvss-metric">'
+                      f'<span class="l-es">{_esc(label_es)}</span>'
+                      f'<span class="l-en">{_esc(label_en)}</span>'
+                      f'</td><td class="cvss-val">{_esc(metric)}:{_esc(val)}</td>'
+                      f'<td class="cvss-desc">{_esc(val_label)}</td></tr>')
+
+    cve_safe = _esc(cve or "")
+    slug_guess = ""
+    plugin_line = ""
+    if cve:
+        slug_guess = getattr(inv, "plugin_slug", "") or getattr(inv, "slug", "") or ""
+        if not slug_guess:
+            slug_guess = str(getattr(inv, "llm_notes", {}) or {}).split("slug")[-1].split("'")[1] if "slug" in str(getattr(inv, "llm_notes", {}) or {}) else ""
+        if slug_guess:
+            plugin_line = (
+                f'<li><a href="https://wordpress.org/plugins/{_esc(slug_guess)}/" target="_blank" rel="noopener">'
+                f'wordpress.org/plugins/{_esc(slug_guess)}/</a>'
+                f' — <span class="l-es">plugin en WordPress.org</span>'
+                f'<span class="l-en">plugin on WordPress.org</span></li>')
+
+    poc_line = ""
+    if poc_source_used:
+        poc_line = (f'<li><a href="{_esc(poc_source_used)}" target="_blank" rel="noopener">'
+                    f'{_esc(poc_source_used)}</a>'
+                    f' — <span class="l-es">PoC público utilizado</span>'
+                    f'<span class="l-en">Public PoC used</span></li>')
+
+    published_line = ""
+    if published:
+        published_line = (f'<li><span class="l-es">Fecha de publicación NVD:</span>'
+                          f'<span class="l-en">NVD publication date:</span>'
+                          f' <strong>{_esc(published)}</strong></li>')
+
+    affected_line = ""
+    aff_ver = getattr(inv, "affected_version", "") or str(llm_notes.get("affected_version") or "")
+    if not aff_ver:
+        aff_ver = affected_ver
+    if aff_ver:
+        affected_line = (f'<li><span class="l-es">Versión afectada: ≤ </span>'
+                         f'<span class="l-en">Affected version: ≤ </span>'
+                         f'<strong>{_esc(aff_ver)}</strong></li>')
+
+    cvss_table = ""
+    if cvss_rows:
+        cvss_table = (
+            f'<div class="cvss-breakdown">'
+            f'<div class="cvss-title">'
+            f'<span class="l-es">Desglose CVSS 3.1</span>'
+            f'<span class="l-en">CVSS 3.1 Breakdown</span>'
+            f'</div>'
+            f'<table class="cvss-table"><tbody>{cvss_rows}</tbody></table>'
+            f'<div class="cvss-vector-raw">'
+            f'<span class="l-es">Vector completo:</span>'
+            f'<span class="l-en">Full vector:</span>'
+            f' <code>{_esc(raw_vec)}</code></div>'
+            f'</div>')
+
+    references_section = (
+        f'<section id="sec-refs" style="margin-top:32px">'
+        + _sec_heading("09", "REFERENCIAS", "REFERENCES", "refs")
+        + f'<ul class="refs-list">'
+        + f'<li><a href="https://nvd.nist.gov/vuln/detail/{cve_safe}" target="_blank" rel="noopener">'
+        + f'nvd.nist.gov/vuln/detail/{cve_safe}</a>'
+        + f' — <span class="l-es">ficha oficial NVD</span><span class="l-en">official NVD entry</span></li>'
+        + f'<li><a href="https://www.wordfence.com/threat-intel/vulnerabilities/search?query={cve_safe}" target="_blank" rel="noopener">'
+        + f'wordfence.com — Threat Intelligence</a>'
+        + f' — <span class="l-es">análisis de Wordfence</span><span class="l-en">Wordfence analysis</span></li>'
+        + plugin_line
+        + poc_line
+        + f'<li><a href="https://owasp.org/www-community/attacks/SQL_Injection" target="_blank" rel="noopener">'
+        + f'OWASP: SQL Injection</a></li>'
+        + f'<li><a href="https://cwe.mitre.org/data/definitions/89.html" target="_blank" rel="noopener">'
+        + f'CWE-89: Improper Neutralization of Special Elements used in an SQL Command</a></li>'
+        + published_line
+        + affected_line
+        + f'</ul>'
+        + cvss_table
+        + f'</section>')
 
     # ── Sidebar de navegacion ────────────────────────────────────────────────
     sidenav_links = []
-    sidenav_links.append(f'<a href="#sec-summary" class="sidenav-link">'
-                         + ("Resumen" if es else "Summary") + '</a>')
+    def _slink(href, es_lbl, en_lbl, extra_cls=""):
+        cls = f'sidenav-link{" " + extra_cls if extra_cls else ""}'
+        return (f'<a href="{href}" class="{cls}">'
+                f'<span class="l-es">{es_lbl}</span>'
+                f'<span class="l-en">{en_lbl}</span>'
+                f'</a>')
+
+    sidenav_links.append(_slink("#sec-summary", "01 Resumen", "01 Summary"))
     if verified:
-        sidenav_links.append('<a href="#sec-proof" class="sidenav-link sidenav-verified">'
-                             '&#9733; ' + ("Prueba" if es else "Proof") + '</a>')
+        sidenav_links.append(_slink("#sec-proof", "02 ★ Prueba", "02 ★ Proof", "sidenav-verified"))
     if pasos:
-        sidenav_links.append(f'<a href="#sec-chain" class="sidenav-link">'
-                             + ("Cadena de ataque" if es else "Attack chain") + '</a>')
+        sidenav_links.append(_slink("#sec-chain", "03 Cadena", "03 Chain"))
     if _tc_items:
-        sidenav_links.append(f'<a href="#sec-tech" class="sidenav-link">'
-                             + ("Análisis técnico" if es else "Tech analysis") + '</a>')
+        sidenav_links.append(_slink("#sec-tech", "04 Técnico", "04 Technical"))
     if _all_shots:
-        sidenav_links.append(f'<a href="#sec-shots" class="sidenav-link">'
-                             + ("Capturas" if es else "Screenshots") + '</a>')
+        sidenav_links.append(_slink("#sec-shots", "05 Capturas", "05 Screenshots"))
     if blockers:
-        sidenav_links.append(f'<a href="#sec-blockers" class="sidenav-link sidenav-warn">'
-                             + ("Bloqueos" if es else "Blockers") + '</a>')
+        sidenav_links.append(_slink("#sec-blockers", "! Bloqueos", "! Blockers", "sidenav-warn"))
     if script:
-        sidenav_links.append(f'<a href="#sec-poc" class="sidenav-link">PoC</a>')
-    sidenav_links.append(f'<a href="#sec-report" class="sidenav-link">'
-                         + ("Informe" if es else "Report") + '</a>')
+        sidenav_links.append(_slink("#sec-poc", "06 PoC", "06 PoC"))
+    sidenav_links.append(_slink("#sec-report", "07 Informe", "07 Report"))
+    sidenav_links.append(_slink("#sec-remediation", "08 Remed.", "08 Remediation"))
+    sidenav_links.append(_slink("#sec-refs", "09 Refs", "09 References"))
 
     sidenav = (
         f'<nav class="sidenav">'
-        f'<div class="sidenav-title">{"SECCIONES" if es else "SECTIONS"}</div>'
+        f'<div class="sidenav-title"><span class="l-es">SECCIONES</span><span class="l-en">SECTIONS</span></div>'
         + "".join(sidenav_links)
         + '</nav>')
 
     # ── CSS ───────────────────────────────────────────────────────────────────
     css = """<style>
-:root{--bg:#ffffff;--surf:#f6f8fa;--fg:#1f2328;--mut:#57606a;--brd:#d0d7de;
-  --acc:#0969da;--red:#cf222e;--grn:#1a7f37;--yel:#9a6700;
-  --code-bg:#f6f8fa;--code-fg:#24292f;--proof-bg:#f0fdf4;--proof-brd:#16a34a;
-  --blocker-bg:#fffbeb;--blocker-brd:#d97706;color-scheme:light}
-@media(prefers-color-scheme:dark){:root:not([data-theme=light]){
-  --bg:#0d1117;--surf:#161b22;--fg:#e6edf3;--mut:#8b949e;--brd:#30363d;
-  --acc:#58a6ff;--red:#f85149;--grn:#3fb950;--yel:#d29922;
-  --code-bg:#161b22;--code-fg:#e6edf3;--proof-bg:#0d2818;--proof-brd:#3fb950;
-  --blocker-bg:#1c1700;--blocker-brd:#d29922;color-scheme:dark}}
-:root[data-theme=dark]{--bg:#0d1117;--surf:#161b22;--fg:#e6edf3;--mut:#8b949e;
-  --brd:#30363d;--acc:#58a6ff;--red:#f85149;--grn:#3fb950;--yel:#d29922;
+:root{--bg:#0d1117;--surf:#161b22;--surf2:#1c2128;--surf3:#21262d;
+  --brd:#30363d;--fg:#e6edf3;--mut:#8b949e;--acc:#58a6ff;
+  --red:#f85149;--grn:#3fb950;--yel:#d29922;--purple:#bc8cff;
+  --mono:'IBM Plex Mono','Courier New',monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
   --code-bg:#161b22;--code-fg:#e6edf3;--proof-bg:#0d2818;--proof-brd:#3fb950;
   --blocker-bg:#1c1700;--blocker-brd:#d29922;color-scheme:dark}
+@media(prefers-color-scheme:light){:root:not([data-theme=dark]){
+  --bg:#ffffff;--surf:#f6f8fa;--surf2:#eaf0f6;--surf3:#dde3ea;
+  --brd:#d0d7de;--fg:#1f2328;--mut:#57606a;--acc:#0969da;
+  --red:#cf222e;--grn:#1a7f37;--yel:#9a6700;--purple:#8250df;
+  --code-bg:#f6f8fa;--code-fg:#24292f;--proof-bg:#f0fdf4;--proof-brd:#16a34a;
+  --blocker-bg:#fffbeb;--blocker-brd:#d97706;color-scheme:light}}
+:root[data-theme=light]{--bg:#ffffff;--surf:#f6f8fa;--surf2:#eaf0f6;--surf3:#dde3ea;
+  --brd:#d0d7de;--fg:#1f2328;--mut:#57606a;--acc:#0969da;
+  --red:#cf222e;--grn:#1a7f37;--yel:#9a6700;--purple:#8250df;
+  --code-bg:#f6f8fa;--code-fg:#24292f;--proof-bg:#f0fdf4;--proof-brd:#16a34a;
+  --blocker-bg:#fffbeb;--blocker-brd:#d97706;color-scheme:light}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);
   font-family:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
   font-size:14px;line-height:1.6}
 a{color:var(--acc)}
 code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia Code',monospace}
-/* ── Topbar ── */
-.topbar{position:sticky;top:0;z-index:100;background:var(--surf);
+/* ── Print bar (sticky top) ── */
+.print-bar{position:sticky;top:0;z-index:200;background:rgba(13,17,23,.88);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
   border-bottom:1px solid var(--brd);display:flex;align-items:center;
-  gap:12px;padding:10px 24px}
-.tb-brand{font-weight:800;font-size:15px;letter-spacing:.3px}
-.tb-brand .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
-  background:var(--acc);margin-right:7px;vertical-align:middle}
-.tb-cve{font-family:ui-monospace,monospace;font-size:11px;background:var(--code-bg);
+  gap:10px;padding:8px 24px}
+.pb-brand{font-weight:800;font-size:14px;letter-spacing:.3px;font-family:var(--sans)}
+.pb-brand .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
+  background:var(--acc);margin-right:6px;vertical-align:middle}
+.pb-cve{font-family:var(--mono);font-size:11px;background:var(--surf2);
   border:1px solid var(--brd);border-radius:4px;padding:2px 7px;color:var(--acc)}
-.tb-spacer{flex:1}
-.tb-meta{color:var(--mut);font-size:11px}
-.tb-toggle{background:var(--surf);border:1px solid var(--brd);color:var(--fg);
-  border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;font-family:inherit}
-.tb-toggle:hover{border-color:var(--acc);color:var(--acc)}
-/* ── Banner ── */
+.pb-spacer{flex:1}
+.pb-meta{color:var(--mut);font-size:11px}
+.print-btn{background:var(--acc);color:#fff;border:none;border-radius:6px;
+  padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;
+  font-family:var(--sans);display:flex;align-items:center;gap:5px}
+.print-btn:hover{opacity:.85}
+.html-dl-btn{background:var(--surf2);color:var(--grn);border:1px solid rgba(63,185,80,.4);
+  border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;
+  font-family:var(--sans);display:flex;align-items:center;gap:5px;text-decoration:none}
+.html-dl-btn:hover{background:rgba(63,185,80,.12);border-color:var(--grn)}
+.pb-toggle{background:var(--surf2);border:1px solid var(--brd);color:var(--fg);
+  border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;font-family:var(--sans)}
+.pb-toggle:hover{border-color:var(--acc);color:var(--acc)}
+/* ── Confidential banner ── */
 .conf-banner{background:var(--red);color:#fff;font-size:11px;font-weight:700;
   text-align:center;padding:5px 20px;letter-spacing:.08em}
-/* ── Hero ── */
-.hero{background:var(--surf);border-bottom:1px solid var(--brd);padding:36px 24px 32px}
-.hero-inner{max-width:1180px;margin:0 auto;display:flex;align-items:flex-start;gap:28px}
-.hero-left{flex:1;min-width:0}
-.hero-right{flex-shrink:0}
-.hero-eyebrow{font-size:11px;font-weight:600;letter-spacing:.12em;color:var(--mut);
-  text-transform:uppercase;margin-bottom:14px}
-.hero-cve{font-family:ui-monospace,'JetBrains Mono',monospace;font-size:44px;font-weight:800;
-  color:var(--acc);letter-spacing:-.8px;margin-bottom:12px;line-height:1.1}
-.hero-desc{font-size:15px;font-weight:500;color:var(--fg);margin-bottom:18px;
-  max-width:780px;line-height:1.5}
+/* ── Cover ── */
+.cover{background:var(--surf);border-bottom:2px solid var(--brd);padding:52px 24px 44px;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 39px,var(--brd) 39px,var(--brd) 40px),
+    repeating-linear-gradient(90deg,transparent,transparent 39px,var(--brd) 39px,var(--brd) 40px);
+  background-size:40px 40px;position:relative}
+.cover::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 60% at 55% 50%,rgba(13,17,23,.0) 0%,rgba(13,17,23,.92) 100%);
+  pointer-events:none}
+.cover-inner{max-width:1100px;margin:0 auto;position:relative;
+  display:flex;align-items:flex-start;gap:32px}
+.cover-left{flex:1;min-width:0}
+.cover-right{flex-shrink:0}
+.cover-eyebrow{font-size:11px;font-weight:600;letter-spacing:.14em;color:var(--mut);
+  text-transform:uppercase;margin-bottom:14px;font-family:var(--sans)}
+.cover-cve{font-family:var(--mono);font-size:38px;font-weight:700;
+  color:var(--acc);letter-spacing:-.5px;margin-bottom:12px;line-height:1.1}
+.cover-title{font-size:16px;font-weight:500;color:var(--fg);margin-bottom:20px;
+  max-width:760px;line-height:1.5;font-family:var(--sans)}
 .cvss-pill{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
-  width:96px;height:96px;border-radius:50%;border:4px solid;text-decoration:none}
-.cvss-pill-score{font-size:28px;font-weight:900;line-height:1}
-.cvss-pill-sev{font-size:10px;font-weight:700;letter-spacing:.08em;margin-top:2px}
+  width:88px;height:88px;border-radius:50%;border:4px solid;text-decoration:none}
+.cvss-pill-score{font-size:26px;font-weight:900;line-height:1;font-family:var(--mono)}
+.cvss-pill-sev{font-size:10px;font-weight:700;letter-spacing:.08em;margin-top:2px;font-family:var(--sans)}
 /* ── Badges ── */
 .badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:4px}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;
+  letter-spacing:.03em;padding:4px 10px;border-radius:20px;white-space:nowrap;font-family:var(--sans)}
+.badge-outline{background:transparent;border:1.5px solid var(--brd);color:var(--mut)}
+.badge-gray{background:var(--surf2);border:1.5px solid var(--brd);color:var(--fg)}
+.badge-green{background:rgba(63,185,80,.18);border:1.5px solid rgba(63,185,80,.5);color:var(--grn)}
+.badge-red{background:rgba(248,81,73,.15);border:1.5px solid rgba(248,81,73,.4);color:var(--red)}
+.badge-blue{background:rgba(88,166,255,.15);border:1.5px solid rgba(88,166,255,.4);color:var(--acc)}
+.badge-warn{background:rgba(210,153,34,.15);border:1.5px solid rgba(210,153,34,.4);color:var(--yel)}
+/* keep old names for backwards compat */
 .ibadge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;
-  letter-spacing:.03em;padding:4px 10px;border-radius:5px;white-space:nowrap}
+  letter-spacing:.03em;padding:4px 10px;border-radius:20px;white-space:nowrap;font-family:var(--sans)}
 .ibadge-outline{background:transparent;border:1.5px solid var(--brd);color:var(--mut)}
-.ibadge-gray{background:var(--surf);border:1.5px solid var(--brd);color:var(--fg)}
-.ibadge-verified{background:#166534;color:#fff}
-.ibadge-unconf{background:#92400e;color:#fff}
+.ibadge-gray{background:var(--surf2);border:1.5px solid var(--brd);color:var(--fg)}
+.ibadge-verified{background:rgba(63,185,80,.18);border:1.5px solid rgba(63,185,80,.5);color:var(--grn)}
+.ibadge-unconf{background:rgba(210,153,34,.15);border:1.5px solid rgba(210,153,34,.4);color:var(--yel)}
 /* ── Layout principal: sidebar + contenido ── */
-.page-wrap{max-width:1180px;margin:0 auto;padding:32px 24px 80px;
-  display:grid;grid-template-columns:200px 1fr;gap:32px;align-items:start}
+.page-wrap{max-width:1100px;margin:0 auto;padding:40px 24px 80px;
+  display:grid;grid-template-columns:200px 1fr;gap:36px;align-items:start}
 /* ── Sidebar ── */
-.sidenav{position:sticky;top:60px;background:var(--surf);border:1px solid var(--brd);
+.sidenav{position:sticky;top:52px;background:var(--surf);border:1px solid var(--brd);
   border-radius:10px;padding:14px 0;overflow:hidden}
 .sidenav-title{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--mut);padding:0 16px 10px;border-bottom:1px solid var(--brd);margin-bottom:6px}
+  color:var(--mut);padding:0 16px 10px;border-bottom:1px solid var(--brd);margin-bottom:6px;font-family:var(--sans)}
 .sidenav-link{display:block;padding:6px 16px;font-size:13px;color:var(--fg);
-  text-decoration:none;border-left:3px solid transparent;transition:all .15s}
+  text-decoration:none;border-left:3px solid transparent;transition:all .15s;font-family:var(--sans)}
 .sidenav-link:hover{background:var(--bg);color:var(--acc);border-left-color:var(--acc)}
-.sidenav-verified{color:#166534;font-weight:600}
+.sidenav-verified{color:var(--grn);font-weight:600}
 .sidenav-warn{color:var(--yel)}
-/* ── Seccion header ── */
-.section-hd{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--mut);padding-bottom:10px;border-bottom:1px solid var(--brd);margin-bottom:18px}
-.proof-hd{color:#166534;border-bottom-color:#bbf7d0}
-/* ── Grid de metadata ── */
+/* ── Section heading ── */
+.section-heading{display:flex;align-items:center;gap:10px;margin-bottom:20px;
+  padding-bottom:12px;border-bottom:1px solid var(--brd)}
+.section-heading svg{flex-shrink:0;color:var(--acc)}
+.section-heading-text{display:flex;flex-direction:column;gap:1px}
+.section-num{font-size:10px;font-weight:700;color:var(--mut);letter-spacing:.12em;
+  font-family:var(--mono);text-transform:uppercase}
+.section-title{font-size:14px;font-weight:700;color:var(--fg);letter-spacing:.02em;
+  font-family:var(--sans);text-transform:uppercase}
+/* legacy .section-hd still used in some sections */
+.section-hd{display:flex;align-items:center;gap:8px;padding-bottom:10px;
+  border-bottom:1px solid var(--brd);margin-bottom:18px;
+  font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--mut);font-family:var(--sans)}
+.sec-num{font-size:9px;font-weight:800;background:var(--acc);color:#fff;
+  border-radius:3px;padding:1px 5px;letter-spacing:.08em;flex-shrink:0;font-family:var(--mono)}
+.proof-hd{color:var(--grn);border-bottom-color:rgba(63,185,80,.4)}
+.proof-heading{border-bottom-color:rgba(63,185,80,.4)}
+.proof-heading svg{color:var(--grn)}
+.proof-heading .section-num{color:var(--grn)}
+.proof-heading .section-title{color:var(--grn)}
+/* ── Info grid (metadata cards) ── */
+.info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
+  gap:12px;margin-bottom:4px}
+.info-card{background:var(--surf2);border:1px solid var(--brd);border-radius:10px;
+  padding:14px 16px;transition:border-color .15s}
+.info-card:hover{border-color:var(--acc)}
+.info-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--mut);margin-bottom:6px;font-family:var(--sans)}
+.info-val{font-size:14px;font-weight:500;color:var(--fg);font-family:var(--sans)}
+/* legacy .mc classes */
 .mc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
   gap:12px;margin-bottom:4px}
-.mc{background:var(--surf);border:1px solid var(--brd);border-radius:8px;padding:14px 16px}
+.mc{background:var(--surf2);border:1px solid var(--brd);border-radius:10px;padding:14px 16px}
 .mc-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--mut);margin-bottom:6px}
-.mc-val{font-size:14px;font-weight:500;color:var(--fg)}
+  color:var(--mut);margin-bottom:6px;font-family:var(--sans)}
+.mc-val{font-size:14px;font-weight:500;color:var(--fg);font-family:var(--sans)}
 /* ── Tarjeta de prueba de explotacion ── */
 .proof-card{background:var(--proof-bg);border:2px solid var(--proof-brd);
   border-radius:12px;overflow:hidden;margin-top:4px}
@@ -2808,14 +3177,23 @@ code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia
 .blocker-item{padding:10px 16px;font-size:13px;color:var(--fg);
   border-bottom:1px solid var(--blocker-brd)}
 .blocker-item:last-child{border-bottom:none}
-/* ── PoC inline ── */
+/* ── PoC inline / code-wrap ── */
 .dlbtn{display:inline-flex;align-items:center;gap:7px;background:var(--acc);color:#fff;
   border-radius:8px;padding:9px 18px;text-decoration:none;font-weight:600;
   font-size:13px;margin-bottom:14px}
 .dlbtn:hover{opacity:.85}
-.poc-inline{background:#0d1117;color:#e6edf3;border:1px solid var(--brd);
-  border-radius:8px;padding:16px;overflow:auto;font-size:12px;line-height:1.5;
-  white-space:pre;max-height:380px}
+.code-wrap{background:var(--surf2);border:1px solid var(--brd);border-radius:10px;
+  overflow:hidden;margin-bottom:4px}
+.code-header{background:var(--surf3);border-bottom:1px solid var(--brd);
+  padding:7px 14px;display:flex;align-items:center;gap:7px}
+.mac-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.mac-dot-r{background:#ff5f56}.mac-dot-y{background:#ffbd2e}.mac-dot-g{background:#27c93f}
+.code-fname{font-family:var(--mono);font-size:11px;color:var(--mut);margin-left:4px}
+.code-body{padding:14px 16px;overflow-x:auto;font-family:var(--mono);
+  font-size:12px;line-height:1.6;color:var(--code-fg);background:var(--surf2)}
+.poc-inline{background:var(--surf2);color:#e6edf3;border:1px solid var(--brd);
+  border-radius:10px;padding:16px;overflow:auto;font-size:12px;line-height:1.5;
+  white-space:pre;max-height:420px;font-family:var(--mono)}
 /* ── Contenido markdown ── */
 .md-body h3{font-size:17px;font-weight:700;margin:26px 0 10px;
   padding-bottom:7px;border-bottom:2px solid var(--brd)}
@@ -2850,39 +3228,76 @@ code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia
   .sidenav-title{display:none}
   .sidenav-link{padding:4px 10px;border-left:none;border:1px solid var(--brd);
     border-radius:5px;font-size:12px}
-  .hero-inner{flex-direction:column;gap:16px}
-  .hero-cve{font-size:30px}
+  .cover-inner{flex-direction:column;gap:16px}
+  .cover-cve{font-size:28px}
   .proof-cols{grid-template-columns:1fr}
   .proof-col{border-right:none;border-bottom:1px solid var(--brd)}
   .proof-col:last-child{border-bottom:none}}
-/* ── Print button ── */
-.tb-print{background:var(--acc);color:#fff;border:none;border-radius:6px;
-  padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;
-  font-family:inherit;display:flex;align-items:center;gap:5px}
-.tb-print:hover{opacity:.85}
-/* ── Section numbers + icons ── */
-.section-hd{display:flex;align-items:center;gap:8px}
-.sec-num{font-size:9px;font-weight:800;background:var(--acc);color:#fff;
-  border-radius:3px;padding:1px 5px;letter-spacing:.08em;flex-shrink:0}
-/* ── Screenshot step cards ── */
-.shot-card{background:var(--surf);border:1px solid var(--brd);border-radius:10px;overflow:hidden}
-.shot-header{display:flex;align-items:center;gap:10px;padding:10px 14px;
-  background:var(--code-bg);border-bottom:1px solid var(--brd)}
-.shot-num-circle{width:26px;height:26px;border-radius:50%;background:var(--acc);color:#fff;
-  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;
+/* ── Language toggle ── */
+[data-lang=en] .l-es,.l-es{display:inline}
+[data-lang=es] .l-es{display:inline}
+[data-lang=en] .l-en{display:inline}
+[data-lang=es] .l-en,.l-en{display:none}
+[data-lang=en] .l-es{display:none}
+/* ── Step cards (screenshots) ── */
+.steps-grid{display:flex;flex-direction:column;gap:20px}
+.step-card{background:var(--surf2);border:1px solid var(--brd);border-radius:12px;overflow:hidden}
+.step-header{display:flex;align-items:center;gap:10px;padding:10px 16px;
+  background:var(--surf3);border-bottom:1px solid var(--brd)}
+.step-num{width:28px;height:28px;border-radius:50%;background:var(--acc);color:#fff;
+  font-family:var(--mono);font-size:11px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.step-num.ok{background:var(--grn)}
+.step-num.warn{background:var(--yel)}
+.step-num.bad{background:var(--red)}
+.step-title{font-size:13px;font-weight:600;color:var(--fg);flex:1;line-height:1.3;font-family:var(--sans)}
+.step-url{font-family:var(--mono);font-size:10px;color:var(--mut);
+  background:var(--surf2);border:1px solid var(--brd);border-radius:4px;
+  padding:2px 7px;flex-shrink:0;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step-screenshot{width:100%;display:block}
+.step-cmd{margin:10px 16px 16px;background:#0d1117;border:1px solid var(--brd);
+  border-radius:8px;padding:10px 14px;font-family:var(--mono);
+  font-size:11.5px;color:#3fb950;overflow-x:auto;white-space:pre;line-height:1.6}
+.step-cmd .sh-prompt{color:var(--mut);user-select:none}
+.step-cmd .sh-comment{color:var(--mut)}
+/* legacy shot-* names */
+.shot-card{background:var(--surf2);border:1px solid var(--brd);border-radius:12px;overflow:hidden}
+.shot-header{display:flex;align-items:center;gap:10px;padding:10px 16px;
+  background:var(--surf3);border-bottom:1px solid var(--brd)}
+.shot-num-circle{width:28px;height:28px;border-radius:50%;background:var(--acc);color:#fff;
+  font-family:var(--mono);font-size:11px;font-weight:700;
   display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .shot-num-circle.ok{background:var(--grn)}
 .shot-num-circle.bad{background:var(--red)}
-.shot-header-title{font-size:13px;font-weight:600;color:var(--fg);flex:1;line-height:1.3}
-.shot-url-pill{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--mut);
-  background:var(--surf);border:1px solid var(--brd);border-radius:4px;
+.shot-header-title{font-size:13px;font-weight:600;color:var(--fg);flex:1;line-height:1.3;font-family:var(--sans)}
+.shot-url-pill{font-family:var(--mono);font-size:10px;color:var(--mut);
+  background:var(--surf2);border:1px solid var(--brd);border-radius:4px;
   padding:2px 7px;flex-shrink:0;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.shot-img{width:100%;display:block;border-top:none}
-.shot-cmd{margin:10px 14px 14px;background:var(--code-bg);border:1px solid var(--brd);
-  border-radius:6px;padding:9px 12px;font-family:'IBM Plex Mono',monospace;
+.shot-img{width:100%;display:block}
+.shot-cmd{margin:10px 16px 16px;background:#0d1117;border:1px solid var(--brd);
+  border-radius:8px;padding:10px 14px;font-family:var(--mono);
   font-size:11.5px;color:#3fb950;overflow-x:auto;white-space:pre;line-height:1.6}
 .shot-cmd .sh-prompt{color:var(--mut);user-select:none}
 .shot-cmd .sh-comment{color:var(--mut)}
+/* ── Evidence table ── */
+.evtable-wrap{border:1px solid var(--brd);border-radius:10px;overflow:hidden;margin-bottom:4px}
+.evtable-banner{background:var(--surf3);border-bottom:1px solid var(--brd);
+  padding:8px 16px;font-size:11px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--mut);font-family:var(--sans);
+  display:flex;align-items:center;gap:8px}
+.evtable{width:100%;border-collapse:collapse;font-size:13px}
+.evtable th{background:var(--surf2);border-bottom:1px solid var(--brd);padding:8px 14px;
+  text-align:left;font-weight:700;font-size:11px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--mut);font-family:var(--sans)}
+.evtable td{border-bottom:1px solid var(--brd);padding:9px 14px;vertical-align:top;
+  font-family:var(--mono);font-size:12px}
+.evtable tr:last-child td{border-bottom:none}
+.evtable tr:hover td{background:var(--surf3)}
+.ev-ok{color:var(--grn);font-weight:700}
+.ev-bad{color:var(--red);font-weight:700}
+.ev-label{color:var(--fg);font-weight:500;font-family:var(--sans);font-size:12px}
+.evtable-note{padding:10px 16px;font-size:12px;color:var(--mut);font-style:italic;
+  border-top:1px solid var(--brd);font-family:var(--sans)}
 /* ── Timing evidence pills ── */
 .time-fast{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;
   font-weight:600;padding:1px 7px;border-radius:4px;
@@ -2890,27 +3305,89 @@ code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia
 .time-slow{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;
   font-weight:600;padding:1px 7px;border-radius:4px;
   background:rgba(207,34,46,.15);color:var(--red);border:1px solid rgba(207,34,46,.3)}
+/* ── Remediation ── */
+.rem-list{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+.rem-item{display:flex;gap:14px;background:var(--surf);border:1px solid var(--brd);border-radius:8px;padding:14px 16px;align-items:flex-start}
+.rem-num{min-width:28px;height:28px;border-radius:50%;background:var(--acc);color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.rem-body{font-size:13px;line-height:1.6;color:var(--fg)}
+/* ── References ── */
+.refs-list{margin-top:16px;padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:13px;line-height:1.6}
+.refs-list li{background:var(--surf);border:1px solid var(--brd);border-radius:6px;padding:10px 14px;list-style:none;margin:0}
+.refs-list a{color:var(--acc);word-break:break-all}
+.cvss-breakdown{margin-top:20px;background:var(--surf);border:1px solid var(--brd);border-radius:8px;overflow:hidden}
+.cvss-title{padding:10px 16px;font-weight:700;font-size:12px;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--brd);color:var(--mut)}
+.cvss-table{width:100%;border-collapse:collapse}
+.cvss-table td{padding:7px 14px;font-size:12px;border-bottom:1px solid var(--brd)}
+.cvss-table tr:last-child td{border-bottom:none}
+.cvss-metric{color:var(--mut);width:40%}
+.cvss-val{font-family:var(--mono);color:var(--acc);width:20%}
+.cvss-desc{color:var(--fg)}
+.cvss-vector-raw{padding:8px 16px;font-size:11px;color:var(--mut);border-top:1px solid var(--brd)}
+.cvss-vector-raw code{color:var(--fg);font-size:11px}
 @media print{
-  .topbar,.conf-banner,.sidenav,.tb-print{display:none!important}
+  .print-bar,.conf-banner,.sidenav{display:none!important}
   .page-wrap{display:block}
   body{background:#fff!important;color:#000!important;font-size:11pt}
-  .hero{background:#f6f8fa!important}
+  .cover{background:#f6f8fa!important;background-image:none!important}
+  .cover::before{display:none}
   pre,code{background:#f4f4f4!important;color:#111!important}
-  .shot-cmd{background:#f4f4f4!important;color:#111!important}
+  .shot-cmd,.step-cmd{background:#f4f4f4!important;color:#111!important}
   .poc-inline{background:#f4f4f4!important;color:#111!important;max-height:none}
   section{break-inside:avoid}
-  .shot-card{break-inside:avoid}
+  .shot-card,.step-card{break-inside:avoid;page-break-inside:avoid}
+  .step-screenshot{max-width:100%!important;width:100%!important;display:block!important;page-break-inside:avoid}
   .proof-card{break-inside:avoid}
-  a{color:inherit;text-decoration:none}}
+  img{max-width:100%!important;display:block!important}
+  .rem-item,.refs-list li{background:#f6f8fa!important;border-color:#d0d7de!important}
+  a{color:#0969da;text-decoration:underline}}
 </style>"""
 
     # ── JS ────────────────────────────────────────────────────────────────────
     js = """<script>
-(function(){var t=localStorage.getItem('inv-theme');
-if(t)document.documentElement.setAttribute('data-theme',t)})();
-function _toggleTheme(){var r=document.documentElement;
-var n=r.getAttribute('data-theme')==='dark'?'light':'dark';
-r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
+(function(){
+  var t=localStorage.getItem('inv-theme');
+  if(t)document.documentElement.setAttribute('data-theme',t);
+  var l=localStorage.getItem('inv-lang');
+  if(l)document.documentElement.setAttribute('data-lang',l);
+})();
+function _toggleTheme(){
+  var r=document.documentElement;
+  var cur=r.getAttribute('data-theme')||'dark';
+  var n=cur==='light'?'dark':'light';
+  r.setAttribute('data-theme',n);
+  localStorage.setItem('inv-theme',n);
+  var btn=document.getElementById('_themeBtn');
+  if(btn)btn.textContent=n==='dark'?'☀ Light':'☾ Dark';
+}
+function _toggleLang(){
+  var r=document.documentElement;
+  var cur=r.getAttribute('data-lang')||'es';
+  var n=cur==='es'?'en':'es';
+  r.setAttribute('data-lang',n);
+  localStorage.setItem('inv-lang',n);
+  var btn=document.getElementById('_langBtn');
+  if(btn)btn.textContent=n==='es'?'EN':'ES';
+}
+function _downloadHTML(){
+  var html=document.documentElement.outerHTML;
+  var blob=new Blob([html],{type:'text/html;charset=utf-8'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  var cve=document.title.split(' ')[0]||'report';
+  a.href=url;a.download=cve+'_report.html';
+  document.body.appendChild(a);a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},8000);
+}
+document.addEventListener('DOMContentLoaded',function(){
+  var r=document.documentElement;
+  var t=r.getAttribute('data-theme')||'dark';
+  var l=r.getAttribute('data-lang')||'es';
+  var tb=document.getElementById('_themeBtn');
+  var lb=document.getElementById('_langBtn');
+  if(tb)tb.textContent=t==='dark'?'☀ Light':'☾ Dark';
+  if(lb)lb.textContent=l==='es'?'EN':'ES';
+});
 </script>"""
 
     # ── Ensamblado ────────────────────────────────────────────────────────────
@@ -2941,38 +3418,52 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
     )
 
     topbar = (
-        '<div class="topbar">'
-        '<div class="tb-brand"><span class="dot"></span>bin<span style="color:#f5a623">0</span>racle</div>'
-        f'<span class="tb-cve">{_esc(cve or "")}</span>'
-        '<div class="tb-spacer"></div>'
-        f'<span class="tb-meta">{_esc(generated_short)}</span>'
-        '<button class="tb-print" onclick="window.print()" title="Guardar como PDF">'
-        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<div class="print-bar">'
+        '<div class="pb-brand"><span class="dot"></span>bin<span style="color:#f5a623">0</span>racle</div>'
+        f'<span class="pb-cve">{_esc(cve or "")}</span>'
+        '<div class="pb-spacer"></div>'
+        f'<span class="pb-meta">{_esc(generated_short)}</span>'
+        '<button class="html-dl-btn" onclick="_downloadHTML()" title="Descargar HTML con capturas">'
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<polyline points="7 10 12 15 17 10"/>'
+        '<line x1="12" y1="15" x2="12" y2="3"/>'
+        '</svg>'
+        '<span class="l-es">Descargar</span><span class="l-en">Download</span></button>'
+        '<button class="print-btn" onclick="window.print()" title="Guardar como PDF">'
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
         '<polyline points="6 9 6 2 18 2 18 9"/>'
         '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>'
         '<rect x="6" y="14" width="12" height="8"/>'
         '</svg>'
         'PDF</button>'
-        '<button class="tb-toggle" onclick="_toggleTheme()">&#9711; Tema</button>'
+        '<button id="_langBtn" class="pb-toggle" onclick="_toggleLang()">EN</button>'
+        '<button id="_themeBtn" class="pb-toggle" onclick="_toggleTheme()">☀ Light</button>'
         '</div>')
 
     conf_banner = f'<div class="conf-banner">{conf_txt}</div>'
 
+    # Bilingual eyebrow
+    eyebrow_es = "INFORME DE VULNERABILIDAD — bin0racle · " + generated_long.upper()
+    eyebrow_en = "VULNERABILITY REPORT — bin0racle · " + generated_long.upper()
+    eyebrow_html = (f'<span class="l-es">{_esc(eyebrow_es)}</span>'
+                    f'<span class="l-en">{_esc(eyebrow_en)}</span>')
+
     hero = (
-        '<div class="hero">'
-        '<div class="hero-inner">'
-        '<div class="hero-left">'
-        f'<div class="hero-eyebrow">{heading_eyebrow}</div>'
-        f'<div class="hero-cve">{_esc(cve or "")}</div>'
-        + (f'<div class="hero-desc">{_esc(description)}</div>' if description else "")
+        '<div class="cover">'
+        '<div class="cover-inner">'
+        '<div class="cover-left">'
+        f'<div class="cover-eyebrow">{eyebrow_html}</div>'
+        f'<div class="cover-cve">{_esc(cve or "")}</div>'
+        + (f'<div class="cover-title">{_esc(description)}</div>' if description else "")
         + (f'<div class="badges">{badges_html}</div>' if badges_html else "")
         + '</div>'
-        + (f'<div class="hero-right">{cvss_pill}</div>' if cvss_pill else "")
+        + (f'<div class="cover-right">{cvss_pill}</div>' if cvss_pill else "")
         + '</div></div>')
 
     summary_section = (
         f'<section id="sec-summary">'
-        f'<div class="section-hd"><span class="sec-num">01</span>{"RESUMEN EJECUTIVO" if es else "EXECUTIVE SUMMARY"}</div>'
+        + _sec_heading("01", "RESUMEN EJECUTIVO", "EXECUTIVE SUMMARY", "summary")
         + grid_html
         + '</section>')
 
@@ -2984,7 +3475,9 @@ r.setAttribute('data-theme',n);localStorage.setItem('inv-theme',n)}
         + shots_section
         + blockers_section
         + poc_section
-        + full_section)
+        + full_section
+        + remediation_section
+        + references_section)
 
     body = (
         topbar + conf_banner + hero

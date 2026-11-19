@@ -233,6 +233,12 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/result/"):
             job_id = path.split("/")[-1]
             self._json_result(job_id)
+        elif path.startswith("/api/export-html/"):
+            job_id = path.split("/")[-1]
+            self._export_html(job_id)
+        elif path.startswith("/api/export-pdf/"):
+            job_id = path.split("/")[-1]
+            self._export_pdf(job_id)
         elif path.startswith("/api/screenshot/"):
             b64 = path.split("/")[-1]
             self._serve_screenshot(b64)
@@ -551,6 +557,199 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(500, {"error": f"PDF generation failed: {exc}"})
 
+    def _export_html(self, job_id: str):
+        """Generate a standalone HTML report for the given job and serve as download."""
+        try:
+            from binoracle.report.html import render_investigation_page
+        except ImportError:
+            self._send_json(500, {"error": "report module unavailable"}); return
+
+        # Try live job first
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+
+        inv = None
+        result = None
+        if job and job.status == "done":
+            inv  = getattr(job, "inv", None)
+            result = job.result or {}
+        else:
+            try:
+                path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+                with open(path, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                result = rec.get("result", rec)
+            except Exception:
+                self._send_json(404, {"error": "job not found"}); return
+
+        cve_id = (result or {}).get("cve_id", job_id)
+
+        # If no live inv, build a minimal proxy from result dict
+        if inv is None and result:
+            class _Inv:
+                pass
+            inv = _Inv()
+            inv.cvss_score     = result.get("cvss_score")
+            inv.cvss_severity  = result.get("cvss_severity", "")
+            inv.cvss_vector    = result.get("cvss_vector", "")
+            inv.description    = result.get("description", "")
+            inv.published      = result.get("published", "")
+            inv.vuln_class     = result.get("vuln_class", "")
+            inv.verified       = result.get("verified", False)
+            inv.verified_detail= result.get("detail", "")
+            inv.verified_evidence = result.get("verified_evidence") or {}
+            inv.attempt_evidence  = result.get("evidence") or {}
+            inv.dynamic_verify = {"attempted": bool(result.get("verified_evidence"))}
+            inv.poc_source_used = result.get("poc_source", "")
+            inv.llm_notes      = result.get("llm_notes") or {}
+            inv.blockers       = result.get("blockers") or []
+
+        # Get PoC script if available
+        script = ""
+        poc_kind = "http"
+        if inv is not None:
+            script   = str(getattr(inv, "exploit_script", "") or
+                           getattr(inv, "poc_script", "") or
+                           (result or {}).get("poc_script", "") or "")
+            poc_kind = str(getattr(inv, "poc_kind", "http") or "http")
+
+        # Get markdown from logs or detail
+        markdown = str(getattr(inv, "markdown_report", "") or
+                       (result or {}).get("markdown_report", "") or
+                       (result or {}).get("detail", "") or "")
+
+        try:
+            html = render_investigation_page(
+                markdown=markdown,
+                script=script,
+                cve=cve_id,
+                lang="es",
+                poc_kind=poc_kind,
+                inv=inv,
+            )
+        except Exception as exc:
+            self._send_json(500, {"error": f"report generation failed: {exc}"}); return
+
+        safe_id = cve_id.replace("/", "_").replace(" ", "_")
+        filename = f"{safe_id}_report.html"
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _export_pdf(self, job_id: str):
+        """Generate a PDF report using Playwright (headless Chromium print-to-PDF)."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self._send_json(503, {"error": "playwright not installed — run: pip install playwright && python -m playwright install chromium"}); return
+
+        try:
+            from binoracle.report.html import render_investigation_page
+        except ImportError:
+            self._send_json(500, {"error": "report module unavailable"}); return
+
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+
+        inv = None
+        result = None
+        if job and job.status == "done":
+            inv    = getattr(job, "inv", None)
+            result = job.result or {}
+        else:
+            try:
+                path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+                with open(path, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                result = rec.get("result", rec)
+            except Exception:
+                self._send_json(404, {"error": "job not found"}); return
+
+        cve_id = (result or {}).get("cve_id", job_id)
+
+        if inv is None and result:
+            class _Inv:
+                pass
+            inv = _Inv()
+            inv.cvss_score        = result.get("cvss_score")
+            inv.cvss_severity     = result.get("cvss_severity", "")
+            inv.cvss_vector       = result.get("cvss_vector", "")
+            inv.description       = result.get("description", "")
+            inv.published         = result.get("published", "")
+            inv.vuln_class        = result.get("vuln_class", "")
+            inv.verified          = result.get("verified", False)
+            inv.verified_detail   = result.get("detail", "")
+            inv.verified_evidence = result.get("verified_evidence") or {}
+            inv.attempt_evidence  = result.get("evidence") or {}
+            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
+            inv.poc_source_used   = result.get("poc_source", "")
+            inv.llm_notes         = result.get("llm_notes") or {}
+            inv.blockers          = result.get("blockers") or []
+            inv.affected_version  = result.get("affected_version", "")
+
+        script   = str(getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or (result or {}).get("poc_script", "") or "")
+        poc_kind = str(getattr(inv, "poc_kind", "http") or "http")
+        markdown = str(getattr(inv, "markdown_report", "") or (result or {}).get("markdown_report", "") or (result or {}).get("detail", "") or "")
+
+        try:
+            html_content = render_investigation_page(
+                markdown=markdown,
+                script=script,
+                cve=cve_id,
+                lang="es",
+                poc_kind=poc_kind,
+                inv=inv,
+            )
+        except Exception as exc:
+            self._send_json(500, {"error": f"report generation failed: {exc}"}); return
+
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as tf:
+                # Force light theme for PDF readability
+                tf.write(html_content.replace(
+                    "color-scheme:dark}", "color-scheme:light}"
+                ).replace(
+                    'localStorage.getItem(\'inv-theme\')', '"light"'
+                ))
+                tmp_path = tf.name
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{tmp_path}", wait_until="networkidle", timeout=30000)
+                # Apply light theme before printing
+                page.evaluate("document.documentElement.setAttribute('data-theme','light')")
+                page.wait_for_timeout(500)
+                pdf_bytes = page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "20mm", "bottom": "20mm", "left": "16mm", "right": "16mm"},
+                )
+                browser.close()
+        except Exception as exc:
+            self._send_json(500, {"error": f"PDF generation failed: {exc}"}); return
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+        safe_id  = cve_id.replace("/", "_").replace(" ", "_")
+        filename = f"{safe_id}_report.pdf"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(pdf_bytes)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(pdf_bytes)
+
     def _send_json(self, code: int, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
@@ -864,6 +1063,25 @@ main {
 }
 #export-btn:hover { background: rgba(0,212,255,.18); border-color: var(--cyan); }
 #export-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+/* ── html download btn ── */
+#html-btn {
+  background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.4); border-radius: 6px;
+  color: #3fb950; font-family: var(--sans); font-size: 13px; font-weight: 600;
+  padding: 7px 16px; cursor: pointer; display: flex; align-items: center;
+  transition: background .15s, border-color .15s; white-space: nowrap; flex-shrink: 0;
+}
+#html-btn:hover { background: rgba(63,185,80,.18); border-color: #3fb950; }
+#html-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+#pdf-btn {
+  background: rgba(188,140,255,.08); border: 1px solid rgba(188,140,255,.4); border-radius: 6px;
+  color: #bc8cff; font-family: var(--sans); font-size: 13px; font-weight: 600;
+  padding: 7px 16px; cursor: pointer; display: flex; align-items: center;
+  transition: background .15s, border-color .15s; white-space: nowrap; flex-shrink: 0;
+}
+#pdf-btn:hover { background: rgba(188,140,255,.18); border-color: #bc8cff; }
+#pdf-btn:disabled { opacity: .35; cursor: not-allowed; }
 
 /* ── history panel ── */
 #history-btn {
@@ -1279,6 +1497,16 @@ main {
           <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>
         </svg>Export PDF
       </button>
+      <button id="html-btn" disabled title="Download standalone HTML report with screenshots">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>Download HTML
+      </button>
+      <button id="pdf-btn" disabled title="Generate PDF via Playwright (includes screenshots)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+        </svg>Export PDF
+      </button>
     </div>
 
     <div id="verdict"></div>
@@ -1461,6 +1689,8 @@ main {
     setStatus('running', 'Running…');
     $('run-btn').disabled = true;
     $('export-btn').disabled = true;
+    $('html-btn').disabled = true;
+    if ($('pdf-btn')) $('pdf-btn').disabled = true;
 
     // Switch to log tab
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1501,6 +1731,8 @@ main {
       renderResult(d);
       $('run-btn').disabled = false;
       $('export-btn').disabled = false;
+      $('html-btn').disabled = false;
+      if ($('pdf-btn')) $('pdf-btn').disabled = false;
       setTimeout(loadHistory, 1500);
     });
 
@@ -1519,6 +1751,8 @@ main {
       renderResult(d);
       $('run-btn').disabled = false;
       $('export-btn').disabled = false;
+      $('html-btn').disabled = false;
+      if ($('pdf-btn')) $('pdf-btn').disabled = false;
     } catch {}
   }
 
@@ -2050,6 +2284,71 @@ main {
       btn.innerHTML = origHTML;
     }
   });
+
+  // ── HTML download ─────────────────────────────────────────────────────────
+  $('html-btn').addEventListener('click', async () => {
+    if (!currentJobId) return;
+    const btn = $('html-btn');
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    const cveId = ($('cve-input').value.trim() || 'report').toUpperCase()
+                    .replace(/[^A-Z0-9_-]/g, '_');
+    try {
+      const r = await fetch('/api/export-html/' + currentJobId);
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert('HTML export failed: ' + (err.error || r.status));
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = cveId + '_report.html';
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 8000);
+    } catch (e) {
+      alert('HTML download error: ' + e);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHTML;
+    }
+  });
+
+  // ── PDF download (Playwright) ──────────────────────────────────────────────
+  const pdfBtn = document.getElementById('pdf-btn');
+  if (pdfBtn) {
+    pdfBtn.addEventListener('click', async () => {
+      if (!currentJobId) return;
+      const btn = pdfBtn;
+      const origHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.textContent = 'Generating PDF…';
+      const cveId = ($('cve-input').value.trim() || 'report').toUpperCase()
+                      .replace(/[^A-Z0-9_-]/g, '_');
+      try {
+        const r = await fetch('/api/export-pdf/' + currentJobId);
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          alert('PDF export failed: ' + (err.error || r.status));
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = cveId + '_report.pdf';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 8000);
+      } catch (e) {
+        alert('PDF download error: ' + e);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = origHTML;
+      }
+    });
+  }
 
   // ── history panel ─────────────────────────────────────────────────────────
   let _historyData = [];
