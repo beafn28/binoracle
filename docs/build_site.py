@@ -2898,103 +2898,72 @@ def web_ui_page():
     body = f"""
 <div class="doc-layout">
 {wiki_sidebar("web-ui")}
-<div class="doc-content">
+<main class="doc-content">
 <h1 id="overview">Web UI</h1>
-<p>binoracle ships a full visual interface that exposes every CLI capability — no terminal needed. Launch it with:</p>
-<pre><code>binoracle web</code></pre>
-<p>Then open <strong>http://localhost:8000</strong> in your browser. The server streams all output live via Server-Sent Events (SSE), so the page updates in real time as an investigation runs.</p>
+<p class="page-lead">A full visual interface for every binoracle capability — no terminal needed. Output streams live via Server-Sent Events as investigations run.</p>
 
 <h2 id="start">Starting the UI</h2>
-<div class="code-card">
-<div class="code-header"><span class="dot dot-red"></span><span class="dot dot-yel"></span><span class="dot dot-grn"></span><span style="font-family:monospace;font-size:.82rem;color:var(--muted)">terminal</span></div>
-<pre><span class="comment"># default: port 8000</span>
-<span class="cmd">binoracle web</span>
+<pre><code># default port 8000
+binoracle web
 
-<span class="comment"># custom port</span>
-<span class="cmd">binoracle web --port 9090</span></pre>
+# custom port
+binoracle web --port 9090</code></pre>
+<p>Then open <strong>http://localhost:8000</strong>. The page reconnects automatically if the server restarts.</p>
+
+<h2 id="exploit-dev">Exploit Dev</h2>
+<p>Type a CVE ID (e.g. <code>CVE-2024-1071</code>) into the input bar and press <strong>Run</strong>. The engine runs the full autonomous pipeline:</p>
+<pre class="doc-pipeline"> CVE ID input
+   │
+   ├── NVD lookup ────── CVSS score, description, affected version
+   ├── LLM hypothesis ── vulnerability class, endpoint, payload
+   ├── Code analysis ─── source download, sink/source tracing
+   ├── Docker lab ─────── ephemeral WordPress / app container
+   ├── PoC execution ──── Playwright screenshots at each step
+   └── Report ──────────  CVSS badge, evidence, PDF export</pre>
+
+<p>The <strong>phase tracker</strong> shows progress across all stages. When the run finishes the Report tab populates automatically and the <strong>Export PDF</strong> button becomes active.</p>
+
+<h3>Export PDF</h3>
+<p>Click <strong>Export PDF</strong> in the top bar to download a complete A4 PDF of the report — dark theme, embedded screenshots, step-by-step evidence. No print dialog appears; the file saves directly.</p>
+<div class="doc-callout tip">
+  <strong>Tip.</strong> The PDF is generated server-side by Playwright. It includes all screenshots that appear in the Report tab at the moment you click the button.
 </div>
 
-<h2 id="tabs">Tabs Reference</h2>
-<div class="table-wrap">
-<table>
-<thead><tr><th>Tab</th><th>Purpose</th><th>Key inputs</th></tr></thead>
-<tbody>
-<tr><td><strong>Live Log</strong></td><td>Real-time streaming output from any running job</td><td>Auto-populated</td></tr>
-<tr><td><strong>Report</strong></td><td>Professional investigation report with CVSS badge, phases, evidence</td><td>Auto-generated on result</td></tr>
-<tr><td><strong>Evidence</strong></td><td>All collected evidence with copy-to-clipboard buttons</td><td>Auto-populated</td></tr>
-<tr><td><strong>HTTP Requests</strong></td><td>Captured HTTP traffic from the lab container</td><td>Auto-populated</td></tr>
-<tr><td><strong>Screenshots</strong></td><td>Lab screenshots captured during exploitation</td><td>Auto-populated</td></tr>
-<tr><td><strong>Binary Lab</strong></td><td>File upload + all binary analysis and exploitation tools</td><td>Upload file, pick tool</td></tr>
-<tr><td><strong>Recon</strong></td><td>Autonomous recon: CVE discovery, PHP inventory, source scan</td><td>Scope/URL/path</td></tr>
-<tr><td><strong>Exploit Plan</strong></td><td>Generate a structured exploitation plan from a CVE or description</td><td>CVE ID or text</td></tr>
-<tr><td><strong>System</strong></td><td>Doctor check, MCP config, batch investigation</td><td>None / CVE IDs</td></tr>
-<tr><td><strong>All Tools</strong></td><td>Searchable catalog of all 50+ CLI commands</td><td>Search bar</td></tr>
-</tbody>
-</table>
-</div>
+<h2 id="binary-lab">Binary Lab</h2>
+<p>Drag and drop any binary (ELF, PE, APK, Mach-O, WASM, JAR, .NET, Go, Rust, firmware, HAR, SQLite, EVM, JS, core dump) or use the Browse button. After upload the file is identified automatically. The lab has two sub-panels:</p>
 
-<h2 id="exploit-dev">Exploit Dev tab</h2>
-<p>The main tab. Enter a CVE ID (<code>CVE-2024-1071</code>) and pick a mode from the dropdown:</p>
-<div class="table-wrap">
-<table>
-<thead><tr><th>Mode</th><th>Command</th><th>What it does</th></tr></thead>
-<tbody>
-<tr><td><strong>Dev Exploit</strong></td><td><code>binoracle cve</code></td><td>Full autonomous exploit development — spins up a Docker lab, generates PoC, verifies, exports report</td></tr>
-<tr><td><strong>Exploit Plan</strong></td><td><code>binoracle cveplan</code></td><td>Structured exploitation plan from a CVE ID or description (no lab needed)</td></tr>
-</tbody>
-</table>
-</div>
-<p>The phase progress bar tracks NVD lookup → LLM hypothesis → code analysis → lab → PoC → verify → report as the investigation runs. The CVSS badge, description, affected version, and PoC source link appear in the result panel.</p>
-
-<h2 id="binary-lab">Binary Lab tab</h2>
-<p>Drag and drop any binary file (ELF, PE, APK, Mach-O, WASM, JAR, .NET, Go, Rust, firmware, HAR, SQLite, EVM, JS, core dump) or use the Browse button. The file is uploaded to the server and auto-identified. Then pick a tool group:</p>
-<div class="table-wrap">
+<h3>EXPLOIT DEV AUTÓNOMO</h3>
 <table>
 <thead><tr><th>Group</th><th>Tools</th></tr></thead>
 <tbody>
-<tr><td><strong>Static Analysis</strong></td><td>identify, elf, pe, macho, apk, java, wasm, dotnet, go, rust, firmware, har, sqlite, evm, asar, plist, js, rawshellcode, core, jeb</td></tr>
-<tr><td><strong>Analysis</strong></td><td>secrets, funcid, analyze, explain, audit, heap, triage, hunt</td></tr>
-<tr><td><strong>Exploitation</strong></td><td>gadgets, arsenal, rop, shellcode, fmtstring, primitives, autopoc, autopwn</td></tr>
-<tr><td><strong>Fuzzing</strong></td><td>fuzz, exploit-skeleton, cve-corpus</td></tr>
-<tr><td><strong>Utilities</strong></td><td>cyclic (pattern generation), shellcode (arch), kernel-exploit (technique) — no file required, prompts for argument</td></tr>
+<tr><td><strong>Exploitation</strong></td><td><code>gadgets</code> <code>arsenal</code> <code>rop</code> <code>shellcode</code> <code>fmtstring</code> <code>primitives</code> <code>autopoc</code> <code>autopwn</code></td></tr>
+<tr><td><strong>Fuzzing</strong></td><td><code>fuzz</code> <code>exploit-skeleton</code> <code>cve-corpus</code></td></tr>
+<tr><td><strong>Utilities</strong></td><td><code>cyclic</code> (pattern generation) · <code>shellcode</code> (arch selector) · <code>kernel-exploit</code> (technique) — no file required</td></tr>
 </tbody>
 </table>
-</div>
-<p>All output streams live to the terminal below the tool buttons. The running button is highlighted in orange.</p>
 
-<h2 id="recon">Recon tab</h2>
-<div class="table-wrap">
+<h3>ANÁLISIS DE BINARIOS</h3>
 <table>
-<thead><tr><th>Section</th><th>Command</th><th>Input</th></tr></thead>
+<thead><tr><th>Group</th><th>Tools</th></tr></thead>
 <tbody>
-<tr><td><strong>Auto-Discover</strong></td><td><code>binoracle autodiscover SCOPE</code></td><td>Technology scope: <code>wordpress-plugin</code>, <code>python-flask</code>, <code>nodejs</code>, <code>php</code>, <code>linux-kernel</code>, <code>apache</code></td></tr>
-<tr><td><strong>PHP Estate</strong></td><td><code>binoracle phpestate [URL]</code></td><td>Leave empty for local PHP inventory; add a URL to also probe remote headers</td></tr>
-<tr><td><strong>Scan</strong></td><td><code>binoracle scan PATH</code></td><td>Absolute path to a local source directory</td></tr>
+<tr><td><strong>Static Analysis</strong></td><td><code>identify</code> <code>elf</code> <code>pe</code> <code>macho</code> <code>apk</code> <code>java</code> <code>wasm</code> <code>dotnet</code> <code>go</code> <code>rust</code> <code>firmware</code> <code>har</code> <code>sqlite</code> <code>evm</code> <code>asar</code> <code>plist</code> <code>js</code> <code>rawshellcode</code> <code>core</code> <code>jeb</code></td></tr>
+<tr><td><strong>Deep Analysis</strong></td><td><code>secrets</code> <code>funcid</code> <code>analyze</code> <code>explain</code> <code>audit</code> <code>heap</code> <code>triage</code> <code>hunt</code></td></tr>
 </tbody>
 </table>
-</div>
+<p>All output streams live to the terminal at the bottom of the lab. The active button highlights in orange.</p>
 
-<h2 id="system">System tab</h2>
-<ul>
-<li><strong>Environment Check</strong> — runs <code>binoracle doctor</code>: verifies LLM backend, all oracle modules, RAG knowledge base, and tool availability</li>
-<li><strong>MCP Server</strong> — config snippet for Claude Desktop, Continue, or any MCP client. Launch with <code>binoracle mcp</code></li>
-<li><strong>Watch CVE Feed</strong> — instructions for running <code>binoracle investigate-watch</code> in a terminal to auto-investigate new CVEs from Telegram</li>
-<li><strong>Batch Investigation</strong> — enter CVE IDs separated by spaces, runs <code>binoracle investigate-batch</code> in parallel</li>
-</ul>
-
-<h2 id="exploit-plan">Exploit Plan tab</h2>
-<p>Runs <code>binoracle cveplan</code>. Enter a CVE ID (<code>CVE-2024-1071</code>) or a plain-text description ("SQL injection in Ultimate Member") to get a structured exploitation plan including:</p>
-<ul>
-<li>Vulnerability class and primitive</li>
-<li>Phase-by-phase approach (recon, primitive, objective)</li>
-<li>Pwntools skeleton when a binary is involved</li>
-</ul>
-<p>For binary-specific questions, upload the file in Binary Lab and use the <strong>Explain</strong> or <strong>Audit</strong> buttons there.</p>
-
-<h2 id="all-tools">All Tools catalog</h2>
-<p>A searchable grid of every CLI command. Use the search box to filter by name, description, or category. Click a card to jump to the right tab: CVE tools switch to Exploit Dev, binary tools switch to Binary Lab, Exploit Plan opens that tab.</p>
-<p>Categories: CVE, BINARY, EXPLOIT, ANALYSIS, DATA, DYNAMIC, LEARN, SYSTEM.</p>
-</div>
+<h2 id="all-tools">Tabs reference</h2>
+<table>
+<thead><tr><th>Tab</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><strong>Live Log</strong></td><td>Real-time streaming output from any running job</td></tr>
+<tr><td><strong>Report</strong></td><td>Professional investigation report — CVSS, phases, evidence, PDF export</td></tr>
+<tr><td><strong>Evidence</strong></td><td>All collected evidence with copy-to-clipboard</td></tr>
+<tr><td><strong>Screenshots</strong></td><td>Playwright screenshots captured at each step</td></tr>
+<tr><td><strong>Binary Lab</strong></td><td>Upload + Exploit Dev / Análisis panels</td></tr>
+</tbody>
+</table>
+</main>
 </div>"""
     return shell("Web UI Reference — binoracle docs", "web-ui", body)
 
