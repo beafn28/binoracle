@@ -905,8 +905,47 @@ class _Lab:
         es un recurso del daemon, visible sea donde sea que corra binoracle)."""
         plugin_path = os.path.join(host_plugin_dir, slug)
         buf = io.BytesIO()
+        # WP core classes used in plugins with namespaces: `extends WP_List_Table` in
+        # `namespace Foo` resolves to `Foo\WP_List_Table` (non-existent) in PHP 7+/8+.
+        # Patch `extends WP_CoreClass` → `extends \WP_CoreClass` before tarring so the
+        # lab (PHP 8.0 Docker) doesn't fatal on class load.
+        _WP_GLOBAL_CLASSES = re.compile(
+            r'\bextends\s+(WP_(?:List_Table|Widget|REST_Controller|REST_Posts_Controller'
+            r'|REST_Terms_Controller|REST_Users_Controller|REST_Comments_Controller'
+            r'|Customize_Control|Customize_Setting|Customize_Section|Customize_Panel'
+            r'|Query|Error|Rewrite|Roles)|Walker(?:_Category|_Comment|_Nav_Menu|_Page)?'
+            r'|WC_(?:Payment_Gateway|Shipping_Method|Product|Order))',
+            re.MULTILINE)
+        _HAS_NAMESPACE_RE = re.compile(r'^\s*namespace\s+\S', re.MULTILINE)
+
+        def _php_patch(src_bytes: bytes) -> bytes:
+            try:
+                text = src_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                return src_bytes
+            if not _HAS_NAMESPACE_RE.search(text):
+                return src_bytes
+            patched = _WP_GLOBAL_CLASSES.sub(lambda m: m.group(0).replace(
+                "extends " + m.group(1), "extends \\" + m.group(1)), text)
+            return patched.encode("utf-8", errors="replace") if patched != text else src_bytes
+
         with tarfile.open(fileobj=buf, mode="w") as tf:
-            tf.add(plugin_path, arcname=slug)
+            for root, dirs, files in os.walk(plugin_path):
+                dirs.sort()
+                for fname in sorted(files):
+                    fpath = os.path.join(root, fname)
+                    arcname = os.path.join(slug, os.path.relpath(fpath, plugin_path))
+                    if fname.endswith(".php"):
+                        try:
+                            raw = open(fpath, "rb").read()
+                            patched = _php_patch(raw)
+                            info = tarfile.TarInfo(name=arcname)
+                            info.size = len(patched)
+                            tf.addfile(info, io.BytesIO(patched))
+                            continue
+                        except Exception:
+                            pass
+                    tf.add(fpath, arcname=arcname)
         try:
             r = subprocess.run(
                 ["docker", "run", "-i", "--rm", "--platform", "linux/amd64",
