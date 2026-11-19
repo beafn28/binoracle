@@ -4493,9 +4493,10 @@ def verify_wordpress_sqli(
             or ("wp-login.php" in (base_resp.text or "")
                 and "<html" in (base_resp.text or "").lower())
         )
+        _wp_access_denied = base_resp.status_code in (401, 403)
         _needs_admin_retry = (
             not _anon_attack and boot.admin_sess and _is_admin_ep and
-            (_ctrl_body_raw in ("-1", "0") or _login_redirect)
+            (_ctrl_body_raw in ("-1", "0") or _login_redirect or _wp_access_denied)
         )
         if _needs_admin_retry:
             _reason = ("'-1'/'0'" if _ctrl_body_raw in ("-1", "0")
