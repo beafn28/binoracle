@@ -1786,6 +1786,9 @@ _EXTRACT_POC_SYS = (
     "custom_headers (dict de cabeceras HTTP NO-ESTANDAR que el PoC envía junto con la peticion "
     "de ataque, p.ej. {\"X-WCPAY-PLATFORM-CHECKOUT-USER\": \"1\"} para CVE-2023-28121 donde "
     "la cabecera HTTP es el mecanismo de bypass; vacio si el ataque solo usa parametros normales), "
+    "path_param (SOLO para LFI/path-traversal: el nombre EXACTO del parametro que lleva la "
+    "ruta/fichero en el PoC, p.ej. 'source' para un PoC que usa ?source=../etc/passwd o "
+    "'file' para ?file=../../wp-config.php; deja vacio si no es un CVE de tipo LFI/path-traversal), "
     "notes (una frase con "
     "cualquier precondicion o detalle importante que el PoC mencione y no quepa en los campos "
     "anteriores). Deja vacio lo que el PoC no diga explicitamente -- nunca inventes."
@@ -1822,9 +1825,72 @@ def _drop_poc_self_referencing_source_url(poc_hints: dict, poc_repo_url: str) ->
     def _norm(u: str) -> str:
         return (u or "").strip().rstrip("/").removesuffix(".git").lower()
     poc_source = (poc_hints.get("source_url") or "").strip()
-    if poc_source and poc_repo_url and _norm(poc_source) == _norm(poc_repo_url):
+    if not poc_source:
+        return poc_hints, None
+    # Descarta si coincide con el repo del propio PoC.
+    if poc_repo_url and _norm(poc_source) == _norm(poc_repo_url):
         cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
         return cleaned, poc_source
+    # Descarta repos de herramientas de seguridad conocidas que el LLM cita por error
+    # (ej. el PoC usa sqlmap como herramienta pero el LLM da su repo como source_url).
+    _TOOL_REPOS = (
+        "github.com/sqlmapproject/sqlmap",
+        "github.com/rapid7/metasploit-framework",
+        "github.com/projectdiscovery/",
+        "github.com/vulhub/vulhub",
+        "github.com/swisskyrepo/payloadsallthethings",
+        "github.com/danielmiessler/secLists",
+        "github.com/nicowillis/",
+    )
+    _src_lower = poc_source.lower()
+    for _bad in _TOOL_REPOS:
+        if _bad.lower() in _src_lower:
+            cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
+            return cleaned, poc_source
+    # Descarta URLs placeholder (github.com/username/repo, github.com/yourname/..., etc.)
+    _PLACEHOLDER_SOURCE_RE = re.compile(
+        r'github\.com/(username|yourname|user|yourusername|placeholder|example|your[-_]?repo|'
+        r'your[-_]?plugin|your[-_]?name|test|demo)/', re.IGNORECASE)
+    if _PLACEHOLDER_SOURCE_RE.search(_src_lower):
+        cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
+        return cleaned, poc_source
+    # Convierte paths SVN de WordPress.org (ej. "chatbot/trunk/qcld-wpwbot-search.php")
+    # al slug del plugin (ej. "chatbot") -- los paths SVN no son URLs descargables.
+    # Formato: <slug>/trunk/<file> o <slug>/tags/<version>/<file>
+    _SVN_PATH_RE = re.compile(r'^([a-z0-9][a-z0-9\-]{1,60})/(trunk|tags|branches)/', re.I)
+    _svn_m = _SVN_PATH_RE.match(poc_source)
+    if _svn_m and not poc_source.startswith(("http://", "https://", "git://", "/")):
+        slug_from_svn = _svn_m.group(1).lower()
+        new_hints = {**poc_hints, "source_url": slug_from_svn}
+        return new_hints, None  # don't discard — convert to slug
+    return poc_hints, None
+
+
+# Patrones de endpoint que indican que el PoC no tiene un exploit real (RandomRobbieBF usa /x*
+# y similares como placeholder en CVEs donde solo documenta la existencia del bug sin PoC real).
+_PLACEHOLDER_ENDPOINT_RE = re.compile(
+    r'^(/x\*|/x/|/ENDPOINT|/YOUR_ENDPOINT|/example|/api/PLACEHOLDER|/stub|/\*|/x$)',
+    re.IGNORECASE)
+
+_PLACEHOLDER_PARAM_RE = re.compile(
+    r'^(?:foobar|foo|bar|baz|test|param|placeholder|example|dummy|xxx?|yyy?|zzz?)(?:_\d+|[0-9])?$',
+    re.IGNORECASE)
+
+def _drop_placeholder_poc_hints(poc_hints: dict) -> tuple:
+    """Descarta hints cuyo endpoint o parámetros parecen placeholders (PoC sin exploit real).
+    Devuelve (hints_limpios, endpoint_descartado_o_None)."""
+    ep = (poc_hints.get("endpoint") or "").strip()
+    if ep and _PLACEHOLDER_ENDPOINT_RE.match(ep):
+        cleaned = {k: v for k, v in poc_hints.items() if k not in ("endpoint", "parameters")}
+        return cleaned, ep
+    # Parámetros con nombres placeholder: foobar_1, foobar_2, foo, bar, xxx, etc.
+    # (RandomRobbieBF los usa cuando el PoC no tiene params reales identificados)
+    params = poc_hints.get("parameters") or []
+    if params:
+        param_list = list(params.keys() if isinstance(params, dict) else params)
+        if param_list and all(_PLACEHOLDER_PARAM_RE.match(str(p)) for p in param_list):
+            cleaned = {k: v for k, v in poc_hints.items() if k != "parameters"}
+            return cleaned, None
     return poc_hints, None
 
 
@@ -1850,7 +1916,7 @@ def _extract_hints_from_real_poc(llm, poc_text: str) -> Optional[dict]:
     if not isinstance(data, dict):
         return None
     out = {}
-    for key in ("source_url", "affected_version", "http_method", "endpoint"):
+    for key in ("source_url", "affected_version", "http_method", "endpoint", "path_param"):
         v = str(data.get(key) or "").strip()
         if v:
             out[key] = v.upper() if key == "http_method" else v
@@ -1908,6 +1974,10 @@ _PLUGIN_NAME_PATTERNS = [
     re.compile(r"([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin for (?:WordPress|WooCommerce)"),
     # "plugin X" – fraseo corto de NVD cuando el nombre es el sujeto directo
     re.compile(r"plugin\s+([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)\s+(?:<=|before|through|version)"),
+    # "PluginName <= X.Y.Z" o "PluginName < X.Y.Z" -- titulo de WPScan/RandomRobbieBF
+    re.compile(r"^([A-Za-z0-9][A-Za-z0-9 .\-]{2,60}?)\s+(?:<=?|<|>=?)\s+[0-9]"),
+    # "PluginName – X" o "PluginName - X" cuando el nombre precede a un guion y texto
+    re.compile(r"^([A-Za-z0-9][A-Za-z0-9 .\-]{2,40}?)\s+[–-]\s+(?:Unauthenticated|Authenticated|SQL|LFI|Path|SSRF|XSS|RCE|File)"),
 ]
 
 
@@ -3801,6 +3871,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         det_refined = _deterministic_web_hints_from_source(
                             fr.local_path, inv.source_grounding["found"])
                     refined = {**(llm_refined or {}), **(det_refined or {})}
+                    # Si el endpoint refinado sigue siendo un placeholder (p.ej. /x* de RandomRobbieBF),
+                    # descartarlo para no sobreescribir un endpoint real (o None) con un placeholder.
+                    _ref_ep = (refined.get("endpoint") or "").strip()
+                    if _ref_ep and _PLACEHOLDER_ENDPOINT_RE.match(_ref_ep):
+                        refined.pop("endpoint", None)
+                        refined.pop("parameters", None)
+                        step((f"refinacion descarto endpoint placeholder '{_ref_ep}' del codigo "
+                              f"-- se mantiene endpoint actual") if es else
+                             (f"refinement dropped placeholder endpoint '{_ref_ep}' from source "
+                              f"-- keeping current endpoint"))
                     if det_refined:
                         step((f"grep deterministico del codigo real: endpoint="
                              f"{det_refined.get('endpoint')}, parameters="
@@ -5814,6 +5894,12 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                          f"es el codigo del plugin, se descarta" if es else
                          f"the PoC gave its own repo ({dropped_source}) as source_url -- that's not "
                          f"the plugin's code, dropping it")
+                poc_hints, dropped_ep = _drop_placeholder_poc_hints(poc_hints)
+                if dropped_ep:
+                    step(f"el PoC tiene endpoint placeholder ({dropped_ep!r}) -- se descarta "
+                         f"endpoint/parameters del PoC, se mantiene la hipotesis del LLM" if es else
+                         f"PoC has placeholder endpoint ({dropped_ep!r}) -- dropping PoC "
+                         f"endpoint/parameters, keeping LLM hypothesis")
                 inv.poc_source_used = github_ref.url if github_ref else ""
                 # El PoC puede reportar 'rce' como vuln_class (la consecuencia) cuando la
                 # causa raiz es 'path-traversal', 'sqli', etc. -- no dejar que eso pise la
@@ -5830,6 +5916,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                         _poc_vc not in _CAUSE_ROOT_CLASSES and _poc_vc):
                     poc_hints = {k: v for k, v in poc_hints.items() if k != "vuln_class"}
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}
+                notes = inv.llm_notes  # re-bind: inv.llm_notes is a NEW dict after merge
                 step((f"PoC real leido -- endpoint={poc_hints.get('endpoint', '?')}, "
                      f"parameters={poc_hints.get('parameters', '?')}" if es else
                      (f"real PoC read -- endpoint={poc_hints.get('endpoint', '?')}, "
@@ -5881,6 +5968,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
         given = {k: v for k, v in hints.items() if v}
         if given:
             inv.llm_notes = {**inv.llm_notes, **given}
+            notes = inv.llm_notes  # re-bind after dict replacement
             step(("hechos del analista aplicados: " if es else "analyst-supplied facts applied: ")
                  + ", ".join(f"{k}={v}" for k, v in given.items()))
 

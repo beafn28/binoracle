@@ -44,7 +44,8 @@ def _save_history(job: "_Job"):
         pass
 
 
-def _load_history(limit: int = 50) -> list:
+def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False) -> tuple:
+    """Returns (records_page, total_count)."""
     records = []
     try:
         for fname in os.listdir(_HISTORY_DIR):
@@ -59,7 +60,10 @@ def _load_history(limit: int = 50) -> list:
     except Exception:
         pass
     records.sort(key=lambda r: r.get("created", 0), reverse=True)
-    return records[:limit]
+    if verified_only:
+        records = [r for r in records if r.get("verified", False)]
+    total = len(records)
+    return records[offset:offset + limit], total
 
 # ── Binary lab job store ──────────────────────────────────────────────────────
 
@@ -169,16 +173,25 @@ def _start_job(cve_id: str, config) -> _Job:
             evidence = {}
             if wp_res and hasattr(wp_res, "evidence"):
                 evidence = dict(wp_res.evidence or {})
-            # Merge attempt_evidence screenshots/HTTP even when not confirmed
+            # Merge attempt_evidence into evidence when not yet confirmed:
+            # screenshots/HTTP for the UI, plus diagnostic fields for debugging failures
             attempt_ev = getattr(inv, "attempt_evidence", None) or {}
-            for _k in ("screenshots", "http_requests", "http_log"):
+            _MERGE_KEYS = (
+                "screenshots", "http_requests", "http_log",
+                # diagnostic fields from SQLi/LFI/path-traversal verifiers
+                "respuesta_control_recorte", "path_param", "sqli_param",
+                "tecnica", "endpoint_probado", "parametro_probado",
+                "metodo", "canary_path", "lfi_lectura_intentos",
+            )
+            for _k in _MERGE_KEYS:
                 if _k in attempt_ev and _k not in evidence:
                     evidence[_k] = attempt_ev[_k]
             sf = getattr(inv, "source_fetch", None) or {}
+            _dv = getattr(inv, "dynamic_verify", None) or {}
             job.result = {
                 "verified": inv.verified,
                 "cve_id": job.cve_id,
-                "detail": getattr(inv, "detail", ""),
+                "detail": _dv.get("detail", "") or getattr(inv, "detail", ""),
                 "elapsed": round(time.time() - job.t0, 1),
                 "verified_evidence": ve,
                 "evidence": evidence,
@@ -233,6 +246,15 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/result/"):
             job_id = path.split("/")[-1]
             self._json_result(job_id)
+        elif path.startswith("/api/export-html/"):
+            job_id = path.split("/")[-1]
+            self._export_html(job_id)
+        elif path.startswith("/api/export-pdf/"):
+            job_id = path.split("/")[-1]
+            self._export_pdf(job_id)
+        elif path.startswith("/api/delete-history/"):
+            job_id = path.split("/")[-1]
+            self._delete_history(job_id)
         elif path.startswith("/api/screenshot/"):
             b64 = path.split("/")[-1]
             self._serve_screenshot(b64)
@@ -359,7 +381,19 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def _json_history(self):
-        records = _load_history(50)
+        from urllib.parse import parse_qs, urlparse as _up
+        qs = parse_qs(_up(self.path).query)
+        try:
+            page = max(1, int(qs.get("page", ["1"])[0]))
+        except ValueError:
+            page = 1
+        try:
+            per = max(5, min(50, int(qs.get("limit", ["20"])[0])))
+        except ValueError:
+            per = 20
+        offset = (page - 1) * per
+        verified_only = qs.get("verified", ["0"])[0] == "1"
+        records, total = _load_history(per, offset, verified_only)
         summary = [
             {
                 "job_id": r["job_id"],
@@ -370,7 +404,26 @@ class _Handler(BaseHTTPRequestHandler):
             }
             for r in records
         ]
-        self._send_json(200, summary)
+        import math
+        self._send_json(200, {
+            "items": summary,
+            "total": total,
+            "page": page,
+            "pages": max(1, math.ceil(total / per)),
+            "per": per,
+        })
+
+    def _delete_history(self, job_id: str):
+        import re
+        if not re.match(r'^[a-f0-9]{8}$', job_id):
+            self._send_json(400, {"error": "invalid job_id"})
+            return
+        path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+        if os.path.exists(path):
+            os.remove(path)
+            self._send_json(200, {"deleted": job_id})
+        else:
+            self._send_json(404, {"error": "not found"})
 
     def _json_result(self, job_id: str):
         with _jobs_lock:
@@ -551,6 +604,199 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(500, {"error": f"PDF generation failed: {exc}"})
 
+    def _export_html(self, job_id: str):
+        """Generate a standalone HTML report for the given job and serve as download."""
+        try:
+            from binoracle.report.html import render_investigation_page
+        except ImportError:
+            self._send_json(500, {"error": "report module unavailable"}); return
+
+        # Try live job first
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+
+        inv = None
+        result = None
+        if job and job.status == "done":
+            inv  = getattr(job, "inv", None)
+            result = job.result or {}
+        else:
+            try:
+                path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+                with open(path, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                result = rec.get("result", rec)
+            except Exception:
+                self._send_json(404, {"error": "job not found"}); return
+
+        cve_id = (result or {}).get("cve_id", job_id)
+
+        # If no live inv, build a minimal proxy from result dict
+        if inv is None and result:
+            class _Inv:
+                pass
+            inv = _Inv()
+            inv.cvss_score     = result.get("cvss_score")
+            inv.cvss_severity  = result.get("cvss_severity", "")
+            inv.cvss_vector    = result.get("cvss_vector", "")
+            inv.description    = result.get("description", "")
+            inv.published      = result.get("published", "")
+            inv.vuln_class     = result.get("vuln_class", "")
+            inv.verified       = result.get("verified", False)
+            inv.verified_detail= result.get("detail", "")
+            inv.verified_evidence = result.get("verified_evidence") or {}
+            inv.attempt_evidence  = result.get("evidence") or {}
+            inv.dynamic_verify = {"attempted": bool(result.get("verified_evidence"))}
+            inv.poc_source_used = result.get("poc_source", "")
+            inv.llm_notes      = result.get("llm_notes") or {}
+            inv.blockers       = result.get("blockers") or []
+
+        # Get PoC script if available
+        script = ""
+        poc_kind = "http"
+        if inv is not None:
+            script   = str(getattr(inv, "exploit_script", "") or
+                           getattr(inv, "poc_script", "") or
+                           (result or {}).get("poc_script", "") or "")
+            poc_kind = str(getattr(inv, "poc_kind", "http") or "http")
+
+        # Get markdown from logs or detail
+        markdown = str(getattr(inv, "markdown_report", "") or
+                       (result or {}).get("markdown_report", "") or
+                       (result or {}).get("detail", "") or "")
+
+        try:
+            html = render_investigation_page(
+                markdown=markdown,
+                script=script,
+                cve=cve_id,
+                lang="es",
+                poc_kind=poc_kind,
+                inv=inv,
+            )
+        except Exception as exc:
+            self._send_json(500, {"error": f"report generation failed: {exc}"}); return
+
+        safe_id = cve_id.replace("/", "_").replace(" ", "_")
+        filename = f"{safe_id}_report.html"
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _export_pdf(self, job_id: str):
+        """Generate a PDF report using Playwright (headless Chromium print-to-PDF)."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self._send_json(503, {"error": "playwright not installed — run: pip install playwright && python -m playwright install chromium"}); return
+
+        try:
+            from binoracle.report.html import render_investigation_page
+        except ImportError:
+            self._send_json(500, {"error": "report module unavailable"}); return
+
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+
+        inv = None
+        result = None
+        if job and job.status == "done":
+            inv    = getattr(job, "inv", None)
+            result = job.result or {}
+        else:
+            try:
+                path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+                with open(path, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                result = rec.get("result", rec)
+            except Exception:
+                self._send_json(404, {"error": "job not found"}); return
+
+        cve_id = (result or {}).get("cve_id", job_id)
+
+        if inv is None and result:
+            class _Inv:
+                pass
+            inv = _Inv()
+            inv.cvss_score        = result.get("cvss_score")
+            inv.cvss_severity     = result.get("cvss_severity", "")
+            inv.cvss_vector       = result.get("cvss_vector", "")
+            inv.description       = result.get("description", "")
+            inv.published         = result.get("published", "")
+            inv.vuln_class        = result.get("vuln_class", "")
+            inv.verified          = result.get("verified", False)
+            inv.verified_detail   = result.get("detail", "")
+            inv.verified_evidence = result.get("verified_evidence") or {}
+            inv.attempt_evidence  = result.get("evidence") or {}
+            inv.dynamic_verify    = {"attempted": bool(result.get("verified_evidence"))}
+            inv.poc_source_used   = result.get("poc_source", "")
+            inv.llm_notes         = result.get("llm_notes") or {}
+            inv.blockers          = result.get("blockers") or []
+            inv.affected_version  = result.get("affected_version", "")
+
+        script   = str(getattr(inv, "exploit_script", "") or getattr(inv, "poc_script", "") or (result or {}).get("poc_script", "") or "")
+        poc_kind = str(getattr(inv, "poc_kind", "http") or "http")
+        markdown = str(getattr(inv, "markdown_report", "") or (result or {}).get("markdown_report", "") or (result or {}).get("detail", "") or "")
+
+        try:
+            html_content = render_investigation_page(
+                markdown=markdown,
+                script=script,
+                cve=cve_id,
+                lang="es",
+                poc_kind=poc_kind,
+                inv=inv,
+            )
+        except Exception as exc:
+            self._send_json(500, {"error": f"report generation failed: {exc}"}); return
+
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as tf:
+                # Force light theme for PDF readability
+                tf.write(html_content.replace(
+                    "color-scheme:dark}", "color-scheme:light}"
+                ).replace(
+                    'localStorage.getItem(\'inv-theme\')', '"light"'
+                ))
+                tmp_path = tf.name
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{tmp_path}", wait_until="networkidle", timeout=30000)
+                # Apply light theme before printing
+                page.evaluate("document.documentElement.setAttribute('data-theme','light')")
+                page.wait_for_timeout(500)
+                pdf_bytes = page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "20mm", "bottom": "20mm", "left": "16mm", "right": "16mm"},
+                )
+                browser.close()
+        except Exception as exc:
+            self._send_json(500, {"error": f"PDF generation failed: {exc}"}); return
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+        safe_id  = cve_id.replace("/", "_").replace(" ", "_")
+        filename = f"{safe_id}_report.pdf"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(pdf_bytes)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(pdf_bytes)
+
     def _send_json(self, code: int, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
@@ -717,23 +963,25 @@ main {
 .verdict-ok   { background: rgba(0,230,118,.12); color: var(--green); border: 1px solid rgba(0,230,118,.3); }
 .verdict-fail { background: rgba(255,210,0,.08); color: var(--yellow); border: 1px solid rgba(255,210,0,.18); }
 
-/* ── tabs ── */
+/* ── log section (tabs removed) ── */
 .tabs-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.tab-bar {
-  display: flex; gap: 2px; padding-bottom: 0; overflow-x: auto;
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
+.tab-pane { display: none; }
+.tab-pane.active { display: flex; flex: 1; flex-direction: column; overflow: hidden; min-height: 0; }
+
+/* ── done panel ── */
+#done-panel {
+  flex-shrink: 0; display: none; flex-direction: column; gap: 10px;
+  padding-top: 10px; border-top: 1px solid var(--border); margin-top: 8px;
 }
-.tab-bar::-webkit-scrollbar { height: 2px; }
-.tab-btn {
-  background: none; border: none; color: var(--dim);
-  font-family: var(--sans); font-size: 13px; font-weight: 500;
-  padding: 7px 14px; cursor: pointer; border-bottom: 2px solid transparent;
-  margin-bottom: -1px; transition: color .15s, border-color .15s; white-space: nowrap;
+#done-panel.visible { display: flex; }
+.done-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 16px; border-radius: 7px; font-family: var(--mono);
+  font-size: 13px; font-weight: 700; letter-spacing: .05em;
 }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
-.tab-pane { display: none; flex: 1; overflow-y: auto; padding: 12px 0; }
-.tab-pane.active { display: flex; flex-direction: column; }
+.done-banner-ok   { background: rgba(0,230,118,.1); color: var(--green); border: 1px solid rgba(0,230,118,.28); }
+.done-banner-fail { background: rgba(255,210,0,.07); color: var(--yellow); border: 1px solid rgba(255,210,0,.18); }
+.done-banner-msg  { flex: 1; min-width: 0; }
 
 /* ── log terminal ── */
 #log-terminal {
@@ -750,12 +998,20 @@ main {
 .log-info { color: var(--text); }
 .log-sep  { color: var(--cyan); opacity: .6; letter-spacing: .2em; }
 .log-phase-header {
-  display: flex; align-items: center; gap: 10px; margin: 8px 0 4px;
-  font-size: 11px; font-weight: 600; letter-spacing: .1em; color: var(--cyan);
+  display: flex; align-items: center; gap: 8px; margin: 12px 0 5px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .12em; color: var(--cyan);
   text-transform: uppercase;
+}
+.log-phase-header::before {
+  content: ''; width: 3px; height: 11px; background: var(--cyan);
+  border-radius: 2px; flex-shrink: 0;
 }
 .log-phase-header::after {
   content: ''; flex: 1; height: 1px; background: var(--border);
+}
+.log-phase-time {
+  font-family: var(--mono); font-size: 10px; color: var(--dim);
+  font-weight: 400; letter-spacing: 0; white-space: nowrap;
 }
 
 /* ── report tab ── */
@@ -855,15 +1111,24 @@ main {
 }
 .shot-wrap img { width: 100%; display: block; }
 
-/* ── export btn ── */
-#export-btn {
-  background: rgba(0,212,255,.08); border: 1px solid rgba(0,212,255,.4); border-radius: 6px;
-  color: var(--cyan); font-family: var(--sans); font-size: 13px; font-weight: 600;
+/* ── html download btn ── */
+#html-btn {
+  background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.4); border-radius: 6px;
+  color: #3fb950; font-family: var(--sans); font-size: 13px; font-weight: 600;
   padding: 7px 16px; cursor: pointer; display: flex; align-items: center;
   transition: background .15s, border-color .15s; white-space: nowrap; flex-shrink: 0;
 }
-#export-btn:hover { background: rgba(0,212,255,.18); border-color: var(--cyan); }
-#export-btn:disabled { opacity: .35; cursor: not-allowed; }
+#html-btn:hover { background: rgba(63,185,80,.18); border-color: #3fb950; }
+#html-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+#pdf-btn {
+  background: rgba(188,140,255,.08); border: 1px solid rgba(188,140,255,.4); border-radius: 6px;
+  color: #bc8cff; font-family: var(--sans); font-size: 13px; font-weight: 600;
+  padding: 7px 16px; cursor: pointer; display: flex; align-items: center;
+  transition: background .15s, border-color .15s; white-space: nowrap; flex-shrink: 0;
+}
+#pdf-btn:hover { background: rgba(188,140,255,.18); border-color: #bc8cff; }
+#pdf-btn:disabled { opacity: .35; cursor: not-allowed; }
 
 /* ── history panel ── */
 #history-btn {
@@ -899,7 +1164,7 @@ main {
 .hist-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04);
-  transition: background .12s;
+  transition: background .12s; position: relative;
 }
 .hist-item:hover { background: rgba(255,255,255,.04); }
 .hist-item.active { background: rgba(0,212,255,.07); }
@@ -911,11 +1176,35 @@ main {
 .hist-cve { font-family: var(--mono); font-size: 13px; font-weight: 600; }
 .hist-meta { font-size: 10px; color: var(--dim); margin-top: 2px; }
 .hist-empty { color: var(--dim); font-size: 13px; text-align: center; padding: 32px 16px; }
+.hist-del {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 5px; border: none;
+  background: transparent; cursor: pointer; opacity: 0;
+  color: var(--dim); transition: opacity .15s, background .12s, color .12s;
+}
+.hist-item:hover .hist-del { opacity: 1; }
+.hist-del:hover { background: rgba(248,81,73,.15); color: #f85149 !important; }
+.hist-del svg { pointer-events: none; }
 .hist-overlay {
   position: fixed; inset: 0; z-index: 99; background: rgba(0,0,0,.35);
   display: none;
 }
 .hist-overlay.open { display: block; }
+.hist-pagination {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+  gap: 8px; flex-shrink: 0;
+}
+.hist-pagination button {
+  background: rgba(255,255,255,.05); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--sans); font-size: 11px; font-weight: 600;
+  padding: 5px 12px; border-radius: 5px; cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.hist-pagination button:hover:not(:disabled) { background: rgba(0,212,255,.12); border-color: rgba(0,212,255,.4); color: var(--cyan); }
+.hist-pagination button:disabled { opacity: .3; cursor: not-allowed; }
+.hist-page-info { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.hist-page-info span { color: var(--text); font-weight: 600; }
 
 /* ── empty state ── */
 .empty-msg {
@@ -1129,7 +1418,7 @@ main {
 /* ── print styles ── */
 @media print {
   #app { height: auto; overflow: visible; }
-  header, .run-panel, .tab-bar, #export-btn, #status-badge, #verdict { display: none !important; }
+  header, .run-panel, .tab-bar, #status-badge, #verdict { display: none !important; }
   /* hide every tab except the report */
   .tab-pane { display: none !important; }
   #tab-report { display: flex !important; padding: 0 !important; }
@@ -1258,11 +1547,19 @@ main {
   <div class="hist-overlay" id="hist-overlay"></div>
   <div class="hist-panel" id="hist-panel">
     <div class="hist-panel-head">
-      <span>Investigation History</span>
-      <button id="hist-close" title="Close">×</button>
+      <span>Investigation History <span id="hist-total-badge" style="font-size:10px;font-weight:400;color:var(--dim)"></span></span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <button id="hist-filter-btn" title="Show only verified" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--dim);font-size:10px;padding:2px 7px;cursor:pointer;font-family:var(--sans);font-weight:600;transition:color .12s,border-color .12s">ALL</button>
+        <button id="hist-close" title="Close">×</button>
+      </div>
     </div>
     <div class="hist-list" id="hist-list">
       <div class="hist-empty">No previous investigations</div>
+    </div>
+    <div class="hist-pagination" id="hist-pagination" style="display:none">
+      <button id="hist-prev" disabled>← Prev</button>
+      <span class="hist-page-info">Page <span id="hist-page-cur">1</span> / <span id="hist-page-total">1</span></span>
+      <button id="hist-next" disabled>Next →</button>
     </div>
   </div>
 
@@ -1274,9 +1571,14 @@ main {
     <div class="run-panel">
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
       <button id="run-btn">Run</button>
-      <button id="export-btn" disabled title="Save as PDF">
+      <button id="html-btn" disabled title="Download standalone HTML report with screenshots">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
-          <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>Download HTML
+      </button>
+      <button id="pdf-btn" disabled title="Generate PDF via Playwright (includes screenshots)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
         </svg>Export PDF
       </button>
     </div>
@@ -1285,39 +1587,20 @@ main {
     <div id="cve-info-panel" style="display:none"></div>
 
     <div class="tabs-wrap">
-      <div class="tab-bar">
-        <button class="tab-btn active" data-tab="log">Live Log</button>
-        <button class="tab-btn" data-tab="report">Report</button>
-        <button class="tab-btn" data-tab="evidence">Evidence</button>
-        <button class="tab-btn" data-tab="binary" id="tab-btn-binary" style="display:none">Binary Analysis</button>
-        <button class="tab-btn" data-tab="screenshots">Screenshots</button>
-        <button class="tab-btn" data-tab="binlab">Binary Lab</button>
-      </div>
-
+      <!-- Log section — no tab bar -->
       <div id="tab-log" class="tab-pane active">
         <div id="log-terminal"><div class="empty-msg">Enter a CVE ID and press Run to develop an exploit</div></div>
+        <div id="done-panel"></div>
       </div>
-      <div id="tab-report" class="tab-pane">
-        <div id="report-content">
-          <div class="empty-msg">Run a CVE investigation to generate the report</div>
-        </div>
-      </div>
+      <!-- Hidden panes kept for JS/Playwright compatibility — not visible in UI -->
+      <div id="tab-report" class="tab-pane"><div id="report-content"></div></div>
       <div id="tab-evidence" class="tab-pane">
-        <div id="evidence-content" class="evidence-grid">
-          <div class="empty-msg">Run a CVE investigation to see evidence</div>
-        </div>
-        <div id="http-content" style="margin-top:8px"></div>
+        <div id="evidence-content" class="evidence-grid"></div>
+        <div id="http-content"></div>
       </div>
-      <div id="tab-binary" class="tab-pane">
-        <div id="binary-content" class="binary-wrap">
-          <div class="empty-msg">No binary analysis data for this CVE</div>
-        </div>
-      </div>
-      <div id="tab-screenshots" class="tab-pane">
-        <div id="shots-content" class="shots-grid">
-          <div class="empty-msg">Screenshots will appear here after the run</div>
-        </div>
-      </div>
+      <div id="tab-binary" class="tab-pane"><div id="binary-content" class="binary-wrap"></div></div>
+      <div id="tab-btn-binary" style="display:none"></div>
+      <div id="tab-screenshots" class="tab-pane"><div id="shots-content" class="shots-grid"></div></div>
       <div id="tab-binlab" class="tab-pane">
         <div id="binlab-content">
           <!-- Upload zone (hidden after file load) -->
@@ -1418,16 +1701,6 @@ main {
   let currentJobId = null;
   let currentEs = null;
 
-  // ── tabs ──────────────────────────────────────────────────────────────────
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      $('tab-' + btn.dataset.tab).classList.add('active');
-    });
-  });
-
   // ── run ───────────────────────────────────────────────────────────────────
   $('run-btn').addEventListener('click', startRun);
   $('cve-input').addEventListener('keydown', e => { if (e.key === 'Enter') startRun(); });
@@ -1447,12 +1720,8 @@ main {
     if (currentEs) { currentEs.close(); currentEs = null; }
     _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '';
-    $('report-content').innerHTML = '<div class="empty-msg">Run a CVE investigation to generate the report</div>';
-    $('evidence-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
-    $('http-content').innerHTML = '';
-    $('shots-content').innerHTML = '<div class="empty-msg">Waiting…</div>';
-    $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
-    $('tab-btn-binary').style.display = 'none';
+    $('done-panel').className = '';
+    $('done-panel').innerHTML = '';
     $('verdict').style.display = 'none';
     $('verdict').className = '';
     $('cve-info-panel').style.display = 'none';
@@ -1460,13 +1729,8 @@ main {
     $('phase-tracker').style.display = 'block';
     setStatus('running', 'Running…');
     $('run-btn').disabled = true;
-    $('export-btn').disabled = true;
-
-    // Switch to log tab
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelector('[data-tab="log"]').classList.add('active');
-    $('tab-log').classList.add('active');
+    $('html-btn').disabled = true;
+    if ($('pdf-btn')) $('pdf-btn').disabled = true;
 
     try {
       const res = await fetch('/api/run', {
@@ -1500,7 +1764,8 @@ main {
       const d = JSON.parse(e.data);
       renderResult(d);
       $('run-btn').disabled = false;
-      $('export-btn').disabled = false;
+        $('html-btn').disabled = false;
+      if ($('pdf-btn')) $('pdf-btn').disabled = false;
       setTimeout(loadHistory, 1500);
     });
 
@@ -1518,7 +1783,8 @@ main {
       const d = await r.json();
       renderResult(d);
       $('run-btn').disabled = false;
-      $('export-btn').disabled = false;
+        $('html-btn').disabled = false;
+      if ($('pdf-btn')) $('pdf-btn').disabled = false;
     } catch {}
   }
 
@@ -1645,17 +1911,38 @@ main {
     // HTTP requests
     renderHttp(d.evidence || {});
 
-    // screenshots
+    // screenshots + done panel
+    showDonePanel(d);
+
+    // keep hidden evidence/report/binary data for export
+    renderEvidence(d.verified_evidence || {}, d.evidence || {});
+    renderHttp(d.evidence || {});
     renderScreenshots(d.evidence || {});
-
-    // professional report
     buildReport(d);
-
-    // binary analysis
     renderBinary(d);
 
     // stop phase tracker
     $('phase-tracker').style.display = 'none';
+  }
+
+  function showDonePanel(d) {
+    const panel = $('done-panel');
+    const ok = !!d.verified;
+    const elapsed = d.elapsed ? (' · ' + Math.round(d.elapsed) + 's') : '';
+    const icon = ok
+      ? `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+      : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    const subline = ok
+      ? (d.cve_id || '') + escHtml(elapsed) + ' · Vulnerabilidad reproducida en lab aislado'
+      : (d.cve_id || '') + escHtml(elapsed) + ' · No reproducido dinámicamente';
+
+    panel.innerHTML = `
+      <div class="done-banner ${ok ? 'done-banner-ok' : 'done-banner-fail'}">
+        ${icon}
+        <div class="done-banner-msg">binOracle ha terminado — Informe hecho<br><span style="font-weight:400;font-size:11px;opacity:.75">${subline}</span></div>
+      </div>`;
+
+    panel.classList.add('visible');
   }
 
   function renderCveInfo(d) {
@@ -1746,13 +2033,12 @@ main {
       : 'NOT CONFIRMED — dynamic reproduction did not succeed';
 
     const shotsHtml = shots.map((s, i) => {
-      const path  = typeof s === 'string' ? s : (s.path || '');
-      const label = typeof s === 'object' ? (s.label || s.title || `Screenshot ${i+1}`) : `Screenshot ${i+1}`;
-      if (!path) return '';
-      const b64 = btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+      const src   = _shotImgSrc(s, i);
+      if (!src) return '';
+      const label = _shotLabel(s, i);
       return `<div class="report-shot">
         <div class="report-shot-label">${escHtml(label)}</div>
-        <img src="/api/screenshot/${b64}" alt="${escHtml(label)}" loading="lazy">
+        <img src="${src}" alt="${escHtml(label)}" loading="lazy">
       </div>`;
     }).join('');
 
@@ -1963,18 +2249,26 @@ main {
       findings.push(['Reversing Log Entries', binLogs.map(e => `[${e.t}s] ${e.msg}`).join('\n')]);
     }
 
-    const btn = $('tab-btn-binary');
     if (findings.length) {
-      btn.style.display = '';
       $('binary-content').innerHTML = findings.map(([label, val]) => `
         <div class="binary-finding">
           <div class="binary-finding-head">${escHtml(label)}</div>
           <div class="binary-finding-body">${escHtml(String(val))}</div>
         </div>`).join('');
     } else {
-      btn.style.display = 'none';
       $('binary-content').innerHTML = '<div class="empty-msg">No binary analysis data for this CVE</div>';
     }
+  }
+
+  function _shotImgSrc(s, i) {
+    if (typeof s === 'object' && s.png_b64) return 'data:image/png;base64,' + s.png_b64;
+    const path = typeof s === 'string' ? s : (s.path || '');
+    if (!path) return '';
+    return '/api/screenshot/' + btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  }
+  function _shotLabel(s, i) {
+    if (typeof s === 'object') return s.caption_en || s.caption_es || s.label || s.title || `Screenshot ${i+1}`;
+    return `Screenshot ${i+1}`;
   }
 
   function renderScreenshots(ev) {
@@ -1985,14 +2279,13 @@ main {
       return;
     }
     container.innerHTML = shots.map((s, i) => {
-      const path = typeof s === 'string' ? s : (s.path || '');
-      const label = typeof s === 'object' ? (s.label || s.title || `Screenshot ${i+1}`) : `Screenshot ${i+1}`;
-      if (!path) return '';
-      const b64 = btoa(path).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+      const src = _shotImgSrc(s, i);
+      if (!src) return '';
+      const label = _shotLabel(s, i);
       return `
         <div class="shot-wrap">
           <div class="shot-label">${escHtml(label)}</div>
-          <img src="/api/screenshot/${b64}" alt="${escHtml(label)}" loading="lazy">
+          <img src="${src}" alt="${escHtml(label)}" loading="lazy">
         </div>`;
     }).join('');
   }
@@ -2005,69 +2298,128 @@ main {
     badge.style.display = 'inline-block';
   }
 
-  // ── PDF export ────────────────────────────────────────────────────────────
-  $('export-btn').addEventListener('click', async () => {
-    const btn = $('export-btn');
+  // ── HTML download ─────────────────────────────────────────────────────────
+  $('html-btn').addEventListener('click', async () => {
+    if (!currentJobId) return;
+    const btn = $('html-btn');
     const origHTML = btn.innerHTML;
     btn.disabled = true;
     btn.textContent = 'Generating…';
-
-    // Switch to report tab so its content is in the DOM
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelector('[data-tab="report"]').classList.add('active');
-    $('tab-report').classList.add('active');
-    // Allow one render frame before serialising
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
     const cveId = ($('cve-input').value.trim() || 'report').toUpperCase()
                     .replace(/[^A-Z0-9_-]/g, '_');
     try {
-      const r = await fetch('/api/export-pdf', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          cve_id: cveId,
-          html: document.documentElement.outerHTML,
-        }),
-      });
+      const r = await fetch('/api/export-html/' + currentJobId);
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        alert('PDF export failed: ' + (err.error || r.status));
+        alert('HTML export failed: ' + (err.error || r.status));
         return;
       }
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = cveId + '_report.pdf';
+      a.href = url; a.download = cveId + '_report.html';
       document.body.appendChild(a); a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 8000);
     } catch (e) {
-      alert('PDF export error: ' + e);
+      alert('HTML download error: ' + e);
     } finally {
       btn.disabled = false;
       btn.innerHTML = origHTML;
     }
   });
 
+  // ── PDF download (Playwright) ──────────────────────────────────────────────
+  const pdfBtn = document.getElementById('pdf-btn');
+  if (pdfBtn) {
+    pdfBtn.addEventListener('click', async () => {
+      if (!currentJobId) return;
+      const btn = pdfBtn;
+      const origHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.textContent = 'Generating PDF…';
+      const cveId = ($('cve-input').value.trim() || 'report').toUpperCase()
+                      .replace(/[^A-Z0-9_-]/g, '_');
+      try {
+        const r = await fetch('/api/export-pdf/' + currentJobId);
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          alert('PDF export failed: ' + (err.error || r.status));
+          return;
+        }
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = cveId + '_report.pdf';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 8000);
+      } catch (e) {
+        alert('PDF download error: ' + e);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = origHTML;
+      }
+    });
+  }
+
   // ── history panel ─────────────────────────────────────────────────────────
   let _historyData = [];
   let _activeHistJobId = null;
 
-  async function loadHistory() {
+  let _histPage = 1;
+  let _histPages = 1;
+  let _histTotal = 0;
+  let _histFilter = 'all'; // 'all' | 'verified'
+
+  async function loadHistory(page) {
+    page = page || _histPage;
     try {
-      const r = await fetch('/api/history');
-      _historyData = await r.json();
+      const filter = _histFilter === 'verified' ? '&verified=1' : '';
+      const r = await fetch(`/api/history?page=${page}&limit=20${filter}`);
+      const data = await r.json();
+      // Support both old (array) and new (object) response formats
+      if (Array.isArray(data)) {
+        _historyData = data;
+        _histPage = 1; _histPages = 1; _histTotal = data.length;
+      } else {
+        _historyData = data.items || [];
+        _histPage = data.page || 1;
+        _histPages = data.pages || 1;
+        _histTotal = data.total || 0;
+      }
       renderHistoryList();
-      $('hist-count').textContent = _historyData.length;
-    } catch {}
+      $('hist-count').textContent = _histTotal;
+    } catch(e) { console.error('loadHistory error', e); }
   }
 
   function renderHistoryList() {
     const list = $('hist-list');
+    const pgEl = $('hist-pagination');
+    const totalBadge = $('hist-total-badge');
+    if (totalBadge) totalBadge.textContent = _histTotal ? `(${_histTotal} total)` : '';
+
+    // Pagination controls
+    if (_histPages > 1) {
+      pgEl.style.display = '';
+      $('hist-page-cur').textContent = _histPage;
+      $('hist-page-total').textContent = _histPages;
+      $('hist-prev').disabled = _histPage <= 1;
+      $('hist-next').disabled = _histPage >= _histPages;
+    } else {
+      pgEl.style.display = 'none';
+    }
+
+    // Filter button label
+    const filterBtn = $('hist-filter-btn');
+    if (filterBtn) {
+      filterBtn.textContent = _histFilter === 'verified' ? 'CONF' : 'ALL';
+      filterBtn.style.color = _histFilter === 'verified' ? 'var(--green)' : 'var(--dim)';
+      filterBtn.style.borderColor = _histFilter === 'verified' ? 'rgba(0,230,118,.4)' : 'var(--border)';
+    }
+
     if (!_historyData.length) {
-      list.innerHTML = '<div class="hist-empty">No previous investigations</div>';
+      list.innerHTML = `<div class="hist-empty">${_histFilter === 'verified' ? 'No verified investigations' : 'No previous investigations'}</div>`;
       return;
     }
     list.innerHTML = _historyData.map(rec => {
@@ -2086,27 +2438,64 @@ main {
           <div class="hist-cve">${escHtml(rec.cve_id)}</div>
           <div class="hist-meta">${dtStr}${elapsed ? ' · ' + elapsed : ''}</div>
         </div>
+        <button class="hist-del" title="Delete from history" aria-label="Delete ${escHtml(rec.cve_id)} from history">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H2.506a.58.58 0 0 0-.01 0H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66H14.5a.5.5 0 0 0 0-1h-.995a.59.59 0 0 0-.01 0H11Zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5h9.916Zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-.998.06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-.998-.06l.5-8.5a.5.5 0 0 1 .528-.47ZM8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5Z"/>
+          </svg>
+        </button>
       </div>`;
     }).join('');
 
     list.querySelectorAll('.hist-item').forEach(el => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.hist-del')) return;
+        openHistoryItem(el.dataset.jid, el.dataset.cve);
+      });
+      el.querySelector('.hist-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
         const jobId = el.dataset.jid;
-        const cveId = el.dataset.cve;
-        openHistoryItem(jobId, cveId);
+        try {
+          const r = await fetch('/api/delete-history/' + jobId, {method: 'GET'});
+          if (r.ok) {
+            _historyData = _historyData.filter(x => x.job_id !== jobId);
+            _histTotal = Math.max(0, _histTotal - 1);
+            _histPages = Math.max(1, Math.ceil(_histTotal / 20));
+            if (_histPage > _histPages) _histPage = _histPages;
+            renderHistoryList();
+            $('hist-count').textContent = _histTotal;
+          }
+        } catch(err) { console.error('Delete error', err); }
       });
     });
+
+    // Pagination buttons
+    const prevBtn = $('hist-prev'), nextBtn = $('hist-next');
+    if (prevBtn) prevBtn.onclick = () => { if (_histPage > 1) loadHistory(_histPage - 1); };
+    if (nextBtn) nextBtn.onclick = () => { if (_histPage < _histPages) loadHistory(_histPage + 1); };
+
+    // Filter toggle
+    if (filterBtn) {
+      filterBtn.onclick = () => {
+        _histFilter = _histFilter === 'verified' ? 'all' : 'verified';
+        _histPage = 1;
+        loadHistory(1);
+      };
+    }
   }
 
   async function openHistoryItem(jobId, cveId) {
     closeHistPanel();
     _activeHistJobId = jobId;
+    currentJobId = jobId;
     // Reset UI for the loaded run
     _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '<div class="empty-msg">Loading from history…</div>';
+    $('done-panel').className = '';
+    $('done-panel').innerHTML = '';
     $('verdict').style.display = 'none';
-    $('export-btn').disabled = true;
     $('cve-input').value = cveId;
+    $('html-btn').disabled = false;
+    if ($('pdf-btn')) $('pdf-btn').disabled = false;
 
     try {
       const r = await fetch('/api/result/' + jobId);
@@ -2118,7 +2507,6 @@ main {
       (d.logs || []).forEach(entry => appendLog(entry.t, entry.msg));
 
       renderResult(d);
-      $('export-btn').disabled = false;
       setStatus(d.verified ? 'ok' : 'fail', d.verified ? `CONFIRMED: ${cveId}` : `NOT CONFIRMED: ${cveId}`);
     } catch (e) {
       alert('Error loading history: ' + e);

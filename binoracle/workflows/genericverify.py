@@ -1279,11 +1279,15 @@ def verify_generic_lfi_rce(
 
     path_param = path_param_hint or _pick_param(parameters, _PATH_HINTS)
     if not path_param:
-        res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
-        res.limitations.append("la verificacion de LFI-a-RCE necesita saber que parametro "
-                               "lleva la ruta/fichero; afina 'parameters' o pasalo a mano "
-                               "(path_param_hint)")
-        return res
+        _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+        if _params_list:
+            path_param = _params_list[0]
+        else:
+            res.detail = "no se identifico el parametro que lleva la ruta/fichero a incluir"
+            res.limitations.append("la verificacion de LFI-a-RCE necesita saber que parametro "
+                                   "lleva la ruta/fichero; afina 'parameters' o pasalo a mano "
+                                   "(path_param_hint)")
+            return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
     if boot is None:
@@ -1753,6 +1757,176 @@ def _sqli_sleep_clause(op: str, sleep_expr: str) -> str:
     return sleep_expr
 
 
+def _screenshot_browser_navigate(url: str) -> Optional[str]:
+    """Abre la URL en un navegador Chromium headless real y toma una captura visual de la pagina
+    tal como la renderiza el navegador (captura tipo 'web', distinta de _screenshot_response que
+    muestra el visor HTTP). Devuelve PNG en base64, o None si Playwright no esta disponible."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from .. import chromium_launch_kwargs
+    except Exception:
+        return None
+    import base64
+    import concurrent.futures as _cf
+    import tempfile
+
+    fd, out_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+
+    def _do() -> Optional[str]:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**chromium_launch_kwargs())
+            try:
+                page = browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    device_scale_factor=2,
+                ).new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                page.screenshot(path=out_path)
+                try:
+                    page.close(run_before_unload=False)
+                except Exception:
+                    pass
+            finally:
+                browser.close()
+        with open(out_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_do).result(timeout=30)
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
+def _take_generic_screenshots_sqli(
+    base_url: str, endpoint_path: str, m: str, base_params: dict,
+    sqli_param: str, evidence: dict,
+) -> List[dict]:
+    """Captura screenshots Playwright del lab generico para SQLi: control, payload, false (boolean)."""
+    import urllib.parse
+    shots: List[dict] = []
+    estrategia = evidence.get("estrategia", "tiempo")
+    payload_ganador = evidence.get("payload_ganador", "")
+    orig_value = str(base_params.get(sqli_param) or "1")
+
+    def _do_shot(params: dict, step_n: int, caption_es: str, caption_en: str,
+                 highlight: str = "", timeout: int = 20) -> None:
+        try:
+            resp = _http_request(m, base_url + endpoint_path, timeout=timeout,
+                                 data=params if m != "GET" else None,
+                                 params=params if m == "GET" else None)
+            body = getattr(resp, "text", "") or ""
+            status = getattr(resp, "status_code", 200)
+            url_disp = base_url + endpoint_path
+            if m == "GET":
+                url_disp += "?" + urllib.parse.urlencode(params)
+            png = _screenshot_response(url_disp, m, status, body, highlight=highlight)
+            if png:
+                shots.append({"step": step_n, "caption_es": caption_es,
+                               "caption_en": caption_en, "png_b64": png})
+        except Exception:
+            pass
+
+    _do_shot({**base_params, sqli_param: orig_value}, 1,
+             f"Control: {m} {endpoint_path} sin inyección → respuesta base del servidor",
+             f"Control: {m} {endpoint_path} without injection → baseline server response")
+
+    if payload_ganador:
+        if estrategia == "boolean-inband":
+            cap_es = (f"Payload boolean TRUE: {sqli_param}={payload_ganador!r} → "
+                      f"{evidence.get('respuesta_true_len', '?')}B (inyección confirmada)")
+            cap_en = (f"Boolean TRUE payload: {sqli_param}={payload_ganador!r} → "
+                      f"{evidence.get('respuesta_true_len', '?')}B (injection confirmed)")
+        else:
+            cap_es = (f"Payload SQLi ciega: {sqli_param}={payload_ganador!r} → "
+                      "respuesta retrasada (tiempo confirma inyección)")
+            cap_en = (f"Blind SQLi payload: {sqli_param}={payload_ganador!r} → "
+                      "delayed response (time-based injection confirmed)")
+        _do_shot({**base_params, sqli_param: payload_ganador}, 2,
+                 cap_es, cap_en, highlight=payload_ganador[:80])
+
+    if estrategia == "boolean-inband" and evidence.get("payload_false"):
+        pf = evidence["payload_false"]
+        _do_shot({**base_params, sqli_param: pf}, 3,
+                 (f"Payload boolean FALSE: {sqli_param}={pf!r} → "
+                  f"{evidence.get('respuesta_false_len', '?')}B (contraste con payload TRUE)"),
+                 (f"Boolean FALSE payload: {sqli_param}={pf!r} → "
+                  f"{evidence.get('respuesta_false_len', '?')}B (contrast with TRUE payload)"))
+
+    # Web screenshot — navegador real apuntando al servidor del lab (complementa los shots
+    # de visor HTTP con una vista tal como la renderiza Chromium)
+    step_web = len(shots) + 1
+    try:
+        web_url = base_url + endpoint_path
+        # GET: añadir payload ganador en la URL para que el navegador muestre la respuesta
+        if m == "GET" and payload_ganador:
+            web_url += "?" + urllib.parse.urlencode({**base_params, sqli_param: payload_ganador})
+        web_png = _screenshot_browser_navigate(web_url)
+        if web_png:
+            shots.append({
+                "step": step_web,
+                "caption_es": (f"Vista web real: Chromium renderiza {endpoint_path} "
+                               f"— servidor vivo en {base_url}"),
+                "caption_en": (f"Real web view: Chromium renders {endpoint_path} "
+                               f"— live server at {base_url}"),
+                "png_b64": web_png,
+            })
+    except Exception:
+        pass
+    return shots
+
+
+def _take_generic_screenshots_bypass(
+    base_url: str, endpoint: str, m: str,
+    bypass_header: str, bypass_value: str,
+    status_normal: int, body_normal: str,
+    status_bypass: int, body_bypass: str,
+) -> List[dict]:
+    """Captura screenshots Playwright del lab generico para header bypass."""
+    shots: List[dict] = []
+    url = base_url + endpoint
+
+    for step_n, status, body, caption_es, caption_en, hl in [
+        (1, status_normal, body_normal,
+         f"Sin header de bypass → HTTP {status_normal} (middleware bloquea el acceso)",
+         f"Without bypass header → HTTP {status_normal} (middleware blocks access)",
+         ""),
+        (2, status_bypass, body_bypass,
+         f"CON {bypass_header}: {bypass_value[:60]!r} → HTTP {status_bypass} (acceso conseguido)",
+         f"WITH {bypass_header}: {bypass_value[:60]!r} → HTTP {status_bypass} (access gained)",
+         bypass_value[:80]),
+    ]:
+        try:
+            png = _screenshot_response(url, m, status, body, highlight=hl)
+            if png:
+                shots.append({"step": step_n, "caption_es": caption_es,
+                               "caption_en": caption_en, "png_b64": png})
+        except Exception:
+            pass
+
+    # Web screenshot — navegador real apuntando al endpoint (vista complementaria al visor HTTP)
+    try:
+        web_png = _screenshot_browser_navigate(url)
+        if web_png:
+            shots.append({
+                "step": len(shots) + 1,
+                "caption_es": (f"Vista web real: Chromium renderiza {endpoint} "
+                               f"tras el bypass — servidor vivo en {url.split(endpoint)[0]}"),
+                "caption_en": (f"Real web view: Chromium renders {endpoint} "
+                               f"after bypass — live server at {url.split(endpoint)[0]}"),
+                "png_b64": web_png,
+            })
+    except Exception:
+        pass
+    return shots
+
+
 def verify_generic_sqli_blind(
     source_dir: str, endpoint: str, http_method: str, parameters,
     sqli_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
@@ -2117,6 +2291,11 @@ def verify_generic_sqli_blind(
                               f"{res.evidence['payload_ganador']!r} retraso la respuesta de forma "
                               f"consistente en 2 peticiones independientes, por encima de la linea "
                               f"base + la mitad del retraso pedido -- no es ruido de red/Docker")
+            step("capturando evidencia visual (screenshots del laboratorio)...")
+            shots = _take_generic_screenshots_sqli(
+                base_url, endpoint_path, m, base_params, sqli_param, res.evidence)
+            if shots:
+                res.evidence["screenshots"] = shots
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} combinaciones de contexto/dialecto de "
@@ -2852,11 +3031,13 @@ def verify_generic_header_bypass(
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         url = base_url + endpoint
         step(f"probando SIN cabecera de bypass: {m} {url}")
+        body_normal = ""
         try:
             # allow_redirects=False: necesitamos el status REAL del servidor (3xx/401/403),
             # no el de la pagina de login/error a la que redirige -- igual que open_redirect.
             r_normal = _http_request(m, url, timeout=15, allow_redirects=False)
             status_normal = r_normal.status_code
+            body_normal = getattr(r_normal, "text", "") or ""
         except Exception as e:
             status_normal = -1
             step(f"error en peticion normal: {e}")
@@ -2900,6 +3081,12 @@ def verify_generic_header_bypass(
                 (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "") +
                 " -- el control de autorizacion fue eludido"
             )
+            step("capturando evidencia visual (screenshots del laboratorio)...")
+            shots = _take_generic_screenshots_bypass(
+                base_url, endpoint, m, bypass_header, bypass_value,
+                status_normal, body_normal, status_bypass, body_bypass)
+            if shots:
+                res.evidence["screenshots"] = shots
         else:
             res.ok = True
             # Diagnostico automatico: razona por que fallo el bypass
