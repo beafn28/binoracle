@@ -3843,7 +3843,7 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
     table_counts: dict = {}
     # patrones: `{$wpdb->prefix}tablename`, `$wpdb->prefix.'tablename'`, "'wp_tablename'"
     _TABLE_RE = re.compile(
-        r'(?:\{\$wpdb->prefix\}|{?\$wpdb->prefix\.\'|\'wp_)([a-zA-Z][a-zA-Z0-9_]{1,40})(?:\')?',
+        r'(?:\{\$wpdb->prefix\}|{?\$wpdb->prefix\s*\.\s*[\'"]|[\'"]wp_)([a-zA-Z][a-zA-Z0-9_]{1,40})(?:[\'"])?',
         re.IGNORECASE)
     _SKIP_TABLES = {
         "posts", "postmeta", "terms", "term_taxonomy", "term_relationships",
@@ -3875,7 +3875,7 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
     El objetivo es que el endpoint devuelva al menos una fila para que el diferencial booleano
     sea detectable (TRUE=filas, FALSE=vacio) en plugins que fallan por DB vacia."""
     seeded = 0
-    for tbl in tables[:3]:
+    for tbl in tables[:6]:
         full = f"wp_{tbl}"
         # Intentar varias formas de INSERT, de menos a mas especulativo:
         # 1. Solo id=1 (PK explicita)
