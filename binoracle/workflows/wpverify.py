@@ -743,7 +743,9 @@ class _Lab:
         return _run(["docker"] + list(args), timeout=timeout, input_text=input_text)
 
     def setup_network_and_volume(self):
-        self.sh("network", "create", self.net, timeout=30)
+        r = self.sh("network", "create", self.net, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"docker network create failed: {r.stderr.strip()[:200]}")
         self._created.append(("network", self.net))
         self.sh("volume", "create", self.vol, timeout=30)
         self._created.append(("volume", self.vol))
@@ -1601,7 +1603,12 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         _src_future = None
 
     step("levantando laboratorio WordPress+MySQL aislado en Docker (red/volumen propios)...")
-    lab.setup_network_and_volume()
+    try:
+        lab.setup_network_and_volume()
+    except RuntimeError as _net_err:
+        res.detail = f"docker network create falló: {_net_err}"
+        step(f"[ERROR] {_net_err} -- limpia redes huérfanas con: docker network prune -f")
+        return None
     lab.start_mysql(root_pw, db_pw)
     if not lab.mysql_ready(db_pw):
         res.detail = "MySQL no respondio a tiempo"
