@@ -1054,16 +1054,6 @@ main {
 }
 .shot-wrap img { width: 100%; display: block; }
 
-/* ── export btn ── */
-#export-btn {
-  background: rgba(0,212,255,.08); border: 1px solid rgba(0,212,255,.4); border-radius: 6px;
-  color: var(--cyan); font-family: var(--sans); font-size: 13px; font-weight: 600;
-  padding: 7px 16px; cursor: pointer; display: flex; align-items: center;
-  transition: background .15s, border-color .15s; white-space: nowrap; flex-shrink: 0;
-}
-#export-btn:hover { background: rgba(0,212,255,.18); border-color: var(--cyan); }
-#export-btn:disabled { opacity: .35; cursor: not-allowed; }
-
 /* ── html download btn ── */
 #html-btn {
   background: rgba(63,185,80,.08); border: 1px solid rgba(63,185,80,.4); border-radius: 6px;
@@ -1347,7 +1337,7 @@ main {
 /* ── print styles ── */
 @media print {
   #app { height: auto; overflow: visible; }
-  header, .run-panel, .tab-bar, #export-btn, #status-badge, #verdict { display: none !important; }
+  header, .run-panel, .tab-bar, #status-badge, #verdict { display: none !important; }
   /* hide every tab except the report */
   .tab-pane { display: none !important; }
   #tab-report { display: flex !important; padding: 0 !important; }
@@ -1492,11 +1482,6 @@ main {
     <div class="run-panel">
       <input id="cve-input" type="text" placeholder="CVE-2024-1071" autocomplete="off" spellcheck="false">
       <button id="run-btn">Run</button>
-      <button id="export-btn" disabled title="Save as PDF">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
-          <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>
-        </svg>Export PDF
-      </button>
       <button id="html-btn" disabled title="Download standalone HTML report with screenshots">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:5px">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
@@ -1688,7 +1673,6 @@ main {
     $('phase-tracker').style.display = 'block';
     setStatus('running', 'Running…');
     $('run-btn').disabled = true;
-    $('export-btn').disabled = true;
     $('html-btn').disabled = true;
     if ($('pdf-btn')) $('pdf-btn').disabled = true;
 
@@ -1730,8 +1714,7 @@ main {
       const d = JSON.parse(e.data);
       renderResult(d);
       $('run-btn').disabled = false;
-      $('export-btn').disabled = false;
-      $('html-btn').disabled = false;
+        $('html-btn').disabled = false;
       if ($('pdf-btn')) $('pdf-btn').disabled = false;
       setTimeout(loadHistory, 1500);
     });
@@ -1750,8 +1733,7 @@ main {
       const d = await r.json();
       renderResult(d);
       $('run-btn').disabled = false;
-      $('export-btn').disabled = false;
-      $('html-btn').disabled = false;
+        $('html-btn').disabled = false;
       if ($('pdf-btn')) $('pdf-btn').disabled = false;
     } catch {}
   }
@@ -2239,52 +2221,6 @@ main {
     badge.style.display = 'inline-block';
   }
 
-  // ── PDF export ────────────────────────────────────────────────────────────
-  $('export-btn').addEventListener('click', async () => {
-    const btn = $('export-btn');
-    const origHTML = btn.innerHTML;
-    btn.disabled = true;
-    btn.textContent = 'Generating…';
-
-    // Switch to report tab so its content is in the DOM
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelector('[data-tab="report"]').classList.add('active');
-    $('tab-report').classList.add('active');
-    // Allow one render frame before serialising
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-    const cveId = ($('cve-input').value.trim() || 'report').toUpperCase()
-                    .replace(/[^A-Z0-9_-]/g, '_');
-    try {
-      const r = await fetch('/api/export-pdf', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          cve_id: cveId,
-          html: document.documentElement.outerHTML,
-        }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        alert('PDF export failed: ' + (err.error || r.status));
-        return;
-      }
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = cveId + '_report.pdf';
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 8000);
-    } catch (e) {
-      alert('PDF export error: ' + e);
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = origHTML;
-    }
-  });
-
   // ── HTML download ─────────────────────────────────────────────────────────
   $('html-btn').addEventListener('click', async () => {
     if (!currentJobId) return;
@@ -2404,7 +2340,6 @@ main {
     _logPhases = []; _currentPhase = null;
     $('log-terminal').innerHTML = '<div class="empty-msg">Loading from history…</div>';
     $('verdict').style.display = 'none';
-    $('export-btn').disabled = true;
     $('cve-input').value = cveId;
 
     try {
@@ -2417,8 +2352,7 @@ main {
       (d.logs || []).forEach(entry => appendLog(entry.t, entry.msg));
 
       renderResult(d);
-      $('export-btn').disabled = false;
-      setStatus(d.verified ? 'ok' : 'fail', d.verified ? `CONFIRMED: ${cveId}` : `NOT CONFIRMED: ${cveId}`);
+        setStatus(d.verified ? 'ok' : 'fail', d.verified ? `CONFIRMED: ${cveId}` : `NOT CONFIRMED: ${cveId}`);
     } catch (e) {
       alert('Error loading history: ' + e);
     }
