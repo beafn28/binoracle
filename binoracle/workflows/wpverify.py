@@ -892,7 +892,7 @@ class _Lab:
                     "-e", query, timeout=timeout)
         return (r.stdout or "") if r.returncode == 0 else ""
 
-    def install_plugin(self, host_plugin_dir: str, slug: str, timeout=60.0) -> bool:
+    def install_plugin(self, host_plugin_dir: str, slug: str, timeout=180.0) -> bool:
         """Copia el plugin (ya descargado a `host_plugin_dir`, que contiene <slug>/...) dentro del
         volumen compartido. NO usa un bind mount de `host_plugin_dir`: ese directorio lo creo YO
         (websource.py), dentro del PROPIO contenedor de binoracle -- con Docker-fuera-de-Docker el
@@ -1702,10 +1702,11 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
 
     step(f"copiando el plugin ({slug}) al volumen e instalandolo...")
     if not lab.install_plugin(plugin_source_dir, slug):
+        step(f"ERROR: install_plugin devolvio False para '{slug}' -- copia/timeout fallida")
         res.detail = "no se pudo copiar el plugin al laboratorio"
         res.evidence["screenshots"] = shots
         return None
-    r = lab.wp_cli("plugin", "activate", slug, timeout=60)
+    r = lab.wp_cli("plugin", "activate", slug, timeout=90)
     # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
     # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
     # inexistente en el modo CLI de esta version) llama exit(1) ANTES de que WordPress
@@ -1750,6 +1751,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
             and "cannot be registered" in activation_output
         )
         if not wpcli_registration_error:
+            step(f"ERROR: activacion del plugin fallo (rc={r.returncode}): "
+                 f"{activation_output[:200]}")
             res.detail = f"activacion del plugin fallo: {activation_output[:300]}"
             res.limitations.append("si el slug/version descargados no coinciden con el afectado, "
                                    "la activacion puede fallar por requisitos del propio plugin")
