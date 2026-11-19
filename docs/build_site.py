@@ -639,18 +639,25 @@ def shell(title, current, body, lang_other=None):
 def wiki_sidebar(current, lang="en"):
     section_map = {
         "index": [
-            ("#overview",      "Overview"),
-            ("#quick-start",   "Quick Start"),
-            ("#two-pipelines", "Two Pipelines"),
-            ("#cve-engine",    "CVE Engine"),
-            ("#binary-re",     "Binary RE Engine"),
-            ("#reports",       "Reports"),
-            ("#mcp-server",    "MCP Integration"),
-            ("#cli-reference", "CLI Reference"),
-            ("#installation",  "Installation"),
-            ("#configuration", "Configuration"),
-            ("#comparison",    "Comparison"),
-            ("#roadmap",       "Roadmap"),
+            ("#overview",         "Overview"),
+            ("#quick-start",      "Quick Start"),
+            ("#two-pipelines",    "Two Pipelines"),
+            ("#cve-engine",       "CVE Engine"),
+            ("#cve-how",          "↳ How it works"),
+            ("#cve-vuln-classes", "↳ Vuln classes"),
+            ("#cve-commands",     "↳ Commands"),
+            ("#binary-re",        "Binary RE Engine"),
+            ("#re-analysis",      "↳ Analysis types"),
+            ("#re-exploitation",  "↳ Exploitation"),
+            ("#re-formats",       "↳ Formats"),
+            ("#re-commands",      "↳ Commands"),
+            ("#reports",          "Reports"),
+            ("#mcp-server",       "MCP Integration"),
+            ("#cli-reference",    "CLI Reference"),
+            ("#installation",     "Installation"),
+            ("#configuration",    "Configuration"),
+            ("#comparison",       "Comparison"),
+            ("#roadmap",          "Roadmap"),
         ],
         "docs": [
             ("#descripcion",    "Descripción"),
@@ -989,22 +996,66 @@ binoracle pwn    ./binary</code></pre>
       </div>
     </div>
 
-    <h2 id="cve-engine">CVE Engine</h2>
-    <p>The CVE engine is fully autonomous. The local LLM receives only the raw NVD description — no analyst-supplied hints, no guided prompts, no pre-filled templates. Hypotheses are generated entirely from that description.</p>
+    <h2 id="cve-engine">CVE Engine — Autonomous Exploit Development</h2>
+    <p>The CVE engine is a fully autonomous exploit-development pipeline. It receives a CVE identifier and, without any analyst-supplied hints, derives a working proof-of-concept, verifies it in an isolated Docker lab, and emits a self-contained HTML report with Playwright screenshots.</p>
 
-    <pre class="doc-pipeline"> NVD / NIST          LLM local           Docker lab         Playwright          HTML report
- CVE descriptor  --&gt;  Qwen 2.5 Coder  --&gt;  ephemeral env  --&gt;  screenshots    --&gt;  disk only
-                      zero hints           Docker Compose      each step           HTML+CSS</pre>
+    <pre class="doc-pipeline"> NVD / NIST          LLM local           Source code         Docker lab         Playwright          HTML report
+ CVE descriptor  ──▶  Qwen 2.5 Coder  ──▶  static scanner  ──▶  ephemeral env  ──▶  screenshots    ──▶  disk only
+                      zero hints           deterministic        Docker Compose      each step           HTML+CSS</pre>
 
-    <p>Each CVE run provisions a fresh Docker Compose environment scoped to that CVE. The environment is torn down automatically after the run. No persistent lab state is kept between runs.</p>
+    <h3 id="cve-how">How it works — 7 stages</h3>
+    <table>
+      <thead><tr><th>Stage</th><th>What happens</th><th>Component</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>1 · NVD fetch</strong></td>
+          <td>Retrieves the CVE record (CVSS score, affected version, plain-language description) from NIST/NVD plus any GitHub advisories or Exploit-DB entries found in the wild.</td>
+          <td><code>cve_agent.py</code></td>
+        </tr>
+        <tr>
+          <td><strong>2 · LLM hypothesis</strong></td>
+          <td>The local LLM reads the raw description and proposes a structured exploit plan: vulnerability class (SSTI, SQLi, XSS, RCE…), affected endpoint or parameter, payload strategy, and which Docker scaffolder to provision. No human prompts guide this step.</td>
+          <td><code>cve_agent.py</code></td>
+        </tr>
+        <tr>
+          <td><strong>3 · Source-code download</strong></td>
+          <td>The engine downloads the exact vulnerable version of the package (WordPress plugin, PyPI/npm/Composer/RubyGems package, or CMS) from its public registry and caches it locally.</td>
+          <td><code>cve_agent.py</code></td>
+        </tr>
+        <tr>
+          <td><strong>4 · Deterministic scanner</strong></td>
+          <td>A static scanner reads the source code — no LLM at this step — and traces the injection path deterministically: it locates the REST/AJAX endpoint, the DB write, the render context (href, html, js_innerHTML, url, js_string), and derives the exact payload transform needed (e.g. base64-encode for WP REST API). This is the layer that catches render contexts the LLM might miss.</td>
+          <td><code>websource.py</code></td>
+        </tr>
+        <tr>
+          <td><strong>5 · Docker lab</strong></td>
+          <td>Spins up an ephemeral Docker Compose environment scoped to the CVE: the right CMS version, the right DB, the right plugin or package. For WordPress CVEs this includes wp-cli installation, plugin activation, and subscriber/admin user creation. The lab is torn down automatically after the run.</td>
+          <td><code>wpverify.py</code></td>
+        </tr>
+        <tr>
+          <td><strong>6 · Headless browser verification</strong></td>
+          <td>Playwright drives a real Chromium instance to execute the exploit: injects payloads via the REST/AJAX endpoint as a low-privilege user, then loads the admin view and checks whether the XSS fires (document.title marker), the SQLi leaks data, or the SSRF reaches the internal host. Captures a screenshot at every verification step.</td>
+          <td><code>wpverify.py</code></td>
+        </tr>
+        <tr>
+          <td><strong>7 · Report</strong></td>
+          <td>Emits a self-contained HTML report to disk: executive summary, CVSS score, full LLM reasoning chain, winning payload, step-by-step Playwright screenshots, complete curl / Python PoC, and remediation guidance.</td>
+          <td><code>report.py</code></td>
+        </tr>
+      </tbody>
+    </table>
 
-    <h3>Supported vulnerability classes</h3>
+    <div class="doc-callout tip">
+      <strong>Deterministic scanner vs. LLM.</strong> The two layers complement each other. The LLM identifies the vulnerability class and rough attack surface. The deterministic scanner reads the actual source code to find the exact endpoint, DB table, column name, payload transform, and render context — without hallucinating. Only the scanner output is used for the actual exploit attempt.
+    </div>
+
+    <h3 id="cve-vuln-classes">Supported vulnerability classes</h3>
     <table>
       <thead><tr><th>Class</th><th>Ecosystems</th><th>Auto PoC</th></tr></thead>
       <tbody>{vuln_trs}</tbody>
     </table>
 
-    <h3>Commands</h3>
+    <h3 id="cve-commands">Commands</h3>
     <pre><code># Single CVE, default language (Spanish)
 binoracle cve CVE-2025-27516
 
@@ -1020,42 +1071,77 @@ binoracle cve-batch CVE-2025-27516 CVE-2024-23334 CVE-2025-59681
 # Batch with output directory
 binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/</code></pre>
 
-    <h2 id="binary-re">Binary RE Engine</h2>
-    <p>Static and dynamic analysis pipeline for binary files. Covers 50+ exploit families across stack, heap, format string, and low-level categories. All analysis runs locally without uploading the binary.</p>
+    <h2 id="binary-re">Binary RE Engine — Reversing &amp; Exploitation</h2>
+    <p>The binary RE engine takes a binary file and autonomously produces an exploit chain, decompiled output with LLM annotations, and a structured HTML report. It covers 50+ exploit techniques across all major binary formats. All analysis runs locally — the binary is never uploaded anywhere.</p>
 
     <pre class="doc-pipeline"> Binary input
-     |
-     +-- Static analysis -- symbols, imports, sections, mitigations (NX/PIE/RELRO/canary)
-     |
-     +-- LLM analysis ----- decompiled code review, vuln patterns, technique selection
-     |
-     +-- Dynamic (opt) ---- strace / ltrace / gdb automation
-     |
-     +-- Exploit gen ------ pwntools script + structured HTML report</pre>
+     │
+     ├── 1 · Static triage ── checksec, symbols, imports, section layout, entropy scan
+     │
+     ├── 2 · Multi-backend decompile ── Ghidra / radare2 / angr / pwndbg (auto-selected)
+     │                                   + LLM annotation of decompiled pseudocode
+     │
+     ├── 3 · Vuln pattern detection ── taint analysis, dangerous sinks, format-string calls,
+     │                                  integer overflows, UAF patterns, stack smashing hints
+     │
+     ├── 4 · Technique selection ── LLM picks the right primitive based on mitigations
+     │                               (NX/PIE/RELRO/canary) and gadget availability
+     │
+     ├── 5 · Dynamic (optional) ── strace / ltrace / gdb automation, crash triage
+     │
+     └── 6 · Exploit generation ── pwntools script, gadget chains, shellcode (bad-char filtered)
+                                    + self-contained HTML report</pre>
 
-    <h3>Exploit families</h3>
+    <h3 id="re-analysis">Analysis types</h3>
+    <table>
+      <thead><tr><th>Type</th><th>Command</th><th>What it produces</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Static triage</strong></td><td><code>binoracle triage</code></td><td>NX, PIE, RELRO, canary, Fortify, CFI status; symbol table; imported functions; section layout; entropy scan for packed/encrypted regions</td></tr>
+        <tr><td><strong>Decompilation</strong></td><td><code>binoracle decompile</code></td><td>Pseudo-C output from Ghidra, radare2, angr and/or pwndbg; LLM-annotated to highlight dangerous patterns (gets, strcpy, printf, malloc/free, memcpy with attacker-controlled size)</td></tr>
+        <tr><td><strong>Vuln hunt</strong></td><td><code>binoracle vuln-hunt</code></td><td>Source-to-sink taint analysis across the decompiled output; flags reachable sinks, controlled buffer sizes, and format-string arguments</td></tr>
+        <tr><td><strong>Dynamic trace</strong></td><td><code>binoracle dynamic</code></td><td>strace (syscall trace), ltrace (library call trace), gdb crash triage with register dump and backtrace; crash offset computation</td></tr>
+        <tr><td><strong>Fuzzing</strong></td><td><code>binoracle fuzz</code></td><td>Dumb fuzzing with mutation engine; AFL integration for coverage-guided fuzzing; crash deduplication</td></tr>
+        <tr><td><strong>Hardening audit</strong></td><td><code>binoracle hardening</code></td><td>Full mitigation inventory with per-mitigation bypass notes (e.g. partial overwrite for PIE, fork brute-force for canary)</td></tr>
+        <tr><td><strong>Patch diff / N-day</strong></td><td><code>binoracle diff</code></td><td>Binary diff between two versions; highlights new/removed functions and changed basic blocks; isolates the patched vulnerability for N-day analysis</td></tr>
+        <tr><td><strong>IOC scan</strong></td><td><code>binoracle ioc-scan</code></td><td>YARA rules, embedded IPs/domains, hardcoded credentials, suspicious API call patterns</td></tr>
+        <tr><td><strong>Full audit</strong></td><td><code>binoracle audit</code></td><td>Runs all static oracles in one pass + LLM synthesis report</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="re-exploitation">Exploit chain generation</h3>
+    <p>The engine selects an exploit primitive based on detected mitigations and available gadgets, then generates a complete pwntools script.</p>
     <table>
       <thead><tr><th>Family</th><th>Techniques</th></tr></thead>
       <tbody>{exploit_trs}</tbody>
     </table>
 
-    <h3>Supported formats</h3>
+    <div class="doc-callout tip">
+      <strong>Technique selection logic.</strong> The LLM reads the mitigation report and the decompiled output together. If NX is on it uses ROP; if PIE is on it adds a leak gadget first; if a canary is present it looks for a format-string leak or fork brute-force; if the heap allocator is ptmalloc it selects the right House-of-X variant based on libc version. The pwntools script is emitted with inline comments explaining every step.
+    </div>
+
+    <h3 id="re-formats">Supported formats</h3>
     <table>
       <thead><tr><th>Format</th><th>Analysis backends</th></tr></thead>
       <tbody>{format_trs}</tbody>
     </table>
 
-    <h3>Commands</h3>
-    <pre><code>binoracle triage ./binary        # mitigations, symbols, imports, sections
-binoracle decompile ./binary     # multi-backend: Ghidra, radare2, angr, pwndbg + LLM
+    <h3 id="re-commands">Commands</h3>
+    <pre><code>binoracle triage ./binary        # static triage: mitigations, symbols, imports, sections
+binoracle decompile ./binary     # multi-backend decompile + LLM annotation
+binoracle vuln-hunt ./binary     # taint analysis: sources, sinks, dangerous patterns
 binoracle pwn ./binary           # full exploit chain, technique auto-selected
 binoracle rop ./binary           # ROP gadget search + chain synthesis
-binoracle chain ./binary         # gadget enumeration + pwntools script
-binoracle heap ./binary          # heap exploit primitives
-binoracle fmt ./binary           # format string exploitation
-binoracle srop ./binary          # SROP chain generation
-binoracle shellcode ./binary     # shellcode with bad-char filtering
-binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI audit</code></pre>
+binoracle chain ./binary         # gadget enumeration + pwntools script output
+binoracle heap ./binary          # heap exploit: tcache/fastbin/UAF/House-of-X auto-selected
+binoracle fmt ./binary           # format string: %n write, GOT overwrite, canary/PIE leak
+binoracle srop ./binary          # SROP chain generator (sigreturn-oriented programming)
+binoracle shellcode ./binary     # shellcode gen with bad-char filtering
+binoracle fuzz ./binary          # dumb + AFL coverage-guided fuzzer
+binoracle dynamic ./binary       # strace / ltrace / gdb automation + crash triage
+binoracle hardening ./binary     # NX, PIE, RELRO, canary, Fortify, CFI audit
+binoracle diff ./v1_binary ./v2_binary  # patch diff + N-day analysis
+binoracle ioc-scan ./binary      # IOC scan: YARA, IPs, credentials, API patterns
+binoracle audit ./binary         # all static oracles + LLM synthesis</code></pre>
 
     <h2 id="reports">Reports</h2>
     <p>Every CVE investigation and binary analysis writes a self-contained HTML report to disk. Reports are single-file HTML with embedded CSS — no external dependencies required to view them.</p>
