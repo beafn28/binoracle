@@ -1747,8 +1747,20 @@ def parse_raw_http_poc_request(text: str) -> Optional[dict]:
                 break
         content_type = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
         body_params = None
-        if body_line and ("application/x-www-form-urlencoded" in content_type or
-                          (not content_type and "=" in body_line and not body_line.startswith("{"))):
+        is_json_body = False
+        if body_line and ("application/json" in content_type or
+                          (body_line.startswith("{") and body_line.endswith("}"))):
+            try:
+                import json as _json
+                _parsed = _json.loads(body_line)
+                if isinstance(_parsed, dict):
+                    body_params = _parsed
+                    is_json_body = True
+            except Exception:
+                pass
+        if body_params is None and body_line and (
+                "application/x-www-form-urlencoded" in content_type or
+                (not content_type and "=" in body_line and not body_line.startswith("{"))):
             from urllib.parse import parse_qsl
             pairs = parse_qsl(body_line, keep_blank_values=True)
             if pairs:
@@ -1758,7 +1770,7 @@ def parse_raw_http_poc_request(text: str) -> Optional[dict]:
                           if k.lower() not in _STANDARD_HTTP_HEADERS}
         best = {"method": method, "path": path, "headers": headers,
                 "custom_headers": custom_headers, "body_params": body_params,
-                "raw_body": body_line}
+                "raw_body": body_line, "is_json_body": is_json_body}
     return best
 
 
@@ -4823,7 +4835,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     relationship_table=relationship_table,
                     keep_lab_on_failure=keep_lab_on_failure,
                     _boot_ref=_sqli_boot_ref,
-                    _lab_ref=_sqli_lab_ref)
+                    _lab_ref=_sqli_lab_ref,
+                    json_body=bool(notes.get("json_body")))
                 # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
@@ -4858,7 +4871,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         relationship_table=relationship_table,
                         extra_nonce_pages=list(extra_nonce_pages),
                         extra_setup_trigger_paths=list(extra_setup_trigger_paths),
-                        _live_boot=_live)
+                        _live_boot=_live,
+                        json_body=bool(notes.get("json_body")))
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
@@ -5939,6 +5953,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 inv.llm_notes["http_method"] = raw_req["method"]
                 if raw_req["body_params"]:
                     inv.llm_notes["parameters"] = raw_req["body_params"]
+                if raw_req.get("is_json_body"):
+                    inv.llm_notes["json_body"] = True
                 if raw_req.get("custom_headers"):
                     inv.llm_notes["custom_headers"] = raw_req["custom_headers"]
                 step((f"bloque de peticion HTTP cruda encontrado en el PoC -- usando "

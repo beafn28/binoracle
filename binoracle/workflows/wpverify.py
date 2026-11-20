@@ -4023,6 +4023,7 @@ def verify_wordpress_sqli(
     _live_boot: Optional["_LabSession"] = None,
     _boot_ref: Optional[list] = None,
     _lab_ref: Optional[list] = None,
+    json_body: bool = False,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -4189,6 +4190,12 @@ def verify_wordpress_sqli(
         # hecho (boot.sub_sess trae la cookie de sesion real), activar el display despues no
         # puede romper nada que ya se completo.
         lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant",
+                  timeout=30)
+        # WP_DEBUG=true triggers $wpdb->show_errors() (via wp-settings.php), which is what
+        # causes MySQL query errors (extractvalue/updatexml XPATH errors) to appear in HTTP
+        # responses. WP_DEBUG_DISPLAY alone only enables PHP error display, not MySQL errors.
+        # Safe to set here: subscriber login already completed, so no cookie-breaking risk.
+        lab.wp_cli("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant",
                   timeout=30)
 
         if boot.shortcode_page_path and attack_endpoint_is_bare_root:
@@ -4490,7 +4497,8 @@ def verify_wordpress_sqli(
             payload = dict(base_params)
             payload[sqli_param] = val
             return _attack_sess.request(m, boot.base_url + endpoint,
-                               data=payload if m != "GET" else None,
+                               json=payload if (m != "GET" and json_body) else None,
+                               data=payload if (m != "GET" and not json_body) else None,
                                params=payload if m == "GET" else None, timeout=20)
 
         res.evidence.update({"login_bajo_privilegio": boot.sub_user,
