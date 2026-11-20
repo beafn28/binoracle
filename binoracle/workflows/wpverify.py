@@ -4135,6 +4135,7 @@ def verify_wordpress_sqli(
     t0 = time.time()
 
     params_list = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
+    _sqli_param_from_hints = bool(sqli_param_hint or _pick_param(parameters, _SQLI_HINTS))
     sqli_param = sqli_param_hint or _pick_param(parameters, _SQLI_HINTS) or (params_list[0] if params_list else "")
     if not sqli_param:
         res.detail = "no se identifico el parametro a inyectar"
@@ -4220,6 +4221,15 @@ def verify_wordpress_sqli(
             if _sqli_qs_params:
                 step(f"QS normalizacion SQLi: extraido {list(_sqli_qs_params.keys())} de endpoint, "
                      f"endpoint limpio → '{endpoint}'")
+                # Si el sqli_param fue elegido solo por fallback (primer param de la lista LLM,
+                # sin match de hints), intentar de nuevo ahora que base_params tiene los params
+                # reales del PoC (p.ej. orderby, sorting) que podrian coincidir con los hints.
+                if not _sqli_param_from_hints:
+                    _repick = _pick_param(base_params, _SQLI_HINTS)
+                    if _repick and _repick != sqli_param:
+                        step(f"sqli_param corregido '{sqli_param}' → '{_repick}' (hints matchean "
+                             f"param del QS del endpoint PoC, no el param LLM original)")
+                        sqli_param = _repick
 
         # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
         # sin resolver, ID de recurso ofuscado) -- ver _auto_resolve_wp_blockers, factorizado
