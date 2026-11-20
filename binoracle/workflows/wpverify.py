@@ -3980,7 +3980,7 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
             fpath = os.path.join(root, fname)
             try:
                 with open(fpath, encoding="utf-8", errors="replace") as fh:
-                    content = fh.read(80_000)  # max 80KB por fichero
+                    content = fh.read(400_000)  # max 400KB por fichero (rsvpmaker-email.php es 270KB)
             except Exception:
                 continue
             for m in _TABLE_RE.finditer(content):
@@ -4761,28 +4761,31 @@ def verify_wordpress_sqli(
                         # pero no estaba en MySQL cuando el static-analysis scan corrio).
                         if (base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "")
                                 ) and slug:
-                            _slug_clean2 = re.sub(r'[^a-z0-9]', '', slug.lower())
-                            _mysql2_raw = lab.exec_mysql(
-                                f"SELECT table_name FROM information_schema.tables "
-                                f"WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%{_slug_clean2}%';",
-                                boot.db_pw) or ""
-                            _mysql2_tables = [
-                                t.strip()[3:] for t in _mysql2_raw.strip().split('\n')
-                                if t.strip().startswith('wp_') and t.strip() != 'wp_'
-                            ]
-                            # Solo seedear tablas que NO sembramos aun (evitar re-INSERT en las ya sembradas)
-                            _new_tables = [t for t in _mysql2_tables if t not in _plugin_tables]
-                            if _new_tables:
-                                step(f"re-scan MySQL: tablas nuevas tras primer control request: {_new_tables}")
-                                _seeded2 = _seed_plugin_tables(lab, boot.db_pw, _new_tables, step,
-                                                               sqli_param=sqli_param,
-                                                               sqli_param_value=orig_value)
-                                if _seeded2:
-                                    base_resp = send(orig_value)
-                                    base_len = len(base_resp.text or "")
-                                    _ctrl_body = (base_resp.text or "").strip()
-                                    step(f"respuesta post-reseed: {base_len} bytes -- "
-                                         f"{'diferencial posible' if base_len > 10 else 'sigue vacia'}")
+                            try:
+                                _slug_clean2 = re.sub(r'[^a-z0-9]', '', slug.lower())
+                                _mysql2_raw = lab.exec_mysql(
+                                    f"SELECT table_name FROM information_schema.tables "
+                                    f"WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%{_slug_clean2}%';",
+                                    boot.db_pw) or ""
+                                _mysql2_tables = [
+                                    t.strip()[3:] for t in _mysql2_raw.strip().split('\n')
+                                    if t.strip().startswith('wp_') and t.strip() != 'wp_'
+                                ]
+                                # Solo seedear tablas que NO sembramos aun (evitar re-INSERT en las ya sembradas)
+                                _new_tables = [t for t in _mysql2_tables if t not in _plugin_tables]
+                                step(f"re-scan MySQL: found={_mysql2_tables[:5]} new={_new_tables[:5]}")
+                                if _new_tables:
+                                    _seeded2 = _seed_plugin_tables(lab, boot.db_pw, _new_tables, step,
+                                                                   sqli_param=sqli_param,
+                                                                   sqli_param_value=orig_value)
+                                    if _seeded2:
+                                        base_resp = send(orig_value)
+                                        base_len = len(base_resp.text or "")
+                                        _ctrl_body = (base_resp.text or "").strip()
+                                        step(f"respuesta post-reseed: {base_len} bytes -- "
+                                             f"{'diferencial posible' if base_len > 10 else 'sigue vacia'}")
+                            except Exception as _rescan_exc:
+                                step(f"[WARN] re-scan MySQL fallo: {_rescan_exc!r:.100}")
                         # Si el seed inflO la respuesta mas de 20x respecto al baseline pre-seed pequeno,
                         # la fila seeded esta disparando codigo adicional que crashea el plugin
                         # (p.ej. WooCommerce, payment gateway no instalado): la injection no podria
