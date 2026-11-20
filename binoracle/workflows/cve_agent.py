@@ -525,6 +525,188 @@ _REFINE_SYS = (
 _SQLI_RETRY_MAX_ATTEMPTS = 8   # cheap now: retries reuse the same Docker lab
 _RETRY_MAX_ATTEMPTS = _SQLI_RETRY_MAX_ATTEMPTS
 
+
+def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
+    """Convierte la evidencia cruda de un intento fallido en un diagnóstico
+    estructurado legible por el LLM y por el bucle de reintento.
+
+    En lugar de enviar el dump crudo de respuestas al LLM, el motor razona
+    primero sobre los patrones observados y produce un dict con:
+    - 'causa': etiqueta corta del patrón detectado (nonce_invalido, 404,
+      auth_gate, respuesta_vacia, diff_insuficiente, timeout_sin_delay, etc.)
+    - 'detalle': frase explicativa de una línea
+    - 'tecnica_agotada': True si la técnica no tiene sentido reintentar con
+      los mismos parámetros (p.ej. time-based con delta <0.3s en 3 pares)
+    - 'cambio_tecnica_sugerido': nombre de otra técnica que sí tiene sentido
+      probar (o '' si no hay sugerencia determinista)
+
+    El diagnóstico se inyecta en la evidencia ANTES de llamar al LLM,
+    de modo que el modelo recibe contexto estructurado en vez de texto crudo."""
+    ev = getattr(wr, "evidence", {}) or {}
+    ctrl_body = (ev.get("respuesta_control_recorte") or "")[:600]
+    ctrl_status = ev.get("status_control") or ev.get("control_status") or 0
+    det = (getattr(wr, "detail", "") or "")[:400]
+    td = technique_label.lower()
+
+    causa = ""
+    detalle = ""
+    tecnica_agotada = False
+    cambio_tecnica = ""
+
+    # 1 — 404 en el endpoint: el recurso no existe
+    if ctrl_status == 404 or "404" in ctrl_body[:100]:
+        causa = "endpoint_404"
+        detalle = "El endpoint devolvio 404 — el recurso no existe con esa ruta."
+        tecnica_agotada = True
+
+    # 2 — nonce / security token inválido
+    elif any(t in ctrl_body.lower() for t in
+             ("invalid nonce", "wrong nonce", "invalid security", "security check failed")):
+        causa = "nonce_invalido"
+        detalle = ("Nonce/token inválido detectado en respuesta de control — "
+                   "el motor no ha scrapeado el nonce correcto para este endpoint.")
+
+    # 3 — auth gate / login redirect
+    elif any(t in ctrl_body.lower() for t in
+             ("you must log in", "please log in", "login required",
+              "acceso denegado", "forbidden")) or ctrl_status in (401, 403):
+        causa = "auth_gate"
+        detalle = "El endpoint requiere autenticación — la petición llega autenticada."
+
+    # 4 — respuesta vacía / JSON vacío {}
+    elif ctrl_body.strip() in ("{}", "[]", "", "null") or not ctrl_body.strip():
+        causa = "respuesta_vacia"
+        detalle = ("Respuesta de control vacía o JSON vacío — el handler existe "
+                   "pero no procesa el parámetro probado.")
+
+    # 5 — time-based con delta insignificante
+    elif "time" in td or "tiempo" in td:
+        _true_t = ev.get("tiempo_true_s") or 0.0
+        _false_t = ev.get("tiempo_false_s") or 0.0
+        _delta = abs(float(_true_t) - float(_false_t)) if _true_t or _false_t else 0.0
+        if _delta < 0.5:
+            causa = "timeout_sin_delay"
+            detalle = (f"Time-based inútil: delta observado {_delta:.2f}s < 0.5s — "
+                       "la inyección de tiempo está filtrada o el parámetro no llega a la query.")
+            tecnica_agotada = True
+            cambio_tecnica = "error-based"
+
+    # 6 — boolean-blind con diff insuficiente
+    elif "boolean" in td or "blind" in td:
+        _diff = ev.get("tok_diff_count") or ev.get("diff_tokens") or 0
+        _size_diff = ev.get("size_diff_bytes") or 0
+        if int(_diff) < 5 and int(_size_diff) < 20:
+            causa = "diff_insuficiente"
+            detalle = (f"Boolean-blind insuficiente: tok_diff={_diff}, "
+                       f"size_diff={_size_diff}B — las respuestas TRUE/FALSE son casi idénticas.")
+            cambio_tecnica = "error-based"
+
+    # 7 — error PHP explícito (500 con mensaje)
+    elif ctrl_status == 500 or "500" in ctrl_body[:80]:
+        causa = "error_500"
+        detalle = ("Status 500 en control — la función se ejecuta pero falla "
+                   "(falta seed data, FK constraint, o el parámetro esperado).")
+
+    # fallback: sin patrón reconocido
+    if not causa:
+        causa = "sin_patron"
+        detalle = "No se detectó un patrón claro de fallo — revisar respuesta completa."
+
+    return {
+        "causa": causa,
+        "detalle": detalle,
+        "tecnica_agotada": tecnica_agotada,
+        "cambio_tecnica_sugerido": cambio_tecnica,
+    }
+
+
+# Tabla de confianza de cada fuente de endpoint. Usada por _set_endpoint_with_confidence()
+# para decidir si un candidato nuevo puede sobreescribir el actual sin un lock manual.
+# Cuanto mayor el valor, más confiable la fuente.
+_ENDPOINT_CONFIDENCE: dict[str, float] = {
+    "poc_raw_http":      1.0,   # bloque HTTP literal del PoC — máxima confianza
+    "poc_llm_extract":   0.9,   # LLM extrae URL del texto del PoC
+    "analyst_lock":      0.9,   # analista fijó el endpoint a mano
+    "taint_tracking":    0.85,  # taint tracking del código fuente
+    "grep_deterministic":0.80,  # grep determinístico de add_action/register_rest_route
+    "ajax_param_scan":   0.50,  # find_ajax_action_for_param
+    "ajax_name_score":   0.30,  # scoring de similitud de nombre AJAX
+    "scaffold_lab":      0.10,  # _scaffold_pip_lab / _scaffold_npm_lab
+    "llm_guess":         0.20,  # LLM sugiere endpoint sin extracción del PoC
+}
+
+
+def _set_endpoint_with_confidence(notes: dict, new_ep: str, source: str,
+                                  step=None) -> bool:
+    """Actualiza notes["endpoint"] sólo si la nueva fuente tiene confianza >=
+    la del endpoint actual. Registra la decisión en notes["_ep_source"] y
+    notes["_ep_confidence"] para que cualquier módulo posterior pueda leerla.
+
+    Devuelve True si se aplicó el cambio, False si se descartó.
+
+    Este mecanismo reemplaza los locks manuales (poc_llm_endpoint_lock /
+    poc_raw_http_lock) con un sistema genérico: cada fuente declara su
+    confianza y el motor elige la mayor. Los locks siguen funcionando como
+    alias de confianza 1.0 / 0.9 para retrocompatibilidad."""
+    new_conf = _ENDPOINT_CONFIDENCE.get(source, 0.15)
+    cur_conf = notes.get("_ep_confidence", 0.0)
+
+    # Los locks manuales siguen tomando precedencia completa
+    if notes.get("poc_raw_http_lock"):
+        cur_conf = max(cur_conf, _ENDPOINT_CONFIDENCE["poc_raw_http"])
+    if notes.get("poc_llm_endpoint_lock"):
+        cur_conf = max(cur_conf, _ENDPOINT_CONFIDENCE["poc_llm_extract"])
+    if notes.get("analyst_endpoint_lock"):
+        cur_conf = max(cur_conf, _ENDPOINT_CONFIDENCE["analyst_lock"])
+
+    if new_conf < cur_conf:
+        if step:
+            cur_src = notes.get("_ep_source", "desconocida")
+            step((f"endpoint descartado (confianza {new_conf:.2f} < actual {cur_conf:.2f} "
+                  f"de '{cur_src}'): {new_ep!r} — manteniendo "
+                  f"'{notes.get('endpoint')}'"))
+        return False
+
+    notes["endpoint"] = new_ep
+    notes["_ep_source"] = source
+    notes["_ep_confidence"] = new_conf
+    return True
+
+
+class _TechniqueTracker:
+    """Registra qué técnicas se han probado en un CVE y qué resultado han dado.
+
+    El LLM recibe este estado serializado para no sugerir técnicas agotadas.
+    El retry loop lo consulta antes de cada intento para pivotear automáticamente
+    al siguiente endpoint en alt_endpoints cuando la técnica está agotada."""
+
+    def __init__(self):
+        self._state: dict[str, dict] = {}
+
+    def record(self, technique: str, endpoint: str, param: str,
+               result: str, diff_seen: int = 0, delay_seen: float = 0.0):
+        """Registra el resultado de un intento.
+        result ∈ {'verified', 'failed', 'agotada', 'filtrada'}"""
+        if technique not in self._state:
+            self._state[technique] = {"attempts": 0, "endpoints_tried": [],
+                                      "result": "pending", "max_diff_seen": 0,
+                                      "max_delay_seen": 0.0}
+        s = self._state[technique]
+        s["attempts"] += 1
+        if endpoint not in s["endpoints_tried"]:
+            s["endpoints_tried"].append(endpoint)
+        s["result"] = result
+        s["max_diff_seen"] = max(s["max_diff_seen"], diff_seen)
+        s["max_delay_seen"] = max(s["max_delay_seen"], delay_seen)
+
+    def is_exhausted(self, technique: str) -> bool:
+        s = self._state.get(technique, {})
+        return s.get("result") in ("agotada", "filtrada", "verified")
+
+    def summary(self) -> dict:
+        return {k: {kk: vv for kk, vv in v.items() if kk != "endpoints_tried"}
+                for k, v in self._state.items()}
+
 _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
                             "respuesta_control_recorte": "respuesta_control_recorte",
                             "diagnostico_scraping_nonce": "nonce_scraping_diagnostico"}
@@ -764,6 +946,13 @@ def _llm_suggest_retry_from_evidence(llm, system_prompt: str, wr: Any,
     evidence["detalle"] = wr.detail
     if technique_label:
         evidence["tecnica"] = technique_label
+    # Inyectar diagnóstico estructurado antes de llamar al LLM.
+    # El motor razona sobre los patrones de respuesta y produce una causa
+    # determinista; el LLM recibe ese pre-diagnóstico junto con la evidencia
+    # cruda y no necesita volver a inferirlo desde cero.
+    _diag = _diagnose_failure(wr, technique_label)
+    if _diag["causa"] != "sin_patron":
+        evidence["diagnostico_motor"] = _diag
     from ..llm.base import Message
     prompt = f"Evidencia real observada:\n{json.dumps(evidence, ensure_ascii=False)[:3000]}"
     try:
@@ -810,6 +999,17 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     retry_endpoint, retry_param = endpoint, param
     for attempt_n in range(1, max_attempts):
         if wr.verified or not wr.available:
+            break
+        # Diagnóstico estructurado antes de llamar al LLM.
+        # Si el motor detecta que la técnica está agotada (time-based sin delta,
+        # boolean con diff=0, 404 en el endpoint), aborta el bucle y lo registra
+        # en lugar de consumir reintentos a ciegas.
+        _pre_diag = _diagnose_failure(wr, technique_label)
+        if _pre_diag.get("tecnica_agotada"):
+            step((f"diagnostico del motor: técnica agotada ({_pre_diag['causa']}) — "
+                  f"{_pre_diag['detalle']} — abortando reintentos") if es else
+                 (f"engine diagnosis: technique exhausted ({_pre_diag['causa']}) — "
+                  f"{_pre_diag['detalle']} — aborting retries"))
             break
         # Fast first-pass: ExploitReasoningEngine (~100ms, no LLM).
         # Only bypasses LLM when ERE has high confidence AND can produce a
@@ -3665,46 +3865,39 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     _param_action = _r
                                     _found_via_p = _cand_p
                                     break
-                            # El poc_llm_endpoint_lock / poc_raw_http_lock indican que el PoC
-                            # ya tiene un endpoint de alta confianza. No sobreescribir aunque
-                            # el grep encuentre una accion AJAX alternativa — el PoC manda.
-                            _ep_already_locked = (notes.get("poc_raw_http_lock")
-                                                   or notes.get("poc_llm_endpoint_lock"))
-                            if _param_action and not _ep_already_locked:
-                                step((f"accion AJAX encontrada directamente en el codigo "
-                                      f"real por el parametro POST '{_found_via_p}': "
-                                      f"'{_param_action}' -- actualizando endpoint" if es else
-                                      (f"AJAX action found directly in source by POST param "
-                                      f"'{_found_via_p}': '{_param_action}' -- updating endpoint")))
+                            if _param_action:
+                                _new_ep_candidate = ""
                                 old_ep = notes.get("endpoint") or ""
                                 if "action=" in old_ep:
                                     import urllib.parse as _up
                                     _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
                                     _qs["action"] = _param_action
                                     _base = old_ep.split("?", 1)[0]
-                                    notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                    _new_ep_candidate = _base + "?" + _up.urlencode(_qs)
                                 else:
-                                    notes["endpoint"] = (old_ep.rstrip("?&") +
+                                    _new_ep_candidate = (old_ep.rstrip("?&") +
                                                          ("?" if "?" not in old_ep else "&") +
                                                          f"action={_param_action}")
-                                notes["ajax_action"] = _param_action
-                                notes["http_method"] = "POST"  # AJAX siempre se llama via POST
-                                inv.llm_notes["ajax_action"] = _param_action
-                                inv.llm_notes["http_method"] = "POST"
-                                inv.llm_notes["endpoint"] = notes["endpoint"]
-                                # propagamos tambien sqli_param para que el verificador SQLi lo
-                                # use directamente sin tener que adivinarlo de nuevo.
-                                if _found_via_p and not notes.get("sqli_param"):
-                                    notes["sqli_param"] = _found_via_p
-                                    inv.llm_notes["sqli_param"] = _found_via_p
-                            elif _param_action and _ep_already_locked:
-                                step((f"accion AJAX '{_param_action}' (param '{_found_via_p}') "
-                                      f"descartada: el endpoint del PoC esta bloqueado "
-                                      f"-- manteniendo '{notes.get('endpoint')}'" if es else
-                                      (f"AJAX action '{_param_action}' (param '{_found_via_p}') "
-                                       f"discarded: PoC endpoint is locked "
-                                       f"-- keeping '{notes.get('endpoint')}'")))
-                                _rec2 = None  # skip recovery if locked
+                                _ep_applied = _set_endpoint_with_confidence(
+                                    notes, _new_ep_candidate, "ajax_param_scan", step=step)
+                                if _ep_applied:
+                                    step((f"accion AJAX encontrada por parametro POST "
+                                          f"'{_found_via_p}': '{_param_action}' -- endpoint "
+                                          f"actualizado (confianza ajax_param_scan)") if es else
+                                         (f"AJAX action found by POST param '{_found_via_p}': "
+                                          f"'{_param_action}' -- endpoint updated "
+                                          f"(confidence: ajax_param_scan)"))
+                                    notes["ajax_action"] = _param_action
+                                    notes["http_method"] = "POST"
+                                    inv.llm_notes["ajax_action"] = _param_action
+                                    inv.llm_notes["http_method"] = "POST"
+                                    inv.llm_notes["endpoint"] = notes["endpoint"]
+                                    if _found_via_p and not notes.get("sqli_param"):
+                                        notes["sqli_param"] = _found_via_p
+                                        inv.llm_notes["sqli_param"] = _found_via_p
+                            if _param_action and not notes.get("ajax_action"):
+                                # El endpoint de mayor confianza ganó; aun así buscar el handler
+                                _rec2 = None
                                 _rec2 = find_ajax_handler_function(fr.local_path, _param_action)
                                 if _rec2:
                                     inv.source_grounding["found"] = {
@@ -3757,25 +3950,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
 
                                 best = max(all_actions, key=_score)
                                 if _score(best) > 0:
-                                    step((f"accion AJAX mas parecida en el codigo real: "
-                                         f"'{best}' (puntuacion normalizada: "
-                                         f"{_score(best):.3f}) -- "
-                                         f"actualizando endpoint" if es else
-                                         (f"closest AJAX action in the real code: '{best}' "
-                                         f"(normalized score: {_score(best):.3f}) "
-                                         f"-- updating endpoint")))
-                                    # actualizar notes con la accion real
-                                    old_ep = notes.get("endpoint") or ""
-                                    if "action=" in old_ep:
+                                    # El scoring de similitud de nombres tiene confianza baja
+                                    # (0.30); sólo sobreescribe si no hay fuente más confiable.
+                                    _old_ep2 = notes.get("endpoint") or ""
+                                    if "action=" in _old_ep2:
                                         import urllib.parse as _up
-                                        _qs = dict(_up.parse_qsl(old_ep.split("?", 1)[-1]))
-                                        _qs["action"] = best
-                                        _base = old_ep.split("?", 1)[0]
-                                        notes["endpoint"] = _base + "?" + _up.urlencode(_qs)
+                                        _qs2 = dict(_up.parse_qsl(_old_ep2.split("?", 1)[-1]))
+                                        _qs2["action"] = best
+                                        _base2 = _old_ep2.split("?", 1)[0]
+                                        _score_ep_candidate = _base2 + "?" + _up.urlencode(_qs2)
                                     else:
-                                        notes["endpoint"] = (old_ep.rstrip("?&") +
-                                                             ("?" if "?" not in old_ep else "&") +
-                                                             f"action={best}")
+                                        _score_ep_candidate = (_old_ep2.rstrip("?&") +
+                                                               ("?" if "?" not in _old_ep2 else "&") +
+                                                               f"action={best}")
+                                    _ep_score_applied = _set_endpoint_with_confidence(
+                                        notes, _score_ep_candidate, "ajax_name_score", step=step)
+                                    if _ep_score_applied:
+                                        step((f"accion AJAX mas parecida en el codigo real: "
+                                             f"'{best}' (puntuacion: {_score(best):.3f}) -- "
+                                             f"endpoint actualizado") if es else
+                                            (f"closest AJAX action in real code: '{best}' "
+                                             f"(score: {_score(best):.3f}) -- endpoint updated"))
                                     notes["ajax_action"] = best
                                     notes["http_method"] = "POST"  # AJAX siempre POST
                                     inv.llm_notes["ajax_action"] = best
@@ -3874,7 +4069,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     elif _taint_hook:
                                         # REST o template_redirect — usar el hook directamente
                                         _ep_taint = _taint_hook
-                                        notes["endpoint"] = _ep_taint
+                                        _set_endpoint_with_confidence(
+                                            notes, _ep_taint, "taint_tracking", step=step)
                                         notes["sqli_param"] = _det_param
                                         notes["http_method"] = "GET"
                                         inv.llm_notes["endpoint"] = _ep_taint
@@ -3898,7 +4094,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                       f"'{_det_action}' (param '{_det_param}') -- "
                                       f"building endpoint..."))
                                 _det_ep = f"/wp-admin/admin-ajax.php?action={_det_action}"
-                                notes["endpoint"] = _det_ep
+                                _set_endpoint_with_confidence(
+                                    notes, _det_ep, "grep_deterministic", step=step)
                                 notes["ajax_action"] = _det_action
                                 notes["http_method"] = "POST"
                                 notes["sqli_param"] = _det_param
@@ -4129,7 +4326,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         else:
                             _new_ep_ov = f"/wp-admin/admin-ajax.php?action={_real_act_ov}"
                         notes["ajax_action"] = _real_act_ov
-                        notes["endpoint"] = _new_ep_ov
+                        _set_endpoint_with_confidence(notes, _new_ep_ov, "grep_deterministic", step=step)
                         notes["sqli_param"] = _cand_ov
                         inv.llm_notes["ajax_action"] = _real_act_ov
                         inv.llm_notes["endpoint"] = _new_ep_ov
@@ -4170,7 +4367,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                           f"'{_noLLM_action}' (POST param '{_noLLM_param}') -- "
                           f"building endpoint..."))
                     _noLLM_ep = f"/wp-admin/admin-ajax.php?action={_noLLM_action}"
-                    notes["endpoint"] = _noLLM_ep
+                    _set_endpoint_with_confidence(notes, _noLLM_ep, "grep_deterministic", step=step)
                     notes["ajax_action"] = _noLLM_action
                     notes["http_method"] = "POST"
                     notes["sqli_param"] = _noLLM_param
@@ -6070,6 +6267,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 _ep_from_poc = poc_hints.get("endpoint", "")
                 if _ep_from_poc and not inv.llm_notes.get("poc_raw_http_lock"):
                     inv.llm_notes["poc_llm_endpoint_lock"] = True
+                    # Registrar confianza en el sistema de scoring de endpoints
+                    _set_endpoint_with_confidence(inv.llm_notes, _ep_from_poc,
+                                                  "poc_llm_extract")
                 step((f"PoC real leido -- endpoint={poc_hints.get('endpoint', '?')}, "
                      f"parameters={poc_hints.get('parameters', '?')}" if es else
                      (f"real PoC read -- endpoint={poc_hints.get('endpoint', '?')}, "
@@ -6099,6 +6299,8 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                 # Marcar que el endpoint viene de un bloque HTTP crudo real (alta confianza):
                 # el refinement posterior NO debe sobreescribirlo con un endpoint distinto.
                 inv.llm_notes["poc_raw_http_lock"] = True
+                # Registrar confianza máxima en el sistema de scoring de endpoints
+                _set_endpoint_with_confidence(inv.llm_notes, raw_req["path"], "poc_raw_http")
                 step((f"bloque de peticion HTTP cruda encontrado en el PoC -- usando "
                      f"{raw_req['method']} {raw_req['path']} con los parametros y valores REALES "
                      f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)"

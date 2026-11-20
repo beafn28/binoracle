@@ -4338,6 +4338,46 @@ def verify_wordpress_sqli(
                              f"param del QS del endpoint PoC, no el param LLM original)")
                         sqli_param = _repick
 
+        # Endpoint pre-check: probe ligero ANTES de _auto_resolve_wp_blockers y de las
+        # técnicas de ataque. Una petición GET sin inyección al endpoint base sirve para
+        # descartar rápidamente casos obvios: 404 (el recurso no existe), 302 permanente a
+        # /wp-login.php (auth gate absoluto), o respuesta completamente vacía para cualquier
+        # valor del parámetro (el handler existe pero no procesa ese param).
+        # Se limita a ~5s y nunca bloquea el flujo: si el probe falla por timeout o error
+        # de red, se ignora y la verificación continúa normalmente.
+        try:
+            import requests as _rq_probe
+            _probe_url = boot.base_url + (endpoint if endpoint.startswith("/") else "/" + endpoint)
+            _probe_sess = boot.sub_sess or _rq_probe.Session()
+            _probe_p = dict(base_params)
+            _probe_p[sqli_param] = "1"  # valor neutro, sin payload
+            _probe_resp = _probe_sess.get(
+                _probe_url, params=_probe_p, allow_redirects=False,
+                timeout=5, verify=False)
+            _probe_status = _probe_resp.status_code
+            _probe_loc = _probe_resp.headers.get("Location", "")
+            if _probe_status == 404:
+                step(f"pre-check endpoint: HTTP 404 — '{endpoint}' no existe en este lab; "
+                     f"el motor continuará pero las técnicas de SQLi probablemente fallen")
+                res.evidence["precheck_endpoint_status"] = 404
+                res.evidence["precheck_nota"] = "endpoint devolvio 404 — ruta incorrecta o plugin no expone ese endpoint"
+            elif _probe_status in (301, 302) and "wp-login" in _probe_loc.lower():
+                step(f"pre-check endpoint: redireccion a login ({_probe_loc}) — "
+                     f"el endpoint requiere autenticación que el lab no ha resuelto")
+                res.evidence["precheck_endpoint_status"] = _probe_status
+                res.evidence["precheck_nota"] = f"auth gate: redirige a {_probe_loc}"
+            elif len(_probe_resp.content) < 10 and _probe_status == 200:
+                step(f"pre-check endpoint: respuesta vacía (200, {len(_probe_resp.content)}B) — "
+                     f"el handler existe pero no procesa '{sqli_param}' o falta seed data")
+                res.evidence["precheck_endpoint_status"] = 200
+                res.evidence["precheck_nota"] = "respuesta control vacia — revisar seed data y sqli_param"
+            else:
+                step(f"pre-check endpoint: HTTP {_probe_status}, "
+                     f"{len(_probe_resp.content)}B — endpoint accesible")
+                res.evidence["precheck_endpoint_status"] = _probe_status
+        except Exception as _probe_exc:
+            step(f"pre-check endpoint: error/timeout ({_probe_exc!r:.60}) — continuando")
+
         # bloqueos de infraestructura comunes a CUALQUIER tecnica contra WordPress (nonce/token
         # sin resolver, ID de recurso ofuscado) -- ver _auto_resolve_wp_blockers, factorizado
         # para que todos los verify_* dinamicos lo compartan en vez de duplicar esta logica.
