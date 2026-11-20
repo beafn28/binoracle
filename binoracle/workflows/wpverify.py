@@ -81,7 +81,7 @@ _PATH_HINTS = (
 _PASSWD_SIGNATURE_RE = re.compile(r"root:[^:\n]*:0:0:")
 _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
              "domain", "shell")
-_SQLI_HINTS = ("id", "search", "q", "query", "code", "name", "term", "filter", "sort", "order")
+_SQLI_HINTS = ("sort", "order", "id", "search", "q", "query", "code", "name", "term", "filter")
 
 # algunos plugins NO crean sus paginas por defecto (Login/Register/Account/Members/...) con la
 # simple activacion -- exigen un paso extra PROPIO de cada plugin (un boton "Create Pages" en su
@@ -115,6 +115,15 @@ _PLUGIN_SETUP_TRIGGER_PATHS = {
 # reference them (e.g. _auto_resolve_wp_blockers's legacy fallback) don't get NameErrors.
 _PLUGIN_DIRECTORY_CPT: dict = {}
 _PLUGIN_SHORTCODE_OVERRIDE: dict = {}
+
+# Plugin-specific WP options that must be force-enabled in the lab to reach the vulnerable
+# code path, regardless of the auto-detect scan (used when the scan finds >3 options and
+# aborts, or when the option is not near the injection sink in source).
+# Format: {slug: {option_key: value, ...}}
+# Values are raw PHP strings (e.g. "1", "'custom'"); they go into update_option() directly.
+_PLUGIN_REQUIRED_OPTIONS: dict = {
+    "ultimate-member": {"member_directory_own_table": "1"},
+}
 _URL_HINTS = ("url", "uri", "src", "source", "link", "feed", "webhook", "callback",
              "image", "avatar", "file_url", "endpoint")
 _XSS_HINTS = ("comment", "content", "message", "title", "name", "bio", "description", "text",
@@ -2080,6 +2089,31 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                     lab.wp_cli("option", "update", _go_key, _go_val, timeout=10)
                 step(f"opcion detectada en source: '{_go_key}'={_go_val} activada "
                      f"en '{_plugin_blob_key}' (branch vulnerable requiere esta opcion)")
+
+    # Apply hardcoded per-plugin required options (overrides auto-detect when scan aborts).
+    # These are options that MUST be enabled to reach the vulnerable code path, known to be
+    # required from manual analysis (see _PLUGIN_REQUIRED_OPTIONS).
+    _slug_key = slug if slug else ""
+    for _hc_key, _hc_val in _PLUGIN_REQUIRED_OPTIONS.get(_slug_key, {}).items():
+        # Skip if already set by caller or auto-detect
+        if _hc_key in {o.get("name") for o in (setup_wp_options or []) if isinstance(o, dict)}:
+            continue
+        if _hc_key in _gating_opts_found:
+            continue
+        _plugin_blob_key_hc = slug.replace("-", "_") + "_options" if slug else "plugin_options"
+        _php_set_hc = (
+            f"$opts=get_option('{_plugin_blob_key_hc}',array());"
+            f"$opts['{_hc_key}']={_hc_val};"
+            f"update_option('{_plugin_blob_key_hc}',$opts);"
+            f"$v=get_option('{_plugin_blob_key_hc}');"
+            f"echo isset($v['{_hc_key}'])?'ok:'.$v['{_hc_key}']:'missing';"
+        )
+        _r_hc = lab.wp_cli("eval", _php_set_hc, timeout=10)
+        _hc_out = (_r_hc.stdout or "").strip()
+        if _r_hc.returncode != 0 or not _hc_out.startswith("ok:"):
+            lab.wp_cli("option", "update", _hc_key, str(_hc_val).strip("'\""), timeout=10)
+        step(f"opcion requerida (hardcoded): '{_hc_key}'={_hc_val} activada en "
+             f"'{_plugin_blob_key_hc}'")
 
     # Diagnostic: verify options + hash lookup work from within WordPress (WP-CLI context).
     # Runs after all options are set so we see the actual live state.
