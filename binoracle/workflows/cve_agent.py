@@ -2442,13 +2442,12 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     with open(app_path, "w") as f:
         f.write(app_code)
 
-    # Siempre sobreescribe notes con el endpoint/param que el lab realmente usa.
-    # El LLM puede devolver placeholders en cualquier idioma ("parametro1", "query",
-    # "admin/your-endpoint", "ruta/a/la/vulnerabilidad"...) -- como controlamos
-    # exactamente los valores que se pasaron a _gen_pip_app, NO dependemos de detectar
-    # si es placeholder: simplemente usamos los valores que el lab tiene de verdad.
-    # Django ignora el endpoint del LLM en su urlpatterns (siempre usa 'search').
-    # SQLi lab generates a route from the endpoint after stripping query-string and special chars.
+    # Sobreescribe notes con el endpoint/param que el lab realmente usa,
+    # SALVO que el PoC ya fijo un endpoint de alta confianza (poc_llm_endpoint_lock /
+    # poc_raw_http_lock) -- en ese caso el lab pip es un scaffold auxiliar (no el objetivo
+    # del ataque), y cambiar el endpoint romperia la deteccion de la vulnerabilidad real.
+    # Confirmado necesario con CVE-2024-54292 (appsplate WP plugin): el lab pip cambiaba
+    # notes["endpoint"] a "/search" sobreescribiendo "/?mobile=1&code=x" del PoC real.
     _is_sqli_lab = "sqli" in vuln_class or "sql" in vuln_class
     if "django" in pkg:
         _lab_ep = "search"
@@ -2458,8 +2457,9 @@ def _scaffold_pip_lab(target: str, version: str, vuln_class: str,
     else:
         _lab_ep = endpoint or "search"
     _lab_param = param or "q"
-    notes["endpoint"] = f"/{_lab_ep}"
-    notes["parameters"] = [_lab_param]
+    if not notes.get("poc_raw_http_lock") and not notes.get("poc_llm_endpoint_lock"):
+        notes["endpoint"] = f"/{_lab_ep}"
+        notes["parameters"] = [_lab_param]
 
     on_step((f"scaffolded minimal {pkg} lab at {lab_dir} "
              f"(vuln_class={vuln_class}, pin={pin})"))
@@ -2651,11 +2651,12 @@ def _scaffold_npm_lab(target: str, version: str, vuln_class: str,
         ep = _ep_raw or "cmd"
         p = (_params_raw[0] if isinstance(_params_raw, list) and _params_raw
              else str(_params_raw) if _params_raw else "cmd")
-        # Garantiza que genericverify sabe que endpoint/param usar -- el scanner de rutas
-        # solo cubre Flask/Ruby; para Node.js actualizamos notes directamente.
-        notes["endpoint"] = f"/{ep}"
-        if not notes.get("parameters"):
-            notes["parameters"] = [p]
+        # Garantiza que genericverify sabe que endpoint/param usar, salvo que el PoC
+        # ya fijo un endpoint de alta confianza (poc_llm_endpoint_lock/poc_raw_http_lock).
+        if not notes.get("poc_raw_http_lock") and not notes.get("poc_llm_endpoint_lock"):
+            notes["endpoint"] = f"/{ep}"
+            if not notes.get("parameters"):
+                notes["parameters"] = [p]
         srv = (
             "const http = require('http');\n"
             "const { exec } = require('child_process');\n"
@@ -3664,7 +3665,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     _param_action = _r
                                     _found_via_p = _cand_p
                                     break
-                            if _param_action:
+                            # El poc_llm_endpoint_lock / poc_raw_http_lock indican que el PoC
+                            # ya tiene un endpoint de alta confianza. No sobreescribir aunque
+                            # el grep encuentre una accion AJAX alternativa — el PoC manda.
+                            _ep_already_locked = (notes.get("poc_raw_http_lock")
+                                                   or notes.get("poc_llm_endpoint_lock"))
+                            if _param_action and not _ep_already_locked:
                                 step((f"accion AJAX encontrada directamente en el codigo "
                                       f"real por el parametro POST '{_found_via_p}': "
                                       f"'{_param_action}' -- actualizando endpoint" if es else
@@ -3691,6 +3697,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 if _found_via_p and not notes.get("sqli_param"):
                                     notes["sqli_param"] = _found_via_p
                                     inv.llm_notes["sqli_param"] = _found_via_p
+                            elif _param_action and _ep_already_locked:
+                                step((f"accion AJAX '{_param_action}' (param '{_found_via_p}') "
+                                      f"descartada: el endpoint del PoC esta bloqueado "
+                                      f"-- manteniendo '{notes.get('endpoint')}'" if es else
+                                      (f"AJAX action '{_param_action}' (param '{_found_via_p}') "
+                                       f"discarded: PoC endpoint is locked "
+                                       f"-- keeping '{notes.get('endpoint')}'")))
+                                _rec2 = None  # skip recovery if locked
                                 _rec2 = find_ajax_handler_function(fr.local_path, _param_action)
                                 if _rec2:
                                     inv.source_grounding["found"] = {
@@ -3821,7 +3835,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                          (f"SSRF handler: '{_ssrf_rec['function']}' at "
                                           f"{_ssrf_rec['location']}"))
                         if inv.vuln_class in ("sqli", "sql-injection"):
-                            from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                            from .websource import (find_all_ajax_actions,
+                                                    find_ajax_action_for_param,
+                                                    find_unsanitized_sqli_params)
                             _pts_det = ["order", "start", "length", "draw", "search",
                                         "columns", "id", "post_id", "user_id", "orderby", "dir"]
                             _det_action = None
@@ -3832,6 +3848,48 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     _det_action = _r
                                     _det_param = _cand_p
                                     break
+                            # Fallback taint scan: si el scan de parámetros conocidos no
+                            # encontró nada, hacer análisis taint completo del código fuente
+                            # para encontrar parámetros que fluyen directamente a $wpdb sin
+                            # preparación. Especialmente útil cuando is_gap=True (sin PoC)
+                            # y el parámetro vulnerable no tiene un nombre estándar.
+                            if not _det_action and not notes.get("endpoint"):
+                                _taint_hits = find_unsanitized_sqli_params(fr.local_path)
+                                if _taint_hits:
+                                    _th = _taint_hits[0]
+                                    _det_param = _th["param"]
+                                    _taint_hook = _th.get("hook", "")
+                                    step((f"taint scan encontro param inyectable: "
+                                          f"'{_det_param}' en {_th['file']}:{_th['line']} "
+                                          f"-- hook={_taint_hook or 'desconocido'}") if es else
+                                         (f"taint scan found injectable param: "
+                                          f"'{_det_param}' at {_th['file']}:{_th['line']} "
+                                          f"-- hook={_taint_hook or 'unknown'}"))
+                                    if _taint_hook and "admin-ajax" in _taint_hook:
+                                        # extraer acción del hook URL
+                                        _ta_m = __import__('re').search(
+                                            r"action=([A-Za-z0-9_]+)", _taint_hook)
+                                        if _ta_m:
+                                            _det_action = _ta_m.group(1)
+                                    elif _taint_hook:
+                                        # REST o template_redirect — usar el hook directamente
+                                        _ep_taint = _taint_hook
+                                        notes["endpoint"] = _ep_taint
+                                        notes["sqli_param"] = _det_param
+                                        notes["http_method"] = "GET"
+                                        inv.llm_notes["endpoint"] = _ep_taint
+                                        inv.llm_notes["sqli_param"] = _det_param
+                                        inv.llm_notes["http_method"] = "GET"
+                                        # Registrar alternativos taint si los hay
+                                        _taint_alts = [
+                                            {"endpoint": t.get("hook", ""),
+                                             "parameters": [t["param"]]}
+                                            for t in _taint_hits[1:]
+                                            if t.get("hook")
+                                        ]
+                                        if _taint_alts:
+                                            notes["alt_endpoints"] = _taint_alts
+                                            inv.llm_notes["alt_endpoints"] = _taint_alts
                             if _det_action:
                                 step((f"escaner determinista encontro accion AJAX para SQLi: "
                                       f"'{_det_action}' (parametro '{_det_param}') -- "
@@ -3857,6 +3915,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                           f"{_det_rec['location']}") if es else
                                          (f"handler: '{_det_rec['function']}' at "
                                           f"{_det_rec['location']}"))
+                                # Registrar endpoints alternativos para fallback: todos los AJAX
+                                # actions del plugin excepto el principal ya elegido.
+                                # Si el principal falla, el retry loop los probará en orden.
+                                _all_actions = find_all_ajax_actions(fr.local_path)
+                                _alt_eps = [
+                                    {"endpoint": f"/wp-admin/admin-ajax.php?action={_act}",
+                                     "parameters": [_det_param]}
+                                    for _act in _all_actions if _act != _det_action
+                                ]
+                                if _alt_eps:
+                                    notes["alt_endpoints"] = _alt_eps
+                                    inv.llm_notes["alt_endpoints"] = _alt_eps
+                                    step((f"endpoints alternativos registrados para fallback: "
+                                          f"{len(_alt_eps)} acciones AJAX adicionales") if es else
+                                         (f"registered {len(_alt_eps)} alternative AJAX endpoints "
+                                          f"for fallback"))
                 # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
                 # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
                 # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara
@@ -3893,6 +3967,31 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                               f"-- se mantiene endpoint actual") if es else
                              (f"refinement dropped placeholder endpoint '{_ref_ep}' from source "
                               f"-- keeping current endpoint"))
+                    # Si el PoC fue parseado de un bloque HTTP crudo real (poc_raw_http_lock),
+                    # el endpoint tiene alta confianza y NO debe ser sobreescrito por el grep/LLM
+                    # con uno completamente diferente (p.ej. /wp-admin/admin-ajax.php cuando el PoC
+                    # apunta a /wp-json/...). El grep puede encontrar OTRO sumidero valido pero que
+                    # requiere una tecnica distinta; sustituir el endpoint silenciosamente hace que
+                    # sqli_param y base_params sean incorrectos para ESE endpoint, causando 10+
+                    # fallos consecutivos antes de que el motor pivote por otro camino.
+                    _ep_locked = (notes.get("poc_raw_http_lock")
+                                  or notes.get("poc_llm_endpoint_lock"))
+                    if _ep_locked:
+                        _cur_ep = (notes.get("endpoint") or "").rstrip("/")
+                        _new_ep = (refined.get("endpoint") or "").rstrip("/")
+                        if _new_ep and _new_ep != _cur_ep:
+                            refined.pop("endpoint", None)
+                            refined.pop("parameters", None)
+                            _lock_kind = ("poc_raw_http_lock" if notes.get("poc_raw_http_lock")
+                                          else "poc_llm_endpoint_lock")
+                            step((f"{_lock_kind}: endpoint del PoC conservado "
+                                  f"(grep proponia '{_new_ep}', "
+                                  f"mantenemos '{_cur_ep}')") if es else
+                                 (f"{_lock_kind}: keeping PoC endpoint "
+                                  f"(grep proposed '{_new_ep}', "
+                                  f"keeping '{_cur_ep}')"))
+                            refined = {k: v for k, v in refined.items()
+                                       if k not in ("endpoint", "parameters", "http_method")}
                     if det_refined:
                         step((f"grep deterministico del codigo real: endpoint="
                              f"{det_refined.get('endpoint')}, parameters="
@@ -3979,7 +4078,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                 _safe_refined = {k: v for k, v in refined.items()
                                                  if not (k == "parameters" and v is None)}
                             notes = {**notes, **_safe_refined}
-                        inv.llm_notes.update(refined)
+                        # Sincronizar inv.llm_notes con lo que realmente quedo en notes:
+                        # si _skip_params_override protegió los params, inv.llm_notes debe
+                        # reflejar eso — de lo contrario cualquier relectura posterior de
+                        # inv.llm_notes obtendria los params del grep en vez de los del PoC.
+                        inv.llm_notes.update({k: notes[k] for k in ("endpoint", "parameters",
+                                              "http_method") if k in notes})
                         step((f"refinado con el codigo real: endpoint={notes.get('endpoint')}, "
                              f"parameters={notes.get('parameters')}") if es else
                              (f"refined from the real source: endpoint={notes.get('endpoint')}, "
@@ -4754,7 +4858,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_drupal, wr, notes.get("endpoint"), sqli_p,
                     technique_label="SQLi Drupal", max_attempts=_SQLI_RETRY_MAX_ATTEMPTS,
-                    lock_endpoint=bool(notes.get("analyst_endpoint_lock")))
+                    lock_endpoint=bool(notes.get("analyst_endpoint_lock")
+                                       or notes.get("poc_raw_http_lock")
+                                       or notes.get("poc_llm_endpoint_lock")))
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para SQLi: UNION-based (extrae version() real de la
             # base de datos) con fallback a boolean-blind diferencial -- ver verify_wordpress_sqli.
@@ -4856,6 +4962,24 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 def _on_sqli_suggestion(sug):
                     _apply_generic_wp_suggestion(sug, extra_nonce_pages,
                                                  extra_setup_trigger_paths, params)
+                    # Si el LLM no propone un endpoint distinto al actual Y hay
+                    # endpoints alternativos del grep disponibles, probar el siguiente.
+                    # Esto implementa "razonamiento de fallo": el motor entiende que
+                    # tiene más candidatos y los agota antes de rendirse.
+                    _sug_ep = (sug.get("endpoint_alternativo") or "").rstrip("/")
+                    _cur_ep = (notes.get("endpoint") or "").rstrip("/")
+                    _alt_eps = notes.get("alt_endpoints") or []
+                    _ep_locked = (notes.get("poc_raw_http_lock")
+                                  or notes.get("poc_llm_endpoint_lock"))
+                    if (not _sug_ep or _sug_ep == _cur_ep) and _alt_eps and not _ep_locked:
+                        _next = _alt_eps.pop(0)
+                        notes["alt_endpoints"] = _alt_eps
+                        inv.llm_notes["alt_endpoints"] = _alt_eps
+                        sug["endpoint_alternativo"] = _next["endpoint"]
+                        step((f"LLM sin sugerencia nueva -- probando endpoint alternativo "
+                              f"del grep: {_next['endpoint']}") if es else
+                             (f"LLM has no new suggestion -- trying next grep endpoint: "
+                              f"{_next['endpoint']}"))
                 def _attempt_sqli(ep, pr):
                     _ep_method = ("POST" if "admin-ajax" in (ep or "")
                                   else notes.get("http_method") or "GET")
@@ -4873,13 +4997,21 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         extra_setup_trigger_paths=list(extra_setup_trigger_paths),
                         _live_boot=_live,
                         json_body=bool(notes.get("json_body")))
+                _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
+                                       or notes.get("poc_raw_http_lock")
+                                       or notes.get("poc_llm_endpoint_lock"))
+                if _ep_lock_active:
+                    step((f"endpoint bloqueado (poc/analyst lock): "
+                          f"el retry loop no podra cambiarlo -- {notes.get('endpoint')}") if es else
+                         (f"endpoint locked (poc/analyst lock): "
+                          f"retry loop cannot change it -- {notes.get('endpoint')}"))
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
                         max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
                         ere_nonce_pages=extra_nonce_pages,
-                        lock_endpoint=bool(notes.get("analyst_endpoint_lock")),
+                        lock_endpoint=_ep_lock_active,
                         lock_param=bool(notes.get("analyst_endpoint_lock") and sqli_p)))
                 # Teardown the persistent lab now that all retries are done.
                 # _lab_ref[0] is the _Lab object; _boot_ref[0] is the _LabSession.
@@ -5931,6 +6063,13 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     poc_hints = {k: v for k, v in poc_hints.items() if k != "vuln_class"}
                 inv.llm_notes = {**inv.llm_notes, **poc_hints}
                 notes = inv.llm_notes  # re-bind: inv.llm_notes is a NEW dict after merge
+                # Si el LLM extrajo un endpoint real del PoC (no placeholder), bloquearlo
+                # para que el retry loop no lo sustituya por otro encontrado via grep.
+                # Es el mismo mecanismo que poc_raw_http_lock pero para endpoints extraídos
+                # por el LLM (no solo para raw HTTP blocks).
+                _ep_from_poc = poc_hints.get("endpoint", "")
+                if _ep_from_poc and not inv.llm_notes.get("poc_raw_http_lock"):
+                    inv.llm_notes["poc_llm_endpoint_lock"] = True
                 step((f"PoC real leido -- endpoint={poc_hints.get('endpoint', '?')}, "
                      f"parameters={poc_hints.get('parameters', '?')}" if es else
                      (f"real PoC read -- endpoint={poc_hints.get('endpoint', '?')}, "
@@ -5957,6 +6096,9 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
                     inv.llm_notes["json_body"] = True
                 if raw_req.get("custom_headers"):
                     inv.llm_notes["custom_headers"] = raw_req["custom_headers"]
+                # Marcar que el endpoint viene de un bloque HTTP crudo real (alta confianza):
+                # el refinement posterior NO debe sobreescribirlo con un endpoint distinto.
+                inv.llm_notes["poc_raw_http_lock"] = True
                 step((f"bloque de peticion HTTP cruda encontrado en el PoC -- usando "
                      f"{raw_req['method']} {raw_req['path']} con los parametros y valores REALES "
                      f"tal cual (sin pasar por el LLM, cero riesgo de alucinacion)"
@@ -6256,8 +6398,12 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
 
     inv.steps = []   # el streaming ya emitio los pasos; el informe los reconstruye del render
 
-    # Captura de terminal: estado final de la investigacion
+    # Captura de terminal: estado final de la investigacion.
+    # IMPORTANTE: _screenshot_terminal_step lanza Playwright/Chromium que puede colgarse
+    # indefinidamente cuando hay contención de recursos (Docker activo, Chromium ya en uso).
+    # Se ejecuta en un hilo separado con timeout de 15s; si no termina, se omite sin bloquear.
     try:
+        import concurrent.futures as _cf_term
         from .wpverify import _screenshot_terminal_step
         _status = ("VERIFICADO" if inv.verified else "NO CONFIRMADO") if es else ("VERIFIED" if inv.verified else "UNCONFIRMED")
         _detail = inv.verified_detail or inv.blockers[0] if (inv.verified_detail or inv.blockers) else ""
@@ -6270,12 +6416,19 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             + (f"Payload: {inv.verified_evidence.get('payload_ganador', '')}\n"
                if inv.verified and inv.verified_evidence else "")
         )
-        _term_png = _screenshot_terminal_step(
-            title=f"{inv.cve_id} · {_status}",
-            content=_term_content,
-            highlight=_status,
-            lang=lang,
-        )
+        _term_png = None
+        with _cf_term.ThreadPoolExecutor(max_workers=1) as _ex_term:
+            _fut_term = _ex_term.submit(
+                _screenshot_terminal_step,
+                title=f"{inv.cve_id} · {_status}",
+                content=_term_content,
+                highlight=_status,
+                lang=lang,
+            )
+            try:
+                _term_png = _fut_term.result(timeout=15)
+            except (_cf_term.TimeoutError, Exception):
+                _term_png = None
         if _term_png:
             inv.verified_evidence = inv.verified_evidence or {}
             inv.verified_evidence.setdefault("screenshots", [])

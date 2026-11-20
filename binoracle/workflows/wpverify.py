@@ -893,15 +893,16 @@ class _Lab:
                        "-v", f"{self.vol}:/var/www/html", *self._db_env, "--user", "33:33",
                        _WPCLI_IMAGE, "wp", "--path=/var/www/html", *args, timeout=timeout)
 
-    def exec_mysql(self, query: str, db_pw: str, timeout: float = 20.0) -> str:
+    def exec_mysql(self, query: str, db_pw: str, timeout: float = 20.0) -> str | None:
         """Ejecuta una query SQL directamente en el contenedor MySQL del lab via `docker exec`.
-        Devuelve el stdout (puede estar vacio si la query no produce filas). Util para sembrar
-        datos minimos de seed antes de intentar SQLi booleana en plugins que necesitan filas en
-        sus tablas personalizadas para devolver una respuesta con diferencial."""
+        Devuelve el stdout si el comando tuvo exito (puede ser "" para DML que no produce filas),
+        o None si el retorno fue != 0 (error SQL, tabla inexistente, etc.).
+        La distincion None vs "" es importante para _seed_plugin_tables: "" = INSERT exitoso
+        sin filas de salida; None = INSERT fallido (tabla no existe, error de sintaxis, etc.)."""
         r = self.sh("exec", self.mysql,
                     "mysql", "-uwordpress", f"-p{db_pw}", "-D", "wordpress",
                     "-e", query, timeout=timeout)
-        return (r.stdout or "") if r.returncode == 0 else ""
+        return (r.stdout or "") if r.returncode == 0 else None
 
     def install_plugin(self, host_plugin_dir: str, slug: str, timeout=180.0) -> bool:
         """Copia el plugin (ya descargado a `host_plugin_dir`, que contiene <slug>/...) dentro del
@@ -3969,10 +3970,25 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
         r'(?:\{\$wpdb->prefix\}|{?\$wpdb->prefix\s*\.\s*[\'"]|[\'"]wp_)([a-zA-Z][a-zA-Z0-9_]{1,40})(?:[\'"])?',
         re.IGNORECASE)
     _SKIP_TABLES = {
+        # WordPress core tables
         "posts", "postmeta", "terms", "term_taxonomy", "term_relationships",
         "options", "users", "usermeta", "comments", "commentmeta",
         "links", "user_registrations", "blogs", "signups",
+        # WordPress action/filter hooks that contain 'wp_' prefix but are NOT tables:
+        # add_action('wp_enqueue_scripts', ...), register_uninstall_hook(), etc.
+        "enqueue_scripts", "enqueue_styles", "head", "footer", "loaded",
+        "uninstall_plugin", "user_id", "insert_post", "update_post_meta",
+        "ajax", "admin_ajax", "login_init", "admin_init", "init",
+        "set_current_user", "dashboard_setup", "admin_enqueue_scripts",
+        "admin_menu", "admin_notices", "widgets_init", "plugins_loaded",
+        "after_setup_theme", "template_redirect", "wp_cron",
     }
+    # Only match table names that appear in SQL query context (SELECT/INSERT/UPDATE/DELETE/FROM/JOIN)
+    # to avoid false positives from add_action('wp_hookname', ...) patterns.
+    _SQL_CONTEXT_RE = re.compile(
+        r'(?:SELECT|INSERT|UPDATE|DELETE|FROM|JOIN|INTO)\b[^\n]{0,120}'
+        r'(?:\{\$wpdb->prefix\}|{?\$wpdb->prefix\s*\.\s*[\'"]|[\'"]wp_)([a-zA-Z][a-zA-Z0-9_]{1,40})',
+        re.IGNORECASE)
     for root, _, files in os.walk(plugin_source_dir):
         for fname in files:
             if not fname.endswith(".php"):
@@ -3983,6 +3999,12 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
                     content = fh.read(400_000)  # max 400KB por fichero (rsvpmaker-email.php es 270KB)
             except Exception:
                 continue
+            # First pass: SQL context (high confidence)
+            for m in _SQL_CONTEXT_RE.finditer(content):
+                tbl = m.group(1).lower()
+                if tbl not in _SKIP_TABLES and len(tbl) > 2:
+                    table_counts[tbl] = table_counts.get(tbl, 0) + 2  # weight 2 for SQL context
+            # Second pass: any wp_ prefix match (lower confidence, +1 only if not already found)
             for m in _TABLE_RE.finditer(content):
                 tbl = m.group(1).lower()
                 if tbl not in _SKIP_TABLES and len(tbl) > 2:
@@ -4004,6 +4026,13 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
     # que no estaban en MySQL cuando corrio el static-analysis scan inicial.
     if sqli_param:
         tables = sorted(tables, key=lambda t: 0 if sqli_param.lower() in t.lower() else 1)
+    # Priorizar tablas email/mail/guest/subscriber cuando sqli_param_value es un email:
+    # rsvpmaker_guest_email contiene 'email' y es la tabla correcta, pero sin esta ordenacion
+    # cae en posicion 9+ (detras de tablas genericas como enqueue_scripts, unique_post_slug).
+    if sqli_param_value and "@" in sqli_param_value:
+        _email_tbl_hints = ("email", "mail", "guest", "subscriber", "member")
+        tables = sorted(tables, key=lambda t: 0 if any(h in t.lower() for h in _email_tbl_hints) else 1)
+    step(f"[seed debug] sqli_param={sqli_param!r} first8={tables[:8]}")
     for tbl in tables[:8]:
         full = f"wp_{tbl}"
         # Intentar varias formas de INSERT, de menos a mas especulativo:
@@ -4015,13 +4044,19 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
             f"INSERT IGNORE INTO {full} (id) VALUES (1);",
             f"INSERT IGNORE INTO {full} () VALUES ();",
         ]:
-            r = lab.exec_mysql(q, db_pw) or ""
-            if "ERROR" not in r.upper() and "error" not in r.lower():
+            r = lab.exec_mysql(q, db_pw)
+            # None = SQL error (tabla inexistente, violacion de constraint no ignorable, etc.)
+            # "" = INSERT exitoso sin filas de salida (DML normal con INSERT IGNORE)
+            if r is not None:
                 inserted = True
                 break
         # Fallback: DESCRIBE para descubrir columnas NOT NULL y construir INSERT válido
         if not inserted:
-            desc_r = lab.exec_mysql(f"DESCRIBE {full};", db_pw) or ""
+            desc_r = lab.exec_mysql(f"DESCRIBE {full};", db_pw)
+            if desc_r is None:
+                # DESCRIBE falló → la tabla no existe (fue detectada por falso positivo del regex)
+                step(f"seed data: {full} no existe en DB (falso positivo del grep de tablas) -- omitida")
+                continue
             nn_cols = {}
             for line in desc_r.strip().split('\n')[1:]:  # skip header
                 parts = [p.strip() for p in line.split('\t')]
@@ -4040,8 +4075,8 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                 cols = ', '.join(nn_cols.keys())
                 vals = ', '.join(nn_cols.values())
                 q_desc = f"INSERT IGNORE INTO {full} ({cols}) VALUES ({vals});"
-                r2 = lab.exec_mysql(q_desc, db_pw) or ""
-                if "ERROR" not in r2.upper():
+                r2 = lab.exec_mysql(q_desc, db_pw)
+                if r2 is not None:
                     inserted = True
         # Si el sqli_param coincide con una columna de texto común, actualizar esa columna
         # para que la fila seeded tenga un valor consultable (diferencial booleano más limpio).
@@ -4059,6 +4094,15 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                 _upd = (f"UPDATE {full} SET {sqli_param}='{_safe_val}' "
                         f"WHERE id=(SELECT MIN(id) FROM (SELECT id FROM {full} LIMIT 1) t);")
                 lab.exec_mysql(_upd, db_pw)
+        # Cuando sqli_param_value es un email y sqli_param no es 'email', la columna a poblar
+        # puede llamarse 'email' aunque el param HTTP se llame 'q' u otro nombre generico.
+        # Siempre intentar actualizar la columna 'email' con el valor real (silencioso si no existe).
+        if inserted and sqli_param_value and "@" in sqli_param_value and sqli_param.lower() != "email":
+            _safe_em = sqli_param_value.replace("'", "\\'")[:100]
+            lab.exec_mysql(
+                f"UPDATE {full} SET email='{_safe_em}' "
+                f"WHERE id=(SELECT MIN(id) FROM (SELECT id FROM {full} LIMIT 1) t);",
+                db_pw)
         step(f"seed data: INSERT en {full} {'OK' if inserted else 'SKIP'} "
              f"(diferencial booleano en DB vacia)")
         seeded += 1
@@ -4319,18 +4363,19 @@ def verify_wordpress_sqli(
         import urllib.parse as _urlparse
         _email_param_hints = {"email", "sender", "receiver", "mail", "user", "address"}
         _is_email_param = any(h in sqli_param.lower() for h in _email_param_hints)
-        if orig_value == "1" and not base_params.get(sqli_param):
+        if orig_value == "1" and (not base_params.get(sqli_param)
+                                   or base_params.get(sqli_param) == "1"):
             for _seg in reversed([_urlparse.unquote(s) for s in endpoint.split("/") if s]):
                 if ("@" in _seg or                                           # email con @
                         re.match(r"^\d+$", _seg) or                         # ID numerico
                         ("." in _seg and len(_seg) >= 5                      # dominio/token con punto
                          and not re.match(r"^v\d+", _seg, re.I))):          # no 'v1', 'v2', etc.
                     _extracted = _urlparse.unquote(_seg)
-                    # Si el param es de tipo email y el segmento no tiene @, puede que el LLM
-                    # haya mangleado @ → _ para hacer la URL valida; intentar restaurarlo.
-                    # Esto es necesario para que los filtros tipo rsvpmail_contains_email()
-                    # (que exigen @ en el valor) no descarten el payload de inyeccion.
-                    if _is_email_param and "@" not in _extracted and "_" in _extracted:
+                    # Si el segmento no tiene @, puede que el LLM haya mangleado @ → _
+                    # para hacer la URL valida. Restaurar con o sin _is_email_param:
+                    # algunos endpoints tienen gates de email aunque sqli_param se llame 'q' u otro
+                    # (el LLM refina mal el nombre del param pero la URL sigue siendo path de email).
+                    if "@" not in _extracted and "_" in _extracted:
                         _cand = _extracted.replace("_", "@", 1)
                         if re.match(r"[^@]+@[^@]+\.[^@]{2,6}$", _cand):
                             endpoint = endpoint.replace(_extracted, _cand, 1)
@@ -4341,6 +4386,19 @@ def verify_wordpress_sqli(
                     step(f"orig_value extraido del path del endpoint: '{orig_value}' "
                          f"('{sqli_param}' no estaba en base_params, posible path-param)")
                     break
+
+        # Restauracion de email mangleado cuando el LLM asigna @ → _ en base_params
+        # (caso: sqli_param='q', base_params={'q':'test_example.com'}, path-extraction no corrio).
+        # Sin @ el gate rsvpmail_contains_email() rechaza el valor y la SQL nunca corre.
+        if "@" not in orig_value and "_" in orig_value and orig_value in endpoint:
+            _cand_em = orig_value.replace("_", "@", 1)
+            if re.match(r"[^@]+@[^@]+\.[^@]{2,6}$", _cand_em):
+                endpoint = endpoint.replace(orig_value, _cand_em, 1)
+                if base_params.get(sqli_param) == orig_value:
+                    base_params[sqli_param] = _cand_em
+                orig_value = _cand_em
+                step(f"email restaurado en orig_value/endpoint: '{orig_value}' "
+                     f"(LLM mangleaba @ → _ aunque sqli_param='{sqli_param}')")
 
         # algunos plugins (ver _SQLI_CUSTOM_SORT_GATE) gatean el sumidero real detras de una
         # comparacion EXACTA contra un valor guardado en META de un post real -- sin esto, se
@@ -4997,7 +5055,10 @@ def verify_wordpress_sqli(
                 bool_tried.append({"true": true_p, "false": false_p, "error": str(e)})
                 continue
             lt, lf = len(rt.text or ""), len(rf.text or "")
-            threshold = max(20, 0.05 * base_len)
+            # Para respuestas pequenas (<100B), el threshold absoluto de 20B seria demasiado grande
+            # (p.ej. rsvpmaker devuelve 4B=true vs 5B=false -- diferencia de 1B real).
+            # Se usa max(0.5, 5% del base) para ser sensible incluso a diferencias de 1 byte.
+            threshold = max(0.5, 0.05 * base_len) if base_len < 100 else max(20, 0.05 * base_len)
             differs = (rt.status_code != rf.status_code) or (abs(lt - lf) > threshold)
             matches_base = abs(lt - base_len) <= threshold
             bool_tried.append({"true": true_p, "false": false_p, "status_true": rt.status_code,
@@ -5021,6 +5082,85 @@ def verify_wordpress_sqli(
                  f"diferencia consistente")
             res.evidence["screenshots"] = boot.shots
             return res
+
+        # Content-diff boolean: cuando base_len es grande (>10KB) el threshold del 5% (>500B)
+        # oculta diferencias reales de contenido muy pequeñas (p.ej. un var_dump de 40B que
+        # aparece en FALSE pero no en TRUE). En lugar de comparar TAMAÑO, buscamos tokens/strings
+        # que aparezcan en la respuesta FALSE pero no en TRUE (o viceversa) de forma consistente.
+        # Se activa solo cuando el diferencial de tamaño falló completamente (consistent_diffs==0)
+        # y base_len > 10KB para evitar falsos positivos en respuestas cortas.
+        if consistent_diffs == 0 and base_len > 10_000 and bool_tried:
+            _content_consistent = 0
+            _content_trigger_pair = None
+            for _entry in bool_tried:
+                _rt_text = _entry.get("respuesta_true_recorte", "")
+                # necesitamos el texto completo de TRUE y FALSE para content-diff
+                # bool_tried solo guarda recorte de TRUE; re-enviamos el primer par
+                # que tenga respuestas válidas (sin error) para hacer diff completo
+                if _entry.get("error") or not _rt_text:
+                    continue
+                _true_p = _entry.get("true", "")
+                _false_p = _entry.get("false", "")
+                try:
+                    _rt2 = send(_true_p)
+                    _rf2 = send(_false_p)
+                    _rt2_text = _rt2.text or ""
+                    _rf2_text = _rf2.text or ""
+                    # Buscar tokens que aparecen solo en FALSE (mensajes de error, dumps)
+                    # o solo en TRUE (datos reales de la DB)
+                    _only_in_false = set()
+                    _only_in_true = set()
+                    # Dividir en tokens de >=6 chars para evitar ruido
+                    _tok_true = set(w for w in _rt2_text.split() if len(w) >= 6)
+                    _tok_false = set(w for w in _rf2_text.split() if len(w) >= 6)
+                    _only_in_false = _tok_false - _tok_true
+                    _only_in_true = _tok_true - _tok_false
+                    # Señal válida: hay tokens exclusivos de una respuesta y no de la otra
+                    # AND el status code es el mismo (descartamos redirecciones/403)
+                    _tok_diff_count = len(_only_in_false) + len(_only_in_true)
+                    # Señal secundaria: diferencia en los primeros 200B del body (donde suele
+                    # aparecer var_dump / error PHP antes del HTML normal). Detecta textos cortos
+                    # como `string(28) "Can't not get the order"` que tienen pocos tokens >=6chars.
+                    _head_true = (_rt2.text or "")[:200]
+                    _head_false = (_rf2.text or "")[:200]
+                    _head_differs = (_head_true != _head_false and
+                                     abs(len(_head_true) - len(_head_false)) >= 5)
+                    _status_ok = (_rt2.status_code == _rf2.status_code)
+                    if ((_tok_diff_count >= 2 or _head_differs)
+                            and _status_ok):
+                        _content_consistent += 1
+                        if _content_trigger_pair is None:
+                            _content_trigger_pair = {
+                                "true": _true_p, "false": _false_p,
+                                "tokens_solo_false": sorted(_only_in_false)[:5],
+                                "tokens_solo_true": sorted(_only_in_true)[:5],
+                                "tok_diff_count": _tok_diff_count,
+                                "head_differs": _head_differs,
+                            }
+                        # Señal fuerte: muchos tokens exclusivos O diferencia en el head del body
+                        # (var_dump / error PHP que aparece antes del HTML normal) — un solo par
+                        # es suficiente evidencia cuando la señal es clara.
+                        if _tok_diff_count >= 10 or _head_differs:
+                            _content_consistent = max(_content_consistent, 2)
+                except Exception:
+                    pass
+                if _content_consistent >= 2:
+                    break
+
+            if _content_consistent >= 2:
+                res.verified = True
+                res.ok = True
+                res.evidence["tecnica"] = "boolean-blind-content-diff"
+                res.evidence["content_diff_trigger"] = _content_trigger_pair
+                res.detail = (f"SQLI probable (boolean-blind, content-diff): {_content_consistent}/"
+                              f"{len(bool_tried)} pares TRUE/FALSE mostraron tokens exclusivos en "
+                              f"una respuesta frente a la otra -- la respuesta cambia segun la "
+                              f"condicion SQL, aunque el tamaño sea similar (pagina grande con "
+                              f"pequeño fragmento variable)")
+                step(f"VERIFICADO (boolean-blind content-diff): {_content_consistent} pares "
+                     f"con tokens exclusivos TRUE≠FALSE")
+                res.evidence["screenshots"] = boot.shots
+                return res
 
         # ultimo recurso: time-based blind. Si el contenido/longitud de la respuesta nunca cambia
         # (p.ej. la pagina siempre devuelve lo mismo independientemente del resultado del query),
@@ -5089,7 +5229,17 @@ def verify_wordpress_sqli(
                 "(p.ej. wp_term_taxonomy)."
             )
 
-        if timing_consistent >= 2:
+        # Threshold principal: 2+ pares con retraso >= 3.5s
+        # Threshold alternativo: 1 par con retraso >= 8s — cuando la tabla tiene
+        # pocas filas solo el payload OR SLEEP dispara (AND SLEEP no evalúa si no
+        # hay filas que coincidan con la condición), así que un retraso muy grande
+        # en 1 par es igual de convincente que 2 pares con retraso justo.
+        _max_single_delay = max(
+            (t.get("slow_s", 0) - t.get("fast_s", 0)
+             for t in timing_tried if "slow_s" in t and "fast_s" in t),
+            default=0.0,
+        )
+        if timing_consistent >= 2 or (timing_consistent >= 1 and _max_single_delay >= 8.0):
             res.verified = True
             res.ok = True
             res.evidence["tecnica"] = "time-based-blind"

@@ -2279,3 +2279,196 @@ def find_stored_xss_endpoint(local_path: str) -> Optional[dict]:
         "table_hint": best_inject["table_hint"],
         "view_path": view_path,
     }
+
+
+def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
+    """Analisis taint simplificado: rastrea parametros que fluyen desde $_GET/$_POST/$_REQUEST
+    hasta $wpdb->query/get_results/get_row/get_col/prepare sin pasar por $wpdb->prepare().
+    Devuelve lista de {param, hook, file, line} para cada sumidero inyectable encontrado.
+
+    Este scanner no depende del LLM ni de un PoC publico -- lee el codigo fuente y aplica
+    logica estructural para identificar el patron exacto de la vulnerabilidad. Util cuando
+    is_gap=True (sin exploit publico) y el LLM no puede adivinar el endpoint correcto."""
+    if not local_path or not os.path.isdir(local_path):
+        return []
+
+    # Patron 1: asignacion directa $var = $_GET/POST/REQUEST['param']
+    _TAINT_ASSIGN = re.compile(
+        r"""\$([A-Za-z_]\w*)\s*=\s*(?:sanitize_text_field\s*\(\s*wp_unslash\s*\(\s*)?"""
+        r"""\$_(GET|POST|REQUEST)\s*\[\s*['"]([\w\-]+)['"]\s*\]""",
+        re.I,
+    )
+    # Patron 2: uso directo en query: aparece $var dentro de una string SQL de $wpdb->
+    _WPDB_QUERY = re.compile(
+        r"""\$wpdb\s*->\s*(?:query|get_results|get_row|get_col|get_var)\s*\("""
+        r"""\s*["\'][^"\']{0,600}""",
+        re.S,
+    )
+    # Patron 3: hook AJAX o REST en el mismo archivo (para saber el endpoint)
+    _AJAX_HOOK = re.compile(
+        r"""add_action\s*\(\s*['"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['"]""",
+    )
+    _REST_HOOK = re.compile(
+        r"""register_rest_route\s*\([^)]{0,200}['"]([A-Za-z0-9/_\-{}]+)['"]""",
+        re.S,
+    )
+    # Patron 4: template_redirect con $wpdb (como appsplate)
+    _TEMPLATE_REDIRECT = re.compile(
+        r"""add_action\s*\(\s*['"]template_redirect['"]""",
+    )
+
+    results: list = []
+    seen_pairs: set = set()
+
+    if not os.path.isdir(local_path):
+        return results
+
+    # Primera pasada: leer todos los archivos PHP del plugin
+    all_texts: dict = {}
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in files:
+            if not fn.lower().endswith(".php"):
+                continue
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                    all_texts[fp] = fh.read(_MAX_SCAN_BYTES)
+            except OSError:
+                continue
+            if len(all_texts) >= _MAX_SCAN_FILES:
+                break
+        if len(all_texts) >= _MAX_SCAN_FILES:
+            break
+
+    # Segunda pasada: detectar asignaciones tainted y queries vulnerables
+    for fp, text in all_texts.items():
+            # Paso 1: recoger todas las asignaciones tainted en este archivo
+            tainted: dict = {}  # var_name -> param_name
+            for m in _TAINT_ASSIGN.finditer(text):
+                var, _src, param = m.group(1), m.group(2), m.group(3)
+                tainted[var] = param
+
+            if not tainted:
+                continue
+
+            # Paso 2: buscar queries que contienen esas variables tainted sin prepare()
+            for m_q in _WPDB_QUERY.finditer(text):
+                query_start = m_q.start()
+                # extraer el bloque hasta el cierre del paréntesis (heuristica)
+                depth = 0
+                query_end = query_start
+                for i, c in enumerate(text[query_start:], query_start):
+                    if c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                        if depth == 0:
+                            query_end = i
+                            break
+                query_block = text[query_start:query_end + 1]
+
+                # Verificar que NO usa prepare() en el mismo bloque (safe pattern)
+                if 'prepare' in query_block:
+                    continue
+
+                # Buscar variables tainted dentro del query block
+                for var, param in tainted.items():
+                    if f'${var}' in query_block:
+                        # Determinar endpoint buscando el hook asociado a la FUNCIÓN
+                        # que contiene esta query (no cualquier hook del archivo).
+                        # Estrategia: buscar hacia ATRÁS la función MÁS CERCANA
+                        # (última definición antes de la query), luego su hook.
+                        _fn_all = list(re.finditer(
+                            r"function\s+([A-Za-z_]\w*)\s*\(",
+                            text[:query_start],
+                        ))
+                        _containing_fn = _fn_all[-1].group(1) if _fn_all else ""
+                        hook = ""
+                        if _containing_fn:
+                            # AJAX hook que registra esta función
+                            _fn_hook_re = re.compile(
+                                rf"""add_action\s*\(\s*['"]wp_ajax(?:_nopriv)?_([A-Za-z0-9_]+)['"]"""
+                                rf"""[^)]*?['"]{re.escape(_containing_fn)}['"]""",
+                                re.S,
+                            )
+                            _fh = _fn_hook_re.search(text)
+                            if _fh:
+                                hook = f"/wp-admin/admin-ajax.php?action={_fh.group(1)}"
+                            if not hook:
+                                # REST route que registra esta función
+                                _rest_fn_re = re.compile(
+                                    rf"""register_rest_route\s*\([^){{]{{0,400}}"""
+                                    rf"""['"]([\w/_\-{{}}]+)['"]\s*,"""
+                                    rf"""[^){{]{{0,300}}['"]{re.escape(_containing_fn)}['"]""",
+                                    re.S,
+                                )
+                                _rfh = _rest_fn_re.search(text)
+                                if _rfh:
+                                    hook = f"/wp-json/{_rfh.group(1).lstrip('/')}"
+                            if not hook:
+                                # template_redirect en el mismo archivo que llama a esta función
+                                _tr_re = re.compile(
+                                    rf"""add_action\s*\(\s*['"]template_redirect['"]"""
+                                    rf"""[^)]*?['"]{re.escape(_containing_fn)}['"]""",
+                                    re.S,
+                                )
+                                if _tr_re.search(text):
+                                    hook = "/?template_redirect"
+                        # Fallback: si la función no registra su propio hook en este
+                        # archivo, buscar en todos los archivos ya leídos (registro centralizado
+                        # en el archivo principal del plugin, p.ej. class-plugin.php)
+                        if not hook and _containing_fn:
+                            for _other_fp, _other_text in all_texts.items():
+                                if _other_fp == fp:
+                                    continue
+                                _fn_hook_re2 = re.compile(
+                                    rf"""add_action\s*\(\s*['"]([^'"]+)['"]"""
+                                    rf"""[^)]*?['"]{re.escape(_containing_fn)}['"]""",
+                                    re.S,
+                                )
+                                _fh2 = _fn_hook_re2.search(_other_text)
+                                if _fh2:
+                                    _htype = _fh2.group(1)
+                                    if _htype.startswith("wp_ajax"):
+                                        # extraer acción
+                                        _act2 = _htype.replace("wp_ajax_nopriv_", "").replace("wp_ajax_", "")
+                                        hook = f"/wp-admin/admin-ajax.php?action={_act2}"
+                                    elif _htype == "template_redirect":
+                                        hook = "/?template_redirect"
+                                    elif _htype == "init":
+                                        hook = "/?template_redirect"
+                                    break
+                        # Último fallback: cualquier hook del mismo archivo
+                        if not hook:
+                            for m_h in _AJAX_HOOK.finditer(text):
+                                hook = f"/wp-admin/admin-ajax.php?action={m_h.group(1)}"
+                                break
+                        if not hook and _TEMPLATE_REDIRECT.search(text):
+                            hook = "/?template_redirect"
+                        line_no = text[:query_start].count('\n') + 1
+                        pair_key = (fp, param)
+                        if pair_key not in seen_pairs:
+                            seen_pairs.add(pair_key)
+                            results.append({
+                                "param": param,
+                                "hook": hook,
+                                "file": os.path.relpath(fp, local_path),
+                                "line": line_no,
+                                "fn": _containing_fn,
+                            })
+
+    # Ordenar: hooks conocidos primero (admin-ajax, wp-json), luego template_redirect, luego vacíos
+    def _hook_rank(r: dict) -> int:
+        h = r.get("hook", "")
+        if "admin-ajax" in h:
+            return 0
+        if "wp-json" in h:
+            return 1
+        if "template_redirect" in h:
+            return 2
+        return 3
+
+    results.sort(key=_hook_rank)
+    return results
