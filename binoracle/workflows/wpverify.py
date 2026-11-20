@@ -81,7 +81,8 @@ _PATH_HINTS = (
 _PASSWD_SIGNATURE_RE = re.compile(r"root:[^:\n]*:0:0:")
 _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
              "domain", "shell")
-_SQLI_HINTS = ("sort", "order", "id", "search", "q", "query", "code", "name", "term", "filter")
+_SQLI_HINTS = ("sort", "order", "id", "search", "email", "sender", "receiver",
+               "q", "query", "code", "name", "term", "filter")
 
 # algunos plugins NO crean sus paginas por defecto (Login/Register/Account/Members/...) con la
 # simple activacion -- exigen un paso extra PROPIO de cada plugin (un boton "Create Pages" en su
@@ -1777,6 +1778,34 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     # en la DB cuando llegue la peticion HTTP.
     _activate_out = (r.stdout or "") + (r.stderr or "")
     _activate_ok = r.returncode == 0
+    # Si la activacion falla por vendor/autoload.php faltante, crear un stub minimo y reintentar.
+    # Ocurre en plugins que usan Composer para SDKs externos (p.ej. TextMagic, Stripe) pero el ZIP
+    # de WordPress.org no incluye el directorio vendor/ — Composer lo genera localmente y no se sube
+    # al repositorio.  El stub permite que el plugin cargue; las clases Composer solo se instancian
+    # en rutas de codigo que comprueban credenciales/ficheros externos primero, no en el path SQLi.
+    if not _activate_ok and ("vendor/autoload.php" in _activate_out
+                              or "Failed opening required" in _activate_out):
+        import pathlib as _pathlib
+        _vendor_dir = _pathlib.Path(plugin_source_dir) / "vendor"
+        _autoload_stub = _vendor_dir / "autoload.php"
+        if not _autoload_stub.exists():
+            _vendor_dir.mkdir(exist_ok=True)
+            _autoload_stub.write_text(
+                "<?php\n// stub autoloader — vendor/ not included in WP.org ZIP; "
+                "Composer classes are only instantiated in paths that check external "
+                "credentials/files first, not in the SQLi-vulnerable code path.\n")
+            step(f"vendor/autoload.php faltante en '{slug}' — creado stub para permitir carga "
+                 f"del plugin (las clases Composer solo se instancian en rutas que comprueban "
+                 f"credenciales externas, no en el path de la vulnerabilidad SQL)...")
+            _install_ok2 = False
+            try:
+                _install_ok2 = lab.install_plugin(plugin_source_dir, slug)
+            except Exception:
+                pass
+            if _install_ok2:
+                r = lab.wp_cli("plugin", "activate", slug, timeout=90)
+                _activate_out = (r.stdout or "") + (r.stderr or "")
+                _activate_ok = r.returncode == 0
     _scaffold_error = ("does not exist" in _activate_out and "cannot be registered" in _activate_out)
     if not _activate_ok and _scaffold_error:
         _r_ap_check = lab.wp_cli("eval",
@@ -4256,6 +4285,36 @@ def verify_wordpress_sqli(
         _inj_match = _sql_injection_re.search(_raw_orig)
         orig_value = _raw_orig[:_inj_match.start()].strip() if _inj_match else _raw_orig
 
+        # Fallback: si orig_value es el default '1' y sqli_param no tiene valor en base_params,
+        # intentar extraer el valor real desde un segmento del path del endpoint.
+        # Cubre path-params estilo REST como /rsvpmailer_member/test@example.com (email),
+        # /items/123 (ID numerico), etc. — sin hardcodear nada especifico.
+        import urllib.parse as _urlparse
+        _email_param_hints = {"email", "sender", "receiver", "mail", "user", "address"}
+        _is_email_param = any(h in sqli_param.lower() for h in _email_param_hints)
+        if orig_value == "1" and not base_params.get(sqli_param):
+            for _seg in reversed([_urlparse.unquote(s) for s in endpoint.split("/") if s]):
+                if ("@" in _seg or                                           # email con @
+                        re.match(r"^\d+$", _seg) or                         # ID numerico
+                        ("." in _seg and len(_seg) >= 5                      # dominio/token con punto
+                         and not re.match(r"^v\d+", _seg, re.I))):          # no 'v1', 'v2', etc.
+                    _extracted = _urlparse.unquote(_seg)
+                    # Si el param es de tipo email y el segmento no tiene @, puede que el LLM
+                    # haya mangleado @ → _ para hacer la URL valida; intentar restaurarlo.
+                    # Esto es necesario para que los filtros tipo rsvpmail_contains_email()
+                    # (que exigen @ en el valor) no descarten el payload de inyeccion.
+                    if _is_email_param and "@" not in _extracted and "_" in _extracted:
+                        _cand = _extracted.replace("_", "@", 1)
+                        if re.match(r"[^@]+@[^@]+\.[^@]{2,6}$", _cand):
+                            endpoint = endpoint.replace(_extracted, _cand, 1)
+                            _extracted = _cand
+                            step(f"email restaurado en endpoint: '{_extracted}' "
+                                 f"(LLM mangleaba @ → _ para URL valida, restaurado para gates email)")
+                    orig_value = _extracted
+                    step(f"orig_value extraido del path del endpoint: '{orig_value}' "
+                         f"('{sqli_param}' no estaba en base_params, posible path-param)")
+                    break
+
         # algunos plugins (ver _SQLI_CUSTOM_SORT_GATE) gatean el sumidero real detras de una
         # comparacion EXACTA contra un valor guardado en META de un post real -- sin esto, se
         # puede probar el payload correcto contra el parametro correcto y nunca confirmarse,
@@ -4661,12 +4720,29 @@ def verify_wordpress_sqli(
                                              sqli_param=sqli_param,
                                              sqli_param_value=orig_value)
                 if _seeded:
+                    _preseed_len = base_len
+                    _preseed_body = _ctrl_body
                     try:
                         base_resp = send(orig_value)
                         base_len = len(base_resp.text or "")
                         _ctrl_body = (base_resp.text or "").strip()
                         step(f"respuesta post-seed: {base_len} bytes -- "
                              f"{'diferencial posible' if base_len > 10 else 'sigue vacia, continuando'}")
+                        # Si el seed inflO la respuesta mas de 20x respecto al baseline pre-seed pequeno,
+                        # la fila seeded esta disparando codigo adicional que crashea el plugin
+                        # (p.ej. WooCommerce, payment gateway no instalado): la injection no podria
+                        # distinguirse del control porque ambas devuelven la misma pagina de error.
+                        # Revertir al baseline pre-seed preserva el diferencial real (seed row present
+                        # → crash → misma respuesta; sin row → var_dump/codigo normal → distinta respuesta).
+                        _SEED_BLOAT_FACTOR = 20
+                        if (_preseed_len > 0 and base_len > _preseed_len * _SEED_BLOAT_FACTOR
+                                and base_len > 10000):
+                            step(f"[WARN] seed data inflO la respuesta de {_preseed_len}B -> {base_len}B "
+                                 f"(factor >{_SEED_BLOAT_FACTOR}x) — el plugin crashea al procesar la fila "
+                                 f"seeded (p.ej. WooCommerce no instalado). Revertiendo al baseline "
+                                 f"pre-seed ({_preseed_len}B) para preservar el diferencial.")
+                            base_len = _preseed_len
+                            _ctrl_body = _preseed_body
                     except Exception:
                         pass
         # recorte del cuerpo real de la peticion de CONTROL (sin inyeccion) -- confirmado en
