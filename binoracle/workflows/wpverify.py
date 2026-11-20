@@ -3998,7 +3998,13 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
     El objetivo es que el endpoint devuelva al menos una fila para que el diferencial booleano
     sea detectable (TRUE=filas, FALSE=vacio) en plugins que fallan por DB vacia."""
     seeded = 0
-    for tbl in tables[:6]:
+    # Priorizar tablas cuyo nombre contiene sqli_param: p.ej. si sqli_param='email',
+    # 'rsvpmaker_guest_email' sube al primer puesto aunque el static-analysis la ordene 7+.
+    # Esto tambien resuelve tablas creadas lazily (via dbDelta en el primer request de control)
+    # que no estaban en MySQL cuando corrio el static-analysis scan inicial.
+    if sqli_param:
+        tables = sorted(tables, key=lambda t: 0 if sqli_param.lower() in t.lower() else 1)
+    for tbl in tables[:8]:
         full = f"wp_{tbl}"
         # Intentar varias formas de INSERT, de menos a mas especulativo:
         # 1. Solo id=1 (PK explicita)
@@ -4749,6 +4755,34 @@ def verify_wordpress_sqli(
                         _ctrl_body = (base_resp.text or "").strip()
                         step(f"respuesta post-seed: {base_len} bytes -- "
                              f"{'diferencial posible' if base_len > 10 else 'sigue vacia, continuando'}")
+                        # Si tras el primer seed la respuesta sigue vacia/minima, hacer un re-scan
+                        # MySQL para capturar tablas creadas LAZILY por el primer request de control
+                        # (p.ej. rsvpmaker_guest_email la crea via dbDelta en el primer endpoint hit,
+                        # pero no estaba en MySQL cuando el static-analysis scan corrio).
+                        if (base_len <= 10 or _ctrl_body in ("[]", "null", "{}", "0", "false", "")
+                                ) and slug:
+                            _slug_clean2 = re.sub(r'[^a-z0-9]', '', slug.lower())
+                            _mysql2_raw = lab.exec_mysql(
+                                f"SELECT table_name FROM information_schema.tables "
+                                f"WHERE table_schema=DATABASE() AND table_name LIKE 'wp_%{_slug_clean2}%';",
+                                boot.db_pw) or ""
+                            _mysql2_tables = [
+                                t.strip()[3:] for t in _mysql2_raw.strip().split('\n')
+                                if t.strip().startswith('wp_') and t.strip() != 'wp_'
+                            ]
+                            # Solo seedear tablas que NO sembramos aun (evitar re-INSERT en las ya sembradas)
+                            _new_tables = [t for t in _mysql2_tables if t not in _plugin_tables]
+                            if _new_tables:
+                                step(f"re-scan MySQL: tablas nuevas tras primer control request: {_new_tables}")
+                                _seeded2 = _seed_plugin_tables(lab, boot.db_pw, _new_tables, step,
+                                                               sqli_param=sqli_param,
+                                                               sqli_param_value=orig_value)
+                                if _seeded2:
+                                    base_resp = send(orig_value)
+                                    base_len = len(base_resp.text or "")
+                                    _ctrl_body = (base_resp.text or "").strip()
+                                    step(f"respuesta post-reseed: {base_len} bytes -- "
+                                         f"{'diferencial posible' if base_len > 10 else 'sigue vacia'}")
                         # Si el seed inflO la respuesta mas de 20x respecto al baseline pre-seed pequeno,
                         # la fila seeded esta disparando codigo adicional que crashea el plugin
                         # (p.ej. WooCommerce, payment gateway no instalado): la injection no podria
