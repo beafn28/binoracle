@@ -1728,6 +1728,21 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     lab.wp_cli("config", "set", "WP_DEBUG_LOG", "true", "--raw", "--type=constant", timeout=30)
     lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true" if wp_debug_display else "false",
               "--raw", "--type=constant", timeout=30)
+    # WordPress 5.0+ no llama automaticamente a $wpdb->show_errors() cuando WP_DEBUG=true.
+    # En WP 4.x lo hacia desde wp-settings.php, pero desde 5.0 eso se elimino.
+    # Sin show_errors(), los errores MySQL (XPATH errors de extractvalue/updatexml) van al
+    # debug.log pero NO al cuerpo HTTP -- error-based SQLi no puede detectar version().
+    # Solucion: instalar un mu-plugin que llame show_errors() en cada peticion web.
+    _muplugin_code = (
+        "<?php\n"
+        "// binoracle: activar show_errors() de wpdb en cada peticion web\n"
+        "// (WP 5.0+ no lo llama automaticamente al activar WP_DEBUG=true)\n"
+        "add_action('init', function() { global $wpdb; $wpdb->show_errors(); }, 1);\n"
+    )
+    lab.wp_cli("eval",
+        f"@mkdir(WPMU_PLUGIN_DIR, 0755, true); "
+        f"file_put_contents(WPMU_PLUGIN_DIR . '/binoracle-sqli-debug.php', {repr(_muplugin_code)});",
+        timeout=15)
     admin_id = lab.wp_cli("user", "get", admin_user, "--field=ID", timeout=30).stdout.strip()
     if not admin_id:
         # En un WordPress recién instalado el primer usuario siempre es id=1; usar como fallback.
@@ -4220,10 +4235,10 @@ def verify_wordpress_sqli(
         # puede romper nada que ya se completo.
         lab.wp_cli("config", "set", "WP_DEBUG_DISPLAY", "true", "--raw", "--type=constant",
                   timeout=30)
-        # WP_DEBUG=true triggers $wpdb->show_errors() (via wp-settings.php), which is what
-        # causes MySQL query errors (extractvalue/updatexml XPATH errors) to appear in HTTP
-        # responses. WP_DEBUG_DISPLAY alone only enables PHP error display, not MySQL errors.
-        # Safe to set here: subscriber login already completed, so no cookie-breaking risk.
+        # WP_DEBUG=true activa el display de errores PHP pero NO llama $wpdb->show_errors()
+        # en WordPress 5.0+. Los errores MySQL apareceran en el response porque el mu-plugin
+        # binoracle-sqli-debug.php instalado en boot_wordpress_lab() llama show_errors() en
+        # cada peticion. Esta linea solo asegura WP_DEBUG=true por coherencia.
         lab.wp_cli("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant",
                   timeout=30)
 
