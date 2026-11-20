@@ -5021,10 +5021,20 @@ def verify_wordpress_sqli(
                     continue
                 new_versions = (set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or ""))
                                - version_noise)
+                _body_snip = (r.text or "").replace("\n", " ")
+                # Capture a larger slice (1000 chars) to ensure MySQL XPATH error is not
+                # cut off by a long PHP deprecation warning that can exceed 300 chars.
                 orderby_error_tried.append({
                     "payload": payload_val, "status": r.status_code,
                     "version_nueva": sorted(new_versions),
-                    "respuesta_cuerpo_recorte": (r.text or "")[:300]})
+                    "respuesta_cuerpo_recorte": _body_snip[:1000]})
+                if not new_versions:
+                    # Debug: log response snippet so we can see if the MySQL error IS there
+                    # but not matching, or if it's absent entirely.
+                    _snip = _body_snip[200:600]  # skip the PHP deprecation preamble
+                    step(f"[debug] ORDER BY error payload #{orderby_error_payloads.index(payload_val)+1} "
+                         f"status={r.status_code} bytes={len(r.text or '')} "
+                         f"body[200:600]={_snip[:200]}")
                 if new_versions:
                     orderby_error_found = (payload_val, sorted(new_versions)[0])
                     break
