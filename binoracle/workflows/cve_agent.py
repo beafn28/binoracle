@@ -7077,20 +7077,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   and "elementor" in (companion_plugins or [])
                   and not notes.get("endpoint")):
                 # XSS via Elementor widget: el plugin actúa como addon de Elementor.
-                # La vulnerabilidad está en el renderizado del widget (Twig autoescape=OFF),
-                # no en un endpoint AJAX propio. No necesita endpoint -- crea su propio
-                # addon de test e inyecta via _elementor_data post meta.
+                # La vulnerabilidad está en el renderizado del widget (Twig |raw anula
+                # autoescape='html'), no en un endpoint AJAX propio. No necesita endpoint
+                # — crea su propio addon de test e inyecta via _elementor_data post meta.
                 # Detectado: unlimited-elements-for-elementor CVE-2024-10784 y similares.
                 from .wpverify import verify_wordpress_xss_elementor
-                step(("verificando XSS via Elementor widget (Twig autoescape=OFF + "
-                     "escCombinedHtml=no-op): creando addon de test e inyectando via "
-                     "_elementor_data..." if es else
-                     "verifying XSS via Elementor widget (Twig autoescape=OFF + "
-                     "escCombinedHtml=no-op): creating test addon, injecting via "
-                     "_elementor_data..."))
+                step(("verificando XSS via Elementor widget (Twig |raw + custom field): "
+                     "creando addon de test e inyectando via _elementor_data..." if es else
+                     "verifying XSS via Elementor widget (Twig |raw + custom field): "
+                     "creating test addon, injecting via _elementor_data..."))
                 wr = verify_wordpress_xss_elementor(
                     fr.local_path, plugin_dir, on_step=step, budget_s=budget_s,
-                    keep_lab_on_failure=keep_lab_on_failure)
+                    keep_lab_on_failure=keep_lab_on_failure,
+                    vuln_max_version=notes.get("affected_version", ""))
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):

