@@ -215,7 +215,24 @@ def _start_job(cve_id: str, config) -> _Job:
             _save_history(job)
             job._q.put(("done", job.result))
 
-    threading.Thread(target=_run, daemon=True, name=f"cve-{job.id}").start()
+    t = threading.Thread(target=_run, daemon=True, name=f"cve-{job.id}")
+    t.start()
+
+    def _watchdog():
+        t.join(timeout=_INVESTIGATION_TIMEOUT_S)
+        if t.is_alive() and job.status != "done":
+            job.status = "done"
+            job.result = {
+                "verified": False,
+                "cve_id": job.cve_id,
+                "error": (f"timeout: investigacion supero "
+                          f"{_INVESTIGATION_TIMEOUT_S // 60} minutos sin completar"),
+                "logs": job.logs,
+            }
+            _save_history(job)
+            job._q.put(("done", job.result))
+
+    threading.Thread(target=_watchdog, daemon=True, name=f"watchdog-{job.id}").start()
     return job
 
 
@@ -821,8 +838,38 @@ class _Handler(BaseHTTPRequestHandler):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+_INVESTIGATION_TIMEOUT_S = 25 * 60  # 25 min watchdog — investigation phase has no inner budget
+
+
+def _cleanup_stale_docker_labs():
+    """Remove stale binoracle-wpverify containers/networks left by prior server runs."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["docker", "ps", "-q", "--filter", "name=binoracle-wpverify"],
+            capture_output=True, text=True, timeout=10)
+        ids = r.stdout.strip().split()
+        if ids:
+            subprocess.run(["docker", "rm", "-f"] + ids,
+                           capture_output=True, timeout=30)
+        subprocess.run(
+            ["docker", "network", "ls", "-q", "--filter", "name=binoracle-wpverify"],
+            capture_output=True, timeout=10)
+        rn = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}",
+             "--filter", "name=binoracle-wpverify"],
+            capture_output=True, text=True, timeout=10)
+        nets = rn.stdout.strip().split()
+        for net in nets:
+            subprocess.run(["docker", "network", "rm", net],
+                           capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
 def serve(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True,
           config=None):
+    _cleanup_stale_docker_labs()
     _Handler.config = config
     server = ThreadingHTTPServer((host, port), _Handler)
     url = f"http://{host}:{port}"

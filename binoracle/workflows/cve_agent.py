@@ -4727,12 +4727,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         keep_lab_on_failure=keep_lab_on_failure,
                         extra_nonce_pages=list(pt_extra_nonce_pages),
                         extra_setup_trigger_paths=list(pt_extra_setup_trigger_paths))
+                _pt_ep_lock = bool(notes.get("poc_raw_http_lock")
+                                   or notes.get("poc_llm_endpoint_lock")
+                                   or notes.get("analyst_endpoint_lock"))
+                _pt_param_lock = bool(notes.get("poc_raw_http_lock") and path_p)
+                if _pt_ep_lock:
+                    step((f"endpoint bloqueado (poc/analyst lock): "
+                          f"el retry loop no podra cambiarlo -- {notes.get('endpoint')}") if es else
+                         (f"endpoint locked (poc/analyst lock): "
+                          f"retry loop cannot change it -- {notes.get('endpoint')}"))
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _PATH_TRAVERSAL_RETRY_SYS,
                         _PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_wppt, wr,
                         notes.get("endpoint"), path_p, technique_label="path-traversal WordPress",
-                        on_suggestion=_on_wppt_suggestion))
+                        on_suggestion=_on_wppt_suggestion,
+                        lock_endpoint=_pt_ep_lock,
+                        lock_param=_pt_param_lock))
                 inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                       "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
                                       "logs": wr.logs}
@@ -4868,11 +4879,22 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         companion_plugins=companion_plugins,
                         shortcode_name=shortcode_name_generic)
+                _lfi_ep_lock = bool(notes.get("poc_raw_http_lock")
+                                    or notes.get("poc_llm_endpoint_lock")
+                                    or notes.get("analyst_endpoint_lock"))
+                _lfi_param_lock = bool(notes.get("poc_raw_http_lock") and path_p)
+                if _lfi_ep_lock:
+                    step((f"endpoint bloqueado (poc/analyst lock): "
+                          f"retry loop no podra cambiarlo -- {notes.get('endpoint')}") if es else
+                         (f"endpoint locked (poc/analyst lock): "
+                          f"retry loop cannot change it -- {notes.get('endpoint')}"))
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS,
                     _attempt_lfi, wr, notes.get("endpoint"), path_p,
-                    technique_label="LFI WordPress")
+                    technique_label="LFI WordPress",
+                    lock_endpoint=_lfi_ep_lock,
+                    lock_param=_lfi_param_lock)
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de IDOR (ver genericverify.py) para cuando
             # el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/
@@ -5209,7 +5231,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
                         ere_nonce_pages=extra_nonce_pages,
                         lock_endpoint=_ep_lock_active,
-                        lock_param=bool(notes.get("analyst_endpoint_lock") and sqli_p)))
+                        lock_param=bool((notes.get("analyst_endpoint_lock")
+                                         or notes.get("poc_raw_http_lock")) and sqli_p)))
                 # Teardown the persistent lab now that all retries are done.
                 # _lab_ref[0] is the _Lab object; _boot_ref[0] is the _LabSession.
                 # If the first attempt failed before bootstrap, refs are empty — no-op.
