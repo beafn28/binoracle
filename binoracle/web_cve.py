@@ -2038,7 +2038,7 @@ main {
     showDonePanel(d);
 
     // exploit PoC panel (shown when verified=true and exploit_poc is populated)
-    renderExploitPoc(d.exploit_poc || {});
+    renderExploitPoc(d.exploit_poc || {}, d);
 
     // keep hidden evidence/report/binary data for export
     renderEvidence(d.verified_evidence || {}, d.evidence || {});
@@ -2051,18 +2051,94 @@ main {
     $('phase-tracker').style.display = 'none';
   }
 
-  function renderExploitPoc(poc) {
+  function buildPocFromEvidence(d) {
+    const ve = d.verified_evidence || {};
+    const ep = ve.endpoint || '';
+    const metodo = (ve.metodo || 'GET').toUpperCase();
+    const param = ve.sqli_param || ve.path_param || '';
+    const payload = ve.payload_ganador || '';
+    const target = 'http://TARGET';
+    if (!ep) return {};
+
+    let curl = '';
+    let python = '';
+    let http = '';
+    const technique = ve.tecnica || ve.estrategia || (ve.sqli_param ? 'sqli' : ve.path_param ? 'path-traversal' : ve.bypass_header ? 'header-bypass' : 'generic');
+    const fullUrl = target + ep;
+
+    if (ve.mysql_version_extraida && ve.sqli_param) {
+      // WordPress SQLi (error-based or union)
+      const user = ve.login_bajo_privilegio || '';
+      const pass = ve.login_bajo_privilegio_password || '';
+      const auth = user ? `\n# 1. Authenticate\ncurl -s -c /tmp/jar.txt -b 'wordpress_test_cookie=WP+Cookie+check' \\\n  -X POST '${target}/wp-login.php' \\\n  --data-urlencode 'log=${user}' \\\n  --data-urlencode 'pwd=${pass}' \\\n  --data-urlencode 'wp-submit=Log In' \\\n  --data-urlencode 'testcookie=1' \\\n  -D /tmp/hdr.txt >/dev/null\n\n# 2. ` : '';
+      const cookie = user ? '\\\n  -b /tmp/jar.txt ' : '';
+      if (metodo === 'GET') {
+        curl = `${auth}Trigger SQLi\ncurl -v ${cookie}'${fullUrl}?${param}=${encodeURIComponent(payload)}'`;
+        http = `GET ${ep}?${param}=${encodeURIComponent(payload)} HTTP/1.1\nHost: TARGET\n`;
+      } else {
+        curl = `${auth}Trigger SQLi\ncurl -v ${cookie}-X POST '${fullUrl}' \\\n  --data-urlencode '${param}=${payload}'`;
+        http = `POST ${ep} HTTP/1.1\nHost: TARGET\nContent-Type: application/x-www-form-urlencoded\n\n${param}=${encodeURIComponent(payload)}`;
+      }
+      python = `import requests\n\nsession = requests.Session()\n${user ? `session.post('${target}/wp-login.php', data={'log': '${user}', 'pwd': '${pass}', 'wp-submit': 'Log In', 'testcookie': '1'}, cookies={'wordpress_test_cookie': 'WP+Cookie+check'})\n\n` : ''}r = session.${metodo === 'GET' ? 'get' : 'post'}(\n    '${fullUrl}',\n    ${metodo === 'GET' ? `params={'${param}': '${payload.replace(/'/g, "\\'")}'}` : `data={'${param}': '${payload.replace(/'/g, "\\'")}'}`}\n)\nprint(r.text[:500])`;
+    } else if (ve.tiempo_base_mediana_s && ve.sqli_param) {
+      // Generic blind SQLi
+      if (metodo === 'GET') {
+        curl = `curl -v '${fullUrl}?${param}=${encodeURIComponent(payload)}'`;
+        http = `GET ${ep}?${param}=${encodeURIComponent(payload)} HTTP/1.1\nHost: TARGET\n`;
+      } else {
+        curl = `curl -v -X POST '${fullUrl}' \\\n  --data-urlencode '${param}=${payload}'`;
+        http = `POST ${ep} HTTP/1.1\nHost: TARGET\nContent-Type: application/x-www-form-urlencoded\n\n${param}=${encodeURIComponent(payload)}`;
+      }
+      python = `import requests\nr = requests.${metodo.toLowerCase()}(\n    '${fullUrl}',\n    ${metodo === 'GET' ? `params={'${param}': '${payload.replace(/'/g, "\\'")}'}` : `data={'${param}': '${payload.replace(/'/g, "\\'")}'}`}\n)\nprint(r.elapsed.total_seconds(), r.status_code)`;
+    } else if (ve.path_param || ve.canary_path) {
+      // Path traversal / LFI
+      curl = `curl -v '${fullUrl}?${param}=${encodeURIComponent(payload)}'`;
+      http = `GET ${ep}?${param}=${encodeURIComponent(payload)} HTTP/1.1\nHost: TARGET\n`;
+      python = `import requests\nr = requests.get('${fullUrl}', params={'${param}': '${payload.replace(/'/g, "\\'")}'})\nprint(r.text[:500])`;
+    } else if (ve.bypass_header && ve.bypass_value) {
+      // Header bypass
+      curl = `curl -v -X ${metodo} '${fullUrl}' \\\n  -H '${ve.bypass_header}: ${ve.bypass_value}'`;
+      http = `${metodo} ${ep} HTTP/1.1\nHost: TARGET\n${ve.bypass_header}: ${ve.bypass_value}\n`;
+      python = `import requests\nr = requests.${metodo.toLowerCase()}(\n    '${fullUrl}',\n    headers={'${ve.bypass_header}': '${ve.bypass_value}'}\n)\nprint(r.status_code, r.text[:200])`;
+    } else if (ve.page_url && ve.marker) {
+      // XSS
+      curl = `# Trigger XSS (requires browser — see screenshot in evidence)\n# Marker: ${ve.marker}\ncurl -v '${ve.page_url.replace('http://TARGET', fullUrl)}'`;
+      http = `GET ${ep} HTTP/1.1\nHost: TARGET\n`;
+      python = `# XSS marker: ${ve.marker}\nimport requests\nr = requests.get('${ve.page_url.replace('http://TARGET', fullUrl)}')\nprint('${ve.marker}' in r.text)`;
+    } else {
+      curl = `curl -v -X ${metodo} '${fullUrl}'`;
+      http = `${metodo} ${ep} HTTP/1.1\nHost: TARGET\n`;
+      python = `import requests\nprint(requests.${metodo.toLowerCase()}('${fullUrl}').status_code)`;
+    }
+
+    return {
+      curl: curl || '',
+      python: python || '',
+      http: http || '',
+      technique,
+      description: `Auto-generated PoC — replace TARGET with the real host. Payload verified in isolated lab.`
+    };
+  }
+
+  function renderExploitPoc(poc, d) {
     const el = $('exploit-poc-panel');
     if (!el) return;
+    // If no pre-built exploit_poc but we have verified evidence, auto-generate
+    if ((!poc || !poc.curl) && d && d.verified) {
+      poc = buildPocFromEvidence(d);
+    }
     if (!poc || !poc.curl) { el.style.display = 'none'; return; }
     const tab = (k, label, active) =>
       `<button class="poc-tab${active?' poc-tab-active':''}" data-poc="${k}">${escHtml(label)}</button>`;
     const pre = (content) =>
       `<pre class="poc-code">${escHtml(content)}</pre>`;
     el.innerHTML = `
-      <div class="poc-header">
-        <span class="poc-title">PoC — ${escHtml(poc.technique || 'exploit')}</span>
-        <span class="poc-desc">${escHtml(poc.description || '')}</span>
+      <div class="poc-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div>
+          <span class="poc-title">PoC — ${escHtml(poc.technique || 'exploit')}</span>
+          <span class="poc-desc">${escHtml(poc.description || '')}</span>
+        </div>
+        <button id="poc-copy-btn" style="background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.35);border-radius:4px;color:var(--green);font-size:10px;padding:3px 10px;cursor:pointer;font-family:var(--sans);font-weight:600;white-space:nowrap">Copy curl</button>
       </div>
       <div class="poc-tabs">
         ${tab('curl','curl',true)}${tab('python','Python',false)}${tab('http','HTTP raw',false)}
@@ -2073,9 +2149,29 @@ main {
         <div class="poc-pane" id="poc-pane-http" style="display:none">${pre(poc.http||'')}</div>
       </div>`;
     el.style.display = 'block';
+
+    // Copy button — copies the active pane's content
+    let _activePoc = 'curl';
+    const pocContents = {curl: poc.curl||'', python: poc.python||'', http: poc.http||''};
+    const copyBtn = el.querySelector('#poc-copy-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async () => {
+        const txt = pocContents[_activePoc] || poc.curl || '';
+        try { await navigator.clipboard.writeText(txt); } catch(e) {
+          const ta = document.createElement('textarea');
+          ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+        }
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+      });
+    }
+
     el.querySelectorAll('.poc-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         const k = btn.dataset.poc;
+        _activePoc = k;
+        if (copyBtn) copyBtn.textContent = `Copy ${k}`;
         el.querySelectorAll('.poc-tab').forEach(b => b.classList.remove('poc-tab-active'));
         btn.classList.add('poc-tab-active');
         el.querySelectorAll('.poc-pane').forEach(p => p.style.display = 'none');
