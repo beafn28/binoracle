@@ -1954,42 +1954,37 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     _unexpected_output_error = ("unexpected output" in _activate_out.lower() or
                                 "generated unexpected" in _activate_out.lower())
     if not _activate_ok and _unexpected_output_error:
-        step(f"activacion rechazada por 'unexpected output' en hook de activacion de '{slug}' — "
-             f"forzando via eval (direct active_plugins + activate_plugin silent=true)...")
-        # 1. Escribir directamente en active_plugins
+        step(f"activacion rechazada por 'unexpected output' en '{slug}' — "
+             f"forzando directo en active_plugins (sin cargar el plugin para evitar el output)...")
+        # Escribir directamente en active_plugins SIN llamar activate_plugin():
+        # Si el plugin produce output al ser CARGADO (no solo en su hook), activate_plugin()
+        # con $silent=true también fallará. La solución es solo actualizar la opción en BD.
         _main_file = f"{slug}/{slug}.php"
-        _r_force_out = lab.wp_cli("eval",
-            f"$current = (array)get_option('active_plugins'); "
-            f"$s = '{_main_file}'; "
-            f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
-            f"update_option('active_plugins', $current); }} "
-            f"@activate_plugin($s, '', false, true); "   # $silent=true, suppress output
-            f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
-            timeout=30)
-        _force_ok = (_r_force_out.stdout or "").strip() == "OK"
-        if _force_ok:
+
+        def _force_active_via_db(plugin_file: str) -> bool:
+            _r = lab.wp_cli("eval",
+                f"$current = (array)get_option('active_plugins'); "
+                f"$s = '{plugin_file}'; "
+                f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
+                f"update_option('active_plugins', $current); }} "
+                f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+                timeout=20)
+            return (_r.stdout or "").strip() == "OK"
+
+        if _force_active_via_db(_main_file):
             _activate_ok = True
-            step(f"plugin '{slug}' forzado activo via eval+active_plugins directo.")
+            step(f"plugin '{slug}' forzado activo en BD (active_plugins directo).")
         else:
-            # 2. Si el main file no es slug/slug.php, buscar el .php de cabecera real
+            # El main file canónico no existe — buscar el .php de cabecera real
             _r_find = lab.wp_cli("eval",
                 f"foreach(glob(WP_PLUGIN_DIR.'/{slug}/*.php') as $f) {{ "
                 f"$h=get_file_data($f,['Name'=>'Plugin Name']); "
                 f"if(!empty($h['Name'])){{ echo basename(dirname($f)).'/'.basename($f); break; }} }}",
                 timeout=20)
             _real_file = (_r_find.stdout or "").strip()
-            if _real_file and _real_file != _main_file:
-                _r_force2 = lab.wp_cli("eval",
-                    f"$current = (array)get_option('active_plugins'); "
-                    f"$s = '{_real_file}'; "
-                    f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
-                    f"update_option('active_plugins', $current); }} "
-                    f"@activate_plugin($s, '', false, true); "
-                    f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
-                    timeout=30)
-                if (_r_force2.stdout or "").strip() == "OK":
-                    _activate_ok = True
-                    step(f"plugin '{slug}' activado via archivo real '{_real_file}'.")
+            if _real_file and _real_file != _main_file and _force_active_via_db(_real_file):
+                _activate_ok = True
+                step(f"plugin '{slug}' forzado activo via archivo real '{_real_file}'.")
 
     _scaffold_error = ("does not exist" in _activate_out and "cannot be registered" in _activate_out)
     if not _activate_ok and _scaffold_error:
@@ -2012,7 +2007,7 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 res.evidence["screenshots"] = shots
                 return None
 
-    if r.returncode != 0:
+    if r.returncode != 0 and not _activate_ok:
         # WP-CLI puede devolver exit!=0 aunque el plugin haya quedado activo.  Esto ocurre
         # cuando el plugin registra comandos WP-CLI con clases inexistentes en esa version:
         # WP-CLI activa el plugin en WordPress (lo escribe en active_plugins), luego lo carga
