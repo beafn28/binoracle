@@ -460,6 +460,13 @@ _RESEARCH_SYS = (
     "'/wp-admin/edit.php' si es en la lista de entradas/formularios; "
     "SOLO cuando el payload inyectado NO se renderiza en la misma respuesta del endpoint de "
     "inyeccion sino que lo ve el admin en OTRA visita; vacio si es XSS reflejado o si no sabes). "
+    "Para CVEs de XSS en WIDGETS DE ELEMENTOR (el plugin actua como widget/addon de Elementor "
+    "y la vulnerabilidad es que el motor de plantillas Twig del plugin renderiza settings del "
+    "widget sin escapar -- p.ej. unlimited-elements-for-elementor, essential-addons-for-elementor, "
+    "jet-elements, etc.): deja 'endpoint' VACIO y pon companion_plugins=['elementor']. "
+    "El motor verificara automaticamente creando un widget de test con un campo XSS e "
+    "inyectando via _elementor_data post meta. NO intentes buscar un endpoint AJAX propio "
+    "si la CVE dice 'custom field post data' o 'widget settings' o 'Elementor control'. "
     "Se tecnico y breve; deja vacio lo que no sepas."
 )
 
@@ -7063,6 +7070,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_xss_drupal, wr, notes.get("endpoint"), xss_p,
                     technique_label="XSS Drupal")
+                _apply_wpverify_result(inv, wr, es, llm)
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class == "xss"
+                  and "elementor" in (companion_plugins or [])
+                  and not notes.get("endpoint")):
+                # XSS via Elementor widget: el plugin actúa como addon de Elementor.
+                # La vulnerabilidad está en el renderizado del widget (Twig autoescape=OFF),
+                # no en un endpoint AJAX propio. No necesita endpoint -- crea su propio
+                # addon de test e inyecta via _elementor_data post meta.
+                # Detectado: unlimited-elements-for-elementor CVE-2024-10784 y similares.
+                from .wpverify import verify_wordpress_xss_elementor
+                step(("verificando XSS via Elementor widget (Twig autoescape=OFF + "
+                     "escCombinedHtml=no-op): creando addon de test e inyectando via "
+                     "_elementor_data..." if es else
+                     "verifying XSS via Elementor widget (Twig autoescape=OFF + "
+                     "escCombinedHtml=no-op): creating test addon, injecting via "
+                     "_elementor_data..."))
+                wr = verify_wordpress_xss_elementor(
+                    fr.local_path, plugin_dir, on_step=step, budget_s=budget_s,
+                    keep_lab_on_failure=keep_lab_on_failure)
                 _apply_wpverify_result(inv, wr, es, llm)
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class == "xss" and notes.get("endpoint")):
