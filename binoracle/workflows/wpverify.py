@@ -1946,6 +1946,51 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 r = lab.wp_cli("plugin", "activate", slug, timeout=90)
                 _activate_out = (r.stdout or "") + (r.stderr or "")
                 _activate_ok = r.returncode == 0
+    # Caso "unexpected output": el plugin emite algo durante su hook de activación (echo,
+    # PHP notice, debug output, header premature) y WP-CLI lo rechaza. Ocurre especialmente
+    # en versiones antiguas de plugins descargadas via SVN que tienen print/echo en el hook
+    # de activacion. Forzamos activacion directamente en active_plugins (misma estrategia
+    # que el caso scaffold_error) + corremos el hook de activacion via wp eval con $silent=true.
+    _unexpected_output_error = ("unexpected output" in _activate_out.lower() or
+                                "generated unexpected" in _activate_out.lower())
+    if not _activate_ok and _unexpected_output_error:
+        step(f"activacion rechazada por 'unexpected output' en hook de activacion de '{slug}' — "
+             f"forzando via eval (direct active_plugins + activate_plugin silent=true)...")
+        # 1. Escribir directamente en active_plugins
+        _main_file = f"{slug}/{slug}.php"
+        _r_force_out = lab.wp_cli("eval",
+            f"$current = (array)get_option('active_plugins'); "
+            f"$s = '{_main_file}'; "
+            f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
+            f"update_option('active_plugins', $current); }} "
+            f"@activate_plugin($s, '', false, true); "   # $silent=true, suppress output
+            f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+            timeout=30)
+        _force_ok = (_r_force_out.stdout or "").strip() == "OK"
+        if _force_ok:
+            _activate_ok = True
+            step(f"plugin '{slug}' forzado activo via eval+active_plugins directo.")
+        else:
+            # 2. Si el main file no es slug/slug.php, buscar el .php de cabecera real
+            _r_find = lab.wp_cli("eval",
+                f"foreach(glob(WP_PLUGIN_DIR.'/{slug}/*.php') as $f) {{ "
+                f"$h=get_file_data($f,['Name'=>'Plugin Name']); "
+                f"if(!empty($h['Name'])){{ echo basename(dirname($f)).'/'.basename($f); break; }} }}",
+                timeout=20)
+            _real_file = (_r_find.stdout or "").strip()
+            if _real_file and _real_file != _main_file:
+                _r_force2 = lab.wp_cli("eval",
+                    f"$current = (array)get_option('active_plugins'); "
+                    f"$s = '{_real_file}'; "
+                    f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
+                    f"update_option('active_plugins', $current); }} "
+                    f"@activate_plugin($s, '', false, true); "
+                    f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+                    timeout=30)
+                if (_r_force2.stdout or "").strip() == "OK":
+                    _activate_ok = True
+                    step(f"plugin '{slug}' activado via archivo real '{_real_file}'.")
+
     _scaffold_error = ("does not exist" in _activate_out and "cannot be registered" in _activate_out)
     if not _activate_ok and _scaffold_error:
         _r_ap_check = lab.wp_cli("eval",
