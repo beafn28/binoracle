@@ -350,8 +350,16 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             step(f"la API de info fallo ({e}), pero se pidio la version {version}: probando la "
                  f"descarga directa igualmente (algunos plugins cerrados siguen sirviendo zips "
                  f"de versiones concretas aunque ya no esten listados)...")
-            return _download_wp_zip(slug, _WP_DOWNLOAD.format(slug=slug, version=version),
-                                    version, dest_dir, step, timeout, res)
+            _r_direct = _download_wp_zip(slug, _WP_DOWNLOAD.format(slug=slug, version=version),
+                                         version, dest_dir, step, timeout, res)
+            if _r_direct.ok:
+                return _r_direct
+            # Plugin cerrado + zip no disponible → intentar SVN histórico
+            # WordPress mantiene SVN de todos los plugins aunque estén cerrados/retirados
+            _r_svn = _svn_fetch_wp_plugin_version(slug, version, dest_dir, step, timeout)
+            if _r_svn.ok:
+                return _r_svn
+            return _r_direct  # devuelve el resultado del intento directo con su error
         res.note = (f"plugin '{slug}' no resuelto en WordPress.org: {e}. Posibles causas: (a) es "
                     f"COMERCIAL/premium (vendido directo por el fabricante, nunca estuvo en el "
                     f"directorio gratuito), o (b) fue CERRADO/retirado del directorio (frecuente "

