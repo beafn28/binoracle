@@ -1481,19 +1481,62 @@ _COMPANION_FUNCTION_RE = re.compile(
 
 
 def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[str]:
-    """Busca, SOLO en el fichero bootstrap del plugin (el de la cabecera 'Plugin Name:', ver
-    find_plugin_main_file -- el patron de bloqueo real que confirmo CVE-2024-50508 esta siempre
-    ahi, en el constructor/inicio), una comprobacion de que OTRO plugin este activo que ADEMAS
-    corte la ejecucion (return false/exit/die a pocas lineas) si no lo esta -- no basta con que
-    la comprobacion exista: una integracion OPCIONAL (p.ej. 'si Yoast SEO esta activo, anade
-    estos campos extra') usa el mismo in_array()/is_plugin_active() sin bloquear nada, y
-    contarla como companero REQUERIDO instala plugins de sobra sin necesidad (confirmado en
-    vivo, CVE-2024-3552). Devuelve los slugs (deduplicados, orden de aparicion), o [] si no se
-    encuentra el fichero bootstrap o ninguna comprobacion bloqueante en el."""
+    """Busca companions requeridos en el bootstrap del plugin.
+
+    Dos vías:
+    1. Análisis del bootstrap (is_plugin_active bloqueante, function_exists WC/EDD) — necesita
+       el fichero principal encontrado por find_plugin_main_file.
+    2. Heurística de slug/nombre — funciona SIN fichero principal, cubre addons de Elementor
+       que no tienen is_plugin_active() bloqueante (unlimited-elements, essential-addons…).
+    """
+    slugs: List[str] = []
+    seen: set = set()
+
+    # Vía 2 primero: heurística por slug — no requiere el fichero principal.
+    # Los addons de Elementor raramente tienen is_plugin_active('elementor') bloqueante;
+    # se detectan porque su nombre/slug incluye "for Elementor" o "-for-elementor".
+    if "elementor" not in seen:
+        slug_lower = (plugin_dir or "").lower()
+        if (slug_lower.endswith("-for-elementor")
+                or slug_lower.endswith("-elementor-addon")
+                or slug_lower.endswith("-elementor-addons")):
+            seen.add("elementor")
+            slugs.append("elementor")
+
     main = find_plugin_main_file(local_path, plugin_dir, max_head_bytes=20_000,
                                   content_lines=400)
     if not main:
-        return []
+        # Si hay double-nesting (tmpdir/slug/slug/), intentar un nivel más abajo
+        import os as _os
+        nested = _os.path.join(local_path, plugin_dir, plugin_dir) if plugin_dir else ""
+        if nested and _os.path.isdir(nested):
+            main = find_plugin_main_file(_os.path.join(local_path, plugin_dir),
+                                          plugin_dir, max_head_bytes=20_000, content_lines=400)
+        if not main:
+            # Intentar leer el nombre del plugin de cualquier .php en el primer nivel del subdir
+            if "elementor" not in seen:
+                try:
+                    import os as _os2
+                    base = _os2.path.join(local_path, plugin_dir) if plugin_dir else local_path
+                    for _fn in sorted(_os2.listdir(base)):
+                        if not _fn.lower().endswith(".php"):
+                            continue
+                        _fp = _os2.path.join(base, _fn)
+                        if not _os2.path.isfile(_fp):
+                            continue
+                        with open(_fp, "r", encoding="utf-8", errors="replace") as _f:
+                            _head = _f.read(4000)
+                        _m = re.search(r"Plugin Name\s*:\s*(.+)", _head, re.IGNORECASE)
+                        if _m:
+                            _pname = _m.group(1).strip().lower()
+                            if ("for elementor" in _pname or "elementor addon" in _pname
+                                    or "elementor widget" in _pname):
+                                seen.add("elementor")
+                                slugs.append("elementor")
+                            break
+                except OSError:
+                    pass
+            return slugs
     text = main["content"]
     lines = text.splitlines()
     slugs: List[str] = []
@@ -1520,6 +1563,27 @@ def detect_required_companion_plugins(local_path: str, plugin_dir: str) -> List[
         if mapped and mapped not in seen and mapped != (plugin_dir or "").lower():
             seen.add(mapped)
             slugs.append(mapped)
+    # Detecta plugins que son addons/widgets de Elementor sin un is_plugin_active() bloqueante
+    # (patrón típico: nombre del plugin incluye "for Elementor" en la cabecera, o el slug
+    # termina en "-for-elementor" / "-elementor-addon").  Muchos addons de Elementor
+    # (unlimited-elements, essential-addons, jet-elements…) no comprueban is_plugin_active('elementor')
+    # de forma bloqueante -- simplemente no registran sus widgets si el SDK de Elementor no está
+    # cargado.  El nombre de la cabecera es el indicador más fiable del patrón.
+    if "elementor" not in seen:
+        plugin_name_m = re.search(r"Plugin Name\s*:\s*(.+)", text, re.IGNORECASE)
+        plugin_name = plugin_name_m.group(1).strip().lower() if plugin_name_m else ""
+        slug_lower = (plugin_dir or "").lower()
+        is_elementor_addon = (
+            "for elementor" in plugin_name
+            or "elementor addon" in plugin_name
+            or "elementor widget" in plugin_name
+            or slug_lower.endswith("-for-elementor")
+            or slug_lower.endswith("-elementor-addon")
+            or slug_lower.endswith("-elementor-addons")
+        )
+        if is_elementor_addon:
+            seen.add("elementor")
+            slugs.append("elementor")
     return slugs
 
 

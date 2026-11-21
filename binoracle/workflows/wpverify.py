@@ -6216,10 +6216,9 @@ def verify_wordpress_xss_elementor(
     boot = None
     try:
         boot = _bootstrap_lab(
-            lab, plugin_source_dir, slug, step, res,
+            lab, plugin_source_dir, slug, step, res, t0, budget_s,
             companion_plugins=["elementor"],
             required_role="contributor",
-            budget_s=budget_s,
         )
         if boot is None:
             return res
