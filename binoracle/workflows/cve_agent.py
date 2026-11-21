@@ -4061,7 +4061,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             #    la similitud de nombres).
                             # 2) Si no hay sqli_param o no dio resultado, caer al scoring de
                             #    similitud de nombres entre known_action y las acciones reales.
-                            from .websource import find_all_ajax_actions, find_ajax_action_for_param
+                            from .websource import (find_all_ajax_actions, find_ajax_action_for_param,
+                                                    fetch_wp_rest_routes)
                             _sqli_p = (notes.get("sqli_param") or
                                        notes.get("vulnerable_parameter") or "").strip()
                             _param_action = None

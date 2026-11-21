@@ -2570,3 +2570,50 @@ def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
 
     result["vuln_functions"] = vuln_fns
     return result
+
+
+def fetch_wp_rest_routes(base_url: str, session=None, plugin_slug: str = "") -> list:
+    """
+    Hit /wp-json/ and return routes likely belonging to plugin_slug.
+    Returns [{"route": str, "methods": [str], "args": [str], "namespace": str}].
+    Empty list on any error or if the endpoint is unreachable.
+    """
+    import requests as _rq
+    import re as _re_rest
+    _WP_CORE_NS = {
+        "wp/v2", "oembed/1.0", "wp-site-health/v1", "wp-block-editor/v1",
+        "wp-block-directory/v1", "wp/v3",
+    }
+    try:
+        url = base_url.rstrip("/") + "/wp-json/"
+        r = (session or _rq).get(url, timeout=10, allow_redirects=True)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        routes_raw = data.get("routes", {})
+        slug_parts: set = set()
+        if plugin_slug:
+            slug_parts = (
+                set(_re_rest.split(r"[-_]", plugin_slug.lower()))
+                - {"wp", "api", "v1", "v2", "v3", "the", "a", "an"}
+            )
+        result = []
+        for route, info in routes_raw.items():
+            namespace = info.get("namespace", "")
+            if namespace in _WP_CORE_NS:
+                continue
+            ns_route_lower = (namespace + route).lower()
+            if plugin_slug and not any(p in ns_route_lower for p in slug_parts if len(p) >= 3):
+                continue
+            for ep in info.get("endpoints", []):
+                methods = ep.get("methods", [])
+                args = list(ep.get("args", {}).keys())
+                result.append({
+                    "route": route,
+                    "namespace": namespace,
+                    "methods": methods,
+                    "args": args,
+                })
+        return result
+    except Exception:
+        return []
