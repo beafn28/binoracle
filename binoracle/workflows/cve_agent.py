@@ -647,6 +647,100 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
     }
 
 
+def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
+                           endpoint: str = "", sqli_param: str = "",
+                           grounded_fns: list | None = None,
+                           not_found_fns: list | None = None) -> dict:
+    """Pre-check estático antes de arrancar un lab Docker.
+
+    Verifica que el patrón vulnerable realmente existe en la versión descargada.
+    Cuando falla con alta confianza (p.ej. la función vulnerable no existe, o el
+    taint scan no detecta SQL sin prepare()), ahorra todos los labs de ese CVE.
+
+    Devuelve:
+      ok        — True si la vulnerabilidad probablemente existe en esta versión
+      reason    — explicación de una línea
+      confidence — 0-1; solo reportar como "probable versión parchada" si ≥ 0.80
+    """
+    if not local_path:
+        return {"ok": True, "reason": "sin fuente local para pre-check", "confidence": 0.0}
+
+    # --- Check 1: funciones citadas por el LLM y confirmadas ausentes en el código ---
+    # Si el LLM nombró funciones vulnerables Y grep_vulnerable_functions no encontró
+    # NINGUNA de ellas → la versión descargada no contiene esas funciones → muy probablemente
+    # ya está parchada o es otra versión completamente distinta.
+    _grounded = grounded_fns or []
+    _not_found = not_found_fns or []
+    if _not_found and not _grounded:
+        return {
+            "ok": False,
+            "reason": (f"ninguna función vulnerable citada existe en el código descargado "
+                       f"({', '.join(_not_found[:3])}) — probable versión parchada"),
+            "confidence": 0.85,
+        }
+
+    # --- Check 2: taint scan SQLi — si no hay SQL sin prepare(), la versión está parchada ---
+    if vuln_class in ("sqli", "sql-injection"):
+        try:
+            from .websource import find_unsanitized_sqli_params
+            _taint = find_unsanitized_sqli_params(local_path)
+            if _taint is not None and len(_taint) == 0:
+                return {
+                    "ok": False,
+                    "reason": ("taint scan SQLi: 0 parámetros fluyen a $wpdb sin prepare() "
+                               "en el código descargado — probable versión parchada o "
+                               "la vulnerabilidad usa un path de código distinto"),
+                    "confidence": 0.75,
+                }
+            if _taint:
+                # Si el sqli_param esperado no aparece en ningún hit → señal débil
+                if sqli_param and not any(h.get("param", "").lower() == sqli_param.lower()
+                                          for h in _taint):
+                    return {
+                        "ok": True,
+                        "reason": (f"taint scan encontró {len(_taint)} parámetros inyectables "
+                                   f"pero no '{sqli_param}' — el motor intentará de todos modos"),
+                        "confidence": 0.0,  # no bloquear, solo informar
+                    }
+        except Exception:
+            pass
+
+    # --- Check 3: LFI/path-traversal — verificar que hay lectura de archivo con input externo ---
+    if vuln_class in ("lfi", "path-traversal"):
+        import re as _re_pc, os as _os_pc
+        _UNSAFE_FILE_PATTERNS = re.compile(
+            r'(file_get_contents|readfile|fopen|include|require|file)\s*\(\s*'
+            r'(?:\$_(?:GET|POST|REQUEST|COOKIE)|\\$[a-zA-Z_]\w*)',
+            re.IGNORECASE)
+        _found_unsafe = False
+        try:
+            for _root, _, _files in _os_pc.walk(local_path):
+                for _f in _files:
+                    if not _f.endswith(".php"):
+                        continue
+                    _fpath = _os_pc.path.join(_root, _f)
+                    try:
+                        with open(_fpath, encoding="utf-8", errors="ignore") as _fh:
+                            if _UNSAFE_FILE_PATTERNS.search(_fh.read()):
+                                _found_unsafe = True
+                                break
+                    except Exception:
+                        continue
+                if _found_unsafe:
+                    break
+        except Exception:
+            pass
+        if not _found_unsafe:
+            return {
+                "ok": False,
+                "reason": ("pre-check LFI: no se detectaron lecturas de archivo con "
+                           "input de usuario en el código descargado — probable versión parchada"),
+                "confidence": 0.70,
+            }
+
+    return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
+
+
 # Tabla de confianza de cada fuente de endpoint. Usada por _set_endpoint_with_confidence()
 # para decidir si un candidato nuevo puede sobreescribir el actual sin un lock manual.
 # Cuanto mayor el valor, más confiable la fuente.
@@ -5294,6 +5388,73 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 # intentos ciegos que nunca dejan nada en pie que inspeccionar.
                 # Si el endpoint es admin-ajax.php, el metodo debe ser POST: $_POST no se
                 # popula con GET y la inyeccion nunca llega al codigo vulnerable.
+                # --- PRE-CHECK ESTÁTICO (Fix A) ---
+                # Antes de gastar un lab Docker, verificar que el patrón vulnerable
+                # existe en la versión descargada. Si falla con alta confianza (≥0.80)
+                # → probable versión parchada, no tiene sentido laborar.
+                _sg = inv.source_grounding or {}
+                _precheck = _static_vuln_precheck(
+                    fr.local_path, plugin_dir, inv.vuln_class,
+                    endpoint=notes.get("endpoint") or "",
+                    sqli_param=sqli_p or "",
+                    grounded_fns=list((_sg.get("found") or {}).keys()),
+                    not_found_fns=list(_sg.get("not_found") or []),
+                )
+                # Pre-check advisory: log siempre la razón si falla, pero dejar que el lab corra.
+                # Con confianza ≥ 0.80 lo marcamos en blockers para que el informe lo explique.
+                if not _precheck["ok"]:
+                    _pc_msg = (f"pre-check estático ({_precheck['confidence']:.0%}): "
+                               f"{_precheck['reason']}")
+                    step((_pc_msg + " — el lab continúa para confirmar") if es else
+                         (_pc_msg + " — lab continues to confirm"))
+                    if _precheck["confidence"] >= 0.80:
+                        inv.blockers.append(("static_precheck", _precheck["reason"]))
+
+                    # --- AUTO-DETECT json_body para endpoints REST (Fix B) ---
+                    # Si el endpoint empieza por /wp-json/ o el plugin usa get_json_params()
+                    # → forzar json_body=True aunque el LLM no lo haya detectado.
+                    _sqli_ep_norm = (notes.get("endpoint") or "").lower()
+                    if not notes.get("json_body") and (
+                            "/wp-json/" in _sqli_ep_norm
+                            or _sqli_ep_norm.startswith("wp-json/")):
+                        notes["json_body"] = True
+                        inv.llm_notes["json_body"] = True
+                        step(("auto-detectado json_body=True: el endpoint es REST "
+                              "(/wp-json/) — el handler usa get_json_params()") if es else
+                             ("auto-detected json_body=True: REST endpoint "
+                              "(/wp-json/) — handler uses get_json_params()"))
+                    elif not notes.get("json_body") and fr.local_path:
+                        # Verificar en el código fuente si el handler del endpoint usa
+                        # get_json_params() — indica que espera JSON body, no form data.
+                        import re as _re_jb
+                        _jb_found = False
+                        _known_action = _extract_known_ajax_action(notes)
+                        if _known_action:
+                            import os as _os_jb
+                            for _root_jb, _, _ffiles_jb in _os_jb.walk(fr.local_path):
+                                for _ff_jb in _ffiles_jb:
+                                    if not _ff_jb.endswith(".php"):
+                                        continue
+                                    try:
+                                        with open(_os_jb.path.join(_root_jb, _ff_jb),
+                                                  encoding="utf-8", errors="ignore") as _fh_jb:
+                                            _src_jb = _fh_jb.read(50000)
+                                            if ("get_json_params" in _src_jb
+                                                    or "get_body_params" in _src_jb):
+                                                _jb_found = True
+                                                break
+                                    except Exception:
+                                        pass
+                                if _jb_found:
+                                    break
+                        if _jb_found:
+                            notes["json_body"] = True
+                            inv.llm_notes["json_body"] = True
+                            step(("auto-detectado json_body=True: el handler real usa "
+                                  "get_json_params() en el codigo fuente") if es else
+                                 ("auto-detected json_body=True: real handler uses "
+                                  "get_json_params() in source code"))
+
                 _sqli_ep = notes.get("endpoint") or ""
                 _sqli_http_method = ("POST" if "admin-ajax" in _sqli_ep
                                      else notes.get("http_method") or "GET")
