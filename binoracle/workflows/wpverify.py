@@ -1921,6 +1921,12 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         return None
     step(f"plugin copiado al volumen; activando '{slug}' via wp-cli...")
     r = lab.wp_cli("plugin", "activate", slug, timeout=90)
+    # DNS race: on slow hosts the DB container may not be resolvable yet when WordPress
+    # tries to connect for the first time. Retry once after a brief wait.
+    if r.returncode != 0 and "getaddrinfo" in ((r.stderr or "") + (r.stdout or "")):
+        import time as _t
+        _t.sleep(5)
+        r = lab.wp_cli("plugin", "activate", slug, timeout=90)
     # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
     # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
     # inexistente en el modo CLI de esta version) llama exit(1) ANTES de que WordPress
