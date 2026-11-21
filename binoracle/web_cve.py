@@ -206,6 +206,15 @@ def _start_job(cve_id: str, config) -> _Job:
                 "poc_source": getattr(inv, "poc_source_used", ""),
                 "affected_version": sf.get("resolved_version", ""),
                 "exploit_poc": _dv.get("exploit_poc", {}),
+                "cve_intel": {
+                    "sources": inv.llm_notes.get("cve_intel", {}).get("sources", {}),
+                    "cvss": inv.llm_notes.get("cve_intel", {}).get("cvss_score"),
+                    "cwes": inv.llm_notes.get("cve_intel", {}).get("cwes", []),
+                    "advisory_notes": (
+                        inv.llm_notes.get("cve_intel", {})
+                        .get("advisory_notes", "")[:500]),
+                    "synthesized_exploit": inv.llm_notes.get("synthesized_exploit", {}),
+                },
             }
             _save_history(job)
             job._q.put(("done", job.result))

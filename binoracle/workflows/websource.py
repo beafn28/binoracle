@@ -2617,3 +2617,249 @@ def fetch_wp_rest_routes(base_url: str, session=None, plugin_slug: str = "") -> 
         return result
     except Exception:
         return []
+
+
+# ── Multi-source CVE intelligence gathering ──────────────────────────────────
+
+def fetch_wordfence_advisory(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch Wordfence Threat Intel advisory — WP-specific param/endpoint/function hints."""
+    import requests as _req, re as _re
+    result = {"ok": False, "source": "wordfence", "cve_id": cve_id,
+              "vulnerable_param": "", "endpoint_hint": "", "affected_function": "",
+              "attack_vector": "", "notes": "", "raw_text": ""}
+    try:
+        url = f"https://www.wordfence.com/threat-intel/vulnerabilities/id/{cve_id}"
+        r = _req.get(url, timeout=timeout,
+                     headers={"User-Agent": "Mozilla/5.0 (security-research)"})
+        if r.status_code != 200:
+            search_url = (f"https://www.wordfence.com/threat-intel/vulnerabilities"
+                          f"?search={cve_id}")
+            r = _req.get(search_url, timeout=timeout,
+                         headers={"User-Agent": "Mozilla/5.0 (security-research)"})
+            if r.status_code != 200:
+                return result
+        text = r.text
+        result["raw_text"] = text[:8000]
+        result["ok"] = True
+
+        for pat in [r"['\"]([a-z_]{2,30})['\"] parameter",
+                    r"parameter ['\"]([a-z_]{2,30})['\"]",
+                    r"the ['\"]([a-z_]{2,30})['\"] (?:POST |GET |request )?parameter",
+                    r"via the ['\"]([a-z_]{2,30})['\"]"]:
+            m = _re.search(pat, text, _re.IGNORECASE)
+            if m:
+                result["vulnerable_param"] = m.group(1)
+                break
+
+        for pat in [r"(/wp-(?:admin|json|content)/[^\s\"'<>]{3,80})",
+                    r"(admin-ajax\.php[^\s\"'<>]{0,50})",
+                    r"action=['\"]?([a-z_0-9]{3,50})['\"]?"]:
+            m = _re.search(pat, text, _re.IGNORECASE)
+            if m:
+                result["endpoint_hint"] = m.group(1)
+                break
+
+        for pat in [r"(?:function|in) ['\"]?([a-z_]{3,50})\(\)['\"]?",
+                    r"([a-z_]{3,50})\(\) function"]:
+            m = _re.search(pat, text, _re.IGNORECASE)
+            if m:
+                result["affected_function"] = m.group(1)
+                break
+
+        av_parts = []
+        for pat in [r"(unauthenticated|authenticated|subscriber|contributor|author|editor|administrator)",
+                    r"(SQL injection|cross-site scripting|file inclusion|path traversal|SSRF|RCE|LFI)"]:
+            m = _re.search(pat, text, _re.IGNORECASE)
+            if m:
+                av_parts.append(m.group(1))
+        result["attack_vector"] = " ".join(av_parts[:3])
+
+        for marker in ["Description", "Technical Analysis", "Vulnerability Details"]:
+            idx = text.find(marker)
+            if idx >= 0:
+                result["notes"] = text[idx:idx + 2000].strip()
+                break
+        if not result["notes"]:
+            result["notes"] = text[500:2500].strip()
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def fetch_patchstack_advisory(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch Patchstack vulnerability advisory for a CVE."""
+    import requests as _req, re as _re
+    result = {"ok": False, "source": "patchstack", "cve_id": cve_id,
+              "vulnerable_param": "", "endpoint_hint": "", "affected_function": "",
+              "attack_vector": "", "notes": "", "raw_text": ""}
+    try:
+        url = f"https://patchstack.com/database/search?term={cve_id}"
+        r = _req.get(url, timeout=timeout,
+                     headers={"User-Agent": "Mozilla/5.0 (security-research)"})
+        if r.status_code != 200:
+            return result
+        text = r.text
+        result["raw_text"] = text[:6000]
+        result["ok"] = True
+        for pat in [r"parameter ['\"]([a-z_]{2,30})['\"]",
+                    r"['\"]([a-z_]{2,30})['\"] parameter"]:
+            m = _re.search(pat, text, _re.IGNORECASE)
+            if m:
+                result["vulnerable_param"] = m.group(1)
+                break
+        result["notes"] = text[200:2000].strip()
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def fetch_github_advisories(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch GitHub Security Advisories for a CVE via GitHub API."""
+    import requests as _req, re as _re
+    result = {"ok": False, "source": "github_advisory", "cve_id": cve_id,
+              "ghsa_id": "", "summary": "", "description": "", "severity": "",
+              "vulnerable_param": "", "affected_function": "", "references": []}
+    try:
+        r = _req.get("https://api.github.com/advisories",
+                     params={"cve_id": cve_id, "per_page": 5}, timeout=timeout,
+                     headers={"Accept": "application/vnd.github+json",
+                               "User-Agent": "binoracle-security-research"})
+        if r.status_code != 200:
+            return result
+        advisories = r.json()
+        if not advisories:
+            return result
+        adv = advisories[0]
+        result["ok"] = True
+        result["ghsa_id"] = adv.get("ghsa_id", "")
+        result["summary"] = adv.get("summary", "")
+        result["description"] = adv.get("description", "")[:3000]
+        result["severity"] = adv.get("severity", "")
+        result["references"] = [ref.get("url", "") for ref in adv.get("references", [])][:10]
+        desc = result["description"]
+        for pat in [r"['\"]([a-z_]{2,30})['\"] parameter",
+                    r"parameter ['\"]([a-z_]{2,30})['\"]"]:
+            m = _re.search(pat, desc, _re.IGNORECASE)
+            if m:
+                result["vulnerable_param"] = m.group(1)
+                break
+        for pat in [r"(?:function|in) `([a-z_]{3,50})\(\)`",
+                    r"`([a-z_]{3,50})\(\)` function"]:
+            m = _re.search(pat, desc, _re.IGNORECASE)
+            if m:
+                result["affected_function"] = m.group(1)
+                break
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def fetch_nvd_cve_details(cve_id: str, timeout: int = 20) -> dict:
+    """Fetch detailed CVE data from NVD: description, CWEs, CVSS, references."""
+    import requests as _req
+    result = {"ok": False, "source": "nvd", "cve_id": cve_id,
+              "description": "", "cwes": [], "cvss_score": 0.0,
+              "cvss_vector": "", "attack_vector": "", "references": []}
+    try:
+        r = _req.get("https://services.nvd.nist.gov/rest/json/cves/2.0",
+                     params={"cveId": cve_id}, timeout=timeout,
+                     headers={"User-Agent": "binoracle-security-research"})
+        if r.status_code != 200:
+            return result
+        data = r.json()
+        vulns = data.get("vulnerabilities", [])
+        if not vulns:
+            return result
+        cve = vulns[0].get("cve", {})
+        result["ok"] = True
+        for d in cve.get("descriptions", []):
+            if d.get("lang") == "en":
+                result["description"] = d.get("value", "")
+                break
+        for w in cve.get("weaknesses", []):
+            for d in w.get("description", []):
+                cwe = d.get("value", "")
+                if cwe.startswith("CWE-"):
+                    result["cwes"].append(cwe)
+        metrics = cve.get("metrics", {})
+        for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            if key in metrics and metrics[key]:
+                cvss_data = metrics[key][0].get("cvssData", {})
+                result["cvss_score"] = cvss_data.get("baseScore", 0.0)
+                result["cvss_vector"] = cvss_data.get("vectorString", "")
+                result["attack_vector"] = cvss_data.get("attackVector", "")
+                break
+        result["references"] = [ref.get("url", "") for ref in cve.get("references", [])][:15]
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
+                             timeout: int = 15) -> dict:
+    """
+    Gather CVE intelligence from NVD, Wordfence, Patchstack, and GitHub in parallel.
+    Returns a merged dict with the richest available information from all sources.
+    """
+    import concurrent.futures as _cf
+    sources = {}
+    with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {
+            ex.submit(fetch_nvd_cve_details, cve_id, timeout): "nvd",
+            ex.submit(fetch_wordfence_advisory, cve_id, timeout): "wordfence",
+            ex.submit(fetch_patchstack_advisory, cve_id, timeout): "patchstack",
+            ex.submit(fetch_github_advisories, cve_id, timeout): "github",
+        }
+        for fut, name in futures.items():
+            try:
+                sources[name] = fut.result(timeout=timeout + 5)
+            except Exception:
+                sources[name] = {"ok": False, "source": name}
+
+    merged = {
+        "cve_id": cve_id,
+        "sources": {k: v.get("ok", False) for k, v in sources.items()},
+        "description": "",
+        "cwes": [],
+        "cvss_score": 0.0,
+        "attack_vector": "",
+        "vulnerable_param": "",
+        "endpoint_hint": "",
+        "affected_function": "",
+        "advisory_notes": "",
+        "references": [],
+    }
+    nvd = sources.get("nvd", {})
+    if nvd.get("ok"):
+        merged["description"] = nvd.get("description", "")
+        merged["cwes"] = nvd.get("cwes", [])
+        merged["cvss_score"] = nvd.get("cvss_score", 0.0)
+        merged["attack_vector"] = nvd.get("attack_vector", "")
+        merged["references"] = nvd.get("references", [])
+    wf = sources.get("wordfence", {})
+    if wf.get("ok"):
+        if wf.get("vulnerable_param"):
+            merged["vulnerable_param"] = wf["vulnerable_param"]
+        if wf.get("endpoint_hint"):
+            merged["endpoint_hint"] = wf["endpoint_hint"]
+        if wf.get("affected_function"):
+            merged["affected_function"] = wf["affected_function"]
+        if wf.get("notes"):
+            merged["advisory_notes"] = wf["notes"][:3000]
+        if wf.get("attack_vector") and not merged["attack_vector"]:
+            merged["attack_vector"] = wf["attack_vector"]
+    ps = sources.get("patchstack", {})
+    if ps.get("ok") and not merged["vulnerable_param"]:
+        if ps.get("vulnerable_param"):
+            merged["vulnerable_param"] = ps["vulnerable_param"]
+        if ps.get("notes") and not merged["advisory_notes"]:
+            merged["advisory_notes"] = ps["notes"][:2000]
+    gh = sources.get("github", {})
+    if gh.get("ok"):
+        if not merged["description"] and gh.get("description"):
+            merged["description"] = gh["description"]
+        if not merged["vulnerable_param"] and gh.get("vulnerable_param"):
+            merged["vulnerable_param"] = gh["vulnerable_param"]
+        if not merged["affected_function"] and gh.get("affected_function"):
+            merged["affected_function"] = gh["affected_function"]
+    return merged

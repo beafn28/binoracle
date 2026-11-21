@@ -1496,6 +1496,95 @@ def _extract_known_ajax_action(notes: dict) -> Optional[str]:
     return None
 
 
+def _synthesize_exploit_from_intel(
+    llm,
+    cve_intel: dict,
+    vuln_class: str,
+    vulnerable_code: str,
+    endpoint: str,
+    param: str,
+    patch_diff: Optional[dict] = None,
+    schema_hints: Optional[dict] = None,
+    lang: str = "es",
+) -> dict:
+    """LLM-driven exploit synthesis: given CVE intel + vulnerable source code, returns a
+    specific payload (not generic templates) with sql_context, bypass_needed, setup_steps."""
+    _cwe_map = {
+        "CWE-89": "SQL Injection", "CWE-79": "XSS", "CWE-22": "Path Traversal",
+        "CWE-98": "PHP File Inclusion", "CWE-918": "SSRF", "CWE-78": "OS Command Injection",
+        "CWE-502": "Deserialization", "CWE-434": "Unrestricted File Upload",
+        "CWE-352": "CSRF", "CWE-284": "IDOR", "CWE-269": "Privilege Escalation",
+        "CWE-94": "Code Injection", "CWE-611": "XXE",
+    }
+    cwes_str = ", ".join(
+        f"{c} ({_cwe_map.get(c, c)})" for c in cve_intel.get("cwes", []))
+    patch_summary = ""
+    if patch_diff and patch_diff.get("ok"):
+        patch_summary = (
+            f"Patch diff (what changed to fix it):\n"
+            f"- Files: {patch_diff.get('changed_files', [])}\n"
+            f"- Vulnerable functions: {patch_diff.get('vuln_functions', [])}\n"
+            f"- Fix type: {patch_diff.get('fix_type', '')}\n"
+            f"- Diff snippet:\n{patch_diff.get('raw_diff_snippet', '')[:800]}")
+    schema_str = f"Database schema hints: {schema_hints}" if schema_hints else ""
+    system_prompt = (
+        "You are an expert exploit developer specializing in WordPress plugin vulnerabilities. "
+        "Synthesize precise, working exploit payloads from CVE intelligence and vulnerable "
+        "source code — not generic templates. Reason from actual code to understand exact "
+        "SQL context, injection point, and response behavior. Always respond in JSON only.")
+    user_prompt = (
+        f"Synthesize a working exploit for this CVE.\n\n"
+        f"CVE: {cve_intel.get('cve_id', '')}\n"
+        f"Class: {vuln_class}  CWEs: {cwes_str}\n"
+        f"CVSS: {cve_intel.get('cvss_score', '?')}  "
+        f"Attack vector: {cve_intel.get('attack_vector', '?')}\n\n"
+        f"Official description:\n{cve_intel.get('description', 'N/A')[:800]}\n\n"
+        f"Security advisory (Wordfence/Patchstack):\n"
+        f"{cve_intel.get('advisory_notes', 'N/A')[:1500]}\n\n"
+        f"{patch_summary}\n\n"
+        f"Vulnerable code:\n```php\n{vulnerable_code[:2000] if vulnerable_code else 'N/A'}\n```\n\n"
+        f"Endpoint: {endpoint}\nVulnerable parameter: {param}\n{schema_str}\n\n"
+        "Analyze: (1) exact SQL/injection context, (2) any filters to bypass, "
+        "(3) expected response difference, (4) pre-conditions needed.\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\n"
+        '  "payload": "<exact injection payload>",\n'
+        '  "true_payload": "<payload returning true/non-empty>",\n'
+        '  "false_payload": "<payload returning false/empty>",\n'
+        '  "sleep_payload": "<timing payload with SLEEP(3)>",\n'
+        '  "sql_context": "numeric|single_quote|double_quote|order_by|between|json|unknown",\n'
+        '  "injection_type": "error_based|union|boolean_blind|time_based|reflected|stored|direct",\n'
+        '  "expected_response_indicator": "<what to look for in response>",\n'
+        '  "bypass_needed": "<filter bypass technique, or none>",\n'
+        '  "setup_steps": ["<pre-condition>"],\n'
+        '  "reasoning": "<2-3 sentences why this payload works for this exact code>",\n'
+        '  "confidence": 0.0\n'
+        "}")
+    result: dict = {
+        "ok": False, "payload": "", "true_payload": "", "false_payload": "",
+        "sleep_payload": "", "sql_context": "unknown", "injection_type": "unknown",
+        "expected_response_indicator": "", "bypass_needed": "none",
+        "setup_steps": [], "reasoning": "", "confidence": 0.0,
+    }
+    try:
+        import json as _j, re as _re2
+        resp = llm.chat(
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            temperature=0.1,
+            max_tokens=1200,
+        )
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        m = _re2.search(r'\{[\s\S]*\}', raw)
+        if m:
+            parsed = _j.loads(m.group(0))
+            result.update(parsed)
+            result["ok"] = True
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
 def _deterministic_web_hints_from_source(local_path: str, found: dict) -> Optional[dict]:
     """Complementa (y cuando discrepan, GANA sobre) el refinamiento del LLM con un grep LITERAL
     del codigo real: el registro EXACTO del hook `add_action('wp_ajax...')` que de verdad engancha
@@ -3691,7 +3780,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     con --budget y usaba siempre su propio default interno (1200s/20min), fuera cual fuera el
     valor real pasado en la CLI."""
     es = lang == "es"
-    from .websource import fetch_source, grep_vulnerable_functions, detect_required_companion_plugins
+    from .websource import (fetch_source, grep_vulnerable_functions,
+                            detect_required_companion_plugins, gather_cve_intelligence)
     from .webexploit import build_http_poc
 
     notes = inv.llm_notes or {}
@@ -3964,6 +4054,42 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                   f"files={_pd['changed_files'][:3]}"))
                     except Exception:
                         pass
+            # Recopilar inteligencia CVE multi-fuente (NVD + Wordfence + Patchstack + GitHub)
+            # en paralelo antes de sintetizar el exploit. No bloquea si alguna fuente falla.
+            # La intel enriquece los notes (param/endpoint) Y se pasa al synthesizer mas abajo.
+            try:
+                _slug_intel = (fr.plugin_dir or fr.source or source or "").strip().lower()
+                step(("recopilando inteligencia CVE de NVD, Wordfence, Patchstack, GitHub...") if es else
+                     ("gathering CVE intelligence from NVD, Wordfence, Patchstack, GitHub..."))
+                _cve_intel = gather_cve_intelligence(cve_id, plugin_slug=_slug_intel)
+                _intel_ok = sum(1 for v in _cve_intel["sources"].values() if v)
+                step((f"inteligencia CVE: {_intel_ok}/4 fuentes — "
+                      f"CVSS={_cve_intel.get('cvss_score', 0)}, "
+                      f"CWEs={_cve_intel.get('cwes', [])}") if es else
+                     (f"CVE intelligence: {_intel_ok}/4 sources — "
+                      f"CVSS={_cve_intel.get('cvss_score', 0)}, "
+                      f"CWEs={_cve_intel.get('cwes', [])}"))
+                # Propagar param/endpoint del advisory si aún no los tenemos
+                if _cve_intel.get("vulnerable_param") and not notes.get("sqli_param"):
+                    notes["sqli_param"] = _cve_intel["vulnerable_param"]
+                    step((f"parametro vulnerable del advisory: "
+                          f"'{_cve_intel['vulnerable_param']}'") if es else
+                         (f"vulnerable parameter from advisory: "
+                          f"'{_cve_intel['vulnerable_param']}'"))
+                if _cve_intel.get("endpoint_hint") and not notes.get("endpoint"):
+                    step((f"endpoint hint del advisory: "
+                          f"'{_cve_intel['endpoint_hint']}'") if es else
+                         (f"endpoint hint from advisory: '{_cve_intel['endpoint_hint']}'"))
+                inv.llm_notes["cve_intel"] = {
+                    k: v for k, v in _cve_intel.items() if k != "sources"
+                }
+                inv.llm_notes["cve_intel"]["sources"] = _cve_intel["sources"]
+            except Exception:
+                _cve_intel = {"cve_id": cve_id, "description": "", "cwes": [],
+                              "cvss_score": 0.0, "advisory_notes": "",
+                              "vulnerable_param": "", "endpoint_hint": "",
+                              "affected_function": "", "references": [],
+                              "sources": {}}
             # calculado AQUI (no solo mas abajo, donde lo usa el despacho de verificacion
             # dinamica) porque el refinamiento determinista de endpoint/parametros TAMBIEN
             # necesita saber de que CMS es: Drupal (routing.yml) y Joomla ($input->getXxx()) se
@@ -4551,6 +4677,56 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         step("sin LLM disponible o sin nada que afinar: se mantiene la hipotesis "
                              "inicial" if es else "no LLM available or nothing to refine: keeping "
                              "the initial hypothesis")
+            # Synthesis mode: dado el código fuente vulnerable + toda la inteligencia CVE,
+            # pedir al LLM que sintetice el payload EXACTO para esta vulnerabilidad concreta.
+            # El resultado propaga sql_context, bypass_needed y setup_steps a notes para que
+            # el verifier los use. Se ejecuta tras el refinamiento (tenemos endpoint/param
+            # definitivos) y no bloquea si falla (el motor continua con templates genéricos).
+            if (fr.ok and inv.source_grounding.get("found") and llm):
+                try:
+                    _vuln_code_synth = ""
+                    for _fn_synth in inv.source_grounding["found"]:
+                        if fr.local_path:
+                            import subprocess as _sp_synth
+                            _gr = _sp_synth.run(
+                                ["grep", "-rn", "--include=*.php", _fn_synth, fr.local_path],
+                                capture_output=True, text=True, timeout=5)
+                            if _gr.stdout:
+                                _fhit = _gr.stdout.split("\n")[0].split(":")[0]
+                                if _fhit and os.path.isfile(_fhit):
+                                    with open(_fhit, errors="replace") as _fh_s:
+                                        _vuln_code_synth = _fh_s.read()[:3000]
+                                    break
+                    _synth = _synthesize_exploit_from_intel(
+                        llm=llm,
+                        cve_intel=inv.llm_notes.get("cve_intel") or {"cve_id": cve_id,
+                                                                      "description": ""},
+                        vuln_class=vuln_class,
+                        vulnerable_code=_vuln_code_synth,
+                        endpoint=notes.get("endpoint", ""),
+                        param=(notes.get("sqli_param") or notes.get("lfi_param")
+                               or notes.get("xss_param") or ""),
+                        patch_diff=inv.llm_notes.get("patch_diff_analysis"),
+                        lang="es" if es else "en",
+                    )
+                    if _synth.get("ok") and _synth.get("confidence", 0) >= 0.5:
+                        step((f"síntesis de exploit: contexto={_synth['sql_context']}, "
+                              f"tipo={_synth['injection_type']}, "
+                              f"confianza={_synth['confidence']:.0%} — "
+                              f"{_synth.get('reasoning', '')[:180]}") if es else
+                             (f"exploit synthesis: context={_synth['sql_context']}, "
+                              f"type={_synth['injection_type']}, "
+                              f"confidence={_synth['confidence']:.0%} — "
+                              f"{_synth.get('reasoning', '')[:180]}"))
+                        inv.llm_notes["synthesized_exploit"] = _synth
+                        if _synth.get("sql_context") not in ("unknown", ""):
+                            notes["sql_context_hint"] = _synth["sql_context"]
+                        if _synth.get("setup_steps"):
+                            notes["exploit_setup_steps"] = _synth["setup_steps"]
+                        if _synth.get("bypass_needed") not in ("none", "", None):
+                            notes["bypass_needed"] = _synth["bypass_needed"]
+                except Exception:
+                    pass
             # Override determinista para WordPress SQLi: si un parametro de tipo DataTables
             # (order, dir, start, etc.) apunta directamente a una accion DISTINTA de la
             # actualmente seleccionada (via codigo real, no similitud de nombres), la accion
