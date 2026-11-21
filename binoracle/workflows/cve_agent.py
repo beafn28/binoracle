@@ -4760,6 +4760,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             detect_required_companion_plugins, gather_cve_intelligence)
     from .webexploit import build_http_poc
 
+    cve_id = inv.cve_id
     notes = inv.llm_notes or {}
     # CVE sobre una herramienta CLI LOCAL (sin servicio escuchando, sin endpoint HTTP) -- ver
     # cliverify.py, confirmado en vivo con CVE-2025-64756 (glob npm CLI). Reusa la clase

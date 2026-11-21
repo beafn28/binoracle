@@ -503,8 +503,43 @@ def _svn_fetch_wp_plugin_version(slug: str, version: str, dest_dir: str, step,
         # Verificar que el tag existe
         entries = _svn_list_dir(base_svn)
         if not entries or all(e in _SKIP_NAMES for e in entries):
-            step(f"SVN tag '{version}' no encontrado para '{slug}'")
-            return res
+            # Tag exacto no existe — listar todos los tags disponibles y buscar el
+            # más cercano al solicitado (versión más alta ≤ version_pedida).
+            # Esto cubre el caso común donde el publisher no etiquetó CADA release
+            # pero sí las principales: unlimited-elements tiene 1.5.102 pero no 1.5.126.
+            svn_tags_base = f"https://plugins.svn.wordpress.org/{slug}/tags/"
+            tag_entries = _svn_list_dir(svn_tags_base)
+            available = sorted(
+                [t.rstrip("/") for t in tag_entries
+                 if t not in _SKIP_NAMES and not t.startswith("?") and t.endswith("/")
+                 and _re.match(r"^\d", t)],
+                key=lambda v: [int(x) if x.isdigit() else x
+                               for x in _re.split(r"[.\-]", v)])
+            # Versiones ≤ solicitada (candidatas vulnerables)
+            _vkey = [int(x) if x.isdigit() else x
+                     for x in _re.split(r"[.\-]", version)]
+            older = [v for v in available
+                     if [int(x) if x.isdigit() else x
+                         for x in _re.split(r"[.\-]", v)] <= _vkey]
+            if older:
+                best = older[-1]  # mayor versión ≤ solicitada
+                step(f"SVN: tag '{version}' no existe — usando la más cercana disponible "
+                     f"'{best}' (de {len(available)} tags en SVN)")
+                version = best
+                base_svn = f"{svn_tags_base}{best}/"
+                res.resolved_version = best
+                # actualizar cache_path para la versión resuelta
+                cache_path = _cache_path_for("wordpress-plugin", slug, best)
+                if cache_path and _os.path.isdir(cache_path) and _os.listdir(cache_path):
+                    step(f"'{slug}' {best} ya en cache SVN ({cache_path}) -- reutilizando...")
+                    if _copy_from_cache(cache_path, dest_dir, slug):
+                        res.ok = True
+                        res.local_path = dest_dir
+                        return res
+                entries = _svn_list_dir(base_svn)
+            if not entries or all(e in _SKIP_NAMES for e in entries):
+                step(f"SVN: no se encontraron tags disponibles para '{slug}' ≤ {version}")
+                return res
 
         plugin_local_dir = _os.path.join(dest_dir, slug)
         _os.makedirs(plugin_local_dir, exist_ok=True)
