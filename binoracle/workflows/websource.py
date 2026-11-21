@@ -510,9 +510,11 @@ def _svn_fetch_wp_plugin_version(slug: str, version: str, dest_dir: str, step,
         """Recopila la lista de ficheros (crawl secuencial de directorios) y luego
         descarga todos en paralelo con un pool de 20 threads — de ~600s a ~60s."""
         import concurrent.futures as _cf
+        step(f"SVN: explorando estructura de directorios...")
         tasks = _collect_file_list(base_url, local_base, depth)
         if not tasks:
             return 0
+        step(f"SVN: {len(tasks)} ficheros encontrados — descargando en paralelo (20 threads)...")
         downloaded = 0
         with _cf.ThreadPoolExecutor(max_workers=20) as pool:
             for ok in pool.map(_download_one, tasks):
