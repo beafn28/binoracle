@@ -659,3 +659,307 @@ def scout_hueco_cves(
     # Sort by CVSS desc, recency as tiebreak
     hueco.sort(key=lambda c: (c.cvss_score or 0, c.published), reverse=True)
     return hueco[:max_results]
+
+
+# ─── Multi-technology HUECO scout ────────────────────────────────────────────
+
+OSV_API = "https://api.osv.dev/v1"
+
+# Maps our tech names → (OSV ecosystem name, NVD scope keys, human label)
+_TECH_PROFILE: dict = {
+    "wordpress": {
+        "nvd_scopes": ["wordpress-plugin"],
+        "osv_ecosystem": None,          # Patchstack RSS covers this better
+        "label": "WordPress Plugin",
+    },
+    "python": {
+        "nvd_scopes": ["python-django", "python-flask", "python"],
+        "osv_ecosystem": "PyPI",
+        "label": "Python (PyPI)",
+    },
+    "nodejs": {
+        "nvd_scopes": ["nodejs"],
+        "osv_ecosystem": "npm",
+        "label": "Node.js (npm)",
+    },
+    "ruby": {
+        "nvd_scopes": ["ruby-rails"],
+        "osv_ecosystem": "RubyGems",
+        "label": "Ruby (RubyGems)",
+    },
+    "java": {
+        "nvd_scopes": ["java-spring"],
+        "osv_ecosystem": "Maven",
+        "label": "Java (Maven)",
+    },
+    "go": {
+        "nvd_scopes": ["go"],
+        "osv_ecosystem": "Go",
+        "label": "Go",
+    },
+    "php": {
+        "nvd_scopes": ["php"],
+        "osv_ecosystem": "Packagist",
+        "label": "PHP (Packagist)",
+    },
+    "dotnet": {
+        "nvd_scopes": ["dotnet"],
+        "osv_ecosystem": "NuGet",
+        "label": ".NET (NuGet)",
+    },
+}
+
+# NVD scopes for techs not already in _SCOPE_PRESETS
+_SCOPE_PRESETS.update({
+    "go":     ["golang", "go programming language"],
+    "dotnet": ["asp.net", "dotnet", ".net core"],
+})
+
+
+def _fetch_osv_recent(
+    ecosystem: str,
+    days_back: int = 30,
+    max_results: int = 50,
+    timeout: float = 15.0,
+) -> List[HuecoCandidateResult]:
+    """Fetch recent CVEs from OSV.dev for a given ecosystem.
+
+    Uses the OSV.dev batch query endpoint, paginating over recently modified
+    vulnerabilities. Returns HuecoCandidateResult list (cvss_score may be None).
+    """
+    from datetime import datetime, timedelta, timezone
+    import json as _json
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    results: List[HuecoCandidateResult] = []
+    page_token: Optional[str] = None
+
+    for _page in range(8):   # max 8 pages = 800 candidates
+        if len(results) >= max_results:
+            break
+        payload: dict = {
+            "package": {"ecosystem": ecosystem},
+        }
+        if page_token:
+            payload["page_token"] = page_token
+
+        try:
+            body = _json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"{OSV_API}/query",
+                data=body,
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "binoracle/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = _json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            break
+
+        vulns = data.get("vulns") or []
+        page_token = data.get("next_page_token")
+
+        for v in vulns:
+            if len(results) >= max_results:
+                break
+
+            # Date filter
+            modified = v.get("modified") or v.get("published") or ""
+            if modified and modified < cutoff_str:
+                continue
+
+            # Extract CVE ID
+            aliases = v.get("aliases") or []
+            cve_id = next((a for a in aliases if a.upper().startswith("CVE-")),
+                          v.get("id", ""))
+            if not cve_id or not cve_id.upper().startswith("CVE-"):
+                continue
+            cve_id = cve_id.upper()
+
+            # Package name
+            affected = v.get("affected") or [{}]
+            pkg_name = (affected[0].get("package") or {}).get("name", "")
+
+            # Description
+            details = (v.get("details") or v.get("summary") or "")[:300]
+
+            # Published date
+            pub_raw = v.get("published") or modified or ""
+            pub_iso = pub_raw[:10] if pub_raw else ""
+
+            results.append(HuecoCandidateResult(
+                cve_id=cve_id,
+                plugin_name=pkg_name,
+                description=details,
+                published=pub_iso,
+                cvss_score=None,
+                cvss_severity="",
+                source=f"osv/{ecosystem.lower()}",
+                advisory_url=f"https://osv.dev/vulnerability/{v.get('id', cve_id)}",
+            ))
+
+        if not page_token:
+            break
+        time.sleep(0.3)
+
+    return results
+
+
+def scout_hueco_cves_generic(
+    techs:       Optional[List[str]] = None,
+    min_cvss:    float = 6.0,
+    days_back:   int   = 30,
+    max_per_tech: int  = 15,
+    timeout:     float = 15.0,
+    skip_existing: Optional[set] = None,
+) -> List[HuecoCandidateResult]:
+    """Find recent HUECO CVEs across ALL supported technology stacks.
+
+    techs: list of keys from _TECH_PROFILE, or None for all techs.
+           e.g. ['nodejs', 'python', 'java', 'ruby', 'go', 'wordpress']
+
+    For each tech:
+      - WordPress: Patchstack RSS (best signal) + NVD
+      - Others:    OSV.dev ecosystem query + NVD keyword search
+
+    Cross-checks nomi-sec/PoC-in-GitHub to confirm HUECO status.
+    Returns candidates sorted by CVSS desc across all techs.
+    """
+    if techs is None:
+        techs = list(_TECH_PROFILE.keys())
+
+    skip = skip_existing or set()
+    seen_ids: set = set(skip)
+    all_candidates: List[HuecoCandidateResult] = []
+
+    for tech in techs:
+        profile = _TECH_PROFILE.get(tech)
+        if not profile:
+            continue
+
+        tech_candidates: List[HuecoCandidateResult] = []
+
+        # --- WordPress: Patchstack RSS ---
+        if tech == "wordpress":
+            try:
+                req = urllib.request.Request(
+                    _PATCHSTACK_RSS,
+                    headers={"User-Agent": "binoracle/1.0 (security research)"},
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    rss_xml = r.read().decode("utf-8", "replace")
+                for item in _parse_patchstack_rss(rss_xml, days_back=days_back):
+                    if item.cve_id not in seen_ids:
+                        seen_ids.add(item.cve_id)
+                        tech_candidates.append(item)
+            except Exception:
+                pass
+
+        # --- OSV.dev: ecosystem CVEs (non-WordPress) ---
+        osv_eco = profile.get("osv_ecosystem")
+        if osv_eco:
+            try:
+                osv_items = _fetch_osv_recent(
+                    osv_eco, days_back=days_back,
+                    max_results=max_per_tech * 3, timeout=timeout)
+                for item in osv_items:
+                    if item.cve_id not in seen_ids:
+                        seen_ids.add(item.cve_id)
+                        tech_candidates.append(item)
+            except Exception:
+                pass
+
+        # --- NVD keyword search for this tech ---
+        for scope in profile.get("nvd_scopes", []):
+            if len(tech_candidates) >= max_per_tech * 2:
+                break
+            try:
+                nvd_results = search_nvd_by_scope(
+                    scope=scope,
+                    min_cvss=min_cvss,
+                    days_back=days_back,
+                    max_results=max_per_tech,
+                    require_exploit=False,
+                    enrich=False,
+                    timeout=timeout,
+                )
+                for r in nvd_results:
+                    if r.cve_id not in seen_ids:
+                        # Skip immediately if NVD already flagged a public exploit
+                        if r.has_public_exploit:
+                            continue
+                        seen_ids.add(r.cve_id)
+                        tech_candidates.append(HuecoCandidateResult(
+                            cve_id=r.cve_id,
+                            plugin_name=r.keyword_matched or scope,
+                            description=r.description[:300],
+                            published=r.published,
+                            cvss_score=r.cvss_score,
+                            cvss_severity=r.cvss_severity,
+                            source="nvd",
+                        ))
+            except Exception:
+                pass
+            time.sleep(1.0)   # conservative: NVD 5 req/30s across all techs
+
+        # --- Cross-check: confirm HUECO status (no public PoC) ---
+        confirmed: List[HuecoCandidateResult] = []
+        for cand in tech_candidates:
+            # OSV items have no CVSS yet — enrich from NVD
+            if cand.cvss_score is None:
+                try:
+                    info = fetch_cve(cand.cve_id, timeout=timeout, enrich=True)
+                    if info.ok:
+                        cand.cvss_score    = info.cvss_score
+                        cand.cvss_severity = info.cvss_severity
+                        if info.has_public_exploit:
+                            time.sleep(0.3)
+                            continue
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+            else:
+                # NVD items: quick GitHub PoC double-check (lightweight)
+                try:
+                    poc_refs = search_github_poc(cand.cve_id, timeout=6.0)
+                    if poc_refs:
+                        continue
+                except Exception:
+                    pass   # network error → assume no PoC, keep candidate
+
+            if cand.cvss_score is None or cand.cvss_score >= min_cvss:
+                cand.plugin_name = f"[{tech}] {cand.plugin_name}"
+                confirmed.append(cand)
+            if len(confirmed) >= max_per_tech:
+                break
+
+        all_candidates.extend(confirmed)
+
+    # Global sort: CVSS desc, then recency
+    all_candidates.sort(key=lambda c: (c.cvss_score or 0, c.published), reverse=True)
+    return all_candidates
+
+
+def load_hueco_queue(queue_path: str) -> List[str]:
+    """Load list of CVE IDs already in the queue file (one per line)."""
+    if not os.path.exists(queue_path):
+        return []
+    with open(queue_path, encoding="utf-8") as fh:
+        return [ln.strip() for ln in fh if ln.strip().startswith("CVE-")]
+
+
+def append_hueco_queue(queue_path: str, candidates: List[HuecoCandidateResult]) -> int:
+    """Append new HUECO candidates to the queue file. Returns count added."""
+    existing = set(load_hueco_queue(queue_path))
+    new_items = [c for c in candidates if c.cve_id not in existing]
+    if not new_items:
+        return 0
+    os.makedirs(os.path.dirname(queue_path), exist_ok=True)
+    with open(queue_path, "a", encoding="utf-8") as fh:
+        for c in new_items:
+            # Format: CVE-YYYY-NNNNN|tech-label|cvss|description_snippet
+            desc_short = (c.description or "")[:80].replace("|", " ").replace("\n", " ")
+            fh.write(f"{c.cve_id}|{c.plugin_name}|{c.cvss_score or '?'}|{desc_short}\n")
+    return len(new_items)
