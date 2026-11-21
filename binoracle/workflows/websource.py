@@ -465,38 +465,59 @@ def _svn_fetch_wp_plugin_version(slug: str, version: str, dest_dir: str, step,
     _DOWNLOAD_EXTS = {".php", ".js", ".css", ".txt", ".json", ".html", ".htm",
                       ".svg", ".pot", ".po", ".mo"}
     _SKIP_NAMES = {"../", "..", ".", ""}
+    import threading as _threading
+    _svn_lock = _threading.Lock()
 
-    def _svn_fetch_recursive(base_url: str, local_base: str, depth: int = 0) -> int:
-        """Descarga recursivamente los ficheros de un directorio SVN."""
+    def _collect_file_list(base_url: str, local_base: str,
+                           depth: int = 0) -> list:
+        """Recorre el árbol SVN de forma recursiva y devuelve lista de
+        (file_url, local_path) para todos los ficheros descargables.
+        Solo hace HTTP para las páginas de directorio (rápido)."""
         if depth > 8:
-            return 0
+            return []
         entries = _svn_list_dir(base_url)
-        downloaded = 0
+        tasks = []
         for entry in entries:
             if entry in _SKIP_NAMES or entry.startswith("?") or entry.startswith("//"):
                 continue
-            # Subdirectorio
             if entry.endswith("/"):
-                subdir_local = _os.path.join(local_base, entry.rstrip("/"))
-                _os.makedirs(subdir_local, exist_ok=True)
-                downloaded += _svn_fetch_recursive(base_url + entry, subdir_local, depth + 1)
+                sub_local = _os.path.join(local_base, entry.rstrip("/"))
+                with _svn_lock:
+                    _os.makedirs(sub_local, exist_ok=True)
+                tasks.extend(_collect_file_list(base_url + entry, sub_local, depth + 1))
                 continue
-            # Fichero con extension descargable
             _, ext = _os.path.splitext(entry.lower())
             if ext not in _DOWNLOAD_EXTS:
                 continue
-            file_url = base_url + entry
-            local_file = _os.path.join(local_base, entry)
-            try:
-                req = _ur.Request(file_url, headers={"User-Agent": "binoracle/1.0"})
-                with _ur.urlopen(req, timeout=min(timeout, 15)) as r:
-                    if r.status == 200:
-                        content = r.read()
-                        with open(local_file, "wb") as fh:
-                            fh.write(content)
-                        downloaded += 1
-            except Exception:
-                pass
+            tasks.append((base_url + entry, _os.path.join(local_base, entry)))
+        return tasks
+
+    def _download_one(args) -> bool:
+        file_url, local_file = args
+        try:
+            req = _ur.Request(file_url, headers={"User-Agent": "binoracle/1.0"})
+            with _ur.urlopen(req, timeout=min(timeout, 15)) as r:
+                if r.status == 200:
+                    content = r.read()
+                    with open(local_file, "wb") as fh:
+                        fh.write(content)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _svn_fetch_recursive(base_url: str, local_base: str, depth: int = 0) -> int:
+        """Recopila la lista de ficheros (crawl secuencial de directorios) y luego
+        descarga todos en paralelo con un pool de 20 threads — de ~600s a ~60s."""
+        import concurrent.futures as _cf
+        tasks = _collect_file_list(base_url, local_base, depth)
+        if not tasks:
+            return 0
+        downloaded = 0
+        with _cf.ThreadPoolExecutor(max_workers=20) as pool:
+            for ok in pool.map(_download_one, tasks):
+                if ok:
+                    downloaded += 1
         return downloaded
 
     try:
