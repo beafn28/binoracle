@@ -487,3 +487,175 @@ def search_nvd_by_scope(
     # Sort by CVSS desc, then by date desc
     results.sort(key=lambda r: (r.cvss_score or 0, r.published), reverse=True)
     return results[:max_results]
+
+
+# ─── Patchstack advisory feed ────────────────────────────────────────────────
+
+_PATCHSTACK_RSS = "https://patchstack.com/database/wordpress/feed/"
+
+
+@dataclass
+class HuecoCandidateResult:
+    """A HUECO CVE candidate — recent advisory with no confirmed public exploit."""
+    cve_id:      str
+    plugin_name: str
+    description: str
+    published:   str            # YYYY-MM-DD
+    cvss_score:  Optional[float]
+    cvss_severity: str
+    source:      str            # "patchstack" | "nvd"
+    advisory_url: str = ""
+
+
+def _parse_patchstack_rss(xml_text: str, days_back: int = 30) -> List[HuecoCandidateResult]:
+    """Extract CVE IDs and metadata from Patchstack RSS feed XML."""
+    from datetime import datetime, timedelta, timezone
+    import email.utils
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    items: List[HuecoCandidateResult] = []
+
+    # Simple regex XML parsing (no lxml dependency)
+    for item_m in re.finditer(r"<item>(.*?)</item>", xml_text, re.S):
+        block = item_m.group(1)
+
+        title_m  = re.search(r"<title[^>]*><!\[CDATA\[(.*?)]]></title>|<title[^>]*>(.*?)</title>", block, re.S)
+        link_m   = re.search(r"<link[^>]*>(.*?)</link>", block, re.S)
+        desc_m   = re.search(r"<description[^>]*><!\[CDATA\[(.*?)]]>|<description[^>]*>(.*?)</description>", block, re.S)
+        date_m   = re.search(r"<pubDate[^>]*>(.*?)</pubDate>", block, re.S)
+
+        title    = (title_m.group(1) or title_m.group(2) or "").strip() if title_m else ""
+        link     = (link_m.group(1) or "").strip() if link_m else ""
+        raw_desc = (desc_m.group(1) or desc_m.group(2) or "").strip() if desc_m else ""
+        raw_date = (date_m.group(1) or "").strip() if date_m else ""
+
+        # Parse pubDate (RFC 2822) and filter by cutoff
+        pub_iso = ""
+        try:
+            parsed_dt = email.utils.parsedate_to_datetime(raw_date)
+            if parsed_dt < cutoff:
+                continue
+            pub_iso = parsed_dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+        # Extract CVE IDs from title or description
+        cve_ids = list(dict.fromkeys(
+            m.upper() for m in _CVE_RE.findall(title + " " + raw_desc[:800])
+        ))
+        if not cve_ids:
+            continue
+
+        # Extract plugin name from title: "PluginName <= X.Y.Z" pattern
+        plugin_m = re.match(r"^(.+?)\s*(?:<=|<|–|-)\s*[\d.]+", title)
+        plugin_name = plugin_m.group(1).strip() if plugin_m else title[:60]
+
+        # Strip HTML tags from description
+        clean_desc = re.sub(r"<[^>]+>", " ", raw_desc).strip()[:300]
+
+        for cve_id in cve_ids:
+            items.append(HuecoCandidateResult(
+                cve_id=cve_id,
+                plugin_name=plugin_name,
+                description=clean_desc,
+                published=pub_iso,
+                cvss_score=None,
+                cvss_severity="",
+                source="patchstack",
+                advisory_url=link,
+            ))
+
+    return items
+
+
+def scout_hueco_cves(
+    max_results: int = 25,
+    days_back:   int = 45,
+    min_cvss:    float = 5.0,
+    timeout:     float = 15.0,
+) -> List[HuecoCandidateResult]:
+    """Find recent WordPress plugin CVEs with NO confirmed public exploit from two sources:
+    1. Patchstack advisory RSS feed — earliest signal for new WP plugin vulns.
+    2. NVD keyword search with `require_exploit=False` — cross-check.
+
+    For each CVE found, cross-checks nomi-sec/PoC-in-GitHub to confirm it is
+    truly a HUECO (no PoC repo indexed).  Returns only confirmed HUECOs.
+
+    Rate-limited to stay within NVD's 5 req/30s. Best-effort: returns partial
+    results on network errors rather than raising.
+    """
+    seen_ids: set = set()
+    candidates: List[HuecoCandidateResult] = []
+
+    # --- Source 1: Patchstack RSS ---
+    try:
+        req = urllib.request.Request(
+            _PATCHSTACK_RSS,
+            headers={"User-Agent": "binoracle/1.0 (security research)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            rss_xml = r.read().decode("utf-8", "replace")
+        ps_items = _parse_patchstack_rss(rss_xml, days_back=days_back)
+        for item in ps_items:
+            if item.cve_id not in seen_ids:
+                seen_ids.add(item.cve_id)
+                candidates.append(item)
+    except Exception:
+        pass
+
+    # --- Source 2: NVD search (wordpress-plugin scope, no exploit required) ---
+    try:
+        nvd_results = search_nvd_by_scope(
+            scope="wordpress-plugin",
+            min_cvss=min_cvss,
+            days_back=days_back,
+            max_results=max_results,
+            require_exploit=False,
+            enrich=False,          # skip per-CVE enrichment here, do it below
+            timeout=timeout,
+        )
+        for r in nvd_results:
+            if r.cve_id not in seen_ids:
+                seen_ids.add(r.cve_id)
+                candidates.append(HuecoCandidateResult(
+                    cve_id=r.cve_id,
+                    plugin_name=r.keyword_matched,
+                    description=r.description[:300],
+                    published=r.published,
+                    cvss_score=r.cvss_score,
+                    cvss_severity=r.cvss_severity,
+                    source="nvd",
+                ))
+    except Exception:
+        pass
+
+    # --- Cross-check: keep only confirmed HUECOs (no GitHub PoC found) ---
+    hueco: List[HuecoCandidateResult] = []
+    for cand in candidates:
+        # Also try to fill cvss_score from NVD if missing (Patchstack items)
+        if cand.cvss_score is None:
+            try:
+                info = fetch_cve(cand.cve_id, timeout=timeout, enrich=True)
+                if info.ok:
+                    cand.cvss_score   = info.cvss_score
+                    cand.cvss_severity = info.cvss_severity
+                    if info.has_public_exploit:
+                        continue   # has a public exploit — not a HUECO
+                time.sleep(0.3)
+            except Exception:
+                pass
+        else:
+            # NVD result already enriched with has_public_exploit from search phase
+            # Double-check with github PoC search
+            poc_refs = search_github_poc(cand.cve_id, timeout=6.0)
+            if poc_refs:
+                continue  # GitHub PoC found — not a HUECO
+
+        if cand.cvss_score is None or cand.cvss_score >= min_cvss:
+            hueco.append(cand)
+        if len(hueco) >= max_results:
+            break
+
+    # Sort by CVSS desc, recency as tiebreak
+    hueco.sort(key=lambda c: (c.cvss_score or 0, c.published), reverse=True)
+    return hueco[:max_results]

@@ -302,6 +302,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/export-pdf/"):
             job_id = path.split("/")[-1]
             self._export_pdf(job_id)
+        elif path == "/api/scout-hueco":
+            self._scout_hueco()
         elif path == "/api/delete-failed":
             self._delete_failed_history()
         elif path.startswith("/api/delete-history/"):
@@ -476,6 +478,36 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"deleted": job_id})
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _scout_hueco(self):
+        from urllib.parse import parse_qs, urlparse as _up
+        qs = parse_qs(_up(self.path).query)
+        days_back  = int(qs.get("days", ["45"])[0])
+        min_cvss   = float(qs.get("min_cvss", ["5.0"])[0])
+        max_results = int(qs.get("limit", ["20"])[0])
+        try:
+            from binoracle.workflows.cvelookup import scout_hueco_cves
+            items = scout_hueco_cves(
+                max_results=max_results,
+                days_back=days_back,
+                min_cvss=min_cvss,
+            )
+            payload = [
+                {
+                    "cve_id":        c.cve_id,
+                    "plugin_name":   c.plugin_name,
+                    "description":   c.description,
+                    "published":     c.published,
+                    "cvss_score":    c.cvss_score,
+                    "cvss_severity": c.cvss_severity,
+                    "source":        c.source,
+                    "advisory_url":  c.advisory_url,
+                }
+                for c in items
+            ]
+            self._send_json(200, {"items": payload, "total": len(payload)})
+        except Exception as exc:
+            self._send_json(500, {"error": str(exc)})
 
     def _delete_failed_history(self):
         deleted = []
@@ -1660,8 +1692,27 @@ main {
       <button id="history-btn" title="Session history">
         History <span class="hist-count" id="hist-count">0</span>
       </button>
+      <button id="scout-btn" title="Scout recent HUECO CVEs from Patchstack + NVD" style="background:rgba(100,180,255,.1);border:1px solid rgba(100,180,255,.3);border-radius:5px;color:rgba(130,200,255,.85);font-size:11px;padding:0 10px;height:28px;cursor:pointer;font-family:var(--sans);font-weight:600;white-space:nowrap;transition:background .12s">Scout HUECOs</button>
     </div>
   </header>
+
+  <!-- Scout modal -->
+  <div id="scout-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200"></div>
+  <div id="scout-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(640px,96vw);max-height:80vh;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5);z-index:201;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <span style="font-size:13px;font-weight:600;color:var(--fg)">HUECO Scout — recent WP plugin CVEs without public exploit</span>
+      <button id="scout-close" style="background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="scout-body" style="flex:1;overflow-y:auto;padding:12px 18px">
+      <div id="scout-status" style="color:var(--dim);font-size:11px;font-family:var(--mono);padding:8px 0">Press Scan to find HUECOs…</div>
+      <div id="scout-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border);flex-shrink:0">
+      <button id="scout-scan-btn" style="background:rgba(100,180,255,.15);border:1px solid rgba(100,180,255,.3);border-radius:5px;color:rgba(130,200,255,.9);font-size:11px;padding:4px 14px;cursor:pointer;font-family:var(--sans);font-weight:600">Scan now</button>
+      <label style="font-size:10px;color:var(--dim);font-family:var(--mono)">days back <input id="scout-days" type="number" value="45" min="7" max="180" style="width:48px;background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--fg);font-size:10px;padding:1px 4px;text-align:center"></label>
+      <span id="scout-spinner" style="display:none;font-size:10px;color:var(--dim);font-family:var(--mono)">scanning…</span>
+    </div>
+  </div>
 
   <!-- History panel -->
   <div class="hist-overlay" id="hist-overlay"></div>
@@ -2799,6 +2850,73 @@ main {
   $('history-btn').addEventListener('click', openHistPanel);
   $('hist-close').addEventListener('click', closeHistPanel);
   $('hist-overlay').addEventListener('click', closeHistPanel);
+
+  // ── Scout HUECOs modal ────────────────────────────────────────────────────
+  function openScoutModal() {
+    $('scout-overlay').style.display = 'block';
+    $('scout-modal').style.display = 'flex';
+  }
+  function closeScoutModal() {
+    $('scout-overlay').style.display = 'none';
+    $('scout-modal').style.display = 'none';
+  }
+  $('scout-btn').addEventListener('click', openScoutModal);
+  $('scout-close').addEventListener('click', closeScoutModal);
+  $('scout-overlay').addEventListener('click', closeScoutModal);
+
+  $('scout-scan-btn').addEventListener('click', async () => {
+    const days = parseInt($('scout-days').value) || 45;
+    $('scout-status').textContent = 'Scanning Patchstack + NVD…';
+    $('scout-status').style.color = 'var(--dim)';
+    $('scout-spinner').style.display = 'inline';
+    $('scout-scan-btn').disabled = true;
+    $('scout-list').innerHTML = '';
+    try {
+      const r = await fetch('/api/scout-hueco?days=' + days + '&limit=25');
+      const d = await r.json();
+      $('scout-spinner').style.display = 'none';
+      $('scout-scan-btn').disabled = false;
+      const items = d.items || [];
+      if (!items.length) {
+        $('scout-status').textContent = 'No HUECO candidates found in the last ' + days + ' days.';
+        return;
+      }
+      $('scout-status').textContent = items.length + ' HUECO CVE(s) found — click one to investigate:';
+      $('scout-status').style.color = 'rgba(130,200,255,.85)';
+      $('scout-list').innerHTML = items.map(it => {
+        const score = it.cvss_score ? it.cvss_score.toFixed(1) : '?';
+        const sev   = it.cvss_severity ? it.cvss_severity.toUpperCase() : '';
+        const srcBg = it.source === 'patchstack'
+          ? 'rgba(255,160,80,.12)' : 'rgba(100,180,255,.1)';
+        const srcCol = it.source === 'patchstack'
+          ? 'rgba(255,180,80,.85)' : 'rgba(130,200,255,.85)';
+        return \`<div class="scout-item" data-cve="\${escHtml(it.cve_id)}" style="background:\${srcBg};border:1px solid \${srcCol}30;border-radius:6px;padding:9px 12px;cursor:pointer;transition:background .12s">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="font-size:11px;font-weight:700;font-family:var(--mono);color:var(--green)">\${escHtml(it.cve_id)}</span>
+            <span style="font-size:9px;background:rgba(0,0,0,.3);border-radius:3px;padding:1px 5px;color:var(--dim)">\${escHtml(it.plugin_name.slice(0,40))}</span>
+            \${score !== '?' ? \`<span style="font-size:9px;color:\${sev==='CRITICAL'?'#ff6b6b':sev==='HIGH'?'#ffa040':'var(--dim)'}">CVSS \${score} \${sev}</span>\` : ''}
+            <span style="font-size:9px;color:\${srcCol};margin-left:auto">\${escHtml(it.source)}</span>
+          </div>
+          <div style="font-size:10px;color:var(--dim);font-family:var(--mono);line-height:1.4">\${escHtml(it.description.slice(0,180))}</div>
+        </div>\`;
+      }).join('');
+      $('scout-list').querySelectorAll('.scout-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const cveId = el.dataset.cve;
+          $('cve-input').value = cveId;
+          closeScoutModal();
+          $('run-btn').click();
+        });
+        el.addEventListener('mouseenter', () => { el.style.filter = 'brightness(1.15)'; });
+        el.addEventListener('mouseleave', () => { el.style.filter = ''; });
+      });
+    } catch(err) {
+      $('scout-spinner').style.display = 'none';
+      $('scout-scan-btn').disabled = false;
+      $('scout-status').textContent = 'Error: ' + err.message;
+      $('scout-status').style.color = 'rgba(255,100,100,.8)';
+    }
+  });
 
   // Load count on page load
   loadHistory();
