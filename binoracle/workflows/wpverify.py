@@ -1858,7 +1858,18 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     import base64 as _b64
     _muplugin_code = (
         "<?php\n"
-        "// binoracle: activar show_errors() de wpdb en cada peticion web\n"
+        "// binoracle MU-plugin: dos funciones para los laboratorios efimeros\n"
+        "//\n"
+        "// 1. ob_start() inmediato: algunos plugins viejos hacen echo/print durante su\n"
+        "//    inicializacion (antes de que WordPress pueda enviar cabeceras HTTP). Sin\n"
+        "//    output buffering, ese output prematuro hace que setcookie() falle\n"
+        "//    silenciosamente ('headers already sent') y el login del subscriber nunca\n"
+        "//    obtiene su cookie de sesion. ob_start() aqui captura ese output antes de\n"
+        "//    que llegue al cliente; ob_end_flush() al final del request lo libera.\n"
+        "ob_start();\n"
+        "add_action('shutdown', function() { while (ob_get_level() > 0) ob_end_flush(); }, 999);\n"
+        "//\n"
+        "// 2. show_errors() de wpdb en cada peticion web\n"
         "// (WP 5.0+ no llama show_errors() automaticamente con WP_DEBUG=true)\n"
         "add_action('init', function() { global $wpdb; $wpdb->show_errors(); }, 1);\n"
     )
