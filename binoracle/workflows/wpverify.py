@@ -1961,15 +1961,27 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
         # con $silent=true también fallará. La solución es solo actualizar la opción en BD.
         _main_file = f"{slug}/{slug}.php"
 
+        _PHP_FORCE = (
+            f"$current = (array)get_option('active_plugins'); "
+            f"$s = '{{FILE}}'; "
+            f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
+            f"update_option('active_plugins', $current); }} "
+            f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';"
+        )
+
         def _force_active_via_db(plugin_file: str) -> bool:
+            # --skip-plugins --skip-themes: WP-CLI carga WordPress pero NO activa
+            # ningún plugin/theme, eliminando cualquier "unexpected output" de ellos.
             _r = lab.wp_cli("eval",
-                f"$current = (array)get_option('active_plugins'); "
-                f"$s = '{plugin_file}'; "
-                f"if (!in_array($s, $current)) {{ $current[] = $s; sort($current); "
-                f"update_option('active_plugins', $current); }} "
-                f"echo in_array($s, (array)get_option('active_plugins')) ? 'OK' : 'FAIL';",
+                _PHP_FORCE.replace("{FILE}", plugin_file),
+                "--skip-plugins", "--skip-themes",
                 timeout=20)
-            return (_r.stdout or "").strip() == "OK"
+            _out = (_r.stdout or "").strip()
+            # La última línea debe ser "OK"; puede haber PHP notices antes si WP_DEBUG=true
+            _last = _out.splitlines()[-1].strip() if _out else ""
+            if _last != "OK":
+                step(f"wp eval forzado devolvio: rc={_r.returncode} out={_out[:80]!r}")
+            return _last == "OK"
 
         if _force_active_via_db(_main_file):
             _activate_ok = True
@@ -1980,8 +1992,10 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
                 f"foreach(glob(WP_PLUGIN_DIR.'/{slug}/*.php') as $f) {{ "
                 f"$h=get_file_data($f,['Name'=>'Plugin Name']); "
                 f"if(!empty($h['Name'])){{ echo basename(dirname($f)).'/'.basename($f); break; }} }}",
+                "--skip-plugins", "--skip-themes",
                 timeout=20)
-            _real_file = (_r_find.stdout or "").strip()
+            _real_file = (_r_find.stdout or "").strip().splitlines()[-1].strip() \
+                if (_r_find.stdout or "").strip() else ""
             if _real_file and _real_file != _main_file and _force_active_via_db(_real_file):
                 _activate_ok = True
                 step(f"plugin '{slug}' forzado activo via archivo real '{_real_file}'.")
