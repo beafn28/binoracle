@@ -532,16 +532,15 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
 
     En lugar de enviar el dump crudo de respuestas al LLM, el motor razona
     primero sobre los patrones observados y produce un dict con:
-    - 'causa': etiqueta corta del patrón detectado (nonce_invalido, 404,
-      auth_gate, respuesta_vacia, diff_insuficiente, timeout_sin_delay, etc.)
+    - 'causa': etiqueta corta del patrón detectado
     - 'detalle': frase explicativa de una línea
-    - 'tecnica_agotada': True si la técnica no tiene sentido reintentar con
-      los mismos parámetros (p.ej. time-based con delta <0.3s en 3 pares)
-    - 'cambio_tecnica_sugerido': nombre de otra técnica que sí tiene sentido
-      probar (o '' si no hay sugerencia determinista)
+    - 'tecnica_agotada': True si la técnica no tiene sentido reintentar
+    - 'cambio_tecnica_sugerido': nombre de otra técnica a probar (o '')
+    - 'next_action': acción determinista recomendada para el bucle de reintento
+      ('pop_alt_endpoint' | 'escalate_technique' | 'ask_llm')
+    - 'auto_nonce_found': valor de nonce extraído del body de respuesta (o None)
 
-    El diagnóstico se inyecta en la evidencia ANTES de llamar al LLM,
-    de modo que el modelo recibe contexto estructurado en vez de texto crudo."""
+    El diagnóstico se inyecta en la evidencia ANTES de llamar al LLM."""
     ev = getattr(wr, "evidence", {}) or {}
     ctrl_body = (ev.get("respuesta_control_recorte") or "")[:600]
     ctrl_status = ev.get("status_control") or ev.get("control_status") or 0
@@ -552,6 +551,7 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
     detalle = ""
     tecnica_agotada = False
     cambio_tecnica = ""
+    auto_nonce = None
 
     # 1 — 404 en el endpoint: el recurso no existe
     if ctrl_status == 404 or "404" in ctrl_body[:100]:
@@ -559,12 +559,29 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
         detalle = "El endpoint devolvio 404 — el recurso no existe con esa ruta."
         tecnica_agotada = True
 
-    # 2 — nonce / security token inválido
+    # 2 — nonce / security token inválido (patrones ampliados)
     elif any(t in ctrl_body.lower() for t in
-             ("invalid nonce", "wrong nonce", "invalid security", "security check failed")):
+             ("invalid nonce", "wrong nonce", "invalid security", "security check failed",
+              "nonce_failed", "nonce does not match", "invalid security token",
+              "failed security check", "_wpnonce")):
         causa = "nonce_invalido"
         detalle = ("Nonce/token inválido detectado en respuesta de control — "
                    "el motor no ha scrapeado el nonce correcto para este endpoint.")
+        # Fix 5: intentar extraer el nonce directamente del body de la respuesta
+        import re as _re
+        _nonce_patterns = [
+            r'"nonce"\s*:\s*"([a-f0-9]{8,12})"',
+            r"'nonce'\s*:\s*'([a-f0-9]{8,12})'",
+            r'["\']nonce["\']\s*:\s*["\']([a-f0-9]{8,12})["\']',
+            r'["\']security["\']\s*:\s*["\']([a-f0-9]{8,12})["\']',
+            r'["\']_wpnonce["\']\s*:\s*["\']([a-f0-9]{8,12})["\']',
+            r'var\s+\w*[Nn]once\s*=\s*["\']([a-f0-9]{8,12})["\']',
+        ]
+        for _p in _nonce_patterns:
+            _m = _re.search(_p, ctrl_body, _re.IGNORECASE)
+            if _m:
+                auto_nonce = _m.group(1)
+                break
 
     # 3 — auth gate / login redirect
     elif any(t in ctrl_body.lower() for t in
@@ -612,11 +629,21 @@ def _diagnose_failure(wr: Any, technique_label: str = "") -> dict:
         causa = "sin_patron"
         detalle = "No se detectó un patrón claro de fallo — revisar respuesta completa."
 
+    # Calcular next_action determinista para el bucle de reintento
+    if causa == "endpoint_404":
+        next_action = "pop_alt_endpoint"
+    elif cambio_tecnica and not tecnica_agotada:
+        next_action = "escalate_technique"
+    else:
+        next_action = "ask_llm"
+
     return {
         "causa": causa,
         "detalle": detalle,
         "tecnica_agotada": tecnica_agotada,
         "cambio_tecnica_sugerido": cambio_tecnica,
+        "next_action": next_action,
+        "auto_nonce_found": auto_nonce,
     }
 
 
@@ -706,6 +733,50 @@ class _TechniqueTracker:
     def summary(self) -> dict:
         return {k: {kk: vv for kk, vv in v.items() if kk != "endpoints_tried"}
                 for k, v in self._state.items()}
+
+
+class _PartialSignalAccumulator:
+    """Acumula señales parciales de múltiples labs fallidos.
+
+    Si 2+ labs distintos producen un diff > 0 en el mismo (endpoint, param),
+    la señal combinada puede superar el umbral aunque ninguna lo haga sola.
+    Sirve para diagnosticar casos donde el engine falla repetidamente con
+    señal débil pero consistente — evidencia de que va en la dirección correcta
+    pero falta ajuste fino (payload, encoding, nonce, etc.)."""
+
+    def __init__(self):
+        self._signals: list = []
+
+    def record(self, endpoint: str, param: str, diff_bytes: int, diff_tokens: int,
+               technique: str, lab_n: int):
+        self._signals.append({
+            "endpoint": endpoint, "param": param,
+            "diff_bytes": diff_bytes, "diff_tokens": diff_tokens,
+            "technique": technique, "lab_n": lab_n,
+        })
+
+    def best_candidate(self):
+        from collections import defaultdict
+        by_pair: dict = defaultdict(list)
+        for s in self._signals:
+            if s["diff_bytes"] > 0 or s["diff_tokens"] > 0:
+                by_pair[(s["endpoint"], s["param"])].append(s)
+        if not by_pair:
+            return None
+        best_pair, best_labs = max(
+            by_pair.items(),
+            key=lambda kv: (len(kv[1]), sum(x["diff_bytes"] for x in kv[1])))
+        if len(best_labs) >= 2:
+            ep, prm = best_pair
+            total_diff = sum(x["diff_bytes"] for x in best_labs)
+            return {"endpoint": ep, "param": prm, "labs": len(best_labs),
+                    "total_diff_bytes": total_diff,
+                    "techniques": list({x["technique"] for x in best_labs})}
+        return None
+
+    def has_consistent_signal(self) -> bool:
+        return self.best_candidate() is not None
+
 
 _SQLI_RETRY_EVIDENCE_KEYS = {"endpoint_probado": "endpoint", "parametro_probado": "sqli_param",
                             "respuesta_control_recorte": "respuesta_control_recorte",
@@ -978,6 +1049,7 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                              ere_nonce_pages: Optional[List[str]] = None,
                              lock_endpoint: bool = False,
                              lock_param: bool = False,
+                             alt_endpoints: Optional[List[Any]] = None,
                              ) -> Any:
     """Bucle de aprendizaje-y-reintento COMPARTIDO por cualquier verificador dinamico (no solo
     SQLi/path-traversal): tras un negativo, le pide al LLM (`_llm_suggest_retry_from_evidence`)
@@ -995,8 +1067,13 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
     closure, en vez de ampliar la firma de endpoint/param (que SI cambiaria los ~20 sitios donde ya
     se usa este bucle). Nunca lanza si `on_suggestion` falla -- un fallo ahi no debe tirar abajo un
     reintento que de otro modo iria bien. `lock_endpoint=True` preserva el endpoint del analista
-    entre reintentos -- el LLM solo puede cambiar el parametro, no la ruta base."""
+    entre reintentos -- el LLM solo puede cambiar el parametro, no la ruta base.
+    `alt_endpoints` permite al bucle pivotar automáticamente a un endpoint alternativo cuando
+    el diagnóstico detecta 404, sin necesitar al LLM."""
     retry_endpoint, retry_param = endpoint, param
+    _alt_eps = list(alt_endpoints) if alt_endpoints else []
+    # Fix 3: detectar bucles LLM — registrar (endpoint, param) ya probados
+    _tried_pairs: set = {(retry_endpoint or "", retry_param or "")}
     for attempt_n in range(1, max_attempts):
         if wr.verified or not wr.available:
             break
@@ -1005,12 +1082,40 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
         # boolean con diff=0, 404 en el endpoint), aborta el bucle y lo registra
         # en lugar de consumir reintentos a ciegas.
         _pre_diag = _diagnose_failure(wr, technique_label)
+
+        # Fix 1: 404 → auto-pop alt_endpoint (sin llamar al LLM)
+        if _pre_diag.get("causa") == "endpoint_404" and _alt_eps and not lock_endpoint:
+            _next_ep_obj = _alt_eps.pop(0)
+            _next_ep = (_next_ep_obj.get("endpoint") if isinstance(_next_ep_obj, dict)
+                        else str(_next_ep_obj))
+            step((f"diagnostico: endpoint 404 — pivotando automaticamente al siguiente "
+                  f"endpoint alternativo: {_next_ep} (sin llamar al LLM)") if es else
+                 (f"diagnosis: endpoint 404 — auto-pivoting to next alt endpoint: "
+                  f"{_next_ep} (skipping LLM)"))
+            retry_endpoint = _next_ep
+            _tried_pairs.add((retry_endpoint, retry_param or ""))
+            wr_retry = attempt_fn(retry_endpoint, retry_param)
+            wr_retry.detail = (f"[reintento {attempt_n + 1}/{max_attempts} auto-404-pivot: "
+                               f"{retry_endpoint}] " + wr_retry.detail)
+            wr = wr_retry
+            continue
+
         if _pre_diag.get("tecnica_agotada"):
             step((f"diagnostico del motor: técnica agotada ({_pre_diag['causa']}) — "
                   f"{_pre_diag['detalle']} — abortando reintentos") if es else
                  (f"engine diagnosis: technique exhausted ({_pre_diag['causa']}) — "
                   f"{_pre_diag['detalle']} — aborting retries"))
             break
+
+        # Fix 5: nonce auto-extraído del body — inyectar en on_suggestion si disponible
+        _auto_nonce = _pre_diag.get("auto_nonce_found")
+        if _auto_nonce and on_suggestion is not None:
+            try:
+                on_suggestion({"auto_nonce_extracted": _auto_nonce, "tiene_sugerencia": True,
+                               "razon": f"nonce extraido automaticamente del body: {_auto_nonce}"})
+            except Exception:
+                pass
+
         # Fast first-pass: ExploitReasoningEngine (~100ms, no LLM).
         # Only bypasses LLM when ERE has high confidence AND can produce a
         # concrete fix (currently: NONCE_MISMATCH and AUTH_GATE_FIRED).
@@ -1051,10 +1156,25 @@ def _run_evidence_retry_loop(llm, step, es: bool, system_prompt: str, evidence_k
                 on_suggestion(suggestion)
             except Exception:
                 pass
+
+        # Calcular el nuevo (endpoint, param) provisional antes de verificar bucle
+        _new_ep = retry_endpoint
+        _new_param = retry_param
         if not lock_endpoint:
-            retry_endpoint = suggestion.get("endpoint_alternativo") or retry_endpoint
+            _new_ep = suggestion.get("endpoint_alternativo") or retry_endpoint
         if not lock_param:
-            retry_param = suggestion.get("parametro_alternativo") or retry_param
+            _new_param = suggestion.get("parametro_alternativo") or retry_param
+
+        # Fix 3: detectar bucle LLM — si el par ya fue probado, abortar
+        if (_new_ep or "", _new_param or "") in _tried_pairs:
+            step(("LLM repite combinacion (endpoint, param) ya probada — "
+                  "abortando reintentos para evitar bucle") if es else
+                 ("LLM repeats (endpoint, param) pair already tried — "
+                  "aborting retries to avoid loop"))
+            break
+        _tried_pairs.add((_new_ep or "", _new_param or ""))
+        retry_endpoint, retry_param = _new_ep, _new_param
+
         step((f"el LLM reviso la evidencia real (intento {attempt_n + 1}/{max_attempts}) y "
              f"sugiere reintentar con endpoint={retry_endpoint!r} parametro={retry_param!r} -- "
              f"razon: {suggestion.get('razon')}") if es else
@@ -3718,6 +3838,37 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         source = _url_seg
             step(f"codigo obtenido ({fr.kind}, version {fr.resolved_version or '?'})" if es else
                  f"source fetched ({fr.kind}, version {fr.resolved_version or '?'})")
+            # Fix 2: patch-diff grounding — para plugins WP con SQLi/LFI/path-traversal,
+            # descargar el diff entre versión vulnerable y parchada de plugins.trac.wordpress.org
+            # para confirmar qué funciones PHP cambiaron y qué tipo de fix se aplicó.
+            # Solo cuando tenemos plugin WP con versión resuelta y versión afectada conocida.
+            if (fr.kind == "wordpress-plugin" and fr.resolved_version
+                    and inv.vuln_class in ("sqli", "sql-injection", "lfi", "path-traversal")):
+                _vuln_ver_pd = notes.get("affected_version") or notes.get("vuln_version") or ""
+                _fixed_ver_pd = fr.resolved_version or ""
+                _slug_pd = (fr.plugin_dir or fr.source or source or "").strip().lower()
+                # affected_version puede ser "≤2.9.5" o "< 3.0" — extraer el número
+                import re as _re_pd
+                _vnum = _re_pd.search(r'(\d+\.\d+[\.\d]*)', _vuln_ver_pd or "")
+                _vuln_ver_clean = _vnum.group(1) if _vnum else ""
+                if _slug_pd and _vuln_ver_clean and _fixed_ver_pd and _vuln_ver_clean != _fixed_ver_pd:
+                    try:
+                        from .websource import fetch_wp_plugin_patch_diff as _fetch_pd
+                        step((f"descargando patch diff {_slug_pd} "
+                              f"{_vuln_ver_clean}→{_fixed_ver_pd}...") if es else
+                             (f"fetching patch diff {_slug_pd} "
+                              f"{_vuln_ver_clean}→{_fixed_ver_pd}..."))
+                        _pd = _fetch_pd(_slug_pd, _vuln_ver_clean, _fixed_ver_pd)
+                        if _pd.get("ok"):
+                            inv.llm_notes["patch_diff_analysis"] = _pd
+                            step((f"patch-diff: fix_type={_pd['fix_type']} "
+                                  f"vuln_functions={_pd['vuln_functions']} "
+                                  f"archivos={_pd['changed_files'][:3]}") if es else
+                                 (f"patch-diff: fix_type={_pd['fix_type']} "
+                                  f"vuln_functions={_pd['vuln_functions']} "
+                                  f"files={_pd['changed_files'][:3]}"))
+                    except Exception:
+                        pass
             # calculado AQUI (no solo mas abajo, donde lo usa el despacho de verificacion
             # dinamica) porque el refinamiento determinista de endpoint/parametros TAMBIEN
             # necesita saber de que CMS es: Drupal (routing.yml) y Joomla ($input->getXxx()) se
@@ -5224,6 +5375,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                           f"el retry loop no podra cambiarlo -- {notes.get('endpoint')}") if es else
                          (f"endpoint locked (poc/analyst lock): "
                           f"retry loop cannot change it -- {notes.get('endpoint')}"))
+                _sqli_signal_acc = _PartialSignalAccumulator()
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
                         llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
@@ -5232,7 +5384,32 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         ere_nonce_pages=extra_nonce_pages,
                         lock_endpoint=_ep_lock_active,
                         lock_param=bool((notes.get("analyst_endpoint_lock")
-                                         or notes.get("poc_raw_http_lock")) and sqli_p)))
+                                         or notes.get("poc_raw_http_lock")) and sqli_p),
+                        alt_endpoints=notes.get("alt_endpoints") or []))
+                # Fix 4: acumular señal parcial del ultimo intento para cross-lab diagnosis
+                if not wr.verified and wr.available:
+                    _ev_acc = getattr(wr, "evidence", {}) or {}
+                    _sqli_signal_acc.record(
+                        endpoint=notes.get("endpoint") or "",
+                        param=sqli_p or "",
+                        diff_bytes=int(_ev_acc.get("size_diff_bytes") or 0),
+                        diff_tokens=int(_ev_acc.get("tok_diff_count") or 0),
+                        technique="SQLi-boolean",
+                        lab_n=1)
+                    _best = _sqli_signal_acc.best_candidate()
+                    if _best:
+                        step((f"señal parcial consistente en {_best['labs']} lab(s): "
+                              f"endpoint={_best['endpoint']} param={_best['param']} "
+                              f"diff_total={_best['total_diff_bytes']}B — "
+                              f"indica dirección correcta pero señal insuficiente para confirmar") if es else
+                             (f"consistent partial signal across {_best['labs']} lab(s): "
+                              f"endpoint={_best['endpoint']} param={_best['param']} "
+                              f"total_diff={_best['total_diff_bytes']}B — "
+                              f"right direction but signal too weak to confirm"))
+                        inv.blockers.append(
+                            f"señal parcial consistente: {_best['labs']} labs, "
+                            f"endpoint={_best['endpoint']}, param={_best['param']}, "
+                            f"diff_total={_best['total_diff_bytes']}B")
                 # Teardown the persistent lab now that all retries are done.
                 # _lab_ref[0] is the _Lab object; _boot_ref[0] is the _LabSession.
                 # If the first attempt failed before bootstrap, refs are empty — no-op.

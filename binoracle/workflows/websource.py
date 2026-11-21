@@ -2472,3 +2472,101 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
 
     results.sort(key=_hook_rank)
     return results
+
+
+# ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────
+
+def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
+                               timeout: int = 20) -> dict:
+    """Descarga el diff unificado entre versión vulnerable y parchada de un plugin
+    de WordPress.org via plugins.trac.wordpress.org/changeset y lo parsea para
+    identificar qué funciones PHP cambiaron y qué tipo de fix se aplicó.
+
+    Devuelve:
+      ok: bool
+      diff_url: str
+      changed_files: [str]
+      vuln_functions: [str]   # funciones que tenían SQL sin preparar
+      fix_type: str           # "prepare" | "sanitize" | "intval" | "unknown"
+      raw_diff_snippet: str   # primeras 2000 chars del diff
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+    import re as _re
+
+    result: dict = {
+        "ok": False,
+        "diff_url": "",
+        "changed_files": [],
+        "vuln_functions": [],
+        "fix_type": "unknown",
+        "raw_diff_snippet": "",
+    }
+
+    if not slug or not vuln_version or not fixed_version:
+        return result
+    if vuln_version == fixed_version:
+        return result
+
+    slug = slug.strip().lower()
+    vuln_version = vuln_version.strip()
+    fixed_version = fixed_version.strip()
+
+    diff_url = (
+        f"https://plugins.trac.wordpress.org/changeset"
+        f"?new_path=%2F{slug}%2Ftags%2F{fixed_version}"
+        f"&old_path=%2F{slug}%2Ftags%2F{vuln_version}"
+        f"&format=diff"
+    )
+    result["diff_url"] = diff_url
+
+    try:
+        req = _ur.Request(diff_url, headers={"User-Agent": "binoracle/1.0"})
+        with _ur.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(200_000).decode("utf-8", errors="replace")
+    except (_ue.URLError, OSError):
+        return result
+
+    if not raw.strip() or len(raw) < 50:
+        return result
+
+    result["raw_diff_snippet"] = raw[:2000]
+    result["ok"] = True
+
+    # Extraer archivos modificados de cabeceras "--- a/..." / "+++ b/..."
+    changed_files = []
+    for _m in _re.finditer(r'^(?:\+\+\+|---)\s+(?:[ab]/)?(.+\.php)', raw, _re.MULTILINE):
+        _f = _m.group(1).strip()
+        if _f not in changed_files and not _f.startswith("/dev/null"):
+            changed_files.append(_f)
+    result["changed_files"] = changed_files
+
+    # Detectar tipo de fix en líneas "+" (código añadido)
+    added = " ".join(ln[1:] for ln in raw.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
+    if _re.search(r'\$wpdb\s*->\s*prepare\s*\(', added, _re.IGNORECASE):
+        result["fix_type"] = "prepare"
+    elif _re.search(r'sanitize_\w+\s*\(', added, _re.IGNORECASE):
+        result["fix_type"] = "sanitize"
+    elif _re.search(r'\b(?:intval|absint)\s*\(', added, _re.IGNORECASE):
+        result["fix_type"] = "intval"
+    elif _re.search(r'esc_sql\s*\(', added, _re.IGNORECASE):
+        result["fix_type"] = "sanitize"
+
+    # Extraer funciones PHP vulnerables: buscar en líneas "-" (eliminadas) que tenían
+    # $wpdb->query/get_results con concatenación de string directa (sin prepare)
+    vuln_fns: list = []
+    _current_fn = ""
+    _fn_re = _re.compile(r'^\+?-?\s*function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(')
+    _unsafe_sql_re = _re.compile(
+        r'\$wpdb\s*->\s*(?:query|get_results|get_row|get_var|get_col)\s*\(\s*["\']?\s*(?:SELECT|INSERT|UPDATE|DELETE|"\.|\'\.|".*\$|\'\s*\.\s*\$)',
+        _re.IGNORECASE)
+    for ln in raw.splitlines():
+        _fmatch = _fn_re.match(ln.lstrip("+-"))
+        if _fmatch:
+            _current_fn = _fmatch.group(1)
+        if ln.startswith("-") and _unsafe_sql_re.search(ln) and _current_fn:
+            if _current_fn not in vuln_fns:
+                vuln_fns.append(_current_fn)
+
+    result["vuln_functions"] = vuln_fns
+    return result
