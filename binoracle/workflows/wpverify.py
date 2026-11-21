@@ -1923,10 +1923,18 @@ def _bootstrap_lab(lab: "_Lab", plugin_source_dir: str, slug: str, step, res: Wp
     r = lab.wp_cli("plugin", "activate", slug, timeout=90)
     # DNS race: on slow hosts the DB container may not be resolvable yet when WordPress
     # tries to connect for the first time. Retry once after a brief wait.
-    if r.returncode != 0 and "getaddrinfo" in ((r.stderr or "") + (r.stdout or "")):
+    _activate_combined = (r.stderr or "") + (r.stdout or "")
+    if r.returncode != 0 and "getaddrinfo" in _activate_combined:
         import time as _t
         _t.sleep(5)
         r = lab.wp_cli("plugin", "activate", slug, timeout=90)
+        _activate_combined = (r.stderr or "") + (r.stdout or "")
+    # wp-cli "not a WordPress installation" — WP not yet ready at /var/www/html/ (slow container
+    # init). Retry once with --path to be explicit, after a brief wait.
+    if r.returncode != 0 and "not seem to be a WordPress" in _activate_combined:
+        import time as _t
+        _t.sleep(8)
+        r = lab.wp_cli("plugin", "activate", slug, "--path=/var/www/html", timeout=90)
     # WP-CLI puede morir durante el hook de activacion sin escribir en active_plugins --
     # confirmado en vivo con KiviCare 4.1.2: WP_CLI::add_command() con KCScaffold (clase
     # inexistente en el modo CLI de esta version) llama exit(1) ANTES de que WordPress
@@ -4588,14 +4596,13 @@ def verify_wordpress_sqli(
     # or pure integer), it's probably a lookup key (e.g. directory_id=f3e71 in Ultimate Member),
     # not the injection point. Prefer a sort*/order* param if one exists.
     if sqli_param and isinstance(parameters, dict):
-        import re as _spg_re
         _spg_val = str(parameters.get(sqli_param, ""))
         _spg_name_lc = sqli_param.lower()
-        _spg_struct_name = bool(_spg_re.search(
+        _spg_struct_name = bool(re.search(
             r'(?:_id|_hash|directory|resource|hash|token)', _spg_name_lc))
         _is_structural = bool(
-            (_spg_re.match(r'^[a-f0-9]{4,16}$', _spg_val) and _spg_struct_name) or  # hex hash
-            (_spg_re.match(r'^\d{1,10}$', _spg_val) and _spg_struct_name)            # integer id
+            (re.match(r'^[a-f0-9]{4,16}$', _spg_val) and _spg_struct_name) or  # hex hash
+            (re.match(r'^\d{1,10}$', _spg_val) and _spg_struct_name)            # integer id
         )
         if _is_structural:
             _sort_alt = _pick_param(parameters, ("sort", "order", "orderby", "sorting", "filter"))

@@ -35,6 +35,7 @@ def _save_history(job: "_Job"):
             "cve_id": job.cve_id,
             "verified": job.result.get("verified", False),
             "elapsed": job.result.get("elapsed", 0),
+            "is_gap": job.result.get("is_gap"),
             "created": job.created,
             "result": job.result,
         }
@@ -190,6 +191,7 @@ def _start_job(cve_id: str, config) -> _Job:
             _dv = getattr(inv, "dynamic_verify", None) or {}
             job.result = {
                 "verified": inv.verified,
+                "is_gap": getattr(inv, "is_gap", None),
                 "cve_id": job.cve_id,
                 "detail": _dv.get("detail", "") or getattr(inv, "detail", ""),
                 "elapsed": round(time.time() - job.t0, 1),
