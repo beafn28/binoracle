@@ -1397,7 +1397,8 @@ def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     razonada del negativo con el LLM); el parametro ya existe para no tener que volver a tocar
     los ~30 call sites otra vez cuando se conecte."""
     inv.dynamic_verify = {"attempted": True, "available": wr.available, "ok": wr.ok,
-                          "verified": wr.verified, "detail": wr.detail, "logs": wr.logs}
+                          "verified": wr.verified, "detail": wr.detail, "logs": wr.logs,
+                          "exploit_poc": getattr(wr, "exploit_poc", {})}
     inv.attempt_evidence = wr.evidence
     if wr.verified:
         inv.verified = True

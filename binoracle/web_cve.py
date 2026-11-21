@@ -205,6 +205,7 @@ def _start_job(cve_id: str, config) -> _Job:
                 "vuln_class": getattr(inv, "vuln_class", ""),
                 "poc_source": getattr(inv, "poc_source_used", ""),
                 "affected_version": sf.get("resolved_version", ""),
+                "exploit_poc": _dv.get("exploit_poc", {}),
             }
             _save_history(job)
             job._q.put(("done", job.result))
@@ -1051,6 +1052,28 @@ main {
 .done-banner-fail { background: rgba(255,210,0,.07); color: var(--yellow); border: 1px solid rgba(255,210,0,.18); }
 .done-banner-msg  { flex: 1; min-width: 0; }
 
+/* ── exploit PoC panel ── */
+#exploit-poc-panel {
+  margin-top: 12px; border: 1px solid rgba(0,230,118,.3);
+  border-radius: 7px; overflow: hidden; background: var(--bg3);
+}
+.poc-header {
+  padding: 10px 16px 6px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.poc-title { font-family: var(--mono); font-size: 12px; font-weight: 700;
+  color: var(--green); letter-spacing: .05em; text-transform: uppercase; }
+.poc-desc  { font-size: 11.5px; color: var(--text2); }
+.poc-tabs  { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+.poc-tab   { background: none; border: none; border-right: 1px solid var(--border);
+  padding: 7px 14px; font-family: var(--mono); font-size: 11px; color: var(--text2);
+  cursor: pointer; letter-spacing: .04em; }
+.poc-tab:hover      { color: var(--text1); background: var(--bg2); }
+.poc-tab-active     { color: var(--green) !important; background: rgba(0,230,118,.06) !important; }
+.poc-code  { margin: 0; padding: 12px 16px; font-family: var(--mono); font-size: 11.5px;
+  line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  color: var(--text1); background: transparent; overflow-x: auto; }
+
 /* ── log terminal ── */
 #log-terminal {
   flex: 1; overflow-y: auto; overflow-x: hidden;
@@ -1659,6 +1682,7 @@ main {
       <div id="tab-log" class="tab-pane active">
         <div id="log-terminal"><div class="empty-msg">Enter a CVE ID and press Run to develop an exploit</div></div>
         <div id="done-panel"></div>
+        <div id="exploit-poc-panel" style="display:none"></div>
       </div>
       <!-- Hidden panes kept for JS/Playwright compatibility — not visible in UI -->
       <div id="tab-report" class="tab-pane"><div id="report-content"></div></div>
@@ -1793,6 +1817,7 @@ main {
     $('verdict').style.display = 'none';
     $('verdict').className = '';
     $('cve-info-panel').style.display = 'none';
+    if ($('exploit-poc-panel')) { $('exploit-poc-panel').style.display = 'none'; $('exploit-poc-panel').innerHTML = ''; }
     $('phase-track-inner').innerHTML = '';
     $('phase-tracker').style.display = 'block';
     setStatus('running', 'Running…');
@@ -1982,6 +2007,9 @@ main {
     // screenshots + done panel
     showDonePanel(d);
 
+    // exploit PoC panel (shown when verified=true and exploit_poc is populated)
+    renderExploitPoc(d.exploit_poc || {});
+
     // keep hidden evidence/report/binary data for export
     renderEvidence(d.verified_evidence || {}, d.evidence || {});
     renderHttp(d.evidence || {});
@@ -1991,6 +2019,39 @@ main {
 
     // stop phase tracker
     $('phase-tracker').style.display = 'none';
+  }
+
+  function renderExploitPoc(poc) {
+    const el = $('exploit-poc-panel');
+    if (!el) return;
+    if (!poc || !poc.curl) { el.style.display = 'none'; return; }
+    const tab = (k, label, active) =>
+      `<button class="poc-tab${active?' poc-tab-active':''}" data-poc="${k}">${escHtml(label)}</button>`;
+    const pre = (content) =>
+      `<pre class="poc-code">${escHtml(content)}</pre>`;
+    el.innerHTML = `
+      <div class="poc-header">
+        <span class="poc-title">PoC — ${escHtml(poc.technique || 'exploit')}</span>
+        <span class="poc-desc">${escHtml(poc.description || '')}</span>
+      </div>
+      <div class="poc-tabs">
+        ${tab('curl','curl',true)}${tab('python','Python',false)}${tab('http','HTTP raw',false)}
+      </div>
+      <div class="poc-body">
+        <div class="poc-pane" id="poc-pane-curl">${pre(poc.curl||'')}</div>
+        <div class="poc-pane" id="poc-pane-python" style="display:none">${pre(poc.python||'')}</div>
+        <div class="poc-pane" id="poc-pane-http" style="display:none">${pre(poc.http||'')}</div>
+      </div>`;
+    el.style.display = 'block';
+    el.querySelectorAll('.poc-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const k = btn.dataset.poc;
+        el.querySelectorAll('.poc-tab').forEach(b => b.classList.remove('poc-tab-active'));
+        btn.classList.add('poc-tab-active');
+        el.querySelectorAll('.poc-pane').forEach(p => p.style.display = 'none');
+        const pane = $('poc-pane-' + k); if (pane) pane.style.display = 'block';
+      });
+    });
   }
 
   function showDonePanel(d) {

