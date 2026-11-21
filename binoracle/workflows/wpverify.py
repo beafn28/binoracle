@@ -5580,6 +5580,12 @@ def verify_wordpress_sqli(
             res.verified = True
             res.ok = True
             res.evidence["tecnica"] = "boolean-blind-differential"
+            # Capture TRUE/FALSE response sizes for report generation
+            _winning_pair = next((e for e in bool_tried if e.get("difiere") and e.get("true_coincide_con_base")), None)
+            if _winning_pair:
+                res.evidence["respuesta_true_len"] = _winning_pair.get("len_true", 0)
+                res.evidence["respuesta_false_len"] = _winning_pair.get("len_false", 0)
+                res.evidence["payload_ganador"] = _winning_pair.get("true", "")
             res.detail = (f"SQLI probable (boolean-blind, diferencial): {consistent_diffs}/"
                           f"{len(pairs)} pares TRUE/FALSE mostraron una diferencia consistente de "
                           f"respuesta (y el caso TRUE se comporto como la peticion de control) -- "

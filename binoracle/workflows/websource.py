@@ -2822,6 +2822,157 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
     return results
 
 
+def find_missing_auth_handlers(local_path: str) -> List[dict]:
+    """Escaner estructural de handlers AJAX con problemas de autorizacion en plugins WP.
+
+    Para cada accion registrada con add_action('wp_ajax_...' / 'wp_ajax_nopriv_...'):
+    1. ¿El handler contiene check_ajax_referer/wp_verify_nonce antes del codigo principal?
+    2. ¿El handler contiene current_user_can() con una capability?
+    3. ¿El hook usa wp_ajax_nopriv_* (cualquier usuario, incluidos anonimos)?
+    4. ¿El handler usa $_POST/$_GET/$_REQUEST directamente en $wpdb / update_user_meta /
+       wp_update_user / delete_user / wp_set_password / etc. sin sanitizar?
+
+    Devuelve lista de {action, handler_fn, file, line, nopriv, has_nonce_check,
+    has_capability_check, has_unsanitized_sensitive, issues:[str]} ordenada por
+    numero de issues descendente (los mas graves primero).
+
+    No depende del LLM — es analisis estatico puro. Especialmente util para HUECO CVEs
+    de clase missing-authorization/auth-bypass/idor."""
+    if not local_path or not os.path.isdir(local_path):
+        return []
+
+    _MAX_FILES = 6000
+    _MAX_BYTES = 500_000
+
+    # Registro de acciones AJAX
+    _AJAX_REG  = re.compile(
+        r"""add_action\s*\(\s*['"]wp_ajax_(nopriv_)?([A-Za-z0-9_]+)['"]\s*,\s*"""
+        r"""(?:['"]([\w\\:]+)['"]|array\s*\([^)]{0,80}['\"]([\w\\:]+)['\"])""",
+        re.S,
+    )
+    # Chequeos de nonce
+    _NONCE_CHECK = re.compile(
+        r"""\b(?:check_ajax_referer|wp_verify_nonce|check_admin_referer)\s*\(""", re.I)
+    # Chequeos de capability
+    _CAP_CHECK   = re.compile(r"""\bcurrent_user_can\s*\(""", re.I)
+    # Funciones sensibles en las que el input sin sanitizar es critico
+    _SENSITIVE_FNS = re.compile(
+        r"""\b(?:wp_update_user|update_user_meta|wp_set_password|delete_user|"""
+        r"""remove_user_from_blog|add_user_to_blog|set_role|wp_insert_user|"""
+        r"""update_option|delete_option|wp_mail|do_shortcode|wp_schedule_event)\s*\(""",
+        re.I,
+    )
+    # Input sin sanitizar (variable que viene de $_POST/$_GET sin pasar por sanitize/absint/intval)
+    _RAW_INPUT   = re.compile(
+        r"""\$_(?:POST|GET|REQUEST)\s*\[\s*['"]([\w\-]+)['"]\s*\]""", re.I)
+    _SANITIZERS  = re.compile(
+        r"""\b(?:sanitize_text_field|sanitize_textarea_field|sanitize_email|"""
+        r"""sanitize_key|absint|intval|floatval|esc_sql|wp_kses|wp_kses_post|"""
+        r"""strip_tags|htmlspecialchars|filter_input|filter_var)\s*\(""",
+        re.I,
+    )
+
+    all_texts: dict = {}
+    # Primera pasada: leer todos los archivos PHP
+    scanned = 0
+    for dirpath, _dirs, files in os.walk(local_path):
+        if "node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for fn in sorted(files):
+            if not fn.lower().endswith(".php"):
+                continue
+            scanned += 1
+            if scanned > _MAX_FILES:
+                break
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                    all_texts[fp] = fh.read(_MAX_BYTES)
+            except OSError:
+                continue
+        if scanned > _MAX_FILES:
+            break
+
+    # Segunda pasada: encontrar registros AJAX y analizar sus handlers
+    results: list = []
+    seen_actions: set = set()
+
+    for fp, text in all_texts.items():
+        for m in _AJAX_REG.finditer(text):
+            nopriv_flag = bool(m.group(1))
+            action_name = m.group(2)
+            handler_fn  = (m.group(3) or m.group(4) or "").strip("\\")
+            if not handler_fn or action_name in seen_actions:
+                continue
+            seen_actions.add(action_name)
+
+            # Localizar el cuerpo del handler
+            handler_text = ""
+            handler_file = os.path.relpath(fp, local_path)
+            handler_line = 0
+            # Buscar en todos los archivos por el nombre de función
+            _fn_simple = handler_fn.split("::")[-1].split("->")[-1]
+            _fn_re = re.compile(
+                rf"""function\s+{re.escape(_fn_simple)}\s*\(""", re.I)
+            for _sfp, _stext in all_texts.items():
+                _fm = _fn_re.search(_stext)
+                if _fm:
+                    handler_line = _stext[:_fm.start()].count('\n') + 1
+                    # Extract ~60 lines after function definition
+                    _lines = _stext[_fm.start():].split('\n')[:60]
+                    handler_text = '\n'.join(_lines)
+                    handler_file = os.path.relpath(_sfp, local_path)
+                    break
+
+            if not handler_text:
+                # Fallback: use the registration file text near the hook
+                handler_text = text
+                handler_file = os.path.relpath(fp, local_path)
+
+            has_nonce   = bool(_NONCE_CHECK.search(handler_text))
+            has_cap     = bool(_CAP_CHECK.search(handler_text))
+            # Check unsanitized raw input going to sensitive functions
+            has_unsanitized_sensitive = False
+            raw_params = _RAW_INPUT.findall(handler_text)
+            if raw_params:
+                # Simple heuristic: sensitive function in same function body AND
+                # no sanitizer wrapping the input
+                has_sensitive = bool(_SENSITIVE_FNS.search(handler_text))
+                has_sanitizer = bool(_SANITIZERS.search(handler_text))
+                has_unsanitized_sensitive = has_sensitive and not has_sanitizer
+
+            issues: list = []
+            if not has_nonce:
+                issues.append("no_nonce_check")
+            if not has_cap and not nopriv_flag:
+                issues.append("no_capability_check")
+            if nopriv_flag:
+                issues.append("nopriv_access")
+            if has_unsanitized_sensitive:
+                issues.append("unsanitized_sensitive_fn")
+
+            results.append({
+                "action": action_name,
+                "handler_fn": handler_fn,
+                "file": handler_file,
+                "line": handler_line,
+                "nopriv": nopriv_flag,
+                "has_nonce_check": has_nonce,
+                "has_capability_check": has_cap,
+                "has_unsanitized_sensitive": has_unsanitized_sensitive,
+                "issues": issues,
+                "n_issues": len(issues),
+            })
+
+    # Sort: most issues first, nopriv without nonce highest priority
+    results.sort(key=lambda r: (
+        -(r["n_issues"]),
+        0 if (r["nopriv"] and not r["has_nonce_check"]) else 1,
+        0 if not r["has_capability_check"] else 1,
+    ))
+    return results
+
+
 # ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────
 
 def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,

@@ -522,6 +522,90 @@ _REFINE_SYS = (
     "no inventes. Se exacto: un nombre mal copiado hace que la peticion real falle."
 )
 
+# Sistema de análisis de código para CVEs HUECO (sin PoC público).
+# A diferencia de _REFINE_SYS (que presupone que ya tenemos la función grounded),
+# este prompt parte del código encontrado por el escáner taint y deriva el exploit
+# desde cero leyendo el código real — el LLM actúa como analista que lee el código
+# del plugin por primera vez, igual que haría un investigador profesional.
+_HUECO_SQLI_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/research). "
+    "Te doy el codigo PHP REAL de un plugin de WordPress en el que el escaner taint ha "
+    "detectado una variable de peticion HTTP que llega a $wpdb sin pasar por prepare(). "
+    "No hay PoC publico: TU derivas el exploit leyendo el codigo real. "
+    "SOLO razonas desde el codigo — nunca inventas datos. "
+    "Responde SOLO con JSON valido con las claves: "
+    "ajax_action (string EXACTO en add_action('wp_ajax_...' o 'wp_ajax_nopriv_...'), "
+    "vacio si es endpoint REST), "
+    "rest_route (ruta REST EXACTA de register_rest_route() si es REST, vacio si no), "
+    "http_method (GET o POST segun la superglobal del parametro vulnerable), "
+    "sqli_param (nombre EXACTO del parametro que llega a la query SQL sin prepare), "
+    "auth_required (none si wp_ajax_nopriv_ o sin check_ajax_referer/capability; "
+    "subscriber si hay check_ajax_referer pero cualquier usuario logueado puede; "
+    "editor o admin si exige un rol especifico), "
+    "sqli_technique (error-based si ves error_reporting o display_errors; "
+    "union-based si la query devuelve datos seleccionables; "
+    "boolean-blind si solo cambia algo en la respuesta; "
+    "time-based como ultimo recurso), "
+    "payload_hint (payload minimo de prueba, p.ej. '1 AND extractvalue(1,concat(0x7e,version()))' "
+    "para error-based, '1 AND 1=1' vs '1 AND 1=2' para boolean-blind), "
+    "parameters (lista de TODOS los parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
+    "reasoning (una linea explicando por que la vulnerabilidad existe en este codigo). "
+    "Se exacto: un nombre mal copiado hace que el PoC falle."
+)
+
+_HUECO_XSS_SYS = (
+    "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/research). "
+    "Te doy el codigo PHP REAL de un plugin de WordPress con un XSS almacenado potencial. "
+    "No hay PoC publico: TU derivas el exploit leyendo el codigo real. "
+    "SOLO razonas desde el codigo — nunca inventas datos. "
+    "Responde SOLO con JSON valido con las claves: "
+    "inject_action (accion AJAX o REST donde se inyecta el payload, string EXACTO), "
+    "inject_param (nombre EXACTO del parametro que se guarda sin sanitizar), "
+    "http_method (GET o POST), "
+    "view_path (URL o pagina de admin donde se renderiza el dato sin escapar), "
+    "auth_required (none, subscriber, editor, admin), "
+    "payload (payload XSS minimo, p.ej. '<script>alert(1)</script>'), "
+    "reasoning (una linea explicando donde falla la sanitizacion)."
+)
+
+_HUECO_MISSING_AUTH_SYS = (
+    "Eres un auditor de seguridad ofensiva para objetivos AUTORIZADOS (pentest/research). "
+    "Te paso codigo PHP REAL de un plugin de WordPress con un posible problema de control "
+    "de acceso (missing authorization / IDOR). No hay PoC publico: TU derivas el exploit "
+    "leyendo el codigo real. SOLO razonas desde el codigo — nunca inventas datos. "
+    "\n\n"
+    "Para cada accion registrada con add_action('wp_ajax_...') o add_action('wp_ajax_nopriv_...') "
+    "analiza en este orden:\n"
+    "1. ¿Existe check_ajax_referer() o wp_verify_nonce() ANTES de procesar la peticion? "
+    "   (un nonce ausente = la peticion es falsificable desde cualquier pagina)\n"
+    "2. ¿Existe current_user_can() con una capability adecuada al efecto del handler? "
+    "   (ausencia = cualquier usuario logueado puede ejecutar la accion)\n"
+    "3. Si el hook es wp_ajax_nopriv_*, ¿esta justificado que usuarios NO autenticados accedan? "
+    "   ¿O deberia ser solo wp_ajax_* porque el handler modifica datos/config del sitio?\n"
+    "4. ¿Los parametros de entrada ($_POST/$_GET) se sanitizan (sanitize_text_field, absint...) "
+    "   antes de usarse en consultas o logica de negocio?\n"
+    "5. ¿El handler permite actuar sobre un ID arbitrario (user_id, post_id, order_id) sin "
+    "   comprobar que el usuario actual tiene permiso sobre ESE recurso en concreto (IDOR), "
+    "   mas alla del check de capability general?\n"
+    "\n"
+    "Responde SOLO con JSON valido con las claves: "
+    "ajax_action (accion AJAX EXACTA con el fallo de autorizacion mas explotable), "
+    "http_method (GET o POST), "
+    "parameters (lista EXACTA de parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
+    "capability_missing (capability que DEBERIA chequearse pero no se chequea, "
+    "p.ej. 'edit_users', 'manage_options', vacio si no aplica), "
+    "nonce_check_present (true/false: si check_ajax_referer/wp_verify_nonce existe ANTES del codigo vulnerable), "
+    "auth_required (none si wp_ajax_nopriv_ sin restriccion; subscriber si wp_ajax_ sin capability; "
+    "editor/admin si exige rol especifico), "
+    "idor_id_param (nombre del parametro ID arbitrario si hay IDOR, vacio si no), "
+    "sanitization_missing (true/false: si algun parametro se usa sin sanitizar), "
+    "attack_goal (que hace el handler: delete_user, change_email, escalate_role, read_data, "
+    "modify_config, privilege_escalation, etc.), "
+    "severity (critical/high/medium segun el impacto real del handler), "
+    "reasoning (una linea ESPECIFICA explicando el fallo de autorizacion citando el codigo). "
+    "Se exacto: un nombre mal copiado hace que el PoC falle."
+)
+
 
 # tope del bucle de aprendizaje-y-reintento (1 intento inicial + como mucho esto-1 reintentos
 # sugeridos por el LLM) -- acotado a proposito: cada intento levanta un laboratorio Docker real
@@ -2950,6 +3034,269 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
     return out or None
 
 
+def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es: bool) -> None:
+    """Para CVEs HUECO (sin PoC publico): analiza el codigo fuente real del plugin
+    para fundamentar la hipotesis en evidencia concreta ANTES de intentar la verificacion.
+
+    Estrategia por clase de vulnerabilidad:
+    - sqli/sql-injection: escaner taint (find_unsanitized_sqli_params) → codigo real
+      → LLM con _HUECO_SQLI_SYS → sqli_param/endpoint/technique grounded
+    - xss: find_stored_xss_endpoint → codigo real → LLM con _HUECO_XSS_SYS
+    - missing-authorization/auth-bypass/idor: find_all_ajax_actions → codigo del handler
+      → LLM con _HUECO_MISSING_AUTH_SYS
+
+    Muta inv.llm_notes y inv.source_grounding con los datos derivados del codigo real.
+    Solo se activa cuando inv.is_gap=True y el codigo se pudo descargar."""
+    if not getattr(inv, "is_gap", False):
+        return
+    if not fr.ok or not fr.local_path:
+        return
+    if llm is None or not getattr(llm, "available", lambda: False)():
+        return
+
+    from .websource import (find_unsanitized_sqli_params, find_stored_xss_endpoint,
+                             find_all_ajax_actions, find_ajax_handler_function,
+                             find_missing_auth_handlers)
+    from ..llm.base import Message
+
+    vc     = inv.vuln_class or ""
+    notes  = inv.llm_notes
+    lpath  = fr.local_path
+
+    def _read_snippet(rel_file: str, line_no: int, ctx: int = 35) -> str:
+        """Lee ctx lineas alrededor de line_no en rel_file (ruta relativa a lpath)."""
+        try:
+            fp = os.path.join(lpath, rel_file)
+            with open(fp, encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+            lo = max(0, line_no - 5)
+            hi = min(len(lines), line_no + ctx)
+            return f"# {rel_file} (linea {line_no})\n" + "".join(lines[lo:hi])
+        except OSError:
+            return ""
+
+    # ------------------------------------------------------------------ SQLi
+    if vc in ("sqli", "sql-injection") and not notes.get("endpoint"):
+        taint_hits = find_unsanitized_sqli_params(lpath)
+        if not taint_hits:
+            return
+
+        taint = taint_hits[0]
+        step((f"[HUECO] escaner taint encontro param inyectable: "
+              f"'{taint['param']}' en {taint.get('file','?')}:{taint.get('line','?')} "
+              f"(hook: {taint.get('hook', '?')})") if es else
+             (f"[HUECO] taint scanner found injectable param: "
+              f"'{taint['param']}' at {taint.get('file','?')}:{taint.get('line','?')} "
+              f"(hook: {taint.get('hook', '?')})"))
+
+        # Register extra candidates as alt_endpoints for automatic 404-pivot retry
+        if len(taint_hits) > 1 and not notes.get("alt_endpoints"):
+            _alts: list = []
+            for _t in taint_hits[1:]:
+                _h = _t.get("hook", "")
+                if _h:
+                    _alts.append({"endpoint": _h, "parameters": [_t["param"]]})
+            if _alts:
+                inv.llm_notes["alt_endpoints"] = _alts
+
+        # Apply taint hit directly to notes (before LLM call)
+        taint_hook = taint.get("hook", "")
+        if taint_hook and not notes.get("endpoint"):
+            _set_endpoint_with_confidence(notes, taint_hook, "taint_tracking", step=step)
+            inv.llm_notes["endpoint"]   = notes.get("endpoint", taint_hook)
+            inv.llm_notes["sqli_param"] = taint["param"]
+            inv.llm_notes["http_method"] = (
+                "POST" if ("action=" in taint_hook or "/wp-admin/" in taint_hook) else "GET")
+            if "action=" in taint_hook:
+                _am = re.search(r"action=([A-Za-z0-9_]+)", taint_hook)
+                if _am:
+                    inv.llm_notes["ajax_action"] = _am.group(1)
+
+        # Populate source_grounding from taint scan so _refine_web_hints_from_source
+        # and the report's grounding block both see evidence.
+        _fn_name = taint.get("fn", "").split("→")[0].strip() or taint.get("file", "?")
+        inv.source_grounding.setdefault("found", {})[_fn_name] = [
+            f"{taint.get('file','?')}:{taint.get('line', 0)}"]
+        inv.source_grounding.setdefault("not_found", [])
+
+        # LLM second-pass: read the actual vulnerable code and derive precise exploit
+        snippet = _read_snippet(taint.get("file", ""), taint.get("line", 0))
+        if not snippet:
+            return
+        try:
+            raw = llm.chat([
+                Message("system", _HUECO_SQLI_SYS),
+                Message("user", (
+                    f"CVE: {inv.cve_id}\n"
+                    f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
+                    f"Parametro taintado encontrado por escaner: '{taint['param']}'\n"
+                    f"Hook/endpoint detectado: {taint_hook or '(desconocido)'}\n\n"
+                    f"=== CODIGO REAL DEL PLUGIN ===\n```php\n{snippet[:4000]}\n```\n\n"
+                    f"Extrae los datos exactos del exploit en JSON."
+                )),
+            ], json_mode=True)
+            hint = json.loads(raw)
+        except Exception as _exc:
+            step((f"[HUECO] analisis LLM SQLi: {_exc}") if es else
+                 (f"[HUECO] LLM SQLi analysis: {_exc}"))
+            return
+
+        # Apply LLM hints (only fill gaps — do not overwrite analyst-supplied data)
+        changed: list = []
+        _action = (hint.get("ajax_action") or "").strip()
+        _route  = (hint.get("rest_route") or "").strip()
+        if _action and not notes.get("ajax_action"):
+            _ep = f"/wp-admin/admin-ajax.php?action={_action}"
+            _set_endpoint_with_confidence(notes, _ep, "hueco_llm_code", step=step)
+            inv.llm_notes["endpoint"]    = notes.get("endpoint", _ep)
+            inv.llm_notes["ajax_action"] = _action
+            changed.append(f"action={_action}")
+        elif _route and not notes.get("endpoint"):
+            _set_endpoint_with_confidence(notes, _route, "hueco_llm_code", step=step)
+            inv.llm_notes["endpoint"] = notes.get("endpoint", _route)
+            changed.append(f"rest_route={_route}")
+        if hint.get("http_method") and not notes.get("http_method"):
+            inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+            changed.append(f"method={inv.llm_notes['http_method']}")
+        _sp = (hint.get("sqli_param") or "").strip()
+        if _sp and not notes.get("sqli_param"):
+            inv.llm_notes["sqli_param"] = _sp
+            changed.append(f"sqli_param={_sp}")
+        _tech = (hint.get("sqli_technique") or "").strip()
+        if _tech and not notes.get("sqli_technique"):
+            inv.llm_notes["sqli_technique"] = _tech
+            changed.append(f"technique={_tech}")
+        _ph = (hint.get("payload_hint") or "").strip()
+        if _ph:
+            inv.llm_notes["hueco_payload_hint"] = _ph
+        if hint.get("parameters") and not notes.get("parameters"):
+            inv.llm_notes["parameters"] = hint["parameters"]
+        _auth = (hint.get("auth_required") or "").strip()
+        if _auth and not notes.get("auth_required"):
+            inv.llm_notes["auth_required"] = _auth
+        if hint.get("reasoning"):
+            inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+        if changed:
+            step((f"[HUECO] analisis de codigo SQLi: {', '.join(changed)} -- "
+                  f"razon: {hint.get('reasoning','(ver codigo)')[:120]}") if es else
+                 (f"[HUECO] SQLi code analysis: {', '.join(changed)} -- "
+                  f"reason: {hint.get('reasoning','(see code)')[:120]}"))
+
+    # ------------------------------------------------------------------ XSS
+    elif vc in ("xss", "cross-site-scripting", "stored-xss") and not notes.get("endpoint"):
+        xss = find_stored_xss_endpoint(lpath)
+        if not xss:
+            return
+        step((f"[HUECO] escaner XSS: inject_action='{xss.get('inject_action','?')}' "
+              f"param='{xss.get('inject_param','?')}'") if es else
+             (f"[HUECO] XSS scanner: inject_action='{xss.get('inject_action','?')}' "
+              f"param='{xss.get('inject_param','?')}'"))
+        _ia = (xss.get("inject_action") or "").strip()
+        _ip = (xss.get("inject_param") or "").strip()
+        if _ia:
+            _ep = f"/wp-admin/admin-ajax.php?action={_ia}"
+            inv.llm_notes["endpoint"]    = _ep
+            inv.llm_notes["ajax_action"] = _ia
+            inv.llm_notes["http_method"] = "POST"
+        if _ip:
+            inv.llm_notes["xss_param"] = _ip
+        if xss.get("view_path"):
+            inv.llm_notes["xss_view_path"] = xss["view_path"]
+
+    # ------------------------------------------------------------------ Missing-auth / IDOR / auth-bypass
+    elif vc in ("missing-authorization", "idor", "auth-bypass") and not notes.get("endpoint"):
+        # Structural scanner: find AJAX handlers sorted by number of auth issues
+        # (no nonce, no capability, nopriv, unsanitized sensitive input).
+        auth_hits = find_missing_auth_handlers(lpath)
+        if not auth_hits:
+            return
+        step((f"[HUECO] escaner auth: {len(auth_hits)} handlers AJAX, el mas critico: "
+              f"action='{auth_hits[0]['action']}' issues={auth_hits[0]['issues']}") if es else
+             (f"[HUECO] auth scanner: {len(auth_hits)} AJAX handlers, most critical: "
+              f"action='{auth_hits[0]['action']}' issues={auth_hits[0]['issues']}"))
+
+        # Build alt_endpoints from all candidates with issues
+        _auth_alts = [
+            {"endpoint": f"/wp-admin/admin-ajax.php?action={h['action']}",
+             "parameters": [], "_issues": h["issues"]}
+            for h in auth_hits[1:8]
+            if h.get("n_issues", 0) > 0
+        ]
+        if _auth_alts and not notes.get("alt_endpoints"):
+            inv.llm_notes["alt_endpoints"] = _auth_alts
+
+        for _hit in auth_hits[:3]:
+            _cand = _hit["action"]
+            # Get handler code
+            _rec = find_ajax_handler_function(lpath, _cand)
+            if _rec:
+                _snippet = _read_snippet(
+                    _rec.get("location", "").split(":")[0],
+                    int(_rec.get("location", ":0").split(":")[-1] or 0))
+            else:
+                _snippet = ""
+            if not _snippet:
+                continue
+
+            # Build a structured audit report from the scanner to include in the prompt
+            _audit_lines = [
+                f"Resultado del escaner estatico para action='{_cand}':",
+                f"  - nopriv (anonimo): {_hit['nopriv']}",
+                f"  - check_ajax_referer/wp_verify_nonce: {_hit['has_nonce_check']}",
+                f"  - current_user_can: {_hit['has_capability_check']}",
+                f"  - input sin sanitizar en funcion sensible: {_hit['has_unsanitized_sensitive']}",
+                f"  - issues: {', '.join(_hit['issues']) or 'ninguno'}",
+            ]
+            _audit_str = '\n'.join(_audit_lines)
+
+            try:
+                raw = llm.chat([
+                    Message("system", _HUECO_MISSING_AUTH_SYS),
+                    Message("user", (
+                        f"CVE: {inv.cve_id}\n"
+                        f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
+                        f"{_audit_str}\n\n"
+                        f"=== CODIGO DEL HANDLER '{_cand}' ===\n```php\n{_snippet[:3500]}\n```\n\n"
+                        f"Analiza usando el checklist del sistema. Extrae datos del exploit en JSON."
+                    )),
+                ], json_mode=True)
+                hint = json.loads(raw)
+            except Exception:
+                continue
+
+            _a2 = (hint.get("ajax_action") or _cand).strip()
+            if _a2:
+                _ep2 = f"/wp-admin/admin-ajax.php?action={_a2}"
+                inv.llm_notes["endpoint"]    = _ep2
+                inv.llm_notes["ajax_action"] = _a2
+                inv.llm_notes["http_method"] = str(hint.get("http_method", "POST")).upper()
+                if hint.get("parameters"):
+                    inv.llm_notes["parameters"] = hint["parameters"]
+                if hint.get("idor_id_param"):
+                    inv.llm_notes["idor_id_param"] = hint["idor_id_param"]
+                if hint.get("capability_missing"):
+                    inv.llm_notes["hueco_capability_missing"] = hint["capability_missing"]
+                if hint.get("reasoning"):
+                    inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                if hint.get("attack_goal"):
+                    inv.llm_notes["hueco_attack_goal"] = hint["attack_goal"]
+                if _rec:
+                    inv.source_grounding.setdefault("found", {})[_rec.get("function", _a2)] = [
+                        _rec.get("location", "")]
+                    inv.source_grounding.setdefault("not_found", [])
+                step((f"[HUECO] analisis auth-bypass: action='{_a2}' "
+                      f"goal='{hint.get('attack_goal','?')}' "
+                      f"nonce={hint.get('nonce_check_present','?')} "
+                      f"cap={hint.get('capability_missing','?')} "
+                      f"razon: {hint.get('reasoning','')[:80]}") if es else
+                     (f"[HUECO] auth-bypass analysis: action='{_a2}' "
+                      f"goal='{hint.get('attack_goal','?')}' "
+                      f"nonce={hint.get('nonce_check_present','?')} "
+                      f"cap={hint.get('capability_missing','?')} "
+                      f"reason: {hint.get('reasoning','')[:80]}"))
+                break  # found a good candidate
+
+
 _POC_TEXT_EXT = (".py", ".php", ".js", ".sh", ".md", ".txt", ".rb", ".pl", ".json", ".yml", ".yaml")
 _POC_MAX_FILES = 12
 _POC_MAX_BYTES_PER_FILE = 20_000
@@ -5118,12 +5465,29 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # dinamica de WordPress (antes solo existia para SQLi) -- ver keep_lab_on_failure
             # en wpverify.py/_finalize_lab.
             keep_lab_on_failure = bool(notes.get("keep_lab_on_failure"))
+            # HUECO path: when no public exploit exists, derive the attack from the real
+            # source code BEFORE grounding — the taint scanner finds the vulnerable
+            # parameter/endpoint deterministically, then the LLM reasons from actual PHP
+            # code (not just the NVD description) to produce a precise exploit hypothesis.
+            # This runs for ALL HUECO CVEs regardless of whether the LLM guessed function
+            # names, so the subsequent grounding + refinement steps work from real evidence.
+            if inv.is_gap and llm and fr.ok and fr.local_path:
+                _hueco_code_analysis(inv, fr, llm, step, es)
+                notes = inv.llm_notes   # re-bind after potential update
+                fn_names = notes.get("vulnerable_functions") or []
+                if isinstance(fn_names, str):
+                    fn_names = [fn_names]
             if fn_names:
                 step("confirmando en el codigo real las funciones citadas por el LLM..." if es else
                      "confirming the LLM-cited functions in the real source...")
                 g = grep_vulnerable_functions(fr.local_path, fn_names)
+                _grep_found = {k: [f"{m.file}:{m.line}" for m in v] for k, v in g["found"].items()}
+                # Preserve HUECO grounding from code analysis (taint scanner) if grep found
+                # nothing — the LLM's guessed function names may be wrong but the taint-found
+                # function is real code evidence we do not want to discard.
+                _hueco_grounding = (inv.source_grounding or {}).get("found") or {}
                 inv.source_grounding = {
-                    "found": {k: [f"{m.file}:{m.line}" for m in v] for k, v in g["found"].items()},
+                    "found": _grep_found if _grep_found else _hueco_grounding,
                     "not_found": g["not_found"],
                 }
                 for name, locs in inv.source_grounding["found"].items():
@@ -6805,9 +7169,26 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          (f"endpoint locked (poc/analyst lock): "
                           f"retry loop cannot change it -- {notes.get('endpoint')}"))
                 _sqli_signal_acc = _PartialSignalAccumulator()
+                # HUECO: enrich the retry system prompt with code-analysis context so the
+                # LLM can reason from actual PHP code, not just the HTTP response.
+                _sqli_retry_sys_wp = _SQLI_RETRY_SYS
+                if inv.is_gap and (notes.get("hueco_reasoning") or notes.get("hueco_payload_hint")):
+                    _hueco_ctx = ""
+                    if notes.get("hueco_reasoning"):
+                        _hueco_ctx += (f"\n\nContexto HUECO (sin PoC publico): el analisis "
+                                       f"estatico del codigo determino que el parametro vulnerable "
+                                       f"es '{notes.get('sqli_param','?')}' (taint confirmado). "
+                                       f"Razon tecnica del analisis: "
+                                       f"{notes.get('hueco_reasoning','')[:200]}.")
+                    if notes.get("hueco_payload_hint"):
+                        _hueco_ctx += (f" Payload sugerido por analisis: "
+                                       f"'{notes['hueco_payload_hint'][:100]}'.")
+                    _hueco_ctx += (" Razona desde el codigo real del plugin para corregir el "
+                                   "intento — no desde un PoC publico (no existe).")
+                    _sqli_retry_sys_wp = _SQLI_RETRY_SYS.rstrip() + _hueco_ctx
                 wr = _retry_or_keep_lab_alive(
                     keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
-                        llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
+                        llm, step, es, _sqli_retry_sys_wp, _SQLI_RETRY_EVIDENCE_KEYS, _attempt_sqli,
                         wr, notes.get("endpoint"), sqli_p, technique_label="SQLi WordPress",
                         max_attempts=_SQLI_RETRY_MAX_ATTEMPTS, on_suggestion=_on_sqli_suggestion,
                         ere_nonce_pages=extra_nonce_pages,

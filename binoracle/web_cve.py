@@ -208,6 +208,7 @@ def _start_job(cve_id: str, config) -> _Job:
                 "poc_source": getattr(inv, "poc_source_used", ""),
                 "affected_version": sf.get("resolved_version", ""),
                 "exploit_poc": _dv.get("exploit_poc", {}),
+                "markdown_report": getattr(inv, "markdown_report", "") or "",
                 "cve_intel": {
                     "sources": inv.llm_notes.get("cve_intel", {}).get("sources", {}),
                     "cvss": inv.llm_notes.get("cve_intel", {}).get("cvss_score"),
