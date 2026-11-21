@@ -2551,17 +2551,46 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
     if not local_path or not os.path.isdir(local_path):
         return []
 
-    # Patron 1: asignacion directa $var = $_GET/POST/REQUEST['param']
+    # Patron 1a: asignacion directa $var = $_GET/POST/REQUEST['param']
     _TAINT_ASSIGN = re.compile(
         r"""\$([A-Za-z_]\w*)\s*=\s*(?:sanitize_text_field\s*\(\s*wp_unslash\s*\(\s*)?"""
         r"""\$_(GET|POST|REQUEST)\s*\[\s*['"]([\w\-]+)['"]\s*\]""",
         re.I,
     )
-    # Patron 2: uso directo en query: aparece $var dentro de una string SQL de $wpdb->
+    # Patron 1b: REST API — $var = $request['param'] or $request->get_param('param')
+    # sanitize_params_submitted/sanitize_text_field wrapping still tainted (doesn't strip SQL chars)
+    _REST_PARAM_ASSIGN = re.compile(
+        r"""\$([A-Za-z_]\w*)\s*=\s*"""
+        r"""(?:[A-Za-z_][\w\\]*(?:::[A-Za-z_]\w*)?\s*\([^)]{0,80})?\s*"""
+        r"""(?:\$request\s*\[\s*['"]([\w\-]+)['"]\s*\]"""
+        r"""|\$request\s*->\s*get_param\s*\(\s*['"]([\w\-]+)['"]\s*\))""",
+        re.S | re.I,
+    )
+    # Patron 1c: $filter->prop = fn($request['param']) — taint through filter object
+    # ORDER BY p.{$filter->order_by} in execute() is the classic sink (CVE-2022-45808)
+    _FILTER_PROP_ASSIGN = re.compile(
+        r"""\$(?:filter|this)\s*->\s*([A-Za-z_]\w*)\s*=\s*"""
+        r"""(?:[A-Za-z_][\w\\]*(?:::[A-Za-z_]\w*)?\s*\([^)]{0,120})?\s*"""
+        r"""(?:\$request\s*\[\s*['"]([\w\-]+)['"]\s*\]"""
+        r"""|\$request\s*->\s*get_param\s*\(\s*['"]([\w\-]+)['"]\s*\))""",
+        re.S | re.I,
+    )
+    # Patron 2a: uso directo en query raw (sin prepare)
     _WPDB_QUERY = re.compile(
         r"""\$wpdb\s*->\s*(?:query|get_results|get_row|get_col|get_var)\s*\("""
         r"""\s*["\'][^"\']{0,600}""",
         re.S,
+    )
+    # Patron 2b: prepare() con interpolacion directa {$var} — prepare NO protege vars interpoladas
+    _WPDB_PREPARE_INTERP = re.compile(
+        r"""\$wpdb\s*->\s*prepare\s*\(\s*["\']"""
+        r"""[^"\']{0,800}\{\s*\$([A-Za-z_]\w*)\s*\}""",
+        re.S,
+    )
+    # Patron 2c: ORDER BY .{$var} en cualquier string (dentro o fuera de prepare)
+    _ORDERBY_INTERP = re.compile(
+        r"""ORDER\s+BY\s+[^"\';\n]{0,40}\{\s*\$([A-Za-z_]\w*)\s*\}""",
+        re.S | re.I,
     )
     # Patron 3: hook AJAX o REST en el mismo archivo (para saber el endpoint)
     _AJAX_HOOK = re.compile(
@@ -2603,16 +2632,69 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
 
     # Segunda pasada: detectar asignaciones tainted y queries vulnerables
     for fp, text in all_texts.items():
-            # Paso 1: recoger todas las asignaciones tainted en este archivo
+            # Paso 1a: $_GET/$_POST/$_REQUEST taint
             tainted: dict = {}  # var_name -> param_name
             for m in _TAINT_ASSIGN.finditer(text):
                 var, _src, param = m.group(1), m.group(2), m.group(3)
                 tainted[var] = param
 
-            if not tainted:
+            # Paso 1b: REST $request['param'] taint
+            for m in _REST_PARAM_ASSIGN.finditer(text):
+                var = m.group(1)
+                param = m.group(2) or m.group(3) or ""
+                if var and param:
+                    tainted[var] = param
+
+            # Paso 1c: $filter->prop = fn($request['param']) — registrar (prop_name, param_name)
+            filter_props: dict = {}  # filter_prop -> http_param_name
+            for m in _FILTER_PROP_ASSIGN.finditer(text):
+                prop = m.group(1)
+                param = m.group(2) or m.group(3) or ""
+                if prop and param:
+                    filter_props[prop] = param
+
+            if not tainted and not filter_props:
                 continue
 
-            # Paso 2: buscar queries que contienen esas variables tainted sin prepare()
+            # Paso 1d: buscar ORDER BY {$prop} donde prop está en filter_props
+            # Esto detecta sinks cross-file: file A establece $filter->order_by desde request,
+            # file B tiene ORDER BY p.{$order_by}. Escaneamos TODOS los archivos para el sink.
+            if filter_props:
+                for _sfp, _stext in all_texts.items():
+                    for m_ob in _ORDERBY_INTERP.finditer(_stext):
+                        sink_var = m_ob.group(1)
+                        # ¿sink_var es una propiedad de filter que está tainted?
+                        param = filter_props.get(sink_var)
+                        if not param:
+                            # Buscar si sink_var = $filter->prop_name en este archivo
+                            _prop_read = re.search(
+                                rf"""\${re.escape(sink_var)}\s*=\s*\$(?:filter|this)\s*->\s*([A-Za-z_]\w*)""",
+                                _stext,
+                            )
+                            if _prop_read:
+                                param = filter_props.get(_prop_read.group(1))
+                        if not param:
+                            continue
+                        # Encontrar hook/endpoint para el archivo fuente (fp, donde se asigna)
+                        line_no = text.count('\n', 0, 0) + 1
+                        pair_key = (fp, param)
+                        if pair_key not in seen_pairs:
+                            seen_pairs.add(pair_key)
+                            # Buscar el endpoint en el archivo donde se asigna $filter->prop
+                            _ep_hook = ""
+                            for _m_rr in _REST_HOOK.finditer(text):
+                                _ep_hook = f"/wp-json/{_m_rr.group(1).lstrip('/')}"
+                                break
+                            results.append({
+                                "param": param,
+                                "hook": _ep_hook,
+                                "file": os.path.relpath(fp, local_path),
+                                "line": line_no,
+                                "fn": f"filter->{list(filter_props.keys())[0]} → ORDER BY sink",
+                                "note": "cross-file: filter prop → ORDER BY interpolation",
+                            })
+
+            # Paso 2: buscar queries que contienen esas variables tainted
             for m_q in _WPDB_QUERY.finditer(text):
                 query_start = m_q.start()
                 # extraer el bloque hasta el cierre del paréntesis (heuristica)
@@ -2628,9 +2710,16 @@ def find_unsanitized_sqli_params(local_path: str) -> List[dict]:
                             break
                 query_block = text[query_start:query_end + 1]
 
-                # Verificar que NO usa prepare() en el mismo bloque (safe pattern)
+                # Verificar prepare(): solo seguro si la var va como placeholder %s/%d,
+                # NO si está interpolada con {$var} directamente en la string SQL.
                 if 'prepare' in query_block:
-                    continue
+                    # ¿Alguna variable tainted está interpolada (no como placeholder)?
+                    has_interp = any(
+                        f'{{${v}}}' in query_block or f'.${v}' in query_block
+                        for v in tainted
+                    )
+                    if not has_interp:
+                        continue  # uso correcto de prepare — no es vulnerable
 
                 # Buscar variables tainted dentro del query block
                 for var, param in tainted.items():

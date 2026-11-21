@@ -302,6 +302,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/export-pdf/"):
             job_id = path.split("/")[-1]
             self._export_pdf(job_id)
+        elif path == "/api/delete-failed":
+            self._delete_failed_history()
         elif path.startswith("/api/delete-history/"):
             job_id = path.split("/")[-1]
             self._delete_history(job_id)
@@ -474,6 +476,22 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"deleted": job_id})
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _delete_failed_history(self):
+        deleted = []
+        for fname in os.listdir(_HISTORY_DIR):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(_HISTORY_DIR, fname)
+            try:
+                with open(fpath, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                if rec.get("verified") is False:
+                    os.remove(fpath)
+                    deleted.append(fname.replace(".json", ""))
+            except Exception:
+                pass
+        self._send_json(200, {"deleted": deleted, "count": len(deleted)})
 
     def _json_result(self, job_id: str):
         with _jobs_lock:
@@ -1652,6 +1670,7 @@ main {
       <span>Investigation History <span id="hist-total-badge" style="font-size:10px;font-weight:400;color:var(--dim)"></span></span>
       <div style="display:flex;align-items:center;gap:6px">
         <button id="hist-filter-btn" title="Show only verified" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--dim);font-size:10px;padding:2px 7px;cursor:pointer;font-family:var(--sans);font-weight:600;transition:color .12s,border-color .12s">ALL</button>
+        <button id="hist-purge-btn" title="Delete all failed investigations" style="background:none;border:1px solid rgba(255,80,80,.35);border-radius:4px;color:rgba(255,100,100,.7);font-size:10px;padding:2px 7px;cursor:pointer;font-family:var(--sans);font-weight:600;transition:color .12s,border-color .12s">DEL FAIL</button>
         <button id="hist-close" title="Close">×</button>
       </div>
     </div>
@@ -2607,6 +2626,23 @@ main {
         } catch(err) { console.error('Delete error', err); }
       });
     });
+
+    // Purge all FAILed
+    const purgeBtn = $('hist-purge-btn');
+    if (purgeBtn) {
+      purgeBtn.onclick = async () => {
+        purgeBtn.disabled = true;
+        purgeBtn.textContent = '…';
+        try {
+          const r = await fetch('/api/delete-failed', {method: 'GET'});
+          const d = await r.json();
+          _histPage = 1;
+          await loadHistory(1);
+        } catch(err) { console.error('Purge error', err); }
+        purgeBtn.disabled = false;
+        purgeBtn.textContent = 'DEL FAIL';
+      };
+    }
 
     // Pagination buttons
     const prevBtn = $('hist-prev'), nextBtn = $('hist-next');
