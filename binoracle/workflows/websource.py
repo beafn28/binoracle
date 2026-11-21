@@ -2795,20 +2795,162 @@ def fetch_nvd_cve_details(cve_id: str, timeout: int = 20) -> dict:
     return result
 
 
+def fetch_wpscan_advisory(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch vulnerability details from WPScan Vulnerability Database (api.wpscan.com).
+    Returns advisory with affected_function, vulnerable_param, and PoC references."""
+    import urllib.request as _ur
+    import json as _j
+    result = {"ok": False, "source": "wpscan", "cve_id": cve_id}
+    try:
+        # WPScan public search endpoint (no API key needed for CVE lookup)
+        url = f"https://wpscan.com/api/v3/vulnerabilities/{cve_id}"
+        req = _ur.Request(url, headers={"User-Agent": "binoracle/1.0"})
+        with _ur.urlopen(req, timeout=timeout) as r:
+            data = _j.loads(r.read())
+        if not data:
+            return result
+        # WPScan returns a list of vuln objects
+        vuln = data[0] if isinstance(data, list) else data
+        notes_parts = []
+        if vuln.get("title"):
+            notes_parts.append(f"Title: {vuln['title']}")
+        if vuln.get("vuln_type"):
+            notes_parts.append(f"Type: {vuln['vuln_type']}")
+        # Extract references and PoC URLs
+        refs = vuln.get("references", {})
+        poc_urls = refs.get("url", [])
+        if poc_urls:
+            notes_parts.append(f"References: {', '.join(poc_urls[:5])}")
+        # Extract affected versions
+        fixed_in = vuln.get("fixed_in", "")
+        if fixed_in:
+            notes_parts.append(f"Fixed in: {fixed_in}")
+        result.update({
+            "ok": True,
+            "notes": "\n".join(notes_parts),
+            "poc_urls": poc_urls[:5],
+            "fixed_in": fixed_in,
+            "vuln_type": vuln.get("vuln_type", ""),
+        })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def fetch_exploitdb_data(cve_id: str, timeout: int = 15) -> dict:
+    """Search ExploitDB for public PoC code related to a CVE.
+    Returns exploit description, exploit code snippet, and author."""
+    import urllib.request as _ur
+    import urllib.parse as _up
+    import json as _j
+    result = {"ok": False, "source": "exploitdb", "cve_id": cve_id}
+    try:
+        # ExploitDB search API
+        params = _up.urlencode({"cve": cve_id, "type": "webapps", "format": "json"})
+        url = f"https://www.exploit-db.com/search?{params}"
+        req = _ur.Request(url, headers={
+            "User-Agent": "binoracle/1.0",
+            "Accept": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        with _ur.urlopen(req, timeout=timeout) as r:
+            data = _j.loads(r.read())
+        entries = data.get("data", [])
+        if not entries:
+            return result
+        notes_parts = []
+        poc_snippets = []
+        for entry in entries[:3]:
+            title = entry.get("description", "")
+            eid = entry.get("id", "")
+            author = entry.get("author", {}).get("name", "")
+            platform = entry.get("platform", {}).get("val", "")
+            notes_parts.append(
+                f"ExploitDB #{eid}: {title} (platform={platform}, author={author})")
+            # Try to fetch the actual exploit code
+            if eid:
+                try:
+                    code_url = f"https://www.exploit-db.com/raw/{eid}"
+                    code_req = _ur.Request(code_url, headers={"User-Agent": "binoracle/1.0"})
+                    with _ur.urlopen(code_req, timeout=10) as cr:
+                        code = cr.read().decode("utf-8", errors="replace")[:2000]
+                    poc_snippets.append(f"# ExploitDB #{eid}\n{code}")
+                except Exception:
+                    pass
+        result.update({
+            "ok": True,
+            "notes": "\n".join(notes_parts),
+            "poc_snippets": poc_snippets,
+            "exploit_count": len(entries),
+        })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def fetch_vulndb_mitre(cve_id: str, timeout: int = 15) -> dict:
+    """Fetch MITRE CVE record for detailed description, references, and affected products."""
+    import urllib.request as _ur
+    import json as _j
+    result = {"ok": False, "source": "mitre", "cve_id": cve_id}
+    try:
+        url = f"https://cveawg.mitre.org/api/cve/{cve_id}"
+        req = _ur.Request(url, headers={"User-Agent": "binoracle/1.0",
+                                         "Accept": "application/json"})
+        with _ur.urlopen(req, timeout=timeout) as r:
+            data = _j.loads(r.read())
+        containers = data.get("containers", {})
+        cna = containers.get("cna", {})
+        descriptions = cna.get("descriptions", [])
+        desc = next((d["value"] for d in descriptions if d.get("lang") == "en"), "")
+        # Extract affected component info
+        affected = cna.get("affected", [])
+        affected_info = []
+        for a in affected[:3]:
+            vendor = a.get("vendor", "")
+            product = a.get("product", "")
+            versions = [v.get("version", "") for v in a.get("versions", [])
+                        if v.get("status") == "affected"]
+            affected_info.append(f"{vendor}/{product} {','.join(versions[:3])}")
+        # Extract references
+        refs = [r.get("url", "") for r in cna.get("references", [])[:5]]
+        notes_parts = []
+        if desc:
+            notes_parts.append(f"MITRE description: {desc[:600]}")
+        if affected_info:
+            notes_parts.append(f"Affected: {'; '.join(affected_info)}")
+        if refs:
+            notes_parts.append(f"References: {', '.join(refs[:3])}")
+        result.update({
+            "ok": bool(desc),
+            "description": desc,
+            "affected": affected_info,
+            "references": refs,
+            "notes": "\n".join(notes_parts),
+        })
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
 def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
                              timeout: int = 15) -> dict:
     """
-    Gather CVE intelligence from NVD, Wordfence, Patchstack, and GitHub in parallel.
-    Returns a merged dict with the richest available information from all sources.
+    Gather CVE intelligence from NVD, Wordfence, Patchstack, GitHub, WPScan,
+    ExploitDB, and MITRE in parallel. Returns a merged dict with the richest
+    available information from all sources.
     """
     import concurrent.futures as _cf
     sources = {}
-    with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+    with _cf.ThreadPoolExecutor(max_workers=7) as ex:
         futures = {
             ex.submit(fetch_nvd_cve_details, cve_id, timeout): "nvd",
             ex.submit(fetch_wordfence_advisory, cve_id, timeout): "wordfence",
             ex.submit(fetch_patchstack_advisory, cve_id, timeout): "patchstack",
             ex.submit(fetch_github_advisories, cve_id, timeout): "github",
+            ex.submit(fetch_wpscan_advisory, cve_id, timeout): "wpscan",
+            ex.submit(fetch_exploitdb_data, cve_id, timeout): "exploitdb",
+            ex.submit(fetch_vulndb_mitre, cve_id, timeout): "mitre",
         }
         for fut, name in futures.items():
             try:
@@ -2828,6 +2970,8 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
         "affected_function": "",
         "advisory_notes": "",
         "references": [],
+        "poc_available": False,
+        "poc_snippets": [],
     }
     nvd = sources.get("nvd", {})
     if nvd.get("ok"):
@@ -2862,4 +3006,30 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
             merged["vulnerable_param"] = gh["vulnerable_param"]
         if not merged["affected_function"] and gh.get("affected_function"):
             merged["affected_function"] = gh["affected_function"]
+    # WPScan: append advisory notes and PoC URLs
+    ws = sources.get("wpscan", {})
+    if ws.get("ok"):
+        if ws.get("notes"):
+            if merged["advisory_notes"]:
+                merged["advisory_notes"] += f"\n\nWPScan: {ws['notes'][:800]}"
+            else:
+                merged["advisory_notes"] = ws["notes"][:800]
+        if ws.get("poc_urls"):
+            merged["references"] = list({*merged["references"], *ws["poc_urls"]})
+            merged["poc_available"] = True
+    # ExploitDB: highest-value intel — public PoC code
+    edb = sources.get("exploitdb", {})
+    if edb.get("ok"):
+        merged["poc_available"] = True
+        if edb.get("notes"):
+            merged["advisory_notes"] += f"\n\nExploitDB: {edb['notes'][:600]}"
+        if edb.get("poc_snippets"):
+            merged["poc_snippets"] = edb["poc_snippets"]
+    # MITRE: fallback description when NVD is empty
+    mitre = sources.get("mitre", {})
+    if mitre.get("ok"):
+        if not merged["description"] and mitre.get("description"):
+            merged["description"] = mitre["description"]
+        if mitre.get("notes"):
+            merged["advisory_notes"] += f"\n\nMITRE: {mitre['notes'][:400]}"
     return merged

