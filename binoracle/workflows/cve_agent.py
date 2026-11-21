@@ -527,6 +527,191 @@ _REFINE_SYS = (
 # este prompt parte del código encontrado por el escáner taint y deriva el exploit
 # desde cero leyendo el código real — el LLM actúa como analista que lee el código
 # del plugin por primera vez, igual que haría un investigador profesional.
+def _hueco_sys(tech: str, vuln_class: str) -> str:
+    """Return the appropriate HUECO system prompt for the detected technology and class.
+    All prompts are technology-agnostic — tech is injected as context."""
+
+    _tech_ctx = {
+        "php":    "PHP (WordPress plugin / theme / core, o framework generico PHP)",
+        "python": "Python (Django, Flask, FastAPI, o framework generico Python)",
+        "nodejs": "Node.js / TypeScript (Express, Fastify, Nest.js, o framework JS generico)",
+        "ruby":   "Ruby on Rails, Sinatra, o framework generico Ruby",
+        "java":   "Java (Spring Boot, Servlet, Struts, o framework JEE generico)",
+        "go":     "Go (net/http, Gin, Echo, o framework generico Go)",
+        "dotnet": "C# / .NET (ASP.NET Core, MVC, o framework .NET generico)",
+    }.get(tech, f"aplicacion web ({tech})")
+
+    _base = (
+        f"Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/research). "
+        f"Te doy codigo REAL de {_tech_ctx} donde el escaner estatico ha detectado un posible "
+        f"punto de vulnerabilidad. No hay PoC publico: TU derivas el exploit leyendo el codigo real. "
+        f"SOLO razonas desde el codigo — nunca inventas datos ni asumes comportamiento no visible. "
+        f"Responde SOLO con JSON valido. "
+    )
+
+    vc = vuln_class.lower()
+
+    if "sqli" in vc or "sql" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler vulnerable — ruta REST, accion AJAX, "
+            "URL de formulario, etc.), "
+            "http_method (GET o POST segun como se lee el parametro), "
+            "sqli_param (nombre EXACTO del parametro que llega a la query SQL sin sanear), "
+            "auth_required (none/low/medium/high — 'none' si cualquier visitante puede; "
+            "'low' si solo usuario registrado; 'medium'/'high' si requiere rol especifico), "
+            "sqli_technique (error-based | union-based | boolean-blind | time-based — "
+            "elige segun el contexto: error-based si errores SQL llegan al cliente; "
+            "union-based si la query devuelve filas renderizadas; "
+            "boolean-blind si la respuesta cambia segun la condicion; "
+            "time-based como ultimo recurso), "
+            "payload_hint (payload minimo de prueba para la tecnica elegida), "
+            "parameters (lista de TODOS los parametros que el handler acepta), "
+            "reasoning (una linea explicando por que el parametro llega sin sanear a la query)."
+        )
+
+    if "xss" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA donde se inyecta el payload — POST/PUT), "
+            "inject_param (nombre EXACTO del parametro que se almacena sin sanitizar), "
+            "http_method (GET o POST), "
+            "view_path (URL o ruta donde se renderiza el valor sin escapar), "
+            "auth_required (none/low/medium/high), "
+            "payload (payload XSS minimo, e.g. '<script>alert(document.domain)</script>'), "
+            "reasoning (una linea explicando donde falla el escape en la salida)."
+        )
+
+    if "lfi" in vc or "path" in vc or "traversal" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que lee el fichero), "
+            "path_param (nombre EXACTO del parametro que controla la ruta del fichero), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "payload (payload de path traversal, e.g. '../../etc/passwd' o '../wp-config.php'), "
+            "target_file (fichero objetivo mas critico: wp-config.php, /etc/passwd, .env, etc.), "
+            "reasoning (una linea explicando por que la ruta no esta validada)."
+        )
+
+    if "ssrf" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler vulnerable), "
+            "url_param (nombre EXACTO del parametro que controla la URL de la peticion saliente), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "payload (URL de prueba: 'http://169.254.169.254/latest/meta-data/' o 'http://localhost:6379/'), "
+            "ssrf_target (servicio interno objetivo: metadata, redis, elasticsearch, etc.), "
+            "reasoning (una linea explicando por que la URL no esta validada)."
+        )
+
+    if "rce" in vc or "command" in vc or "injection" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler vulnerable), "
+            "cmd_param (nombre EXACTO del parametro que se pasa al comando del SO), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "payload (payload de inyeccion: '; id' o '$(id)' o '| cat /etc/passwd'), "
+            "shell_operator (operador de shell usado: ; && | $ backtick), "
+            "reasoning (una linea explicando por que el input llega sin sanear al comando)."
+        )
+
+    if "auth" in vc or "missing" in vc or "idor" in vc or "bypass" in vc:
+        return _base + (
+            "Analiza el handler/endpoint buscando en este orden:\n"
+            "1. ¿Existe verificacion de autenticacion ANTES de procesar la peticion? "
+            "   (token JWT, sesion, nonce, firma HMAC, etc.)\n"
+            "2. ¿Existe verificacion de autorizacion (rol/permiso) adecuado al efecto del handler?\n"
+            "3. ¿El endpoint es accesible sin autenticacion cuando deberia requerir login?\n"
+            "4. ¿Los parametros de entrada se validan/sanean antes de usarse en DB o logica?\n"
+            "5. ¿El handler opera sobre un ID arbitrario (user_id, order_id, file_id) sin "
+            "   verificar que el usuario actual tiene permiso sobre ESE recurso (IDOR)?\n"
+            "\nClaves JSON requeridas: "
+            "endpoint (ruta EXACTA del handler vulnerable), "
+            "http_method (GET o POST), "
+            "parameters (lista de parametros que el handler lee del request), "
+            "auth_check_missing (descripcion del check que falta), "
+            "auth_required (none/low/medium/high segun el efecto real del handler), "
+            "idor_id_param (nombre del param ID si hay IDOR, vacio si no), "
+            "attack_goal (que permite hacer el bug: delete_user, read_data, modify_config, etc.), "
+            "severity (critical/high/medium), "
+            "reasoning (una linea citando el codigo que falta)."
+        )
+
+    if "deserializ" in vc or "object-injection" in vc or "pickle" in vc or "unserializ" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que deserializa datos del usuario), "
+            "deser_param (nombre EXACTO del parametro o campo que llega a la funcion de deserializacion), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "deser_function (funcion vulnerable exacta: unserialize, pickle.loads, ObjectInputStream, Marshal.load, etc.), "
+            "payload_type (tipo de payload: php-object-injection, python-pickle-rce, java-gadget-chain, ruby-marshal, yaml-deserialization), "
+            "gadget_hint (gadget o clase que activa el payload si es conocible del codigo), "
+            "impact (rce / data-exfiltration / privilege-escalation), "
+            "reasoning (una linea citando la linea exacta vulnerable)."
+        )
+
+    if "xxe" in vc or "xml" in vc or "xml-injection" in vc or "xml-external" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que parsea XML), "
+            "xml_param (nombre del parametro o como llega el XML: request body, multipart field, etc.), "
+            "http_method (GET o POST), "
+            "content_type (application/xml o text/xml o multipart/form-data), "
+            "auth_required (none/low/medium/high), "
+            "parser_function (funcion de parseo exacta sin hardening: simplexml_load_string, DocumentBuilderFactory, etc.), "
+            "entity_loader_disabled (true/false — si libxml_disable_entity_loader esta en false o ausente), "
+            "payload (payload XXE minimo, e.g. '<?xml ...><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo>'), "
+            "target_file (fichero objetivo mas critico: /etc/passwd, wp-config.php, .env), "
+            "reasoning (una linea explicando que config de seguridad falta en el parser)."
+        )
+
+    if "redirect" in vc or "open-redirect" in vc or "url-redirect" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler con el redirect), "
+            "redirect_param (nombre EXACTO del parametro que controla la URL de destino), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "redirect_function (funcion usada: header Location, wp_redirect, res.redirect, redirect_to, etc.), "
+            "bypass_hint (si hay validacion parcial, como saltarsela: subdomain trick, @ trick, //evil.com, etc.), "
+            "payload (URL de destino malicioso para el PoC: 'https://evil.com' o '//evil.com'), "
+            "phishing_vector (true/false — si puede usarse para phishing de credenciales), "
+            "reasoning (una linea explicando por que la URL no esta validada o como se puede bypassear)."
+        )
+
+    if "ssti" in vc or "template-injection" in vc or "template" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que renderiza la plantilla), "
+            "template_param (nombre EXACTO del parametro que se pasa como plantilla o contexto sin sanitizar), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "template_engine (Jinja2, Twig, ERB, Thymeleaf, Handlebars, Pug, FreeMarker, etc.), "
+            "detection_payload (payload de deteccion para confirmar SSTI: '{{7*7}}' para Jinja2/Twig, '<%= 7*7 %>' para ERB), "
+            "rce_payload (payload de RCE si es Jinja2/ERB/Twig: p.ej. '{{config.__class__.__init__.__globals__[\"os\"].popen(\"id\").read()}}'), "
+            "context (si el input se inyecta en la PLANTILLA o en el CONTEXTO de renderizado), "
+            "reasoning (una linea citando la llamada exacta que mezcla input de usuario con la plantilla)."
+        )
+
+    # Generic / unknown class
+    return _base + (
+        "Claves JSON requeridas: "
+        "endpoint (ruta HTTP EXACTA del handler vulnerable), "
+        "http_method (GET o POST), "
+        "vuln_param (nombre del parametro o entrada vulnerable), "
+        "auth_required (none/low/medium/high), "
+        "exploit_steps (lista de pasos para explotar), "
+        "payload (payload o valor de prueba minimo), "
+        "reasoning (una linea explicando el defecto en el codigo)."
+    )
+
+
+# ── Original WordPress/PHP-specific prompts (kept for PHP CVEs — more precise) ──
+
 _HUECO_SQLI_SYS = (
     "Eres un investigador de explotacion para objetivos AUTORIZADOS (pentest/research). "
     "Te doy el codigo PHP REAL de un plugin de WordPress en el que el escaner taint ha "
@@ -542,15 +727,10 @@ _HUECO_SQLI_SYS = (
     "auth_required (none si wp_ajax_nopriv_ o sin check_ajax_referer/capability; "
     "subscriber si hay check_ajax_referer pero cualquier usuario logueado puede; "
     "editor o admin si exige un rol especifico), "
-    "sqli_technique (error-based si ves error_reporting o display_errors; "
-    "union-based si la query devuelve datos seleccionables; "
-    "boolean-blind si solo cambia algo en la respuesta; "
-    "time-based como ultimo recurso), "
-    "payload_hint (payload minimo de prueba, p.ej. '1 AND extractvalue(1,concat(0x7e,version()))' "
-    "para error-based, '1 AND 1=1' vs '1 AND 1=2' para boolean-blind), "
+    "sqli_technique (error-based | union-based | boolean-blind | time-based), "
+    "payload_hint (payload minimo de prueba), "
     "parameters (lista de TODOS los parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
-    "reasoning (una linea explicando por que la vulnerabilidad existe en este codigo). "
-    "Se exacto: un nombre mal copiado hace que el PoC falle."
+    "reasoning (una linea explicando por que la vulnerabilidad existe en este codigo)."
 )
 
 _HUECO_XSS_SYS = (
@@ -578,32 +758,15 @@ _HUECO_MISSING_AUTH_SYS = (
     "analiza en este orden:\n"
     "1. ¿Existe check_ajax_referer() o wp_verify_nonce() ANTES de procesar la peticion? "
     "   (un nonce ausente = la peticion es falsificable desde cualquier pagina)\n"
-    "2. ¿Existe current_user_can() con una capability adecuada al efecto del handler? "
-    "   (ausencia = cualquier usuario logueado puede ejecutar la accion)\n"
-    "3. Si el hook es wp_ajax_nopriv_*, ¿esta justificado que usuarios NO autenticados accedan? "
-    "   ¿O deberia ser solo wp_ajax_* porque el handler modifica datos/config del sitio?\n"
-    "4. ¿Los parametros de entrada ($_POST/$_GET) se sanitizan (sanitize_text_field, absint...) "
-    "   antes de usarse en consultas o logica de negocio?\n"
-    "5. ¿El handler permite actuar sobre un ID arbitrario (user_id, post_id, order_id) sin "
-    "   comprobar que el usuario actual tiene permiso sobre ESE recurso en concreto (IDOR), "
-    "   mas alla del check de capability general?\n"
+    "2. ¿Existe current_user_can() con una capability adecuada al efecto del handler?\n"
+    "3. Si wp_ajax_nopriv_*, ¿justificado que usuarios NO autenticados accedan?\n"
+    "4. ¿$_POST/$_GET/$_REQUEST se sanitizan antes de usarse en consultas o logica?\n"
+    "5. ¿Handler permite actuar sobre ID arbitrario sin comprobar permiso (IDOR)?\n"
     "\n"
     "Responde SOLO con JSON valido con las claves: "
-    "ajax_action (accion AJAX EXACTA con el fallo de autorizacion mas explotable), "
-    "http_method (GET o POST), "
-    "parameters (lista EXACTA de parametros que el handler lee de $_POST/$_GET/$_REQUEST), "
-    "capability_missing (capability que DEBERIA chequearse pero no se chequea, "
-    "p.ej. 'edit_users', 'manage_options', vacio si no aplica), "
-    "nonce_check_present (true/false: si check_ajax_referer/wp_verify_nonce existe ANTES del codigo vulnerable), "
-    "auth_required (none si wp_ajax_nopriv_ sin restriccion; subscriber si wp_ajax_ sin capability; "
-    "editor/admin si exige rol especifico), "
-    "idor_id_param (nombre del parametro ID arbitrario si hay IDOR, vacio si no), "
-    "sanitization_missing (true/false: si algun parametro se usa sin sanitizar), "
-    "attack_goal (que hace el handler: delete_user, change_email, escalate_role, read_data, "
-    "modify_config, privilege_escalation, etc.), "
-    "severity (critical/high/medium segun el impacto real del handler), "
-    "reasoning (una linea ESPECIFICA explicando el fallo de autorizacion citando el codigo). "
-    "Se exacto: un nombre mal copiado hace que el PoC falle."
+    "ajax_action, http_method, parameters, capability_missing, "
+    "nonce_check_present (true/false), auth_required, idor_id_param, "
+    "sanitization_missing (true/false), attack_goal, severity (critical/high/medium), reasoning."
 )
 
 
@@ -3056,12 +3219,20 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
 
     from .websource import (find_unsanitized_sqli_params, find_stored_xss_endpoint,
                              find_all_ajax_actions, find_ajax_handler_function,
-                             find_missing_auth_handlers)
+                             find_missing_auth_handlers,
+                             # generic multi-language scanners
+                             detect_tech_stack, find_sqli_sinks_generic,
+                             find_path_traversal_sinks, find_ssrf_sinks,
+                             find_rce_sinks, find_xss_sinks_generic,
+                             find_auth_bypass_generic,
+                             find_deserialization_sinks, find_xxe_sinks,
+                             find_open_redirect_sinks, find_ssti_sinks)
     from ..llm.base import Message
 
     vc     = inv.vuln_class or ""
     notes  = inv.llm_notes
     lpath  = fr.local_path
+    tech   = detect_tech_stack(lpath)   # 'php', 'nodejs', 'python', 'ruby', 'java', etc.
 
     def _read_snippet(rel_file: str, line_no: int, ctx: int = 35) -> str:
         """Lee ctx lineas alrededor de line_no en rel_file (ruta relativa a lpath)."""
@@ -3295,6 +3466,411 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                       f"cap={hint.get('capability_missing','?')} "
                       f"reason: {hint.get('reasoning','')[:80]}"))
                 break  # found a good candidate
+
+    # ---- Generic branches: use multi-language scanners when tech != php OR
+    #      PHP CVE but vuln class not covered by the specialized branches above ----
+
+    def _apply_generic_sink(sinks: list, ep_key: str = "endpoint",
+                            param_key: str = "vuln_param") -> None:
+        """Apply the first generic sink to inv.llm_notes and source_grounding."""
+        if not sinks:
+            return
+        s = sinks[0]
+        inv.source_grounding.setdefault("found", {})[
+            f"{s.sink} ({s.file}:{s.line})"] = [f"{s.file}:{s.line}"]
+        inv.source_grounding.setdefault("not_found", [])
+        if not notes.get(param_key):
+            inv.llm_notes[param_key] = s.param
+        if not notes.get(ep_key):
+            snippet = _read_snippet(s.file, s.line, ctx=40)
+            inv.llm_notes["_hueco_sink_snippet"] = snippet
+        # Provide alt endpoints from remaining sinks
+        if len(sinks) > 1 and not notes.get("alt_endpoints"):
+            inv.llm_notes["alt_endpoints"] = [
+                {"endpoint": x.file, "parameters": [x.param]} for x in sinks[1:5]]
+
+    def _llm_generic(sys_prompt: str, sink_label: str,
+                     snippet: str, extra_ctx: str = "") -> Optional[dict]:
+        """Call LLM with generic HUECO prompt and return parsed JSON or None."""
+        try:
+            raw = llm.chat([
+                Message("system", sys_prompt),
+                Message("user", (
+                    f"CVE: {inv.cve_id}\n"
+                    f"Tecnologia detectada: {tech}\n"
+                    f"Descripcion NVD: {(inv.description or '')[:300]}\n\n"
+                    f"Sumidero detectado por escaner: {sink_label}\n"
+                    f"{extra_ctx}\n\n"
+                    f"=== CODIGO REAL ===\n```\n{snippet[:4000]}\n```\n\n"
+                    f"Extrae datos exactos del exploit en JSON."
+                )),
+            ], json_mode=True)
+            return json.loads(raw)
+        except Exception as _e:
+            step(f"[HUECO] LLM {vc} analysis error: {_e}")
+            return None
+
+    # ------------------------------------------------------------------ SQLi (non-PHP)
+    # For non-PHP stacks OR when PHP taint scanner found nothing, try generic scanner
+    if vc in ("sqli", "sql-injection") and tech != "php" and not notes.get("endpoint"):
+        generic_hits = find_sqli_sinks_generic(lpath, tech)
+        if generic_hits:
+            _apply_generic_sink(generic_hits, param_key="sqli_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                generic_hits[0].file, generic_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner SQLi generico ({tech}): "
+                  f"param='{generic_hits[0].param}' en {generic_hits[0].file}:{generic_hits[0].line}") if es else
+                 (f"[HUECO] generic SQLi scanner ({tech}): "
+                  f"param='{generic_hits[0].param}' at {generic_hits[0].file}:{generic_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{generic_hits[0].sink} @ {generic_hits[0].file}:{generic_hits[0].line}",
+                                    snippet)
+                if hint:
+                    _ep = (hint.get("endpoint") or "").strip()
+                    if _ep:
+                        inv.llm_notes["endpoint"] = _ep
+                    if hint.get("sqli_param"):
+                        inv.llm_notes["sqli_param"] = str(hint["sqli_param"]).strip()
+                    if hint.get("sqli_technique"):
+                        inv.llm_notes["sqli_technique"] = str(hint["sqli_technique"]).strip()
+                    if hint.get("payload_hint"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload_hint"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis SQLi {tech}: endpoint={_ep or '?'} "
+                          f"technique={hint.get('sqli_technique','?')} "
+                          f"razon: {hint.get('reasoning','')[:80]}") if es else
+                         (f"[HUECO] SQLi {tech} analysis: endpoint={_ep or '?'} "
+                          f"technique={hint.get('sqli_technique','?')} "
+                          f"reason: {hint.get('reasoning','')[:80]}"))
+
+    # ------------------------------------------------------------------ XSS (non-PHP)
+    elif vc in ("xss", "cross-site-scripting", "stored-xss") and tech != "php" and not notes.get("endpoint"):
+        xss_hits = find_xss_sinks_generic(lpath, tech)
+        if xss_hits:
+            _apply_generic_sink(xss_hits, param_key="xss_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                xss_hits[0].file, xss_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner XSS generico ({tech}): "
+                  f"param='{xss_hits[0].param}' en {xss_hits[0].file}:{xss_hits[0].line}") if es else
+                 (f"[HUECO] generic XSS scanner ({tech}): "
+                  f"param='{xss_hits[0].param}' at {xss_hits[0].file}:{xss_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{xss_hits[0].sink} @ {xss_hits[0].file}:{xss_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("inject_param"):
+                        inv.llm_notes["xss_param"] = str(hint["inject_param"]).strip()
+                    if hint.get("view_path"):
+                        inv.llm_notes["xss_view_path"] = str(hint["view_path"]).strip()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+
+    # ------------------------------------------------------------------ LFI / Path traversal
+    elif vc in ("lfi", "path-traversal", "directory-traversal",
+                "file-inclusion", "local-file-inclusion") and not notes.get("endpoint"):
+        lfi_hits = find_path_traversal_sinks(lpath, tech)
+        if lfi_hits:
+            _apply_generic_sink(lfi_hits, param_key="path_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                lfi_hits[0].file, lfi_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner LFI ({tech}): "
+                  f"param='{lfi_hits[0].param}' sink={lfi_hits[0].sink} "
+                  f"en {lfi_hits[0].file}:{lfi_hits[0].line}") if es else
+                 (f"[HUECO] LFI scanner ({tech}): "
+                  f"param='{lfi_hits[0].param}' sink={lfi_hits[0].sink} "
+                  f"at {lfi_hits[0].file}:{lfi_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{lfi_hits[0].sink} @ {lfi_hits[0].file}:{lfi_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("path_param"):
+                        inv.llm_notes["path_param"] = str(hint["path_param"]).strip()
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("target_file"):
+                        inv.llm_notes["lfi_target_file"] = str(hint["target_file"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis LFI: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('path_param','?')} "
+                          f"target={hint.get('target_file','?')}") if es else
+                         (f"[HUECO] LFI analysis: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('path_param','?')} "
+                          f"target={hint.get('target_file','?')}"))
+
+    # ------------------------------------------------------------------ SSRF
+    elif vc in ("ssrf", "server-side-request-forgery") and not notes.get("endpoint"):
+        ssrf_hits = find_ssrf_sinks(lpath, tech)
+        if ssrf_hits:
+            _apply_generic_sink(ssrf_hits, param_key="ssrf_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                ssrf_hits[0].file, ssrf_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner SSRF ({tech}): "
+                  f"param='{ssrf_hits[0].param}' sink={ssrf_hits[0].sink}") if es else
+                 (f"[HUECO] SSRF scanner ({tech}): "
+                  f"param='{ssrf_hits[0].param}' sink={ssrf_hits[0].sink}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{ssrf_hits[0].sink} @ {ssrf_hits[0].file}:{ssrf_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("url_param"):
+                        inv.llm_notes["ssrf_param"] = str(hint["url_param"]).strip()
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("ssrf_target"):
+                        inv.llm_notes["ssrf_target"] = str(hint["ssrf_target"])
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis SSRF: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('url_param','?')} "
+                          f"target={hint.get('ssrf_target','?')}") if es else
+                         (f"[HUECO] SSRF analysis: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('url_param','?')} "
+                          f"target={hint.get('ssrf_target','?')}"))
+
+    # ------------------------------------------------------------------ RCE / Command injection
+    elif vc in ("rce", "remote-code-execution", "command-injection",
+                "os-command-injection", "code-injection") and not notes.get("endpoint"):
+        rce_hits = find_rce_sinks(lpath, tech)
+        if rce_hits:
+            _apply_generic_sink(rce_hits, param_key="cmd_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                rce_hits[0].file, rce_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner RCE/cmdi ({tech}): "
+                  f"param='{rce_hits[0].param}' sink={rce_hits[0].sink}") if es else
+                 (f"[HUECO] RCE/cmdi scanner ({tech}): "
+                  f"param='{rce_hits[0].param}' sink={rce_hits[0].sink}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{rce_hits[0].sink} @ {rce_hits[0].file}:{rce_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("cmd_param"):
+                        inv.llm_notes["cmd_param"] = str(hint["cmd_param"]).strip()
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("shell_operator"):
+                        inv.llm_notes["rce_shell_operator"] = str(hint["shell_operator"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis RCE: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('cmd_param','?')} "
+                          f"payload={hint.get('payload','?')[:40]}") if es else
+                         (f"[HUECO] RCE analysis: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('cmd_param','?')} "
+                          f"payload={hint.get('payload','?')[:40]}"))
+
+    # ------------------------------------------------------------------ Auth bypass (non-PHP)
+    elif vc in ("missing-authorization", "idor", "auth-bypass") and tech != "php" and not notes.get("endpoint"):
+        auth_hits = find_auth_bypass_generic(lpath, tech)
+        if auth_hits:
+            _hit = auth_hits[0]
+            step((f"[HUECO] escaner auth generico ({tech}): "
+                  f"route='{_hit.get('route','?')}' issues={_hit.get('issues',[])}") if es else
+                 (f"[HUECO] generic auth scanner ({tech}): "
+                  f"route='{_hit.get('route','?')}' issues={_hit.get('issues',[])}"))
+            # Build alt endpoints
+            if len(auth_hits) > 1 and not notes.get("alt_endpoints"):
+                inv.llm_notes["alt_endpoints"] = [
+                    {"endpoint": h.get("route", ""), "parameters": []}
+                    for h in auth_hits[1:6] if h.get("n_issues", 0) > 0]
+            snippet = _read_snippet(_hit.get("file", ""), _hit.get("line", 0), ctx=50)
+            if snippet:
+                hint = _llm_generic(
+                    _hueco_sys(tech, vc),
+                    f"route={_hit.get('route','?')}, issues={','.join(_hit.get('issues',[]))}",
+                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("parameters"):
+                        inv.llm_notes["parameters"] = hint["parameters"]
+                    if hint.get("idor_id_param"):
+                        inv.llm_notes["idor_id_param"] = str(hint["idor_id_param"])
+                    if hint.get("auth_check_missing"):
+                        inv.llm_notes["hueco_capability_missing"] = str(hint["auth_check_missing"])
+                    if hint.get("attack_goal"):
+                        inv.llm_notes["hueco_attack_goal"] = str(hint["attack_goal"])
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    inv.source_grounding.setdefault("found", {})[
+                        _hit.get("handler", _hit.get("route", "?"))] = [
+                        f"{_hit.get('file','?')}:{_hit.get('line', 0)}"]
+
+    # ------------------------------------------------------------------ Deserialization
+    elif vc in ("deserialization", "object-injection", "unsafe-deserialization",
+                "insecure-deserialization", "php-object-injection",
+                "pickle", "unserialize") and not notes.get("endpoint"):
+        deser_hits = find_deserialization_sinks(lpath, tech)
+        if deser_hits:
+            _apply_generic_sink(deser_hits, param_key="deser_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                deser_hits[0].file, deser_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner deserializacion ({tech}): "
+                  f"sink={deser_hits[0].sink} en {deser_hits[0].file}:{deser_hits[0].line}") if es else
+                 (f"[HUECO] deserialization scanner ({tech}): "
+                  f"sink={deser_hits[0].sink} at {deser_hits[0].file}:{deser_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{deser_hits[0].sink} @ {deser_hits[0].file}:{deser_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("deser_param"):
+                        inv.llm_notes["deser_param"] = str(hint["deser_param"]).strip()
+                    if hint.get("deser_function"):
+                        inv.llm_notes["deser_function"] = str(hint["deser_function"])
+                    if hint.get("payload_type"):
+                        inv.llm_notes["deser_payload_type"] = str(hint["payload_type"])
+                    if hint.get("gadget_hint"):
+                        inv.llm_notes["deser_gadget"] = str(hint["gadget_hint"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis deserializacion: endpoint={hint.get('endpoint','?')} "
+                          f"fn={hint.get('deser_function','?')} "
+                          f"tipo={hint.get('payload_type','?')}") if es else
+                         (f"[HUECO] deserialization analysis: endpoint={hint.get('endpoint','?')} "
+                          f"fn={hint.get('deser_function','?')} "
+                          f"type={hint.get('payload_type','?')}"))
+
+    # ------------------------------------------------------------------ XXE
+    elif vc in ("xxe", "xml-injection", "xml-external-entity",
+                "xxe-injection") and not notes.get("endpoint"):
+        xxe_hits = find_xxe_sinks(lpath, tech)
+        if xxe_hits:
+            _apply_generic_sink(xxe_hits, param_key="xml_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                xxe_hits[0].file, xxe_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner XXE ({tech}): "
+                  f"sink={xxe_hits[0].sink} en {xxe_hits[0].file}:{xxe_hits[0].line}") if es else
+                 (f"[HUECO] XXE scanner ({tech}): "
+                  f"sink={xxe_hits[0].sink} at {xxe_hits[0].file}:{xxe_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{xxe_hits[0].sink} @ {xxe_hits[0].file}:{xxe_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("xml_param"):
+                        inv.llm_notes["xml_param"] = str(hint["xml_param"]).strip()
+                    if hint.get("content_type"):
+                        inv.llm_notes["xxe_content_type"] = str(hint["content_type"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("target_file"):
+                        inv.llm_notes["xxe_target_file"] = str(hint["target_file"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis XXE: endpoint={hint.get('endpoint','?')} "
+                          f"parser={hint.get('parser_function','?')} "
+                          f"target={hint.get('target_file','?')}") if es else
+                         (f"[HUECO] XXE analysis: endpoint={hint.get('endpoint','?')} "
+                          f"parser={hint.get('parser_function','?')} "
+                          f"target={hint.get('target_file','?')}"))
+
+    # ------------------------------------------------------------------ Open redirect
+    elif vc in ("open-redirect", "url-redirect", "redirect",
+                "unvalidated-redirect", "open-redirection") and not notes.get("endpoint"):
+        redir_hits = find_open_redirect_sinks(lpath, tech)
+        if redir_hits:
+            _apply_generic_sink(redir_hits, param_key="redirect_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                redir_hits[0].file, redir_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner open-redirect ({tech}): "
+                  f"sink={redir_hits[0].sink} param={redir_hits[0].param}") if es else
+                 (f"[HUECO] open-redirect scanner ({tech}): "
+                  f"sink={redir_hits[0].sink} param={redir_hits[0].param}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{redir_hits[0].sink} @ {redir_hits[0].file}:{redir_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("redirect_param"):
+                        inv.llm_notes["redirect_param"] = str(hint["redirect_param"]).strip()
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("bypass_hint"):
+                        inv.llm_notes["redirect_bypass"] = str(hint["bypass_hint"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis open-redirect: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('redirect_param','?')} "
+                          f"bypass={hint.get('bypass_hint','?')[:40]}") if es else
+                         (f"[HUECO] open-redirect analysis: endpoint={hint.get('endpoint','?')} "
+                          f"param={hint.get('redirect_param','?')} "
+                          f"bypass={hint.get('bypass_hint','?')[:40]}"))
+
+    # ------------------------------------------------------------------ SSTI
+    elif vc in ("ssti", "template-injection", "server-side-template-injection",
+                "template-injection-rce") and not notes.get("endpoint"):
+        ssti_hits = find_ssti_sinks(lpath, tech)
+        if ssti_hits:
+            _apply_generic_sink(ssti_hits, param_key="template_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                ssti_hits[0].file, ssti_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner SSTI ({tech}): "
+                  f"sink={ssti_hits[0].sink} param={ssti_hits[0].param}") if es else
+                 (f"[HUECO] SSTI scanner ({tech}): "
+                  f"sink={ssti_hits[0].sink} param={ssti_hits[0].param}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{ssti_hits[0].sink} @ {ssti_hits[0].file}:{ssti_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("template_param"):
+                        inv.llm_notes["template_param"] = str(hint["template_param"]).strip()
+                    if hint.get("template_engine"):
+                        inv.llm_notes["ssti_engine"] = str(hint["template_engine"])
+                    if hint.get("detection_payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["detection_payload"])
+                    if hint.get("rce_payload"):
+                        inv.llm_notes["ssti_rce_payload"] = str(hint["rce_payload"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step((f"[HUECO] analisis SSTI: endpoint={hint.get('endpoint','?')} "
+                          f"engine={hint.get('template_engine','?')} "
+                          f"payload_deteccion={hint.get('detection_payload','?')[:30]}") if es else
+                         (f"[HUECO] SSTI analysis: endpoint={hint.get('endpoint','?')} "
+                          f"engine={hint.get('template_engine','?')} "
+                          f"detection={hint.get('detection_payload','?')[:30]}"))
+
+    # Clean up internal scratch key
+    inv.llm_notes.pop("_hueco_sink_snippet", None)
 
 
 _POC_TEXT_EXT = (".py", ".php", ".js", ".sh", ".md", ".txt", ".rb", ".pl", ".json", ".yml", ".yaml")

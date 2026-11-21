@@ -2973,6 +2973,781 @@ def find_missing_auth_handlers(local_path: str) -> List[dict]:
     return results
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# GENERIC MULTI-LANGUAGE STATIC ANALYSIS  (HUECO engine — tech-agnostic path)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_MAX_GENERIC_SCAN = 300   # max files to scan
+_MAX_GENERIC_BYTES = 200_000
+
+@dataclass
+class VulnSink:
+    """A potential vulnerability sink found by static analysis."""
+    file: str
+    line: int
+    snippet: str
+    param: str    # user-controlled input variable/key
+    sink: str     # vulnerable function or operation
+    tech: str     # detected technology
+    confidence: int  # 1=low (heuristic), 2=medium, 3=high (input+sink same line)
+
+
+def detect_tech_stack(local_path: str) -> str:
+    """Detect the primary programming language / framework from file contents.
+    Returns: 'php', 'nodejs', 'python', 'ruby', 'java', 'go', 'dotnet', 'unknown'.
+    """
+    # Config-file fingerprints (fast O(1) checks first)
+    _markers: List[tuple] = [
+        ("nodejs",  ["package.json", ".nvmrc", "yarn.lock", "pnpm-lock.yaml"]),
+        ("python",  ["requirements.txt", "Pipfile", "setup.py", "pyproject.toml",
+                     "manage.py", "wsgi.py", "asgi.py", "app.py"]),
+        ("ruby",    ["Gemfile", "Gemfile.lock", "config/routes.rb"]),
+        ("java",    ["pom.xml", "build.gradle", "build.gradle.kts"]),
+        ("go",      ["go.mod", "go.sum"]),
+        ("dotnet",  ["global.json", "nuget.config"]),
+    ]
+    for tech, files in _markers:
+        for f in files:
+            if os.path.exists(os.path.join(local_path, f)):
+                return tech
+    # Count file extensions (skip heavy dirs)
+    _skip = {"node_modules", "vendor", ".git", "__pycache__", ".tox", "dist", "build"}
+    ext_count: dict = {}
+    scanned = 0
+    for root, dirs, files in os.walk(local_path):
+        dirs[:] = [d for d in dirs if d not in _skip]
+        for fn in files:
+            _, ext = os.path.splitext(fn)
+            if ext:
+                ext_count[ext.lower()] = ext_count.get(ext.lower(), 0) + 1
+            scanned += 1
+            if scanned > 5000:
+                break
+    _map = {".php": "php", ".py": "python", ".js": "nodejs", ".ts": "nodejs",
+            ".rb": "ruby", ".java": "java", ".go": "go", ".cs": "dotnet",
+            ".kt": "java", ".scala": "java"}
+    best = max(ext_count, key=lambda k: ext_count[k] if k in _map else 0, default=".php")
+    return _map.get(best, "php")
+
+
+def _walk_source_files(local_path: str, extensions: List[str]) -> "Iterator[tuple[str, str, List[str]]]":
+    """Yield (abs_path, rel_path, lines) for source files matching extensions."""
+    _skip = {"node_modules", "vendor", ".git", "__pycache__", ".tox", "dist", "build",
+             "test", "tests", "spec", "fixtures", "migrations"}
+    scanned = 0
+    for root, dirs, files in os.walk(local_path):
+        dirs[:] = [d for d in dirs if d not in _skip]
+        for fn in files:
+            if scanned >= _MAX_GENERIC_SCAN:
+                return
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in extensions:
+                continue
+            fp = os.path.join(root, fn)
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read(_MAX_GENERIC_BYTES)
+            except OSError:
+                continue
+            scanned += 1
+            yield fp, os.path.relpath(fp, local_path), text.splitlines()
+
+
+# ── SQLi sinks ────────────────────────────────────────────────────────────────
+
+# Patterns: (tech, user_input_re, sink_re, extensions)
+_SQLI_PATTERNS = [
+    # PHP
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\$wpdb\s*->\s*(?:query|get_results|get_var|get_row)\s*\("
+                r"|\bmysqli?_(?:query|fetch)\s*\("
+                r"|\bPDO::\w+\s*\(\s*[\"'].*\?(?!.*prepare)"
+                r"|->(?:query|execute)\s*\(\s*[\"']",
+                re.IGNORECASE),
+     [".php"]),
+    # Python (Django, Flask, FastAPI, raw cursor)
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form|json|data)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"
+                r"|request\.params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"cursor\.execute\s*\(\s*[f\"'].*%[sd]"
+                r"|cursor\.execute\s*\(\s*f['\"]"
+                r"|\.raw\s*\(\s*[f\"']"
+                r"|\.objects\.filter\s*\([^)]*=\s*f['\"]"
+                r"|execute\s*\(\s*[\"'].*\+",
+                re.IGNORECASE),
+     [".py"]),
+    # Node.js (Express, Fastify, raw pg/mysql)
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\.query\s*\(\s*`"
+                r"|\.query\s*\(\s*['\"].*\$\{"
+                r"|\.query\s*\(\s*['\"].*\+"
+                r"|knex\.raw\s*\("
+                r"|Sequelize\.literal\s*\(",
+                re.IGNORECASE),
+     [".js", ".ts", ".mjs", ".cjs"]),
+    # Ruby (Rails, Sinatra)
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"
+                r"|params\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\.where\s*\(\s*[\"'].*#\{"
+                r"|\.find_by_sql\s*\(\s*[\"'].*#\{"
+                r"|execute\s*\(\s*[\"'].*#\{"
+                r"|ActiveRecord::Base\.connection\.execute",
+                re.IGNORECASE),
+     [".rb"]),
+    # Java (Servlet, Spring)
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"Statement\.execute(?:Query|Update)?\s*\(\s*[\"'].*\+"
+                r"|createQuery\s*\(\s*[\"'].*\+"
+                r"|prepareStatement\s*\(\s*[\"'].*\+",
+                re.IGNORECASE),
+     [".java"]),
+    # Go
+    ("go",
+     re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"db\.(?:Query|Exec)\s*\(\s*fmt\.Sprintf"
+                r"|db\.(?:Query|Exec)\s*\(\s*[\"'].*\+"
+                r"|\.QueryRow\s*\(\s*fmt\.Sprintf",
+                re.IGNORECASE),
+     [".go"]),
+]
+
+
+def find_sqli_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find SQL injection sinks for ANY supported language.
+    Returns sinks sorted by confidence (high first)."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    # Find matching pattern set(s)
+    pattern_sets = [p for p in _SQLI_PATTERNS if p[0] == tech]
+    if not pattern_sets:
+        # Fall back to scanning all known patterns
+        pattern_sets = _SQLI_PATTERNS
+    results: List[VulnSink] = []
+    for _tech, _user_re, _sink_re, _exts in pattern_sets:
+        for abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
+            for i, line in enumerate(lines, 1):
+                _user_m = _user_re.search(line)
+                _sink_m = _sink_re.search(line)
+                # Same line: high confidence
+                if _user_m and _sink_m:
+                    param = next((g for g in _user_m.groups() if g), "?")
+                    results.append(VulnSink(
+                        file=rel_fp, line=i, snippet=line.strip(),
+                        param=param, sink=_sink_m.group(0)[:60],
+                        tech=_tech, confidence=3))
+                    continue
+                # Sink line nearby a user-input read (within 10 lines)
+                if _sink_m:
+                    window = "\n".join(lines[max(0, i-10):i])
+                    wu = _user_re.search(window)
+                    if wu:
+                        param = next((g for g in wu.groups() if g), "?")
+                        results.append(VulnSink(
+                            file=rel_fp, line=i, snippet=line.strip(),
+                            param=param, sink=_sink_m.group(0)[:60],
+                            tech=_tech, confidence=2))
+    # Deduplicate by (file, line), keep highest confidence
+    seen: dict = {}
+    for s in results:
+        key = (s.file, s.line)
+        if key not in seen or seen[key].confidence < s.confidence:
+            seen[key] = s
+    return sorted(seen.values(), key=lambda x: -x.confidence)[:20]
+
+
+# ── Path traversal / LFI sinks ────────────────────────────────────────────────
+
+_LFI_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bfile_get_contents\s*\(|\binclude(?:_once)?\s*\(|\brequire(?:_once)?\s*\("
+                r"|\bfopen\s*\(|\breadfile\s*\(|\bhighlight_file\s*\(|\bshow_source\s*\("
+                r"|\bfile\s*\(|\binclude\b", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bopen\s*\(|\bPath\s*\(.*\)\.read"
+                r"|\bpathlib\.Path"
+                r"|\bos\.path\.join\s*\(", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\bfs\.readFile(?:Sync)?\s*\(|\bfs\.createReadStream\s*\("
+                r"|\bpath\.join\s*\(|\brequire\s*\(", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bFile\.read\s*\(|\bFile\.open\s*\(|\bIO\.read\s*\("
+                r"|\brender\s+file:", re.IGNORECASE),
+     [".rb"]),
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"new\s+FileInputStream\s*\(|Files\.readAllBytes\s*\("
+                r"|new\s+File\s*\(", re.IGNORECASE),
+     [".java"]),
+    ("go",
+     re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\bioutil\.ReadFile\s*\(|\bos\.Open\s*\("
+                r"|\bhttp\.ServeFile\s*\(", re.IGNORECASE),
+     [".go"]),
+]
+
+
+def find_path_traversal_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find path traversal / LFI sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _LFI_PATTERNS if p[0] == tech] or _LFI_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── SSRF sinks ────────────────────────────────────────────────────────────────
+
+_SSRF_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bfile_get_contents\s*\(\s*\$"
+                r"|\bwp_remote_(?:get|post|request)\s*\("
+                r"|\bcurl_setopt\s*\([^,]+,\s*CURLOPT_URL"
+                r"|\bcurl_init\s*\(\s*\$"
+                r"|\bfopen\s*\(\s*[\"']https?", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\brequests\.(?:get|post|put|patch|head)\s*\("
+                r"|\burllib\.request\.urlopen\s*\("
+                r"|\bhttpx\.\w+\s*\("
+                r"|\baiohttp\.\w+\.(?:get|post)\s*\(", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\baxios\.(?:get|post|put)\s*\("
+                r"|\bfetch\s*\("
+                r"|\bhttp(?:s)?\.request\s*\("
+                r"|\bnode-fetch\b", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bNet::HTTP\.(?:get|post_form)\s*\("
+                r"|\bFaraday\.(?:get|post)\s*\("
+                r"|\bopen\s*\(\s*params", re.IGNORECASE),
+     [".rb"]),
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"new\s+URL\s*\([^)]*getParameter"
+                r"|\bRestTemplate\b.*(?:get|post)ForObject"
+                r"|HttpClient.*\.execute\s*\(", re.IGNORECASE),
+     [".java"]),
+    ("go",
+     re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\bhttp\.Get\s*\(|\bhttp\.Post\s*\("
+                r"|\bclient\.Do\s*\(|\bhttp\.NewRequest\s*\(", re.IGNORECASE),
+     [".go"]),
+]
+
+
+def find_ssrf_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find SSRF sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _SSRF_PATTERNS if p[0] == tech] or _SSRF_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── RCE / Command injection sinks ────────────────────────────────────────────
+
+_RCE_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bexec\s*\(|\bsystem\s*\(|\bshell_exec\s*\("
+                r"|\bpassthru\s*\(|\bpopen\s*\(|\bproc_open\s*\("
+                r"|\beval\s*\(", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bos\.system\s*\(|\bsubprocess\.(?:call|run|Popen|check_output)\s*\("
+                r"|\bexec\s*\(|\beval\s*\("
+                r"|\bcommands\.getoutput\s*\(", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\bexec\s*\(|\bspawn\s*\("
+                r"|\bexecSync\s*\(|\bspawnSync\s*\("
+                r"|\beval\s*\(|\bnew\s+Function\s*\(", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bsystem\s*\(|\bexec\s*\(|\bspawn\s*\("
+                r"|\bIO\.popen\s*\(|\b`[^`]*#\{params", re.IGNORECASE),
+     [".rb"]),
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\bRuntime\.getRuntime\(\)\.exec\s*\("
+                r"|\bProcessBuilder\s*\("
+                r"|\bScriptEngine\b", re.IGNORECASE),
+     [".java"]),
+    ("go",
+     re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\bexec\.Command\s*\(|\bexec\.CommandContext\s*\(", re.IGNORECASE),
+     [".go"]),
+]
+
+
+def find_rce_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find RCE / command injection sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _RCE_PATTERNS if p[0] == tech] or _RCE_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── XSS sinks ────────────────────────────────────────────────────────────────
+
+_XSS_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\becho\s+\$|\bprint\s+\$|\bprintf?\s*\(\s*[\"'].*\$"
+                r"|\besc_html\s*\([^)]*\$(?!.*esc_html)"  # unescaped echo
+                r"|\}\s*\?>"  # variable echo via template
+                r"|\{[^\}]*\$[^\}]+\}", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\brender_template_string\s*\(.*request\."
+                r"|\bmark_safe\s*\("
+                r"|\bformat_html\s*\(\s*[f'\"].*{}"
+                r"|\bHttpResponse\s*\(.*request\.", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"res\.(?:send|write|end)\s*\("
+                r"|\bres\.json\s*\(.*req\."
+                r"|\binner(?:HTML|Text)\s*="
+                r"|\bdocument\.write\s*\(", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bhtml_safe\b|\braw\s*\("
+                r"|\brender\s+(?:inline|html):", re.IGNORECASE),
+     [".rb", ".erb"]),
+]
+
+
+def find_xss_sinks_generic(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find XSS sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _XSS_PATTERNS if p[0] == tech] or _XSS_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── Auth bypass patterns ──────────────────────────────────────────────────────
+
+def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
+    """Find routes/handlers lacking authentication checks for ANY language.
+
+    For PHP/WordPress delegates to find_missing_auth_handlers().
+    For other techs uses language-specific auth pattern detection.
+    Returns list of dicts: {route, handler, file, line, issues, n_issues}
+    sorted by n_issues descending.
+    """
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+
+    # PHP/WordPress: use the existing specialized scanner
+    if tech == "php":
+        return find_missing_auth_handlers(local_path)
+
+    results: List[dict] = []
+
+    if tech == "python":
+        # Django: views without @login_required or permission_required
+        # Flask: routes without @login_required
+        _route_re   = re.compile(r"@(?:app|bp|blueprint)\.route\s*\(['\"]([^'\"]+)['\"]")
+        _view_re    = re.compile(r"def\s+([A-Za-z0-9_]+)\s*\((?:request|self)")
+        _auth_dec   = re.compile(r"@login_required|@permission_required|@staff_member_required"
+                                 r"|@jwt_required|@requires_auth")
+        _sensitive  = re.compile(r"\buser\b.*\.(delete|update|save)\s*\("
+                                 r"|\bsettings\b|\bconfig\b.*=\s*request\.",
+                                 re.IGNORECASE)
+        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".py"]):
+            joined = "\n".join(lines)
+            for i, line in enumerate(lines, 1):
+                m = _route_re.search(line) or _view_re.search(line)
+                if not m:
+                    continue
+                route = m.group(1)
+                # Check 10 lines before for auth decorator
+                window_before = "\n".join(lines[max(0, i-10):i])
+                has_auth = bool(_auth_dec.search(window_before))
+                # Check 30 lines after for sensitive operations
+                window_after = "\n".join(lines[i:i+30])
+                is_sensitive = bool(_sensitive.search(window_after))
+                issues = []
+                if not has_auth:
+                    issues.append("no_auth_decorator")
+                if is_sensitive and not has_auth:
+                    issues.append("unauthenticated_mutation")
+                if issues:
+                    results.append({"route": route, "handler": route,
+                                    "file": rel_fp, "line": i,
+                                    "issues": issues, "n_issues": len(issues)})
+
+    elif tech == "nodejs":
+        # Express: routes without auth middleware
+        _route_re   = re.compile(r"(?:app|router)\.(?:get|post|put|delete|patch)\s*\("
+                                 r"\s*['\"]([^'\"]+)['\"]")
+        _auth_mw    = re.compile(r"\bisAuthenticated\b|\bisAdmin\b|\bauthenticate\b"
+                                 r"|\bjwtAuth\b|\bverifyToken\b|\brequireAuth\b"
+                                 r"|\bpassport\.authenticate\b", re.IGNORECASE)
+        _sensitive  = re.compile(r"\.(?:delete|drop|remove|update|create|insert)\s*\("
+                                 r"|\bconfig\b|\bsettings\b|\bpassword\b", re.IGNORECASE)
+        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".js", ".ts", ".mjs"]):
+            for i, line in enumerate(lines, 1):
+                m = _route_re.search(line)
+                if not m:
+                    continue
+                route = m.group(1)
+                window = "\n".join(lines[i:i+5])
+                has_auth = bool(_auth_mw.search(line + window))
+                is_sensitive = bool(_sensitive.search(window))
+                issues = []
+                if not has_auth:
+                    issues.append("no_auth_middleware")
+                if is_sensitive and not has_auth:
+                    issues.append("unauthenticated_sensitive_route")
+                if issues:
+                    results.append({"route": route, "handler": route,
+                                    "file": rel_fp, "line": i,
+                                    "issues": issues, "n_issues": len(issues)})
+
+    elif tech == "ruby":
+        # Rails: actions without before_action :authenticate
+        _action_re  = re.compile(r"def\s+([A-Za-z0-9_]+)\s*$")
+        _auth_ba    = re.compile(r"before_action\s*:authenticate"
+                                 r"|before_filter\s*:authenticate"
+                                 r"|current_user\b|\bauthorize\b")
+        _sensitive  = re.compile(r"\.(delete|destroy|update|create|save)\s*[!\(]", re.IGNORECASE)
+        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".rb"]):
+            for i, line in enumerate(lines, 1):
+                m = _action_re.search(line)
+                if not m:
+                    continue
+                action = m.group(1)
+                window_before = "\n".join(lines[max(0, i-30):i])
+                has_auth = bool(_auth_ba.search(window_before))
+                window_after = "\n".join(lines[i:i+20])
+                is_sensitive = bool(_sensitive.search(window_after))
+                issues = []
+                if not has_auth:
+                    issues.append("no_before_action_authenticate")
+                if is_sensitive and not has_auth:
+                    issues.append("unauthenticated_mutation")
+                if issues:
+                    results.append({"route": action, "handler": action,
+                                    "file": rel_fp, "line": i,
+                                    "issues": issues, "n_issues": len(issues)})
+
+    elif tech == "java":
+        # Spring: mappings without @PreAuthorize / @Secured
+        _map_re     = re.compile(r"@(?:Get|Post|Put|Delete|Patch|Request)Mapping\s*"
+                                 r"\(?[\"']?([A-Za-z0-9_/{}]+)[\"']?")
+        _auth_ann   = re.compile(r"@PreAuthorize|@Secured|@RolesAllowed"
+                                 r"|@WithMockUser", re.IGNORECASE)
+        for abs_fp, rel_fp, lines in _walk_source_files(local_path, [".java"]):
+            for i, line in enumerate(lines, 1):
+                m = _map_re.search(line)
+                if not m:
+                    continue
+                route = m.group(1)
+                window = "\n".join(lines[max(0, i-5):i])
+                has_auth = bool(_auth_ann.search(window))
+                issues = [] if has_auth else ["no_preauthorize_annotation"]
+                if issues:
+                    results.append({"route": route, "handler": route,
+                                    "file": rel_fp, "line": i,
+                                    "issues": issues, "n_issues": 1})
+
+    # Sort by severity (n_issues desc)
+    return sorted(results, key=lambda x: -x.get("n_issues", 0))[:20]
+
+
+# ── Shared scan helper ────────────────────────────────────────────────────────
+
+def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink]:
+    """Generic scan helper for input→sink patterns."""
+    results: List[VulnSink] = []
+    for _tech, _user_re, _sink_re, _exts in pattern_sets:
+        for abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
+            for i, line in enumerate(lines, 1):
+                _sink_m = _sink_re.search(line)
+                if not _sink_m:
+                    continue
+                _user_m = _user_re.search(line)
+                if _user_m:
+                    param = next((g for g in _user_m.groups() if g), "?")
+                    conf = 3
+                else:
+                    window = "\n".join(lines[max(0, i-15):i])
+                    _user_m2 = _user_re.search(window)
+                    if not _user_m2:
+                        continue
+                    param = next((g for g in _user_m2.groups() if g), "?")
+                    conf = 2
+                results.append(VulnSink(
+                    file=rel_fp, line=i, snippet=line.strip(),
+                    param=param, sink=_sink_m.group(0)[:60],
+                    tech=_tech, confidence=conf))
+    # Deduplicate by (file, line)
+    seen: dict = {}
+    for s in results:
+        key = (s.file, s.line)
+        if key not in seen or seen[key].confidence < s.confidence:
+            seen[key] = s
+    return sorted(seen.values(), key=lambda x: -x.confidence)
+
+
+# ── Deserialization sinks ─────────────────────────────────────────────────────
+
+_DESER_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bunserialize\s*\(", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form|body|data)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bpickle\.loads?\s*\("
+                r"|\byaml\.load\s*\([^,)]+\)"   # yaml.load without Loader= is unsafe
+                r"|\bmarshal\.loads?\s*\("
+                r"|\bjsonpickle\.decode\s*\("
+                r"|\bshelve\.open\s*\(", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\beval\s*\(\s*req\."
+                r"|\bvm\.runIn(?:Context|NewContext|ThisContext)\s*\("
+                r"|\bFunction\s*\(\s*req\."
+                r"|\bnode-serialize\b"
+                r"|\bserialize-javascript\b", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bMarshal\.load\s*\("
+                r"|\bYAML\.load\s*\("          # YAML.safe_load is safe
+                r"|\bYAML\.unsafe_load\s*\(", re.IGNORECASE),
+     [".rb"]),
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|getInputStream\s*\(\s*\)"),
+     re.compile(r"new\s+ObjectInputStream\s*\("
+                r"|\breadObject\s*\(\s*\)"
+                r"|\breadUnshared\s*\(\s*\)"
+                r"|\bXStream\s*\(\s*\)"
+                r"|\bSerializationUtils\.deserialize\s*\(", re.IGNORECASE),
+     [".java"]),
+    ("go",
+     re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|io\.ReadAll\s*\(r\.Body\)"),
+     re.compile(r"\bgob\.NewDecoder\s*\("
+                r"|\bgob\.Decode\s*\("
+                r"|\bengoding/gob\b", re.IGNORECASE),
+     [".go"]),
+]
+
+
+def find_deserialization_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find unsafe deserialization sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _DESER_PATTERNS if p[0] == tech] or _DESER_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── XXE sinks ─────────────────────────────────────────────────────────────────
+
+_XXE_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE|FILES)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+                r"|\$xml\b|\$body\b|\$input\b"),
+     re.compile(r"\bsimplexml_load_(?:string|file)\s*\("
+                r"|\bDOMDocument\s*\(\s*\)"
+                r"|\bloadXML\s*\(\s*\$"
+                r"|\blibxml_disable_entity_loader\s*\(\s*false"
+                r"|\bXMLReader::open\s*\(", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:data|body|get_data|stream)"
+                r"|request\.(?:args|form)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"),
+     re.compile(r"\bxml\.etree\.ElementTree\.(?:parse|fromstring|XML)\s*\("
+                r"|\bET\.(?:parse|fromstring)\s*\("
+                r"|\blxml\.etree\.parse\s*\("
+                r"|\blxml\.etree\.fromstring\s*\("
+                r"|\bexpatbuilder\b"
+                r"|\bxmltodict\.parse\s*\(", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|rawBody|text)\b"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\bDOMParser\s*\(\s*\)"
+                r"|\bparseFromString\s*\("
+                r"|\bxml2js\.parseString\s*\("
+                r"|\bfast-xml-parser\b"
+                r"|\blibxmljs\.parseXml\s*\(", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"
+                r"|request\.body\b"),
+     re.compile(r"\bREXML::Document\.new\s*\("
+                r"|\bNokogiri::XML\.parse\s*\("     # safe with NONET flag
+                r"|\bNokogiri::XML\s*\("
+                r"|\bXMLParser\b", re.IGNORECASE),
+     [".rb"]),
+    ("java",
+     re.compile(r"request\.(?:getInputStream|getReader|getParameter)\s*\([^)]*\)"),
+     re.compile(r"\bDocumentBuilderFactory\.newInstance\s*\(\s*\)"
+                r"|\bSAXParserFactory\.newInstance\s*\(\s*\)"
+                r"|\bXMLInputFactory\.newInstance\s*\(\s*\)"
+                r"|\bTransformerFactory\.newInstance\s*\(\s*\)"
+                r"|\bSchemaFactory\b", re.IGNORECASE),
+     [".java"]),
+]
+
+
+def find_xxe_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find XXE / XML injection sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _XXE_PATTERNS if p[0] == tech] or _XXE_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── Open redirect sinks ───────────────────────────────────────────────────────
+
+_REDIRECT_PATTERNS = [
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bheader\s*\(\s*['\"]Location:"
+                r"|\bwp_redirect\s*\(\s*\$"
+                r"|\bwp_safe_redirect\s*\(\s*\$"   # safe_redirect can still be abused
+                r"|\bheader\s*\(\s*['\"]location:", re.IGNORECASE),
+     [".php"]),
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\bredirect\s*\(\s*request\."
+                r"|\bHttpResponseRedirect\s*\(\s*request\."
+                r"|\bRedirectResponse\s*\(\s*request\."
+                r"|\bflask\.redirect\s*\(.*request\.", re.IGNORECASE),
+     [".py"]),
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\bres\.redirect\s*\(\s*req\."
+                r"|\bres\.redirect\s*\(.*req\.", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bredirect_to\s+params\b"
+                r"|\bredirect_to\s+params\[", re.IGNORECASE),
+     [".rb"]),
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"response\.sendRedirect\s*\("
+                r"|\bnew\s+RedirectView\s*\(\s*[^\"']"
+                r"|\bModelAndView\s*\(\s*\"redirect:", re.IGNORECASE),
+     [".java"]),
+    ("go",
+     re.compile(r"r\.FormValue\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"
+                r"|r\.URL\.Query\(\)\.Get\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\bhttp\.Redirect\s*\(", re.IGNORECASE),
+     [".go"]),
+]
+
+
+def find_open_redirect_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find open redirect sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _REDIRECT_PATTERNS if p[0] == tech] or _REDIRECT_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── SSTI sinks ────────────────────────────────────────────────────────────────
+
+_SSTI_PATTERNS = [
+    # Python: Flask/Jinja2 — render_template_string with user input
+    ("python",
+     re.compile(r"request\.(?:GET|POST|args|form|json)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|params\.get\(['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\brender_template_string\s*\("
+                r"|\bjinja2\.Template\s*\("
+                r"|\bTemplate\s*\([^)]*request\."
+                r"|\bEnvironment\s*\(.*\)\.from_string\s*\(", re.IGNORECASE),
+     [".py"]),
+    # PHP: Twig/Smarty template from user input
+    ("php",
+     re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"),
+     re.compile(r"\$twig\s*->\s*render\s*\(\s*\$"
+                r"|\$twig\s*->\s*createTemplate\s*\(\s*\$"
+                r"|\$smarty\s*->\s*display\s*\(\s*\$"
+                r"|\$blade\s*->\s*render\s*\(\s*\$", re.IGNORECASE),
+     [".php"]),
+    # Ruby: ERB with user-supplied template string
+    ("ruby",
+     re.compile(r"params\[:([A-Za-z0-9_]+)\]"),
+     re.compile(r"\bERB\.new\s*\(\s*params"
+                r"|\bERB\.new\s*\([^)]*#\{"
+                r"|\bErubi::Engine\s*\(\s*params", re.IGNORECASE),
+     [".rb"]),
+    # Java: Thymeleaf/FreeMarker template from user input
+    ("java",
+     re.compile(r"request\.getParameter\s*\(\s*[\"']([A-Za-z0-9_]+)[\"']"),
+     re.compile(r"\bSpringTemplateEngine\b.*render"
+                r"|\bcfg\.getTemplate\s*\(\s*[^\"']"
+                r"|\bnew\s+Template\s*\(\s*[^\"']"
+                r"|\bVelocityEngine\b.*evaluate", re.IGNORECASE),
+     [".java"]),
+    # Node.js: Handlebars/Pug/EJS compile from user string
+    ("nodejs",
+     re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
+                r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
+     re.compile(r"\bHandlebars\.compile\s*\(\s*req\."
+                r"|\bpug\.render\s*\(\s*req\."
+                r"|\bejs\.render\s*\(\s*req\."
+                r"|\bnunjucks\.renderString\s*\(\s*req\.", re.IGNORECASE),
+     [".js", ".ts", ".mjs"]),
+]
+
+
+def find_ssti_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    """Find Server-Side Template Injection sinks for ANY language."""
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    pattern_sets = [p for p in _SSTI_PATTERNS if p[0] == tech] or _SSTI_PATTERNS
+    return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
 # ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────
 
 def fetch_wp_plugin_patch_diff(slug: str, vuln_version: str, fixed_version: str,
