@@ -3470,7 +3470,8 @@ _PLUGIN_NAME_PATTERNS = [
     # "vulnerability exists in X versions" -- fraseo alternativo de NVD
     re.compile(r"(?:vulnerability|vuln(?:erability)?)\s+exists in ([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)[,\s]"),
     # "X plugin for WordPress" (en vez de "X WordPress plugin")
-    re.compile(r"([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?) plugin for (?:WordPress|WooCommerce)"),
+    # Con paréntesis opcionales: "X (Free subtitle) plugin for WordPress"
+    re.compile(r"([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)(?:\s*\([^)]{1,80}\))? plugin for (?:WordPress|WooCommerce)"),
     # "plugin X" – fraseo corto de NVD cuando el nombre es el sujeto directo
     re.compile(r"plugin\s+([A-Za-z0-9][A-Za-z0-9 .\-]{1,60}?)\s+(?:<=|before|through|version)"),
     # "PluginName <= X.Y.Z" o "PluginName < X.Y.Z" -- titulo de WPScan/RandomRobbieBF
@@ -3483,7 +3484,7 @@ _PLUGIN_NAME_PATTERNS = [
 # Slugs that are NVD phrasing artifacts, not real product names.
 # "an-issue-in-X" comes from "This issue affects an-issue-in-X:" in some NVD records.
 _SLUG_REJECT_PREFIXES = ("an-issue-in-", "this-issue-", "the-issue-", "an-auth-",
-                          "a-vuln-", "the-vuln-", "affected-")
+                          "a-vuln-", "the-vuln-", "affected-", "the-")
 
 
 def _guess_wp_slug_from_description(description: str) -> Optional[str]:
