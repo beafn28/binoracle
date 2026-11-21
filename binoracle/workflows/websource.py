@@ -391,10 +391,18 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
         url = info.get("download_link") or _WP_DOWNLOAD_LATEST.format(slug=slug)
         res.resolved_version = info.get("version", "")
     r = _download_wp_zip(slug, url, res.resolved_version, dest_dir, step, timeout, res)
-    # Fallback: si se pidio una version concreta (que el LLM puede haber alucinado) y la URL
-    # versionada 404, intenta con la ultima estable de la API -- al menos el motor tendra codigo
-    # real para analizar aunque no sea exactamente la version vulnerable. Confirmado en vivo con
-    # varios CVEs donde el LLM da un numero de version que nunca existio en wordpress.org.
+    # Fallback 1: SVN tag directory — antiguas versiones que ya no están en downloads.wordpress.org
+    # pero sí en el SVN histórico (plugins.svn.wordpress.org/{slug}/tags/{version}/).
+    # Crítico para CVEs que afectan a versiones antiguas (ej. unlimited-elements 1.5.126).
+    if not r.ok and version and version == res.resolved_version:
+        svn_res = _svn_fetch_wp_plugin_version(slug, version, dest_dir, step, timeout)
+        if svn_res.ok:
+            return svn_res
+    # Fallback 2: si se pidio una version concreta (que el LLM puede haber alucinado) y la URL
+    # versionada 404 y el SVN tampoco lo tiene, intenta con la ultima estable de la API -- al
+    # menos el motor tendra codigo real para analizar aunque no sea exactamente la version
+    # vulnerable. Confirmado en vivo con varios CVEs donde el LLM da un numero de version que
+    # nunca existio en wordpress.org.
     if not r.ok and version and res.resolved_version:
         latest_url = info.get("download_link") or _WP_DOWNLOAD_LATEST.format(slug=slug)
         latest_ver = info.get("version", "")
@@ -406,6 +414,112 @@ def fetch_wordpress_plugin(slug: str, version: str = "", dest_dir: str = "",
             if r2.ok:
                 return r2
     return r
+
+
+def _svn_fetch_wp_plugin_version(slug: str, version: str, dest_dir: str, step,
+                                  timeout: float) -> "SourceFetchResult":
+    """Descarga una version especifica de un plugin desde el SVN de WordPress.org.
+    Util cuando la version ya no esta en downloads.wordpress.org (antiguas releases).
+    URL: https://plugins.svn.wordpress.org/{slug}/tags/{version}/
+    Descarga recursivamente todos los ficheros .php/.js/.css del tag."""
+    import urllib.request as _ur
+    import re as _re
+    import os as _os
+
+    res = SourceFetchResult(kind="wordpress-plugin", source=slug)
+    base_svn = f"https://plugins.svn.wordpress.org/{slug}/tags/{version}/"
+
+    # Cache check primero
+    cache_path = _cache_path_for("wordpress-plugin", slug, version)
+    if cache_path and _os.path.isdir(cache_path) and _os.listdir(cache_path):
+        step(f"'{slug}' {version} ya en cache SVN ({cache_path}) -- reutilizando...")
+        if _copy_from_cache(cache_path, dest_dir, slug):
+            res.ok = True
+            res.local_path = dest_dir
+            res.resolved_version = version
+            return res
+
+    step(f"version '{version}' no en downloads.wordpress.org -- intentando SVN tag ({base_svn})...")
+
+    def _svn_list_dir(url: str) -> list:
+        """GET al directorio SVN y extrae enlaces de ficheros y subdirectorios."""
+        try:
+            req = _ur.Request(url, headers={"User-Agent": "binoracle/1.0"})
+            with _ur.urlopen(req, timeout=min(timeout, 20)) as r:
+                if r.status != 200:
+                    return []
+                html = r.read().decode("utf-8", errors="replace")
+            # SVN directory listing: <li><a href="filename">filename</a></li>
+            return _re.findall(r'href="([^"?#]+)"', html)
+        except Exception:
+            return []
+
+    _DOWNLOAD_EXTS = {".php", ".js", ".css", ".txt", ".json", ".html", ".htm",
+                      ".svg", ".pot", ".po", ".mo"}
+    _SKIP_NAMES = {"../", "..", ".", ""}
+
+    def _svn_fetch_recursive(base_url: str, local_base: str, depth: int = 0) -> int:
+        """Descarga recursivamente los ficheros de un directorio SVN."""
+        if depth > 8:
+            return 0
+        entries = _svn_list_dir(base_url)
+        downloaded = 0
+        for entry in entries:
+            if entry in _SKIP_NAMES or entry.startswith("?") or entry.startswith("//"):
+                continue
+            # Subdirectorio
+            if entry.endswith("/"):
+                subdir_local = _os.path.join(local_base, entry.rstrip("/"))
+                _os.makedirs(subdir_local, exist_ok=True)
+                downloaded += _svn_fetch_recursive(base_url + entry, subdir_local, depth + 1)
+                continue
+            # Fichero con extension descargable
+            _, ext = _os.path.splitext(entry.lower())
+            if ext not in _DOWNLOAD_EXTS:
+                continue
+            file_url = base_url + entry
+            local_file = _os.path.join(local_base, entry)
+            try:
+                req = _ur.Request(file_url, headers={"User-Agent": "binoracle/1.0"})
+                with _ur.urlopen(req, timeout=min(timeout, 15)) as r:
+                    if r.status == 200:
+                        content = r.read()
+                        with open(local_file, "wb") as fh:
+                            fh.write(content)
+                        downloaded += 1
+            except Exception:
+                pass
+        return downloaded
+
+    try:
+        # Verificar que el tag existe
+        entries = _svn_list_dir(base_svn)
+        if not entries or all(e in _SKIP_NAMES for e in entries):
+            step(f"SVN tag '{version}' no encontrado para '{slug}'")
+            return res
+
+        plugin_local_dir = _os.path.join(dest_dir, slug)
+        _os.makedirs(plugin_local_dir, exist_ok=True)
+        n_files = _svn_fetch_recursive(base_svn, plugin_local_dir)
+        if n_files == 0:
+            step(f"SVN tag '{version}' encontrado pero no se descargo ningun fichero")
+            return res
+
+        step(f"SVN: descargados {n_files} ficheros de '{slug}' v{version} desde SVN")
+        res.ok = True
+        res.local_path = dest_dir
+        res.resolved_version = version
+
+        # Guardar en cache para proximas ejecuciones
+        if cache_path:
+            try:
+                import shutil as _shutil
+                _shutil.copytree(dest_dir, cache_path, dirs_exist_ok=True)
+            except Exception:
+                pass
+    except Exception as exc:
+        step(f"SVN fetch error para '{slug}' {version}: {exc}")
+    return res
 
 
 def _download_wp_zip(slug: str, url: str, resolved_version: str, dest_dir: str, step,

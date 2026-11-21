@@ -7159,6 +7159,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step(("XSS REFLEJADO: probando en el mismo endpoint de inyeccion") if es else
                          ("REFLECTED XSS: testing on the same injection endpoint"))
                 _xss_base_params = notes.get("base_params") or {}
+                _xss_synth_hints = {
+                    k: v for k, v in {
+                        "xss_context":    notes.get("xss_context_hint"),
+                        "event_handler":  notes.get("xss_event_handler"),
+                        "encoding_bypass": notes.get("encoding_bypass"),
+                        "xss_type":       notes.get("xss_type_hint"),
+                    }.items() if v
+                } or None
                 wr = verify_wordpress_xss(fr.local_path, plugin_dir, notes.get("endpoint"),
                                           notes.get("http_method") or "GET", params,
                                           xss_param_hint=xss_p or "", on_step=step, budget_s=budget_s,
@@ -7167,7 +7175,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                           stored_xss_view_path=_stored_view,
                                           payload_transform=str(notes.get("payload_transform") or ""),
                                           extra_inject_params=_xss_base_params,
-                                          render_context=str(notes.get("render_context") or "unknown"))
+                                          render_context=str(notes.get("render_context") or "unknown"),
+                                          synth_hints=_xss_synth_hints)
                 xss_wp_extra_nonce_pages: List[str] = []
                 xss_wp_extra_setup_trigger_paths: List[str] = []
                 def _on_xss_wp_suggestion(sug):
