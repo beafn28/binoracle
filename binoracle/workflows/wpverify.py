@@ -5327,13 +5327,40 @@ def verify_wordpress_sqli(
                     _rf2 = send(_false_p)
                     _rt2_text = _rt2.text or ""
                     _rf2_text = _rf2.text or ""
+
+                    # Normalizar antes de comparar: eliminar tokens variables que no son
+                    # señal de la inyección (timestamps Unix, nonces WP, campos JSON
+                    # que cambian por request). Sin esto, un "timestamp":1748546123 que
+                    # difiere entre TRUE y FALSE genera falsos positivos de "token exclusivo".
+                    def _norm_for_diff(txt: str) -> str:
+                        import re as _re2
+                        # Valores JSON de campos variables: "field": <valor>
+                        txt = _re2.sub(
+                            r'"(?:timestamp|generated_at|updated_at|created_at'
+                            r'|nonce|_wpnonce|_token|wpnonce|time|expires|exp'
+                            r'|modified|date_modified|current_time)'
+                            r'"\s*:\s*(?:"[^"]{0,80}"|\d+)',
+                            '"__VARFIELD__":0', txt)
+                        # Unix timestamps (10 dígitos, 1xxx...xxx) como literal
+                        txt = _re2.sub(r'\b1[0-9]{9}\b', '0000000000', txt)
+                        # Nonces WP y tokens hex 8-40 chars (no queremos perder
+                        # identificadores de base de datos, así que solo eliminamos
+                        # los que aparecen como valor de atributos data-nonce, nonce=, etc.)
+                        txt = _re2.sub(
+                            r'(?:nonce|_wpnonce|token)(?:=|%3D|&amp;|":")[0-9a-f]{8,40}',
+                            'NONCE=MASKED', txt, flags=_re2.I)
+                        return txt
+
+                    _rt2_norm = _norm_for_diff(_rt2_text)
+                    _rf2_norm = _norm_for_diff(_rf2_text)
+
                     # Buscar tokens que aparecen solo en FALSE (mensajes de error, dumps)
                     # o solo en TRUE (datos reales de la DB)
                     _only_in_false = set()
                     _only_in_true = set()
                     # Dividir en tokens de >=6 chars para evitar ruido
-                    _tok_true = set(w for w in _rt2_text.split() if len(w) >= 6)
-                    _tok_false = set(w for w in _rf2_text.split() if len(w) >= 6)
+                    _tok_true = set(w for w in _rt2_norm.split() if len(w) >= 6)
+                    _tok_false = set(w for w in _rf2_norm.split() if len(w) >= 6)
                     _only_in_false = _tok_false - _tok_true
                     _only_in_true = _tok_true - _tok_false
                     # Señal válida: hay tokens exclusivos de una respuesta y no de la otra
@@ -5342,8 +5369,8 @@ def verify_wordpress_sqli(
                     # Señal secundaria: diferencia en los primeros 200B del body (donde suele
                     # aparecer var_dump / error PHP antes del HTML normal). Detecta textos cortos
                     # como `string(28) "Can't not get the order"` que tienen pocos tokens >=6chars.
-                    _head_true = (_rt2.text or "")[:200]
-                    _head_false = (_rf2.text or "")[:200]
+                    _head_true = _rt2_norm[:200]
+                    _head_false = _rf2_norm[:200]
                     _head_differs = (_head_true != _head_false and
                                      abs(len(_head_true) - len(_head_false)) >= 5)
                     _status_ok = (_rt2.status_code == _rf2.status_code)

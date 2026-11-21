@@ -4359,20 +4359,35 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                           f"{_det_rec['location']}"))
                                 # Registrar endpoints alternativos para fallback: todos los AJAX
                                 # actions del plugin excepto el principal ya elegido.
-                                # Si el principal falla, el retry loop los probará en orden.
+                                # Incluir AMBAS variantes (con y sin nopriv_) por cada action:
+                                # - wp_ajax_X → autenticado; wp_ajax_nopriv_X → anónimo.
+                                # Muchos CVEs unauthenticated solo registran nopriv; si el
+                                # scan detectó la acción auth'd, el fallback prueba la nopriv
+                                # (y viceversa) antes de descartar la acción entera.
                                 _all_actions = find_all_ajax_actions(fr.local_path)
-                                _alt_eps = [
-                                    {"endpoint": f"/wp-admin/admin-ajax.php?action={_act}",
-                                     "parameters": [_det_param]}
-                                    for _act in _all_actions if _act != _det_action
-                                ]
+                                _det_nopriv = (_det_action.replace("nopriv_", "", 1)
+                                               if _det_action.startswith("nopriv_")
+                                               else f"nopriv_{_det_action}")
+                                _alt_eps = []
+                                for _act in _all_actions:
+                                    if _act == _det_action:
+                                        continue
+                                    _alt_eps.append({
+                                        "endpoint": f"/wp-admin/admin-ajax.php?action={_act}",
+                                        "parameters": [_det_param]})
+                                # Variante nopriv/auth del endpoint principal (alta prioridad → primero)
+                                _alt_eps.insert(0, {
+                                    "endpoint": f"/wp-admin/admin-ajax.php?action={_det_nopriv}",
+                                    "parameters": [_det_param],
+                                    "_note": "variante nopriv/priv del endpoint principal"})
                                 if _alt_eps:
                                     notes["alt_endpoints"] = _alt_eps
                                     inv.llm_notes["alt_endpoints"] = _alt_eps
                                     step((f"endpoints alternativos registrados para fallback: "
-                                          f"{len(_alt_eps)} acciones AJAX adicionales") if es else
+                                          f"{len(_alt_eps)} acciones AJAX (incluye variante "
+                                          f"nopriv/priv '{_det_nopriv}' en primer lugar)") if es else
                                          (f"registered {len(_alt_eps)} alternative AJAX endpoints "
-                                          f"for fallback"))
+                                          f"(nopriv/priv variant '{_det_nopriv}' first)"))
                 # con al menos una funcion confirmada de verdad: lee el codigo real alrededor y
                 # pide al LLM que AFINE el endpoint/parametros a partir de el, en vez de quedarse
                 # con la primera suposicion (hecha solo leyendo la descripcion de la CVE, que rara

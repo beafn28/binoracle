@@ -231,6 +231,27 @@ def _start_job(cve_id: str, config) -> _Job:
             }
             _save_history(job)
             job._q.put(("done", job.result))
+        # Limpiar contenedores/redes huérfanas de ESTE job (suffix = job.id[:8])
+        # para no acumular docker garbage entre jobs de una misma sesión.
+        try:
+            import subprocess as _sp
+            _suffix = job.id[:8]
+            _r = _sp.run(
+                ["docker", "ps", "-aq", "--filter", f"name=binoracle-wpverify-{_suffix}"],
+                capture_output=True, text=True, timeout=10)
+            _ids = [i for i in _r.stdout.strip().split() if i]
+            if _ids:
+                _sp.run(["docker", "rm", "-f"] + _ids,
+                        capture_output=True, timeout=30)
+            _rn = _sp.run(
+                ["docker", "network", "ls", "--format", "{{.Name}}",
+                 "--filter", f"name=binoracle-wpverify-{_suffix}"],
+                capture_output=True, text=True, timeout=10)
+            for _net in [n for n in _rn.stdout.strip().split() if n]:
+                _sp.run(["docker", "network", "rm", _net],
+                        capture_output=True, timeout=10)
+        except Exception:
+            pass
 
     threading.Thread(target=_watchdog, daemon=True, name=f"watchdog-{job.id}").start()
     return job
