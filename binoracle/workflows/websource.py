@@ -465,59 +465,74 @@ def _svn_fetch_wp_plugin_version(slug: str, version: str, dest_dir: str, step,
     _DOWNLOAD_EXTS = {".php", ".js", ".css", ".txt", ".json", ".html", ".htm",
                       ".svg", ".pot", ".po", ".mo"}
     _SKIP_NAMES = {"../", "..", ".", ""}
-    import threading as _threading
-    _svn_lock = _threading.Lock()
-
-    def _collect_file_list(base_url: str, local_base: str,
-                           depth: int = 0) -> list:
-        """Recorre el árbol SVN de forma recursiva y devuelve lista de
-        (file_url, local_path) para todos los ficheros descargables.
-        Solo hace HTTP para las páginas de directorio (rápido)."""
-        if depth > 8:
-            return []
-        entries = _svn_list_dir(base_url)
-        tasks = []
-        for entry in entries:
-            if entry in _SKIP_NAMES or entry.startswith("?") or entry.startswith("//"):
-                continue
-            if entry.endswith("/"):
-                sub_local = _os.path.join(local_base, entry.rstrip("/"))
-                with _svn_lock:
-                    _os.makedirs(sub_local, exist_ok=True)
-                tasks.extend(_collect_file_list(base_url + entry, sub_local, depth + 1))
-                continue
-            _, ext = _os.path.splitext(entry.lower())
-            if ext not in _DOWNLOAD_EXTS:
-                continue
-            tasks.append((base_url + entry, _os.path.join(local_base, entry)))
-        return tasks
-
-    def _download_one(args) -> bool:
-        file_url, local_file = args
-        try:
-            req = _ur.Request(file_url, headers={"User-Agent": "binoracle/1.0"})
-            with _ur.urlopen(req, timeout=min(timeout, 15)) as r:
-                if r.status == 200:
-                    content = r.read()
-                    with open(local_file, "wb") as fh:
-                        fh.write(content)
-                    return True
-        except Exception:
-            pass
-        return False
 
     def _svn_fetch_recursive(base_url: str, local_base: str, depth: int = 0) -> int:
-        """Recopila la lista de ficheros (crawl secuencial de directorios) y luego
-        descarga todos en paralelo con un pool de 20 threads — de ~600s a ~60s."""
+        """BFS concurrente: explora directorios Y descarga ficheros en paralelo.
+
+        Fase 1 — BFS de directorios con 20 threads: cada nivel del árbol se
+        procesa en una sola ronda de peticiones paralelas (en vez de secuencial).
+        Convierte 100+ requests secuenciales (~1300s) en ~4 rondas paralelas (~20s).
+
+        Fase 2 — descarga de ficheros con 20 threads (igual que antes).
+        """
         import concurrent.futures as _cf
-        step(f"SVN: explorando estructura de directorios...")
-        tasks = _collect_file_list(base_url, local_base, depth)
-        if not tasks:
+
+        step("SVN: explorando directorios en paralelo (BFS concurrente)...")
+
+        # Cada elemento de la cola es (dir_url, local_dir_path, depth)
+        pending_dirs = [(base_url, local_base, depth)]
+        file_tasks = []  # (file_url, local_path)
+
+        def _list_one_dir(args):
+            """Devuelve (dir_url, local_dir, depth, subdirs, files)."""
+            dir_url, local_dir, d = args
+            if d > 8:
+                return dir_url, local_dir, d, [], []
+            entries = _svn_list_dir(dir_url)
+            subdirs, files = [], []
+            for entry in entries:
+                if entry in _SKIP_NAMES or entry.startswith("?") or entry.startswith("//"):
+                    continue
+                if entry.endswith("/"):
+                    sub_local = _os.path.join(local_dir, entry.rstrip("/"))
+                    _os.makedirs(sub_local, exist_ok=True)
+                    subdirs.append((dir_url + entry, sub_local, d + 1))
+                else:
+                    _, ext = _os.path.splitext(entry.lower())
+                    if ext in _DOWNLOAD_EXTS:
+                        files.append((dir_url + entry, _os.path.join(local_dir, entry)))
+            return dir_url, local_dir, d, subdirs, files
+
+        # BFS: cada ronda procesa todos los directorios pendientes en paralelo
+        with _cf.ThreadPoolExecutor(max_workers=20) as pool:
+            while pending_dirs:
+                results = list(pool.map(_list_one_dir, pending_dirs))
+                pending_dirs = []
+                for _, _, _, subdirs, files in results:
+                    pending_dirs.extend(subdirs)
+                    file_tasks.extend(files)
+
+        if not file_tasks:
             return 0
-        step(f"SVN: {len(tasks)} ficheros encontrados — descargando en paralelo (20 threads)...")
+        step(f"SVN: {len(file_tasks)} ficheros encontrados — descargando en paralelo (20 threads)...")
+
+        def _download_one(args) -> bool:
+            file_url, local_file = args
+            try:
+                req = _ur.Request(file_url, headers={"User-Agent": "binoracle/1.0"})
+                with _ur.urlopen(req, timeout=min(timeout, 15)) as r:
+                    if r.status == 200:
+                        content = r.read()
+                        with open(local_file, "wb") as fh:
+                            fh.write(content)
+                        return True
+            except Exception:
+                pass
+            return False
+
         downloaded = 0
         with _cf.ThreadPoolExecutor(max_workers=20) as pool:
-            for ok in pool.map(_download_one, tasks):
+            for ok in pool.map(_download_one, file_tasks):
                 if ok:
                     downloaded += 1
         return downloaded

@@ -869,7 +869,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-_INVESTIGATION_TIMEOUT_S = 25 * 60  # 25 min watchdog — investigation phase has no inner budget
+_INVESTIGATION_TIMEOUT_S = 40 * 60  # 40 min watchdog — SVN download de plugins grandes puede tomar >20 min
 
 
 def _cleanup_stale_docker_labs():
