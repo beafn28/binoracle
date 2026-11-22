@@ -874,8 +874,9 @@ _HUECO_SQLI_SYS = (
     "http_method (GET o POST segun la superglobal del parametro vulnerable), "
     "sqli_param (nombre EXACTO del parametro que llega a la query SQL sin prepare; "
     "si el taint viene de $_SERVER['REQUEST_URI'] escribe 'REQUEST_URI' aqui), "
-    "sqli_taint_source (donde el valor tainted entra al codigo: query_param|REQUEST_URI|header|cookie), "
+    "sqli_taint_source (donde el valor tainted entra al codigo: query_param|REQUEST_URI|header|cookie|rawurldecode — pon 'rawurldecode' si el plugin llama a rawurldecode() o sanitize_title con un filtro que revierte la sanitizacion, como CVE-2026-39732), "
     "sqli_via_request_uri (true si el taint source es $_SERVER['REQUEST_URI'] y la inyeccion va en el PATH HTTP, false en caso contrario), "
+    "sqli_via_rawurldecode (true si el slug/param pasa por rawurldecode() o sanitize_title filter DESPUES de que WordPress lo haya sanitizado — el payload debe ser %2527 en el wire para que rawurldecode() lo convierta en apostrofo; false en caso contrario), "
     "auth_required (none si wp_ajax_nopriv_ o sin check_ajax_referer/capability; "
     "subscriber si hay check_ajax_referer pero cualquier usuario logueado puede; "
     "editor o admin si exige un rol especifico), "
@@ -8610,6 +8611,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     or any(s in (notes.get("sqli_taint_source") or "").upper()
                            for s in ("REQUEST_URI", "SERVER"))
                 )
+                # Auto-detect rawurldecode injection: se activa cuando el LLM identifica
+                # rawurldecode()/sanitize_title como la causa de que el apostrofo llegue al
+                # SQL (p.ej. CVE-2026-39732 Transliterator: ?name=%2527 → rawurldecode → ')
+                _via_rawurldecode = bool(
+                    notes.get("sqli_via_rawurldecode")
+                    or any(s in (notes.get("sqli_taint_source") or "").lower()
+                           for s in ("rawurldecode", "sanitize_title", "url_decode"))
+                )
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, _sqli_ep,
                     _sqli_http_method, params,
@@ -8621,7 +8630,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _boot_ref=_sqli_boot_ref,
                     _lab_ref=_sqli_lab_ref,
                     json_body=bool(notes.get("json_body")),
-                    sqli_via_request_uri=_via_uri)
+                    sqli_via_request_uri=_via_uri,
+                    sqli_via_rawurldecode=_via_rawurldecode)
                 # aprendizaje y reintento: si no se confirmo pero SI hubo laboratorio real (no es
                 # un problema de infraestructura), se le pide al LLM que lea la MISMA evidencia
                 # real (cuerpo de la respuesta de control) que un analista humano leeria a mano --
@@ -8676,7 +8686,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         extra_setup_trigger_paths=list(extra_setup_trigger_paths),
                         _live_boot=_live,
                         json_body=bool(notes.get("json_body")),
-                        sqli_via_request_uri=_via_uri)
+                        sqli_via_request_uri=_via_uri,
+                        sqli_via_rawurldecode=_via_rawurldecode)
                 _ep_lock_active = bool(notes.get("analyst_endpoint_lock")
                                        or notes.get("poc_raw_http_lock")
                                        or notes.get("poc_llm_endpoint_lock"))
