@@ -24,11 +24,15 @@ here — only a real run against an authorized live target can do that.
 """
 from __future__ import annotations
 
+import json as _json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -1009,6 +1013,203 @@ def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str]
     return res
 
 
+_PYPI_API        = "https://pypi.org/pypi/{name}/{version}/json"
+_PYPI_API_LATEST = "https://pypi.org/pypi/{name}/json"
+_NPM_REGISTRY    = "https://registry.npmjs.org/{name}/{version}"
+_NPM_LATEST      = "https://registry.npmjs.org/{name}/latest"
+_RUBYGEMS_API    = "https://rubygems.org/api/v1/gems/{name}.json"
+_RUBYGEMS_DL     = "https://rubygems.org/gems/{name}-{version}.gem"
+_MAVEN_CENTRAL   = ("https://search.maven.org/remotecontent?filepath="
+                    "{gpath}/{a}/{v}/{a}-{v}-sources.jar")
+
+
+def _http_get_json(url: str, timeout: float = 20.0) -> dict:
+    """Fetch JSON from URL; raises urllib.error.URLError / ValueError on failure."""
+    req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0 CVE-research"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return _json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def _http_download(url: str, dest_path: str, timeout: float = 90.0,
+                   max_bytes: int = 80 * 1024 * 1024) -> None:
+    """Download URL to dest_path (streaming, capped at max_bytes)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0 CVE-research"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp, \
+         open(dest_path, "wb") as fh:
+        read = 0
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            read += len(chunk)
+            if read > max_bytes:
+                raise ValueError(f"download exceeded {max_bytes} bytes: {url}")
+            fh.write(chunk)
+
+
+def _extract_tarball(tarball_path: str, dest_dir: str) -> None:
+    """Extract .tar.gz or .tgz to dest_dir, stripping the leading component."""
+    with tarfile.open(tarball_path, "r:gz") as tf:
+        members = tf.getmembers()
+        # strip leading directory (e.g. 'package/' from npm, 'django-tenants-3.4/' from PyPI)
+        if members:
+            prefix = members[0].name.split("/")[0] + "/"
+            for m in members:
+                if m.name.startswith(prefix):
+                    m.name = m.name[len(prefix):]
+            tf.extractall(dest_dir, members=[m for m in members if m.name])
+
+
+def fetch_pypi_package(name: str, version: str = "",
+                       on_step: Optional[Callable[[str], None]] = None,
+                       timeout: float = 90.0) -> "SourceFetchResult":
+    """Download a PyPI package sdist (.tar.gz) for a given name + version."""
+    step = on_step or (lambda _m: None)
+    name = name.strip()
+    ver  = version.strip()
+    # Normalise: PyPI uses '-' or '_' interchangeably
+    name_norm = name.replace("-", "-").lower()
+    try:
+        url = (_PYPI_API.format(name=name_norm, version=ver) if ver
+               else _PYPI_API_LATEST.format(name=name_norm))
+        meta = _http_get_json(url, timeout=min(timeout, 20))
+    except Exception as e:
+        # Try with underscore variant if hyphen variant fails
+        alt = name_norm.replace("-", "_")
+        if alt != name_norm:
+            try:
+                url = (_PYPI_API.format(name=alt, version=ver) if ver
+                       else _PYPI_API_LATEST.format(name=alt))
+                meta = _http_get_json(url, timeout=min(timeout, 20))
+                name_norm = alt
+            except Exception:
+                return SourceFetchResult(source=name,
+                                         note=f"PyPI API failed for '{name}': {e}")
+        else:
+            return SourceFetchResult(source=name, note=f"PyPI API failed for '{name}': {e}")
+
+    if not ver:
+        ver = meta.get("info", {}).get("version", "")
+    # Prefer sdist (.tar.gz), fall back to wheel
+    urls = meta.get("urls") or []
+    if not urls and ver:
+        urls = meta.get("releases", {}).get(ver, [])
+    sdist_url = next((u["url"] for u in urls if u.get("packagetype") == "sdist"), None)
+    if not sdist_url:
+        sdist_url = next((u["url"] for u in urls if u.get("url", "").endswith(".tar.gz")), None)
+    if not sdist_url:
+        # Last resort: any wheel
+        sdist_url = next((u["url"] for u in urls), None)
+    if not sdist_url:
+        return SourceFetchResult(source=name, note=f"PyPI: no downloadable release for '{name}' {ver}")
+
+    dest_dir = tempfile.mkdtemp(prefix=f"bino_pypi_{name_norm}_")
+    tarball  = os.path.join(dest_dir, "sdist.tar.gz")
+    step(f"descargando PyPI {name_norm}=={ver} ({sdist_url})...")
+    try:
+        _http_download(sdist_url, tarball, timeout=timeout)
+        extract_dir = os.path.join(dest_dir, "src")
+        os.makedirs(extract_dir, exist_ok=True)
+        if tarball.endswith(".tar.gz") or tarball.endswith(".tgz"):
+            _extract_tarball(tarball, extract_dir)
+        else:
+            with zipfile.ZipFile(tarball) as zf:
+                zf.extractall(extract_dir)
+        os.remove(tarball)
+    except Exception as e:
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        return SourceFetchResult(source=name, note=f"PyPI download/extract failed: {e}")
+
+    res = SourceFetchResult(kind="local-dir", source=sdist_url)
+    res.ok         = True
+    res.local_path = extract_dir
+    res.version    = ver
+    return res
+
+
+def fetch_npm_package(name: str, version: str = "",
+                      on_step: Optional[Callable[[str], None]] = None,
+                      timeout: float = 90.0) -> "SourceFetchResult":
+    """Download an npm package tarball for a given name + version."""
+    step = on_step or (lambda _m: None)
+    name = name.strip()
+    ver  = version.strip()
+    # URL-encode scoped packages: @scope/pkg → %40scope%2Fpkg
+    encoded = name.replace("@", "%40").replace("/", "%2F")
+    try:
+        url = (_NPM_REGISTRY.format(name=encoded, version=ver) if ver
+               else _NPM_LATEST.format(name=encoded))
+        meta = _http_get_json(url, timeout=min(timeout, 20))
+    except Exception as e:
+        return SourceFetchResult(source=name, note=f"npm registry failed for '{name}': {e}")
+
+    tarball_url = (meta.get("dist", {}).get("tarball") or
+                   meta.get("dist", {}).get("url") or "")
+    if not ver:
+        ver = meta.get("version", "")
+    if not tarball_url:
+        return SourceFetchResult(source=name, note=f"npm: no tarball URL for '{name}' {ver}")
+
+    dest_dir = tempfile.mkdtemp(prefix=f"bino_npm_{name.replace('/', '_').replace('@', '')}_")
+    tarball  = os.path.join(dest_dir, "pkg.tgz")
+    step(f"descargando npm {name}@{ver} ({tarball_url})...")
+    try:
+        _http_download(tarball_url, tarball, timeout=timeout)
+        extract_dir = os.path.join(dest_dir, "src")
+        os.makedirs(extract_dir, exist_ok=True)
+        _extract_tarball(tarball, extract_dir)
+        os.remove(tarball)
+    except Exception as e:
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        return SourceFetchResult(source=name, note=f"npm download/extract failed: {e}")
+
+    res = SourceFetchResult(kind="local-dir", source=tarball_url)
+    res.ok         = True
+    res.local_path = extract_dir
+    res.version    = ver
+    return res
+
+
+def fetch_gem_package(name: str, version: str = "",
+                      on_step: Optional[Callable[[str], None]] = None,
+                      timeout: float = 90.0) -> "SourceFetchResult":
+    """Download a RubyGem and extract its contents."""
+    step = on_step or (lambda _m: None)
+    name = name.strip()
+    ver  = version.strip()
+    if not ver:
+        try:
+            meta = _http_get_json(_RUBYGEMS_API.format(name=name), timeout=min(timeout, 20))
+            ver  = meta.get("version", "")
+        except Exception as e:
+            return SourceFetchResult(source=name, note=f"RubyGems API failed for '{name}': {e}")
+    if not ver:
+        return SourceFetchResult(source=name, note=f"RubyGems: could not determine version for '{name}'")
+    dl_url   = _RUBYGEMS_DL.format(name=name, version=ver)
+    dest_dir = tempfile.mkdtemp(prefix=f"bino_gem_{name}_")
+    gem_path = os.path.join(dest_dir, f"{name}-{ver}.gem")
+    step(f"descargando gem {name}-{ver}...")
+    try:
+        _http_download(dl_url, gem_path, timeout=timeout)
+        # A .gem is a tar archive containing data.tar.gz (the library source)
+        extract_dir = os.path.join(dest_dir, "src")
+        os.makedirs(extract_dir, exist_ok=True)
+        with tarfile.open(gem_path, "r") as outer:
+            outer.extract("data.tar.gz", path=dest_dir)
+        data_tgz = os.path.join(dest_dir, "data.tar.gz")
+        _extract_tarball(data_tgz, extract_dir)
+        os.remove(gem_path)
+        os.remove(data_tgz)
+    except Exception as e:
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        return SourceFetchResult(source=name, note=f"gem download/extract failed: {e}")
+    res = SourceFetchResult(kind="local-dir", source=dl_url)
+    res.ok         = True
+    res.local_path = extract_dir
+    res.version    = ver
+    return res
+
+
 def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str], None]] = None,
                  timeout: float = 90.0, cms_hint: str = "",
                  exclusive_upper_bound: bool = False) -> SourceFetchResult:
@@ -1042,6 +1243,32 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
         return fetch_zip_url(target, on_step=on_step, timeout=timeout)
     if looks_like_git_url(target):
         return fetch_git_source(target, ref=version, on_step=on_step, timeout=timeout)
+    # ---- Package registries (PyPI / npm / RubyGems) --------------------------
+    # cms_hint="pypi" or "python" → fetch from PyPI directly
+    if cms_hint in ("pypi", "python"):
+        step = on_step or (lambda _m: None)
+        step(f"resolviendo '{target}' como paquete PyPI (hint='{cms_hint}')...")
+        r = fetch_pypi_package(target, version=version, on_step=on_step, timeout=timeout)
+        if r.ok:
+            return r
+        step(f"PyPI fallo ({r.note}) -- intentando git clone como fallback...")
+        # Don't fall through to WP — return the PyPI failure after git attempt
+    # cms_hint="npm" or "nodejs" or "node" → fetch from npm registry
+    if cms_hint in ("npm", "nodejs", "node"):
+        step = on_step or (lambda _m: None)
+        step(f"resolviendo '{target}' como paquete npm (hint='{cms_hint}')...")
+        r = fetch_npm_package(target, version=version, on_step=on_step, timeout=timeout)
+        if r.ok:
+            return r
+        step(f"npm fallo ({r.note}) -- intentando git clone como fallback...")
+    # cms_hint="gem" or "ruby" → fetch from RubyGems
+    if cms_hint in ("gem", "ruby"):
+        step = on_step or (lambda _m: None)
+        step(f"resolviendo '{target}' como RubyGem (hint='{cms_hint}')...")
+        r = fetch_gem_package(target, version=version, on_step=on_step, timeout=timeout)
+        if r.ok:
+            return r
+        step(f"RubyGems fallo ({r.note}) -- continuando...")
     # Gap confirmado con CVE-2024-23334: un directorio LOCAL (ya clonado/preparado por el analista)
     # caia en el camino de "ni URL git ni zip" y se rechazaba como "slug no reconocido". Se trata
     # directamente como fuente lista para usar: local_path apunta al directorio tal cual.
@@ -3746,6 +3973,230 @@ def find_ssti_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
         tech = detect_tech_stack(local_path)
     pattern_sets = [p for p in _SSTI_PATTERNS if p[0] == tech] or _SSTI_PATTERNS
     return _scan_sinks(local_path, pattern_sets, tech)[:15]
+
+
+# ── Prototype Pollution (Node.js) ─────────────────────────────────────────────
+_PROTO_PATTERNS = [
+    # user input assigned directly to __proto__ or via lodash merge/set/defaults with deep objects
+    ("nodejs", re.compile(r"req\.(body|query|params)\b", re.I),
+     re.compile(r"__proto__|constructor\.prototype|merge\(|set\(|defaults\(|deepmerge\(|extend\(", re.I),
+     (".js", ".ts", ".mjs", ".cjs")),
+    ("nodejs", re.compile(r"Object\.assign\s*\(\s*\w+\s*,\s*req\.", re.I),
+     re.compile(r"Object\.assign", re.I),
+     (".js", ".ts")),
+]
+
+def find_prototype_pollution_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    if tech not in ("nodejs", "unknown"):
+        return []
+    return _scan_sinks(local_path, _PROTO_PATTERNS, "nodejs")[:10]
+
+
+# ── NoSQL Injection ───────────────────────────────────────────────────────────
+_NOSQL_PATTERNS = [
+    # Node.js / Mongoose: findOne(req.body) or find({$where: ...})
+    ("nodejs", re.compile(r"req\.(body|query|params)\b", re.I),
+     re.compile(r"\.find\(|\.findOne\(|\.findOneAndUpdate\(|\.update\(|\$where\s*:", re.I),
+     (".js", ".ts")),
+    # Python / PyMongo: collection.find(request_data)
+    ("python", re.compile(r"request\.(data|json|POST|GET)\b", re.I),
+     re.compile(r"\.find\(|\.find_one\(|\.update_one\(|\.aggregate\(", re.I),
+     (".py",)),
+    # PHP: custom BSON/MongoDB driver
+    ("php", re.compile(r"\$_(?:POST|GET|REQUEST)\b", re.I),
+     re.compile(r"->find\(|->findOne\(|new\\\\MongoDB", re.I),
+     (".php",)),
+]
+
+def find_nosql_injection_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _NOSQL_PATTERNS if p[0] == tech] or _NOSQL_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── Mass Assignment ───────────────────────────────────────────────────────────
+_MASSASSIGN_PATTERNS = [
+    # Rails: params without .permit / strong params
+    ("ruby", re.compile(r"params\b", re.I),
+     re.compile(r"\.update\(params\b|\.create\(params\b|\.new\(params\b|attributes\s*=\s*params\b", re.I),
+     (".rb",)),
+    # Express/Node.js: Object.assign(model, req.body)
+    ("nodejs", re.compile(r"req\.(body|query)\b", re.I),
+     re.compile(r"Object\.assign\(|\.update\(req\.|\.create\(req\.|\.save\(req\.", re.I),
+     (".js", ".ts")),
+    # Django: **request.data / **request.POST into model
+    ("python", re.compile(r"request\.(data|POST)\b", re.I),
+     re.compile(r"\*\*request\.|\.objects\.create\(\*\*|\.objects\.update\(\*\*|serializer.*data", re.I),
+     (".py",)),
+    # Laravel/PHP: $request->all() without fillable guard
+    ("php", re.compile(r"\$request->all\(\)|collect\(\$_POST\)", re.I),
+     re.compile(r"->create\(\|->update\(\|->fill\(", re.I),
+     (".php",)),
+]
+
+def find_mass_assignment_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _MASSASSIGN_PATTERNS if p[0] == tech] or _MASSASSIGN_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── CRLF Injection ────────────────────────────────────────────────────────────
+_CRLF_PATTERNS = [
+    # PHP: header() with user-controlled value
+    ("php", re.compile(r"\$_(?:GET|POST|REQUEST|COOKIE)\b", re.I),
+     re.compile(r"header\s*\(|setcookie\s*\(|wp_redirect\s*\(", re.I),
+     (".php",)),
+    # Node.js: res.setHeader / res.writeHead with user input
+    ("nodejs", re.compile(r"req\.(query|params|body|headers)\b", re.I),
+     re.compile(r"res\.setHeader\(|res\.writeHead\(|res\.header\(", re.I),
+     (".js", ".ts")),
+    # Python: response headers from user input
+    ("python", re.compile(r"request\.(GET|POST|data|headers)\b", re.I),
+     re.compile(r"HttpResponse\[.+\]\s*=|response\[.+\]\s*=|set_cookie\(|redirect\(", re.I),
+     (".py",)),
+    # Java: response.addHeader / setHeader
+    ("java", re.compile(r"request\.getParameter\(|getHeader\(", re.I),
+     re.compile(r"response\.addHeader\(|response\.setHeader\(|sendRedirect\(", re.I),
+     (".java",)),
+]
+
+def find_crlf_injection_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _CRLF_PATTERNS if p[0] == tech] or _CRLF_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── LDAP Injection ────────────────────────────────────────────────────────────
+_LDAP_PATTERNS = [
+    # PHP: ldap_search / ldap_bind with user input
+    ("php", re.compile(r"\$_(?:GET|POST|REQUEST)\b", re.I),
+     re.compile(r"ldap_search\s*\(|ldap_bind\s*\(|ldap_add\s*\(|ldap_connect\s*\(", re.I),
+     (".php",)),
+    # Java: DirContext.search / NamingEnumeration
+    ("java", re.compile(r"request\.getParameter\(", re.I),
+     re.compile(r"ctx\.search\(|DirContext|InitialDirContext|NamingEnumeration", re.I),
+     (".java",)),
+    # Python: ldap3 / python-ldap with user input
+    ("python", re.compile(r"request\.(GET|POST|data)\b", re.I),
+     re.compile(r"conn\.search\(|ldap\.search|ldap3\.Connection|MODIFY_ADD", re.I),
+     (".py",)),
+    # Node.js: ldapjs client.search
+    ("nodejs", re.compile(r"req\.(body|query|params)\b", re.I),
+     re.compile(r"client\.search\(|ldap\.createClient|\.bind\(dn", re.I),
+     (".js", ".ts")),
+]
+
+def find_ldap_injection_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _LDAP_PATTERNS if p[0] == tech] or _LDAP_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── JWT Weakness ──────────────────────────────────────────────────────────────
+_JWT_PATTERNS = [
+    # Node.js: jwt.verify without algorithm pinning, or jwt.decode (no verify)
+    ("nodejs", re.compile(r"jwt\.|jsonwebtoken\b", re.I),
+     re.compile(r"jwt\.decode\(|jwt\.verify\([^,)]+,[^,)]+(?:,\s*\{[^}]*(?!\balgorithms\b))?$|"
+                r"algorithm[s]?\s*:\s*\[?\s*['\"](?:none|HS256)['\"]", re.I),
+     (".js", ".ts")),
+    # Python: jwt.decode without algorithms
+    ("python", re.compile(r"import jwt|from jwt\b", re.I),
+     re.compile(r"jwt\.decode\([^,)]+,[^,)]+(?:,\s*(?!algorithms=))?$|"
+                r"options\s*=\s*\{[^}]*verify_signature\s*:\s*False", re.I),
+     (".py",)),
+    # PHP: JWT without algorithm check
+    ("php", re.compile(r"JWT::|use Firebase|use Lcobucci", re.I),
+     re.compile(r"JWT::decode\(|->parse\(|->withoutVerification\(|'alg'\s*=>\s*'none'", re.I),
+     (".php",)),
+    # Java: Jwts.parser without setSigningKey
+    ("java", re.compile(r"import io\.jsonwebtoken|import com\.auth0\.jwt", re.I),
+     re.compile(r"Jwts\.parser\(\)|parseClaimsJwt\(|\.verify\(token,\s*null", re.I),
+     (".java",)),
+]
+
+def find_jwt_weakness_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _JWT_PATTERNS if p[0] == tech] or _JWT_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── GraphQL Injection / Authorization Bypass ──────────────────────────────────
+_GRAPHQL_PATTERNS = [
+    # Node.js: graphql-js / apollo-server without depth/complexity limits
+    ("nodejs", re.compile(r"req\.(body|query)\b", re.I),
+     re.compile(r"graphql\s*\(|buildSchema\(|GraphQLSchema\(|typeDefs\b|resolvers\b", re.I),
+     (".js", ".ts")),
+    # Python: graphene / strawberry without auth on resolver
+    ("python", re.compile(r"import graphene|import strawberry", re.I),
+     re.compile(r"def resolve_|@strawberry\.(field|mutation)|graphql_view\b", re.I),
+     (".py",)),
+    # Ruby: graphql-ruby
+    ("ruby", re.compile(r"require.*graphql", re.I),
+     re.compile(r"field\s+:\w+|def resolve_|GraphQL::Schema", re.I),
+     (".rb",)),
+    # Java: graphql-java
+    ("java", re.compile(r"import graphql\.", re.I),
+     re.compile(r"GraphQL\.newGraphQL\(|DataFetchingEnvironment|\.query\(", re.I),
+     (".java",)),
+]
+
+def find_graphql_injection_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _GRAPHQL_PATTERNS if p[0] == tech] or _GRAPHQL_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── ReDoS / Algorithmic Complexity ────────────────────────────────────────────
+_REDOS_PATTERNS = [
+    # Node.js: regex applied to user input in a tight loop
+    ("nodejs", re.compile(r"req\.(body|query|params)\b", re.I),
+     re.compile(r"\.test\(|\.match\(|\.exec\(|new\s+RegExp\(", re.I),
+     (".js", ".ts")),
+    # Python: re.match/search/fullmatch on user input
+    ("python", re.compile(r"request\.(GET|POST|data|json)\b", re.I),
+     re.compile(r"re\.(match|search|fullmatch|findall|compile)\(", re.I),
+     (".py",)),
+    # PHP: preg_match/preg_replace on user input
+    ("php", re.compile(r"\$_(?:GET|POST|REQUEST)\b", re.I),
+     re.compile(r"preg_match\s*\(|preg_replace\s*\(|preg_split\s*\(", re.I),
+     (".php",)),
+    # Java: Pattern.matches / .matcher applied to user input
+    ("java", re.compile(r"request\.getParameter\(", re.I),
+     re.compile(r"Pattern\.compile\(|\.matches\(|\.matcher\(", re.I),
+     (".java",)),
+]
+
+def find_redos_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _REDOS_PATTERNS if p[0] == tech] or _REDOS_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
+
+
+# ── HTTP Request Smuggling (Node.js / Go / Python) ────────────────────────────
+_SMUGGLING_PATTERNS = [
+    # Node.js http.createServer with raw Content-Length / Transfer-Encoding manipulation
+    ("nodejs", re.compile(r"req\.headers\b", re.I),
+     re.compile(r"content-length|transfer-encoding|http\.createServer|keepAlive\s*:", re.I),
+     (".js", ".ts")),
+    ("go", re.compile(r"r\.Header\.Get\(", re.I),
+     re.compile(r"\"Content-Length\"|\"Transfer-Encoding\"|http\.ListenAndServe", re.I),
+     (".go",)),
+]
+
+def find_request_smuggling_sinks(local_path: str, tech: str = "auto") -> List[VulnSink]:
+    if tech == "auto":
+        tech = detect_tech_stack(local_path)
+    patterns = [p for p in _SMUGGLING_PATTERNS if p[0] == tech] or _SMUGGLING_PATTERNS
+    return _scan_sinks(local_path, patterns, tech)[:10]
 
 
 # ── Fix 2: Patch-diff grounding ───────────────────────────────────────────────

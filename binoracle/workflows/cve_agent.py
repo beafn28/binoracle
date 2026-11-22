@@ -697,6 +697,131 @@ def _hueco_sys(tech: str, vuln_class: str) -> str:
             "reasoning (una linea citando la llamada exacta que mezcla input de usuario con la plantilla)."
         )
 
+    if "prototype" in vc or "proto-pollution" in vc or "prototype-pollution" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que procesa el JSON/objeto del usuario), "
+            "http_method (GET o POST), "
+            "polluted_key (clave inyectable: '__proto__', 'constructor.prototype', etc.), "
+            "trigger_param (nombre del campo JSON que llega a la funcion de merge/assign), "
+            "affected_function (funcion vulnerable: merge, set, defaults, Object.assign, etc.), "
+            "auth_required (none/low/medium/high), "
+            "payload (payload JSON de prueba: '{\"__proto__\":{\"admin\":true}}'), "
+            "impact (que propiedad se puede contaminar y que activa el gadget downstream), "
+            "reasoning (una linea citando la llamada exacta que hace el merge sin sanitizar)."
+        )
+
+    if "nosql" in vc or "mongodb" in vc or "mongo" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que consulta MongoDB/NoSQL), "
+            "http_method (GET o POST), "
+            "query_param (nombre del parametro o campo que se pasa directamente a la query), "
+            "collection (nombre de la coleccion vulnerable), "
+            "auth_required (none/low/medium/high), "
+            "payload (payload de inyeccion: '{\"$gt\":\"\"}' o '{\"$where\":\"sleep(5000)\"}'), "
+            "operator (operador de MongoDB inyectable: $gt, $ne, $where, $regex, etc.), "
+            "bypass_target (que logica de autenticacion o filtro se salta), "
+            "reasoning (una linea explicando por que el input se pasa directamente a la query)."
+        )
+
+    if "mass-assignment" in vc or "mass_assignment" in vc or "bulk-assignment" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que hace el mass-assignment), "
+            "http_method (GET o POST), "
+            "model_name (nombre del modelo o entidad afectada), "
+            "protected_field (campo sensible que se puede sobreescribir: role, admin, is_admin, etc.), "
+            "auth_required (none/low/medium/high), "
+            "payload (payload POST de prueba que inyecta el campo protegido), "
+            "guard_missing (mecanismo ausente: permit(), fillable, @JsonIgnore, etc.), "
+            "impact (que permite hacer: escalada de privilegios, cambio de email, etc.), "
+            "reasoning (una linea citando por que el guard de asignacion falta o se puede bypassear)."
+        )
+
+    if "crlf" in vc or "header-injection" in vc or "response-splitting" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que inyecta la cabecera), "
+            "inject_param (nombre EXACTO del parametro que llega al header sin sanitizar), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "header_function (funcion vulnerable: header(), setHeader(), addHeader(), etc.), "
+            "payload (payload CRLF: 'foo%0d%0aSet-Cookie: session=attacker'), "
+            "impact (que permite hacer: set-cookie, XSS via reflected header, cache poisoning), "
+            "reasoning (una linea explicando que sanitizacion falta en el valor del header)."
+        )
+
+    if "ldap" in vc or "ldap-injection" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que usa LDAP), "
+            "inject_param (nombre del parametro que se interpola en el filtro LDAP), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "ldap_function (funcion vulnerable: ldap_search, ctx.search, conn.search, etc.), "
+            "filter_template (fragmento del filtro LDAP vulnerable: '(uid={INPUT})', etc.), "
+            "payload (payload de inyeccion LDAP: '*)(uid=*))(|(uid=*', etc.), "
+            "bypass_target (que control de acceso salta: autenticacion, listado de usuarios, etc.), "
+            "reasoning (una linea explicando que escape LDAP falta)."
+        )
+
+    if "jwt" in vc or "jwt-weakness" in vc or "jwt-bypass" in vc or "token" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler que verifica el JWT), "
+            "http_method (GET o POST), "
+            "auth_required (none/low/medium/high), "
+            "weakness_type (alg-none | weak-secret | no-expiry | hs256-to-rs256 | kid-injection), "
+            "verify_function (funcion vulnerable: jwt.verify, jwt.decode, Jwts.parser, etc.), "
+            "algorithm_check (true/false — si valida el algoritmo), "
+            "signature_check (true/false — si verifica la firma), "
+            "payload_to_forge (que payload JWT forjado permite acceso: '{\"role\":\"admin\",...}'), "
+            "impact (que permite hacer: bypass de auth, escalada a admin, impersonacion), "
+            "reasoning (una linea citando la linea exacta donde falta la verificacion)."
+        )
+
+    if "graphql" in vc or "graphql-injection" in vc or "graphql-auth" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del endpoint de GraphQL), "
+            "http_method (POST habitualmente), "
+            "auth_required (none/low/medium/high), "
+            "weakness_type (introspection-enabled | no-depth-limit | no-auth-on-resolver | "
+            "batch-attack | field-suggestion-leak | injection-in-resolver), "
+            "vulnerable_resolver (nombre del resolver vulnerable), "
+            "query_payload (query GraphQL de prueba para demostrar el bug), "
+            "impact (que datos o acciones expone: datos de otros usuarios, mutacion sin auth, etc.), "
+            "reasoning (una linea explicando que control falta en el resolver)."
+        )
+
+    if "redos" in vc or "regex-dos" in vc or "algorithmic" in vc or "dos" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "endpoint (ruta HTTP EXACTA del handler afectado), "
+            "http_method (GET o POST), "
+            "dos_param (nombre del parametro que se pasa al regex/algoritmo lento), "
+            "auth_required (none/low/medium/high), "
+            "vulnerable_regex (regex o patron que causa el backtracking catastrofico), "
+            "complexity (exponencial / cuadratica / cubica — segun el patron de backtracking), "
+            "payload (input de prueba que activa la lentitud: secuencia de backtracking), "
+            "impact (tiempo de respuesta esperado: Xs con string de N chars), "
+            "reasoning (una linea explicando por que el regex o algoritmo es vulnerable)."
+        )
+
+    if "smuggling" in vc or "request-smuggling" in vc or "http-desync" in vc:
+        return _base + (
+            "Claves JSON requeridas: "
+            "frontend_server (tipo de proxy/CDN que re-usa la conexion: nginx, Cloudflare, etc.), "
+            "backend_server (servidor backend: Node.js http, Go net/http, Python gunicorn, etc.), "
+            "http_method (POST habitualmente), "
+            "discrepancy (que cabecera causa la discrepancia: Content-Length vs Transfer-Encoding), "
+            "auth_required (none/low/medium/high), "
+            "payload (peticion HTTP ambigua completa que envenena la siguiente peticion), "
+            "impact (que permite hacer: bypass de auth, cache poisoning, XSS reflejado), "
+            "reasoning (una linea explicando la discrepancia exacta en el parsing HTTP)."
+        )
+
     # Generic / unknown class
     return _base + (
         "Claves JSON requeridas: "
@@ -3226,7 +3351,17 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                              find_rce_sinks, find_xss_sinks_generic,
                              find_auth_bypass_generic,
                              find_deserialization_sinks, find_xxe_sinks,
-                             find_open_redirect_sinks, find_ssti_sinks)
+                             find_open_redirect_sinks, find_ssti_sinks,
+                             # new vuln-class scanners
+                             find_prototype_pollution_sinks,
+                             find_nosql_injection_sinks,
+                             find_mass_assignment_sinks,
+                             find_crlf_injection_sinks,
+                             find_ldap_injection_sinks,
+                             find_jwt_weakness_sinks,
+                             find_graphql_injection_sinks,
+                             find_redos_sinks,
+                             find_request_smuggling_sinks)
     from ..llm.base import Message
 
     vc     = inv.vuln_class or ""
@@ -3868,6 +4003,284 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                          (f"[HUECO] SSTI analysis: endpoint={hint.get('endpoint','?')} "
                           f"engine={hint.get('template_engine','?')} "
                           f"detection={hint.get('detection_payload','?')[:30]}"))
+
+    # ------------------------------------------------------------------ Prototype Pollution
+    elif vc in ("prototype-pollution", "proto-pollution", "prototype-pollution-rce",
+                "client-side-prototype-pollution", "prototype") and not notes.get("endpoint"):
+        proto_hits = find_prototype_pollution_sinks(lpath, tech)
+        if proto_hits:
+            _apply_generic_sink(proto_hits, param_key="trigger_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                proto_hits[0].file, proto_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner prototype-pollution ({tech}): "
+                  f"sink={proto_hits[0].sink} en {proto_hits[0].file}:{proto_hits[0].line}") if es else
+                 (f"[HUECO] prototype pollution scanner ({tech}): "
+                  f"sink={proto_hits[0].sink} at {proto_hits[0].file}:{proto_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{proto_hits[0].sink} @ {proto_hits[0].file}:{proto_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("polluted_key"):
+                        inv.llm_notes["proto_polluted_key"] = str(hint["polluted_key"])
+                    if hint.get("affected_function"):
+                        inv.llm_notes["proto_affected_fn"] = str(hint["affected_function"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] prototype pollution: "
+                         f"endpoint={hint.get('endpoint','?')} "
+                         f"key={hint.get('polluted_key','?')}")
+
+    # ------------------------------------------------------------------ NoSQL Injection
+    elif vc in ("nosql-injection", "nosql", "mongodb-injection",
+                "nosql-query-injection", "mongo-injection") and not notes.get("endpoint"):
+        nosql_hits = find_nosql_injection_sinks(lpath, tech)
+        if nosql_hits:
+            _apply_generic_sink(nosql_hits, param_key="query_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                nosql_hits[0].file, nosql_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner NoSQL injection ({tech}): "
+                  f"sink={nosql_hits[0].sink} en {nosql_hits[0].file}:{nosql_hits[0].line}") if es else
+                 (f"[HUECO] NoSQL injection scanner ({tech}): "
+                  f"sink={nosql_hits[0].sink} at {nosql_hits[0].file}:{nosql_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{nosql_hits[0].sink} @ {nosql_hits[0].file}:{nosql_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("query_param"):
+                        inv.llm_notes["nosql_param"] = str(hint["query_param"])
+                    if hint.get("operator"):
+                        inv.llm_notes["nosql_operator"] = str(hint["operator"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] NoSQL injection: "
+                         f"endpoint={hint.get('endpoint','?')} "
+                         f"operator={hint.get('operator','?')}")
+
+    # ------------------------------------------------------------------ Mass Assignment
+    elif vc in ("mass-assignment", "mass_assignment", "bulk-assignment",
+                "insecure-mass-assignment") and not notes.get("endpoint"):
+        mass_hits = find_mass_assignment_sinks(lpath, tech)
+        if mass_hits:
+            _apply_generic_sink(mass_hits, param_key="protected_field")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                mass_hits[0].file, mass_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner mass-assignment ({tech}): "
+                  f"sink={mass_hits[0].sink} en {mass_hits[0].file}:{mass_hits[0].line}") if es else
+                 (f"[HUECO] mass assignment scanner ({tech}): "
+                  f"sink={mass_hits[0].sink} at {mass_hits[0].file}:{mass_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{mass_hits[0].sink} @ {mass_hits[0].file}:{mass_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("protected_field"):
+                        inv.llm_notes["mass_protected_field"] = str(hint["protected_field"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] mass assignment: "
+                         f"endpoint={hint.get('endpoint','?')} "
+                         f"field={hint.get('protected_field','?')}")
+
+    # ------------------------------------------------------------------ CRLF Injection
+    elif vc in ("crlf-injection", "crlf", "header-injection",
+                "response-splitting", "http-response-splitting") and not notes.get("endpoint"):
+        crlf_hits = find_crlf_injection_sinks(lpath, tech)
+        if crlf_hits:
+            _apply_generic_sink(crlf_hits, param_key="inject_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                crlf_hits[0].file, crlf_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner CRLF injection ({tech}): "
+                  f"sink={crlf_hits[0].sink} en {crlf_hits[0].file}:{crlf_hits[0].line}") if es else
+                 (f"[HUECO] CRLF injection scanner ({tech}): "
+                  f"sink={crlf_hits[0].sink} at {crlf_hits[0].file}:{crlf_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{crlf_hits[0].sink} @ {crlf_hits[0].file}:{crlf_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("inject_param"):
+                        inv.llm_notes["crlf_param"] = str(hint["inject_param"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] CRLF injection: endpoint={hint.get('endpoint','?')}")
+
+    # ------------------------------------------------------------------ LDAP Injection
+    elif vc in ("ldap-injection", "ldap", "ldap-query-injection") and not notes.get("endpoint"):
+        ldap_hits = find_ldap_injection_sinks(lpath, tech)
+        if ldap_hits:
+            _apply_generic_sink(ldap_hits, param_key="inject_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                ldap_hits[0].file, ldap_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner LDAP injection ({tech}): "
+                  f"sink={ldap_hits[0].sink} en {ldap_hits[0].file}:{ldap_hits[0].line}") if es else
+                 (f"[HUECO] LDAP injection scanner ({tech}): "
+                  f"sink={ldap_hits[0].sink} at {ldap_hits[0].file}:{ldap_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{ldap_hits[0].sink} @ {ldap_hits[0].file}:{ldap_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("inject_param"):
+                        inv.llm_notes["ldap_param"] = str(hint["inject_param"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("ldap_function"):
+                        inv.llm_notes["ldap_function"] = str(hint["ldap_function"])
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] LDAP injection: endpoint={hint.get('endpoint','?')}")
+
+    # ------------------------------------------------------------------ JWT Weakness
+    elif vc in ("jwt-weakness", "jwt-bypass", "jwt", "jwt-vulnerability",
+                "token-forgery", "authentication-bypass-via-jwt") and not notes.get("endpoint"):
+        jwt_hits = find_jwt_weakness_sinks(lpath, tech)
+        if jwt_hits:
+            _apply_generic_sink(jwt_hits, param_key="verify_function")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                jwt_hits[0].file, jwt_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner JWT weakness ({tech}): "
+                  f"sink={jwt_hits[0].sink} en {jwt_hits[0].file}:{jwt_hits[0].line}") if es else
+                 (f"[HUECO] JWT weakness scanner ({tech}): "
+                  f"sink={jwt_hits[0].sink} at {jwt_hits[0].file}:{jwt_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{jwt_hits[0].sink} @ {jwt_hits[0].file}:{jwt_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("weakness_type"):
+                        inv.llm_notes["jwt_weakness_type"] = str(hint["weakness_type"])
+                    if hint.get("payload_to_forge"):
+                        inv.llm_notes["jwt_payload_to_forge"] = str(hint["payload_to_forge"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] JWT weakness: "
+                         f"type={hint.get('weakness_type','?')} "
+                         f"endpoint={hint.get('endpoint','?')}")
+
+    # ------------------------------------------------------------------ GraphQL
+    elif vc in ("graphql-injection", "graphql-auth", "graphql",
+                "graphql-authorization", "graphql-introspection") and not notes.get("endpoint"):
+        gql_hits = find_graphql_injection_sinks(lpath, tech)
+        if gql_hits:
+            _apply_generic_sink(gql_hits, param_key="vulnerable_resolver")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                gql_hits[0].file, gql_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner GraphQL ({tech}): "
+                  f"sink={gql_hits[0].sink} en {gql_hits[0].file}:{gql_hits[0].line}") if es else
+                 (f"[HUECO] GraphQL scanner ({tech}): "
+                  f"sink={gql_hits[0].sink} at {gql_hits[0].file}:{gql_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{gql_hits[0].sink} @ {gql_hits[0].file}:{gql_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("vulnerability_type") or hint.get("weakness_type"):
+                        inv.llm_notes["gql_weakness"] = str(
+                            hint.get("weakness_type") or hint.get("vulnerability_type"))
+                    if hint.get("query_payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["query_payload"])
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] GraphQL: "
+                         f"type={hint.get('weakness_type','?')} "
+                         f"resolver={hint.get('vulnerable_resolver','?')}")
+
+    # ------------------------------------------------------------------ ReDoS / Algorithmic
+    elif vc in ("redos", "regex-dos", "algorithmic-complexity", "dos",
+                "denial-of-service", "regular-expression-denial-of-service") and not notes.get("endpoint"):
+        redos_hits = find_redos_sinks(lpath, tech)
+        if redos_hits:
+            _apply_generic_sink(redos_hits, param_key="dos_param")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                redos_hits[0].file, redos_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner ReDoS ({tech}): "
+                  f"sink={redos_hits[0].sink} en {redos_hits[0].file}:{redos_hits[0].line}") if es else
+                 (f"[HUECO] ReDoS scanner ({tech}): "
+                  f"sink={redos_hits[0].sink} at {redos_hits[0].file}:{redos_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{redos_hits[0].sink} @ {redos_hits[0].file}:{redos_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("dos_param"):
+                        inv.llm_notes["redos_param"] = str(hint["dos_param"])
+                    if hint.get("vulnerable_regex"):
+                        inv.llm_notes["redos_regex"] = str(hint["vulnerable_regex"])[:100]
+                    if hint.get("complexity"):
+                        inv.llm_notes["redos_complexity"] = str(hint["complexity"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("http_method"):
+                        inv.llm_notes["http_method"] = str(hint["http_method"]).upper()
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] ReDoS: "
+                         f"endpoint={hint.get('endpoint','?')} "
+                         f"complexity={hint.get('complexity','?')}")
+
+    # ------------------------------------------------------------------ HTTP Request Smuggling
+    elif vc in ("request-smuggling", "http-request-smuggling", "http-desync",
+                "desync-attack") and not notes.get("endpoint"):
+        smug_hits = find_request_smuggling_sinks(lpath, tech)
+        if smug_hits:
+            _apply_generic_sink(smug_hits, param_key="discrepancy")
+            snippet = notes.get("_hueco_sink_snippet") or _read_snippet(
+                smug_hits[0].file, smug_hits[0].line, ctx=40)
+            step((f"[HUECO] escaner HTTP smuggling ({tech}): "
+                  f"sink={smug_hits[0].sink} en {smug_hits[0].file}:{smug_hits[0].line}") if es else
+                 (f"[HUECO] HTTP smuggling scanner ({tech}): "
+                  f"sink={smug_hits[0].sink} at {smug_hits[0].file}:{smug_hits[0].line}"))
+            if snippet:
+                hint = _llm_generic(_hueco_sys(tech, vc),
+                                    f"{smug_hits[0].sink} @ {smug_hits[0].file}:{smug_hits[0].line}",
+                                    snippet)
+                if hint:
+                    if hint.get("endpoint"):
+                        inv.llm_notes["endpoint"] = str(hint["endpoint"]).strip()
+                    if hint.get("discrepancy"):
+                        inv.llm_notes["smuggling_discrepancy"] = str(hint["discrepancy"])
+                    if hint.get("payload"):
+                        inv.llm_notes["hueco_payload_hint"] = str(hint["payload"])
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] HTTP smuggling: "
+                         f"discrepancy={hint.get('discrepancy','?')}")
 
     # Clean up internal scratch key
     inv.llm_notes.pop("_hueco_sink_snippet", None)
@@ -5856,8 +6269,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
              f"attempting to fetch the real source ({source})...")
+        # Pass tech as cms_hint for non-WP stacks so fetch_source dispatches to
+        # PyPI/npm/gem instead of falling through to WordPress.org
+        _explicit_cms = (notes.get("cms") or "").strip().lower()
+        _tech_as_hint = inv.tech or ""
+        _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")
         fr = fetch_source(source, version=version, on_step=step,
-                         cms_hint=(notes.get("cms") or "").strip().lower(),
+                         cms_hint=_cms_pass,
                          exclusive_upper_bound=version_exclusive)
         # confirmado en vivo (CVE-2025-9501, CVE-2024-3552): el LLM a veces da un source_url que
         # NO es ningun slug real -- una URL de GitHub inventada, o el mirror de otra org que no
