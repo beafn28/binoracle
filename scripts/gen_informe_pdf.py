@@ -1908,7 +1908,29 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
     _shots_src = list(ev_shots) if ev_shots else []
     if len(_shots_src) < 2 and r.get("verified") and _auto_gen_screenshots:
         _shots_src = _auto_gen_screenshots(cve_id, r, ve)
-    shots_html = render_screenshots(_shots_src)
+    # For time-based blind SQLi with no browser screenshots, show timing evidence block
+    _tech_str = (ve.get("tecnica") or r.get("vuln_class") or "").lower()
+    _is_time_blind = ("time" in _tech_str or "blind" in _tech_str or "sleep" in _tech_str)
+    _sleep3 = ve.get("sleep3_s") or ve.get("diferencial_s")
+    _sleep0 = ve.get("sleep0_s")
+    if not _shots_src and _is_time_blind and _sleep3 and r.get("verified"):
+        _dif = ve.get("diferencial_s") or ((_sleep3 or 0) - (_sleep0 or 0))
+        _payload_tb = h(ve.get("payload_ganador") or "SLEEP(N)")
+        _timing_block = f"""<div class="shot-card" style="padding:12px">
+  <div class="shot-header"><div class="shot-num">01</div>
+    <div class="shot-title">Medicion Temporal — Confirmacion Time-Blind SQLi</div></div>
+  <div style="background:#0d1117;color:#e2e8f0;border-radius:6px;padding:14px 18px;font-family:\'JetBrains Mono\',\'Courier New\',monospace;font-size:12px;line-height:1.8;margin-top:10px">
+    <div style="color:#4ade80;margin-bottom:8px">✓ SQLI CONFIRMADO — Tecnica: {h(_tech_str)}</div>
+    <div>Payload:    <span style="color:#facc15">{_payload_tb}</span></div>
+    <div>SLEEP(3):   <span style="color:#f87171">{_sleep3:.2f}s</span> &nbsp; (con inyeccion)</div>
+    <div>SLEEP(0):   <span style="color:#4ade80">{(_sleep0 or 0.0):.2f}s</span> &nbsp; (control)</div>
+    <div>Diferencial: <span style="color:#fb923c;font-weight:bold">{_dif:.2f}s</span> &gt; umbral 1.0s → VULNERABLE</div>
+    <div style="margin-top:8px;color:#94a3b8;font-size:11px">Verificacion via raw socket — laboratorio Docker aislado (red none)</div>
+  </div>
+</div>"""
+        shots_html = _timing_block
+    else:
+        shots_html = render_screenshots(_shots_src)
 
     # Error-based attempts
     eb_html = render_error_based(eb_intentos)

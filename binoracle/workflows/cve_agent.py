@@ -360,6 +360,14 @@ _RESEARCH_SYS = (
     "file upload', 'missing file type validation', 'unauthenticated file upload' -- si ves "
     "CUALQUIERA de estas frases, usa 'arbitrary-file-upload', NUNCA 'deserialization' aunque "
     "el codigo tenga funciones de procesamiento de formularios (parse_str, process_entry, etc.); "
+    "(5) PATH-TRAVERSAL vs FILE-UPLOAD: si la descripcion dice 'arbitrary file read', "
+    "'unauthenticated file read', 'sensitive file disclosure', 'read the contents of arbitrary "
+    "files', 'read any file', 'file disclosure', o el CVSS tiene I:N (integridad no afectada) -- "
+    "usa 'path-traversal', NUNCA 'file-upload'. El patron es: parametro del atacante = ruta de "
+    "fichero → el servidor LEE y devuelve en la respuesta el contenido del fichero; "
+    "'file-upload' es ESCRITURA hacia el servidor (el cliente sube un fichero). "
+    "Incluso si el endpoint tiene palabras como 'download' o 'log', si la descripcion dice "
+    "'file read' y el CVSS tiene I:N, es 'path-traversal', NO 'file-upload'; "
     "usa 'lfi' cuando el servidor incluye "
     "un fichero como codigo PHP con include()/require() sobre un parametro controlado por el "
     "atacante -- distinto de path-traversal puro que solo LEE el fichero como texto), "
@@ -6357,7 +6365,16 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
                 return lab
         # Node -- se chequea ANTES del pip generico porque muchos paquetes npm (glob, express,
         # etc.) pasan el regex pip ^[a-z][a-z0-9._-]+$ y se instalan como pip por error.
-        if _NPM_PKG_RE.search(candidate):
+        # Señales de Node.js en candidate o description: "npm", "node", "javascript", ".js",
+        # "package.json", "ep_" prefix (etherpad plugins), "@org/pkg" scopes.
+        _desc_lower_lab = (description or "").lower()
+        _is_node_signal = (
+            _NPM_PKG_RE.search(candidate)
+            or candidate.startswith("ep_")  # etherpad plugin naming convention
+            or re.search(r'\b(npm|node\.?js|javascript|\.js)\b', _desc_lower_lab)
+            or "package.json" in _desc_lower_lab
+        )
+        if _is_node_signal:
             lab = _scaffold_npm_lab(candidate, version, vuln_class, notes, on_step)
             if lab:
                 return lab
@@ -6373,6 +6390,22 @@ def _guess_package_lab(description: str, target_binary: str, vuln_class: str,
             lab = _scaffold_gem_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
             if lab:
                 return lab
+        # Si la descripcion menciona Node.js/npm/javascript explicitamente, prioriza npm
+        # antes que pip para evitar que paquetes npm sin regex especifico se instalen como pip.
+        _desc_has_node = re.search(r'\b(npm|node\.?js|javascript)\b', description, re.I)
+        if _desc_has_node:
+            m = _NPM_PKG_RE.search(description)
+            if not m:
+                # Extrae el primer candidato de nombre de paquete de la descripcion
+                m2 = re.search(r'\b([a-z][a-z0-9._-]{2,})\b', description, re.I)
+                if m2:
+                    lab = _scaffold_npm_lab(m2.group(1).lower(), version, vuln_class, notes, on_step)
+                    if lab:
+                        return lab
+            else:
+                lab = _scaffold_npm_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
+                if lab:
+                    return lab
         m = _PIP_PKG_RE.search(description)
         if m:
             lab = _scaffold_pip_lab(m.group(1).lower(), version, vuln_class, notes, on_step)
@@ -6814,14 +6847,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # La intel enriquece los notes (param/endpoint) Y se pasa al synthesizer mas abajo.
             try:
                 _slug_intel = (fr.plugin_dir or fr.source or source or "").strip().lower()
-                step(("recopilando inteligencia CVE de NVD, Wordfence, Patchstack, GitHub...") if es else
-                     ("gathering CVE intelligence from NVD, Wordfence, Patchstack, GitHub..."))
+                step(("recopilando inteligencia CVE de NVD, Wordfence, Patchstack, GitHub, WPScan, ExploitDB, MITRE, OSV, Vulners...") if es else
+                     ("gathering CVE intelligence from NVD, Wordfence, Patchstack, GitHub, WPScan, ExploitDB, MITRE, OSV, Vulners..."))
                 _cve_intel = gather_cve_intelligence(cve_id, plugin_slug=_slug_intel)
                 _intel_ok = sum(1 for v in _cve_intel["sources"].values() if v)
-                step((f"inteligencia CVE: {_intel_ok}/4 fuentes — "
+                _n_sources = len(_cve_intel["sources"])
+                step((f"inteligencia CVE: {_intel_ok}/{_n_sources} fuentes — "
                       f"CVSS={_cve_intel.get('cvss_score', 0)}, "
                       f"CWEs={_cve_intel.get('cwes', [])}") if es else
-                     (f"CVE intelligence: {_intel_ok}/4 sources — "
+                     (f"CVE intelligence: {_intel_ok}/{_n_sources} sources — "
                       f"CVSS={_cve_intel.get('cvss_score', 0)}, "
                       f"CWEs={_cve_intel.get('cwes', [])}"))
                 # Propagar param/endpoint del advisory si aún no los tenemos
