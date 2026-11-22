@@ -3594,6 +3594,45 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
     if not inv.tech:
         inv.tech = tech  # store for downstream use (source fetch, reports)
 
+    # ---- pre-step: auto-correct LLM vuln_class from CVE description keywords ----
+    # Prevents wasted lab iterations when the LLM assigns the wrong class
+    # (e.g. xss→code-injection, integer-overflow→dos, ssrf→code-injection)
+    _desc_lower = (inv.description or "").lower()
+    _CLASS_KEYWORDS: list[tuple[str, list[str]]] = [
+        ("sqli",             ["sql injection", "sql-injection", "sqli", "unescaped schema", "search_path"]),
+        ("code-injection",   ["code injection", "function injection", "shortcode", "eval(", "template injection",
+                               "arbitrary code", "remote code execution", "rce", "code exec"]),
+        ("rce",              ["remote code execution", "arbitrary code execution", "command injection"]),
+        ("xss",              ["cross-site scripting", "xss", "reflected xss", "stored xss", "dom xss"]),
+        ("ssrf",             ["server-side request forgery", "ssrf", "unvalidated upstream", "open redirect"]),
+        ("dos",              ["denial of service", "denial-of-service", " dos ", "event loop", "infinite loop",
+                               "algorithmic complexity", "redos", "regular expression denial", "catastrophic backtracking"]),
+        ("path-traversal",   ["path traversal", "directory traversal", "lfi", "local file inclusion"]),
+        ("file-upload",      ["arbitrary file upload", "unrestricted file upload", "file upload"]),
+        ("missing-authorization", ["missing authorization", "capability check", "nonce check",
+                                    "authentication bypass", "auth bypass", "unauthenticated"]),
+        ("deserialization",  ["deserialization", "unserialize", "object injection"]),
+        ("ssti",             ["server-side template injection", "ssti", "template injection"]),
+        ("xxe",              ["xml external entity", "xxe", "xml injection"]),
+        ("idor",             ["insecure direct object", "idor", "object reference"]),
+    ]
+    _original_vc = vc
+    for _candidate_class, _keywords in _CLASS_KEYWORDS:
+        if any(kw in _desc_lower for kw in _keywords):
+            if _candidate_class != vc:
+                # Only correct if current class doesn't match primary keywords
+                # (avoid correcting a correct sqli to xss just because description mentions xss as impact)
+                _primary_kw = _keywords[:3]
+                if any(kw in _desc_lower for kw in _primary_kw):
+                    step((f"[HUECO] clase corregida por descripcion NVD: '{_original_vc}' → '{_candidate_class}' "
+                          f"(keyword: '{next(kw for kw in _primary_kw if kw in _desc_lower)}')") if es else
+                         (f"[HUECO] class corrected from NVD description: '{_original_vc}' → '{_candidate_class}' "
+                          f"(keyword: '{next(kw for kw in _primary_kw if kw in _desc_lower)}')"))
+                    inv.vuln_class = _candidate_class
+                    vc = _candidate_class
+                    break
+    # ---- end auto-correct vuln_class -------------------------------------------
+
     # ---- pre-step: extract param hints from CVE description text ----------------
     # Patterns like "via the 'source' parameter", "the X POST parameter", etc.
     _desc = (inv.description or "").lower()
