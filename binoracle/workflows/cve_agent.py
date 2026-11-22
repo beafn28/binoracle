@@ -5370,7 +5370,9 @@ _PIP_PKG_RE = re.compile(
 )
 _NPM_PKG_RE = re.compile(
     r"(?i)\b(next\.?js|next|express|koa|hapi|fastify|nuxt|gatsby|"
-    r"serve-static|connect|restify|feathers|glob)\b"
+    r"serve-static|connect|restify|feathers|glob|"
+    r"vite|svelte|astro|remix|parcel|rollup|webpack|esbuild|"
+    r"turbopack|bun|deno|nest|nestjs|angular|vue)\b"
 )
 # Gemas Ruby conocidas que aparecen en CVEs web -- se chequean ANTES que pip porque
 # nombres como "rack" coinciden también con el regex genérico de paquetes pip.
