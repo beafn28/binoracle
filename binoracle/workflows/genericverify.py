@@ -984,7 +984,7 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
 def verify_generic_command_injection(
     source_dir: str, endpoint: str, http_method: str, parameters,
     cmd_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
-    budget_s: float = 900.0,
+    budget_s: float = 900.0, custom_headers: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica OS command injection contra CUALQUIER objetivo que traiga su propio Dockerfile/
     docker-compose.yml, sin asumir el stack (Python/Node/Go/PHP/Java/Ruby... todos escriben a
@@ -1063,7 +1063,8 @@ def verify_generic_command_injection(
                 try:
                     resp = _http_request(m, base_url + endpoint, timeout=15,
                                      data=payload if m != "GET" else None,
-                                     params=payload if m == "GET" else None)
+                                     params=payload if m == "GET" else None,
+                                     headers=custom_headers or None)
                 except Exception as e:
                     tried.append({"parametro": pname, "error": str(e)})
                     continue
@@ -2966,7 +2967,7 @@ def verify_generic_xss(
 def verify_generic_ssti(
     source_dir: str, endpoint: str, http_method: str, parameters,
     ssti_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
-    budget_s: float = 900.0,
+    budget_s: float = 900.0, custom_headers: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssti: el payload pide al motor de plantillas que
     CALCULE una operacion aritmetica con dos numeros aleatorios; si el resultado (que no aparece
@@ -3065,7 +3066,8 @@ def verify_generic_ssti(
                 try:
                     resp = _http_request(cand_meth, base_url + ep_path, timeout=15,
                                          data=payload if cand_meth != "GET" else None,
-                                         params=payload if cand_meth == "GET" else None)
+                                         params=payload if cand_meth == "GET" else None,
+                                         headers=custom_headers or None)
                 except Exception as e:
                     tried.append({"payload": payload_value, "error": str(e)})
                     continue

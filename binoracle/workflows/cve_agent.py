@@ -8698,13 +8698,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "exec, el objetivo se construye desde su propio Dockerfile/compose..." if es
                      else "attempting GENERIC DYNAMIC verification -- canary file via docker "
                      "exec, the target is built from its own Dockerfile/compose..."))
+                _cmdi_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_command_injection(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s)
+                    params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
+                    custom_headers=_cmdi_custom_hdrs)
                 def _attempt_cmdi_generic(ep, pr):
                     return verify_generic_command_injection(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        cmd_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        custom_headers=_cmdi_custom_hdrs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_cmdi_generic, wr, notes.get("endpoint"), cmd_p,
@@ -9511,13 +9514,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "compose..." if es else "attempting GENERIC DYNAMIC verification -- "
                      "arithmetic computed by the template engine, the target is built from its "
                      "own Dockerfile/compose..."))
+                _ssti_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_ssti(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s)
+                    params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
+                    custom_headers=_ssti_custom_hdrs)
                 def _attempt_ssti_generic(ep, pr):
                     return verify_generic_ssti(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        ssti_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        custom_headers=_ssti_custom_hdrs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssti_generic, wr, notes.get("endpoint"), ssti_p,
