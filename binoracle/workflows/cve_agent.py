@@ -2002,6 +2002,43 @@ def _looks_like_joomla_extension(local_path: str, plugin_dir: str) -> bool:
     return False
 
 
+def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
+    """Para CVEs WEB con docker_image o dockerfile_body en llm_notes: materializa esos campos como
+    un Dockerfile real en source_dir ANTES de que _find_build_target sea llamado por los verificadores
+    genericos.  Sin esto, el verificador ignora docker_image/dockerfile_body (esos campos solo se
+    usan en el camino binario, no en el camino web) y genera un lab minimo generico con la version
+    mas reciente del paquete, en lugar de la version vulnerable especificada en el JSON.
+
+    Solo escribe si el directorio ya no tiene un Dockerfile/docker-compose propio (no sobreescribir
+    un lab que el propio proyecto trae).  Tambien escribe extra_files si estan en llm_notes
+    (p.ej. server.js para h3 que necesita COPY en el Dockerfile).
+    """
+    if not source_dir or not os.path.isdir(source_dir):
+        return
+    for existing in ("Dockerfile", "docker-compose.yml", "compose.yml", "docker-compose.yaml"):
+        if os.path.exists(os.path.join(source_dir, existing)):
+            return  # proyecto ya trae su propio Dockerfile/compose, no tocarlo
+    docker_image = (notes.get("docker_image") or "").strip()
+    dockerfile_body = (notes.get("dockerfile_body") or "").strip()
+    if not docker_image and not dockerfile_body:
+        return
+    df_path = os.path.join(source_dir, "Dockerfile")
+    if docker_image:
+        df_content = f"FROM {docker_image}\n"
+    else:
+        df_content = dockerfile_body + "\n"
+    with open(df_path, "w") as fh:
+        fh.write(df_content)
+    for fname, fcontent in (notes.get("extra_files") or {}).items():
+        fpath = os.path.join(source_dir, fname)
+        if not os.path.exists(fpath):
+            with open(fpath, "w") as fh2:
+                fh2.write(fcontent)
+    label = "docker_image" if docker_image else "dockerfile_body"
+    if step:
+        step(f"inyectado Dockerfile al source_dir desde '{label}' del JSON de hipotesis")
+
+
 def _apply_wpverify_result(inv, wr, es: bool, llm=None) -> None:
     """Vuelca un WpVerifyResult (ver workflows/wpverify.py) en la investigacion -- mismo volcado
     que los bloques de missing-authorization/idor/path-traversal/command-injection/sqli/ssrf
@@ -8175,6 +8212,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                          (_pt_pc_msg + " — lab continues to confirm"))
                     if _pt_precheck["confidence"] >= 0.68:
                         inv.blockers.append(("static_precheck_pt", _pt_precheck["reason"]))
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
                      "se construye desde su propio Dockerfile/compose..." if es else
                      "attempting GENERIC DYNAMIC verification -- canary file, the target is "
@@ -9703,6 +9741,46 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         _attempt_des, wr, notes.get("endpoint"), serial_p,
                         technique_label="deserialization WordPress",
                         on_suggestion=_on_des_suggestion))
+                _apply_wpverify_result(inv, wr, es, llm)
+            # GraphQL auth-bypass: endpoint GraphQL expuesto sin autenticacion (Craft CMS, Ghost, etc.)
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("graphql-bypass", "graphql-injection", "graphql-auth",
+                                     "graphql-authorization", "graphql") and notes.get("endpoint")):
+                from .genericverify import verify_generic_graphql_bypass
+                gql_ep = notes.get("endpoint") or "/graphql"
+                forbidden_q = notes.get("graphql_query") or notes.get("query") or (
+                    "{ __schema { types { name } } }")
+                confirm_f = notes.get("confirm_field") or notes.get("graphql_confirm") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- GraphQL auth-bypass "
+                     "(introspección → query restringida → bypass)..." if es else
+                     "attempting GENERIC DYNAMIC verification -- GraphQL auth-bypass "
+                     "(introspection → restricted query → bypass)..."))
+                wr = verify_generic_graphql_bypass(
+                    fr.local_path, gql_ep, forbidden_q, confirm_field=confirm_f,
+                    on_step=step, budget_s=budget_s)
+                _apply_wpverify_result(inv, wr, es, llm)
+            # Boolean oracle / data-leak: diferencia TRUE/FALSE en respuesta filtra datos privados
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("boolean-oracle", "boolean-injection", "data-leak",
+                                     "filter-bypass") and notes.get("endpoint")):
+                from .genericverify import verify_generic_boolean_oracle
+                bool_ep = notes.get("endpoint") or "/"
+                bool_method = notes.get("http_method") or "GET"
+                params = notes.get("parameters") or []
+                # Construir true_param/false_param desde los parámetros del LLM
+                true_p = notes.get("true_param") or (params[0] if params else "where[id][$gt]")
+                true_v = notes.get("true_value") or "0"
+                false_p = notes.get("false_param") or (params[0] if params else "where[id][$lt]")
+                false_v = notes.get("false_value") or "0"
+                confirm_f = notes.get("confirm_field") or notes.get("leak_field") or ""
+                step(("intentando verificacion DINAMICA GENERICA -- boolean oracle "
+                     "(diferencia TRUE/FALSE en respuesta)..." if es else
+                     "attempting GENERIC DYNAMIC verification -- boolean oracle "
+                     "(TRUE/FALSE response difference)..."))
+                wr = verify_generic_boolean_oracle(
+                    fr.local_path, bool_ep, bool_method,
+                    true_p, true_v, false_p, false_v,
+                    confirm_field=confirm_f, on_step=step, budget_s=budget_s)
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else

@@ -226,6 +226,124 @@ def _proxy_dockerfile_lines(source_dir: str) -> List[str]:
     ]
 
 
+def _detect_cms_fingerprint(source_dir: str) -> Optional[str]:
+    """Devuelve el nombre del CMS si se detecta en source_dir, o None.
+
+    Los CMSs de Node.js (Ghost, Strapi, Payload) tienen manifiestos específicos que
+    permiten un Dockerfile más preciso que el genérico 'npm start'. Craft CMS y otros
+    CMSs PHP se manejan por la ruta composer.json normal.
+    """
+    pkg_path = os.path.join(source_dir, "package.json")
+    if os.path.isfile(pkg_path):
+        try:
+            with open(pkg_path) as f:
+                pkg = json.load(f)
+            name = (pkg.get("name") or "").lower()
+            deps_all = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+            # Ghost: package.json tiene name="ghost" o dep "ghost-core"/"@tryghost/..."
+            if name == "ghost" or any(k.startswith("@tryghost/") for k in deps_all):
+                return "ghost"
+            # Strapi: dep "@strapi/strapi" o name contains "strapi"
+            if "@strapi/strapi" in deps_all or "strapi" in deps_all or "strapi" in name:
+                return "strapi"
+            # Payload CMS: dep "payload"
+            if "payload" in deps_all and "payload" in (pkg.get("description", "") + name).lower():
+                return "payload"
+        except (OSError, ValueError, KeyError):
+            pass
+    # Craft CMS: composer.json con craftcms/cms
+    composer_path = os.path.join(source_dir, "composer.json")
+    if os.path.isfile(composer_path):
+        try:
+            with open(composer_path) as f:
+                comp = json.load(f)
+            if "craftcms/cms" in comp.get("require", {}):
+                return "craft"
+        except (OSError, ValueError, KeyError):
+            pass
+    # Wagtail / Django CMS: requirements.txt con wagtail o django-cms
+    req_path = os.path.join(source_dir, "requirements.txt")
+    if os.path.isfile(req_path):
+        try:
+            content = open(req_path).read().lower()
+            if "wagtail" in content:
+                return "wagtail"
+            if "django-cms" in content or "djangocms" in content:
+                return "djangocms"
+        except OSError:
+            pass
+    return None
+
+
+def _cms_dockerfile_lines(cms: str, source_dir: str) -> Optional[tuple]:
+    """Devuelve (base_image, port, run_lines) para un CMS conocido, o None.
+
+    Los Dockerfiles generados aquí usan variables de entorno de desarrollo mínimas
+    que permiten arrancar el CMS sin configuración real: SQLite in-memory / fichero
+    .tmp, secrets dummy, NODE_ENV=development. Esto basta para explorar las rutas
+    vulnerables sin persistencia real.
+    """
+    proxy = _proxy_dockerfile_lines(source_dir)
+    if cms == "ghost":
+        # Ghost >=5: 'node current/index.js' o 'node_modules/.bin/ghost start'
+        # Usamos imagen oficial que ya trae la instalación
+        lines = (["WORKDIR /var/lib/ghost"] + proxy +
+                 ["ENV NODE_ENV=development",
+                  "ENV database__client=sqlite3",
+                  "ENV database__connection__filename=/var/lib/ghost/content/data/ghost-dev.db",
+                  "ENV url=http://localhost:2368",
+                  "RUN npm install --prefix /var/lib/ghost || true",
+                  'CMD ["node", "current/index.js"]'])
+        return ("ghost:5-alpine", 2368, lines)
+
+    if cms == "strapi":
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ["ENV NODE_ENV=development",
+                  "ENV DATABASE_CLIENT=sqlite",
+                  "ENV DATABASE_FILENAME=.tmp/data.db",
+                  "ENV JWT_SECRET=binoracle_dev_jwt_secret_32ch",
+                  "ENV ADMIN_JWT_SECRET=binoracle_dev_admin_jwt_32ch",
+                  "ENV APP_KEYS=binoracle_key1,binoracle_key2",
+                  "ENV API_TOKEN_SALT=binoracle_api_token_salt_xx",
+                  "RUN npm install || npm install --legacy-peer-deps || true",
+                  "RUN npm run build -- --no-optimization 2>/dev/null || true",
+                  'CMD ["npm", "run", "develop"]'])
+        return ("node:18-alpine", 1337, lines)
+
+    if cms == "payload":
+        lines = (["WORKDIR /app", "COPY . ."] + proxy +
+                 ["ENV NODE_ENV=development",
+                  "ENV PAYLOAD_SECRET=binoracle_payload_secret_32ch",
+                  "ENV DATABASE_URI=file:/app/.tmp/payload-dev.db",
+                  "ENV MONGODB_URI=",
+                  "RUN npm install || npm install --legacy-peer-deps || true",
+                  'CMD ["sh", "-c", "npm run dev || npm start || node dist/server.js || node src/server.js"]'])
+        return ("node:18-alpine", 3000, lines)
+
+    if cms == "wagtail":
+        _py = _best_python_image()
+        _extra = (["RUN " + _alpine_python_build_deps().split("RUN ", 1)[1]]
+                  if "alpine" in _py else [])
+        lines = (["WORKDIR /app", "COPY . ."] + proxy + _extra +
+                 ["RUN pip install --no-cache-dir -r requirements.txt || true",
+                  "ENV DJANGO_SETTINGS_MODULE=mysite.settings.dev",
+                  "RUN python manage.py migrate --run-syncdb 2>/dev/null || true",
+                  'CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]'])
+        return (_py, 8000, lines)
+
+    if cms == "djangocms":
+        _py = _best_python_image()
+        _extra = (["RUN " + _alpine_python_build_deps().split("RUN ", 1)[1]]
+                  if "alpine" in _py else [])
+        lines = (["WORKDIR /app", "COPY . ."] + proxy + _extra +
+                 ["RUN pip install --no-cache-dir -r requirements.txt || true",
+                  "RUN python manage.py migrate --run-syncdb 2>/dev/null || true",
+                  'CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]'])
+        return (_py, 8000, lines)
+
+    return None
+
+
 def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     """Cuando el repo NO trae su propio Dockerfile/docker-compose.yml, detecta el stack por sus
     ficheros delatores (package.json/requirements.txt/composer.json, o sueltos .php) y ESCRIBE
@@ -234,6 +352,20 @@ def _detect_and_write_auto_dockerfile(source_dir: str) -> Optional[dict]:
     stack posible. El Dockerfile generado queda guardado en el propio directorio del codigo
     (_AUTO_DOCKERFILE_NAME) para que quede constancia de que NO es el del autor del PoC -- el
     `step()` del caller debe dejarlo igual de explicito en el informe."""
+    # Deteccion de CMS conocido primero (Ghost, Strapi, Payload, Wagtail...)
+    cms = _detect_cms_fingerprint(source_dir)
+    if cms:
+        cms_tup = _cms_dockerfile_lines(cms, source_dir)
+        if cms_tup:
+            base_image, port, cms_lines = cms_tup
+            lines = [f"FROM {base_image}"] + cms_lines + [f"EXPOSE {port}"]
+            path = os.path.join(source_dir, _AUTO_DOCKERFILE_NAME)
+            with open(path, "w") as f:
+                f.write("\n".join(lines) + "\n")
+            return {"kind": "dockerfile", "path": path, "context": source_dir,
+                    "auto_generado": True, "stack_detectado": f"CMS:{cms}",
+                    "cms": cms}
+
     for signal_file, base_image, port, run_lines in _STACK_SIGNALS:
         signal_path = os.path.join(source_dir, signal_file)
         if not os.path.isfile(signal_path):
@@ -413,7 +545,19 @@ class _GenericLab:
                 ports.append(m.group(1))
         return ports
 
-    def discover_http(self, tries: int = 60, delay: float = 3.0) -> Optional[tuple]:
+    # Señales de "CMS realmente listo" en los logs del contenedor. Algunos CMSs responden
+    # HTTP antes de haber terminado su inicialización (migraciones, primer arranque) lo que
+    # genera falsos positivos en discover_http — las peticiones llegan a un app a medio boot.
+    _CMS_READY_SIGNALS: dict = {
+        "ghost":   ["Ghost is running in development", "Your site is accessible"],
+        "strapi":  ["Project is fully loaded", "Project started"],
+        "payload": ["Listening on port", "Server started"],
+        "wagtail": ["Starting development server", "Quit the server"],
+        "djangocms": ["Starting development server", "Quit the server"],
+    }
+
+    def discover_http(self, tries: int = 60, delay: float = 3.0,
+                      cms: Optional[str] = None) -> Optional[tuple]:
         """Prueba TODOS los puertos publicados de TODOS los contenedores levantados hasta que uno
         responda HTTP (status < 500) -- sin asumir cual de los contenedores del compose es el
         servidor web ni en que puerto escucha. Devuelve (container, port) o None.
@@ -422,20 +566,59 @@ class _GenericLab:
         2xx/3xx llegan al `with` de abajo) -- confirmado en vivo que, sin capturarla aparte, un
         objetivo que solo expone rutas POST (su raiz responde 404/501, no 2xx) nunca se detectaba
         como 'listo' aunque estuviera arriba de verdad. Una URLError (sin respuesta HTTP en
-        absoluto -- conexion rechazada, nombre no resuelto) si sigue significando 'aun no'."""
+        absoluto -- conexion rechazada, nombre no resuelto) si sigue significando 'aun no'.
+
+        `cms`: cuando se conoce el CMS (detectado por _detect_cms_fingerprint), también espera
+        una señal específica en los logs del contenedor que indica que la inicialización completó
+        (p.ej. Ghost completa migraciones antes de emitir "Ghost is running in development") —
+        evita falsos positivos donde HTTP responde pero la app aún está a medio arrancar.
+        Los tries se aumentan automáticamente para CMSs pesados (Ghost, Strapi, Payload).
+        """
         import urllib.error
         import urllib.request
+        # CMSs con arranque largo: 90 tries × 3s = 4.5 min máximo
+        heavy_cms = {"ghost", "strapi", "payload"}
+        if cms and cms.lower() in heavy_cms and tries < 90:
+            tries = 90
+        ready_signals = self._CMS_READY_SIGNALS.get((cms or "").lower(), [])
         host = _lab_host()
         for _try in range(tries):
+            # Para CMSs con señal conocida: verificar primero los logs antes de probar HTTP
+            if ready_signals and _try > 0 and _try % 5 == 0:
+                for c in self.running_containers():
+                    logs_text = self.logs_tail(c, lines=50)
+                    if any(sig.lower() in logs_text.lower() for sig in ready_signals):
+                        # App lista según sus propios logs — ahora sí buscar puerto
+                        ports = self.published_ports(c)
+                        for port in ports:
+                            try:
+                                with urllib.request.urlopen(f"http://{host}:{port}/", timeout=5) as r:
+                                    if r.status < 500:
+                                        return (c, port)
+                            except urllib.error.HTTPError as e:
+                                if e.code < 500:
+                                    return (c, port)
+                            except Exception:
+                                continue
+            # Siempre intentar HTTP directamente (para apps sin señal específica)
             for c in self.running_containers():
                 ports = self.published_ports(c)
                 for port in ports:
                     try:
                         with urllib.request.urlopen(f"http://{host}:{port}/", timeout=4) as r:
                             if r.status < 500:
+                                # Si hay señal de CMS: solo aceptar si ya aparece en logs
+                                if ready_signals:
+                                    logs_text = self.logs_tail(c, lines=30)
+                                    if not any(sig.lower() in logs_text.lower() for sig in ready_signals):
+                                        continue  # HTTP arriba pero CMS aún inicializando
                                 return (c, port)
                     except urllib.error.HTTPError as e:
                         if e.code < 500:
+                            if ready_signals:
+                                logs_text = self.logs_tail(c, lines=30)
+                                if not any(sig.lower() in logs_text.lower() for sig in ready_signals):
+                                    continue
                             return (c, port)
                     except Exception:
                         continue
@@ -770,8 +953,9 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
         lab.teardown()
         return None
 
-    step("esperando a que el objetivo responda HTTP en alguno de sus puertos publicados...")
-    found_http = lab.discover_http()
+    _cms_hint = target.get("cms")
+    step(f"esperando a que el objetivo responda HTTP{' (CMS: ' + _cms_hint + ')' if _cms_hint else ''}...")
+    found_http = lab.discover_http(cms=_cms_hint)
     if found_http is None:
         res.detail = "el objetivo arranco pero ningun puerto publicado respondio HTTP a tiempo"
         for c in lab.running_containers():

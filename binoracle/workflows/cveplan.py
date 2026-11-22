@@ -115,6 +115,12 @@ _CLASSES = [
      "fuerza una accion autenticada desde un origen ajeno (sin interaccion directa con la sesion)", []),
     ("open-redirect", ("open redirect", "unvalidated redirect"),
      "redirige a una URL arbitraria controlada por el atacante (phishing/encadenable)", []),
+    ("graphql-bypass", ("graphql", "graphql auth", "graphql bypass", "introspection bypass",
+                        "unauthenticated graphql", "graphql authorization"),
+     "acceso no autorizado a un endpoint GraphQL — omite controles de autenticacion en queries", []),
+    ("boolean-oracle", ("boolean oracle", "data leak", "boolean injection", "blind data",
+                        "where clause injection", "filter bypass", "boolean-based"),
+     "exfiltra datos via diferencia TRUE/FALSE en respuestas (oracle booleano)", []),
 ]
 
 # clases que NO son corrupcion de memoria nativa: el PoC es una peticion HTTP (o una pagina para CSRF/
@@ -123,6 +129,7 @@ WEB_CLASSES = frozenset({
     "missing-authorization", "idor", "auth-bypass", "sqli", "xss", "ssrf", "command-injection",
     "rce", "code-injection", "arbitrary-file-upload", "path-traversal", "lfi", "file-upload",
     "deserialization", "xxe", "ssti", "csrf", "open-redirect", "php-object-injection",
+    "graphql-bypass", "boolean-oracle",
 })
 
 
