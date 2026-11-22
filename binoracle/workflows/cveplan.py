@@ -130,6 +130,7 @@ WEB_CLASSES = frozenset({
     "rce", "code-injection", "arbitrary-file-upload", "path-traversal", "lfi", "file-upload",
     "deserialization", "xxe", "ssti", "csrf", "open-redirect", "php-object-injection",
     "graphql-bypass", "boolean-oracle",
+    "cors", "cors-misconfiguration", "cors-misconfig", "cors-reflection",
 })
 
 
