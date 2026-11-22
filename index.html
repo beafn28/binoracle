@@ -65,17 +65,17 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 35 CVEs (33 verificados)</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 37 CVEs (33 verificados)</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white">35</div><div class="stat-l">Total CVEs</div></div>
+  <div class="stat"><div class="stat-n s-white">37</div><div class="stat-l">Total CVEs</div></div>
   <div class="stat"><div class="stat-n s-green">33</div><div class="stat-l">Verificados</div></div>
   <div class="stat"><div class="stat-n s-crit">16</div><div class="stat-l">Critical</div></div>
-  <div class="stat"><div class="stat-n s-high">16</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n s-high">18</div><div class="stat-l">High</div></div>
   <div class="stat"><div class="stat-n s-blue">19</div><div class="stat-l">SQLi</div></div>
   <div class="stat"><div class="stat-n s-purple">12</div><div class="stat-l">HUECO Verif.</div></div>
-  <div class="stat"><div class="stat-n s-green">21</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n s-green">23</div><div class="stat-l">Unauthenticated</div></div>
   <div class="stat"><div class="stat-n" style="color:#a78bfa">12</div><div class="stat-l">LLM Razonado</div></div>
   <div class="stat"><div class="stat-n" style="color:#7c3aed">4</div><div class="stat-l">0-day GAP</div></div>
 </div>
@@ -111,7 +111,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
   <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">35</span> / 35 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">37</span> / 37 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -629,8 +629,24 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <a href="CVE-2024-54374_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+<tr class="cve-row" data-cls="integer-overflow" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">32</td>
+  <td class="td-cve"><a href="CVE-2026-129302_informe_pdf.html" target="_blank"><code>CVE-2026-129302</code></a></td>
+  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">integer-overflow</span></td>
+  <td><code class="tech">integer-overflow</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>3.5.0-3.13.0</code></td>
+  <td class="td-pub">2026-11-16</td>
+  <td class="td-desc">Guard Core is an API security core engine for the FastAPI-Guard, FlaskAPI Guard, and DjAPI Guard adapters. From 3.5.0 un</td>
+  <td class="td-links">
+    <a href="CVE-2026-129302_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-129302_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">33</td>
   <td class="td-cve"><a href="CVE-2024-10784_informe_pdf.html" target="_blank"><code>CVE-2024-10784</code></a></td>
   <td><span class="badge" style="background:#2563eb">6.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#9333ea">xss</span></td>
@@ -646,7 +662,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="path-traversal" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">33</td>
+  <td class="td-num">34</td>
   <td class="td-cve"><a href="CVE-2024-23334_informe_pdf.html" target="_blank"><code>CVE-2024-23334</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.9 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
@@ -662,7 +678,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">34</td>
+  <td class="td-num">35</td>
   <td class="td-cve"><a href="CVE-2025-27516_informe_pdf.html" target="_blank"><code>CVE-2025-27516</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
@@ -677,8 +693,24 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <a href="CVE-2025-27516_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
+<tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">36</td>
+  <td class="td-cve"><a href="CVE-2026-123068_informe_pdf.html" target="_blank"><code>CVE-2026-123068</code></a></td>
+  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
+  <td><code class="tech">file-upload</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>5.0.99</code></td>
+  <td class="td-pub">2026-11-22</td>
+  <td class="td-desc">The Front User Submit  WordPress plugin before 5.1.0 does not validate the content of files uploaded through one of its </td>
+  <td class="td-links">
+    <a href="CVE-2026-123068_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-123068_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">35</td>
+  <td class="td-num">37</td>
   <td class="td-cve"><a href="CVE-2026-94259_informe_pdf.html" target="_blank"><code>CVE-2026-94259</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
