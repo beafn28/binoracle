@@ -906,7 +906,9 @@ def _diagnose_infra_error(e: Exception, source_dir: str = "", base_url: str = ""
 
 
 def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
-                           budget_s: float, setup_commands: Optional[List[str]] = None) -> Optional[tuple]:
+                           budget_s: float, setup_commands: Optional[List[str]] = None,
+                           dockerfile_body: str = "",
+                           extra_files: Optional[dict] = None) -> Optional[tuple]:
     """Pasos comunes a TODOS los verificadores genericos: detectar como arrancar el objetivo,
     construirlo/arrancarlo, y encontrar por donde habla HTTP. Devuelve (lab, base_url, container)
     o None con `res` ya relleno (detail/logs/limitations) -- el caller solo tiene que `return res`.
@@ -920,8 +922,31 @@ def _bootstrap_generic_lab(source_dir: str, step, res: WpVerifyResult,
     cualquier generico que arranque el objetivo con `docker compose up` a secas prueba contra una
     app a medio arrancar y nunca llega al codigo real, sea o no vulnerable (falso negativo por
     entorno, no por el payload). Si CUALQUIER comando falla, se aborta con el detalle real en vez
-    de seguir probando contra un objetivo que sabemos a medias."""
-    target = _find_build_target(source_dir)
+    de seguir probando contra un objetivo que sabemos a medias.
+
+    `dockerfile_body` (opcional): si se proporciona, se usa DIRECTAMENTE como Dockerfile para
+    construir el lab -- tiene prioridad absoluta sobre cualquier Dockerfile/docker-compose.yml
+    que el repo descargado pudiera traer (resuelve el caso Gradio donde el repo tiene su propio
+    test/test_docker/docker-compose.yml que falla al construir fuera del entorno de desarrollo).
+
+    `extra_files` (opcional): diccionario {nombre_fichero: contenido} que se escribe en el
+    directorio de contexto Docker ANTES de construir -- necesario para COPY app.py etc."""
+    if dockerfile_body:
+        # Analyst-provided Dockerfile takes priority over anything in source_dir
+        import tempfile
+        ctx_dir = tempfile.mkdtemp(prefix="binoracle_analyst_ctx_")
+        df_path = os.path.join(ctx_dir, "Dockerfile")
+        with open(df_path, "w") as f:
+            f.write(dockerfile_body)
+        for fname, content in (extra_files or {}).items():
+            fp = os.path.join(ctx_dir, os.path.basename(fname))
+            with open(fp, "w") as f:
+                f.write(content)
+        target = {"kind": "dockerfile", "path": df_path, "context": ctx_dir,
+                  "_analyst_ctx": ctx_dir}
+        step("usando Dockerfile del analista (prioridad sobre repo)")
+    else:
+        target = _find_build_target(source_dir)
     if target is None:
         res.detail = ("no se encontro Dockerfile ni docker-compose.yml en el codigo descargado, "
                       "y el stack tampoco se reconocio por sus ficheros propios (package.json/"
@@ -985,6 +1010,7 @@ def verify_generic_command_injection(
     source_dir: str, endpoint: str, http_method: str, parameters,
     cmd_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica OS command injection contra CUALQUIER objetivo que traiga su propio Dockerfile/
     docker-compose.yml, sin asumir el stack (Python/Node/Go/PHP/Java/Ruby... todos escriben a
@@ -999,7 +1025,8 @@ def verify_generic_command_injection(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -1118,6 +1145,7 @@ def verify_generic_path_traversal(
     budget_s: float = 900.0, setup_commands: Optional[List[str]] = None,
     url_suffix: str = "", custom_headers: Optional[dict] = None,
     query_suffix: str = "",
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -1207,7 +1235,8 @@ def verify_generic_path_traversal(
     if not candidates:
         candidates.append((endpoint or "/", parameters, (http_method or "GET").upper(), llm_up, False))
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s, setup_commands=setup_commands,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -1848,6 +1877,7 @@ def verify_generic_ssrf(
     source_dir: str, endpoint: str, http_method: str, parameters,
     url_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
     red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
@@ -1868,7 +1898,8 @@ def verify_generic_ssrf(
                                "URL remota; afina 'parameters' o pasalo a mano (url_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3005,6 +3036,7 @@ def verify_generic_ssti(
     source_dir: str, endpoint: str, http_method: str, parameters,
     ssti_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssti: el payload pide al motor de plantillas que
     CALCULE una operacion aritmetica con dos numeros aleatorios; si el resultado (que no aparece
@@ -3051,7 +3083,8 @@ def verify_generic_ssti(
                                "plantilla; afina 'parameters' o pasalo a mano (ssti_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3282,6 +3315,7 @@ def verify_generic_header_bypass(
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
     bypass_url: Optional[str] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica un bypass de autorizacion via CABECERA HTTP o URL manipulada.
 
@@ -3314,7 +3348,8 @@ def verify_generic_header_bypass(
                                "exactos de la cabecera maliciosa, o una bypass_url alternativa")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot
@@ -3684,6 +3719,7 @@ def verify_generic_cors_misconfig(
     source_dir: str, endpoint: str, http_method: str = "GET",
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+    dockerfile_body: str = "", extra_files: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Verifica CORS misconfiguration: reflexion del Origin en Access-Control-Allow-Origin
     + Access-Control-Allow-Credentials: true (CVE-2025-53092 Strapi y otros).
@@ -3705,7 +3741,8 @@ def verify_generic_cors_misconfig(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   dockerfile_body=dockerfile_body, extra_files=extra_files)
     if boot is None:
         return res
     lab, base_url, container = boot

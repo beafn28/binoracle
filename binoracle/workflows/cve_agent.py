@@ -7013,6 +7013,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             if fr.ok:
                 source = _lab_candidate_fallback
                 guessed_source = False
+        # docker_image/dockerfile_body bypass: si la fuente fallo pero el analista proporciono
+        # una imagen Docker o un Dockerfile completo, crear un directorio temporal y usarlo como
+        # source_dir. Esto permite verificar CVEs cuyo source descargado falla (EtherPadSniper PoC
+        # confundido con plugin, app propietaria sin repo publico, etc.) siempre que se
+        # proporcione como el lab completo via docker_image o dockerfile_body.
+        if not fr.ok and (notes.get("docker_image") or notes.get("dockerfile_body")):
+            import tempfile as _tmpmod
+            _docker_only_dir = _tmpmod.mkdtemp(prefix="binoracle_dockeronly_")
+            _inject_custom_docker_lab(_docker_only_dir, notes, step)
+            class _FrProxy:
+                ok = True; kind = "docker-only"; source = "docker_image/dockerfile_body"
+                resolved_version = notes.get("affected_version") or ""; local_path = _docker_only_dir
+                note = ""; plugin_dir = ""
+            fr = _FrProxy()
+            step(("usando docker_image/dockerfile_body del analista como lab (sin fuente descargada)"
+                  if es else "using analyst docker_image/dockerfile_body as lab (no source fetched)"))
+
         inv.source_fetch = {"ok": fr.ok, "kind": fr.kind, "source": fr.source,
                             "resolved_version": fr.resolved_version,
                             "local_path": fr.local_path, "note": fr.note,
@@ -8414,11 +8431,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _pt_url_suffix = notes.get("url_suffix") or ""
                 _pt_query_suffix = notes.get("query_suffix") or ""
                 _pt_custom_hdrs = notes.get("custom_headers") or None
+                _pt_dockerfile = notes.get("dockerfile_body") or ""
+                _pt_extra_files = notes.get("extra_files") or None
                 wr = verify_generic_path_traversal(
                     fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                     url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
-                    query_suffix=_pt_query_suffix)
+                    query_suffix=_pt_query_suffix,
+                    dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
@@ -8428,7 +8448,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
-                        query_suffix=_pt_query_suffix)
+                        query_suffix=_pt_query_suffix,
+                        dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -8446,7 +8467,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, _ep_extra, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
                         url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
-                        query_suffix=_pt_query_suffix)
+                        query_suffix=_pt_query_suffix,
+                        dockerfile_body=_pt_dockerfile, extra_files=_pt_extra_files)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 _apply_wpverify_result(inv, wr, es, llm)
@@ -8554,7 +8576,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     bypass_value=notes.get("bypass_value", ""),
                     confirm_string=notes.get("confirm_string", ""),
                     on_step=step, budget_s=budget_s,
-                    bypass_url=notes.get("bypass_url") or None)
+                    bypass_url=notes.get("bypass_url") or None,
+                    dockerfile_body=notes.get("dockerfile_body") or "",
+                    extra_files=notes.get("extra_files") or None)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).
@@ -8706,15 +8730,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      else "attempting GENERIC DYNAMIC verification -- canary file via docker "
                      "exec, the target is built from its own Dockerfile/compose..."))
                 _cmdi_custom_hdrs = notes.get("custom_headers") or None
+                _cmdi_dockerfile = notes.get("dockerfile_body") or ""
+                _cmdi_extra_files = notes.get("extra_files") or None
                 wr = verify_generic_command_injection(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, cmd_param_hint=cmd_p or "", on_step=step, budget_s=budget_s,
-                    custom_headers=_cmdi_custom_hdrs)
+                    custom_headers=_cmdi_custom_hdrs,
+                    dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
                 def _attempt_cmdi_generic(ep, pr):
                     return verify_generic_command_injection(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         cmd_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        custom_headers=_cmdi_custom_hdrs)
+                        custom_headers=_cmdi_custom_hdrs,
+                        dockerfile_body=_cmdi_dockerfile, extra_files=_cmdi_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_cmdi_generic, wr, notes.get("endpoint"), cmd_p,
@@ -9239,15 +9267,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "with a random token, the target is built from its own Dockerfile/"
                      "compose..."))
                 _ssrf_custom_hdrs = notes.get("custom_headers") or None
+                _ssrf_dockerfile = notes.get("dockerfile_body") or ""
+                _ssrf_extra_files = notes.get("extra_files") or None
                 wr = verify_generic_ssrf(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
-                    custom_headers=_ssrf_custom_hdrs)
+                    custom_headers=_ssrf_custom_hdrs,
+                    dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
                 def _attempt_ssrf_generic(ep, pr):
                     return verify_generic_ssrf(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         url_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        custom_headers=_ssrf_custom_hdrs)
+                        custom_headers=_ssrf_custom_hdrs,
+                        dockerfile_body=_ssrf_dockerfile, extra_files=_ssrf_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssrf_generic, wr, notes.get("endpoint"), url_p,
@@ -9528,15 +9560,19 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "arithmetic computed by the template engine, the target is built from its "
                      "own Dockerfile/compose..."))
                 _ssti_custom_hdrs = notes.get("custom_headers") or None
+                _ssti_dockerfile = notes.get("dockerfile_body") or ""
+                _ssti_extra_files = notes.get("extra_files") or None
                 wr = verify_generic_ssti(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
                     params, ssti_param_hint=ssti_p or "", on_step=step, budget_s=budget_s,
-                    custom_headers=_ssti_custom_hdrs)
+                    custom_headers=_ssti_custom_hdrs,
+                    dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
                 def _attempt_ssti_generic(ep, pr):
                     return verify_generic_ssti(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         ssti_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        custom_headers=_ssti_custom_hdrs)
+                        custom_headers=_ssti_custom_hdrs,
+                        dockerfile_body=_ssti_dockerfile, extra_files=_ssti_extra_files)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssti_generic, wr, notes.get("endpoint"), ssti_p,
@@ -10031,9 +10067,12 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "(Origin reflejado en Access-Control-Allow-Origin + Credentials)..." if es else
                      "attempting GENERIC DYNAMIC verification -- CORS reflection "
                      "(Origin reflected in Access-Control-Allow-Origin + Credentials)..."))
+                _cors_dockerfile = notes.get("dockerfile_body") or ""
+                _cors_extra_files = notes.get("extra_files") or None
                 wr = verify_generic_cors_misconfig(
                     fr.local_path, cors_ep, cors_method,
-                    on_step=step, budget_s=budget_s, custom_headers=cors_hdrs)
+                    on_step=step, budget_s=budget_s, custom_headers=cors_hdrs,
+                    dockerfile_body=_cors_dockerfile, extra_files=_cors_extra_files)
                 _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
