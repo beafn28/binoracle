@@ -119,9 +119,10 @@ def _run_investigate(cve_id: str, vuln_class: str, log_fp, dry_run: bool,
         _log(f"  [DRY-RUN] binoracle cve {cve_id} --vuln-class {vuln_class}", log_fp)
         return False
 
-    cmd = [sys.executable, "-m", "binoracle", "cve", cve_id,
+    cmd = [sys.executable, "-u", "-m", "binoracle", "cve", cve_id,
            "--vuln-class", vuln_class]
     _log(f"  Lanzando: {' '.join(cmd)}", log_fp)
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     t0 = time.time()
     try:
         result = subprocess.run(
@@ -130,6 +131,7 @@ def _run_investigate(cve_id: str, vuln_class: str, log_fp, dry_run: bool,
             capture_output=True,
             text=True,
             timeout=budget + 60,
+            env=env,
         )
         elapsed = time.time() - t0
         combined = (result.stdout or "") + (result.stderr or "")
