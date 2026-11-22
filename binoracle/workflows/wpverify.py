@@ -4894,12 +4894,23 @@ def verify_wordpress_sqli(
         import urllib.parse as _urlparse
         _email_param_hints = {"email", "sender", "receiver", "mail", "user", "address"}
         _is_email_param = any(h in sqli_param.lower() for h in _email_param_hints)
+        # Segmentos del endpoint que NUNCA son orig_value válido:
+        # ficheros PHP de WP (admin-ajax.php, wp-login.php, etc.), directorios WP conocidos,
+        # prefijos de versión REST (v1, v2…).
+        _WP_PATH_BLOCKLIST = {
+            "admin-ajax.php", "wp-login.php", "wp-cron.php", "xmlrpc.php",
+            "wp-admin", "wp-includes", "wp-content", "wp-json",
+        }
         if orig_value == "1" and (not base_params.get(sqli_param)
                                    or base_params.get(sqli_param) == "1"):
             for _seg in reversed([_urlparse.unquote(s) for s in endpoint.split("/") if s]):
+                # Nunca extraer segmentos conocidos de la infraestructura WP
+                if _seg.lower() in _WP_PATH_BLOCKLIST:
+                    continue
                 if ("@" in _seg or                                           # email con @
                         re.match(r"^\d+$", _seg) or                         # ID numerico
                         ("." in _seg and len(_seg) >= 5                      # dominio/token con punto
+                         and not _seg.lower().endswith(".php")               # no ficheros PHP
                          and not re.match(r"^v\d+", _seg, re.I))):          # no 'v1', 'v2', etc.
                     _extracted = _urlparse.unquote(_seg)
                     # Si el segmento no tiene @, puede que el LLM haya mangleado @ → _

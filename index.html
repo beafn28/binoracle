@@ -65,18 +65,18 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 50 CVEs (34 verificados)</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 27 CVEs (27 verificados)</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white">50</div><div class="stat-l">Total CVEs</div></div>
-  <div class="stat"><div class="stat-n s-green">34</div><div class="stat-l">Verificados</div></div>
-  <div class="stat"><div class="stat-n s-crit">17</div><div class="stat-l">Critical</div></div>
-  <div class="stat"><div class="stat-n s-high">30</div><div class="stat-l">High</div></div>
-  <div class="stat"><div class="stat-n s-blue">20</div><div class="stat-l">SQLi</div></div>
-  <div class="stat"><div class="stat-n s-purple">13</div><div class="stat-l">HUECO Verif.</div></div>
-  <div class="stat"><div class="stat-n s-green">30</div><div class="stat-l">Unauthenticated</div></div>
-  <div class="stat"><div class="stat-n" style="color:#a78bfa">13</div><div class="stat-l">LLM Razonado</div></div>
+  <div class="stat"><div class="stat-n s-white">27</div><div class="stat-l">Total CVEs</div></div>
+  <div class="stat"><div class="stat-n s-green">27</div><div class="stat-l">Verificados</div></div>
+  <div class="stat"><div class="stat-n s-crit">15</div><div class="stat-l">Critical</div></div>
+  <div class="stat"><div class="stat-n s-high">9</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n s-blue">15</div><div class="stat-l">SQLi</div></div>
+  <div class="stat"><div class="stat-n s-purple">11</div><div class="stat-l">HUECO Verif.</div></div>
+  <div class="stat"><div class="stat-n s-green">19</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n" style="color:#a78bfa">11</div><div class="stat-l">LLM Razonado</div></div>
   <div class="stat"><div class="stat-n" style="color:#7c3aed">5</div><div class="stat-l">0-day GAP</div></div>
 </div>
 
@@ -111,7 +111,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
   <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">50</span> / 50 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">27</span> / 27 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -135,22 +135,6 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
 
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">1</td>
-  <td class="td-cve"><a href="CVE-2024-8529_informe_pdf.html" target="_blank"><code>CVE-2024-8529</code></a></td>
-  <td><span class="badge" style="background:#dc2626">10.0 CRITICAL</span></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>4.2.7</code></td>
-  <td class="td-pub">2024-09-12</td>
-  <td class="td-desc">The LearnPress – WordPress LMS Plugin plugin for WordPress is vulnerable to SQL Injection via the &#x27;c_fields&#x27; parameter o</td>
-  <td class="td-links">
-    <a href="CVE-2024-8529_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2024-8529_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">2</td>
   <td class="td-cve"><a href="CVE-2022-45808_informe_pdf.html" target="_blank"><code>CVE-2022-45808</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.9 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -166,7 +150,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="command-injection" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">3</td>
+  <td class="td-num">2</td>
   <td class="td-cve"><a href="CVE-2025-57633_informe_pdf.html" target="_blank"><code>CVE-2025-57633</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
@@ -182,7 +166,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="path-traversal" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">4</td>
+  <td class="td-num">3</td>
   <td class="td-cve"><a href="CVE-2021-41773_informe_pdf.html" target="_blank"><code>CVE-2021-41773</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
@@ -198,7 +182,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">5</td>
+  <td class="td-num">4</td>
   <td class="td-cve"><a href="CVE-2024-1071_informe_pdf.html" target="_blank"><code>CVE-2024-1071</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -214,7 +198,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="ssti" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">6</td>
+  <td class="td-num">5</td>
   <td class="td-cve"><a href="CVE-2026-27641_informe_pdf.html" target="_blank"><code>CVE-2026-27641</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
@@ -230,7 +214,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">7</td>
+  <td class="td-num">6</td>
   <td class="td-cve"><a href="CVE-2024-55978_informe_pdf.html" target="_blank"><code>CVE-2024-55978</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -246,7 +230,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">8</td>
+  <td class="td-num">7</td>
   <td class="td-cve"><a href="CVE-2024-55980_informe_pdf.html" target="_blank"><code>CVE-2024-55980</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -262,7 +246,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">9</td>
+  <td class="td-num">8</td>
   <td class="td-cve"><a href="CVE-2024-54292_informe_pdf.html" target="_blank"><code>CVE-2024-54292</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -278,7 +262,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">10</td>
+  <td class="td-num">9</td>
   <td class="td-cve"><a href="CVE-2024-55981_informe_pdf.html" target="_blank"><code>CVE-2024-55981</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -294,7 +278,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">11</td>
+  <td class="td-num">10</td>
   <td class="td-cve"><a href="CVE-2024-55988_informe_pdf.html" target="_blank"><code>CVE-2024-55988</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -310,7 +294,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">12</td>
+  <td class="td-num">11</td>
   <td class="td-cve"><a href="CVE-2025-39471_informe_pdf.html" target="_blank"><code>CVE-2025-39471</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -326,7 +310,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">13</td>
+  <td class="td-num">12</td>
   <td class="td-cve"><a href="CVE-2024-55976_informe_pdf.html" target="_blank"><code>CVE-2024-55976</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -342,7 +326,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">14</td>
+  <td class="td-num">13</td>
   <td class="td-cve"><a href="CVE-2024-50491_informe_pdf.html" target="_blank"><code>CVE-2024-50491</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -358,7 +342,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">15</td>
+  <td class="td-num">14</td>
   <td class="td-cve"><a href="CVE-2024-55972_informe_pdf.html" target="_blank"><code>CVE-2024-55972</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -373,29 +357,8 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <a href="CVE-2024-55972_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="deserialization" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">16</td>
-  <td class="td-cve"><a href="CVE-2026-133949_informe_pdf.html" target="_blank"><code>CVE-2026-133949</code></a></td>
-  <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">deserialization</span></td>
-  <td><code class="tech">deserialization</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>26.2.2</code></td>
-  <td class="td-pub">2026-11-20</td>
-  <td class="td-desc">pip prior to v26.2.2 the certifi bundled with pip contains the compromised eMudhra certificates. 
-
-
-
-
-Upgrading to a sec</td>
-  <td class="td-links">
-    <a href="CVE-2026-133949_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-133949_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
 <tr class="cve-row" data-cls="missing-authorization" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">17</td>
+  <td class="td-num">15</td>
   <td class="td-cve"><a href="CVE-2025-29927_informe_pdf.html" target="_blank"><code>CVE-2025-29927</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.1 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#c2410c">missing-authorization</span></td>
@@ -411,7 +374,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">18</td>
+  <td class="td-num">16</td>
   <td class="td-cve"><a href="CVE-2026-77355_informe_pdf.html" target="_blank"><code>CVE-2026-77355</code></a></td>
   <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
@@ -426,24 +389,8 @@ Upgrading to a sec</td>
     <a href="CVE-2026-77355_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="?" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">19</td>
-  <td class="td-cve"><a href="CVE-2026-19793_informe_pdf.html" target="_blank"><code>CVE-2026-19793</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">?</span></td>
-  <td><code class="tech">?</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>3.9.32</code></td>
-  <td class="td-pub">2026-11-21</td>
-  <td class="td-desc">The WP Import Export Lite plugin for WordPress is vulnerable to Limited Code Injection in all versions up to, and includ</td>
-  <td class="td-links">
-    <a href="CVE-2026-19793_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-19793_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">20</td>
+  <td class="td-num">17</td>
   <td class="td-cve"><a href="CVE-2026-130082_informe_pdf.html" target="_blank"><code>CVE-2026-130082</code></a></td>
   <td><span class="badge" style="background:#d97706">8.7 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -459,7 +406,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">21</td>
+  <td class="td-num">18</td>
   <td class="td-cve"><a href="CVE-2026-55849_informe_pdf.html" target="_blank"><code>CVE-2026-55849</code></a></td>
   <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
@@ -474,24 +421,8 @@ Upgrading to a sec</td>
     <a href="CVE-2026-55849_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="?" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">22</td>
-  <td class="td-cve"><a href="CVE-2026-133309_informe_pdf.html" target="_blank"><code>CVE-2026-133309</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">?</span></td>
-  <td><code class="tech">?</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>0.1.3</code></td>
-  <td class="td-pub">2026-11-19</td>
-  <td class="td-desc">@scalar/typebox before 0.1.4 contains a code injection vulnerability in TypeCompiler that allows attackers to execute Ja</td>
-  <td class="td-links">
-    <a href="CVE-2026-133309_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-133309_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
 <tr class="cve-row" data-cls="code-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">23</td>
+  <td class="td-num">19</td>
   <td class="td-cve"><a href="CVE-2026-134694_informe_pdf.html" target="_blank"><code>CVE-2026-134694</code></a></td>
   <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
@@ -507,71 +438,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">24</td>
-  <td class="td-cve"><a href="CVE-2023-41652_informe_pdf.html" target="_blank"><code>CVE-2023-41652</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.2 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>10.6.6</code></td>
-  <td class="td-pub">2023-11-03</td>
-  <td class="td-desc">Improper Neutralization of Special Elements used in an SQL Command (&#x27;SQL Injection&#x27;) vulnerability in David F. Carr RSVP</td>
-  <td class="td-links">
-    <a href="CVE-2023-41652_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2023-41652_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="ssrf" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">25</td>
-  <td class="td-cve"><a href="CVE-2026-59988_informe_pdf.html" target="_blank"><code>CVE-2026-59988</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.2 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">ssrf</span></td>
-  <td><code class="tech">ssrf</code></td>
-  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>0.29.0</code></td>
-  <td class="td-pub">2026-11-19</td>
-  <td class="td-desc">django-docutils provides reStructuredText support for Django. Prior to 0.30.0, public rendering paths including publish_</td>
-  <td class="td-links">
-    <a href="CVE-2026-59988_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-59988_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">26</td>
-  <td class="td-cve"><a href="CVE-2024-43965_informe_pdf.html" target="_blank"><code>CVE-2024-43965</code></a></td>
-  <td><span class="badge" style="background:#d97706">8.2 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>1.4</code></td>
-  <td class="td-pub">2024-08-29</td>
-  <td class="td-desc">Improper Neutralization of Special Elements used in an SQL Command (&#x27;SQL Injection&#x27;) vulnerability in Smackcoders SendGr</td>
-  <td class="td-links">
-    <a href="CVE-2024-43965_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2024-43965_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="missing-authorization" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">27</td>
-  <td class="td-cve"><a href="CVE-2026-129703_informe_pdf.html" target="_blank"><code>CVE-2026-129703</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.8 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#c2410c">missing-authorization</span></td>
-  <td><code class="tech">missing-authorization</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>0.5.0</code></td>
-  <td class="td-pub">2026-11-16</td>
-  <td class="td-desc">In the vulnerability-lookup web application, the authentication decorators for feed-key requests (auth_feedkey_func in w</td>
-  <td class="td-links">
-    <a href="CVE-2026-129703_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-129703_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">28</td>
+  <td class="td-num">20</td>
   <td class="td-cve"><a href="CVE-2024-12404_informe_pdf.html" target="_blank"><code>CVE-2024-12404</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -586,24 +453,8 @@ Upgrading to a sec</td>
     <a href="CVE-2024-12404_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">29</td>
-  <td class="td-cve"><a href="CVE-2026-2413_informe_pdf.html" target="_blank"><code>CVE-2026-2413</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>4.0.3</code></td>
-  <td class="td-pub">2026-03-11</td>
-  <td class="td-desc">The Ally – Web Accessibility &amp; Usability plugin for WordPress is vulnerable to SQL Injection via the URL path in all ver</td>
-  <td class="td-links">
-    <a href="CVE-2026-2413_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-2413_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
 <tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">30</td>
+  <td class="td-num">21</td>
   <td class="td-cve"><a href="CVE-2026-129502_informe_pdf.html" target="_blank"><code>CVE-2026-129502</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
@@ -619,7 +470,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">31</td>
+  <td class="td-num">22</td>
   <td class="td-cve"><a href="CVE-2024-12025_informe_pdf.html" target="_blank"><code>CVE-2024-12025</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -634,24 +485,8 @@ Upgrading to a sec</td>
     <a href="CVE-2024-12025_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">32</td>
-  <td class="td-cve"><a href="CVE-2025-64756_informe_pdf.html" target="_blank"><code>CVE-2025-64756</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
-  <td><code class="tech">command-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>10.2.0-10.4.99, 11.0.0-11.0.99</code></td>
-  <td class="td-pub">2025-11-17</td>
-  <td class="td-desc">Glob matches files using patterns the shell uses. Starting in version 10.2.0 and prior to versions 10.5.0 and 11.1.0, th</td>
-  <td class="td-links">
-    <a href="CVE-2025-64756_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2025-64756_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">33</td>
+  <td class="td-num">23</td>
   <td class="td-cve"><a href="CVE-2024-12157_informe_pdf.html" target="_blank"><code>CVE-2024-12157</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
@@ -667,7 +502,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">34</td>
+  <td class="td-num">24</td>
   <td class="td-cve"><a href="CVE-2026-130647_informe_pdf.html" target="_blank"><code>CVE-2026-130647</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
@@ -682,56 +517,8 @@ Upgrading to a sec</td>
     <a href="CVE-2026-130647_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
-  <td class="td-num">35</td>
-  <td class="td-cve"><a href="CVE-2024-54374_informe_pdf.html" target="_blank"><code>CVE-2024-54374</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
-  <td><code class="tech">path-traversal</code></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">PoC publico</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>1.5.6</code></td>
-  <td class="td-pub">2024-12-16</td>
-  <td class="td-desc">Improper Limitation of a Pathname to a Restricted Directory (&#x27;Path Traversal&#x27;) vulnerability in Sabri Sogrid sogrid allo</td>
-  <td class="td-links">
-    <a href="CVE-2024-54374_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2024-54374_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="ssti" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">36</td>
-  <td class="td-cve"><a href="CVE-2026-129302_informe_pdf.html" target="_blank"><code>CVE-2026-129302</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
-  <td><code class="tech">ssti</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>3.5.0-3.13.0</code></td>
-  <td class="td-pub">2026-11-16</td>
-  <td class="td-desc">Guard Core is an API security core engine for the FastAPI-Guard, FlaskAPI Guard, and DjAPI Guard adapters. From 3.5.0 un</td>
-  <td class="td-links">
-    <a href="CVE-2026-129302_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-129302_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="?" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">37</td>
-  <td class="td-cve"><a href="CVE-2026-129500_informe_pdf.html" target="_blank"><code>CVE-2026-129500</code></a></td>
-  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">?</span></td>
-  <td><code class="tech">?</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>9.0.0 - 11.6.9</code></td>
-  <td class="td-pub">2026-11-19</td>
-  <td class="td-desc">@fastify/http-proxy is a Fastify plugin that proxies HTTP and WebSocket traffic to an upstream server. In versions from </td>
-  <td class="td-links">
-    <a href="CVE-2026-129500_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-129500_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
 <tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">38</td>
+  <td class="td-num">25</td>
   <td class="td-cve"><a href="CVE-2024-10784_informe_pdf.html" target="_blank"><code>CVE-2024-10784</code></a></td>
   <td><span class="badge" style="background:#2563eb">6.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#9333ea">xss</span></td>
@@ -747,7 +534,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="path-traversal" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">39</td>
+  <td class="td-num">26</td>
   <td class="td-cve"><a href="CVE-2024-23334_informe_pdf.html" target="_blank"><code>CVE-2024-23334</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.9 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
@@ -763,7 +550,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">40</td>
+  <td class="td-num">27</td>
   <td class="td-cve"><a href="CVE-2025-27516_informe_pdf.html" target="_blank"><code>CVE-2025-27516</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
@@ -776,166 +563,6 @@ Upgrading to a sec</td>
   <td class="td-links">
     <a href="CVE-2025-27516_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
     <a href="CVE-2025-27516_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="idor" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">41</td>
-  <td class="td-cve"><a href="CVE-2026-107592_informe_pdf.html" target="_blank"><code>CVE-2026-107592</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">idor</span></td>
-  <td><code class="tech">idor</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>4.16.2</code></td>
-  <td class="td-pub">2026-11-22</td>
-  <td class="td-desc">The Mooberry Book Manager WordPress plugin through 4.16.2 does not perform any capability or nonce check in one of its A</td>
-  <td class="td-links">
-    <a href="CVE-2026-107592_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-107592_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="deserialization" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">42</td>
-  <td class="td-cve"><a href="CVE-2026-121151_informe_pdf.html" target="_blank"><code>CVE-2026-121151</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">deserialization</span></td>
-  <td><code class="tech">deserialization</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>2.26.16.26-1.26.16</code></td>
-  <td class="td-pub">2026-11-21</td>
-  <td class="td-desc">The UpdraftPlus: WP Backup &amp; Migration Plugin WordPress plugin before 2.26.16.26, UpdraftPlus: WP Backup &amp; Migration Plu</td>
-  <td class="td-links">
-    <a href="CVE-2026-121151_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-121151_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="deserialization" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">43</td>
-  <td class="td-cve"><a href="CVE-2026-121153_informe_pdf.html" target="_blank"><code>CVE-2026-121153</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">deserialization</span></td>
-  <td><code class="tech">deserialization</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>2.26.16.26</code></td>
-  <td class="td-pub">2026-11-21</td>
-  <td class="td-desc">The UpdraftPlus: WP Backup &amp; Migration Plugin WordPress plugin before 2.26.16.26, UpdraftPlus: WP Backup &amp; Migration Plu</td>
-  <td class="td-links">
-    <a href="CVE-2026-121153_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-121153_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="deserialization" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">44</td>
-  <td class="td-cve"><a href="CVE-2026-121154_informe_pdf.html" target="_blank"><code>CVE-2026-121154</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">deserialization</span></td>
-  <td><code class="tech">deserialization</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>2.26.16.26-1.26.16</code></td>
-  <td class="td-pub">2026-11-21</td>
-  <td class="td-desc">The UpdraftPlus: WP Backup &amp; Migration Plugin WordPress plugin before 2.26.16.26, UpdraftPlus: WP Backup &amp; Migration Plu</td>
-  <td class="td-links">
-    <a href="CVE-2026-121154_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-121154_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">45</td>
-  <td class="td-cve"><a href="CVE-2026-123068_informe_pdf.html" target="_blank"><code>CVE-2026-123068</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
-  <td><code class="tech">file-upload</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>5.0.99</code></td>
-  <td class="td-pub">2026-11-22</td>
-  <td class="td-desc">The Front User Submit  WordPress plugin before 5.1.0 does not validate the content of files uploaded through one of its </td>
-  <td class="td-links">
-    <a href="CVE-2026-123068_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-123068_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="idor" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">46</td>
-  <td class="td-cve"><a href="CVE-2026-123136_informe_pdf.html" target="_blank"><code>CVE-2026-123136</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">idor</span></td>
-  <td><code class="tech">idor</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>1.6.2-1</code></td>
-  <td class="td-pub">2026-11-22</td>
-  <td class="td-desc">The Event Tickets Manager for WooCommerce WordPress plugin before 1.6.2 does not check that the ticket type and price ch</td>
-  <td class="td-links">
-    <a href="CVE-2026-123136_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-123136_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">47</td>
-  <td class="td-cve"><a href="CVE-2026-127024_informe_pdf.html" target="_blank"><code>CVE-2026-127024</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
-  <td><code class="tech">file-upload</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>4.1.5</code></td>
-  <td class="td-pub">2026-11-22</td>
-  <td class="td-desc">The WordForm  WordPress plugin before 4.1.6 does not properly validate uploaded files, allowing unauthenticated users to</td>
-  <td class="td-links">
-    <a href="CVE-2026-127024_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-127024_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="code-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">48</td>
-  <td class="td-cve"><a href="CVE-2026-131978_informe_pdf.html" target="_blank"><code>CVE-2026-131978</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">code-injection</span></td>
-  <td><code class="tech">code-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
-  <td class="td-aff"><code>7.9.1-1</code></td>
-  <td class="td-pub">2026-11-21</td>
-  <td class="td-desc">The Shortcodes Ultimate  WordPress plugin before 7.9.1 does not restrict which PHP functions a shortcode&#x27;s filter attrib</td>
-  <td class="td-links">
-    <a href="CVE-2026-131978_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-131978_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="idor" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">49</td>
-  <td class="td-cve"><a href="CVE-2026-14233_informe_pdf.html" target="_blank"><code>CVE-2026-14233</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">idor</span></td>
-  <td><code class="tech">idor</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>10.0.4</code></td>
-  <td class="td-pub">2026-11-22</td>
-  <td class="td-desc">The LifterLMS  WordPress plugin before 10.0.5 does not perform a capability or nonce check in one of its quiz-question q</td>
-  <td class="td-links">
-    <a href="CVE-2026-14233_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-14233_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
-  </td>
-</tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">50</td>
-  <td class="td-cve"><a href="CVE-2026-94259_informe_pdf.html" target="_blank"><code>CVE-2026-94259</code></a></td>
-  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
-  <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
-  <td><code class="tech">error-based</code></td>
-  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
-  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
-  <td class="td-aff"><code>4.0.3</code></td>
-  <td class="td-pub">2026-11-22</td>
-  <td class="td-desc">The SMS Alert  WordPress plugin before 4.0.4 does not sanitise and escape a parameter before using it in a SQL statement</td>
-  <td class="td-links">
-    <a href="CVE-2026-94259_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
-    <a href="CVE-2026-94259_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
 </tbody>

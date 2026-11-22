@@ -391,5 +391,10 @@ function applyFilters() {{
 out_path = os.path.join(OUT, "index.html")
 with open(out_path, "w", encoding="utf-8") as f:
     f.write(page)
+# Also update project root index.html (served by binoracle UI)
+root_index = os.path.join(os.path.dirname(__file__), "..", "index.html")
+with open(root_index, "w", encoding="utf-8") as f:
+    f.write(page)
 print(f"index.html generado: {out_path}")
+print(f"  también: {os.path.realpath(root_index)}")
 print(f"  {stats['total']} CVEs, {stats['verified']} verificados, {stats['critical']} critical, {stats['hueco_ver']} HUECO verif.")
