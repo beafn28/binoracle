@@ -42,7 +42,8 @@ for fname in sorted(os.listdir(HISTORY)):
     desc  = (r.get("description") or "")[:120]
     pub   = r.get("published", "?") or "?"
     endpoint = ve.get("endpoint", "?") or "?"
-    add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=True)
+    verified_hist = data.get("verified", True)
+    add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified_hist)
 
 # 2. Batch reports
 batch_dir = os.path.realpath(BATCH_DIR)
