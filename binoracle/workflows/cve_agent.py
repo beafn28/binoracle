@@ -8317,6 +8317,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _ID_HINTS
                 params = notes.get("parameters") or []
                 id_p = notes.get("id_param") or _pick_param(params, _ID_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- diferencia SIN sesion "
                      "(mas debil que con cuentas reales), el objetivo se construye desde su "
                      "propio Dockerfile/compose..." if es else
@@ -8336,6 +8337,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                   inv.vuln_class in ("missing-authorization", "auth-bypass", "idor") and
                   notes.get("endpoint") and notes.get("bypass_header")):
                 from .genericverify import verify_generic_header_bypass
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- bypass de autorizacion "
                      "via cabecera HTTP, el objetivo se construye desde su propio "
                      "Dockerfile/compose..." if es else
@@ -8492,6 +8494,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _CMD_HINTS
                 params = notes.get("parameters") or []
                 cmd_p = notes.get("cmd_param") or _pick_param(params, _CMD_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario via docker "
                      "exec, el objetivo se construye desde su propio Dockerfile/compose..." if es
                      else "attempting GENERIC DYNAMIC verification -- canary file via docker "
@@ -8866,6 +8869,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _SQLI_HINTS
                 params = notes.get("parameters") or []
                 sqli_p = notes.get("sqli_param") or _pick_param(params, _SQLI_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- ciega por tiempo (SLEEP/"
                      "pg_sleep), el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- time-based blind "
@@ -9013,6 +9017,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _URL_HINTS
                 params = notes.get("parameters") or []
                 url_p = notes.get("url_param") or _pick_param(params, _URL_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- listener interno con token "
                      "aleatorio, el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- internal listener "
@@ -9216,6 +9221,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
                 xss_p = notes.get("xss_param") or _pick_param(params, _XSS_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- ejecucion real en navegador "
                      "headless, el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- real headless-"
@@ -9297,6 +9303,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _XSS_HINTS
                 params = notes.get("parameters") or []
                 ssti_p = notes.get("ssti_param") or _pick_param(params, _XSS_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- aritmetica calculada por el "
                      "motor de plantillas, el objetivo se construye desde su propio Dockerfile/"
                      "compose..." if es else "attempting GENERIC DYNAMIC verification -- "
@@ -9377,6 +9384,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _XML_HINTS
                 params = notes.get("parameters") or []
                 xml_p = notes.get("xml_param") or _pick_param(params, _XML_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario via entidad "
                      "externa, el objetivo se construye desde su propio Dockerfile/compose..."
                      if es else "attempting GENERIC DYNAMIC verification -- canary file via "
@@ -9455,6 +9463,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _REDIRECT_HINTS
                 params = notes.get("parameters") or []
                 redir_p = notes.get("redirect_param") or _pick_param(params, _REDIRECT_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- cabecera Location real sin "
                      "seguir redirects, el objetivo se construye desde su propio Dockerfile/"
                      "compose..." if es else "attempting GENERIC DYNAMIC verification -- real "
@@ -9579,6 +9588,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 from .wpverify import _FILE_UPLOAD_HINTS
                 params = notes.get("parameters") or []
                 file_p = notes.get("file_param") or _pick_param(params, _FILE_UPLOAD_HINTS)
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero subido con un "
                      "secreto real, confirmado dentro del contenedor (grep), el objetivo se "
                      "construye desde su propio Dockerfile/compose..." if es else
@@ -9751,6 +9761,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 forbidden_q = notes.get("graphql_query") or notes.get("query") or (
                     "{ __schema { types { name } } }")
                 confirm_f = notes.get("confirm_field") or notes.get("graphql_confirm") or ""
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- GraphQL auth-bypass "
                      "(introspección → query restringida → bypass)..." if es else
                      "attempting GENERIC DYNAMIC verification -- GraphQL auth-bypass "
@@ -9773,6 +9784,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 false_p = notes.get("false_param") or (params[0] if params else "where[id][$lt]")
                 false_v = notes.get("false_value") or "0"
                 confirm_f = notes.get("confirm_field") or notes.get("leak_field") or ""
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- boolean oracle "
                      "(diferencia TRUE/FALSE en respuesta)..." if es else
                      "attempting GENERIC DYNAMIC verification -- boolean oracle "
