@@ -1427,8 +1427,16 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
     resp_false_len = ve.get("respuesta_false_len") or ""
     widget_type = ve.get("widget_type") or ""
 
-    # Determine confirm note
-    if "union" in technique.lower():
+    _is_verified = bool(r.get("verified", True))
+
+    # Determine confirm note — only factual for verified CVEs
+    if not _is_verified:
+        confirm = (
+            "HUECO — vulnerabilidad NO verificada dinamicamente. "
+            "El script PoC fue generado por el motor a partir del analisis del codigo fuente real "
+            "(sin ejecucion en laboratorio confirmada)."
+        )
+    elif "union" in technique.lower():
         ver_note = mysql_ver or "?"
         warn = " (NOTA: valor puede corresponder a version del plugin, no de MySQL)" if _mysql_suspicious else ""
         confirm = f"SQLi confirmada (UNION-based): el payload extrajo '{ver_note}' desde la base de datos en la respuesta HTTP.{warn}"
@@ -1535,6 +1543,12 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
         '<span class="tag t-hueco">HUECO - sin PoC previo</span>'
     )
 
+    # Verified / HUECO tag
+    if _is_verified:
+        _ver_tag = '<span class="tag t-ok">VERIFICADO - lab aislado</span>'
+    else:
+        _ver_tag = '<span class="tag" style="background:#374151;color:#94a3b8">HUECO — sin verificacion dinamica</span>'
+
     # Lab container name from logs
     container = ""
     for entry in logs:
@@ -1571,7 +1585,7 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
 
 <div class="tag-row">
   <span class="tag t-{sc}">CVSS {score} {severity}</span>
-  <span class="tag t-ok">VERIFICADO - lab aislado</span>
+  {_ver_tag}
   {poc_tag}
   <span class="tag t-plain">{h(vuln_class)}</span>
   <span class="tag t-plain">{h(affected)}</span>
