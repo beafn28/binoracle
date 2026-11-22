@@ -1095,6 +1095,50 @@ class _Lab:
                 pass
 
 
+def _capture_exploit_shot(boot: "WpBootResult", method: str, endpoint: str,
+                          resp_or_body, highlight: str, caption_es: str,
+                          caption_en: str) -> None:
+    """Añade un screenshot HTTP del exploit confirmado a boot.shots.
+    `resp_or_body` puede ser un objeto requests.Response o un str (body directo).
+    Se llama justo después de confirmar la explotación en CUALQUIER clase de vuln."""
+    try:
+        if hasattr(resp_or_body, 'text'):
+            status = resp_or_body.status_code
+            body = (resp_or_body.text or "")[:6000]
+        else:
+            status = 200
+            body = str(resp_or_body)[:6000]
+        url = boot.base_url + endpoint
+        png = _screenshot_response(url, method, status, body, highlight=highlight, lang="es")
+        if png:
+            boot.shots.append({
+                "png_b64": png,
+                "caption_es": caption_es,
+                "caption_en": caption_en,
+                "url": url,
+            })
+    except Exception:
+        pass
+
+
+def _capture_terminal_shot(boot: "WpBootResult", title: str, content: str,
+                           highlight: str = "", caption_es: str = "",
+                           caption_en: str = "", url: str = "") -> None:
+    """Añade un screenshot estilo terminal a boot.shots.
+    Útil para evidencias no-HTTP: listener logs, canary files, Docker output."""
+    try:
+        png = _screenshot_terminal_step(title, content, highlight=highlight, lang="es")
+        if png:
+            boot.shots.append({
+                "png_b64": png,
+                "caption_es": caption_es or title,
+                "caption_en": caption_en or title,
+                "url": url,
+            })
+    except Exception:
+        pass
+
+
 def _screenshot_response(url: str, method: str, status: int, body: str,
                          highlight: str = "", lang: str = "es") -> Optional[str]:
     """Captura visual de tipo 'visor HTTP' con la respuesta ya obtenida (no reintenta la peticion).
@@ -2641,6 +2685,15 @@ def verify_wordpress_account_takeover(
                                             f"'{new_pass}' funciono (cookie wordpress_logged_in_* "
                                             f"presente tras el POST a wp-login.php)")
             step("VERIFICADO: el login como admin con la password nueva funciono.")
+            # Screenshot HTTP del endpoint atacado
+            _capture_exploit_shot(
+                boot, m, endpoint, resp, highlight=new_pass,
+                caption_es=(f"Paso 4 (CLAVE): ACCOUNT TAKEOVER — endpoint acepto la peticion "
+                            f"({resp.status_code}) con la nueva password '{new_pass}' "
+                            f"para el usuario '{boot.admin_user}'."),
+                caption_en=(f"Step 4 (KEY): ACCOUNT TAKEOVER — endpoint accepted the request "
+                            f"({resp.status_code}) with new password '{new_pass}' "
+                            f"for user '{boot.admin_user}'."))
             step("capturando pantalla: panel de WordPress YA como admin, con la password "
                  "fijada por el ataque (prueba final)...")
             boot.capture(confirm, "/wp-admin/",
@@ -2824,6 +2877,20 @@ def verify_wordpress_direct_login_as(
                                                "plugin suplanta por otra via, p.ej. sesion nativa "
                                                "de PHP en vez de la cookie de auth de WordPress)"))
             step("VERIFICADO: la sesion del atacante ahora tiene acceso de administrador.")
+            # Screenshot HTTP del endpoint atacado
+            _capture_exploit_shot(
+                boot, m, endpoint, resp if 'resp' in dir() else post_resp, highlight=boot.admin_user,
+                caption_es=(f"Paso 4 (CLAVE): LOGIN-AS — endpoint aceptado; sesion de "
+                            f"'{boot.sub_user}' (subscriber) escalada a admin."),
+                caption_en=(f"Step 4 (KEY): LOGIN-AS — endpoint accepted; "
+                            f"'{boot.sub_user}' session escalated to admin."))
+            # Screenshot del endpoint de confirmación (acceso admin)
+            _capture_exploit_shot(
+                boot, "GET", confirm_path, post_resp, highlight="administrator",
+                caption_es=(f"Paso 5a (CLAVE): ACCESO ADMIN CONFIRMADO — la misma sesion de "
+                            f"'{boot.sub_user}' ahora puede ver '{confirm_path}' sin re-login."),
+                caption_en=(f"Step 5a (KEY): ADMIN ACCESS CONFIRMED — '{boot.sub_user}' session "
+                            f"now accesses '{confirm_path}' without re-login."))
             step("capturando pantalla: la MISMA sesion, ahora con acceso de administrador "
                  "(prueba final)...")
             boot.capture(boot.sub_sess, confirm_path,
@@ -3084,6 +3151,19 @@ def verify_wordpress_unauthenticated_login_bypass(
                           f"el {resp.status_code} del propio endpoint atacado")
             step(f"VERIFICADO: /wp-admin/profile.php confirma la identidad de '{victim_email}' "
                  f"sin que el atacante aportara ninguna credencial real.")
+            # Screenshot HTTP del endpoint atacado + perfil de verificación
+            _capture_exploit_shot(
+                boot, http_method or "POST", endpoint, resp, highlight=victim_email,
+                caption_es=(f"Paso 5 (CLAVE): AUTH BYPASS CONFIRMADO — el endpoint devolvio "
+                            f"{resp.status_code} sin credenciales reales para '{victim_email}'."),
+                caption_en=(f"Step 5 (KEY): AUTH BYPASS CONFIRMED — endpoint returned "
+                            f"{resp.status_code} without real credentials for '{victim_email}'."))
+            _capture_exploit_shot(
+                boot, "GET", "/wp-admin/profile.php", prof, highlight=victim_email,
+                caption_es=(f"Paso 6 (CLAVE): IDENTIDAD CONFIRMADA — /wp-admin/profile.php "
+                            f"muestra el email real '{victim_email}' — sesion activa como victima."),
+                caption_en=(f"Step 6 (KEY): IDENTITY CONFIRMED — /wp-admin/profile.php shows "
+                            f"victim email '{victim_email}' — session active as victim."))
         else:
             res.detail = (f"la peticion no autenticada devolvio {resp.status_code} pero "
                           f"/wp-admin/profile.php no confirmo la identidad de la victima "
@@ -3233,6 +3313,15 @@ def verify_wordpress_header_auth_bypass(
                               f"→ {detail_evidence}")
                 res.cvss_impact = "auth-bypass unauthenticated"
                 step(f"VERIFICADO: {res.detail}")
+                _hdr_name = list(actual_headers.keys())[0]
+                _hdr_val = list(actual_headers.values())[0]
+                _capture_exploit_shot(
+                    boot, "GET", "/wp-json/wp/v2/users/me", r, highlight=str(target_user_id),
+                    caption_es=(f"Paso 5 (CLAVE): HEADER AUTH BYPASS CONFIRMADO — "
+                                f"{_hdr_name}: {_hdr_val} → {detail_evidence}. "
+                                f"Sin sesion ni credenciales."),
+                    caption_en=(f"Step 5 (KEY): HEADER AUTH BYPASS CONFIRMED — "
+                                f"{_hdr_name}: {_hdr_val} → {detail_evidence}. No session needed."))
             else:
                 step(f"bypass no confirmado via /wp-json/wp/v2/users/me (HTTP {r.status_code})")
                 # Intentar con otros endpoints comunes
@@ -3514,19 +3603,23 @@ def verify_wordpress_path_traversal(
                      f"devolver el contenido directo)" if follow_url else
                      f"VERIFICADO: el secreto plantado aparecio literal en la respuesta con "
                      f"{path_param}={payload_value!r}."))
-                step("capturando pantalla: la respuesta HTTP con el secreto filtrado (prueba "
-                     "final)...")
-                shot_url = (boot.base_url + endpoint
-                           + ("&" if "?" in endpoint else "?")
-                           + f"{path_param}={payload_value}") if (m == "GET" and not follow_url) else None
-                if shot_url:
+                # Captura HTTP del exploit (GET, POST y redirect)
+                _winning_resp = followed_resp
+                _capture_exploit_shot(
+                    boot, m, endpoint, _winning_resp, highlight=_hit_secret,
+                    caption_es=(f"Paso 5 (CLAVE): PATH TRAVERSAL CONFIRMADO — respuesta HTTP "
+                                f"con el secreto plantado en {canary_path} filtrado. "
+                                f"Payload: {path_param}={payload_value!r}"),
+                    caption_en=(f"Step 5 (KEY): PATH TRAVERSAL CONFIRMED — HTTP response "
+                                f"with secret from {canary_path} leaked. "
+                                f"Payload: {path_param}={payload_value!r}"))
+                if m == "GET" and not follow_url:
+                    shot_url = (boot.base_url + endpoint
+                               + ("&" if "?" in endpoint else "?")
+                               + f"{path_param}={payload_value}")
                     boot.capture(_pt_sess, shot_url[len(boot.base_url):],
-                           f"Paso 5: LECTURA DE FICHERO confirmada -- la respuesta real del "
-                           f"servidor contiene el secreto plantado en {canary_path}, fuera del "
-                           f"directorio web previsto.",
-                           f"Step 5: FILE READ confirmed -- the server's real response contains "
-                           f"the secret planted at {canary_path}, outside the intended web "
-                           f"directory.")
+                           f"Paso 5b: PATH TRAVERSAL (navegador) — secreto visible.",
+                           f"Step 5b: PATH TRAVERSAL (browser) — secret visible.")
                 break
         # ultimo recurso si el canario (en /tmp, fuera del volumen web) no se confirmo: repetir
         # las mismas 40 variantes pero pidiendo literalmente /etc/passwd -- el objetivo EXACTO
@@ -3942,6 +4035,12 @@ def verify_wordpress_lfi(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_lfi_poc_params, technique="LFI-to-RCE (log poisoning)",
                 description=f"LFI-to-RCE on '{path_param}': Apache log poisoned with PHP, then included via LFI to execute code. Replace TARGET with the real host.")
+            _capture_exploit_shot(
+                boot, m, endpoint, res.evidence.get("lfi_rce_fragmento", ""), highlight="",
+                caption_es=(f"Paso 5 (CLAVE): LFI-A-RCE CONFIRMADO — fragmento del log de Apache "
+                            f"incluido y ejecutado como PHP. Payload: {path_param}={res.evidence['lfi_rce_payload']!r}"),
+                caption_en=(f"Step 5 (KEY): LFI-TO-RCE CONFIRMED — Apache log poisoned and included as PHP. "
+                            f"Payload: {path_param}={res.evidence['lfi_rce_payload']!r}"))
         elif php_canary_found:
             res.verified = True
             res.ok = True
@@ -3956,6 +4055,12 @@ def verify_wordpress_lfi(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_lfi_poc_params, technique="PHP-include LFI",
                 description=f"PHP-include LFI on '{path_param}': path traversal reaches /tmp/ — plugin appends .php suffix. Replace TARGET with the real host.")
+            _capture_exploit_shot(
+                boot, m, endpoint, res.evidence.get("lfi_php_canary_resp_recorte", ""), highlight=secret,
+                caption_es=(f"Paso 5 (CLAVE): LFI PHP-INCLUDE CONFIRMADO — respuesta con secreto "
+                            f"del canario PHP ejecutado. Payload: {path_param}={res.evidence['lfi_php_canary_payload']!r}"),
+                caption_en=(f"Step 5 (KEY): LFI PHP-INCLUDE CONFIRMED — response with PHP canary secret. "
+                            f"Payload: {path_param}={res.evidence['lfi_php_canary_payload']!r}"))
         elif read_found:
             res.verified = True
             res.ok = True
@@ -3970,6 +4075,14 @@ def verify_wordpress_lfi(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_lfi_poc_params, technique="LFI read",
                 description=f"LFI read on '{path_param}': {res.evidence.get('lfi_lectura_fichero','file')} contents leaked. Replace TARGET with the real host.")
+            _capture_exploit_shot(
+                boot, m, endpoint, res.evidence.get("lfi_lectura_resp_recorte", ""),
+                highlight=res.evidence.get("lfi_lectura_fichero", ""),
+                caption_es=(f"Paso 5 (CLAVE): LFI LECTURA CONFIRMADO — contenido de "
+                            f"'{res.evidence.get('lfi_lectura_fichero','')}' en la respuesta. "
+                            f"Payload: {path_param}={res.evidence['lfi_lectura_payload']!r}"),
+                caption_en=(f"Step 5 (KEY): LFI READ CONFIRMED — '{res.evidence.get('lfi_lectura_fichero','')}' "
+                            f"content in response. Payload: {path_param}={res.evidence['lfi_lectura_payload']!r}"))
         else:
             res.ok = True
             res.detail = (
@@ -4087,19 +4200,22 @@ def verify_wordpress_command_injection(
                 res.evidence["respuesta_cuerpo_recorte"] = (resp.text or "")[:500]
                 step(f"VERIFICADO: la respuesta contiene {expected} (={a}+{b}), calculado por un "
                      f"shell remoto -- ese numero no aparece en el payload enviado.")
-                step("capturando pantalla: la respuesta HTTP con la suma calculada por el shell "
-                     "remoto (prueba final)...")
-                shot_url = (boot.base_url + endpoint
-                           + ("&" if "?" in endpoint else "?")
-                           + f"{cmd_param}={payload_value}") if m == "GET" else None
-                if shot_url:
+                # Captura HTTP (GET y POST)
+                _capture_exploit_shot(
+                    boot, m, endpoint, resp, highlight=str(expected),
+                    caption_es=(f"Paso 5 (CLAVE): COMMAND INJECTION CONFIRMADA — respuesta con "
+                                f"{expected} (={a}+{b}) calculado por shell remoto. "
+                                f"Payload: {cmd_param}={payload_value!r}"),
+                    caption_en=(f"Step 5 (KEY): COMMAND INJECTION CONFIRMED — response with "
+                                f"{expected} (={a}+{b}) from remote shell. "
+                                f"Payload: {cmd_param}={payload_value!r}"))
+                if m == "GET":
+                    shot_url = (boot.base_url + endpoint
+                               + ("&" if "?" in endpoint else "?")
+                               + f"{cmd_param}={payload_value}")
                     boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                           f"Paso 5: EJECUCION DE COMANDOS confirmada -- la respuesta contiene "
-                           f"{expected} (={a}+{b}), que solo pudo calcularse ejecutando aritmetica "
-                           f"en un shell remoto, no reflejando el payload enviado.",
-                           f"Step 5: COMMAND EXECUTION confirmed -- the response contains "
-                           f"{expected} (={a}+{b}), which could only come from arithmetic "
-                           f"evaluated by a remote shell, not from reflecting the sent payload.")
+                           f"Paso 5b: EJECUCION (navegador) — suma {expected} visible.",
+                           f"Step 5b: COMMAND EXECUTION (browser) — sum {expected} visible.")
                 break
         res.evidence["intentos"] = tried
 
@@ -5645,6 +5761,26 @@ def verify_wordpress_sqli(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="boolean-blind SQLi",
                 description=f"Boolean-blind SQLi on '{sqli_param}': TRUE condition returns different response size than FALSE. Replace TARGET with the real host.")
+            # Screenshot terminal con diferencial TRUE/FALSE
+            _true_len = res.evidence.get("respuesta_true_len", 0)
+            _false_len = res.evidence.get("respuesta_false_len", 0)
+            _capture_terminal_shot(
+                boot, "binoracle · Boolean-blind SQLi — TRUE/FALSE differential",
+                content=(f"[BOOLEAN-BLIND SQLi CONFIRMED]\n"
+                         f"Parameter: {sqli_param}\n"
+                         f"TRUE payload:  {_bool_winning!r}\n"
+                         f"TRUE response:  {_true_len} bytes (matches control baseline)\n"
+                         f"FALSE response: {_false_len} bytes (consistently different)\n"
+                         f"Pairs confirmed: {consistent_diffs}/{len(pairs)}\n\n"
+                         f"The server produces different response sizes for TRUE vs FALSE\n"
+                         f"SQL conditions, confirming the parameter is interpreted as SQL."),
+                highlight="CONFIRMED",
+                caption_es=(f"Paso 5 (CLAVE): SQLi BOOLEAN-BLIND CONFIRMADA — diferencial "
+                            f"TRUE ({_true_len}B) vs FALSE ({_false_len}B) consistente en "
+                            f"{consistent_diffs}/{len(pairs)} pares. Param: {sqli_param}"),
+                caption_en=(f"Step 5 (KEY): BOOLEAN-BLIND SQLi CONFIRMED — TRUE ({_true_len}B) "
+                            f"vs FALSE ({_false_len}B) differential in {consistent_diffs}/{len(pairs)} pairs."),
+                url=boot.base_url + endpoint)
             res.evidence["screenshots"] = boot.shots
             return res
 
@@ -5861,11 +5997,33 @@ def verify_wordpress_sqli(
             step(f"VERIFICADO (time-based blind): {timing_consistent}/{len(timing_pairs)} pares "
                  f"mostraron retraso consistente")
             _tbwin = next((t["slow"] for t in timing_tried if t.get("retraso_consistente")), timing_pairs[0][0])
+            _tbfast = next((t["fast"] for t in timing_tried if t.get("retraso_consistente")), None)
+            _tbslow_s = next((t.get("slow_s", 0) for t in timing_tried if t.get("retraso_consistente")), 0)
+            _tbfast_s = next((t.get("fast_s", 0) for t in timing_tried if t.get("retraso_consistente")), 0)
             _poc_params = dict(base_params); _poc_params[sqli_param] = _tbwin
             res.exploit_poc = _build_exploit_poc(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="time-based blind SQLi",
                 description=f"Time-based blind SQLi on '{sqli_param}': SLEEP(5) causes ≥3.5s delay vs SLEEP(0). Replace TARGET with the real host and add auth cookie if needed.")
+            # Screenshot terminal con evidencia timing
+            _capture_terminal_shot(
+                boot, "binoracle · Time-based Blind SQLi — timing evidence",
+                content=(f"[TIME-BASED BLIND SQLi CONFIRMED]\n"
+                         f"Parameter: {sqli_param}\n"
+                         f"SLOW payload (SLEEP): {_tbwin!r}\n"
+                         f"  → elapsed: {_tbslow_s:.2f}s\n"
+                         f"FAST payload (SLEEP(0)): {_tbfast!r}\n"
+                         f"  → elapsed: {_tbfast_s:.2f}s\n"
+                         f"Pairs consistent: {timing_consistent}/{len(timing_pairs)}\n\n"
+                         f"The SLEEP() function in the payload caused measurable server-side\n"
+                         f"delay, confirming SQL code execution (time-based blind injection)."),
+                highlight="CONFIRMED",
+                caption_es=(f"Paso 5 (CLAVE): SQLi TIME-BASED BLIND CONFIRMADA — retraso "
+                            f"{_tbslow_s:.1f}s (SLEEP) vs {_tbfast_s:.1f}s (control) en "
+                            f"{timing_consistent}/{len(timing_pairs)} pares. Param: {sqli_param}"),
+                caption_en=(f"Step 5 (KEY): TIME-BASED BLIND SQLi CONFIRMED — {_tbslow_s:.1f}s delay "
+                            f"(SLEEP) vs {_tbfast_s:.1f}s (control) in {timing_consistent}/{len(timing_pairs)} pairs."),
+                url=boot.base_url + endpoint)
         else:
             _max_single_delay_local = max(_slow_times) if _slow_times else 0.0
             step(f"[técnica time-based blind] FALLO: {timing_consistent}/{len(timing_pairs)} "
@@ -6251,6 +6409,21 @@ def verify_wordpress_ssrf(
                           f"navegador del atacante")
             step(f"VERIFICADO: el listener interno recibio el token "
                  f"'{res.evidence['token_ganador']}' -- la peticion saliente la hizo el servidor.")
+            # Screenshot terminal con log del listener (evidencia SSRF)
+            _token_val = res.evidence.get("token_ganador", "")
+            _log_val = res.evidence.get("listener_log_recorte", "")
+            _callback_url = res.evidence.get("callback_url_ganadora", "")
+            _capture_terminal_shot(
+                boot,
+                title="binoracle · SSRF evidence — listener log",
+                content=f"[SSRF CONFIRMED]\nServer made outbound request to internal listener.\n\nURL param: {url_param}={_callback_url!r}\nToken received: {_token_val}\n\nListener log:\n{_log_val}",
+                highlight=_token_val,
+                caption_es=(f"Paso 5 (CLAVE): SSRF CONFIRMADO — log del listener interno con "
+                            f"el token exacto recibido. El servidor hizo la peticion saliente: "
+                            f"{url_param}={_callback_url!r}"),
+                caption_en=(f"Step 5 (KEY): SSRF CONFIRMED — internal listener log shows "
+                            f"token received from server-side request: {url_param}={_callback_url!r}"),
+                url=boot.base_url + endpoint)
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de URL/codificacion (hostname, IP "
@@ -7245,17 +7418,23 @@ def verify_wordpress_ssti(
                      f"motor de plantillas -- ese numero no aparece en el payload enviado.")
                 step("capturando pantalla: la respuesta HTTP con el producto calculado por el "
                      "motor de plantillas (prueba final)...")
-                shot_url = (boot.base_url + endpoint
-                           + ("&" if "?" in endpoint else "?")
-                           + f"{ssti_param}={payload_value}") if m == "GET" else None
-                if shot_url:
+                # Captura HTTP (GET y POST)
+                _capture_exploit_shot(
+                    boot, m, endpoint, resp, highlight=str(payload_expected),
+                    caption_es=(f"Paso 5 (CLAVE): SSTI CONFIRMADA — la respuesta contiene "
+                                f"{payload_expected} (={payload_expected}), calculado por el "
+                                f"motor de plantillas. Payload: {ssti_param}={payload_value!r}"),
+                    caption_en=(f"Step 5 (KEY): SSTI CONFIRMED — response contains "
+                                f"{payload_expected}, computed by the template engine. "
+                                f"Payload: {ssti_param}={payload_value!r}"))
+                # Para GET también captura con el navegador
+                if m == "GET":
+                    shot_url = (boot.base_url + endpoint
+                               + ("&" if "?" in endpoint else "?")
+                               + f"{ssti_param}={payload_value}")
                     boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                           f"Paso 5: SSTI confirmada -- la respuesta contiene {payload_expected}, "
-                           f"que solo pudo calcularse evaluando codigo en el motor de plantillas, "
-                           f"no reflejando el payload enviado.",
-                           f"Step 5: SSTI confirmed -- the response contains {payload_expected}, "
-                           f"which could only come from the template engine evaluating code, not "
-                           f"from reflecting the sent payload.")
+                           f"Paso 5b: SSTI (navegador) — resultado {payload_expected} visible.",
+                           f"Step 5b: SSTI (browser) — result {payload_expected} visible.")
                 break
         res.evidence["intentos"] = tried
         if found:
@@ -7460,11 +7639,29 @@ def verify_wordpress_xxe(
                               "exacto -- prueba de que el parser resuelve entidades externas "
                               "arbitrarias, aunque no se extrajo el contenido del fichero (mas "
                               "debil que la prueba en banda con el canario)")
+                _capture_terminal_shot(
+                    boot, "binoracle · XXE OOB evidence — listener log",
+                    content=(f"[XXE OOB CONFIRMED]\nXML parser resolved external entity to internal listener.\n\n"
+                             f"Listener log:\n{res.evidence.get('listener_log_recorte','')}"),
+                    highlight=res.evidence.get("token_ganador", ""),
+                    caption_es="Paso 5 (CLAVE): XXE OOB CONFIRMADO — log del listener con conexion del parser XML.",
+                    caption_en="Step 5 (KEY): XXE OOB CONFIRMED — listener log shows XML parser made external request.",
+                    url=boot.base_url + endpoint)
             else:
                 res.detail = (f"XXE confirmada ({res.evidence['modo_ganador']}): la respuesta "
                               f"contiene el secreto exacto plantado en {canary_path} -- el "
                               f"parser XML resolvio una entidad externa apuntando al sistema de "
                               f"ficheros real")
+                # Screenshot HTTP con el secreto en la respuesta
+                _xxe_body = res.evidence.get("respuesta_cuerpo_recorte", "")
+                if _xxe_body:
+                    _capture_exploit_shot(
+                        boot, m, endpoint, _xxe_body, highlight=secret,
+                        caption_es=(f"Paso 5 (CLAVE): XXE CONFIRMADA — respuesta HTTP con el "
+                                    f"secreto de {canary_path} incluido en la respuesta XML. "
+                                    f"Modo: {res.evidence.get('modo_ganador','')}"),
+                        caption_en=(f"Step 5 (KEY): XXE CONFIRMED — HTTP response with secret "
+                                    f"from {canary_path} in XML response."))
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa (en "
@@ -7592,6 +7789,20 @@ def verify_wordpress_open_redirect(
                           f"de verdad a un dominio externo controlado por el atacante")
             step(f"VERIFICADO: Location={confirmed_entry['location']!r} contiene el dominio "
                  f"externo enviado.")
+            # Screenshot de la respuesta con la cabecera Location resaltada
+            _redir_body = (f"HTTP {confirmed_entry['status']}\r\n"
+                           f"Location: {confirmed_entry['location']}\r\n"
+                           f"\r\n(redirect to attacker-controlled domain)")
+            _capture_exploit_shot(
+                boot, m, endpoint, _redir_body,
+                highlight=confirmed_entry["location"],
+                caption_es=(f"Paso 5 (CLAVE): OPEN REDIRECT CONFIRMADO — respuesta "
+                            f"HTTP {confirmed_entry['status']} con Location: "
+                            f"{confirmed_entry['location']!r} apuntando al dominio externo. "
+                            f"Payload: {redirect_param}={confirmed_entry['target']!r}"),
+                caption_en=(f"Step 5 (KEY): OPEN REDIRECT CONFIRMED — HTTP {confirmed_entry['status']} "
+                            f"with Location: {confirmed_entry['location']!r} pointing to "
+                            f"attacker-controlled domain."))
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de bypass (directa, "
@@ -7739,15 +7950,18 @@ def verify_wordpress_file_upload(
                 res.evidence["respuesta_cuerpo_recorte"] = (r2.text or "")[:500]
                 step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- el fichero "
                      f"subido se EJECUTA como PHP, no se sirve como archivo estatico.")
-                step("capturando pantalla: la respuesta del webshell subido ejecutandose de "
-                     "verdad (prueba final)...")
+                # Captura HTTP del webshell ejecutándose
+                _capture_exploit_shot(
+                    boot, "GET", rel, r2, highlight=str(expected),
+                    caption_es=(f"Paso 5 (CLAVE): FILE UPLOAD CONFIRMADO — '{fname}' "
+                                f"ejecuta como PHP y devuelve {expected} (={a}+{b}). "
+                                f"URL publica: {candidate_url}"),
+                    caption_en=(f"Step 5 (KEY): FILE UPLOAD CONFIRMED — '{fname}' "
+                                f"executes as PHP returning {expected} (={a}+{b}). "
+                                f"Public URL: {candidate_url}"))
                 boot.capture(boot.sub_sess, rel,
-                       f"Paso 5: FILE UPLOAD confirmado -- '{fname}' se subio y se EJECUTA como "
-                       f"PHP (devuelve {expected}={a}+{b}, calculado por el interprete, no el "
-                       f"codigo fuente sin ejecutar).",
-                       f"Step 5: FILE UPLOAD confirmed -- '{fname}' was uploaded and RUNS as "
-                       f"PHP (returns {expected}={a}+{b}, computed by the interpreter, not the "
-                       f"raw unexecuted source).")
+                       f"Paso 5b: FILE UPLOAD (navegador) — webshell ejecuta {expected}={a}+{b}.",
+                       f"Step 5b: FILE UPLOAD (browser) — webshell executes {expected}={a}+{b}.")
                 break
         res.evidence["intentos"] = tried
 
@@ -7985,6 +8199,14 @@ def verify_wordpress_plugin_install_rce(
             step(f"VERIFICADO: {candidate_url} devolvio {expected} (={a}+{b}) -- RCE via "
                  f"Plugin_Upgrader->install().")
             step("capturando pantalla: el plugin instalado ejecutandose de verdad (prueba final)...")
+            _capture_exploit_shot(
+                boot, "GET", rel, r2, highlight=str(expected),
+                caption_es=(f"Paso 5 (CLAVE): RCE via PLUGIN INSTALL CONFIRMADA — "
+                            f"{candidate_url} devolvio {expected}={a}+{b} ejecutado por PHP. "
+                            f"Accion AJAX: '{ajax_action}'."),
+                caption_en=(f"Step 5 (KEY): RCE via PLUGIN INSTALL CONFIRMED — "
+                            f"{candidate_url} returned {expected}={a}+{b} executed by PHP. "
+                            f"AJAX action: '{ajax_action}'."))
             boot.capture(boot.sub_sess, rel,
                    f"Paso 5: RCE confirmado -- el ZIP de plugin se instalo via la accion AJAX "
                    f"'{ajax_action}' y SE EJECUTA como PHP (devuelve {expected}={a}+{b}).",
@@ -8139,6 +8361,22 @@ def verify_wordpress_csrf(
                           f"verdad su propia cuenta -- el endpoint no comprueba nonce ni origen")
             step(f"VERIFICADO: CSRF confirmado ({res.evidence['modo_entrega_ganador']}) -- la "
                  f"peticion forjada sin nonce cambio la cuenta del admin.")
+            # Screenshot HTTP del request forjado y de la verificación del efecto
+            _csrf_resp = res.evidence.get("respuesta_entrega_ganadora", "")
+            _csrf_status = res.evidence.get("status_entrega_ganadora", 200)
+            _csrf_mode = res.evidence.get("modo_entrega_ganador", "")
+            _csrf_body = (f"[CSRF CONFIRMED]\nForged request without nonce accepted.\n\n"
+                          f"Mode: {_csrf_mode}\nOrigin: {headers_base['Origin']}\n"
+                          f"Effect: admin account modified (password/email changed)\n\n"
+                          f"Response body (truncated):\n{_csrf_resp[:400]}")
+            _capture_terminal_shot(
+                boot, "binoracle · CSRF evidence — forged request accepted",
+                content=_csrf_body, highlight="CONFIRMED",
+                caption_es=(f"Paso 5 (CLAVE): CSRF CONFIRMADO — peticion sin nonce aceptada "
+                            f"({_csrf_mode}), cuenta del admin modificada. Endpoint: {endpoint}"),
+                caption_en=(f"Step 5 (KEY): CSRF CONFIRMED — nonce-less request accepted "
+                            f"({_csrf_mode}), admin account modified. Endpoint: {endpoint}"),
+                url=boot.base_url + endpoint)
         else:
             res.ok = True
             res.detail = (f"se probaron {len(delivery_tried)} formas de entrega (form-encoded, "
@@ -8325,6 +8563,26 @@ def verify_wordpress_deserialization(
                           f"[gadget_type={gadget.gadget_type}] se reconstruyo de verdad y su "
                           f"{gadget.magic_method} escribio el secreto exacto en {canary_path} "
                           f"-- prueba inequivoca de PHP Object Injection, no deduccion por status code")
+            # Screenshot terminal con fichero canario como evidencia
+            _capture_terminal_shot(
+                boot, "binoracle · PHP Deserialization — canary file evidence",
+                content=(f"[PHP DESERIALIZATION CONFIRMED]\n"
+                         f"Gadget: {gadget.full_class_name}\n"
+                         f"Magic method: {gadget.magic_method}\n"
+                         f"Gadget type: {gadget.gadget_type}\n"
+                         f"Delivery mode: {res.evidence.get('modo_ganador', '')}\n\n"
+                         f"Canary file: {canary_path}\n"
+                         f"Secret written by gadget: {secret}\n\n"
+                         f"The PHP object was reconstructed server-side and the magic method\n"
+                         f"wrote our controlled secret to disk — confirming unserialize() RCE."),
+                highlight=secret,
+                caption_es=(f"Paso 5 (CLAVE): PHP DESERIALIZATION CONFIRMADA — gadget "
+                            f"'{gadget.full_class_name}' escribio secreto en {canary_path}. "
+                            f"Modo: {res.evidence.get('modo_ganador', '')}."),
+                caption_en=(f"Step 5 (KEY): PHP DESERIALIZATION CONFIRMED — gadget "
+                            f"'{gadget.full_class_name}' wrote secret to {canary_path}. "
+                            f"Mode: {res.evidence.get('modo_ganador', '')}."),
+                url=boot.base_url + endpoint)
         else:
             res.ok = True
             res.detail = (f"se encontraron {len(gadgets)} gadgets en el codigo pero ninguna "
@@ -8511,6 +8769,23 @@ def verify_wordpress_deserialization_custom_table(
                           f"{gadget.magic_method} escribio el secreto exacto en {canary_path}")
             step(f"VERIFICADO: {canary_path} contiene el secreto -- deserializacion por tabla "
                  f"propia confirmada.")
+            _capture_terminal_shot(
+                boot, "binoracle · PHP Deserialization (custom table) — canary evidence",
+                content=(f"[PHP DESERIALIZATION (CUSTOM TABLE) CONFIRMED]\n"
+                         f"Table: {table_name}.{column_name}\n"
+                         f"Gadget: {gadget.full_class_name}\n"
+                         f"Magic method: {gadget.magic_method}\n\n"
+                         f"Step 1: serialized object stored in {table_name}\n"
+                         f"Step 2: wp-cli forced unserialize() → gadget executed\n\n"
+                         f"Canary file: {canary_path}\n"
+                         f"Secret written: {secret}\n"
+                         f"wp-cli output: {res.evidence.get('wp_cli_salida','')[:200]}"),
+                highlight=secret,
+                caption_es=(f"Paso 5 (CLAVE): PHP DESERIALIZATION (tabla propia) CONFIRMADA "
+                            f"— gadget '{gadget.full_class_name}' escribio secreto en {canary_path}."),
+                caption_en=(f"Step 5 (KEY): PHP DESERIALIZATION (custom table) CONFIRMED "
+                            f"— gadget '{gadget.full_class_name}' wrote secret to {canary_path}."),
+                url=boot.base_url + store_endpoint)
         else:
             res.ok = True
             res.detail = ("se almaceno el payload en el paso 1 y se forzo la lectura+"
