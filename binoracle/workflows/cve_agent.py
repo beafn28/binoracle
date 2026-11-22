@@ -1270,6 +1270,53 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.65,
             }
 
+    # --- Check 7: Command injection / RCE — detectar escapado de args de shell cerca de sinks ---
+    # Si el código escapa los args antes del sink (escapeshellarg, shlex.quote, execFile…),
+    # la inyección directa probablemente no funcione sin bypass previo.
+    if vuln_class in ("command-injection", "rce", "os-command-injection") and local_path:
+        import os as _os_cmd
+        _CMD_SANITIZE_RE = re.compile(
+            r'escapeshellarg\s*\(|escapeshellcmd\s*\('          # PHP
+            r'|shlex\.quote\s*\(|pipes\.quote\s*\('             # Python
+            r'|shellEscape\s*\(|shell_quote\s*\('               # genérico/Ruby
+            r'|child_process\.execFile\s*\(',                   # Node.js — execFile es seguro
+            re.IGNORECASE,
+        )
+        _cmd_sanitize_hits: list[str] = []
+        _exts_cmd = {".php", ".py", ".js", ".ts", ".rb"}
+        try:
+            for _root_cmd, _dirs_cmd, _files_cmd in _os_cmd.walk(local_path):
+                _dirs_cmd[:] = [d for d in _dirs_cmd
+                                if d not in (".git", "dist", "build", "__pycache__")]
+                for _fname_cmd in _files_cmd:
+                    if not any(_fname_cmd.endswith(e) for e in _exts_cmd):
+                        continue
+                    _fp_cmd = _os_cmd.path.join(_root_cmd, _fname_cmd)
+                    try:
+                        _txt_cmd = open(_fp_cmd, encoding="utf-8", errors="ignore").read(200_000)
+                        for _m_cmd in _CMD_SANITIZE_RE.finditer(_txt_cmd):
+                            _rel_cmd = _os_cmd.path.relpath(_fp_cmd, local_path)
+                            _hit_cmd = f"{_rel_cmd}: `{_m_cmd.group(0)[:60].strip()}`"
+                            if _hit_cmd not in _cmd_sanitize_hits:
+                                _cmd_sanitize_hits.append(_hit_cmd)
+                            if len(_cmd_sanitize_hits) >= 4:
+                                break
+                    except Exception:
+                        continue
+                if len(_cmd_sanitize_hits) >= 4:
+                    break
+        except Exception:
+            pass
+        if _cmd_sanitize_hits:
+            _san_summary = "; ".join(_cmd_sanitize_hits[:2])
+            return {
+                "ok": False,
+                "reason": (f"pre-check command-injection: se detectaron funciones de "
+                           f"escape de argumentos de shell ({_san_summary}) — el input "
+                           f"puede estar protegido antes de llegar al sink"),
+                "confidence": 0.72,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
@@ -3039,12 +3086,27 @@ def _synthesize_exploit_from_intel(
         _other_hints = {k: v for k, v in schema_hints.items() if k != "public_poc_code"}
         if _other_hints:
             schema_str = f"Database schema hints: {_other_hints}"
+    _is_gap = bool(cve_intel.get("is_gap", False))
     system_prompt = (
         "You are an expert exploit developer specializing in WordPress plugin vulnerabilities. "
         "Synthesize precise, working exploit payloads from CVE intelligence and vulnerable "
         "source code — not generic templates. Reason from actual code paths, not assumptions. "
         f"This is a {_vc_normalized.upper()} vulnerability — apply class-specific analysis. "
-        "Always respond in JSON only.")
+        + ("NO PUBLIC EXPLOIT EXISTS for this CVE. You must derive the exploit entirely from the "
+           "source code and the official description. Never guess — trace each line of the vulnerable "
+           "code to find the exact unsanitized input path that reaches the sink. "
+           if _is_gap else "")
+        + "Always respond in JSON only.")
+    _no_poc_block = (
+        "\n⚠️  NO PUBLIC PoC EXISTS — binoracle is first to exploit this.\n"
+        "Derive the payload by:\n"
+        "  1. Identify the SINK: where does user-controlled input reach the dangerous function?\n"
+        "  2. Trace the INPUT PATH: which parameter / header / cookie carries the attacker value?\n"
+        "  3. Check SANITIZATION: list every filter/escape between input and sink — are they bypassable?\n"
+        "  4. Identify AUTHENTICATION: what privilege level can reach this endpoint?\n"
+        "  5. Build the MINIMAL payload that reaches the sink with the sanitization bypassed.\n"
+        "Populate reasoning_steps with these 5 derivation steps from the actual code.\n\n"
+        if _is_gap else "")
     user_prompt = (
         f"Synthesize a working exploit for this CVE.\n\n"
         f"CVE: {cve_intel.get('cve_id', '')}\n"
@@ -3059,18 +3121,21 @@ def _synthesize_exploit_from_intel(
         + (f"Public PoC code (ExploitDB reference):\n```\n{_poc_code[:1500]}\n```\n\n"
            if _poc_code else "")
         + f"Endpoint: {endpoint}\nVulnerable parameter: {param}\n{schema_str}\n\n"
+        f"{_no_poc_block}"
         f"{spec['analysis']}\n\n"
         "Return ONLY valid JSON:\n"
         "{\n"
         f"{spec['schema']}"
         '  "bypass_needed": "<filter/sanitizer bypass technique, or none>",\n'
         '  "setup_steps": ["<pre-condition 1>", "<pre-condition 2>"],\n'
+        '  "reasoning_steps": ["<step 1: sink identification>", "<step 2: input path>", '
+        '"<step 3: sanitization check>", "<step 4: auth>", "<step 5: payload construction>"],\n'
         '  "reasoning": "<2-3 sentences: why this exact payload works for this specific code>",\n'
         '  "confidence": 0.0\n'
         "}")
     result: dict = {
         "ok": False, "payload": "", "bypass_needed": "none",
-        "setup_steps": [], "reasoning": "", "confidence": 0.0,
+        "setup_steps": [], "reasoning_steps": [], "reasoning": "", "confidence": 0.0,
         "vuln_class_used": _vc_normalized,
     }
     result.update(spec.get("defaults", {}))
@@ -3080,7 +3145,7 @@ def _synthesize_exploit_from_intel(
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             temperature=0.1,
-            max_tokens=1400,
+            max_tokens=1800 if _is_gap else 1400,
         )
         raw = resp.content if hasattr(resp, "content") else str(resp)
         m = _re2.search(r'\{[\s\S]*\}', raw)
@@ -7255,8 +7320,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                                     with open(_fhit, errors="replace") as _fh_s:
                                         _vuln_code_synth = _fh_s.read()[:3000]
                                     break
-                    _cve_intel_synth = inv.llm_notes.get("cve_intel") or {"cve_id": cve_id,
-                                                                              "description": ""}
+                    _cve_intel_synth = dict(inv.llm_notes.get("cve_intel") or {"cve_id": cve_id,
+                                                                              "description": ""})
+                    _cve_intel_synth["is_gap"] = getattr(inv, "is_gap", False)
                     # Inject any PoC snippets from ExploitDB into schema_hints so LLM can
                     # see real public exploit code when reasoning about the payload
                     _poc_snippets = _cve_intel_synth.get("poc_snippets", [])
@@ -7373,6 +7439,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                             notes["synth_response_indicator"] = _synth["expected_response_indicator"]
                         if _synth.get("payload"):
                             notes["synthesized_payload"] = _synth["payload"]
+                        # No-PoC reasoning steps (is_gap CVEs)
+                        if _synth.get("reasoning_steps"):
+                            inv.llm_notes["gap_reasoning_steps"] = _synth["reasoning_steps"]
                 except Exception:
                     pass
             # Override determinista para WordPress SQLi: si un parametro de tipo DataTables
