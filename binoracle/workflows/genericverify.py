@@ -1244,7 +1244,13 @@ def verify_generic_path_traversal(
         # CVE-2026-71209 (audiobookshelf) donde el check de autenticacion exime rutas que empiezan
         # con /items/ o /authors/ y no normaliza %2F antes de comparar -- el slash inicial hace
         # que el item ID empiece con '/', rompiendo la resolucion de ruta esperada.
-        attempts += [("%2F.." * n) + "%2F" + rel for n in depths]
+        # IMPORTANTE: se codifican TODOS los slashes de rel (no solo los de traversal) para que el
+        # url_suffix se pueda seguir usando sin que un '/' intermedio parta el parametro de ruta.
+        # Ej: rel="tmp/canary.txt", url_suffix="/cover" →
+        #   "%2F..%2F..%2Ftmp%2Fcanary.txt" + "/cover"   ← correcto
+        #   "%2F..%2F..%2Ftmp/canary.txt"   + "/cover"   ← ROTO (Express ve :id="%2F..%2F..%2Ftmp")
+        _rel_2f = rel.replace("/", "%2F")
+        attempts += [("%2F.." * n) + "%2F" + _rel_2f for n in depths]
         # Double-slash bypass: '//' + abs_path bypasea checks de tipo
         # allowed_path.startswith(user_path) que no normalizan slashes multiples antes de comparar
         # (CVE-2024-1561 Gradio: /file=//etc/passwd; otros frameworks Python/Ruby/Go similares).
