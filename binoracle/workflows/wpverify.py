@@ -5361,10 +5361,26 @@ def verify_wordpress_sqli(
             })
         version_noise = set(re.findall(r"\b\d\.\d{1,2}\.\d{1,3}\b", base_resp.text or ""))
         def _is_plausible_mysql_ver(v: str) -> bool:
-            """MySQL >= 4.0.0, so major ≥ 4. 0.x.y / 1.x.y / 2.x.y / 3.x.y are plugin/JS versions."""
+            """Acepta solo versiones que se parecen a MySQL/MariaDB reales.
+            MySQL: 5.5.x-5.7.x, 8.0.x-8.4.x, 9.x.x
+            MariaDB: 10.x.x, 11.x.x
+            Rechaza: PHP (7.x.x, 8.x.x con minor>4), Node, WP, plugin versions, etc.
+            La heuristica correcta: MySQL reporta major 5 (patch≥50), 8, 9; MariaDB reporta 10/11.
+            """
             try:
-                major = int(v.split(".")[0])
-                return major >= 4
+                parts = v.split(".")
+                major = int(parts[0])
+                minor = int(parts[1]) if len(parts) > 1 else 0
+                # MySQL 5.5 – 5.7
+                if major == 5 and 5 <= minor <= 7:
+                    return True
+                # MySQL 8.x (8.0 – 8.4), 9.x
+                if major in (8, 9) and minor <= 9:
+                    return True
+                # MariaDB 10.x, 11.x (minor puede ser grande: 10.11, 11.4, etc.)
+                if major in (10, 11):
+                    return True
+                return False
             except (ValueError, IndexError):
                 return False
         # contextos de inyeccion: el query real puede envolver el valor en comillas simples,
@@ -5442,14 +5458,31 @@ def verify_wordpress_sqli(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="error-based SQLi",
                 description=f"Error-based SQLi on '{sqli_param}': MySQL {mysql_version} leaked via extractvalue(). Replace TARGET with the real host.")
+            # Captura de evidencia de explotacion (GET y POST)
+            _exploit_body = (r.text or "")[:6000]
+            _exploit_png = _screenshot_response(
+                boot.base_url + endpoint, m, r.status_code, _exploit_body,
+                highlight=mysql_version, lang="es")
+            if _exploit_png:
+                boot.shots.append({
+                    "png_b64": _exploit_png,
+                    "caption_es": (f"Paso 5 (CLAVE): SQL INJECTION CONFIRMADA — respuesta HTTP real "
+                                   f"con la version del motor MySQL ({mysql_version}) filtrada en el "
+                                   f"mensaje de error XPATH/extractvalue. Payload: {sqli_param}={payload_val!r}"),
+                    "caption_en": (f"Step 5 (KEY): SQL INJECTION CONFIRMED — real HTTP response "
+                                   f"with MySQL version ({mysql_version}) leaked via XPATH/extractvalue "
+                                   f"error message. Payload: {sqli_param}={payload_val!r}"),
+                    "url": boot.base_url + endpoint,
+                })
+            # Para GET ademas hacemos captura del navegador (renderiza la pagina completa)
             if m == "GET":
                 shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
                            + f"{sqli_param}={payload_val}")
                 boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                       f"Paso 5: SQL INJECTION confirmada (error-based) -- el mensaje de error "
-                       f"contiene la version real del motor ({mysql_version}).",
-                       f"Step 5: SQL INJECTION confirmed (error-based) -- the error message "
-                       f"contains the database engine's real version ({mysql_version}).")
+                       f"Paso 5b: SQL INJECTION (navegador) -- pagina renderizada con el error "
+                       f"de MySQL visible. Version extraida: {mysql_version}.",
+                       f"Step 5b: SQL INJECTION (browser) -- rendered page showing MySQL error. "
+                       f"Version extracted: {mysql_version}.")
             res.evidence["screenshots"] = boot.shots
             return res
         # se guarda la lista COMPLETA de intentos (con el cuerpo real de cada respuesta), no solo
@@ -5521,15 +5554,28 @@ def verify_wordpress_sqli(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="UNION-based SQLi",
                 description=f"UNION-based SQLi on '{sqli_param}': MySQL {mysql_version} extracted via UNION SELECT. Replace TARGET with the real host.")
+            _exploit_png_u = _screenshot_response(
+                boot.base_url + endpoint, m, r.status_code, (r.text or "")[:6000],
+                highlight=mysql_version, lang="es")
+            if _exploit_png_u:
+                boot.shots.append({
+                    "png_b64": _exploit_png_u,
+                    "caption_es": (f"Paso 5 (CLAVE): SQL INJECTION CONFIRMADA (UNION-based) — "
+                                   f"respuesta HTTP real con version MySQL ({mysql_version}) "
+                                   f"extraida. Payload: {sqli_param}={payload_val!r}"),
+                    "caption_en": (f"Step 5 (KEY): SQL INJECTION CONFIRMED (UNION-based) — "
+                                   f"real HTTP response with MySQL version ({mysql_version}) "
+                                   f"extracted. Payload: {sqli_param}={payload_val!r}"),
+                    "url": boot.base_url + endpoint,
+                })
             if m == "GET":
                 shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
                            + f"{sqli_param}={payload_val}")
                 boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                       f"Paso 5: SQL INJECTION confirmada -- la respuesta contiene la version "
-                       f"real del motor de base de datos ({mysql_version}), extraida via UNION "
-                       f"SELECT.",
-                       f"Step 5: SQL INJECTION confirmed -- the response contains the database "
-                       f"engine's real version ({mysql_version}), extracted via UNION SELECT.")
+                       f"Paso 5b: SQL INJECTION (navegador) -- respuesta con version real "
+                       f"del motor ({mysql_version}) extraida via UNION SELECT.",
+                       f"Step 5b: SQL INJECTION (browser) -- response with real engine version "
+                       f"({mysql_version}) extracted via UNION SELECT.")
             res.evidence["screenshots"] = boot.shots
             return res
 
