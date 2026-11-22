@@ -1118,6 +1118,158 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
                 "confidence": 0.70,
             }
 
+    # --- Check 4: path-traversal en Node.js / npm — detectar capas de validación ---
+    # Lección: isomorphic-git tenía 2 checks propios + el paquete `ignore` como 3ª capa.
+    # Si el código fuente contiene funciones de validación de rutas, el ataque puede
+    # estar bloqueado aunque el CVE sea real para otra versión.
+    if vuln_class in ("path-traversal", "lfi") and local_path:
+        import os as _os_pt
+        _PT_DEFENSE_RE = re.compile(
+            r'includes\s*\(\s*[\'"]\.\.[\\/][\'"]'           # includes('../') includes('..\')
+            r'|includes\s*\(\s*[\'"]\.\.[\'/"]'              # includes('..')
+            r'|startsWith\s*\(\s*[\'"]/'                     # startsWith('/')
+            r'|path\.(?:normalize|resolve|isAbsolute)\s*\('  # path.normalize/resolve/isAbsolute
+            r'|sanitize[-_]filename'                         # sanitize-filename lib
+            r'|\.replace\s*\(.*\.\..*,\s*[\'\'\"]\s*[\'\'\"]\)'  # replace('../', '')
+            r'|hfsClean\s*===\s*[\'"]\.\.[\'"]\s*'           # hfsClean === '..'
+            r'|normalized\s*===\s*[\'"]\.git[\'"]',          # normalized === '.git'
+            re.IGNORECASE,
+        )
+        _pt_defense_hits: list[str] = []
+        _exts_pt = {".js", ".ts", ".mjs", ".cjs"}
+        try:
+            for _root_pt, _dirs_pt, _files_pt in _os_pt.walk(local_path):
+                _dirs_pt[:] = [d for d in _dirs_pt
+                               if d not in ("node_modules", ".git", "dist", "build")]
+                for _fname_pt in _files_pt:
+                    if not any(_fname_pt.endswith(e) for e in _exts_pt):
+                        continue
+                    _fp_pt = _os_pt.path.join(_root_pt, _fname_pt)
+                    try:
+                        _txt_pt = open(_fp_pt, encoding="utf-8", errors="ignore").read(200_000)
+                        for _m_pt in _PT_DEFENSE_RE.finditer(_txt_pt):
+                            _rel = _os_pt.path.relpath(_fp_pt, local_path)
+                            _hit = f"{_rel}: `{_m_pt.group(0)[:60].strip()}`"
+                            if _hit not in _pt_defense_hits:
+                                _pt_defense_hits.append(_hit)
+                            if len(_pt_defense_hits) >= 6:
+                                break
+                    except Exception:
+                        continue
+                if len(_pt_defense_hits) >= 6:
+                    break
+        except Exception:
+            pass
+        if _pt_defense_hits:
+            _defense_summary = "; ".join(_pt_defense_hits[:3])
+            return {
+                "ok": False,
+                "reason": (f"pre-check path-traversal: se detectaron {len(_pt_defense_hits)} "
+                           f"función(es) de validación de ruta en el código — "
+                           f"{_defense_summary} — el ataque puede estar bloqueado a nivel de código"),
+                "confidence": 0.72,
+            }
+
+    # --- Check 5: DoS en parsers (loops) — detectar guardas que evitan bucles infinitos ---
+    # Lección: probe-image-size tenía `if (ifd_no === 0)` como guarda en scan_ifd;
+    # cualquier parser con un visited-set, contador de profundidad, o guarda explícita
+    # sobre la condición de repetición hace imposible un bucle infinito.
+    if vuln_class in ("dos", "denial-of-service") and local_path:
+        import os as _os_dos
+        _DOS_GUARD_RE = re.compile(
+            r'\bvisited\b.*\bSet\b'                          # visited = new Set()
+            r'|\bSeenObjects\b|\bseenIFDs\b|\bseenNodes\b'  # seen* structures
+            r'|\bif\s*\([^)]*===\s*0\b'                     # if (x === 0) guard
+            r'|\bdepth\s*[><=]+\s*\d+\b'                    # depth > MAX / depth >= limit
+            r'|\bmax_depth\b|\bmaxDepth\b|\bMAX_DEPTH\b'    # maxDepth constant
+            r'|\brecursion_limit\b|\brecursionLimit\b'       # recursion limits
+            r'|\bcircular\b.*\bdetect\b|\bdetect\b.*\bcircular\b',  # circular detection
+            re.IGNORECASE,
+        )
+        _dos_guard_hits: list[str] = []
+        _exts_dos = {".js", ".ts", ".mjs", ".cjs", ".py", ".rb", ".java"}
+        try:
+            for _root_dos, _dirs_dos, _files_dos in _os_dos.walk(local_path):
+                _dirs_dos[:] = [d for d in _dirs_dos
+                                if d not in ("node_modules", ".git", "dist", "build")]
+                for _fname_dos in _files_dos:
+                    if not any(_fname_dos.endswith(e) for e in _exts_dos):
+                        continue
+                    _fp_dos = _os_dos.path.join(_root_dos, _fname_dos)
+                    try:
+                        _txt_dos = open(_fp_dos, encoding="utf-8", errors="ignore").read(200_000)
+                        for _m_dos in _DOS_GUARD_RE.finditer(_txt_dos):
+                            _rel_dos = _os_dos.path.relpath(_fp_dos, local_path)
+                            _hit_dos = f"{_rel_dos}: `{_m_dos.group(0)[:60].strip()}`"
+                            if _hit_dos not in _dos_guard_hits:
+                                _dos_guard_hits.append(_hit_dos)
+                            if len(_dos_guard_hits) >= 6:
+                                break
+                    except Exception:
+                        continue
+                if len(_dos_guard_hits) >= 6:
+                    break
+        except Exception:
+            pass
+        if _dos_guard_hits:
+            _guard_summary = "; ".join(_dos_guard_hits[:3])
+            return {
+                "ok": False,
+                "reason": (f"pre-check DoS: se detectaron {len(_dos_guard_hits)} guarda(s) "
+                           f"contra bucles infinitos/recursión en el código — "
+                           f"{_guard_summary} — probable que el bucle infinito esté prevenido"),
+                "confidence": 0.68,
+            }
+
+    # --- Check 6: SQLi vía alias/nombre de columna — verificar que el alias no es siempre quoted ---
+    # Lección: Django siempre pasa aliases por quote_name() en todos los backends.
+    # Si el código ORM siempre llama a quote_name() o `connection.ops.quote_name()`,
+    # el `#` u otro payload dentro del alias queda dentro de un identificador entrecomillado.
+    if vuln_class in ("sqli", "sql-injection") and local_path:
+        import os as _os_sqla
+        _ALIAS_QUOTE_RE = re.compile(
+            r'quote_name\s*\([^)]*alias'            # quote_name(alias...)
+            r'|alias[^)]*quote_name\s*\('           # ...alias...quote_name(
+            r'|self\._meta\.db_table'               # Django ORM internal
+            r'|connection\.ops\.quote_name'          # Django DB ops
+            r'|compiler\.quote_name_unless_alias',  # SQLAlchemy
+            re.IGNORECASE,
+        )
+        _alias_quote_hits: list[str] = []
+        _exts_sqla = {".py", ".java", ".rb", ".js", ".ts"}
+        try:
+            for _root_sq, _dirs_sq, _files_sq in _os_sqla.walk(local_path):
+                _dirs_sq[:] = [d for d in _dirs_sq
+                               if d not in (".git", "dist", "build", "__pycache__")]
+                for _fname_sq in _files_sq:
+                    if not any(_fname_sq.endswith(e) for e in _exts_sqla):
+                        continue
+                    _fp_sq = _os_sqla.path.join(_root_sq, _fname_sq)
+                    try:
+                        _txt_sq = open(_fp_sq, encoding="utf-8", errors="ignore").read(200_000)
+                        for _m_sq in _ALIAS_QUOTE_RE.finditer(_txt_sq):
+                            _rel_sq = _os_sqla.path.relpath(_fp_sq, local_path)
+                            _hit_sq = f"{_rel_sq}: `{_m_sq.group(0)[:60].strip()}`"
+                            if _hit_sq not in _alias_quote_hits:
+                                _alias_quote_hits.append(_hit_sq)
+                            if len(_alias_quote_hits) >= 4:
+                                break
+                    except Exception:
+                        continue
+                if len(_alias_quote_hits) >= 4:
+                    break
+        except Exception:
+            pass
+        if _alias_quote_hits:
+            _quote_summary = "; ".join(_alias_quote_hits[:2])
+            return {
+                "ok": False,
+                "reason": (f"pre-check SQLi alias: se detectó uso de quote_name() / identifier "
+                           f"quoting en el código ORM — {_quote_summary} — los aliases pueden "
+                           f"estar siempre entrecomillados (el payload # sería literal, no comentario)"),
+                "confidence": 0.65,
+            }
+
     return {"ok": True, "reason": "pre-check OK", "confidence": 1.0}
 
 
@@ -7685,6 +7837,18 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _extra_pt_eps = ['/cgi-bin/']
                 params = notes.get("parameters") or []
                 path_p = notes.get("path_param") or _pick_param(params, _PATH_HINTS)
+                # Pre-check: detectar capas de validación de ruta en el código antes de Docker
+                _pt_precheck = _static_vuln_precheck(
+                    fr.local_path, "", inv.vuln_class,
+                    endpoint=notes.get("endpoint") or "",
+                )
+                if not _pt_precheck["ok"]:
+                    _pt_pc_msg = (f"pre-check estático ({_pt_precheck['confidence']:.0%}): "
+                                  f"{_pt_precheck['reason']}")
+                    step((_pt_pc_msg + " — el lab continúa para confirmar") if es else
+                         (_pt_pc_msg + " — lab continues to confirm"))
+                    if _pt_precheck["confidence"] >= 0.68:
+                        inv.blockers.append(("static_precheck_pt", _pt_precheck["reason"]))
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
                      "se construye desde su propio Dockerfile/compose..." if es else
                      "attempting GENERIC DYNAMIC verification -- canary file, the target is "
