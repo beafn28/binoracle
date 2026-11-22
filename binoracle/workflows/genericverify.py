@@ -1832,7 +1832,7 @@ def verify_generic_file_upload(
 def verify_generic_ssrf(
     source_dir: str, endpoint: str, http_method: str, parameters,
     url_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
-    budget_s: float = 900.0,
+    budget_s: float = 900.0, custom_headers: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_ssrf: levanta un contenedor 'callback' en la MISMA
     red del laboratorio generico (sea `dockerfile` o `compose` -- ver _GenericLab.resolve_network)
@@ -1897,7 +1897,8 @@ def verify_generic_ssrf(
             try:
                 resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
-                                        params=payload if m == "GET" else None)
+                                        params=payload if m == "GET" else None,
+                                        headers=custom_headers or None)
                 entry["status"] = resp.status_code
                 if not first_resp_captured:
                     res.evidence["respuesta_cuerpo_recorte"] = (getattr(resp, "text", "") or "")[:500]
@@ -2055,7 +2056,8 @@ def _take_generic_screenshots_sqli(
         try:
             resp = _http_request(m, base_url + endpoint_path, timeout=timeout,
                                  data=params if m != "GET" else None,
-                                 params=params if m == "GET" else None)
+                                 params=params if m == "GET" else None,
+                                 headers=custom_headers or None)
             body = getattr(resp, "text", "") or ""
             status = getattr(resp, "status_code", 200)
             url_disp = base_url + endpoint_path
@@ -2718,7 +2720,7 @@ def verify_generic_xxe(
 def verify_generic_open_redirect(
     source_dir: str, endpoint: str, http_method: str, parameters,
     redirect_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
-    budget_s: float = 900.0,
+    budget_s: float = 900.0, custom_headers: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_open_redirect: manda la misma bateria de variantes de
     URL externa/bypass (directa, protocol-relative, backslash, userinfo, espacios/tabs,
@@ -2777,7 +2779,8 @@ def verify_generic_open_redirect(
                 resp = _http_request(m, base_url + endpoint, timeout=15,
                                         data=payload if m != "GET" else None,
                                         params=payload if m == "GET" else None,
-                                        allow_redirects=False)
+                                        allow_redirects=False,
+                                        headers=custom_headers or None)
             except Exception as e:
                 tried.append({"target": target, "error": str(e)})
                 continue

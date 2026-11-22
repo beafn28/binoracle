@@ -9228,13 +9228,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      if es else "attempting GENERIC DYNAMIC verification -- internal listener "
                      "with a random token, the target is built from its own Dockerfile/"
                      "compose..."))
+                _ssrf_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_ssrf(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s)
+                    params, url_param_hint=url_p or "", on_step=step, budget_s=budget_s,
+                    custom_headers=_ssrf_custom_hdrs)
                 def _attempt_ssrf_generic(ep, pr):
                     return verify_generic_ssrf(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        url_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        url_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        custom_headers=_ssrf_custom_hdrs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_ssrf_generic, wr, notes.get("endpoint"), url_p,
@@ -9677,13 +9680,16 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "compose..." if es else "attempting GENERIC DYNAMIC verification -- real "
                      "Location header without following redirects, the target is built from its "
                      "own Dockerfile/compose..."))
+                _or_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_open_redirect(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s)
+                    params, redirect_param_hint=redir_p or "", on_step=step, budget_s=budget_s,
+                    custom_headers=_or_custom_hdrs)
                 def _attempt_or_generic(ep, pr):
                     return verify_generic_open_redirect(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
-                        redirect_param_hint=pr or "", on_step=step, budget_s=budget_s)
+                        redirect_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        custom_headers=_or_custom_hdrs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_RETRY_SYS, _RESPUESTA_CUERPO_EVIDENCE_KEYS,
                     _attempt_or_generic, wr, notes.get("endpoint"), redir_p,
