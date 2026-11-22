@@ -1757,7 +1757,7 @@ main {
 
   <!-- Scout modal -->
   <div id="scout-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200"></div>
-  <div id="scout-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(640px,96vw);max-height:80vh;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5);z-index:201;display:flex;flex-direction:column;overflow:hidden">
+  <div id="scout-modal" hidden style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(640px,96vw);max-height:80vh;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5);z-index:201;flex-direction:column;overflow:hidden">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);flex-shrink:0">
       <span style="font-size:13px;font-weight:600;color:var(--fg)">HUECO Scout — recent WP plugin CVEs without public exploit</span>
       <button id="scout-close" style="background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;line-height:1">×</button>
@@ -2912,12 +2912,14 @@ main {
 
   // ── Scout HUECOs modal ────────────────────────────────────────────────────
   function openScoutModal() {
-    $('scout-overlay').style.display = 'block';
-    $('scout-modal').style.display = 'flex';
+    $('scout-overlay').hidden = false;
+    const m = $('scout-modal');
+    m.hidden = false;
+    m.style.display = 'flex';
   }
   function closeScoutModal() {
-    $('scout-overlay').style.display = 'none';
-    $('scout-modal').style.display = 'none';
+    $('scout-overlay').hidden = true;
+    $('scout-modal').hidden = true;
   }
   $('scout-btn').addEventListener('click', openScoutModal);
   $('scout-close').addEventListener('click', closeScoutModal);
