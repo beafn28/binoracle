@@ -117,7 +117,7 @@ _CLASSES = [
 # XSS), nunca un script pwntools contra un proceso local. Ver workflows/webexploit.py.
 WEB_CLASSES = frozenset({
     "missing-authorization", "idor", "auth-bypass", "sqli", "xss", "ssrf", "command-injection",
-    "rce", "path-traversal", "file-upload", "deserialization", "xxe", "ssti", "csrf", "open-redirect",
+    "rce", "path-traversal", "lfi", "file-upload", "deserialization", "xxe", "ssti", "csrf", "open-redirect",
 })
 
 

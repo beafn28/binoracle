@@ -68,10 +68,37 @@ def _build_logs_from_ae(ae):
             logs.append({"t": t, "msg": f"[CANARY] {canary} → {icon}"})
             t += 0.2
 
+    # DoS phase (técnica dos / dos-pipeline)
+    tecnica = ae.get("tecnica", "")
+    if tecnica in ("dos", "dos-pipeline", "websocket"):
+        endpoint = ae.get("endpoint", "")
+        resp = ae.get("respuesta_cuerpo_recorte", "")
+        sc = ae.get("status_code")
+        logs.append({"t": t, "msg": "[DOCKER] servidor efímero iniciado (Docker --network none)"})
+        t += 0.5
+        if endpoint:
+            logs.append({"t": t, "msg": f"[TARGET] endpoint={endpoint}"})
+            t += 0.3
+        if tecnica == "dos-pipeline":
+            logs.append({"t": t, "msg": "[ATAQUE] HTTP pipeline + TCP RST injection → forzando ECONNRESET"})
+            t += 0.4
+        elif tecnica in ("dos", "websocket"):
+            logs.append({"t": t, "msg": "[ATAQUE] WebSocket upgrade → frame sin máscara (MASK=0, RFC 6455 §5.1)"})
+            t += 0.4
+        if sc:
+            logs.append({"t": t, "msg": f"[HTTP] status upgrade={sc}"})
+            t += 0.2
+        if resp:
+            logs.append({"t": t, "msg": f"[CRASH] {resp[:300]}"})
+            t += 0.3
+        logs.append({"t": t, "msg": "[RESULTADO] servidor crasheó → DoS CONFIRMADO"})
+        return logs
+
     # HTTP phase (web CVEs)
     endpoint = ae.get("endpoint", "")
     metodo = ae.get("metodo", "")
-    if endpoint and metodo:
+    is_cli_marker = metodo == "CLI" or (endpoint and "CLI" in endpoint)
+    if endpoint and metodo and not is_cli_marker:
         base = ae.get("base_url", "")
         contenedor = ae.get("contenedor", "")
         if contenedor:
@@ -96,6 +123,21 @@ def _build_logs_from_ae(ae):
         canary_s = ae.get("canary_secret", "")
         if canary_s:
             logs.append({"t": t, "msg": f"[CANARY] {canary_s} → PRESENTE"})
+            t += 0.2
+    elif is_cli_marker and not argv:
+        payload = ae.get("payload_ganador", "")
+        resp = ae.get("respuesta_cuerpo_recorte", "")
+        if payload:
+            logs.append({"t": t, "msg": f"[RUN] {endpoint} {payload[:200]}"})
+            t += 0.5
+        if resp:
+            logs.append({"t": t, "msg": f"[RESP] {resp[:300]}"})
+            t += 0.2
+        canary = ae.get("canary_name", "")
+        presente = ae.get("canario_presente", False)
+        if canary:
+            icon = "CONFIRMADO" if presente else "NO ENCONTRADO"
+            logs.append({"t": t, "msg": f"[CANARY] {canary} → {icon}"})
             t += 0.2
 
     return logs
