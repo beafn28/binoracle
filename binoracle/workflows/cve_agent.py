@@ -1351,8 +1351,8 @@ def _static_vuln_precheck(local_path: str, plugin_dir: str, vuln_class: str,
 # Cuanto mayor el valor, más confiable la fuente.
 _ENDPOINT_CONFIDENCE: dict[str, float] = {
     "poc_raw_http":      1.0,   # bloque HTTP literal del PoC — máxima confianza
+    "analyst_lock":      1.0,   # analista fijó el endpoint a mano (--endpoint flag)
     "poc_llm_extract":   0.9,   # LLM extrae URL del texto del PoC
-    "analyst_lock":      0.9,   # analista fijó el endpoint a mano
     "taint_tracking":    0.85,  # taint tracking del código fuente
     "grep_deterministic":0.80,  # grep determinístico de add_action/register_rest_route
     "ajax_param_scan":   0.50,  # find_ajax_action_for_param
@@ -7921,17 +7921,39 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         on_step=step, budget_s=budget_s, companion_plugins=companion_plugins,
                         shortcode_name=shortcode_name_generic,
                         keep_lab_on_failure=keep_lab_on_failure)
+                # QUINTA forma: url-param login bypass (p.ej. CVE-2024-9933 WatchTowerHQ:
+                # GET /?wht_login=1 con token OTA vacio autentica como admin sin credenciales).
+                # Se dispara cuando wr sigue siendo None y los parametros contienen un hint
+                # de tipo login-trigger (wht_login, ota_login, access_token, etc.)
+                if wr is None and not (wr and wr.verified):
+                    from .wpverify import verify_wordpress_url_param_login, _URL_LOGIN_HINTS, _pick_param
+                    _all_params = notes.get("parameters") or []
+                    _login_p = _pick_param(_all_params, _URL_LOGIN_HINTS)
+                    if _login_p:
+                        step(("intentando verificacion DINAMICA -- URL-param login bypass "
+                             "(WordPress+MySQL efimero en Docker)..." if es else
+                             "attempting DYNAMIC verification -- URL-param login bypass "
+                             "(ephemeral WordPress+MySQL in Docker)..."))
+                        _params_dict_login = (_all_params if isinstance(_all_params, dict)
+                                              else dict.fromkeys(_all_params, ""))
+                        wr = verify_wordpress_url_param_login(
+                            fr.local_path, plugin_dir, notes.get("endpoint") or "/",
+                            notes.get("http_method") or "GET", _params_dict_login,
+                            login_param_hint=_login_p, on_step=step, budget_s=budget_s,
+                            companion_plugins=companion_plugins,
+                            shortcode_name=shortcode_name_generic,
+                            keep_lab_on_failure=keep_lab_on_failure)
                 if wr is None:
                     inv.blockers.append(("verificacion dinamica no intentada: la hipotesis no trae "
                                          "ni un parametro de email/password ni uno de ID "
-                                         "reconocible ni custom_headers; afina 'parameters' o "
-                                         "'custom_headers' en la hipotesis del LLM o pasalos "
-                                         "a mano" if es else
+                                         "reconocible ni custom_headers ni login-trigger; afina "
+                                         "'parameters' o 'custom_headers' en la hipotesis del LLM "
+                                         "o pasalos a mano" if es else
                                          "dynamic verification not attempted: the hypothesis has "
                                          "neither a recognizable email/password parameter nor an "
-                                         "ID one nor custom_headers; refine 'parameters' or "
-                                         "'custom_headers' in the LLM hypothesis or "
-                                         "pass them by hand"))
+                                         "ID one nor custom_headers nor a login-trigger param; "
+                                         "refine 'parameters' or 'custom_headers' in the LLM "
+                                         "hypothesis or pass them by hand"))
                 else:
                     inv.dynamic_verify = {"attempted": True, "available": wr.available,
                                           "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
@@ -9439,6 +9461,27 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         if wr_ssrf.verified:
                             inv.vuln_class = "ssrf"
                             wr = wr_ssrf
+                # Fallback SSRF+file-write: si hay URL hint Y param de ruta destino
+                # (missed/dest/save_path) → el plugin fetcha la URL y guarda el contenido
+                # (patron: CVE-2024-10586 Debug Tool dbt_pull_image source+missed).
+                if not wr.verified:
+                    from .wpverify import _pick_param, _URL_HINTS, _DEST_PATH_HINTS
+                    _params_fw = notes.get("parameters") or []
+                    _url_p_fw = _pick_param(_params_fw, _URL_HINTS)
+                    _dest_p_fw = _pick_param(_params_fw, _DEST_PATH_HINTS)
+                    if _url_p_fw and _dest_p_fw:
+                        from .wpverify import verify_wordpress_fetch_and_write_rce
+                        step(("file-upload no confirmado, hay pista de URL+ruta destino "
+                             "-- intentando SSRF→file-write→RCE..."))
+                        wr_fw = verify_wordpress_fetch_and_write_rce(
+                            fr.local_path, plugin_dir, notes.get("endpoint"),
+                            notes.get("http_method") or "POST", _params_fw,
+                            url_param_hint=_url_p_fw, dest_param_hint=_dest_p_fw,
+                            on_step=step, budget_s=min(budget_s, 300.0),
+                            companion_plugins=companion_plugins,
+                            shortcode_name=shortcode_name_generic)
+                        if wr_fw.verified:
+                            wr = wr_fw
                 _apply_wpverify_result(inv, wr, es, llm)
             # "cualquier entorno": fallback generico de file-upload (ver genericverify.py) para
             # cuando el codigo descargado no es un CMS reconocido pero trae su propio Dockerfile/

