@@ -25,8 +25,9 @@
 ## Install
 
 ```bash
-pip install binoracle[screenshots]        # includes Playwright for HTML report screenshots
-playwright install chromium               # required: downloads browser for screenshot capture
+git clone https://github.com/beafn28/binoracle
+cd binoracle
+pip install -r requirements.txt           # openai, requests, docker, Pillow, markdown, bs4
 curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5-coder:7b
 
 export BINORACLE_BACKEND=openai
@@ -34,7 +35,7 @@ export BINORACLE_BASE_URL=http://127.0.0.1:11434/v1
 export BINORACLE_MODEL=qwen2.5-coder:7b
 ```
 
-> **Without `playwright install chromium`** the CVE pipeline runs and verifies vulnerabilities normally, but HTML reports will have no visual screenshots at each step.
+> **Pillow** (`pip install Pillow`) is required for terminal and HTTP screenshot generation in HTML reports (`scripts/gen_screenshots.py`). It is included in `requirements.txt`.
 
 ---
 
@@ -152,14 +153,20 @@ Every CVE investigation and binary analysis writes a self-contained HTML report:
 | Executive summary | CVSS score, severity, affected component |
 | Hypothesis | Full LLM reasoning chain |
 | Lab | Docker Compose spec, service versions |
-| Evidence | Playwright screenshots at each verification step |
-| PoC | Complete curl / Python / pwntools code |
+| 05 — Capturas de evidencia | Terminal + HTTP PNG screenshots at each step (auto-generated via Pillow when no live captures exist) |
+| 06 — HTTP captures | Burp-style request/response blocks for every exploitation step |
+| 07 — Technical analysis | Class-specific analysis: SSTI (Jinja2 sandbox escape chain), SSRF (loopback + cloud metadata pivot), DoS (crash/ECONNRESET), command injection (newline bypass + `id`), SQLi (error/boolean/union/time-based) |
+| Logs | Full timeline of Docker lab events, payloads, and verification steps |
+| PoC | Complete curl / Python code |
 | Remediation | Specific fix guidance with code examples |
 
+**32 CVEs verified** — all reports have ≥2 PNG screenshots in section 05 and correct class-specific analysis in section 07 (SSTI/SSRF/DoS no longer show SQLi boolean analysis).
+
 ```bash
-binoracle cve CVE-2025-27516 --open-report
-binoracle cve CVE-2025-27516 --out ./reports/
-binoracle cve-batch CVE-2025-27516 CVE-2024-23334 --out ./reports/
+python3 scripts/gen_batch_informes.py                    # all batch CVEs
+python3 scripts/gen_informe_pdf.py                       # all history CVEs
+python3 scripts/gen_batch_informes.py CVE-2025-27516     # single CVE
+python3 scripts/gen_index.py                             # regenerate index.html
 ```
 
 ---
@@ -265,14 +272,19 @@ export BINORACLE_MODEL=gpt-4o-mini
 export BINORACLE_LANG=en    # default: es
 ```
 
-**Dependency sets**
+**Dependencies**
 
 ```bash
-pip install binoracle[elf]         # pyelftools extras
-pip install binoracle[pwn]         # pwntools + ROPgadget
-pip install binoracle[symbolic]    # angr
-pip install binoracle[screenshots] # Playwright — also run: playwright install chromium
-pip install binoracle[all]         # everything — also run: playwright install chromium
+pip install -r requirements.txt    # installs all required packages
+
+# requirements.txt includes:
+# openai>=1.0.0       — LLM backend
+# requests>=2.31.0    — NVD queries and HTTP verification
+# docker>=7.0.0       — ephemeral lab management
+# Pillow>=10.0.0      — terminal/HTTP PNG screenshot generation
+# markdown>=3.5       — markdown report rendering
+# beautifulsoup4      — web scraping
+# lxml                — HTML/XML parsing
 ```
 
 **System requirements**
@@ -294,7 +306,7 @@ pip install binoracle[all]         # everything — also run: playwright install
 | Autonomous CVE pipeline (NVD -> lab -> PoC) | yes | no |
 | Local LLM via Ollama | yes | no |
 | Ephemeral Docker labs per CVE | yes | no |
-| Playwright screenshot evidence in reports | yes | no |
+| PNG screenshot evidence in reports (terminal + HTTP) | yes | no |
 | WordPress / Joomla / Drupal lab scaffolding | yes | no |
 | MCP server (~100 tools) | yes | no |
 | APK / .NET / WASM / EVM analysis | yes | partial |
