@@ -1,0 +1,12 @@
+# Core engine dependencies
+openai>=1.0.0
+requests>=2.31.0
+docker>=7.0.0
+
+# Report generation
+Pillow>=10.0.0        # terminal/HTTP screenshot generation (gen_screenshots.py)
+markdown>=3.5          # markdown report rendering
+
+# Web scraping / NVD queries
+beautifulsoup4>=4.12.0
+lxml>=4.9.0

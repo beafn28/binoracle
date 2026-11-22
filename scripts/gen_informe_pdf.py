@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Generate _informe_pdf.html for all 21 cached CVEs — v2."""
-import json, os, re, html as html_mod
+import json, os, re, html as html_mod, sys as _sys
+# Auto-screenshot generator (uses Pillow when available)
+_this_dir = os.path.dirname(os.path.abspath(__file__ if '__file__' in dir() else __file__ if hasattr(__builtins__, '__file__') else '/Users/beatrizfresnonaumova/Desktop/binoracle/scripts/gen_informe_pdf.py'))
+_scripts_dir = '/Users/beatrizfresnonaumova/Desktop/binoracle/scripts'
+if _scripts_dir not in _sys.path:
+    _sys.path.insert(0, _scripts_dir)
+try:
+    from gen_screenshots import auto_gen_screenshots as _auto_gen_screenshots
+except ImportError:
+    _auto_gen_screenshots = None
 
 HISTORY = "/Users/beatrizfresnonaumova/.binoracle/history"
 OUT = "/Users/beatrizfresnonaumova/Downloads/binoracle_reports"
@@ -1842,8 +1851,11 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
         for i, r_ in enumerate(recs, 1)
     )
 
-    # Screenshots
-    shots_html = render_screenshots(ev_shots)
+    # Screenshots — auto-generate via Pillow when none stored
+    _shots_src = list(ev_shots) if ev_shots else []
+    if len(_shots_src) < 2 and r.get("verified") and _auto_gen_screenshots:
+        _shots_src = _auto_gen_screenshots(cve_id, r, ve)
+    shots_html = render_screenshots(_shots_src)
 
     # Error-based attempts
     eb_html = render_error_based(eb_intentos)

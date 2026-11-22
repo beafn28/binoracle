@@ -11,6 +11,15 @@ BATCH_DIR = os.path.join(os.path.dirname(__file__), "..", "binoracle_batch_repor
 OUT       = os.path.expanduser("~/Downloads/binoracle_reports")
 SCRIPT    = os.path.join(os.path.dirname(__file__), "gen_informe_pdf.py")
 
+# Auto-screenshot generator
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+if _this_dir not in sys.path:
+    sys.path.insert(0, _this_dir)
+try:
+    from gen_screenshots import auto_gen_screenshots as _auto_screenshots
+except ImportError:
+    _auto_screenshots = None
+
 os.makedirs(OUT, exist_ok=True)
 
 cve_filter = set(a.upper() for a in sys.argv[1:]) if len(sys.argv) > 1 else None
@@ -252,7 +261,11 @@ for fname in files:
         "detail":           grounded_note,
     }
 
-    html = build_informe(cve_id, r, ve, ae.get("screenshots") or [], logs)
+    # Use stored screenshots; auto-generate if none and Pillow available
+    _stored_shots = ae.get("screenshots") or []
+    if len(_stored_shots) < 2 and verified and _auto_screenshots:
+        _stored_shots = _auto_screenshots(cve_id, r, ve)
+    html = build_informe(cve_id, r, ve, _stored_shots, logs)
     dest = os.path.join(OUT, f"{cve_id}_informe_pdf.html")
     with open(dest, "w", encoding="utf-8") as f:
         f.write(html)
