@@ -1364,6 +1364,16 @@ def verify_generic_lfi_rce(
                           f"acceso envenenado y el codigo PHP SE EJECUTO de verdad (el marcador "
                           f"'{marker}' aparecio como resultado de system(), no como texto PHP "
                           f"crudo) -- ejecucion remota de codigo real, no una lectura de fichero")
+            _body = res.evidence.get("respuesta_cuerpo_recorte", "")
+            _png = _screenshot_response(base_url + endpoint_path, m, 200, _body,
+                                        highlight=marker, lang="es")
+            if _png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _png,
+                    "caption_es": f"RESULTADO: LFI-a-RCE CONFIRMADO — marcador '{marker}' ejecutado por PHP",
+                    "caption_en": f"RESULT: LFI-to-RCE CONFIRMED — marker '{marker}' executed by PHP",
+                    "url": base_url + endpoint_path,
+                })
         else:
             any_raw = any(t.get("reflejado_crudo_sin_ejecutar") for t in tried)
             res.ok = True
@@ -1575,6 +1585,18 @@ def verify_generic_file_upload(
                 "verificado el ALMACENAMIENTO del fichero peligroso, no su EJECUCION -- para "
                 "confirmar RCE real hace falta encontrar la URL publica donde el servidor lo "
                 "sirve (especifico del stack) y comprobar que el secreto aparece al pedirla")
+            _file_body = (f"fichero '{res.evidence['fichero_ganador']}' guardado en\n"
+                          f"{res.evidence['ruta_real_en_el_contenedor']}\n"
+                          f"(verificado con secreto canario dentro del contenedor)")
+            _png = _screenshot_terminal_step(
+                "FILE UPLOAD — subida peligrosa CONFIRMADA", _file_body,
+                highlight=res.evidence.get("fichero_ganador", ""), lang="es")
+            if _png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _png,
+                    "caption_es": f"RESULTADO: FILE UPLOAD CONFIRMADO — fichero guardado en {res.evidence.get('ruta_real_en_el_contenedor','')}",
+                    "caption_en": f"RESULT: FILE UPLOAD CONFIRMED — file stored at {res.evidence.get('ruta_real_en_el_contenedor','')}",
+                })
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} nombres/extensiones de fichero contra "
@@ -2447,6 +2469,18 @@ def verify_generic_xxe(
                               f"contiene el secreto exacto plantado en {canary_path} -- el "
                               f"parser XML resolvio una entidad externa apuntando al sistema de "
                               f"ficheros real")
+            _xxe_body = res.evidence.get("respuesta_cuerpo_recorte", "")
+            _xxe_hl = res.evidence.get("canary_secret", "") or "SYSTEM"
+            _xxe_url = base_url + (endpoint or "/")
+            _xxe_png = _screenshot_response(_xxe_url, m, 200, _xxe_body,
+                                            highlight=_xxe_hl, lang="es")
+            if _xxe_png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _xxe_png,
+                    "caption_es": f"RESULTADO: XXE CONFIRMADA — entidad externa resuelta ({res.evidence.get('modo_ganador','')})",
+                    "caption_en": f"RESULT: XXE CONFIRMED — external entity resolved ({res.evidence.get('modo_ganador','')})",
+                    "url": _xxe_url,
+                })
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} formas de mandar la entidad externa (en "
@@ -2556,6 +2590,20 @@ def verify_generic_open_redirect(
                           f"de verdad a un dominio externo controlado por el atacante")
             step(f"VERIFICADO: Location={confirmed_entry['location']!r} contiene el dominio "
                  f"externo enviado.")
+            _redir_body = (f"HTTP/1.1 {confirmed_entry['status']} Found\n"
+                           f"Location: {confirmed_entry['location']}\n\n"
+                           f"Redirect to attacker-controlled domain confirmed")
+            _redir_png = _screenshot_response(
+                base_url + (endpoint or "/"), m,
+                confirmed_entry["status"], _redir_body,
+                highlight=confirmed_entry["location"], lang="es")
+            if _redir_png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _redir_png,
+                    "caption_es": f"RESULTADO: OPEN REDIRECT CONFIRMADO — Location: {confirmed_entry['location']}",
+                    "caption_en": f"RESULT: OPEN REDIRECT CONFIRMED — Location: {confirmed_entry['location']}",
+                    "url": base_url + (endpoint or "/"),
+                })
         else:
             res.ok = True
             res.detail = (f"se probaron {len(tried)} variantes de bypass (directa, "
