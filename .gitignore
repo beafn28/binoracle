@@ -33,3 +33,9 @@ coverage.json
 # generated docs site (docs/build_site.py outputs); hand-crafted site/ is versioned for GitHub Pages
 # docs/site/
 .bak/
+
+# Scripts dependencies
+scripts/node_modules/
+
+# WordPress plugin backup
+unlimited-elements-for-elementor.bak/
