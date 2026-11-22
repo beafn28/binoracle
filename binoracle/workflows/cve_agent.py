@@ -4540,6 +4540,56 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     step(f"[HUECO] HTTP smuggling: "
                          f"discrepancy={hint.get('discrepancy','?')}")
 
+    # ------------------------------------------------------------------ Python eval() code injection
+    # Para CVEs de tipo code-injection en Python que usan eval()/exec() sobre datos externos
+    # (archivos, FITS headers, YAML, etc.): si find_rce_sinks detecta eval en datos de fichero,
+    # generate a dockerfile_body for automatic verification via verify_binary_crash_via_dockerfile
+    elif vc in ("code-injection", "code-exec", "rce", "arbitrary-code-execution") and tech == "python":
+        from .websource import find_rce_sinks
+        rce_hits = find_rce_sinks(lpath, tech)
+        # Only handle file/header-based eval (web RCE is handled by is_web_class path upstream)
+        file_eval_hits = [h for h in rce_hits if any(
+            kw in (h.file + h.sink) for kw in ("header", "fits", "yaml", "json", "from_header", "load"))]
+        if file_eval_hits and not notes.get("dockerfile_body"):
+            hit = file_eval_hits[0]
+            snippet = _read_snippet(hit.file, hit.line, ctx=50)
+            step((f"[HUECO] escaner Python encontro eval() en datos de fichero: "
+                  f"{hit.sink} en {hit.file}:{hit.line} — intentando generar dockerfile_body") if es else
+                 (f"[HUECO] Python scanner found eval() on file data: "
+                  f"{hit.sink} at {hit.file}:{hit.line} — generating dockerfile_body"))
+            try:
+                raw = llm.chat([
+                    Message("system", (
+                        "Eres un investigador de seguridad. Dada evidencia de un eval() sobre datos externos "
+                        "en Python, genera un Dockerfile completo (FROM python:3.x, RUN pip install <pkg>==<vuln_ver>, "
+                        "COPY poc.py ., CMD python poc.py) y un poc.py que demuestre ejecucion de codigo arbitrario. "
+                        "El Dockerfile debe terminar en no-zero exit code si el codigo arbitrario NO se ejecuto. "
+                        "Responde en JSON con claves: 'dockerfile_body' (string), 'poc_cmd' (string, e.g. 'python poc.py'), "
+                        "'crash_patterns' (lista de strings que indica exito del exploit, e.g. ['PWNED', 'uid=']), "
+                        "'reasoning' (una linea). "
+                        "IMPORTANTE: usa solo la version VULNERABLE especificada. No inventes versiones."
+                    )),
+                    Message("user", (
+                        f"CVE: {inv.cve_id}\n"
+                        f"Paquete: {inv.plugin_name or '?'} version vulnerable: {inv.affected_versions or '?'}\n"
+                        f"Descripcion: {(inv.description or '')[:400]}\n\n"
+                        f"Codigo con eval() detectado:\n```python\n{snippet[:3000]}\n```\n\n"
+                        "Genera dockerfile_body y poc.py para verificar la inyeccion de codigo."
+                    )),
+                ], json_mode=True)
+                hint = json.loads(raw)
+                if hint.get("dockerfile_body") and hint.get("poc_cmd"):
+                    inv.llm_notes["dockerfile_body"] = hint["dockerfile_body"]
+                    inv.llm_notes["poc_cmd"] = hint["poc_cmd"]
+                    if hint.get("crash_patterns"):
+                        inv.llm_notes["crash_patterns"] = hint["crash_patterns"]
+                    if hint.get("reasoning"):
+                        inv.llm_notes["hueco_reasoning"] = hint["reasoning"]
+                    step(f"[HUECO] dockerfile_body generado para code-injection Python: "
+                         f"poc_cmd='{hint['poc_cmd']}'")
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------ Node.js test harness
     # Para CVEs de bibliotecas npm (dos, path-traversal, prototype-pollution...): buscar
     # directorios de tests y extraer un snippet de uso real de la librería. Esto alimenta
