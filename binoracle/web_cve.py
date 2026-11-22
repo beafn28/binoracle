@@ -390,8 +390,59 @@ class _Handler(BaseHTTPRequestHandler):
     def _sse(self, job_id: str):
         with _jobs_lock:
             job = _jobs.get(job_id)
+
+        # Fall back to persisted history when job is not in memory (server restart
+        # or old history entry): replay stored logs and emit done event.
         if not job:
-            self._404()
+            hist_path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
+            if not os.path.exists(hist_path):
+                self._404()
+                return
+            try:
+                with open(hist_path, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+            except Exception:
+                self._404()
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            # Replay stored logs; if none, synthesize from verified_detail / result
+            stored_logs = rec.get("logs") or (rec.get("result") or {}).get("logs") or []
+            if not stored_logs:
+                result = rec.get("result") or {}
+                ve = result.get("verified_evidence") or {}
+                detail = (result.get("verified_detail") or result.get("detail") or "").strip()
+                cve_id_hist = rec.get("cve_id", "?")
+                vuln_class = result.get("vuln_class", "")
+                # Build minimal synthetic log entries from stored result data
+                stored_logs = [{"t": 0.0, "msg": f"[HISTORIAL] {cve_id_hist} — resultado recuperado del disco"}]
+                if vuln_class:
+                    stored_logs.append({"t": 0.5, "msg": f"[INFO] clase={vuln_class}"})
+                if detail:
+                    for line in detail.split("\n"):
+                        if line.strip():
+                            stored_logs.append({"t": 1.0, "msg": f"[RESULTADO] {line.strip()}"})
+                if ve.get("payload_ganador"):
+                    stored_logs.append({"t": 1.5, "msg": f"[PAYLOAD] {ve['payload_ganador'][:200]}"})
+                if ve.get("sleep3_s"):
+                    stored_logs.append({"t": 2.0, "msg": f"[TIMING] SLEEP(3)={ve['sleep3_s']:.2f}s  SLEEP(0)={ve.get('sleep0_s',0):.2f}s  dif={ve.get('diferencial_s',0):.2f}s"})
+                if ve.get("cookie"):
+                    stored_logs.append({"t": 2.0, "msg": f"[COOKIE] {ve['cookie'][:100]}"})
+                if ve.get("canary_secret"):
+                    stored_logs.append({"t": 2.0, "msg": f"[CANARY] secreto leido: {ve['canary_secret']}"})
+                if ve.get("respuesta_cuerpo_recorte"):
+                    stored_logs.append({"t": 2.5, "msg": f"[RESP] {ve['respuesta_cuerpo_recorte'][:200]}"})
+
+            for entry in stored_logs:
+                self._write_sse("step", entry)
+            result_to_emit = rec.get("result") or rec
+            self._write_sse("done", result_to_emit)
             return
 
         self.send_response(200)
@@ -1941,7 +1992,7 @@ main {
       $('run-btn').disabled = false;
         $('html-btn').disabled = false;
       if ($('pdf-btn')) $('pdf-btn').disabled = false;
-      setTimeout(loadHistory, 1500);
+      setTimeout(loadHistory, 200);
     });
 
     es.onerror = () => {
