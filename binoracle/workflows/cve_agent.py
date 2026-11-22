@@ -6764,14 +6764,34 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         # PyPI/npm/gem instead of falling through to WordPress.org
         _explicit_cms = (notes.get("cms") or "").strip().lower()
         _tech_as_hint = inv.tech or ""
+        _desc_lower = (inv.description or "").lower()
+        _src_lower = (source or "").lower()
         if not _tech_as_hint:
-            _desc_lower = (inv.description or "").lower()
-            if any(w in _desc_lower for w in ("node.js", "nodejs", " npm ", "javascript", "fastify", "express", "next.js", "nuxt")):
+            # CMSs específicos primero (antes de los genéricos node/python/ruby)
+            if any(w in _desc_lower + _src_lower for w in ("ghost cms", "ghost blog", "tryghost", "ghost/ghost")):
+                _tech_as_hint = "ghost"
+            elif any(w in _desc_lower + _src_lower for w in ("strapi", "@strapi/")):
+                _tech_as_hint = "strapi"
+            elif any(w in _desc_lower + _src_lower for w in ("payload cms", "payloadcms", "payloadcms/payload")):
+                _tech_as_hint = "payload"
+            elif any(w in _desc_lower + _src_lower for w in ("craft cms", "craftcms", "craftcms/cms")):
+                _tech_as_hint = "craft"
+            elif any(w in _desc_lower + _src_lower for w in ("wagtail",)):
+                _tech_as_hint = "wagtail"
+            elif any(w in _desc_lower + _src_lower for w in ("directus",)):
+                _tech_as_hint = "directus"
+            elif any(w in _desc_lower + _src_lower for w in ("node.js", "nodejs", " npm ", "javascript", "fastify", "express", "next.js", "nuxt")):
                 _tech_as_hint = "nodejs"
-            elif any(w in _desc_lower for w in ("python", "pypi", "django", "flask", "fastapi", "aiohttp")):
+            elif any(w in _desc_lower + _src_lower for w in ("python", "pypi", "django", "flask", "fastapi", "aiohttp")):
                 _tech_as_hint = "python"
-            elif any(w in _desc_lower for w in ("ruby", " rails", "rubygems", ".gem")):
+            elif any(w in _desc_lower + _src_lower for w in ("ruby", " rails", "rubygems", ".gem")):
                 _tech_as_hint = "ruby"
+        # Si source_url ES el nombre exacto del CMS (sin slashes), también detectarlo
+        if not _tech_as_hint and source and "/" not in source and "." not in source:
+            _known_cms = {"ghost", "strapi", "payload", "craft", "craftcms", "wagtail",
+                          "directus", "typo3", "contao", "statamic", "kirby", "modx"}
+            if source.lower() in _known_cms:
+                _tech_as_hint = source.lower()
         _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")
         fr = fetch_source(source, version=version, on_step=step,
                          cms_hint=_cms_pass,

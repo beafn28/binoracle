@@ -991,17 +991,29 @@ def fetch_local_zip(path: str, dest_dir: str = "",
 
 def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str], None]] = None,
                   timeout: float = 60.0) -> SourceFetchResult:
-    """Descarga un .zip de una URL DIRECTA (no WordPress.org): un enlace de descarga del propio
-    vendedor, de una cuenta/Marketplace al que tengas acceso, etc."""
+    """Descarga un .zip o .tar.gz de una URL DIRECTA (no WordPress.org).
+    Detecta automáticamente el formato por extensión de la URL o por los primeros bytes."""
     step = on_step or (lambda _m: None)
     res = SourceFetchResult(kind="zip-url", source=url)
     step(f"descargando {url}...")
     dest_dir = dest_dir or tempfile.mkdtemp(prefix="binoracle_zipurl_")
-    zfd, zpath = tempfile.mkstemp(prefix="binoracle_zipurl_", suffix=".zip")
+    # Determinar extensión por la URL para elegir el nombre del fichero temporal
+    _url_path = url.split("?", 1)[0].lower()
+    _is_tgz = _url_path.endswith(".tar.gz") or _url_path.endswith(".tgz")
+    _suffix = ".tar.gz" if _is_tgz else ".zip"
+    zfd, zpath = tempfile.mkstemp(prefix="binoracle_zipurl_", suffix=_suffix)
     os.close(zfd)
     try:
         with _urlopen(url, timeout=timeout) as r:
             total = 0
+            # Re-check Content-Type header for format detection
+            _ct = ""
+            try:
+                _ct = (r.headers.get("Content-Type") or "").lower()
+            except Exception:
+                pass
+            if "gzip" in _ct or "tar" in _ct:
+                _is_tgz = True
             with open(zpath, "wb") as f:
                 while True:
                     chunk = r.read(65536)
@@ -1014,8 +1026,19 @@ def fetch_zip_url(url: str, dest_dir: str = "", on_step: Optional[Callable[[str]
     except Exception as e:
         res.note = f"fallo descargando {url}: {e}"
         return res
+    # Detectar por magic bytes si la URL no daba pista suficiente
     try:
-        _safe_extract_zip(zpath, dest_dir)
+        with open(zpath, "rb") as _mf:
+            _magic = _mf.read(3)
+        if _magic[:2] == b"\x1f\x8b":  # gzip magic
+            _is_tgz = True
+    except Exception:
+        pass
+    try:
+        if _is_tgz:
+            _extract_tarball(zpath, dest_dir)
+        else:
+            _safe_extract_zip(zpath, dest_dir)
     except Exception as e:
         res.note = f"fallo extrayendo {zpath}: {e}"
         return res
@@ -1256,6 +1279,66 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     cms_hint = (cms_hint or "").strip().lower()
     if not target:
         return SourceFetchResult(note="sin source_url/slug para resolver")
+
+    # ── CMS canónico: si target es el nombre del CMS (no una URL/zip/slug) lo
+    # resolvemos al repositorio oficial con --depth 1 --branch <version>.
+    # Esto cubre el caso donde el LLM pone source_url="ghost" o "strapi" sin URL.
+    # También cubre cms_hint="ghost"/"strapi"/etc. con un target que ya es la URL oficial.
+    _CMS_CANONICAL_REPOS: dict = {
+        "ghost":    "https://github.com/TryGhost/Ghost",
+        "strapi":   "https://github.com/strapi/strapi",
+        "payload":  "https://github.com/payloadcms/payload",
+        "craft":    "https://github.com/craftcms/cms",
+        "craftcms": "https://github.com/craftcms/cms",
+        "wagtail":  "https://github.com/wagtail/wagtail",
+        "directus": "https://github.com/directus/directus",
+        "typo3":    "https://github.com/TYPO3/typo3",
+        "contao":   "https://github.com/contao/contao",
+        "statamic": "https://github.com/statamic/cms",
+        "kirby":    "https://github.com/getkirby/kirby",
+        "concrete": "https://github.com/concretecms/concretecms",
+        "concretecms": "https://github.com/concretecms/concretecms",
+        "modx":     "https://github.com/modxcms/revolution",
+    }
+    # También mapeamos a npm para los que se instalan como paquete (más ligero que git clone)
+    _CMS_NPM_PACKAGES: dict = {
+        "ghost":   "ghost",
+        "directus": "directus",
+    }
+    _CMS_COMPOSER_PACKAGES: dict = {
+        "craft":    "craftcms/cms",
+        "craftcms": "craftcms/cms",
+        "contao":   "contao/core-bundle",
+        "statamic": "statamic/cms",
+    }
+    # Resolver: si target es exactamente el nombre de un CMS conocido (sin slashes/puntos/http)
+    _target_lower = target.lower().rstrip("/")
+    _is_bare_cms_name = ("/" not in _target_lower and "." not in _target_lower
+                         and not _target_lower.startswith("http"))
+    if _is_bare_cms_name and _target_lower in _CMS_CANONICAL_REPOS:
+        cms_hint = _target_lower
+        target = _CMS_CANONICAL_REPOS[_target_lower]
+    elif cms_hint in _CMS_CANONICAL_REPOS and not looks_like_git_url(target):
+        # cms_hint dado pero target no es URL git → usar repo canónico
+        target = _CMS_CANONICAL_REPOS[cms_hint]
+    # Si es un git clone de un CMS grande, preferir el tarball de GitHub del tag exacto
+    # (/archive/refs/tags/v<ver>.tar.gz) — mucho más rápido que git clone (solo el snapshot,
+    # sin historial). fetch_zip_url acepta .tar.gz aunque looks_like_zip_url solo vea .zip.
+    if looks_like_git_url(target) and version and cms_hint in _CMS_CANONICAL_REPOS:
+        _step = on_step or (lambda _m: None)
+        _base = target.rstrip("/")
+        for _vfmt in (f"v{version}", version):
+            _tgz_url = f"{_base}/archive/refs/tags/{_vfmt}.tar.gz"
+            _step(f"descargando snapshot {cms_hint} tag={_vfmt} (tarball, sin historial git)...")
+            try:
+                _r = fetch_zip_url(_tgz_url, on_step=on_step, timeout=timeout)
+                if _r.ok:
+                    _r.kind = "git"
+                    return _r
+            except Exception:
+                pass
+        _step(f"tarball de tag no disponible — git clone --depth 1 --branch {version}...")
+
     if looks_like_local_zip(target):
         return fetch_local_zip(target, on_step=on_step)
     if looks_like_zip_url(target):
