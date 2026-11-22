@@ -24,6 +24,82 @@ exec(compile(_src_no_loop, SCRIPT, "exec"), _ns)
 
 build_informe = _ns["build_informe"]
 
+def _build_logs_from_ae(ae):
+    """Convert attempt_evidence fields to [{t, msg}] log entries for the report."""
+    logs = []
+    t = 0.0
+
+    # Setup phase
+    setup_cmd = ae.get("setup_cmd", "")
+    if setup_cmd:
+        logs.append({"t": t, "msg": f"[SETUP] {setup_cmd[:300]}"})
+        t += 1.0
+        setup_stderr = ae.get("setup_stderr_recorte", "")
+        if setup_stderr:
+            for line in setup_stderr.strip().split("\n")[:12]:
+                if line.strip():
+                    logs.append({"t": t, "msg": line.strip()})
+                    t += 0.1
+        rc = ae.get("setup_returncode")
+        if rc is not None:
+            logs.append({"t": t, "msg": f"[SETUP] exit={rc}"})
+            t += 0.5
+
+    # CLI argv phase
+    argv = ae.get("argv")
+    if argv:
+        cmd_str = " ".join(str(a) for a in argv)
+        logs.append({"t": t, "msg": f"[RUN] {cmd_str[:350]}"})
+        t += 0.5
+        run_stdout = ae.get("run_stdout_recorte", "")
+        if run_stdout:
+            for line in run_stdout.strip().split("\n")[:15]:
+                if line.strip():
+                    logs.append({"t": t, "msg": line.strip()})
+                    t += 0.1
+        rc2 = ae.get("run_returncode")
+        if rc2 is not None:
+            logs.append({"t": t, "msg": f"[RUN] exit={rc2}"})
+            t += 0.3
+        canary = ae.get("canary_name", "")
+        presente = ae.get("canario_presente", False)
+        if canary:
+            icon = "CONFIRMADO" if presente else "NO ENCONTRADO"
+            logs.append({"t": t, "msg": f"[CANARY] {canary} → {icon}"})
+            t += 0.2
+
+    # HTTP phase (web CVEs)
+    endpoint = ae.get("endpoint", "")
+    metodo = ae.get("metodo", "")
+    if endpoint and metodo:
+        base = ae.get("base_url", "")
+        contenedor = ae.get("contenedor", "")
+        if contenedor:
+            logs.append({"t": t, "msg": f"[DOCKER] contenedor={contenedor}"})
+            t += 0.3
+        if base:
+            logs.append({"t": t, "msg": f"[TARGET] {base}{endpoint}"})
+            t += 0.3
+        payload = ae.get("payload_ganador", "")
+        param = ae.get("parametro_ganador", "")
+        if payload:
+            logs.append({"t": t, "msg": f"[PAYLOAD] {param}={payload[:200]}"})
+            t += 0.3
+        resp = ae.get("respuesta_cuerpo_recorte", "")
+        if resp:
+            logs.append({"t": t, "msg": f"[RESP] {resp[:300]}"})
+            t += 0.2
+        sc = ae.get("status_code")
+        if sc:
+            logs.append({"t": t, "msg": f"[HTTP] status={sc}"})
+            t += 0.2
+        canary_s = ae.get("canary_secret", "")
+        if canary_s:
+            logs.append({"t": t, "msg": f"[CANARY] {canary_s} → PRESENTE"})
+            t += 0.2
+
+    return logs
+
 # ── 2. Procesar cada batch JSON ───────────────────────────────────────────────
 batch_dir = os.path.realpath(BATCH_DIR)
 files = sorted(f for f in os.listdir(batch_dir) if f.endswith(".json"))
@@ -87,6 +163,8 @@ for fname in files:
             f"{grounded_note}"
         )
 
+    logs = _build_logs_from_ae(ae) if verified else []
+
     r = {
         "cvss_score":       batch.get("cvss_score"),
         "cvss_severity":    batch.get("cvss_severity"),
@@ -98,13 +176,13 @@ for fname in files:
         "verified":         verified,
         "affected_version": llm.get("affected_version") or "(ver NVD)",
         "markdown_report":  markdown_report,
-        "logs":             [],
+        "logs":             logs,
         "evidence":         {"screenshots": ae.get("screenshots") or []},
         "verified_evidence": ve,
         "detail":           grounded_note,
     }
 
-    html = build_informe(cve_id, r, ve, ae.get("screenshots") or [], [])
+    html = build_informe(cve_id, r, ve, ae.get("screenshots") or [], logs)
     dest = os.path.join(OUT, f"{cve_id}_informe_pdf.html")
     with open(dest, "w", encoding="utf-8") as f:
         f.write(html)
