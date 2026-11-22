@@ -10012,6 +10012,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     true_p, true_v, false_p, false_v,
                     confirm_field=confirm_f, on_step=step, budget_s=budget_s)
                 _apply_wpverify_result(inv, wr, es, llm)
+            # CORS misconfiguration: reflexion del Origin en ACAO + ACAC: true
+            elif (not plugin_dir and fr.local_path and
+                  inv.vuln_class in ("cors", "cors-misconfiguration", "cors-misconfig",
+                                     "cors-reflection")):
+                from .genericverify import verify_generic_cors_misconfig
+                cors_ep = notes.get("endpoint") or "/api/"
+                cors_method = notes.get("http_method") or "GET"
+                cors_hdrs = notes.get("custom_headers") or None
+                _inject_custom_docker_lab(str(fr.local_path), notes, step)
+                step(("intentando verificacion DINAMICA GENERICA -- CORS reflection "
+                     "(Origin reflejado en Access-Control-Allow-Origin + Credentials)..." if es else
+                     "attempting GENERIC DYNAMIC verification -- CORS reflection "
+                     "(Origin reflected in Access-Control-Allow-Origin + Credentials)..."))
+                wr = verify_generic_cors_misconfig(
+                    fr.local_path, cors_ep, cors_method,
+                    on_step=step, budget_s=budget_s, custom_headers=cors_hdrs)
+                _apply_wpverify_result(inv, wr, es, llm)
         else:
             step(f"no se pudo obtener el codigo: {fr.note}" if es else
                  f"could not fetch the source: {fr.note}")
