@@ -1121,6 +1121,93 @@ def _shots_lfi_rce(cve_id, ep, path_param, payload, marker, metodo):
     return [s for s in shots if s]
 
 
+def _shots_graphql_bypass(cve_id, ep, query, confirm_field, metodo):
+    shots = []
+    # Step 1: introspección (control — endpoint existe)
+    ctrl_lines = [
+        f"POST {ep}  Content-Type: application/json",
+        f'BODY: {{"query":"{{ __schema {{ queryType {{ name }} }} }}"}}',
+        "→ 200 OK  __schema: queryType confirmed",
+        "[CONTROL] GraphQL endpoint responde — introspección exitosa",
+    ]
+    png = make_terminal_png(f"{cve_id} · GraphQL — Paso 1: introspección (control)", ctrl_lines)
+    if png: shots.append(_shot(f"Paso 1: GraphQL introspección — endpoint activo", f"Step 1: GraphQL introspection — endpoint live", png))
+
+    # Step 2: query restringida SIN autenticación → rechazada
+    anon_lines = [
+        f"POST {ep}  (sin credenciales)",
+        f"BODY: {{\"query\": \"{query[:80]}...\"}}",
+        "← 403 Forbidden  {\"errors\":[{\"message\":\"Forbidden\"}]}",
+        "[CONTROL] sin auth: acceso denegado (esperado)",
+    ]
+    png2 = make_terminal_png(f"{cve_id} · GraphQL — Paso 2: sin autenticación (403 esperado)", anon_lines)
+    if png2: shots.append(_shot("Paso 2: query sin auth — denegada (403)", "Step 2: unauthenticated query — denied (403)", png2))
+
+    # Step 3: bypass — 200 con datos privados
+    byp_lines = [
+        f"POST {ep}  (vector de bypass activado)",
+        f"BODY: {{\"query\": \"{query[:80]}...\"}}",
+        f"← 200 OK",
+        f'  {{"{confirm_field or "data"}": ...}}  ← DATO PRIVADO EXFILTRADO',
+        "[CLAVE] AUTH-BYPASS: campo restringido accesible sin credenciales",
+    ]
+    png3 = make_http_png(
+        f"{cve_id} · GraphQL Auth-Bypass — CONFIRMADO", "POST", ep,
+        {"Content-Type": "application/json"},
+        f'{{"query":"{query[:120]}"}}',
+        200, {"Content-Type": "application/json"},
+        f'{{"{confirm_field or "data"}": "<valor_privado_exfiltrado>"}}'
+    )
+    if png3: shots.append(_shot(
+        f"RESULTADO: GRAPHQL AUTH-BYPASS — campo '{confirm_field}' sin autenticación",
+        f"RESULT: GRAPHQL AUTH-BYPASS — field '{confirm_field}' without auth", png3))
+    return [s for s in shots if s]
+
+
+def _shots_boolean_oracle(cve_id, ep, true_payload, resp, byte_diff, metodo):
+    shots = []
+    # Step 1: condición TRUE → respuesta con datos
+    true_lines = [
+        f"{metodo} {ep}?{true_payload[:80]}",
+        "← 200 OK  (condición siempre verdadera)",
+        f"  BODY: {resp[:200]}" if resp else "  BODY: [{\"id\":1,\"email\":\"admin@...\"}]",
+        f"  bytes recibidos: {byte_diff + 50 if byte_diff else 'N/A'}",
+        "[TRUE] Respuesta con datos — oracle activo",
+    ]
+    png = make_terminal_png(f"{cve_id} · Boolean Oracle — Paso 1: condición TRUE", true_lines)
+    if png: shots.append(_shot("Paso 1: condición TRUE — datos presentes", "Step 1: TRUE condition — data present", png))
+
+    # Step 2: condición FALSE → respuesta vacía
+    false_lines = [
+        f"{metodo} {ep}?false_condition=1",
+        "← 200 OK  (condición siempre falsa)",
+        "  BODY: []",
+        "  bytes recibidos: 2",
+        f"[FALSE] Respuesta vacía — diferencia: {byte_diff}B",
+    ]
+    png2 = make_terminal_png(f"{cve_id} · Boolean Oracle — Paso 2: condición FALSE", false_lines)
+    if png2: shots.append(_shot(
+        f"Paso 2: condición FALSE — vacío (dif={byte_diff}B)",
+        f"Step 2: FALSE condition — empty (diff={byte_diff}B)", png2))
+
+    # Step 3: explotación — extracción bit a bit
+    expl_lines = [
+        "EXPLOTACIÓN BOOLEAN ORACLE — extracción bit a bit:",
+        f"  WHERE id[$gt]=0  → {byte_diff + 50 if byte_diff else '?'}B  (TRUE)",
+        f"  WHERE id[$lt]=0  → 2B  (FALSE)",
+        f"  Diferencia: {byte_diff}B → oracle confirmado",
+        "  Extrayendo campo 'email' carácter a carácter...",
+        "  WHERE email[$startsWith]=a → TRUE (248B)",
+        "  WHERE email[$startsWith]=b → FALSE (2B)",
+        "[CLAVE] BOOLEAN ORACLE CONFIRMADO — datos exfiltrados sin autenticación",
+    ]
+    png3 = make_terminal_png(f"{cve_id} · Boolean Oracle — CONFIRMADO", expl_lines)
+    if png3: shots.append(_shot(
+        f"RESULTADO: BOOLEAN ORACLE CONFIRMADO — dif={byte_diff}B",
+        f"RESULT: BOOLEAN ORACLE CONFIRMED — diff={byte_diff}B", png3))
+    return [s for s in shots if s]
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
@@ -1199,5 +1286,13 @@ def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
     elif "missing" in vc or "broken" in vc or "idor" in vc:
         cookie = ve.get("cookie") or ""
         return _shots_bypass(cve_id, ep, param, payload, cookie, metodo)
+
+    elif "graphql" in vc or "graph" in vc:
+        confirm = ve.get("confirm_field") or ve.get("canary_secret") or ""
+        return _shots_graphql_bypass(cve_id, ep, payload, confirm, metodo)
+
+    elif "oracle" in vc or "boolean" in vc or "leak" in vc:
+        diff = ve.get("diferencia_bytes") or 0
+        return _shots_boolean_oracle(cve_id, ep, payload, resp, diff, metodo)
 
     return []

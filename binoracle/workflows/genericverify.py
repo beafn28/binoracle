@@ -3184,3 +3184,239 @@ def verify_generic_header_bypass(
     finally:
         step("desmontando el laboratorio generico (contenedores/red/imagen)...")
         lab.teardown()
+
+
+# ── GraphQL auth-bypass verifier ──────────────────────────────────────────────
+
+def verify_generic_graphql_bypass(
+    source_dir: str, graphql_endpoint: str,
+    forbidden_query: str, confirm_field: str,
+    bypass_header: str = "", bypass_value: str = "",
+    anon_expected_status: int = 403,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Verifica un auth-bypass en un endpoint GraphQL (p.ej. Craft CMS CVE-2026-124427).
+
+    Mecanismo:
+    1) Levanta el lab efimero con _bootstrap_generic_lab.
+    2) Envia una query GraphQL de introspección para confirmar que el endpoint existe.
+    3) Envia `forbidden_query` SIN autenticación: espera rechazo (403/401 o error de auth).
+    4) Envia `forbidden_query` CON la cabecera de bypass o sin credenciales pero con el
+       vector de bypass (prev/next field, __typename abuse, etc.): si la respuesta 2xx
+       contiene `confirm_field`, la vulnerabilidad queda VERIFICADA.
+
+    `forbidden_query`: query GraphQL completa que debería requerir autenticación.
+    `confirm_field`:   subcadena que debe aparecer en la respuesta exitosa (p.ej. un
+                       nombre de campo privado, un secreto, el token de sesión).
+    `bypass_header` / `bypass_value`: cabecera de bypass opcional (vacío si el bypass
+                       es solo estructural en la query).
+    `anon_expected_status`: código esperado al enviar sin autenticación (default 403).
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    tup = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if tup is None:
+        return res
+    lab, base_url, container = tup
+
+    try:
+        endpoint_url = base_url.rstrip("/") + "/" + graphql_endpoint.lstrip("/")
+        gql_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+        # Step 1: introspección — confirmar que el endpoint GraphQL responde
+        step(f"Paso 1: introspección GraphQL en {graphql_endpoint}")
+        intro_query = '{"query":"{ __schema { queryType { name } } }"}'
+        s_intro, _, b_intro = _http_request(
+            base_url, graphql_endpoint, "POST",
+            headers=gql_headers, body=intro_query.encode(), timeout=15.0)
+        if s_intro == 0 or b_intro is None:
+            res.detail = f"endpoint GraphQL {graphql_endpoint} no responde"
+            res.ok = True
+            return res
+        has_gql = b"__schema" in b_intro or b"queryType" in b_intro or s_intro == 200
+        step(f"  introspección: status={s_intro} graphql={'SI' if has_gql else 'NO'}")
+        res.evidence["intro_status"] = s_intro
+        res.evidence["intro_body_recorte"] = b_intro[:200].decode("utf-8", "replace")
+
+        # Step 2: query restringida SIN autenticación → debe rechazarse
+        step(f"Paso 2: query restringida SIN autenticación (esperado {anon_expected_status})")
+        body_forbidden = json.dumps({"query": forbidden_query}).encode()
+        s_anon, _, b_anon = _http_request(
+            base_url, graphql_endpoint, "POST",
+            headers=gql_headers, body=body_forbidden, timeout=15.0)
+        anon_body = (b_anon or b"").decode("utf-8", "replace")
+        step(f"  sin auth: status={s_anon} body={anon_body[:120]!r}")
+        res.evidence["anon_status"] = s_anon
+        res.evidence["anon_body_recorte"] = anon_body[:300]
+
+        # Step 3: bypass — con cabecera o query modificada
+        bypass_hdrs = dict(gql_headers)
+        if bypass_header:
+            bypass_hdrs[bypass_header] = bypass_value
+            step(f"Paso 3: query con cabecera bypass {bypass_header}: {bypass_value[:60]}")
+        else:
+            step("Paso 3: query con vector de bypass estructural (sin cabecera extra)")
+        s_byp, _, b_byp = _http_request(
+            base_url, graphql_endpoint, "POST",
+            headers=bypass_hdrs, body=body_forbidden, timeout=15.0)
+        byp_body = (b_byp or b"").decode("utf-8", "replace")
+        step(f"  con bypass: status={s_byp} body={byp_body[:200]!r}")
+        res.evidence["bypass_status"] = s_byp
+        res.evidence["bypass_body_recorte"] = byp_body[:500]
+        res.evidence["endpoint"] = graphql_endpoint
+        res.evidence["metodo"] = "POST"
+        res.evidence["base_url"] = base_url
+        res.evidence["contenedor"] = container
+
+        confirmed = (s_byp == 200 and confirm_field and confirm_field in byp_body)
+        if not confirmed and s_byp == 200 and not confirm_field:
+            # Sin campo de confirmación: si el bypass da 200 y el anon daba != 200
+            confirmed = (s_anon != 200)
+
+        if confirmed:
+            res.verified = True
+            res.ok = True
+            res.evidence["respuesta_cuerpo_recorte"] = byp_body[:500]
+            res.detail = (f"GRAPHQL AUTH-BYPASS CONFIRMADO: query restringida devuelve 200 "
+                          f"con el vector de bypass (campo '{confirm_field}' presente). "
+                          f"Sin bypass: status={s_anon}. Con bypass: status={s_byp}.")
+            step(f"VERIFICADO: GraphQL auth-bypass confirmado — '{confirm_field}' en respuesta")
+            _png = _screenshot_response(endpoint_url, "POST", s_byp, byp_body[:2000],
+                                        highlight=confirm_field, lang="es")
+            if _png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _png,
+                    "caption_es": f"RESULTADO: GRAPHQL AUTH-BYPASS — campo '{confirm_field}' accesible sin auth",
+                    "caption_en": f"RESULT: GRAPHQL AUTH-BYPASS — field '{confirm_field}' accessible without auth",
+                    "url": endpoint_url,
+                })
+        else:
+            res.ok = True
+            res.detail = (f"el vector de bypass no confirmo acceso no autorizado al campo "
+                          f"'{confirm_field}' — sin bypass: {s_anon}, con bypass: {s_byp}")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = _diagnose_infra_error(e, source_dir)
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_graphql_bypass: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
+
+
+# ── Boolean oracle / data-leak verifier ───────────────────────────────────────
+
+def verify_generic_boolean_oracle(
+    source_dir: str, endpoint: str, http_method: str,
+    true_param: str, true_value: str,
+    false_param: str, false_value: str,
+    confirm_field: str = "",
+    extra_headers: Optional[dict] = None,
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0,
+) -> WpVerifyResult:
+    """Verifica una vulnerabilidad de tipo oracle booleano (p.ej. Strapi CVE-2026-27886).
+
+    El patrón: el servidor filtra registros según una condición booleana controlada por
+    el atacante. La diferencia de respuesta entre condición TRUE y FALSE confirma el leak.
+
+    Mecanismo:
+    1) Levanta el lab efimero.
+    2) Envia la petición con `true_param=true_value` (condición siempre verdadera):
+       espera respuesta con contenido (lista no vacía, campo con datos).
+    3) Envia la petición con `false_param=false_value` (condición siempre falsa):
+       espera respuesta vacía o diferente.
+    4) Si la diferencia de bytes entre TRUE y FALSE supera un umbral, el oracle está
+       confirmado. Si además `confirm_field` aparece solo en la respuesta TRUE, es prueba
+       directa de exfiltración de datos.
+
+    `true_param`/`true_value`:  parámetro y valor que hace la condición TRUE (p.ej. `where[id][$gt]=0`).
+    `false_param`/`false_value`: parámetro y valor que hace la condición FALSE (p.ej. `where[id][$lt]=0`).
+    `confirm_field`: campo que debe aparecer SOLO en la respuesta TRUE (p.ej. `"email"`, `"token"`).
+    """
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    tup = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if tup is None:
+        return res
+    lab, base_url, container = tup
+
+    try:
+        hdrs = dict(extra_headers or {})
+        hdrs.setdefault("Accept", "application/json")
+
+        def _get(param, value):
+            sep = "&" if "?" in endpoint else "?"
+            ep_q = endpoint + sep + f"{param}={value}"
+            s, _, b = _http_request(base_url, ep_q, http_method.upper(),
+                                    headers=hdrs, timeout=15.0)
+            return s, (b or b"").decode("utf-8", "replace")
+
+        step(f"Paso 1: condición TRUE — {true_param}={true_value}")
+        s_true, b_true = _get(true_param, true_value)
+        step(f"  TRUE: status={s_true} bytes={len(b_true)} preview={b_true[:120]!r}")
+
+        step(f"Paso 2: condición FALSE — {false_param}={false_value}")
+        s_false, b_false = _get(false_param, false_value)
+        step(f"  FALSE: status={s_false} bytes={len(b_false)} preview={b_false[:120]!r}")
+
+        res.evidence.update({
+            "endpoint": endpoint, "metodo": http_method.upper(),
+            "base_url": base_url, "contenedor": container,
+            "true_status": s_true, "false_status": s_false,
+            "true_bytes": len(b_true), "false_bytes": len(b_false),
+            "true_body_recorte": b_true[:300], "false_body_recorte": b_false[:300],
+        })
+
+        byte_diff = abs(len(b_true) - len(b_false))
+        field_only_in_true = confirm_field and confirm_field in b_true and confirm_field not in b_false
+        confirmed = (s_true == 200 and byte_diff > 20) and (field_only_in_true or byte_diff > 100)
+
+        if confirmed:
+            res.verified = True
+            res.ok = True
+            res.evidence["diferencia_bytes"] = byte_diff
+            res.evidence["respuesta_cuerpo_recorte"] = b_true[:500]
+            res.detail = (f"BOOLEAN ORACLE CONFIRMADO: diferencia de {byte_diff} bytes entre "
+                          f"condición TRUE ({len(b_true)}B) y FALSE ({len(b_false)}B). "
+                          + (f"Campo '{confirm_field}' aparece SOLO en TRUE." if field_only_in_true else ""))
+            step(f"VERIFICADO: boolean oracle — dif={byte_diff}B campo={confirm_field}")
+            _png = _screenshot_response(base_url + endpoint, http_method.upper(), s_true,
+                                        b_true[:2000], highlight=confirm_field or "", lang="es")
+            if _png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _png,
+                    "caption_es": f"RESULTADO: BOOLEAN ORACLE — TRUE da {len(b_true)}B, FALSE da {len(b_false)}B (dif={byte_diff}B)",
+                    "caption_en": f"RESULT: BOOLEAN ORACLE — TRUE={len(b_true)}B vs FALSE={len(b_false)}B (diff={byte_diff}B)",
+                    "url": base_url + endpoint,
+                })
+        else:
+            res.ok = True
+            res.detail = (f"diferencia TRUE/FALSE insuficiente para confirmar oracle "
+                          f"({byte_diff}B) — puede que la condición no controle la query, "
+                          f"o que el endpoint filtre por otro mecanismo")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = _diagnose_infra_error(e, source_dir)
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_boolean_oracle: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
