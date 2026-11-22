@@ -45,6 +45,48 @@ def _save_history(job: "_Job"):
         pass
 
 
+_BATCH_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binoracle_batch_reports")
+
+
+def _count_all_verified() -> int:
+    """Count unique verified CVEs across history and batch reports (excluding gaps)."""
+    seen: set[str] = set()
+    # From history
+    try:
+        for fname in os.listdir(_HISTORY_DIR):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(_HISTORY_DIR, fname), encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                r = rec.get("result") or {}
+                if rec.get("verified") and not (rec.get("is_gap") or r.get("is_gap")):
+                    cve = rec.get("cve_id", "")
+                    if cve:
+                        seen.add(cve)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # From batch reports
+    try:
+        for fname in os.listdir(_BATCH_DIR):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(_BATCH_DIR, fname), encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                if rec.get("verified") and not rec.get("is_gap"):
+                    cve = fname[:-5]
+                    if cve:
+                        seen.add(cve)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return len(seen)
+
+
 def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False) -> tuple:
     """Returns (records_page, total_count)."""
     records = []
@@ -307,6 +349,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._export_pdf(job_id)
         elif path == "/api/scout-hueco":
             self._scout_hueco()
+        elif path == "/api/verified-count":
+            cnt = _count_all_verified()
+            body = json.dumps({"count": cnt}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         elif path == "/api/delete-failed":
             self._delete_failed_history()
         elif path.startswith("/api/delete-history/"):
@@ -965,7 +1016,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_html(self):
-        _, hist_total = _load_history(1, 0, True)  # verified only
+        hist_total = _count_all_verified()
         page = _HTML_PAGE.replace(
             'id="hist-count">0<',
             f'id="hist-count">{hist_total}<'
@@ -1751,7 +1802,6 @@ main {
       <button id="history-btn" title="Session history">
         History <span class="hist-count" id="hist-count">0</span>
       </button>
-      <button id="scout-btn" title="Scout recent HUECO CVEs from Patchstack + NVD" style="background:rgba(100,180,255,.1);border:1px solid rgba(100,180,255,.3);border-radius:5px;color:rgba(130,200,255,.85);font-size:11px;padding:0 10px;height:28px;cursor:pointer;font-family:var(--sans);font-weight:600;white-space:nowrap;transition:background .12s">Scout HUECOs</button>
     </div>
   </header>
 
@@ -2754,7 +2804,10 @@ main {
         _histTotal = data.total || 0;
       }
       renderHistoryList();
-      $('hist-count').textContent = _histTotal;
+      // Badge reflects ALL verified CVEs (batch + history), not just history entries
+      fetch('/api/verified-count').then(r=>r.json()).then(d=>{
+        if (d.count) $('hist-count').textContent = d.count;
+      }).catch(()=>{});
     } catch(e) { console.error('loadHistory error', e); }
   }
 
@@ -2827,7 +2880,9 @@ main {
             _histPages = Math.max(1, Math.ceil(_histTotal / 20));
             if (_histPage > _histPages) _histPage = _histPages;
             renderHistoryList();
-            $('hist-count').textContent = _histTotal;
+            fetch('/api/verified-count').then(r=>r.json()).then(d=>{
+              if (d.count) $('hist-count').textContent = d.count;
+            }).catch(()=>{});
           }
         } catch(err) { console.error('Delete error', err); }
       });
