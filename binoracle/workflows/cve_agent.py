@@ -8412,11 +8412,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "attempting GENERIC DYNAMIC verification -- canary file, the target is "
                      "built from its own Dockerfile/compose..."))
                 _pt_url_suffix = notes.get("url_suffix") or ""
+                _pt_query_suffix = notes.get("query_suffix") or ""
                 _pt_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_path_traversal(
                     fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
-                    url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs)
+                    url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
+                    query_suffix=_pt_query_suffix)
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
@@ -8425,7 +8427,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_generic_path_traversal(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs)
+                        url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
+                        query_suffix=_pt_query_suffix)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -8442,7 +8445,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _wr_extra = verify_generic_path_traversal(
                         fr.local_path, _ep_extra, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
-                        url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs)
+                        url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs,
+                        query_suffix=_pt_query_suffix)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 _apply_wpverify_result(inv, wr, es, llm)

