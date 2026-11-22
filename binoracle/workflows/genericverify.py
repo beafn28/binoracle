@@ -1115,6 +1115,7 @@ def verify_generic_path_traversal(
     source_dir: str, endpoint: str, http_method: str, parameters,
     path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, setup_commands: Optional[List[str]] = None,
+    url_suffix: str = "",
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -1260,8 +1261,10 @@ def verify_generic_path_traversal(
             for payload_value in attempts:
                 try:
                     if cand_up:
-                        # el payload va concatenado al path de la URL
-                        target_url = base_url + cand_ep + payload_value
+                        # el payload va concatenado al path de la URL.
+                        # url_suffix (opcional, e.g. '/cover' en audiobookshelf CVE-2026-71209)
+                        # se añade DESPUES del payload: /items/{traversal}/cover
+                        target_url = base_url + cand_ep + payload_value + url_suffix
                         # requests.request() normaliza %2e a '.' ANTES de enviar -- exactamente
                         # lo que rompe bypasses como '.%2e/' (CVE-2021-41773).
                         _has_pct_dot = "%2e" in payload_value.lower() or "%2f" in payload_value.lower()
@@ -1269,7 +1272,7 @@ def verify_generic_path_traversal(
                             resp = _http_request_raw_path(cand_meth, target_url, timeout=15)
                         else:
                             resp = _http_request(cand_meth, target_url, timeout=15)
-                        payload_desc = f"URL_PATH={payload_value!r}"
+                        payload_desc = f"URL_PATH={payload_value!r}{('+' + url_suffix) if url_suffix else ''}"
                     else:
                         payload = dict(cand_params) if isinstance(cand_params, dict) else dict.fromkeys(cand_params or [], "")
                         payload[cand_path_p or path_param or "path"] = payload_value
