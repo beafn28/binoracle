@@ -1908,27 +1908,91 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
     _shots_src = list(ev_shots) if ev_shots else []
     if len(_shots_src) < 2 and r.get("verified") and _auto_gen_screenshots:
         _shots_src = _auto_gen_screenshots(cve_id, r, ve)
-    # For time-based blind SQLi with no browser screenshots, show timing evidence block
+
+    # General fallback for verified CVEs with no browser screenshots:
+    # Show whatever evidence data exists as a terminal/request-response block.
     _tech_str = (ve.get("tecnica") or r.get("vuln_class") or "").lower()
-    _is_time_blind = ("time" in _tech_str or "blind" in _tech_str or "sleep" in _tech_str)
-    _sleep3 = ve.get("sleep3_s") or ve.get("diferencial_s")
-    _sleep0 = ve.get("sleep0_s")
-    if not _shots_src and _is_time_blind and _sleep3 and r.get("verified"):
-        _dif = ve.get("diferencial_s") or ((_sleep3 or 0) - (_sleep0 or 0))
-        _payload_tb = h(ve.get("payload_ganador") or "SLEEP(N)")
-        _timing_block = f"""<div class="shot-card" style="padding:12px">
+    if not _shots_src and r.get("verified"):
+        import html as _html_mod2
+        _h2 = _html_mod2.escape
+        _ev_lines = []
+        _card_title = "Evidencia de Verificacion — Laboratorio Docker Aislado"
+
+        # 1. Timing data (time-based blind SQLi)
+        _sleep3 = ve.get("sleep3_s") or ve.get("diferencial_s")
+        _sleep0 = ve.get("sleep0_s")
+        if _sleep3 and ("time" in _tech_str or "blind" in _tech_str or "sleep" in _tech_str):
+            _dif = ve.get("diferencial_s") or ((_sleep3 or 0) - (_sleep0 or 0))
+            _card_title = "Medicion Temporal — Time-Blind SQLi Confirmado"
+            _ev_lines += [
+                f'<span style="color:#4ade80">✓ CONFIRMADO — {_h2(_tech_str)}</span>',
+                f'Payload:     <span style="color:#facc15">{_h2(str(ve.get("payload_ganador") or "SLEEP(N)"))}</span>',
+                f'SLEEP(3):    <span style="color:#f87171">{_sleep3:.2f}s</span>  (con inyeccion)',
+                f'SLEEP(0):    <span style="color:#4ade80">{(_sleep0 or 0.0):.2f}s</span>  (control)',
+                f'Diferencial: <span style="color:#fb923c;font-weight:bold">{_dif:.2f}s</span> &gt; 1.0s → VULNERABLE',
+                '<span style="color:#94a3b8;font-size:11px">via raw socket · Docker --network none</span>',
+            ]
+
+        # 2. Boolean differential data
+        elif ve.get("diferencial_bytes") or ve.get("true_len") or ve.get("false_len"):
+            _true_l = ve.get("true_len") or ve.get("resp_true_len") or 0
+            _false_l = ve.get("false_len") or ve.get("resp_false_len") or 0
+            _dif_b = ve.get("diferencial_bytes") or abs((_true_l or 0) - (_false_l or 0))
+            _card_title = "Diferencial Booleano — Boolean In-Band SQLi Confirmado"
+            _ev_lines += [
+                f'<span style="color:#4ade80">✓ CONFIRMADO — boolean in-band</span>',
+                f'TRUE  response: <span style="color:#4ade80">{_true_l}B</span>',
+                f'FALSE response: <span style="color:#f87171">{_false_l}B</span>',
+                f'Diferencial:    <span style="color:#fb923c;font-weight:bold">{_dif_b}B</span> → VULNERABLE',
+            ]
+
+        # 3. Login bypass with cookie
+        elif ve.get("cookie") or ("bypass" in _tech_str or "login" in _tech_str):
+            _cookie = ve.get("cookie") or ""
+            _lparam = ve.get("login_param") or ve.get("sqli_param") or ""
+            _lval = ve.get("login_val") or ve.get("payload_ganador") or "1"
+            _card_title = "Bypass de Autenticacion — Login Bypass Confirmado"
+            _ev_lines += [
+                f'<span style="color:#4ade80">✓ CONFIRMADO — {_h2(_tech_str)}</span>',
+                f'Peticion: <span style="color:#facc15">GET /?{_h2(_lparam)}={_h2(_lval)}</span>',
+            ]
+            if _cookie:
+                _ev_lines.append(f'Cookie admin: <span style="color:#4ade80">{_h2(_cookie[:60])}{"..." if len(_cookie) > 60 else ""}</span>')
+
+        # 4. Canary / file read confirmation
+        elif ve.get("canary_secret") or ve.get("canary_path"):
+            _card_title = "Lectura de Archivo — Path Traversal Confirmado"
+            _ev_lines += [
+                f'<span style="color:#4ade80">✓ CONFIRMADO — path-traversal</span>',
+                f'Archivo canario: <span style="color:#facc15">{_h2(str(ve.get("canary_path") or ""))}</span>',
+                f'Secreto leido:   <span style="color:#4ade80">{_h2(str(ve.get("canary_secret") or ""))}</span>',
+            ]
+
+        # 5. Response body / SQL result
+        elif ve.get("respuesta_cuerpo_recorte") or r.get("verified_detail"):
+            _resp = ve.get("respuesta_cuerpo_recorte") or r.get("verified_detail") or r.get("detail") or ""
+            _card_title = "Respuesta del Servidor — Verificacion Confirmada"
+            _ev_lines += [
+                f'<span style="color:#4ade80">✓ CONFIRMADO — {_h2(_tech_str)}</span>',
+                f'Respuesta: <span style="color:#facc15">{_h2(_resp[:200])}</span>',
+            ]
+
+        # 6. Generic logs if none of the above matched
+        elif logs:
+            _card_title = "Log del Laboratorio — Verificacion Confirmada"
+            for _log in logs[:8]:
+                _ev_lines.append(_h2(str(_log.get("msg") or "")[:120]))
+
+        if _ev_lines:
+            shots_html = f"""<div class="shot-card" style="padding:12px">
   <div class="shot-header"><div class="shot-num">01</div>
-    <div class="shot-title">Medicion Temporal — Confirmacion Time-Blind SQLi</div></div>
+    <div class="shot-title">{_h2(_card_title)}</div></div>
   <div style="background:#0d1117;color:#e2e8f0;border-radius:6px;padding:14px 18px;font-family:\'JetBrains Mono\',\'Courier New\',monospace;font-size:12px;line-height:1.8;margin-top:10px">
-    <div style="color:#4ade80;margin-bottom:8px">✓ SQLI CONFIRMADO — Tecnica: {h(_tech_str)}</div>
-    <div>Payload:    <span style="color:#facc15">{_payload_tb}</span></div>
-    <div>SLEEP(3):   <span style="color:#f87171">{_sleep3:.2f}s</span> &nbsp; (con inyeccion)</div>
-    <div>SLEEP(0):   <span style="color:#4ade80">{(_sleep0 or 0.0):.2f}s</span> &nbsp; (control)</div>
-    <div>Diferencial: <span style="color:#fb923c;font-weight:bold">{_dif:.2f}s</span> &gt; umbral 1.0s → VULNERABLE</div>
-    <div style="margin-top:8px;color:#94a3b8;font-size:11px">Verificacion via raw socket — laboratorio Docker aislado (red none)</div>
+    {"<br>".join(_ev_lines)}
   </div>
 </div>"""
-        shots_html = _timing_block
+        else:
+            shots_html = render_screenshots(_shots_src)
     else:
         shots_html = render_screenshots(_shots_src)
 
