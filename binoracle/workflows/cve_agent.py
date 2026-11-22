@@ -5171,6 +5171,25 @@ def _drop_poc_self_referencing_source_url(poc_hints: dict, poc_repo_url: str) ->
     if _GENERIC_PLACEHOLDER_RE.search(poc_source):
         cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
         return cleaned, poc_source
+    # Descarta nombres de fichero de PoC/exploit como source_url
+    # (ej. "CVE-2026-27886-check.py", "exploit.sh", "poc.rb") — el LLM a veces pone
+    # el nombre del script PoC que leyó como si fuera el repo del proyecto afectado.
+    _POC_FILENAME_RE = re.compile(
+        r'^(?:CVE[-_]\d{4}[-_]\d+[-_\w]*\.(?:py|sh|rb|js|pl|go|php|java|ts|ps1)|'
+        r'(?:exploit|poc|payload|hack|check|scan|test)[-_\w]*\.(?:py|sh|rb|js|pl|go|php))$',
+        re.IGNORECASE)
+    if _POC_FILENAME_RE.match(poc_source.strip()):
+        cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
+        return cleaned, poc_source
+    # Descarta cualquier source_url sin http(s):// que tenga extensión de script/código
+    # y no sea una ruta SVN (p.ej. "my-exploit.py", "check.sh")
+    _src_no_proto = poc_source.strip()
+    if (not _src_no_proto.startswith(("http://", "https://", "git://"))
+            and re.search(r'\.(?:py|sh|rb|js|pl|go|php|java|ts|ps1|exe|bat)$',
+                          _src_no_proto, re.IGNORECASE)
+            and "/" not in _src_no_proto):
+        cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
+        return cleaned, poc_source
     # Convierte paths SVN de WordPress.org (ej. "chatbot/trunk/qcld-wpwbot-search.php")
     # al slug del plugin (ej. "chatbot") -- los paths SVN no son URLs descargables.
     # Formato: <slug>/trunk/<file> o <slug>/tags/<version>/<file>
@@ -6778,8 +6797,15 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         "cms-repo", "your-plugin", "your-project",
     )
     def _is_placeholder_source(s: str) -> bool:
-        sl = (s or "").lower()
-        return any(p in sl for p in _PLACEHOLDER_PATTERNS)
+        sl = (s or "").lower().strip()
+        if any(p in sl for p in _PLACEHOLDER_PATTERNS):
+            return True
+        # Nombre de fichero de PoC/exploit sin protocolo (ej. "CVE-2026-27886-check.py")
+        if (not sl.startswith(("http://", "https://", "git://"))
+                and re.search(r'\.(?:py|sh|rb|js|pl|go|php|java|ts|ps1|exe|bat)$', sl)
+                and "/" not in sl):
+            return True
+        return False
 
     # Si el source_url es un placeholder o está ausente, consulta el advisory (OSV)
     # para obtener el repo real — sin tablas hardcodeadas.
