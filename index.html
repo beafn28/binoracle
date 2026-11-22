@@ -65,17 +65,17 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 45 CVEs (33 verificados)</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 48 CVEs (33 verificados)</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white">45</div><div class="stat-l">Total CVEs</div></div>
+  <div class="stat"><div class="stat-n s-white">48</div><div class="stat-l">Total CVEs</div></div>
   <div class="stat"><div class="stat-n s-green">33</div><div class="stat-l">Verificados</div></div>
   <div class="stat"><div class="stat-n s-crit">17</div><div class="stat-l">Critical</div></div>
-  <div class="stat"><div class="stat-n s-high">25</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n s-high">28</div><div class="stat-l">High</div></div>
   <div class="stat"><div class="stat-n s-blue">20</div><div class="stat-l">SQLi</div></div>
   <div class="stat"><div class="stat-n s-purple">12</div><div class="stat-l">HUECO Verif.</div></div>
-  <div class="stat"><div class="stat-n s-green">28</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n s-green">29</div><div class="stat-l">Unauthenticated</div></div>
   <div class="stat"><div class="stat-n" style="color:#a78bfa">12</div><div class="stat-l">LLM Razonado</div></div>
   <div class="stat"><div class="stat-n" style="color:#7c3aed">4</div><div class="stat-l">0-day GAP</div></div>
 </div>
@@ -111,7 +111,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
   <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">45</span> / 45 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">48</span> / 48 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -778,8 +778,40 @@ Upgrading to a sec</td>
     <a href="CVE-2026-107592_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+<tr class="cve-row" data-cls="deserialization" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
   <td class="td-num">41</td>
+  <td class="td-cve"><a href="CVE-2026-121153_informe_pdf.html" target="_blank"><code>CVE-2026-121153</code></a></td>
+  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">deserialization</span></td>
+  <td><code class="tech">deserialization</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>2.26.16.26</code></td>
+  <td class="td-pub">2026-11-21</td>
+  <td class="td-desc">The UpdraftPlus: WP Backup &amp; Migration Plugin WordPress plugin before 2.26.16.26, UpdraftPlus: WP Backup &amp; Migration Plu</td>
+  <td class="td-links">
+    <a href="CVE-2026-121153_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-121153_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="deserialization" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
+  <td class="td-num">42</td>
+  <td class="td-cve"><a href="CVE-2026-121154_informe_pdf.html" target="_blank"><code>CVE-2026-121154</code></a></td>
+  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">deserialization</span></td>
+  <td><code class="tech">deserialization</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>2.26.16.26-1.26.16</code></td>
+  <td class="td-pub">2026-11-21</td>
+  <td class="td-desc">The UpdraftPlus: WP Backup &amp; Migration Plugin WordPress plugin before 2.26.16.26, UpdraftPlus: WP Backup &amp; Migration Plu</td>
+  <td class="td-links">
+    <a href="CVE-2026-121154_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-121154_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">43</td>
   <td class="td-cve"><a href="CVE-2026-123068_informe_pdf.html" target="_blank"><code>CVE-2026-123068</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
@@ -794,8 +826,24 @@ Upgrading to a sec</td>
     <a href="CVE-2026-123068_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
+<tr class="cve-row" data-cls="idor" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">44</td>
+  <td class="td-cve"><a href="CVE-2026-123136_informe_pdf.html" target="_blank"><code>CVE-2026-123136</code></a></td>
+  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">idor</span></td>
+  <td><code class="tech">idor</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>1.6.2-1</code></td>
+  <td class="td-pub">2026-11-22</td>
+  <td class="td-desc">The Event Tickets Manager for WooCommerce WordPress plugin before 1.6.2 does not check that the ticket type and price ch</td>
+  <td class="td-links">
+    <a href="CVE-2026-123136_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-123136_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
 <tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">42</td>
+  <td class="td-num">45</td>
   <td class="td-cve"><a href="CVE-2026-127024_informe_pdf.html" target="_blank"><code>CVE-2026-127024</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
@@ -811,7 +859,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="ssrf" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">43</td>
+  <td class="td-num">46</td>
   <td class="td-cve"><a href="CVE-2026-131978_informe_pdf.html" target="_blank"><code>CVE-2026-131978</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssrf</span></td>
@@ -827,7 +875,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="idor" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">44</td>
+  <td class="td-num">47</td>
   <td class="td-cve"><a href="CVE-2026-14233_informe_pdf.html" target="_blank"><code>CVE-2026-14233</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">idor</span></td>
@@ -843,7 +891,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">45</td>
+  <td class="td-num">48</td>
   <td class="td-cve"><a href="CVE-2026-94259_informe_pdf.html" target="_blank"><code>CVE-2026-94259</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
