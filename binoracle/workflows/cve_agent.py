@@ -807,7 +807,12 @@ def _hueco_sys(tech: str, vuln_class: str) -> str:
             "complexity (exponencial / cuadratica / cubica — segun el patron de backtracking), "
             "payload (input de prueba que activa la lentitud: secuencia de backtracking), "
             "impact (tiempo de respuesta esperado: Xs con string de N chars), "
-            "reasoning (una linea explicando por que el regex o algoritmo es vulnerable)."
+            "reasoning (una linea explicando por que el regex o algoritmo es vulnerable). "
+            "Para DoS que bloquea el event loop de asyncio/Node.js (no un crash): "
+            "usa tambien 'dockerfile_body' (Dockerfile completo que instala la version vulnerable "
+            "y hace RUN python -c / node -e con el payload), 'poc_cmd' (comando de un solo paso), "
+            "'timeout_means_vulnerable' = true (el timeout del contenedor es la senal de DoS, "
+            "no un crash/coredump)."
         )
 
     if "smuggling" in vc or "request-smuggling" in vc or "http-desync" in vc:
