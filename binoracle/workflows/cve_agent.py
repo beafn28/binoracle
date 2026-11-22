@@ -494,7 +494,25 @@ _RESEARCH_SYS = (
     "El motor verificara automaticamente creando un widget de test con un campo XSS e "
     "inyectando via _elementor_data post meta. NO intentes buscar un endpoint AJAX propio "
     "si la CVE dice 'custom field post data' o 'widget settings' o 'Elementor control'. "
-    "Se tecnico y breve; deja vacio lo que no sepas."
+    "Se tecnico y breve; deja vacio lo que no sepas. "
+    "REPOSITORIOS CANONICOS DE CMS (usa SIEMPRE estas URLs reales como source_url si el CVE "
+    "menciona estos CMS; NUNCA inventes URLs placeholder como 'https://github.com/your-cms-repo'): "
+    "Ghost → https://github.com/TryGhost/Ghost ; "
+    "Strapi → https://github.com/strapi/strapi ; "
+    "Payload CMS → https://github.com/payloadcms/payload ; "
+    "Craft CMS → https://github.com/craftcms/cms ; "
+    "Wagtail → https://github.com/wagtail/wagtail ; "
+    "Directus → https://github.com/directus/directus ; "
+    "Typo3 → https://github.com/TYPO3/typo3 ; "
+    "Contao → https://github.com/contao/contao ; "
+    "Statamic → https://github.com/statamic/cms ; "
+    "Kirby → https://github.com/getkirby/kirby ; "
+    "Concrete CMS → https://github.com/concretecms/concretecms ; "
+    "MODX → https://github.com/modxcms/revolution . "
+    "Para CVEs de GraphQL en estos CMS, usa vuln_class='graphql-bypass' y pon el endpoint GraphQL "
+    "real (p.ej. '/graphql', '/api/graphql', '/admin/api'). "
+    "Para CVEs de data-leak por oracle booleano (WHERE clause injection), usa "
+    "vuln_class='boolean-oracle' y pon true_param/false_param en los parameters."
 )
 
 
@@ -5151,8 +5169,16 @@ def _drop_poc_self_referencing_source_url(poc_hints: dict, poc_repo_url: str) ->
     # Descarta URLs placeholder (github.com/username/repo, github.com/yourname/..., etc.)
     _PLACEHOLDER_SOURCE_RE = re.compile(
         r'github\.com/(username|yourname|user|yourusername|placeholder|example|your[-_]?repo|'
-        r'your[-_]?plugin|your[-_]?name|test|demo)/', re.IGNORECASE)
+        r'your[-_]?plugin|your[-_]?name|your[-_]?cms[-_]?repo|test|demo|'
+        r'owner|org|organization|company|vendor|provider|maintainer)/', re.IGNORECASE)
     if _PLACEHOLDER_SOURCE_RE.search(_src_lower):
+        cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
+        return cleaned, poc_source
+    # Descarta cualquier source_url que sea literalmente una URL con segmentos placeholder
+    _GENERIC_PLACEHOLDER_RE = re.compile(
+        r'(?:your[-_]cms[-_]repo|your[-_]repo|your[-_]plugin|example\.com|'
+        r'placeholder\.com|cms[-_]repo|your[-_]project)', re.IGNORECASE)
+    if _GENERIC_PLACEHOLDER_RE.search(poc_source):
         cleaned = {k: v for k, v in poc_hints.items() if k != "source_url"}
         return cleaned, poc_source
     # Convierte paths SVN de WordPress.org (ej. "chatbot/trunk/qcld-wpwbot-search.php")
@@ -6756,6 +6782,47 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 guessed_source = True
             else:
                 source = ""  # nada que intentar; el motor seguira sin source
+
+    # Tabla de repos canónicos para CMSs: si el LLM da un placeholder genérico
+    # ("https://github.com/your-cms-repo", "cms", etc.) o no da source_url pero la
+    # descripción menciona un CMS conocido, sustituir con el repo real.
+    _CMS_REPO_OVERRIDES: dict = {
+        "ghost":    "https://github.com/TryGhost/Ghost",
+        "strapi":   "https://github.com/strapi/strapi",
+        "payload":  "https://github.com/payloadcms/payload",
+        "craft":    "https://github.com/craftcms/cms",
+        "craftcms": "https://github.com/craftcms/cms",
+        "wagtail":  "https://github.com/wagtail/wagtail",
+        "directus": "https://github.com/directus/directus",
+        "typo3":    "https://github.com/TYPO3/typo3",
+        "contao":   "https://github.com/contao/contao",
+        "statamic": "https://github.com/statamic/cms",
+        "kirby":    "https://github.com/getkirby/kirby",
+        "concrete": "https://github.com/concretecms/concretecms",
+        "concretecms": "https://github.com/concretecms/concretecms",
+        "modx":     "https://github.com/modxcms/revolution",
+    }
+    _PLACEHOLDER_PATTERNS = (
+        "your-cms-repo", "example.com", "placeholder", "your-repo",
+        "cms-repo", "your-plugin", "your-project",
+    )
+    def _is_placeholder_source(s: str) -> bool:
+        sl = (s or "").lower()
+        return any(p in sl for p in _PLACEHOLDER_PATTERNS)
+
+    _desc_lower_cms = (inv.description or "").lower()
+    # Detectar si source es placeholder o ausente, y el CVE describe un CMS conocido
+    if not source or _is_placeholder_source(source):
+        for _cms_key, _cms_repo in _CMS_REPO_OVERRIDES.items():
+            if _cms_key in _desc_lower_cms:
+                _old_src = source
+                source = _cms_repo
+                guessed_source = True
+                step((f"source_url '{_old_src}' es un placeholder/ausente pero el aviso menciona "
+                      f"'{_cms_key}' — usando repo canónico: {_cms_repo}") if es else
+                     (f"source_url '{_old_src}' is a placeholder/missing but advisory mentions "
+                      f"'{_cms_key}' — using canonical repo: {_cms_repo}"))
+                break
 
     if source:
         step(f"intentando obtener el codigo real ({source})..." if es else
