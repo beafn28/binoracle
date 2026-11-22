@@ -74,6 +74,19 @@ for fname in files:
             fn_list.append(f"`{fn_name}` ({loc})" if loc else f"`{fn_name}`")
         grounded_note = "Funciones confirmadas en codigo real: " + ", ".join(fn_list) + "."
 
+    # For HUECO (not dynamically verified), use the LLM-developed PoC script as the report
+    developed_script = batch.get("developed_script") or ""
+    markdown_report = ""
+    if developed_script and not verified:
+        # Wrap the script so it renders properly in the informe
+        markdown_report = (
+            f"# PoC desarrollado por binoracle (sin verificacion dinamica)\n\n"
+            f"Este CVE es un **HUECO** — no existe exploit publico previo. El script siguiente "
+            f"fue generado por el motor a partir del analisis del codigo fuente real.\n\n"
+            f"```bash\n{developed_script.strip()}\n```\n\n"
+            f"{grounded_note}"
+        )
+
     r = {
         "cvss_score":       batch.get("cvss_score"),
         "cvss_severity":    batch.get("cvss_severity"),
@@ -84,7 +97,7 @@ for fname in files:
         "poc_source":       batch.get("poc_source_used") or "",
         "verified":         verified,
         "affected_version": llm.get("affected_version") or "(ver NVD)",
-        "markdown_report":  "",   # genera desde vuln_class
+        "markdown_report":  markdown_report,
         "logs":             [],
         "evidence":         {"screenshots": ae.get("screenshots") or []},
         "verified_evidence": ve,

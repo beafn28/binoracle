@@ -84,9 +84,7 @@ def cls_badge(cls):
     return f'<span class="badge badge-sm" style="background:{color}">{h(cls)}</span>'
 
 def _pdf_btn(row):
-    if row.get('verified', True):
-        return f'<a href="{h(row["cve"])}_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>'
-    return ''
+    return f'<a href="{h(row["cve"])}_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>'
 
 def poc_badge(has_poc, verified=False):
     if has_poc and verified:

