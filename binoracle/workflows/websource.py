@@ -3740,9 +3740,21 @@ def find_auth_bypass_generic(local_path: str, tech: str = "auto") -> List[dict]:
 
 def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink]:
     """Generic scan helper for input→sink patterns."""
+    # PHP variable-assignment regex: $var = $_GET['param'] style
+    _PHP_VAR_ASSIGN = re.compile(
+        r"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[['\"]([A-Za-z0-9_]+)['\"]"
+    )
     results: List[VulnSink] = []
     for _tech, _user_re, _sink_re, _exts in pattern_sets:
         for abs_fp, rel_fp, lines in _walk_source_files(local_path, _exts):
+            # Build a PHP variable→param map for the whole file (taint tracking)
+            _var_map: dict = {}
+            if _tech == "php":
+                for _ln in lines:
+                    _am = _PHP_VAR_ASSIGN.search(_ln)
+                    if _am:
+                        _var_map[_am.group(1)] = _am.group(2)
+
             for i, line in enumerate(lines, 1):
                 _sink_m = _sink_re.search(line)
                 if not _sink_m:
@@ -3752,12 +3764,26 @@ def _scan_sinks(local_path: str, pattern_sets: list, tech: str) -> List[VulnSink
                     param = next((g for g in _user_m.groups() if g), "?")
                     conf = 3
                 else:
-                    window = "\n".join(lines[max(0, i-15):i])
+                    # Extended lookback: 50 lines (was 15) to catch params assigned at function top
+                    window = "\n".join(lines[max(0, i-50):i])
                     _user_m2 = _user_re.search(window)
-                    if not _user_m2:
+                    if _user_m2:
+                        param = next((g for g in _user_m2.groups() if g), "?")
+                        conf = 2
+                    elif _tech == "php" and _var_map:
+                        # Variable backtrack: check if sink uses a var that was tainted
+                        _sink_snippet = line + "\n".join(lines[max(0, i-5):i])
+                        _param_found = None
+                        for _var, _p in _var_map.items():
+                            if f"${_var}" in _sink_snippet or f"${{{_var}}}" in _sink_snippet:
+                                _param_found = _p
+                                break
+                        if not _param_found:
+                            continue
+                        param = _param_found
+                        conf = 2
+                    else:
                         continue
-                    param = next((g for g in _user_m2.groups() if g), "?")
-                    conf = 2
                 results.append(VulnSink(
                     file=rel_fp, line=i, snippet=line.strip(),
                     param=param, sink=_sink_m.group(0)[:60],

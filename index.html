@@ -46,6 +46,14 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
 .btn-report:hover{background:#1e40af}
 .btn-pdf:hover{background:#374151;color:#e2e8f0}
 .no-results{padding:40px;text-align:center;color:#475569;font-size:14px;display:none}
+.badge-new{background:#065f46;color:#4ade80;border:1px solid #16a34a;font-size:8px;padding:1px 5px;border-radius:3px;vertical-align:middle;margin-left:4px;letter-spacing:.08em;font-weight:800}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:#94a3b8}
+th.sortable::after{content:' ↕';opacity:.4;font-size:9px}
+th.sortable.asc::after{content:' ↑';opacity:1;color:#38bdf8}
+th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
+.filter-count{margin-left:auto;font-size:11px;color:#475569;font-family:'JetBrains Mono',monospace}
+.filter-count span{color:#38bdf8;font-weight:700}
 @media(max-width:900px){.td-desc,.td-pub,.td-aff{display:none}.wrap{padding:0 16px}.filters{padding:12px 16px}header{padding:14px 16px}}
 </style>
 </head>
@@ -103,6 +111,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
   <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
   <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
+  <span class="filter-count" id="filter-count"><span id="vis-count">32</span> / 32 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -110,15 +119,15 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
 <thead>
 <tr>
   <th>#</th>
-  <th>CVE</th>
-  <th>CVSS</th>
+  <th class="sortable" data-col="cve">CVE</th>
+  <th class="sortable" data-col="cvss">CVSS</th>
   <th>Clase</th>
   <th>Tecnica</th>
   <th>PoC</th>
   <th>Auth</th>
-  <th>Version</th>
-  <th>Publicado</th>
-  <th>Descripcion</th>
+  <th class="td-aff">Version</th>
+  <th class="sortable td-pub" data-col="pub">Publicado</th>
+  <th class="td-desc">Descripcion</th>
   <th>Informe</th>
 </tr>
 </thead>
@@ -643,12 +652,36 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
 
 <script>
 const filters = {};
+let sortCol = null, sortDir = 1;
+const total = document.querySelectorAll('.cve-row').length;
+
+// Add NEW badge to 2026 CVEs
+document.querySelectorAll('.cve-row').forEach(row => {
+  const pub = row.querySelector('.td-pub');
+  if (pub && pub.textContent.trim().startsWith('2026')) {
+    const cveLink = row.querySelector('.td-cve a');
+    if (cveLink) cveLink.insertAdjacentHTML('afterend', '<span class="badge-new">NEW</span>');
+  }
+});
+
+// Add data-cvss numeric attribute for sorting
+document.querySelectorAll('.cve-row').forEach(row => {
+  const badge = row.querySelector('.badge');
+  if (badge) {
+    const m = badge.textContent.match(/[\d.]+/);
+    row.dataset.cvss = m ? parseFloat(m[0]) : 0;
+  }
+  const cve = row.querySelector('code');
+  row.dataset.cveId = cve ? cve.textContent : '';
+  const pubEl = row.querySelector('.td-pub');
+  row.dataset.pubDate = pubEl ? pubEl.textContent.trim() : '';
+});
+
 document.querySelectorAll('.f-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const type = btn.dataset.filter;
     const val  = btn.dataset.val;
     filters[type] = val === 'all' ? null : val;
-    // update active state
     document.querySelectorAll(`.f-btn[data-filter="${type}"]`).forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     applyFilters();
@@ -656,6 +689,46 @@ document.querySelectorAll('.f-btn').forEach(btn => {
 });
 
 document.getElementById('search').addEventListener('input', applyFilters);
+
+// Sortable column headers
+document.querySelectorAll('th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (sortCol === col) {
+      sortDir *= -1;
+    } else {
+      sortCol = col;
+      sortDir = col === 'cvss' ? -1 : 1;
+    }
+    document.querySelectorAll('th.sortable').forEach(h => h.classList.remove('asc','desc'));
+    th.classList.add(sortDir > 0 ? 'asc' : 'desc');
+    sortRows();
+    applyFilters();
+  });
+});
+
+function sortRows() {
+  const tbody = document.querySelector('#cve-table tbody');
+  const rows = Array.from(tbody.querySelectorAll('.cve-row'));
+  rows.sort((a, b) => {
+    let av, bv;
+    if (sortCol === 'cvss') {
+      av = parseFloat(a.dataset.cvss) || 0;
+      bv = parseFloat(b.dataset.cvss) || 0;
+    } else if (sortCol === 'cve') {
+      av = a.dataset.cveId;
+      bv = b.dataset.cveId;
+    } else if (sortCol === 'pub') {
+      av = a.dataset.pubDate;
+      bv = b.dataset.pubDate;
+    } else return 0;
+    return av < bv ? -sortDir : av > bv ? sortDir : 0;
+  });
+  rows.forEach((r, i) => {
+    r.querySelector('.td-num').textContent = i + 1;
+    tbody.appendChild(r);
+  });
+}
 
 function applyFilters() {
   const q = document.getElementById('search').value.toLowerCase();
@@ -672,6 +745,9 @@ function applyFilters() {
     if (show) visible++;
   });
   document.getElementById('no-results').style.display = visible ? 'none' : 'block';
+  document.getElementById('vis-count').textContent = visible;
+  document.getElementById('filter-count').innerHTML =
+    `<span id="vis-count">${visible}</span> / ${total} CVEs`;
 }
 </script>
 </body>

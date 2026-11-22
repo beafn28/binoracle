@@ -3589,6 +3589,39 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
     if not inv.tech:
         inv.tech = tech  # store for downstream use (source fetch, reports)
 
+    # ---- pre-step: extract param hints from CVE description text ----------------
+    # Patterns like "via the 'source' parameter", "the X POST parameter", etc.
+    _desc = (inv.description or "").lower()
+    _PARAM_HINTS = [
+        re.compile(r"via\s+the\s+['\"`]([A-Za-z0-9_\-]+)['\"`]\s+(?:get\s+|post\s+|query\s+|request\s+)?parameter", re.IGNORECASE),
+        re.compile(r"via\s+the\s+([A-Za-z0-9_\-]+)\s+(?:get\s+|post\s+|query\s+|request\s+)?parameter", re.IGNORECASE),
+        re.compile(r"the\s+['\"`]([A-Za-z0-9_\-]+)['\"`]\s+(?:get\s+|post\s+|query\s+)?parameter", re.IGNORECASE),
+        re.compile(r"(?:get|post|query|request)\s+parameter\s+['\"`]([A-Za-z0-9_\-]+)['\"`]", re.IGNORECASE),
+        re.compile(r"\bparameter[:\s]+['\"`]?([A-Za-z0-9_\-]+)['\"`]", re.IGNORECASE),
+        re.compile(r"input\s+(?:field|value)\s+['\"`]([A-Za-z0-9_\-]+)['\"`]", re.IGNORECASE),
+    ]
+    if inv.description and not notes.get("sqli_param") and not notes.get("path_param"):
+        for _pat in _PARAM_HINTS:
+            _m = _pat.search(inv.description)
+            if _m:
+                _hint_p = _m.group(1).strip()
+                # skip obvious false positives
+                if _hint_p.lower() not in ("the", "a", "an", "this", "that", "in", "or"):
+                    if vc in ("sqli", "sql-injection"):
+                        notes.setdefault("sqli_param", _hint_p)
+                    elif vc in ("path-traversal", "lfi"):
+                        notes.setdefault("path_param", _hint_p)
+                    elif vc in ("ssrf",):
+                        notes.setdefault("url_param", _hint_p)
+                    # generic fallback — store as parameters hint
+                    notes.setdefault("_desc_param_hint", _hint_p)
+                    step((f"[HUECO] param extraido desde descripcion NVD: '{_hint_p}' "
+                          f"(patron: {_pat.pattern[:40]}...)") if es else
+                         (f"[HUECO] param extracted from NVD description: '{_hint_p}' "
+                          f"(pattern: {_pat.pattern[:40]}...)"))
+                    break
+    # ---- end param hint extraction ----------------------------------------------
+
     def _read_snippet(rel_file: str, line_no: int, ctx: int = 35) -> str:
         """Lee ctx lineas alrededor de line_no en rel_file (ruta relativa a lpath)."""
         try:
