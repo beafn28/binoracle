@@ -1445,6 +1445,22 @@ def cmd_cve(args, config):
                 _parsed_opts.append({"name": _k.strip(), "value": _v or "1"})
         hints["setup_options"] = _parsed_opts
 
+    # Si existe un JSON del analista en binoracle_batch_reports/, cargar campos de
+    # configuracion Docker (dockerfile_body / docker_image / extra_files) como hints de
+    # base para que se preserven incluso con --no-cache (el LLM fresco no los conoce).
+    _batch_json_path = f"binoracle_batch_reports/{cve_id}.json"
+    try:
+        import json as _j, os as _os2
+        if _os2.path.exists(_batch_json_path):
+            with open(_batch_json_path, encoding="utf-8") as _bf:
+                _stored_notes = _j.load(_bf).get("llm_notes") or {}
+            for _field in ("dockerfile_body", "docker_image", "extra_files",
+                           "confirm_string", "sqli_param", "poc_cmd"):
+                if _field not in hints and _stored_notes.get(_field):
+                    hints[_field] = _stored_notes[_field]
+    except Exception:
+        pass
+
     # ── Banner ────────────────────────────────────────────────────────────────
     _use_col = colorlog._use_color(_sys.stdout)
     _r  = colorlog._RESET if _use_col else ""

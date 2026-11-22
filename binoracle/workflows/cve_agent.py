@@ -2021,15 +2021,15 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
     un lab que el propio proyecto trae).  Tambien escribe extra_files si estan en llm_notes
     (p.ej. server.js para h3 que necesita COPY en el Dockerfile).
     """
+    docker_image = (notes.get("docker_image") or "").strip()
+    dockerfile_body = (notes.get("dockerfile_body") or "").strip()
+    if not docker_image and not dockerfile_body:
+        return
     if not source_dir or not os.path.isdir(source_dir):
         return
     for existing in ("Dockerfile", "docker-compose.yml", "compose.yml", "docker-compose.yaml"):
         if os.path.exists(os.path.join(source_dir, existing)):
             return  # proyecto ya trae su propio Dockerfile/compose, no tocarlo
-    docker_image = (notes.get("docker_image") or "").strip()
-    dockerfile_body = (notes.get("dockerfile_body") or "").strip()
-    if not docker_image and not dockerfile_body:
-        return
     df_path = os.path.join(source_dir, "Dockerfile")
     if docker_image:
         df_content = f"FROM {docker_image}\n"

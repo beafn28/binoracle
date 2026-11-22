@@ -15,6 +15,7 @@ canario de fichero (igual de valido en Python/Node/Go/PHP/Java: todos escriben a
 y se amplia poco a poco."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
