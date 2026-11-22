@@ -8618,6 +8618,9 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     notes.get("sqli_via_rawurldecode")
                     or any(s in (notes.get("sqli_taint_source") or "").lower()
                            for s in ("rawurldecode", "sanitize_title", "url_decode"))
+                    or "%2527" in (notes.get("payload_example") or "").lower()
+                    or "%2527" in (notes.get("strategy") or "").lower()
+                    or "%2527" in (notes.get("poc_notes") or "").lower()
                 )
                 wr = verify_wordpress_sqli(
                     fr.local_path, plugin_dir, _sqli_ep,
