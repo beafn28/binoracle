@@ -3620,6 +3620,112 @@ def _refine_web_hints_from_source(llm, local_path: str, found: dict, context_lin
     return out or None
 
 
+def _prescan_source_for_llm_context(source_dir: str, vuln_class: str,
+                                    description: str = "") -> dict:
+    """Escanea el codigo descargado y devuelve contexto real para alimentar al LLM.
+
+    Para cualquier CVE (gap o no), extrae del codigo real:
+    - routes/endpoints HTTP definidos en el proyecto
+    - funciones/metodos cerca de patrones de la clase de vulnerabilidad
+    - parametros de entrada encontrados cerca de los sinks
+
+    Esto permite que el LLM proponga vulnerable_functions desde nombres reales
+    del codigo, en vez de adivinar desde memoria. Especialmente util para CMSs
+    no-WordPress (Ghost/Strapi/Payload/Craft) donde los nombres de funcion
+    no son obvios desde la descripcion del CVE.
+
+    Devuelve dict con claves: functions, routes, params, tech, files.
+    """
+    import os as _os
+    result: dict = {"functions": [], "routes": [], "params": [], "tech": "", "files": []}
+    if not source_dir or not _os.path.isdir(source_dir):
+        return result
+    try:
+        from .websource import (detect_tech_stack, find_sqli_sinks_generic,
+                                find_rce_sinks, find_path_traversal_sinks,
+                                find_xss_sinks_generic, find_auth_bypass_generic,
+                                find_ssrf_sinks, VulnSink)
+    except ImportError:
+        return result
+
+    tech = detect_tech_stack(source_dir)
+    result["tech"] = tech
+
+    # Seleccionar scanner por clase de vulnerabilidad
+    _vc = (vuln_class or "").lower()
+    sinks: list = []
+    try:
+        if _vc in ("sqli", "sql-injection", "boolean-oracle"):
+            sinks = find_sqli_sinks_generic(source_dir, tech)[:8]
+        elif _vc in ("rce", "code-injection", "command-injection"):
+            sinks = find_rce_sinks(source_dir, tech)[:8]
+        elif _vc in ("path-traversal", "lfi"):
+            sinks = find_path_traversal_sinks(source_dir, tech)[:8]
+        elif _vc in ("xss",):
+            sinks = find_xss_sinks_generic(source_dir, tech)[:8]
+        elif _vc in ("auth-bypass", "missing-authorization", "idor", "graphql-bypass"):
+            sinks = find_auth_bypass_generic(source_dir, tech)[:8]
+        elif _vc in ("ssrf",):
+            sinks = find_ssrf_sinks(source_dir, tech)[:8]
+        else:
+            # Fallback: combinar SQLi + auth para clases desconocidas
+            sinks = (find_sqli_sinks_generic(source_dir, tech)[:4] +
+                     find_auth_bypass_generic(source_dir, tech)[:4])
+    except Exception:
+        pass
+
+    # Extraer funciones y params de los sinks encontrados
+    seen_fns: set = set()
+    seen_params: set = set()
+    seen_files: set = set()
+    for s in sinks:
+        if s.file:
+            seen_files.add(s.file)
+        if s.param and s.param not in ("?", ""):
+            seen_params.add(s.param)
+        # Extraer el nombre de la función del snippet
+        _fn_m = re.search(
+            r'(?:async\s+)?(?:function\s+([A-Za-z_$][A-Za-z0-9_$]*)'
+            r'|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*='
+            r'|def\s+([A-Za-z_][A-Za-z0-9_]*)'
+            r'|public\s+(?:static\s+)?(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*))',
+            s.snippet or "")
+        if _fn_m:
+            fn = next((g for g in _fn_m.groups() if g), None)
+            if fn and fn not in seen_fns:
+                seen_fns.add(fn)
+
+    # Scan rapido de rutas HTTP en Node.js (router.get/post/put/delete/patch)
+    _ROUTE_RE = re.compile(
+        r'''(?:router|app|Router)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]''',
+        re.IGNORECASE)
+    _desc_lower = (description or "").lower()
+    try:
+        for _root, _dirs, _fnames in _os.walk(source_dir):
+            _dirs[:] = [d for d in _dirs if d not in
+                        ("node_modules", ".git", "dist", "build", "__pycache__", "vendor")]
+            for _fn in _fnames:
+                if not _fn.endswith((".js", ".ts", ".mjs", ".py", ".php", ".rb")):
+                    continue
+                _fpath = _os.path.join(_root, _fn)
+                try:
+                    with open(_fpath, encoding="utf-8", errors="replace") as fh:
+                        _content = fh.read(32_000)
+                except OSError:
+                    continue
+                for _m in _ROUTE_RE.finditer(_content):
+                    _route = _m.group(2).strip()
+                    if _route and len(result["routes"]) < 12:
+                        result["routes"].append(f"{_m.group(1).upper()} {_route}")
+    except Exception:
+        pass
+
+    result["functions"] = sorted(seen_fns)[:10]
+    result["params"]    = sorted(seen_params)[:8]
+    result["files"]     = sorted(seen_files)[:6]
+    return result
+
+
 def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es: bool) -> None:
     """Para CVEs HUECO (sin PoC publico): analiza el codigo fuente real del plugin
     para fundamentar la hipotesis en evidencia concreta ANTES de intentar la verificacion.
@@ -8298,7 +8404,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step((_pt_pc_msg + " — el lab continúa para confirmar") if es else
                          (_pt_pc_msg + " — lab continues to confirm"))
                     if _pt_precheck["confidence"] >= 0.68:
-                        inv.blockers.append(("static_precheck_pt", _pt_precheck["reason"]))
+                        inv.blockers.append(f"pre-check estático: {_pt_precheck['reason']}")
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
                 step(("intentando verificacion DINAMICA GENERICA -- fichero canario, el objetivo "
                      "se construye desde su propio Dockerfile/compose..." if es else
@@ -8708,7 +8814,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     step((_pc_msg + " — el lab continúa para confirmar") if es else
                          (_pc_msg + " — lab continues to confirm"))
                     if _precheck["confidence"] >= 0.80:
-                        inv.blockers.append(("static_precheck", _precheck["reason"]))
+                        inv.blockers.append(f"pre-check estático: {_precheck['reason']}")
 
                     # --- AUTO-DETECT json_body para endpoints REST (Fix B) ---
                     # Si el endpoint empieza por /wp-json/ o el plugin usa get_json_params()

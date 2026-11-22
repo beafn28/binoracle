@@ -1578,7 +1578,7 @@ def cmd_cve(args, config):
                 # Sin truncar a 100: los logs de docker contienen el error real de Node/Python
                 # que necesitamos ver entero para diagnosticar. Se limita a 800 chars para no
                 # llenar la terminal, pero es suficiente para ver el 'Error: Cannot find module'.
-                bl_txt = bl[:800]
+                bl_txt = str(bl)[:800]  # str() por si bl es una tupla interna (ej. precheck)
                 # Indentar las líneas internas del bloque de logs para que se lean bien
                 lines = bl_txt.splitlines()
                 print(f"    {vc}▸{_r} {lines[0]}")
