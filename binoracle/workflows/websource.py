@@ -1280,51 +1280,12 @@ def fetch_source(target: str, version: str = "", on_step: Optional[Callable[[str
     if not target:
         return SourceFetchResult(note="sin source_url/slug para resolver")
 
-    # ── CMS canónico: si target es el nombre del CMS (no una URL/zip/slug) lo
-    # resolvemos al repositorio oficial con --depth 1 --branch <version>.
-    # Esto cubre el caso donde el LLM pone source_url="ghost" o "strapi" sin URL.
-    # También cubre cms_hint="ghost"/"strapi"/etc. con un target que ya es la URL oficial.
-    _CMS_CANONICAL_REPOS: dict = {
-        "ghost":    "https://github.com/TryGhost/Ghost",
-        "strapi":   "https://github.com/strapi/strapi",
-        "payload":  "https://github.com/payloadcms/payload",
-        "craft":    "https://github.com/craftcms/cms",
-        "craftcms": "https://github.com/craftcms/cms",
-        "wagtail":  "https://github.com/wagtail/wagtail",
-        "directus": "https://github.com/directus/directus",
-        "typo3":    "https://github.com/TYPO3/typo3",
-        "contao":   "https://github.com/contao/contao",
-        "statamic": "https://github.com/statamic/cms",
-        "kirby":    "https://github.com/getkirby/kirby",
-        "concrete": "https://github.com/concretecms/concretecms",
-        "concretecms": "https://github.com/concretecms/concretecms",
-        "modx":     "https://github.com/modxcms/revolution",
-    }
-    # También mapeamos a npm para los que se instalan como paquete (más ligero que git clone)
-    _CMS_NPM_PACKAGES: dict = {
-        "ghost":   "ghost",
-        "directus": "directus",
-    }
-    _CMS_COMPOSER_PACKAGES: dict = {
-        "craft":    "craftcms/cms",
-        "craftcms": "craftcms/cms",
-        "contao":   "contao/core-bundle",
-        "statamic": "statamic/cms",
-    }
-    # Resolver: si target es exactamente el nombre de un CMS conocido (sin slashes/puntos/http)
-    _target_lower = target.lower().rstrip("/")
-    _is_bare_cms_name = ("/" not in _target_lower and "." not in _target_lower
-                         and not _target_lower.startswith("http"))
-    if _is_bare_cms_name and _target_lower in _CMS_CANONICAL_REPOS:
-        cms_hint = _target_lower
-        target = _CMS_CANONICAL_REPOS[_target_lower]
-    elif cms_hint in _CMS_CANONICAL_REPOS and not looks_like_git_url(target):
-        # cms_hint dado pero target no es URL git → usar repo canónico
-        target = _CMS_CANONICAL_REPOS[cms_hint]
-    # Si es un git clone de un CMS grande, preferir el tarball de GitHub del tag exacto
-    # (/archive/refs/tags/v<ver>.tar.gz) — mucho más rápido que git clone (solo el snapshot,
-    # sin historial). fetch_zip_url acepta .tar.gz aunque looks_like_zip_url solo vea .zip.
-    if looks_like_git_url(target) and version and cms_hint in _CMS_CANONICAL_REPOS:
+    # Optimización: para cualquier repo GitHub con versión conocida, intentar el tarball
+    # del tag exacto (/archive/refs/tags/v<ver>.tar.gz) antes de git clone — mucho más
+    # rápido (sólo el snapshot, sin historial git). No requiere tabla hardcodeada: funciona
+    # para cualquier proyecto en GitHub que siga el convención de tags vX.Y.Z.
+    # fetch_zip_url acepta .tar.gz aunque looks_like_zip_url solo vea .zip.
+    if looks_like_git_url(target) and version and "github.com" in target.lower():
         _step = on_step or (lambda _m: None)
         _base = target.rstrip("/")
         for _vfmt in (f"v{version}", version):

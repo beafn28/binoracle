@@ -238,6 +238,40 @@ def fetch_cve(cve_id: str, timeout: float = 20.0, enrich: bool = True) -> CVEInf
     return info
 
 
+def fetch_source_repo_from_advisory(cve_id: str, timeout: float = 12.0) -> Optional[str]:
+    """Consulta OSV.dev y devuelve la URL del repositorio de código fuente del proyecto
+    afectado, si el advisory la incluye en affected[].ranges[].repo.
+    No usa ninguna tabla hardcodeada — saca el repo directamente del advisory.
+    Devuelve None si no se encuentra o hay error de red."""
+    cid = (cve_id or "").upper().strip()
+    url = f"https://api.osv.dev/v1/vulns/{cid}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "binoracle/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    # OSV: affected[].ranges[].repo → URL del repositorio (ej. https://github.com/strapi/strapi)
+    for affected in data.get("affected", []):
+        for rng in affected.get("ranges", []):
+            repo = (rng.get("repo") or "").strip()
+            if repo and repo.startswith("https://"):
+                return repo
+    # Fallback: buscar en referencias una URL de GitHub que sea un repo raiz (no issue/commit/PR)
+    _GH_REPO_RE = re.compile(
+        r'^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/(?:security/advisories|releases|tags|tree|blob).*)?$'
+    )
+    _ADVISORY_RE = re.compile(r'GHSA-', re.IGNORECASE)
+    for ref in data.get("references", []):
+        ref_url = (ref.get("url") or "").strip()
+        if not ref_url or _ADVISORY_RE.search(ref_url):
+            continue
+        m = _GH_REPO_RE.match(ref_url)
+        if m:
+            return f"https://github.com/{m.group(1)}"
+    return None
+
+
 def render_cve_info(info: CVEInfo, lang: str = "es") -> str:
     """Resumen en markdown de la consulta CVE + estado de exploit publico (Exploit-DB)."""
     es = lang == "es"
