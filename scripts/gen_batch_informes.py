@@ -206,9 +206,12 @@ for fname in files:
     ve = {
         "endpoint":                ae.get("endpoint") or llm.get("endpoint", ""),
         "metodo":                  (ae.get("metodo") or llm.get("http_method", "POST")).upper(),
-        "sqli_param":              ae.get("parametro_ganador") or ae.get("ssti_param") or first_param,
-        "path_param":              ae.get("parametro_ganador") or first_param,
-        "payload_ganador":         ae.get("payload_ganador") or "",
+        "sqli_param":              ae.get("parametro_ganador") or ae.get("login_param") or ae.get("ssti_param") or first_param,
+        "path_param":              ae.get("parametro_ganador") or ae.get("login_param") or first_param,
+        "payload_ganador":         ae.get("payload_ganador") or ae.get("login_val") or "",
+        "login_param":             ae.get("login_param") or "",
+        "login_val":               ae.get("login_val") or "",
+        "cookie":                  ae.get("cookie") or "",
         "canary_path":             ae.get("canary_path") or "",
         "canary_secret":           ae.get("canary_secret") or "",
         "respuesta_cuerpo_recorte": ae.get("respuesta_cuerpo_recorte") or "",
@@ -261,6 +264,8 @@ for fname in files:
         "evidence":         {"screenshots": ae.get("screenshots") or []},
         "verified_evidence": ve,
         "detail":           grounded_note,
+        "developed_script": developed_script,
+        "detail_raw":       (batch.get("dynamic_verify") or {}).get("detail") or "",
     }
 
     # Use stored screenshots; auto-generate if none and Pillow available

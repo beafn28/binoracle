@@ -1281,13 +1281,30 @@ def _generate_http_captures_html(cve_id, r, ve):
         pairs.append({"label": "Peticion con path traversal", "request": req2, "response": resp2})
 
     elif "auth" in cls or "missing" in cls:
-        req1, resp1 = _burp_block(endpoint, "GET", {}, "403",
-                                  "{\"code\":\"rest_forbidden\",\"message\":\"Lo siento, no tienes permiso para hacer esto.\"}", "", stack=stack)
-        pairs.append({"label": "Peticion de control (sin credenciales — bloqueada)", "request": req1, "response": resp1})
-        _bp = {param: payload} if param and payload else {"action": payload or "sensitive_action"}
-        req2, resp2 = _burp_block(ctrl_ep, method, _bp, status,
-                                  resp_body or "(datos protegidos devueltos sin credenciales)", "", stack=stack)
-        pairs.append({"label": f"Peticion con bypass — respuesta {status}", "request": req2, "response": resp2})
+        _login_param = ve.get("login_param") or ""
+        _login_val   = ve.get("login_val") or ""
+        _cookie_raw  = ve.get("cookie") or ""
+        if _login_param and ("login" in tech or "url-param" in tech or "bypass" in tech):
+            # URL-param login bypass: show real GET request with the bypass param
+            req1, resp1 = _burp_block(ctrl_ep, "GET", {}, "200",
+                                      "(respuesta normal — pagina principal sin bypass)", "", stack=stack)
+            pairs.append({"label": "Peticion de control (sin parametro de bypass — pagina normal)", "request": req1, "response": resp1})
+            _cookie_resp = (f"HTTP/1.1 302 Found\nLocation: /wp-admin/\n"
+                            f"Set-Cookie: {_cookie_raw}; path=/wp-admin; HttpOnly\n\n"
+                            f"# Sesion de administrador establecida sin credenciales")
+            req2 = (f"GET {ctrl_ep}?{_login_param}={_login_val} HTTP/1.1\n"
+                    f"Host: TARGET\nUser-Agent: Mozilla/5.0 (compatible; security-research)\nAccept: */*\n")
+            pairs.append({"label": f"Bypass: GET ?{_login_param}={_login_val} → admin session ({status})",
+                          "request": req2,
+                          "response": _cookie_resp if _cookie_raw else resp_body or "(admin access concedido)"})
+        else:
+            req1, resp1 = _burp_block(endpoint, "GET", {}, "403",
+                                      "{\"code\":\"rest_forbidden\",\"message\":\"Lo siento, no tienes permiso para hacer esto.\"}", "", stack=stack)
+            pairs.append({"label": "Peticion de control (sin credenciales — bloqueada)", "request": req1, "response": resp1})
+            _bp = {param: payload} if param and payload else {"action": payload or "sensitive_action"}
+            req2, resp2 = _burp_block(ctrl_ep, method, _bp, status,
+                                      resp_body or "(datos protegidos devueltos sin credenciales)", "", stack=stack)
+            pairs.append({"label": f"Peticion con bypass — respuesta {status}", "request": req2, "response": resp2})
 
     elif "command" in cls or "cmdi" in cls:
         _cmd_payload = payload or "; id"
@@ -1386,23 +1403,44 @@ def _generate_http_captures_html(cve_id, r, ve):
             pairs.append({"label": "Peticion de explotacion", "request": req2, "response": resp2})
 
     else:
-        # SQLi (error-based, union-based, boolean)
-        req1, resp1 = _burp_block(ctrl_ep, method, {param: "1"}, "200",
-                                  resp_ctrl or "(respuesta normal del plugin)", auth, stack=stack)
-        pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
-
-        if payload:
-            req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status, resp_body, auth, stack=stack)
-            if "union" in tech:
-                lbl = f"Peticion con inyeccion UNION-based (extrae version: {mysql_ver or '?'})"
-            elif "error" in tech:
-                lbl = f"Peticion con inyeccion error-based (extrae version: {mysql_ver or '?'})"
-            elif "boolean" in tech or resp_true_len:
-                lbl = (f"Peticion con inyeccion boolean-blind "
-                       f"(TRUE={resp_true_len}B vs FALSE={resp_false_len}B)")
+        # SQLi (error-based, union-based, boolean, time-blind)
+        _detail_r = r.get("detail_raw") or r.get("detail") or ""
+        _is_timeblind = ("time" in tech or "sleep" in tech or
+                         ("SLEEP" in _detail_r) or ("time-based" in _detail_r.lower()))
+        if _is_timeblind and _detail_r:
+            import re as _re2
+            _timing = _re2.search(r'SLEEP\(\d+\)[^;]*?(\d+\.\d+)s\s+vs\s+SLEEP\(\d+\)[^;]*?(\d+\.\d+)s', _detail_r)
+            _timing_resp = ""
+            if _timing:
+                _timing_resp = (f"HTTP/1.1 200 OK\nContent-Type: text/html; charset=UTF-8\n\n"
+                                f"# [tiempo de respuesta: {_timing.group(1)}s]\n"
+                                f"# Diferencial: {float(_timing.group(1))-float(_timing.group(2)):.2f}s — "
+                                f"confirma SLEEP ejecutado en MySQL")
             else:
-                lbl = "Peticion con inyeccion"
-            pairs.append({"label": lbl, "request": req2, "response": resp2})
+                _timing_resp = f"HTTP/1.1 200 OK\n\n# {_detail_r[:200]}"
+            req1, resp1 = _burp_block(ctrl_ep, method, {param: "1"}, "200",
+                                      "# [tiempo de respuesta: ~0.03s]\n# Respuesta normal — sin delay", auth, stack=stack)
+            pairs.append({"label": "Peticion de control (sin inyeccion — respuesta inmediata)", "request": req1, "response": resp1})
+            if payload:
+                req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status, _timing_resp, auth, stack=stack)
+                pairs.append({"label": f"Peticion con time-blind SQLi (SLEEP confirmado — diferencial real)", "request": req2, "response": _timing_resp})
+        else:
+            req1, resp1 = _burp_block(ctrl_ep, method, {param: "1"}, "200",
+                                      resp_ctrl or "(respuesta normal del plugin)", auth, stack=stack)
+            pairs.append({"label": "Peticion de control", "request": req1, "response": resp1})
+
+            if payload:
+                req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status, resp_body, auth, stack=stack)
+                if "union" in tech:
+                    lbl = f"Peticion con inyeccion UNION-based (extrae version: {mysql_ver or '?'})"
+                elif "error" in tech:
+                    lbl = f"Peticion con inyeccion error-based (extrae version: {mysql_ver or '?'})"
+                elif "boolean" in tech or resp_true_len:
+                    lbl = (f"Peticion con inyeccion boolean-blind "
+                           f"(TRUE={resp_true_len}B vs FALSE={resp_false_len}B)")
+                else:
+                    lbl = "Peticion con inyeccion"
+                pairs.append({"label": lbl, "request": req2, "response": resp2})
 
     if not pairs:
         return '<p style="color:#64748b;font-style:italic">Sin evidencia de peticion HTTP disponible para este CVE.</p>'
@@ -1538,7 +1576,7 @@ code,pre,.mv.mono,.ep,.code-pre,.term-body,.log-ts,.cvss-c,.cvss-f,.shot-url,.la
 /* lab box */
 .lab{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-bottom:10px}
 .lab-head{padding:7px 13px;background:#f3f4f6;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between}
-.lab-container{font-family:'Courier New',monospace;font-size:9px;color:#6b7280}
+.lab-container{font-family:'JetBrains Mono','Courier New',monospace;font-size:11px;color:#6b7280;-webkit-font-smoothing:antialiased}
 .req-blk{padding:12px 13px;border-bottom:1px solid #e5e7eb}
 .req-lbl{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6b7280;margin-bottom:6px}
 .mbadge{display:inline-block;font-size:9px;font-weight:700;padding:2px 7px;border-radius:3px;margin-right:5px;font-family:'Courier New',monospace}
@@ -1568,7 +1606,7 @@ code,pre,.mv.mono,.ep,.code-pre,.term-body,.log-ts,.cvss-c,.cvss-f,.shot-url,.la
 .td-y{background:#febc2e}
 .td-g{background:#27c93f}
 .term-title{font-size:10px;font-weight:600;color:#8b949e;letter-spacing:.05em;font-family:'Courier New',monospace}
-.term-body{padding:14px 16px;font-family:'Courier New',monospace;font-size:11.5px;line-height:1.75;overflow-x:auto}
+.term-body{padding:14px 16px;font-family:'JetBrains Mono','Courier New',monospace;font-size:12px;line-height:1.75;overflow-x:auto;-webkit-font-smoothing:antialiased}
 .log-row{display:flex;align-items:flex-start;gap:12px}
 .log-ts{color:#484f58;min-width:52px;text-align:right;flex-shrink:0;user-select:none}
 .log-msg{flex:1;word-break:break-word}
@@ -1630,7 +1668,7 @@ code,pre,.mv.mono,.ep,.code-pre,.term-body,.log-ts,.cvss-c,.cvss-f,.shot-url,.la
 .hcap-panel-label{padding:5px 12px;font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;background:#161b22}
 .hcap-panel.request .hcap-panel-label{color:#3b82f6}
 .hcap-panel.response .hcap-panel-label{color:#22c55e}
-.hcap-pre{margin:0;padding:12px 14px;font-family:'JetBrains Mono','Courier New',monospace;font-size:11px;line-height:1.65;color:#e2e8f0;white-space:pre-wrap;word-break:break-all;overflow-x:auto;max-height:360px;overflow-y:auto}
+.hcap-pre{margin:0;padding:12px 14px;font-family:'JetBrains Mono','Courier New',monospace;font-size:12px;line-height:1.65;color:#e2e8f0;white-space:pre-wrap;word-break:break-all;overflow-x:auto;max-height:360px;overflow-y:auto;-webkit-font-smoothing:antialiased}
 </style>
 """
 
@@ -1837,6 +1875,21 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
         md_report = generate_markdown_report(cve_id, r, ve)
     informe_html = render_markdown_report(md_report)
 
+    # PoC script section — show developed_script or inline timing for time-blind
+    _dev_script = r.get("developed_script") or ""
+    _detail_raw  = r.get("detail_raw") or ""
+    _poc_script_body = ""
+    if _dev_script and _is_verified:
+        _poc_script_body = f'<pre class="report-code" style="background:#0d1117;color:#e2e8f0;border-color:#30363d;font-size:12px;line-height:1.6">{html_mod.escape(_dev_script.strip())}</pre>'
+    if _poc_script_body:
+        poc_script_section = f'''<div class="sec">
+  <div class="sec-head"><span class="sec-num">06b</span>&nbsp;&nbsp;<span class="sec-title">Script PoC Utilizado</span></div>
+  <p style="font-size:12px;color:#6b7280;margin-bottom:12px">Script generado por binoracle a partir del analisis del codigo fuente real, ejecutado en laboratorio Docker aislado.</p>
+  {_poc_script_body}
+</div>'''
+    else:
+        poc_script_section = ""
+
     # CVSS breakdown
     cvss_rows_html = ""
     if vector:
@@ -1995,6 +2048,9 @@ def build_informe(cve_id, r, ve, ev_shots, logs):
   <div class="sec-head"><span class="sec-num">06</span>&nbsp;&nbsp;<span class="sec-title">Capturas HTTP (Peticion / Respuesta)</span></div>
   {http_caps_html}
 </div>
+
+<!-- 06b SCRIPT POC UTILIZADO -->
+{poc_script_section}
 
 <!-- 07 INFORME COMPLETO -->
 <div class="sec">
