@@ -1244,6 +1244,10 @@ def verify_generic_path_traversal(
         # con /items/ o /authors/ y no normaliza %2F antes de comparar -- el slash inicial hace
         # que el item ID empiece con '/', rompiendo la resolucion de ruta esperada.
         attempts += [("%2F.." * n) + "%2F" + rel for n in depths]
+        # Double-slash bypass: '//' + abs_path bypasea checks de tipo
+        # allowed_path.startswith(user_path) que no normalizan slashes multiples antes de comparar
+        # (CVE-2024-1561 Gradio: /file=//etc/passwd; otros frameworks Python/Ruby/Go similares).
+        attempts += ["//" + canary_path, "/" + canary_path, "//" + rel, "/" + rel]
         attempts += [rel + "%00", canary_path + "%00"]
 
         found = False
