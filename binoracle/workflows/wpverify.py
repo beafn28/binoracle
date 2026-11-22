@@ -3857,6 +3857,22 @@ def verify_wordpress_path_traversal(
                          f"{path_param}={payload_value!r} (via {follow_url})" if follow_url else
                          f"VERIFICADO: /etc/passwd aparecio literal en la respuesta con "
                          f"{path_param}={payload_value!r}."))
+                    _capture_exploit_shot(
+                        boot, m, endpoint, followed_body[:6000],
+                        highlight="root:x:0:0",
+                        caption_es=(f"Paso 5 (CLAVE): PATH TRAVERSAL CONFIRMADO — /etc/passwd devuelto. "
+                                    f"Payload: {path_param}={payload_value!r}"),
+                        caption_en=(f"Step 5 (KEY): PATH TRAVERSAL CONFIRMED — /etc/passwd returned. "
+                                    f"Payload: {path_param}={payload_value!r}"))
+                    if m == "GET" and not follow_url:
+                        _pt_params_b = dict(base_params)
+                        _pt_params_b[path_param] = payload_value
+                        _shot_url_b = (boot.base_url + endpoint
+                                       + ("&" if "?" in endpoint else "?")
+                                       + f"{path_param}={payload_value}")
+                        boot.capture(_pt_sess, _shot_url_b[len(boot.base_url):],
+                               f"Paso 5b: PATH TRAVERSAL (navegador) — /etc/passwd visible.",
+                               f"Step 5b: PATH TRAVERSAL (browser) — /etc/passwd visible.")
                     break
             res.evidence["intentos_etc_passwd"] = tried_passwd
         res.evidence["intentos"] = tried
