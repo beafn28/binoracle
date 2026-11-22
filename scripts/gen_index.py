@@ -12,12 +12,13 @@ def h(s): return html_mod.escape(str(s or ""))
 rows = []
 seen = set()
 
-def add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified):
+def add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified, gap=False, is_gap=False):
     if cve in seen:
         return
     seen.add(cve)
     rows.append(dict(cve=cve,cls=cls,tech=tech,score=score,sev=sev,poc=poc,
-                     auth=auth,aff=aff,desc=desc,pub=pub,endpoint=endpoint,verified=verified))
+                     auth=auth,aff=aff,desc=desc,pub=pub,endpoint=endpoint,verified=verified,
+                     gap=gap,is_gap=is_gap))
 
 # 1. History (all verified)
 for fname in sorted(os.listdir(HISTORY)):
@@ -36,14 +37,17 @@ for fname in sorted(os.listdir(HISTORY)):
         elif ve.get("canary_path"):      tech = "path-traversal"
     score = r.get("cvss_score", "?")
     sev   = (r.get("cvss_severity") or "CRITICAL").upper()
-    poc   = bool(r.get("poc_source", ""))
-    auth  = bool(ve.get("login_bajo_privilegio", ""))
-    aff   = r.get("affected_version", "?") or "?"
-    desc  = (r.get("description") or "")[:120]
-    pub   = r.get("published", "?") or "?"
+    poc      = bool(r.get("poc_source", ""))
+    auth     = bool(ve.get("login_bajo_privilegio", ""))
+    aff      = r.get("affected_version", "?") or "?"
+    desc     = (r.get("description") or "")[:120]
+    pub      = r.get("published", "?") or "?"
     endpoint = ve.get("endpoint", "?") or "?"
     verified_hist = data.get("verified", True)
-    add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified_hist)
+    is_gap_h = bool(data.get("is_gap", False) or r.get("is_gap", False))
+    gap_h    = is_gap_h or not poc
+    add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified_hist,
+            gap=gap_h, is_gap=is_gap_h)
 
 # 2. Batch reports
 batch_dir = os.path.realpath(BATCH_DIR)
@@ -59,14 +63,17 @@ if os.path.isdir(batch_dir):
         tech = ae.get("tecnica","") or llm.get("technique","") or cls
         score = data.get("cvss_score", "?")
         sev   = (data.get("cvss_severity") or "HIGH").upper()
-        poc   = bool(data.get("poc_source_used", ""))
-        auth  = bool(ae.get("login_bajo_privilegio",""))
-        aff   = llm.get("affected_version","?") or "?"
-        desc  = (data.get("description") or "")[:120]
-        pub   = data.get("published","?") or "?"
+        poc      = bool(data.get("poc_source_used", ""))
+        auth     = bool(ae.get("login_bajo_privilegio",""))
+        aff      = llm.get("affected_version","?") or "?"
+        desc     = (data.get("description") or "")[:120]
+        pub      = data.get("published","?") or "?"
         endpoint = ae.get("endpoint","") or llm.get("endpoint","?") or "?"
         verified = bool(data.get("verified", False))
-        add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified)
+        is_gap_b = bool(data.get("is_gap", False))
+        gap_b    = is_gap_b or not poc
+        add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified,
+                gap=gap_b, is_gap=is_gap_b)
 
 # Sort by score desc
 rows.sort(key=lambda x: float(x["score"]) if str(x["score"]).replace(".","").isdigit() else 0, reverse=True)
@@ -87,7 +94,11 @@ def cls_badge(cls):
 def _pdf_btn(row):
     return f'<a href="{h(row["cve"])}_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>'
 
-def poc_badge(has_poc, verified=False):
+def poc_badge(has_poc, verified=False, is_gap=False, gap=False):
+    if is_gap and verified:
+        return '<span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span>'
+    if gap and verified and not has_poc:
+        return '<span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span>'
     if has_poc and verified:
         return '<span class="badge badge-sm" style="background:#1e40af">PoC publico</span>'
     if has_poc and not verified:
@@ -105,13 +116,13 @@ rows_html = ""
 for i, row in enumerate(rows):
     sev_lc = row["sev"].lower()
     rows_html += f"""
-<tr class="cve-row" data-cls="{row['cls'].lower()}" data-sev="{row['sev'].lower()}" data-poc="{str(row['poc']).lower()}" data-auth="{str(row['auth']).lower()}">
+<tr class="cve-row" data-cls="{row['cls'].lower()}" data-sev="{row['sev'].lower()}" data-poc="{str(row['poc']).lower()}" data-auth="{str(row['auth']).lower()}" data-gap="{str(row.get('gap',False)).lower()}">
   <td class="td-num">{i+1}</td>
   <td class="td-cve"><a href="{h(row['cve'])}_informe_pdf.html" target="_blank"><code>{h(row['cve'])}</code></a></td>
   <td>{sev_badge(row['sev'], row['score'])}</td>
   <td>{cls_badge(row['cls'])}</td>
   <td><code class="tech">{h(row['tech'] or row['cls'])}</code></td>
-  <td>{poc_badge(row['poc'], row.get('verified', True))}</td>
+  <td>{poc_badge(row['poc'], row.get('verified', True), row.get('is_gap', False), row.get('gap', False))}</td>
   <td>{auth_badge(row['auth'])}</td>
   <td class="td-aff"><code>{h(row['aff'])}</code></td>
   <td class="td-pub">{h(row['pub'])}</td>
@@ -131,6 +142,8 @@ stats = {
     "sqli": sum(1 for r in rows if "sqli" in r["cls"].lower()),
     "hueco_ver": sum(1 for r in verified_rows if not r["poc"]),
     "unauth": sum(1 for r in rows if not r["auth"]),
+    "llm_reasoned": sum(1 for r in verified_rows if r.get("gap") and not r["poc"]),
+    "gap_total": sum(1 for r in verified_rows if r.get("is_gap")),
 }
 
 page = f"""<!DOCTYPE html>
@@ -203,6 +216,8 @@ code,.tech{{font-family:'JetBrains Mono',monospace;font-size:11px}}
   <div class="stat"><div class="stat-n s-blue">{stats['sqli']}</div><div class="stat-l">SQLi</div></div>
   <div class="stat"><div class="stat-n s-purple">{stats['hueco_ver']}</div><div class="stat-l">HUECO Verif.</div></div>
   <div class="stat"><div class="stat-n s-green">{stats['unauth']}</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n" style="color:#a78bfa">{stats['llm_reasoned']}</div><div class="stat-l">LLM Razonado</div></div>
+  <div class="stat"><div class="stat-n" style="color:#7c3aed">{stats['gap_total']}</div><div class="stat-l">0-day GAP</div></div>
 </div>
 
 <div class="filters">
@@ -231,6 +246,10 @@ code,.tech{{font-family:'JetBrains Mono',monospace;font-size:11px}}
   <button class="f-btn active" data-filter="auth" data-val="all">Todos</button>
   <button class="f-btn" data-filter="auth" data-val="false">Unauthenticated</button>
   <button class="f-btn" data-filter="auth" data-val="true">Autenticado</button>
+  &nbsp;
+  <span class="filter-label">LLM</span>
+  <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
+  <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
 </div>
 
@@ -283,6 +302,7 @@ function applyFilters() {{
     if (filters.sev && row.dataset.sev !== filters.sev) show = false;
     if (filters.poc && row.dataset.poc !== filters.poc) show = false;
     if (filters.auth && row.dataset.auth !== filters.auth) show = false;
+    if (filters.gap && row.dataset.gap !== filters.gap) show = false;
     if (q && !row.textContent.toLowerCase().includes(q)) show = false;
     row.classList.toggle('hidden', !show);
     if (show) visible++;

@@ -68,6 +68,8 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
   <div class="stat"><div class="stat-n s-blue">18</div><div class="stat-l">SQLi</div></div>
   <div class="stat"><div class="stat-n s-purple">11</div><div class="stat-l">HUECO Verif.</div></div>
   <div class="stat"><div class="stat-n s-green">19</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n" style="color:#a78bfa">11</div><div class="stat-l">LLM Razonado</div></div>
+  <div class="stat"><div class="stat-n" style="color:#7c3aed">3</div><div class="stat-l">0-day GAP</div></div>
 </div>
 
 <div class="filters">
@@ -96,6 +98,10 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
   <button class="f-btn active" data-filter="auth" data-val="all">Todos</button>
   <button class="f-btn" data-filter="auth" data-val="false">Unauthenticated</button>
   <button class="f-btn" data-filter="auth" data-val="true">Autenticado</button>
+  &nbsp;
+  <span class="filter-label">LLM</span>
+  <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
+  <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
 </div>
 
@@ -118,7 +124,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
 </thead>
 <tbody>
 
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">1</td>
   <td class="td-cve"><a href="CVE-2024-8529_informe_pdf.html" target="_blank"><code>CVE-2024-8529</code></a></td>
   <td><span class="badge" style="background:#dc2626">10.0 CRITICAL</span></td>
@@ -134,7 +140,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-8529_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">2</td>
   <td class="td-cve"><a href="CVE-2022-45808_informe_pdf.html" target="_blank"><code>CVE-2022-45808</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.9 CRITICAL</span></td>
@@ -150,13 +156,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2022-45808_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="critical" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="command-injection" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">3</td>
   <td class="td-cve"><a href="CVE-2025-57633_informe_pdf.html" target="_blank"><code>CVE-2025-57633</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
   <td><code class="tech">command-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>5173b68</code></td>
   <td class="td-pub">2025-09-09</td>
@@ -166,7 +172,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2025-57633_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="path-traversal" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="path-traversal" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">4</td>
   <td class="td-cve"><a href="CVE-2021-41773_informe_pdf.html" target="_blank"><code>CVE-2021-41773</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
@@ -182,7 +188,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2021-41773_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">5</td>
   <td class="td-cve"><a href="CVE-2024-1071_informe_pdf.html" target="_blank"><code>CVE-2024-1071</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
@@ -198,7 +204,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-1071_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="ssti" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="ssti" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">6</td>
   <td class="td-cve"><a href="CVE-2026-27641_informe_pdf.html" target="_blank"><code>CVE-2026-27641</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.8 CRITICAL</span></td>
@@ -214,7 +220,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-27641_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">7</td>
   <td class="td-cve"><a href="CVE-2024-55978_informe_pdf.html" target="_blank"><code>CVE-2024-55978</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -230,7 +236,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-55978_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">8</td>
   <td class="td-cve"><a href="CVE-2024-55980_informe_pdf.html" target="_blank"><code>CVE-2024-55980</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -246,7 +252,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-55980_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">9</td>
   <td class="td-cve"><a href="CVE-2024-54292_informe_pdf.html" target="_blank"><code>CVE-2024-54292</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -262,7 +268,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-54292_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">10</td>
   <td class="td-cve"><a href="CVE-2024-55981_informe_pdf.html" target="_blank"><code>CVE-2024-55981</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -278,7 +284,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-55981_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">11</td>
   <td class="td-cve"><a href="CVE-2024-55988_informe_pdf.html" target="_blank"><code>CVE-2024-55988</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -294,13 +300,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-55988_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">12</td>
   <td class="td-cve"><a href="CVE-2025-39471_informe_pdf.html" target="_blank"><code>CVE-2025-39471</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
   <td><code class="tech">boolean-blind</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>?</code></td>
   <td class="td-pub">2025-04-18</td>
@@ -310,7 +316,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2025-39471_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">13</td>
   <td class="td-cve"><a href="CVE-2024-55976_informe_pdf.html" target="_blank"><code>CVE-2024-55976</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -326,7 +332,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-55976_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">14</td>
   <td class="td-cve"><a href="CVE-2024-50491_informe_pdf.html" target="_blank"><code>CVE-2024-50491</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -342,7 +348,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-50491_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="critical" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">15</td>
   <td class="td-cve"><a href="CVE-2024-55972_informe_pdf.html" target="_blank"><code>CVE-2024-55972</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.3 CRITICAL</span></td>
@@ -358,13 +364,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-55972_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="missing-authorization" data-sev="critical" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="missing-authorization" data-sev="critical" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">16</td>
   <td class="td-cve"><a href="CVE-2025-29927_informe_pdf.html" target="_blank"><code>CVE-2025-29927</code></a></td>
   <td><span class="badge" style="background:#dc2626">9.1 CRITICAL</span></td>
   <td><span class="badge badge-sm" style="background:#c2410c">missing-authorization</span></td>
   <td><code class="tech">auth-bypass</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>?</code></td>
   <td class="td-pub">2025-03-21</td>
@@ -374,13 +380,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2025-29927_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">17</td>
   <td class="td-cve"><a href="CVE-2026-77355_informe_pdf.html" target="_blank"><code>CVE-2026-77355</code></a></td>
   <td><span class="badge" style="background:#d97706">8.8 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
   <td><code class="tech">command-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>1.38.6</code></td>
   <td class="td-pub">2026-11-20</td>
@@ -390,13 +396,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-77355_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">18</td>
   <td class="td-cve"><a href="CVE-2026-55849_informe_pdf.html" target="_blank"><code>CVE-2026-55849</code></a></td>
   <td><span class="badge" style="background:#d97706">8.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
   <td><code class="tech">command-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#7c3aed">0-day GAP</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>2.1.0-5.0.0-1</code></td>
   <td class="td-pub">2026-07-08</td>
@@ -406,7 +412,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-55849_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">19</td>
   <td class="td-cve"><a href="CVE-2023-41652_informe_pdf.html" target="_blank"><code>CVE-2023-41652</code></a></td>
   <td><span class="badge" style="background:#d97706">8.2 HIGH</span></td>
@@ -422,13 +428,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2023-41652_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="ssrf" data-sev="high" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="ssrf" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">20</td>
   <td class="td-cve"><a href="CVE-2026-59988_informe_pdf.html" target="_blank"><code>CVE-2026-59988</code></a></td>
   <td><span class="badge" style="background:#d97706">8.2 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssrf</span></td>
   <td><code class="tech">ssrf</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>0.29.0</code></td>
   <td class="td-pub">2026-11-19</td>
@@ -438,7 +444,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-59988_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">21</td>
   <td class="td-cve"><a href="CVE-2024-43965_informe_pdf.html" target="_blank"><code>CVE-2024-43965</code></a></td>
   <td><span class="badge" style="background:#d97706">8.2 HIGH</span></td>
@@ -454,7 +460,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-43965_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">22</td>
   <td class="td-cve"><a href="CVE-2024-12404_informe_pdf.html" target="_blank"><code>CVE-2024-12404</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
@@ -470,7 +476,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-12404_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">23</td>
   <td class="td-cve"><a href="CVE-2026-2413_informe_pdf.html" target="_blank"><code>CVE-2026-2413</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
@@ -486,13 +492,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-2413_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">24</td>
   <td class="td-cve"><a href="CVE-2026-129502_informe_pdf.html" target="_blank"><code>CVE-2026-129502</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
   <td><code class="tech">dos</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>9.4.0-11.6.9</code></td>
   <td class="td-pub">2026-11-19</td>
@@ -502,7 +508,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-129502_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">25</td>
   <td class="td-cve"><a href="CVE-2024-12025_informe_pdf.html" target="_blank"><code>CVE-2024-12025</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
@@ -518,13 +524,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-12025_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="command-injection" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">26</td>
   <td class="td-cve"><a href="CVE-2025-64756_informe_pdf.html" target="_blank"><code>CVE-2025-64756</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#991b1b">command-injection</span></td>
   <td><code class="tech">command-injection</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>10.2.0-10.4.99, 11.0.0-11.0.99</code></td>
   <td class="td-pub">2025-11-17</td>
@@ -534,7 +540,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2025-64756_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">27</td>
   <td class="td-cve"><a href="CVE-2024-12157_informe_pdf.html" target="_blank"><code>CVE-2024-12157</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
@@ -550,13 +556,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-12157_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="dos" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">28</td>
   <td class="td-cve"><a href="CVE-2026-130647_informe_pdf.html" target="_blank"><code>CVE-2026-130647</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">dos</span></td>
   <td><code class="tech">dos-pipeline</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>9.0.0 - 11.6.9</code></td>
   <td class="td-pub">2026-11-19</td>
@@ -566,7 +572,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2026-130647_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="true">
+<tr class="cve-row" data-cls="path-traversal" data-sev="high" data-poc="true" data-auth="true" data-gap="false">
   <td class="td-num">29</td>
   <td class="td-cve"><a href="CVE-2024-54374_informe_pdf.html" target="_blank"><code>CVE-2024-54374</code></a></td>
   <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
@@ -582,13 +588,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-54374_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">30</td>
   <td class="td-cve"><a href="CVE-2024-10784_informe_pdf.html" target="_blank"><code>CVE-2024-10784</code></a></td>
   <td><span class="badge" style="background:#2563eb">6.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#9333ea">xss</span></td>
   <td><code class="tech">stored-xss</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>2.0.28</code></td>
   <td class="td-pub">2024-12-12</td>
@@ -598,7 +604,7 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-10784_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="path-traversal" data-sev="medium" data-poc="true" data-auth="false">
+<tr class="cve-row" data-cls="path-traversal" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
   <td class="td-num">31</td>
   <td class="td-cve"><a href="CVE-2024-23334_informe_pdf.html" target="_blank"><code>CVE-2024-23334</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.9 MEDIUM</span></td>
@@ -614,13 +620,13 @@ code,.tech{font-family:'JetBrains Mono',monospace;font-size:11px}
     <a href="CVE-2024-23334_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false">
+<tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">32</td>
   <td class="td-cve"><a href="CVE-2025-27516_informe_pdf.html" target="_blank"><code>CVE-2025-27516</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
   <td><code class="tech">ssti</code></td>
-  <td><span class="badge badge-sm" style="background:#0369a1">HUECO ✓ Verif.</span></td>
+  <td><span class="badge badge-sm" style="background:#6d28d9">LLM-razonado</span></td>
   <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
   <td class="td-aff"><code>3.1.5</code></td>
   <td class="td-pub">2025-03-05</td>
@@ -660,6 +666,7 @@ function applyFilters() {
     if (filters.sev && row.dataset.sev !== filters.sev) show = false;
     if (filters.poc && row.dataset.poc !== filters.poc) show = false;
     if (filters.auth && row.dataset.auth !== filters.auth) show = false;
+    if (filters.gap && row.dataset.gap !== filters.gap) show = false;
     if (q && !row.textContent.toLowerCase().includes(q)) show = false;
     row.classList.toggle('hidden', !show);
     if (show) visible++;
