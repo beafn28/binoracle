@@ -104,9 +104,7 @@ def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False)
         pass
     records.sort(key=lambda r: r.get("created", 0), reverse=True)
     if verified_only:
-        records = [r for r in records
-                   if r.get("verified", False)
-                   and not (r.get("is_gap") or (r.get("result") or {}).get("is_gap"))]
+        records = [r for r in records if r.get("verified", False)]
     total = len(records)
     return records[offset:offset + limit], total
 
