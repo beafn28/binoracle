@@ -49,9 +49,9 @@ _BATCH_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binoracle
 
 
 def _count_all_verified() -> int:
-    """Count unique verified CVEs across history and batch reports (excluding gaps)."""
+    """Count unique verified CVEs across history and batch reports."""
     seen: set[str] = set()
-    # From history
+    # From history (primary source — batch CVEs are imported here too)
     try:
         for fname in os.listdir(_HISTORY_DIR):
             if not fname.endswith(".json"):
@@ -59,8 +59,7 @@ def _count_all_verified() -> int:
             try:
                 with open(os.path.join(_HISTORY_DIR, fname), encoding="utf-8") as fh:
                     rec = json.load(fh)
-                r = rec.get("result") or {}
-                if rec.get("verified") and not (rec.get("is_gap") or r.get("is_gap")):
+                if rec.get("verified"):
                     cve = rec.get("cve_id", "")
                     if cve:
                         seen.add(cve)
@@ -68,7 +67,7 @@ def _count_all_verified() -> int:
                 pass
     except Exception:
         pass
-    # From batch reports
+    # Also check batch for any not yet imported into history
     try:
         for fname in os.listdir(_BATCH_DIR):
             if not fname.endswith(".json"):
@@ -76,10 +75,8 @@ def _count_all_verified() -> int:
             try:
                 with open(os.path.join(_BATCH_DIR, fname), encoding="utf-8") as fh:
                     rec = json.load(fh)
-                if rec.get("verified") and not rec.get("is_gap"):
-                    cve = fname[:-5]
-                    if cve:
-                        seen.add(cve)
+                if rec.get("verified"):
+                    seen.add(fname[:-5])
             except Exception:
                 pass
     except Exception:
@@ -2299,13 +2296,10 @@ main {
   }
 
   function renderExploitPoc(poc, d) {
+    // PoC is in the HTML informe — not shown in web UI
     const el = $('exploit-poc-panel');
-    if (!el) return;
-    // If no pre-built exploit_poc but we have verified evidence, auto-generate
-    if ((!poc || !poc.curl) && d && d.verified) {
-      poc = buildPocFromEvidence(d);
-    }
-    if (!poc || !poc.curl) { el.style.display = 'none'; return; }
+    if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+    return;
     const tab = (k, label, active) =>
       `<button class="poc-tab${active?' poc-tab-active':''}" data-poc="${k}">${escHtml(label)}</button>`;
     const pre = (content) =>
