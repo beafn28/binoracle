@@ -2039,9 +2039,10 @@ def _inject_custom_docker_lab(source_dir: str, notes: dict, step=None) -> None:
         fh.write(df_content)
     for fname, fcontent in (notes.get("extra_files") or {}).items():
         fpath = os.path.join(source_dir, fname)
-        if not os.path.exists(fpath):
-            with open(fpath, "w") as fh2:
-                fh2.write(fcontent)
+        # Siempre sobreescribir: extra_files del analista son autoritativos sobre
+        # cualquier residuo de una ejecucion anterior en el mismo source_dir.
+        with open(fpath, "w") as fh2:
+            fh2.write(fcontent)
     label = "docker_image" if docker_image else "dockerfile_body"
     if step:
         step(f"inyectado Dockerfile al source_dir desde '{label}' del JSON de hipotesis")
