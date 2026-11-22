@@ -3529,6 +3529,15 @@ _RCE_PATTERNS = [
                 r"|\bexec\s*\(|\beval\s*\("
                 r"|\bcommands\.getoutput\s*\(", re.IGNORECASE),
      [".py"]),
+    # Python file/header-based RCE: eval() applied to data from files, FITS headers, YAML, etc.
+    ("python",
+     re.compile(r"\.get\s*\(\s*['\"]([A-Za-z0-9_]+)['\"]"       # header.get("KEY")
+                r"|header\s*\[['\"]([A-Za-z0-9_]+)['\"]"         # header["KEY"]
+                r"|\bload\s*\(\s*(?:f|open)\b"                   # yaml.load(open(...))
+                r"|\bfrom_header\s*\("                            # astropy from_header
+                r"|\bread_fits\b|\bfits\.open\b"),
+     re.compile(r"\beval\s*\(|\bexec\s*\(", re.IGNORECASE),
+     [".py"]),
     ("nodejs",
      re.compile(r"req\.(?:body|query|params)\[?['\"]?([A-Za-z0-9_]+)['\"]?\]?"
                 r"|req\.(?:body|query|params)\.([A-Za-z0-9_]+)"),
