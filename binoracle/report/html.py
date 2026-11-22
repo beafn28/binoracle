@@ -3037,39 +3037,28 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         + '</nav>')
 
     # ── CSS ───────────────────────────────────────────────────────────────────
+    # Paleta y fuentes idénticas al index.html de binoracle
     css = """<style>
-:root{--bg:#0d1117;--surf:#161b22;--surf2:#1c2128;--surf3:#21262d;
-  --brd:#30363d;--fg:#e6edf3;--mut:#8b949e;--acc:#58a6ff;
-  --red:#f85149;--grn:#3fb950;--yel:#d29922;--purple:#bc8cff;
-  --mono:'IBM Plex Mono','Courier New',monospace;
-  --sans:'IBM Plex Sans',system-ui,sans-serif;
-  --code-bg:#161b22;--code-fg:#e6edf3;--proof-bg:#0d2818;--proof-brd:#3fb950;
-  --blocker-bg:#1c1700;--blocker-brd:#d29922;color-scheme:dark}
-@media(prefers-color-scheme:light){:root:not([data-theme=dark]){
-  --bg:#ffffff;--surf:#f6f8fa;--surf2:#eaf0f6;--surf3:#dde3ea;
-  --brd:#d0d7de;--fg:#1f2328;--mut:#57606a;--acc:#0969da;
-  --red:#cf222e;--grn:#1a7f37;--yel:#9a6700;--purple:#8250df;
-  --code-bg:#f6f8fa;--code-fg:#24292f;--proof-bg:#f0fdf4;--proof-brd:#16a34a;
-  --blocker-bg:#fffbeb;--blocker-brd:#d97706;color-scheme:light}}
-:root[data-theme=light]{--bg:#ffffff;--surf:#f6f8fa;--surf2:#eaf0f6;--surf3:#dde3ea;
-  --brd:#d0d7de;--fg:#1f2328;--mut:#57606a;--acc:#0969da;
-  --red:#cf222e;--grn:#1a7f37;--yel:#9a6700;--purple:#8250df;
-  --code-bg:#f6f8fa;--code-fg:#24292f;--proof-bg:#f0fdf4;--proof-brd:#16a34a;
-  --blocker-bg:#fffbeb;--blocker-brd:#d97706;color-scheme:light}
+:root{--bg:#0a0f1a;--surf:#050a14;--surf2:#0d1424;--surf3:#111827;
+  --brd:#1e293b;--fg:#e2e8f0;--mut:#475569;--acc:#38bdf8;
+  --red:#ef4444;--grn:#22c55e;--yel:#f59e0b;--purple:#a855f7;
+  --mono:'JetBrains Mono','Fira Code','Cascadia Code',monospace;
+  --sans:'Inter',system-ui,sans-serif;
+  --code-bg:#0d1424;--code-fg:#e2e8f0;--proof-bg:#052e0f;--proof-brd:#22c55e;
+  --blocker-bg:#1c1200;--blocker-brd:#f59e0b;color-scheme:dark}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);
-  font-family:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
-  font-size:14px;line-height:1.6}
+  font-family:'Inter',system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  font-size:13px;line-height:1.6}
 a{color:var(--acc)}
-code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia Code',monospace}
+code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 /* ── Print bar (sticky top) ── */
 .print-bar{position:sticky;top:0;z-index:200;background:var(--surf);
   backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
   border-bottom:1px solid var(--brd);display:flex;align-items:center;
   gap:10px;padding:8px 24px}
-.pb-brand{font-weight:800;font-size:14px;letter-spacing:.3px;font-family:var(--sans)}
-.pb-brand .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
-  background:var(--acc);margin-right:6px;vertical-align:middle}
+.pb-brand{font-weight:900;font-size:18px;letter-spacing:-.02em;color:var(--acc);font-family:var(--mono)}
+.pb-brand-sub{font-size:10px;color:var(--mut);font-weight:500;letter-spacing:.08em;text-transform:uppercase;margin-left:8px;font-family:var(--sans)}
 .pb-cve{font-family:var(--mono);font-size:11px;background:var(--surf2);
   border:1px solid var(--brd);border-radius:4px;padding:2px 7px;color:var(--acc)}
 .pb-spacer{flex:1}
@@ -3345,10 +3334,10 @@ code,pre,kbd{font-family:'IBM Plex Mono',ui-monospace,'JetBrains Mono','Cascadia
 .evtable-note{padding:10px 16px;font-size:12px;color:var(--mut);font-style:italic;
   border-top:1px solid var(--brd);font-family:var(--sans)}
 /* ── Timing evidence pills ── */
-.time-fast{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;
+.time-fast{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:11px;
   font-weight:600;padding:1px 7px;border-radius:4px;
   background:rgba(26,127,55,.18);color:var(--grn);border:1px solid rgba(26,127,55,.35)}
-.time-slow{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;
+.time-slow{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:11px;
   font-weight:600;padding:1px 7px;border-radius:4px;
   background:rgba(207,34,46,.15);color:var(--red);border:1px solid rgba(207,34,46,.3)}
 /* ── Remediation ── */
@@ -3458,8 +3447,8 @@ document.addEventListener('DOMContentLoaded',function(){
                      f'<span class="cvss-pill-sev">{_esc(sev_up)}</span></a>')
 
     _fonts = ("<link rel='stylesheet' href='https://fonts.googleapis.com/css2?"
-              "family=IBM+Plex+Mono:wght@400;500;600"
-              "&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400"
+              "family=Inter:wght@400;500;600;700;800;900"
+              "&family=JetBrains+Mono:wght@400;500;700"
               "&display=swap'>")
     head = (
         "<!doctype html>"
@@ -3472,7 +3461,10 @@ document.addEventListener('DOMContentLoaded',function(){
 
     topbar = (
         '<div class="print-bar">'
-        '<div class="pb-brand"><span class="dot"></span>bin<span style="color:#f5a623">0</span>racle</div>'
+        '<div style="display:flex;align-items:baseline;gap:0">'
+        '<div class="pb-brand">bin<span style="color:#f59e0b">0</span>racle</div>'
+        '<span class="pb-brand-sub">CVE Verification Engine</span>'
+        '</div>'
         f'<span class="pb-cve">{_esc(cve or "")}</span>'
         '<div class="pb-spacer"></div>'
         f'<span class="pb-meta">{_esc(generated_short)}</span>'
