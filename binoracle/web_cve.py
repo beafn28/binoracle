@@ -62,7 +62,9 @@ def _load_history(limit: int = 20, offset: int = 0, verified_only: bool = False)
         pass
     records.sort(key=lambda r: r.get("created", 0), reverse=True)
     if verified_only:
-        records = [r for r in records if r.get("verified", False)]
+        records = [r for r in records
+                   if r.get("verified", False)
+                   and not (r.get("is_gap") or (r.get("result") or {}).get("is_gap"))]
     total = len(records)
     return records[offset:offset + limit], total
 
@@ -963,7 +965,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_html(self):
-        _, hist_total = _load_history(1, 0, False)
+        _, hist_total = _load_history(1, 0, True)  # verified only
         page = _HTML_PAGE.replace(
             'id="hist-count">0<',
             f'id="hist-count">{hist_total}<'
@@ -2733,7 +2735,7 @@ main {
   let _histPage = 1;
   let _histPages = 1;
   let _histTotal = 0;
-  let _histFilter = 'all'; // 'all' | 'verified'
+  let _histFilter = 'verified'; // 'all' | 'verified'
 
   async function loadHistory(page) {
     page = page || _histPage;
