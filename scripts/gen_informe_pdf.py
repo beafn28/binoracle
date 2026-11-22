@@ -877,7 +877,7 @@ El defecto: el valor del parametro se interpola directamente en el string del co
 
 El parametro `{param}` se pasa directamente como parte de un string de comando de shell. Esto significa que el atacante puede terminar el comando original con `;` o `&&` y anadir cualquier comando que el proceso web tenga permiso de ejecutar.
 
-La correccion requiere o bien usar listas de argumentos en lugar de strings de shell (en Python: `subprocess.run([cmd, arg1, arg2])` en lugar de `subprocess.run(f"{cmd} {arg}")`) o bien validar el input contra una lista blanca estricta de valores permitidos.
+La correccion requiere o bien usar listas de argumentos en lugar de strings de shell (en Python: `subprocess.run([cmd, arg1, arg2])` en lugar de `subprocess.run(f"{{cmd}} {{arg}}")`) o bien validar el input contra una lista blanca estricta de valores permitidos.
 
 ---
 

@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""
+Genera _informe_pdf.html (mismo template que gen_informe_pdf.py) para CVEs del batch.
+Uso:
+  python3 scripts/gen_batch_informes.py                    # todos los batch JSONs
+  python3 scripts/gen_batch_informes.py CVE-2025-57633    # solo ese
+"""
+import json, os, sys, tempfile, shutil
+
+BATCH_DIR = os.path.join(os.path.dirname(__file__), "..", "binoracle_batch_reports")
+OUT       = os.path.expanduser("~/Downloads/binoracle_reports")
+SCRIPT    = os.path.join(os.path.dirname(__file__), "gen_informe_pdf.py")
+
+os.makedirs(OUT, exist_ok=True)
+
+cve_filter = set(a.upper() for a in sys.argv[1:]) if len(sys.argv) > 1 else None
+
+# ── 1. Cargar funciones de gen_informe_pdf.py sin ejecutar su bucle final ────
+_src = open(SCRIPT).read()
+# Elimina el bucle de generacion al final (lo ejecutaremos nosotros con nuestros datos)
+_src_no_loop = _src.split("# ── GENERATE")[0]
+_ns = {"__name__": "__main__"}
+exec(compile(_src_no_loop, SCRIPT, "exec"), _ns)
+
+build_informe = _ns["build_informe"]
+
+# ── 2. Procesar cada batch JSON ───────────────────────────────────────────────
+batch_dir = os.path.realpath(BATCH_DIR)
+files = sorted(f for f in os.listdir(batch_dir) if f.endswith(".json"))
+processed = 0
+
+for fname in files:
+    cve_id = fname[:-5]
+    if cve_filter and cve_id not in cve_filter:
+        continue
+
+    with open(os.path.join(batch_dir, fname)) as f:
+        batch = json.load(f)
+
+    llm = batch.get("llm_notes") or {}
+    ae  = batch.get("attempt_evidence") or {}
+    sg  = batch.get("source_grounding") or {}
+    verified = bool(batch.get("verified"))
+
+    # ── verified_evidence: mapeo desde attempt_evidence ──────────────────────
+    params = llm.get("parameters") or []
+    first_param = params[0] if params else ""
+
+    ve = {
+        "endpoint":                ae.get("endpoint") or llm.get("endpoint", ""),
+        "metodo":                  (ae.get("metodo") or llm.get("http_method", "POST")).upper(),
+        "sqli_param":              ae.get("parametro_ganador") or ae.get("ssti_param") or first_param,
+        "path_param":              ae.get("parametro_ganador") or first_param,
+        "payload_ganador":         ae.get("payload_ganador") or "",
+        "canary_path":             ae.get("canary_path") or "",
+        "canary_secret":           ae.get("canary_secret") or "",
+        "respuesta_cuerpo_recorte": ae.get("respuesta_cuerpo_recorte") or "",
+        "respuesta_control_recorte": ae.get("respuesta_control_recorte") or "",
+        "status_code_respuesta":   str(ae.get("status_code") or "200"),
+        "screenshots":             ae.get("screenshots") or [],
+        "tecnica":                 batch.get("vuln_class") or "",
+        "ssti_param":              ae.get("ssti_param") or first_param,
+        "login_bajo_privilegio":   ae.get("login_bajo_privilegio") or "",
+        "marker":                  ae.get("marker") or "",
+    }
+
+    # grounding source info
+    grounded_fns = sg.get("found", {})
+    grounded_note = ""
+    if grounded_fns:
+        fn_list = []
+        for fn_name, locs in list(grounded_fns.items())[:3]:
+            loc = locs[0] if isinstance(locs, list) and locs else ""
+            fn_list.append(f"`{fn_name}` ({loc})" if loc else f"`{fn_name}`")
+        grounded_note = "Funciones confirmadas en codigo real: " + ", ".join(fn_list) + "."
+
+    r = {
+        "cvss_score":       batch.get("cvss_score"),
+        "cvss_severity":    batch.get("cvss_severity"),
+        "cvss_vector":      batch.get("cvss_vector"),
+        "description":      batch.get("description"),
+        "vuln_class":       batch.get("vuln_class"),
+        "published":        batch.get("published") or "2026",
+        "poc_source":       batch.get("poc_source_used") or "",
+        "verified":         verified,
+        "affected_version": llm.get("affected_version") or "(ver NVD)",
+        "markdown_report":  "",   # genera desde vuln_class
+        "logs":             [],
+        "evidence":         {"screenshots": ae.get("screenshots") or []},
+        "verified_evidence": ve,
+        "detail":           grounded_note,
+    }
+
+    html = build_informe(cve_id, r, ve, ae.get("screenshots") or [], [])
+    dest = os.path.join(OUT, f"{cve_id}_informe_pdf.html")
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    shots = len([s for s in (ae.get("screenshots") or [])
+                 if (isinstance(s, dict) and s.get("png_b64"))
+                 or (isinstance(s, list) and len(s) > 1 and s[1])])
+    status = "VERIFICADO" if verified else "HUECO"
+    print(f"[OK] {cve_id} ({status}) — {shots} capturas -> {os.path.basename(dest)}")
+    processed += 1
+
+print(f"\n{processed} informes generados en {OUT}/")
