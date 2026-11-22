@@ -3651,3 +3651,113 @@ def verify_generic_boolean_oracle(
     finally:
         step("desmontando el laboratorio generico...")
         lab.teardown()
+
+
+def verify_generic_cors_misconfig(
+    source_dir: str, endpoint: str, http_method: str = "GET",
+    on_step: Optional[Callable[[str], None]] = None,
+    budget_s: float = 900.0, custom_headers: Optional[dict] = None,
+) -> WpVerifyResult:
+    """Verifica CORS misconfiguration: reflexion del Origin en Access-Control-Allow-Origin
+    + Access-Control-Allow-Credentials: true (CVE-2025-53092 Strapi y otros).
+
+    Mecanismo:
+    1) Levanta el lab efimero con el Dockerfile/compose del codigo descargado.
+    2) Envia la misma peticion SIN Origin y CON Origin: http://<token>.invalid.
+    3) CONFIRMADO si:
+       a) Access-Control-Allow-Origin en la respuesta REFLEJA el Origin enviado (no '*')
+       b) Access-Control-Allow-Credentials: true esta presente
+    Si solo se da (a) sin (b), reporta 'cors-weak' (critico-con-matices).
+    Si Access-Control-Allow-Origin: * sin Credentials → no es ACAO reflection.
+    Prueba multiples endpoints comunes (/api/, /api/users, /) si el endpoint dado falla."""
+    step = on_step or (lambda _m: None)
+    res = WpVerifyResult()
+    if not _docker_daemon_ok():
+        res.available = False
+        res.detail = "sin daemon Docker alcanzable"
+        res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
+        return res
+
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    if boot is None:
+        return res
+    lab, base_url, container = boot
+    try:
+        m = (http_method or "GET").upper().split("/")[0].strip() or "GET"
+        cors_token = f"http://binoracle-cors-{_token()}.invalid"
+        step(f"probando CORS reflection con Origin: {cors_token}")
+
+        # Candidates: LLM-provided endpoint + common fallbacks
+        candidates = [endpoint] if endpoint else []
+        for ep in ["/api/", "/api/users", "/api/users?pageSize=1", "/"]:
+            if ep not in candidates:
+                candidates.append(ep)
+
+        tried = []
+        found = False
+        result_data: dict = {}
+        for ep in candidates:
+            if found:
+                break
+            url = base_url + ep
+            try:
+                r = _http_request(m, url, timeout=15,
+                                  headers={"Origin": cors_token, **(custom_headers or {})})
+            except Exception as e:
+                tried.append({"endpoint": ep, "error": str(e)})
+                continue
+            hdrs = {k.lower(): v for k, v in (getattr(r, "headers", {}) or {}).items()}
+            acao = hdrs.get("access-control-allow-origin", "")
+            acac = hdrs.get("access-control-allow-credentials", "").strip().lower()
+            reflected = cors_token in acao or acao.strip() == cors_token.strip()
+            credentials_true = acac == "true"
+            tried.append({"endpoint": ep, "acao": acao, "acac": acac,
+                          "reflejado": reflected, "credentials": credentials_true,
+                          "status": r.status_code})
+            step(f"  {ep} → ACAO: {acao!r}, ACAC: {acac!r}")
+            if reflected:
+                found = True
+                result_data = {"endpoint": ep, "acao": acao, "acac": acac,
+                               "reflejado": reflected, "credentials": credentials_true}
+
+        res.evidence["intentos"] = tried
+        if found:
+            res.verified = True
+            res.ok = True
+            rd = result_data
+            if rd.get("credentials"):
+                res.detail = (f"CORS MISCONFIGURATION CONFIRMADA: {rd['endpoint']} refleja "
+                              f"el Origin del atacante (ACAO={rd['acao']!r}) con "
+                              f"Access-Control-Allow-Credentials: true — permite peticiones "
+                              f"cross-origin autenticadas desde dominios arbitrarios.")
+                step(f"VERIFICADO (cors+credentials): {rd['endpoint']} — credenciales cross-origin "
+                     f"habilitadas para origen arbitrario")
+            else:
+                res.detail = (f"CORS REFLECTION (sin credentials): {rd['endpoint']} refleja "
+                              f"el Origin (ACAO={rd['acao']!r}) pero sin Credentials:true — "
+                              f"riesgo menor (no afecta requests autenticados).")
+                step(f"VERIFICADO (cors-reflection): {rd['endpoint']} — reflection sin credentials")
+            _png = _screenshot_response(base_url + rd["endpoint"], m, 200,
+                                        f"ACAO: {rd['acao']}\nACAC: {rd['acac']}",
+                                        highlight=cors_token.split("//")[1], lang="es")
+            if _png:
+                res.evidence.setdefault("screenshots", []).append({
+                    "png_b64": _png,
+                    "caption_es": f"CORS reflection confirmada: Origin reflejado en Access-Control-Allow-Origin",
+                    "caption_en": f"CORS reflection confirmed: Origin reflected in Access-Control-Allow-Origin",
+                    "url": base_url + rd["endpoint"],
+                })
+        else:
+            res.ok = True
+            res.detail = (f"CORS reflection no detectada en {len(tried)} endpoints — "
+                          f"ninguno reflejo el Origin en Access-Control-Allow-Origin")
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = _diagnose_infra_error(e, source_dir)
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado en verify_generic_cors_misconfig: {e}"
+        return res
+    finally:
+        step("desmontando el laboratorio generico...")
+        lab.teardown()
