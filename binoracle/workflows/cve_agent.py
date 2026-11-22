@@ -9091,11 +9091,13 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _genlab_param = sqli_p or ""
                 _is_local_lab = (fr.kind == "local-dir")
                 _sqli_custom_hdrs = notes.get("custom_headers") or None
+                _sqli_setup_cmds = notes.get("setup_cmds") or None
                 wr = verify_generic_sqli_blind(
                     fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
                     params, sqli_param_hint=_genlab_param, on_step=step, budget_s=budget_s,
                     sqli_identifier_table_hint=id_table_hint,
-                    custom_headers=_sqli_custom_hdrs)
+                    custom_headers=_sqli_custom_hdrs,
+                    setup_commands=_sqli_setup_cmds)
                 def _attempt_sqli_blind_generic(ep, pr):
                     _ep  = _genlab_ep    if _is_local_lab else ep
                     _pr  = _genlab_param if _is_local_lab else pr
@@ -9103,7 +9105,8 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                         fr.local_path, _ep, notes.get("http_method") or "GET", params,
                         sqli_param_hint=_pr or "", on_step=step, budget_s=budget_s,
                         sqli_identifier_table_hint=id_table_hint,
-                        custom_headers=_sqli_custom_hdrs)
+                        custom_headers=_sqli_custom_hdrs,
+                        setup_commands=_sqli_setup_cmds)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,

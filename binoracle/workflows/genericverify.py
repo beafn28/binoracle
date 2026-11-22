@@ -2185,6 +2185,7 @@ def verify_generic_sqli_blind(
     budget_s: float = 900.0,
     sqli_identifier_table_hint: str = "",
     custom_headers: Optional[dict] = None,
+    setup_commands: Optional[List[str]] = None,
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -2229,7 +2230,8 @@ def verify_generic_sqli_blind(
                                "'parameters' o pasalo a mano (sqli_param_hint)")
         return res
 
-    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
+    boot = _bootstrap_generic_lab(source_dir, step, res, budget_s,
+                                   setup_commands=setup_commands)
     if boot is None:
         return res
     lab, base_url, container = boot
