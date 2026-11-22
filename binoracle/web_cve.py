@@ -642,7 +642,45 @@ class _Handler(BaseHTTPRequestHandler):
             path = os.path.join(_HISTORY_DIR, f"{job_id}.json")
             with open(path, encoding="utf-8") as fh:
                 rec = json.load(fh)
-            self._send_json(200, rec.get("result", rec))
+            result = rec.get("result") or rec
+            # Inject logs if not already stored
+            if not result.get("logs"):
+                stored_logs = rec.get("logs") or []
+                if not stored_logs:
+                    ve = result.get("verified_evidence") or {}
+                    detail = (result.get("verified_detail") or result.get("detail") or "").strip()
+                    cve_id_hist = rec.get("cve_id", "?")
+                    vuln_class = result.get("vuln_class", "")
+                    stored_logs = [{"t": 0.0, "msg": f"[HISTORIAL] {cve_id_hist} — resultado recuperado del disco"}]
+                    if vuln_class:
+                        stored_logs.append({"t": 0.5, "msg": f"[INFO] clase={vuln_class}"})
+                    if ve.get("endpoint"):
+                        stored_logs.append({"t": 0.8, "msg": f"[TARGET] {ve.get('base_url','')}{ve['endpoint']}"})
+                    if ve.get("metodo") and ve.get("endpoint"):
+                        stored_logs.append({"t": 1.0, "msg": f"[HTTP] {ve['metodo']} {ve['endpoint']}"})
+                    if ve.get("payload_ganador"):
+                        param = ve.get("sqli_param") or ve.get("path_param") or ve.get("ssti_param") or "param"
+                        stored_logs.append({"t": 1.2, "msg": f"[PAYLOAD] {param}={ve['payload_ganador'][:200]}"})
+                    if ve.get("sleep3_s"):
+                        stored_logs.append({"t": 1.5, "msg": f"[TIMING] SLEEP(3)={ve['sleep3_s']:.2f}s  SLEEP(0)={ve.get('sleep0_s',0):.2f}s  dif={ve.get('diferencial_s',0):.2f}s"})
+                    if ve.get("canary_secret"):
+                        stored_logs.append({"t": 1.5, "msg": f"[CANARY] secreto leido: {ve['canary_secret']}"})
+                    if ve.get("cookie"):
+                        stored_logs.append({"t": 1.5, "msg": f"[COOKIE] {ve['cookie'][:100]}"})
+                    if ve.get("respuesta_cuerpo_recorte"):
+                        stored_logs.append({"t": 2.0, "msg": f"[RESP] {ve['respuesta_cuerpo_recorte'][:300]}"})
+                    if ve.get("status_code_respuesta"):
+                        stored_logs.append({"t": 2.2, "msg": f"[HTTP] status={ve['status_code_respuesta']}"})
+                    if detail:
+                        for line in detail.split(". "):
+                            line = line.strip()
+                            if line:
+                                stored_logs.append({"t": 2.5, "msg": f"[RESULTADO] {line}"})
+                    if result.get("verified"):
+                        stored_logs.append({"t": 3.0, "msg": f"[OK] {cve_id_hist} VERIFICADO — vulnerabilidad confirmada en lab aislado"})
+                result = dict(result)
+                result["logs"] = stored_logs
+            self._send_json(200, result)
         except Exception:
             self._send_json(404, {"error": "not found"})
 
