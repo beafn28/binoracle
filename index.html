@@ -65,17 +65,17 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 41 CVEs (33 verificados)</div>
+  <div class="hdr-date">22 NOVIEMBRE 2026 &mdash; 43 CVEs (33 verificados)</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white">41</div><div class="stat-l">Total CVEs</div></div>
+  <div class="stat"><div class="stat-n s-white">43</div><div class="stat-l">Total CVEs</div></div>
   <div class="stat"><div class="stat-n s-green">33</div><div class="stat-l">Verificados</div></div>
   <div class="stat"><div class="stat-n s-crit">17</div><div class="stat-l">Critical</div></div>
-  <div class="stat"><div class="stat-n s-high">21</div><div class="stat-l">High</div></div>
+  <div class="stat"><div class="stat-n s-high">23</div><div class="stat-l">High</div></div>
   <div class="stat"><div class="stat-n s-blue">20</div><div class="stat-l">SQLi</div></div>
   <div class="stat"><div class="stat-n s-purple">12</div><div class="stat-l">HUECO Verif.</div></div>
-  <div class="stat"><div class="stat-n s-green">26</div><div class="stat-l">Unauthenticated</div></div>
+  <div class="stat"><div class="stat-n s-green">27</div><div class="stat-l">Unauthenticated</div></div>
   <div class="stat"><div class="stat-n" style="color:#a78bfa">12</div><div class="stat-l">LLM Razonado</div></div>
   <div class="stat"><div class="stat-n" style="color:#7c3aed">4</div><div class="stat-l">0-day GAP</div></div>
 </div>
@@ -111,7 +111,7 @@ th.sortable.desc::after{content:' ↓';opacity:1;color:#38bdf8}
   <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
   <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
-  <span class="filter-count" id="filter-count"><span id="vis-count">41</span> / 41 CVEs</span>
+  <span class="filter-count" id="filter-count"><span id="vis-count">43</span> / 43 CVEs</span>
 </div>
 
 <div class="wrap">
@@ -698,8 +698,24 @@ Upgrading to a sec</td>
     <a href="CVE-2026-129302_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
-<tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+<tr class="cve-row" data-cls="rce" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
   <td class="td-num">36</td>
+  <td class="td-cve"><a href="CVE-2026-129500_informe_pdf.html" target="_blank"><code>CVE-2026-129500</code></a></td>
+  <td><span class="badge" style="background:#d97706">7.5 HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">rce</span></td>
+  <td><code class="tech">rce</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#065f46">unauthenticated</span></td>
+  <td class="td-aff"><code>9.0.0 - 11.6.9</code></td>
+  <td class="td-pub">2026-11-19</td>
+  <td class="td-desc">@fastify/http-proxy is a Fastify plugin that proxies HTTP and WebSocket traffic to an upstream server. In versions from </td>
+  <td class="td-links">
+    <a href="CVE-2026-129500_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-129500_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
+<tr class="cve-row" data-cls="xss" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
+  <td class="td-num">37</td>
   <td class="td-cve"><a href="CVE-2024-10784_informe_pdf.html" target="_blank"><code>CVE-2024-10784</code></a></td>
   <td><span class="badge" style="background:#2563eb">6.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#9333ea">xss</span></td>
@@ -715,7 +731,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="path-traversal" data-sev="medium" data-poc="true" data-auth="false" data-gap="false">
-  <td class="td-num">37</td>
+  <td class="td-num">38</td>
   <td class="td-cve"><a href="CVE-2024-23334_informe_pdf.html" target="_blank"><code>CVE-2024-23334</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.9 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#0891b2">path-traversal</span></td>
@@ -731,7 +747,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="ssti" data-sev="medium" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">38</td>
+  <td class="td-num">39</td>
   <td class="td-cve"><a href="CVE-2025-27516_informe_pdf.html" target="_blank"><code>CVE-2025-27516</code></a></td>
   <td><span class="badge" style="background:#2563eb">5.4 MEDIUM</span></td>
   <td><span class="badge badge-sm" style="background:#374151">ssti</span></td>
@@ -746,8 +762,24 @@ Upgrading to a sec</td>
     <a href="CVE-2025-27516_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
   </td>
 </tr>
+<tr class="cve-row" data-cls="idor" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
+  <td class="td-num">40</td>
+  <td class="td-cve"><a href="CVE-2026-107592_informe_pdf.html" target="_blank"><code>CVE-2026-107592</code></a></td>
+  <td><span class="badge" style="background:#d97706">None HIGH</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">idor</span></td>
+  <td><code class="tech">idor</code></td>
+  <td><span class="badge badge-sm" style="background:#374151">HUECO</span></td>
+  <td><span class="badge badge-sm" style="background:#374151">subscriber</span></td>
+  <td class="td-aff"><code>4.16.2</code></td>
+  <td class="td-pub">2026-11-22</td>
+  <td class="td-desc">The Mooberry Book Manager WordPress plugin through 4.16.2 does not perform any capability or nonce check in one of its A</td>
+  <td class="td-links">
+    <a href="CVE-2026-107592_informe_pdf.html" class="btn-report" target="_blank">HTML</a>
+    <a href="CVE-2026-107592_informe_pdf.pdf" class="btn-pdf" target="_blank">PDF</a>
+  </td>
+</tr>
 <tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="false" data-gap="true">
-  <td class="td-num">39</td>
+  <td class="td-num">41</td>
   <td class="td-cve"><a href="CVE-2026-123068_informe_pdf.html" target="_blank"><code>CVE-2026-123068</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
@@ -763,7 +795,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="file-upload" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">40</td>
+  <td class="td-num">42</td>
   <td class="td-cve"><a href="CVE-2026-127024_informe_pdf.html" target="_blank"><code>CVE-2026-127024</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#374151">file-upload</span></td>
@@ -779,7 +811,7 @@ Upgrading to a sec</td>
   </td>
 </tr>
 <tr class="cve-row" data-cls="sqli" data-sev="high" data-poc="false" data-auth="true" data-gap="true">
-  <td class="td-num">41</td>
+  <td class="td-num">43</td>
   <td class="td-cve"><a href="CVE-2026-94259_informe_pdf.html" target="_blank"><code>CVE-2026-94259</code></a></td>
   <td><span class="badge" style="background:#d97706">None HIGH</span></td>
   <td><span class="badge badge-sm" style="background:#1e40af">sqli</span></td>
