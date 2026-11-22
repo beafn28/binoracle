@@ -181,12 +181,15 @@ def verify_binary_crash_in_docker(
         else:
             exit_code = -1
 
+        # crash_output_recorte: tail of combined output (where crash messages appear)
+        _crash_tail = combined_out[-400:].strip() if combined_out else ("(timeout)" if timed_out else "")
         res.evidence.update({
             "docker_image": docker_image,
             "poc_cmd": poc_cmd,
             "exit_code": exit_code,
             "stdout": (r_poc.stdout or "")[:2000] if r_poc else "(timeout)",
             "stderr": (r_poc.stderr or "")[:2000] if r_poc else "(timeout)",
+            "crash_output_recorte": _crash_tail,
             "elapsed_s": round(poc_elapsed, 2),
             "timed_out": timed_out,
         })

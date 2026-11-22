@@ -4437,6 +4437,58 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
                     step(f"[HUECO] HTTP smuggling: "
                          f"discrepancy={hint.get('discrepancy','?')}")
 
+    # ------------------------------------------------------------------ Node.js test harness
+    # Para CVEs de bibliotecas npm (dos, path-traversal, prototype-pollution...): buscar
+    # directorios de tests y extraer un snippet de uso real de la librería. Esto alimenta
+    # al generador de PoC con el patrón de llamada correcto (require + función exacta)
+    # en vez de que el LLM adivine la API de la librería desde la descripción.
+    if tech in ("nodejs", "javascript") and not inv.llm_notes.get("hueco_nodejs_test_snippet"):
+        _test_dirs = []
+        for _td in ("test", "tests", "__tests__", "spec", "specs"):
+            _tp = os.path.join(lpath, _td)
+            if os.path.isdir(_tp):
+                _test_dirs.append(_tp)
+        if _test_dirs:
+            # Palabras clave por clase de vulnerabilidad para filtrar el test más relevante
+            _vc_kw = {
+                "dos": ["timeout", "hang", "loop", "infinite", "redos", "regex"],
+                "path-traversal": ["path", "traversal", "file", "read", "..", "escape"],
+                "lfi": ["file", "include", "path", "read"],
+                "prototype-pollution": ["__proto__", "constructor", "prototype"],
+                "ssrf": ["url", "fetch", "request", "http"],
+                "xss": ["html", "escape", "sanitize", "xss", "script"],
+            }.get(vc, [])
+            _best_file: Optional[str] = None
+            _best_score = -1
+            for _td in _test_dirs:
+                for _root_t, _, _files_t in os.walk(_td):
+                    for _ft in _files_t:
+                        if not (_ft.endswith(".js") or _ft.endswith(".ts") or _ft.endswith(".mjs")):
+                            continue
+                        _fp_t = os.path.join(_root_t, _ft)
+                        try:
+                            _src_t = open(_fp_t, encoding="utf-8", errors="ignore").read(8000)
+                        except OSError:
+                            continue
+                        _score = sum(1 for kw in _vc_kw if kw in _src_t.lower())
+                        if _score > _best_score:
+                            _best_score = _score
+                            _best_file = _fp_t
+                    if _best_file:
+                        break
+                if _best_file:
+                    break
+            if _best_file:
+                try:
+                    _snippet_t = open(_best_file, encoding="utf-8", errors="ignore").read(3000)
+                    _rel_t = os.path.relpath(_best_file, lpath)
+                    inv.llm_notes["hueco_nodejs_test_snippet"] = (
+                        f"# {_rel_t} (test harness — patron de uso real)\n{_snippet_t}")
+                    step((f"[HUECO] test harness Node.js: patron de uso extraido de {_rel_t}") if es else
+                         (f"[HUECO] Node.js test harness: usage pattern extracted from {_rel_t}"))
+                except OSError:
+                    pass
+
     # Clean up internal scratch key
     inv.llm_notes.pop("_hueco_sink_snippet", None)
 
@@ -9600,6 +9652,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             budget_s=budget_s,
         )
         inv.verified_evidence = bvr.evidence
+        inv.attempt_evidence = bvr.evidence
         if bvr.verified:
             inv.verified = True
             inv.verified_detail = bvr.detail
@@ -9636,6 +9689,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
             budget_s=budget_s,
         )
         inv.verified_evidence = bvr.evidence
+        inv.attempt_evidence = bvr.evidence
         if bvr.verified:
             inv.verified = True
             inv.verified_detail = bvr.detail

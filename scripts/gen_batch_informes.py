@@ -68,6 +68,27 @@ def _build_logs_from_ae(ae):
             logs.append({"t": t, "msg": f"[CANARY] {canary} → {icon}"})
             t += 0.2
 
+    # Binary crash phase (poc_cmd / crash_output_recorte from binaryverify.py)
+    poc_cmd = ae.get("poc_cmd", "")
+    if poc_cmd and not ae.get("argv"):
+        docker_img = ae.get("docker_image", "")
+        if docker_img:
+            logs.append({"t": t, "msg": f"[DOCKER] imagen={docker_img}"})
+            t += 0.3
+        logs.append({"t": t, "msg": f"[POC] {poc_cmd[:300]}"})
+        t += 0.5
+        crash_out = ae.get("crash_output_recorte", "")
+        if crash_out:
+            for line in crash_out.strip().split("\n")[:8]:
+                if line.strip():
+                    logs.append({"t": t, "msg": line.strip()})
+                    t += 0.1
+        exit_code = ae.get("exit_code")
+        if exit_code is not None:
+            logs.append({"t": t, "msg": f"[EXIT] code={exit_code}"})
+            t += 0.2
+        return logs
+
     # DoS phase (técnica dos / dos-pipeline)
     tecnica = ae.get("tecnica", "")
     if tecnica in ("dos", "dos-pipeline", "websocket"):
@@ -127,18 +148,25 @@ def _build_logs_from_ae(ae):
     elif is_cli_marker and not argv:
         payload = ae.get("payload_ganador", "")
         resp = ae.get("respuesta_cuerpo_recorte", "")
-        if payload:
-            logs.append({"t": t, "msg": f"[RUN] {endpoint} {payload[:200]}"})
-            t += 0.5
-        if resp:
-            logs.append({"t": t, "msg": f"[RESP] {resp[:300]}"})
-            t += 0.2
         canary = ae.get("canary_name", "")
         presente = ae.get("canario_presente", False)
+        logs.append({"t": t, "msg": "[DOCKER] sandbox npm isolado (--network none)"})
+        t += 0.5
+        if endpoint:
+            logs.append({"t": t, "msg": f"[CMD] {endpoint}"})
+            t += 0.3
+        if payload:
+            logs.append({"t": t, "msg": f"[PAYLOAD] --cmd {payload[:200]}"})
+            t += 0.4
+        if resp:
+            logs.append({"t": t, "msg": f"[RESP] {resp[:300]}"})
+            t += 0.3
         if canary:
             icon = "CONFIRMADO" if presente else "NO ENCONTRADO"
             logs.append({"t": t, "msg": f"[CANARY] {canary} → {icon}"})
             t += 0.2
+        if presente:
+            logs.append({"t": t, "msg": "[RESULTADO] command injection CONFIRMADO vía parámetro CLI"})
 
     return logs
 
