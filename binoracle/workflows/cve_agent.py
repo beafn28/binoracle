@@ -8412,10 +8412,11 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                      "attempting GENERIC DYNAMIC verification -- canary file, the target is "
                      "built from its own Dockerfile/compose..."))
                 _pt_url_suffix = notes.get("url_suffix") or ""
+                _pt_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_path_traversal(
                     fr.local_path, _pt_ep, notes.get("http_method") or "GET",
                     params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
-                    url_suffix=_pt_url_suffix)
+                    url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs)
                 # aprendizaje y reintento, version GENERICA (cualquier tecnologia, no solo
                 # WordPress) -- mismo bucle acotado que el SQLi de WordPress: el LLM lee el
                 # cuerpo real del primer intento y solo sugiere un reintento con una pista
@@ -8424,7 +8425,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     return verify_generic_path_traversal(
                         fr.local_path, ep, notes.get("http_method") or "GET", params,
                         path_param_hint=pr or "", on_step=step, budget_s=budget_s,
-                        url_suffix=_pt_url_suffix)
+                        url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _GENERIC_PATH_TRAVERSAL_RETRY_SYS,
                     _GENERIC_PATH_TRAVERSAL_RETRY_EVIDENCE_KEYS, _attempt_pt, wr,
@@ -8441,7 +8442,7 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                     _wr_extra = verify_generic_path_traversal(
                         fr.local_path, _ep_extra, notes.get("http_method") or "GET",
                         params, path_param_hint=path_p or "", on_step=step, budget_s=budget_s,
-                        url_suffix=_pt_url_suffix)
+                        url_suffix=_pt_url_suffix, custom_headers=_pt_custom_hdrs)
                     if _wr_extra.verified or (not wr.verified and _wr_extra.ok):
                         wr = _wr_extra
                 _apply_wpverify_result(inv, wr, es, llm)
@@ -9082,17 +9083,20 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
                 _genlab_ep    = notes.get("endpoint")
                 _genlab_param = sqli_p or ""
                 _is_local_lab = (fr.kind == "local-dir")
+                _sqli_custom_hdrs = notes.get("custom_headers") or None
                 wr = verify_generic_sqli_blind(
                     fr.local_path, _genlab_ep, notes.get("http_method") or "GET",
                     params, sqli_param_hint=_genlab_param, on_step=step, budget_s=budget_s,
-                    sqli_identifier_table_hint=id_table_hint)
+                    sqli_identifier_table_hint=id_table_hint,
+                    custom_headers=_sqli_custom_hdrs)
                 def _attempt_sqli_blind_generic(ep, pr):
                     _ep  = _genlab_ep    if _is_local_lab else ep
                     _pr  = _genlab_param if _is_local_lab else pr
                     return verify_generic_sqli_blind(
                         fr.local_path, _ep, notes.get("http_method") or "GET", params,
                         sqli_param_hint=_pr or "", on_step=step, budget_s=budget_s,
-                        sqli_identifier_table_hint=id_table_hint)
+                        sqli_identifier_table_hint=id_table_hint,
+                        custom_headers=_sqli_custom_hdrs)
                 wr = _run_evidence_retry_loop(
                     llm, step, es, _SQLI_RETRY_SYS, _SQLI_RETRY_EVIDENCE_KEYS,
                     _attempt_sqli_blind_generic, wr, _genlab_ep, _genlab_param,

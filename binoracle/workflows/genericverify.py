@@ -1115,7 +1115,7 @@ def verify_generic_path_traversal(
     source_dir: str, endpoint: str, http_method: str, parameters,
     path_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0, setup_commands: Optional[List[str]] = None,
-    url_suffix: str = "",
+    url_suffix: str = "", custom_headers: Optional[dict] = None,
 ) -> WpVerifyResult:
     """Analogo generico de verify_wordpress_path_traversal (wpverify.py): planta un fichero
     canario con un secreto aleatorio DENTRO del contenedor real del objetivo (via `docker exec`,
@@ -1275,14 +1275,16 @@ def verify_generic_path_traversal(
                         if _has_pct_dot and cand_meth == "GET":
                             resp = _http_request_raw_path(cand_meth, target_url, timeout=15)
                         else:
-                            resp = _http_request(cand_meth, target_url, timeout=15)
+                            resp = _http_request(cand_meth, target_url, timeout=15,
+                                                 headers=custom_headers or None)
                         payload_desc = f"URL_PATH={payload_value!r}{('+' + url_suffix) if url_suffix else ''}"
                     else:
                         payload = dict(cand_params) if isinstance(cand_params, dict) else dict.fromkeys(cand_params or [], "")
                         payload[cand_path_p or path_param or "path"] = payload_value
                         resp = _http_request(cand_meth, base_url + cand_ep, timeout=15,
                                              data=payload if cand_meth != "GET" else None,
-                                             params=payload if cand_meth == "GET" else None)
+                                             params=payload if cand_meth == "GET" else None,
+                                             headers=custom_headers or None)
                         payload_desc = f"{cand_path_p or path_param}={payload_value!r}"
                 except Exception as e:
                     tried.append({"payload": payload_value, "error": str(e)})
@@ -2151,6 +2153,7 @@ def verify_generic_sqli_blind(
     sqli_param_hint: str = "", on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
     sqli_identifier_table_hint: str = "",
+    custom_headers: Optional[dict] = None,
 ) -> WpVerifyResult:
     """SQL injection ciega por TIEMPO contra cualquier objetivo con su propio Dockerfile/compose.
     Deliberadamente mas limitada que verify_wordpress_sqli: sin saber el motor real de BD (puede
@@ -2217,7 +2220,8 @@ def verify_generic_sqli_blind(
             try:
                 resp = _http_request(m, base_url + endpoint_path, timeout=_SQLI_SLEEP_SECONDS + 15,
                                  data=payload if m != "GET" else None,
-                                 params=payload if m == "GET" else None)
+                                 params=payload if m == "GET" else None,
+                                 headers=custom_headers or None)
             except Exception:
                 return None
             elapsed = time.time() - t0
