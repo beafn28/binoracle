@@ -304,7 +304,7 @@ document.querySelectorAll('.cve-row').forEach(row => {{
 document.querySelectorAll('.cve-row').forEach(row => {{
   const badge = row.querySelector('.badge');
   if (badge) {{
-    const m = badge.textContent.match(/[\d.]+/);
+    const m = badge.textContent.match(/[\\d.]+/);
     row.dataset.cvss = m ? parseFloat(m[0]) : 0;
   }}
   const cve = row.querySelector('code');
