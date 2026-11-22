@@ -8538,20 +8538,23 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # cabecera el servidor responde 3xx/401/403; con ella, 2xx.
             elif (not plugin_dir and fr.local_path and
                   inv.vuln_class in ("missing-authorization", "auth-bypass", "idor") and
-                  notes.get("endpoint") and notes.get("bypass_header")):
+                  notes.get("endpoint") and
+                  (notes.get("bypass_header") or notes.get("bypass_url"))):
                 from .genericverify import verify_generic_header_bypass
                 _inject_custom_docker_lab(str(fr.local_path), notes, step)
-                step(("intentando verificacion DINAMICA GENERICA -- bypass de autorizacion "
-                     "via cabecera HTTP, el objetivo se construye desde su propio "
-                     "Dockerfile/compose..." if es else
-                     "attempting GENERIC DYNAMIC verification -- authorization bypass via "
-                     "HTTP header, the target is built from its own Dockerfile/compose..."))
+                _bypass_kind = ("URL manipulada" if notes.get("bypass_url") else "cabecera HTTP")
+                step((f"intentando verificacion DINAMICA GENERICA -- bypass de autorizacion "
+                     f"via {_bypass_kind}, el objetivo se construye desde su propio "
+                     f"Dockerfile/compose..." if es else
+                     f"attempting GENERIC DYNAMIC verification -- authorization bypass via "
+                     f"{_bypass_kind}, the target is built from its own Dockerfile/compose..."))
                 wr = verify_generic_header_bypass(
                     fr.local_path, notes.get("endpoint"), notes.get("http_method") or "GET",
-                    bypass_header=notes["bypass_header"],
+                    bypass_header=notes.get("bypass_header", ""),
                     bypass_value=notes.get("bypass_value", ""),
                     confirm_string=notes.get("confirm_string", ""),
-                    on_step=step, budget_s=budget_s)
+                    on_step=step, budget_s=budget_s,
+                    bypass_url=notes.get("bypass_url") or None)
                 _apply_wpverify_result(inv, wr, es, llm)
             # mismo laboratorio efimero, para command injection en Drupal (cuarta clase de
             # Drupal, "poco a poco" -- ver drupalverify.py).

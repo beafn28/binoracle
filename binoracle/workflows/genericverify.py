@@ -3281,19 +3281,22 @@ def verify_generic_header_bypass(
     confirm_string: str = "",
     on_step: Optional[Callable[[str], None]] = None,
     budget_s: float = 900.0,
+    bypass_url: Optional[str] = None,
 ) -> WpVerifyResult:
-    """Verifica un bypass de autorizacion via CABECERA HTTP (p.ej. CVE-2025-29927, Next.js).
+    """Verifica un bypass de autorizacion via CABECERA HTTP o URL manipulada.
 
     Mecanismo:
     1) Levanta el lab efimero con el Dockerfile/compose del codigo descargado.
-    2) Envia la peticion SIN la cabecera de bypass: espera que el servidor responda con un
-       codigo de redireccion (3xx) o con un 401/403 (bloqueado).
-    3) Envia la misma peticion CON la cabecera de bypass: si el servidor responde 2xx y
-       (si se proporciona) el cuerpo contiene `confirm_string`, la vulnerabilidad queda
-       VERIFICADA.
+    2) Envia la peticion SIN bypass al endpoint original: espera 3xx/401/403 (bloqueado).
+    3a) Si bypass_header+bypass_value: envia la misma peticion CON la cabecera de bypass.
+    3b) Si bypass_url: envia peticion a la URL manipulada SIN cabecera extra (ej. path
+        confusion: /api/v1/feeds;a=../../users en CVE-2024-28255 OpenMetadata).
+    Si el servidor responde 2xx y el cuerpo contiene `confirm_string`, VERIFICADO.
 
     `bypass_header`: nombre de la cabecera maliciosa (p.ej. "x-middleware-subrequest").
     `bypass_value`: valor exacto de la cabecera (p.ej. "middleware:middleware:...").
+    `bypass_url`: URL manipulada alternativa (path confusion/semicolon bypass); si se
+                  proporciona, se ignoran bypass_header/bypass_value en el intento de bypass.
     `confirm_string`: cadena que debe aparecer en la respuesta con bypass para confirmar
                       acceso real (vacia = solo se comprueba que el status sea 2xx).
     """
@@ -3305,10 +3308,10 @@ def verify_generic_header_bypass(
         res.limitations.append("verificacion dinamica NO intentada: sin daemon Docker")
         return res
 
-    if not bypass_header or not bypass_value:
-        res.detail = "se necesita bypass_header y bypass_value para la verificacion"
+    if not bypass_url and (not bypass_header or not bypass_value):
+        res.detail = "se necesita bypass_header+bypass_value o bypass_url para la verificacion"
         res.limitations.append("la verificacion de header bypass necesita el nombre y valor "
-                               "exactos de la cabecera maliciosa")
+                               "exactos de la cabecera maliciosa, o una bypass_url alternativa")
         return res
 
     boot = _bootstrap_generic_lab(source_dir, step, res, budget_s)
@@ -3318,7 +3321,7 @@ def verify_generic_header_bypass(
     try:
         m = (http_method or "GET").upper().split("/")[0].split("|")[0].strip() or "GET"
         url = base_url + endpoint
-        step(f"probando SIN cabecera de bypass: {m} {url}")
+        step(f"probando SIN bypass: {m} {url}")
         body_normal = ""
         try:
             # allow_redirects=False: necesitamos el status REAL del servidor (3xx/401/403),
@@ -3330,21 +3333,36 @@ def verify_generic_header_bypass(
             status_normal = -1
             step(f"error en peticion normal: {e}")
 
-        step(f"probando CON cabecera '{bypass_header}: {bypass_value}'")
-        try:
-            r_bypass = _http_request(m, url, timeout=15, allow_redirects=False,
-                                     headers={bypass_header: bypass_value})
-            status_bypass = r_bypass.status_code
-            body_bypass = r_bypass.text or ""
-        except Exception as e:
-            status_bypass = -1
-            body_bypass = ""
-            step(f"error en peticion con bypass: {e}")
+        if bypass_url:
+            step(f"probando CON URL manipulada (path confusion): {m} {base_url + bypass_url}")
+            try:
+                r_bypass = _http_request(m, base_url + bypass_url, timeout=15,
+                                         allow_redirects=False)
+                status_bypass = r_bypass.status_code
+                body_bypass = r_bypass.text or ""
+            except Exception as e:
+                status_bypass = -1
+                body_bypass = ""
+                step(f"error en peticion con bypass_url: {e}")
+        else:
+            step(f"probando CON cabecera '{bypass_header}: {bypass_value}'")
+            try:
+                r_bypass = _http_request(m, url, timeout=15, allow_redirects=False,
+                                         headers={bypass_header: bypass_value})
+                status_bypass = r_bypass.status_code
+                body_bypass = r_bypass.text or ""
+            except Exception as e:
+                status_bypass = -1
+                body_bypass = ""
+                step(f"error en peticion con bypass: {e}")
 
+        _bypass_desc = (f"URL manipulada '{bypass_url}'" if bypass_url
+                        else f"cabecera '{bypass_header}: {bypass_value}'")
         res.evidence = {
             "base_url": base_url,
             "contenedor": container,
             "endpoint": endpoint,
+            "bypass_url": bypass_url or "",
             "metodo": m,
             "bypass_header": bypass_header,
             "bypass_value": bypass_value,
@@ -3363,15 +3381,15 @@ def verify_generic_header_bypass(
             res.verified = True
             res.ok = True
             res.detail = (
-                f"HEADER BYPASS confirmado: sin '{bypass_header}' el servidor responde "
-                f"{status_normal}; con '{bypass_header}: {bypass_value}' responde "
+                f"BYPASS confirmado: sin {_bypass_desc} el servidor responde "
+                f"{status_normal}; con {_bypass_desc} responde "
                 f"{status_bypass}" +
                 (f" y el cuerpo contiene '{confirm_string}'" if confirm_string else "") +
                 " -- el control de autorizacion fue eludido"
             )
             step("capturando evidencia visual (screenshots del laboratorio)...")
             shots = _take_generic_screenshots_bypass(
-                base_url, endpoint, m, bypass_header, bypass_value,
+                base_url, endpoint, m, bypass_header or "bypass_url", bypass_url or bypass_value,
                 status_normal, body_normal, status_bypass, body_bypass)
             if shots:
                 res.evidence["screenshots"] = shots

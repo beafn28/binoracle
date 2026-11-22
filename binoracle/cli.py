@@ -1456,7 +1456,7 @@ def cmd_cve(args, config):
                 _stored_notes = _j.load(_bf).get("llm_notes") or {}
             for _field in ("dockerfile_body", "docker_image", "extra_files",
                            "confirm_string", "sqli_param", "poc_cmd", "url_suffix",
-                           "custom_headers"):
+                           "custom_headers", "bypass_header", "bypass_value", "bypass_url"):
                 if _field not in hints and _stored_notes.get(_field):
                     hints[_field] = _stored_notes[_field]
     except Exception:
