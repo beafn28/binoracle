@@ -75,6 +75,9 @@ if os.path.isdir(batch_dir):
         add_row(cve, cls, tech, score, sev, poc, auth, aff, desc, pub, endpoint, verified=verified,
                 gap=gap_b, is_gap=is_gap_b)
 
+# Keep only 100% dynamically verified CVEs (no HUECO, no unverified)
+rows = [r for r in rows if r.get("verified") and not r.get("is_gap")]
+
 # Sort by score desc
 rows.sort(key=lambda x: float(x["score"]) if str(x["score"]).replace(".","").isdigit() else 0, reverse=True)
 
@@ -133,17 +136,13 @@ for i, row in enumerate(rows):
   </td>
 </tr>"""
 
-verified_rows = [r for r in rows if r.get("verified", True)]
 stats = {
     "total": len(rows),
-    "verified": len(verified_rows),
     "critical": sum(1 for r in rows if r["sev"] == "CRITICAL"),
     "high": sum(1 for r in rows if r["sev"] == "HIGH"),
     "sqli": sum(1 for r in rows if "sqli" in r["cls"].lower()),
-    "hueco_ver": sum(1 for r in verified_rows if not r["poc"]),
+    "poc": sum(1 for r in rows if r["poc"]),
     "unauth": sum(1 for r in rows if not r["auth"]),
-    "llm_reasoned": sum(1 for r in verified_rows if r.get("gap") and not r["poc"]),
-    "gap_total": sum(1 for r in verified_rows if r.get("is_gap")),
 }
 
 page = f"""<!DOCTYPE html>
@@ -213,19 +212,16 @@ th.sortable.desc::after{{content:' ↓';opacity:1;color:#38bdf8}}
     <div class="brand-sub">CVE Verification Engine</div>
   </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-date">{DATE} &mdash; {stats['total']} CVEs ({stats['verified']} verificados)</div>
+  <div class="hdr-date">{DATE} &mdash; {stats['total']} CVEs verificados dinámicamente</div>
 </header>
 
 <div class="stats-bar">
-  <div class="stat"><div class="stat-n s-white">{stats['total']}</div><div class="stat-l">Total CVEs</div></div>
-  <div class="stat"><div class="stat-n s-green">{stats['verified']}</div><div class="stat-l">Verificados</div></div>
+  <div class="stat"><div class="stat-n s-green">{stats['total']}</div><div class="stat-l">Verificados</div></div>
   <div class="stat"><div class="stat-n s-crit">{stats['critical']}</div><div class="stat-l">Critical</div></div>
   <div class="stat"><div class="stat-n s-high">{stats['high']}</div><div class="stat-l">High</div></div>
   <div class="stat"><div class="stat-n s-blue">{stats['sqli']}</div><div class="stat-l">SQLi</div></div>
-  <div class="stat"><div class="stat-n s-purple">{stats['hueco_ver']}</div><div class="stat-l">HUECO Verif.</div></div>
+  <div class="stat"><div class="stat-n s-purple">{stats['poc']}</div><div class="stat-l">Con PoC</div></div>
   <div class="stat"><div class="stat-n s-green">{stats['unauth']}</div><div class="stat-l">Unauthenticated</div></div>
-  <div class="stat"><div class="stat-n" style="color:#a78bfa">{stats['llm_reasoned']}</div><div class="stat-l">LLM Razonado</div></div>
-  <div class="stat"><div class="stat-n" style="color:#7c3aed">{stats['gap_total']}</div><div class="stat-l">0-day GAP</div></div>
 </div>
 
 <div class="filters">
@@ -245,19 +241,10 @@ th.sortable.desc::after{{content:' ↓';opacity:1;color:#38bdf8}}
   <button class="f-btn" data-filter="sev" data-val="high">High</button>
   <button class="f-btn" data-filter="sev" data-val="medium">Medium</button>
   &nbsp;
-  <span class="filter-label">PoC</span>
-  <button class="f-btn active" data-filter="poc" data-val="all">Todos</button>
-  <button class="f-btn" data-filter="poc" data-val="false">HUECO</button>
-  <button class="f-btn" data-filter="poc" data-val="true">PoC publico</button>
-  &nbsp;
   <span class="filter-label">Auth</span>
   <button class="f-btn active" data-filter="auth" data-val="all">Todos</button>
   <button class="f-btn" data-filter="auth" data-val="false">Unauthenticated</button>
   <button class="f-btn" data-filter="auth" data-val="true">Autenticado</button>
-  &nbsp;
-  <span class="filter-label">LLM</span>
-  <button class="f-btn active" data-filter="gap" data-val="all">Todos</button>
-  <button class="f-btn" data-filter="gap" data-val="true" style="border-color:#7c3aed;color:#a78bfa">Sin PoC previo</button>
   <input class="search-box" type="text" id="search" placeholder="Buscar CVE, plugin, endpoint...">
   <span class="filter-count" id="filter-count"><span id="vis-count">{stats['total']}</span> / {stats['total']} CVEs</span>
 </div>
@@ -397,4 +384,4 @@ with open(root_index, "w", encoding="utf-8") as f:
     f.write(page)
 print(f"index.html generado: {out_path}")
 print(f"  también: {os.path.realpath(root_index)}")
-print(f"  {stats['total']} CVEs, {stats['verified']} verificados, {stats['critical']} critical, {stats['hueco_ver']} HUECO verif.")
+print(f"  {stats['total']} CVEs verificados, {stats['critical']} critical, {stats['poc']} con PoC, {stats['unauth']} unauthenticated")
