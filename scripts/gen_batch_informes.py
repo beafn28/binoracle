@@ -58,7 +58,7 @@ for fname in files:
         "respuesta_control_recorte": ae.get("respuesta_control_recorte") or "",
         "status_code_respuesta":   str(ae.get("status_code") or "200"),
         "screenshots":             ae.get("screenshots") or [],
-        "tecnica":                 batch.get("vuln_class") or "",
+        "tecnica":                 ae.get("tecnica") or batch.get("vuln_class") or "",
         "ssti_param":              ae.get("ssti_param") or first_param,
         "login_bajo_privilegio":   ae.get("login_bajo_privilegio") or "",
         "marker":                  ae.get("marker") or "",

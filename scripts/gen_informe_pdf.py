@@ -1068,12 +1068,33 @@ def _generate_http_captures_html(cve_id, r, ve):
     elif "dos" in cls or "overflow" in cls or "rce" in cls or "websocket" in cls:
         # WebSocket / crash / DoS pattern
         _ws_endpoint = ctrl_ep or "/ws"
-        req1 = (f"GET {_ws_endpoint} HTTP/1.1\nHost: TARGET\nUpgrade: websocket\n"
-                f"Connection: Upgrade\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\n"
-                f"Sec-WebSocket-Version: 13\n")
-        pairs.append({"label": "Peticion WebSocket Upgrade (trigger)",
-                      "request": req1,
-                      "response": resp_body or "(servidor cierra la conexion inesperadamente / proceso crashea)"})
+        _crash = resp_body or "(servidor cierra la conexion inesperadamente / proceso crashea)"
+
+        if "pipeline" in tech:
+            # Pipelining attack: HTTP request + WS upgrade in same TCP write, then RST
+            req_pipeline = (
+                f"GET /first HTTP/1.1\r\nHost: TARGET\r\n\r\n"
+                f"GET {_ws_endpoint} HTTP/1.1\r\nHost: TARGET\r\n"
+                f"Connection: Upgrade\r\nUpgrade: websocket\r\n"
+                f"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                f"Sec-WebSocket-Version: 13\r\n\r\n"
+                f"[TCP RST — socket.resetAndDestroy()]"
+            )
+            pairs.append({"label": "HTTP pipeline + WS upgrade + TCP RST (trigger)",
+                          "request": req_pipeline,
+                          "response": _crash})
+        else:
+            req1 = (f"GET {_ws_endpoint} HTTP/1.1\nHost: TARGET\nUpgrade: websocket\n"
+                    f"Connection: Upgrade\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\n"
+                    f"Sec-WebSocket-Version: 13\n")
+            pairs.append({"label": "Peticion WebSocket Upgrade (trigger)",
+                          "request": req1,
+                          "response": "HTTP/1.1 101 Switching Protocols\r\n[Conexion establecida]"})
+            # Second block: unmasked frame that triggers the crash
+            pairs.append({"label": "Frame WebSocket sin mascara (crash)",
+                          "request": "0x81 0x10 BINORACLE_CANARY  [mask bit = 0, viola RFC 6455 §5.3]",
+                          "response": _crash})
+
         if payload:
             req2, resp2 = _burp_block(ctrl_ep, method, {param: payload}, status,
                                       resp_body or "(respuesta con error o sin respuesta)", auth, stack=stack)
