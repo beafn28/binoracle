@@ -1249,6 +1249,13 @@ def verify_generic_path_traversal(
         # allowed_path.startswith(user_path) que no normalizan slashes multiples antes de comparar
         # (CVE-2024-1561 Gradio: /file=//etc/passwd; otros frameworks Python/Ruby/Go similares).
         attempts += ["//" + canary_path, "/" + canary_path, "//" + rel, "/" + rel]
+        # Backslash-encoded bypass '%5C..%5C': en sistemas POSIX el sanitizador trata '\' como byte
+        # ordinario de nombre de fichero y no lo bloquea; pero si la app convierte '\' → '/' DESPUÉS
+        # del check (CVE-2026-114516 Etherpad Minify.ts), los '%5C..%5C' se convierten en '/../'
+        # y producen traversal sin haber pasado por el filtro.  El canary se referencia también con
+        # '%5C' en lugar de '/' para que el path quede totalmente codificado en backslash.
+        _rel_bs = rel.replace("/", "%5C")
+        attempts += [("%5C.." * n) + "%5C" + _rel_bs for n in depths]
         attempts += [rel + "%00", canary_path + "%00"]
 
         found = False
