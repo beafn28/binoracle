@@ -9414,6 +9414,7 @@ def investigate_cve(cve_id: str, binary: str = "", config=None, llm=None,
     #   a) dockerfile_body: construye la imagen localmente (para CVEs donde la imagen base ya
     #      tiene el parche y necesitamos instalar la version vulnerable exacta via .deb archivado)
     #   b) docker_image + poc_cmd: imagen pre-existente en Docker Hub con el binario vulnerable
+    notes = inv.llm_notes  # guard: llm_notes is always {}, notes may be None if LLM failed
     _docker_img = (notes.get("docker_image") or "").strip()
     _poc_cmd = (notes.get("poc_cmd") or "").strip()
     _dockerfile_body = (notes.get("dockerfile_body") or "").strip()
@@ -10084,7 +10085,8 @@ def investigate_cves_batch(
             item.investigation = inv
             item.status = "done"
         except Exception as e:
-            item.error = f"{type(e).__name__}: {e}"
+            import traceback as _tb
+            item.error = f"{type(e).__name__}: {e}\n{_tb.format_exc()}"
             item.status = "error"
         item.elapsed_s = time.time() - t0
         _emit({"cve_id": cve_id, "type": "finish", "status": item.status,
