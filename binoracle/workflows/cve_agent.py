@@ -250,6 +250,7 @@ class Investigation:
     source_grounding: dict = field(default_factory=dict)  # {found: {fn: [loc,...]}, not_found: [...]}
     dynamic_verify: dict = field(default_factory=dict)    # {attempted, available, verified, detail}
     poc_source_used: str = ""   # URL del PoC publico (GitHub) realmente leido, "" si ninguno
+    tech: str = ""               # pila tecnologica detectada: 'php','nodejs','python','ruby','java','go','dotnet','unknown'
     attempt_evidence: dict = field(default_factory=dict)  # evidencia REAL del intento (screenshots
                                                              # incluidas) incluso cuando NO se
                                                              # confirma -- bug real encontrado en
@@ -3368,6 +3369,8 @@ def _hueco_code_analysis(inv: "Investigation", fr: Any, llm: Any, step: Any, es:
     notes  = inv.llm_notes
     lpath  = fr.local_path
     tech   = detect_tech_stack(lpath)   # 'php', 'nodejs', 'python', 'ruby', 'java', etc.
+    if not inv.tech:
+        inv.tech = tech  # store for downstream use (source fetch, reports)
 
     def _read_snippet(rel_file: str, line_no: int, ctx: int = 35) -> str:
         """Lee ctx lineas alrededor de line_no en rel_file (ruta relativa a lpath)."""
@@ -6273,6 +6276,14 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
         # PyPI/npm/gem instead of falling through to WordPress.org
         _explicit_cms = (notes.get("cms") or "").strip().lower()
         _tech_as_hint = inv.tech or ""
+        if not _tech_as_hint:
+            _desc_lower = (inv.description or "").lower()
+            if any(w in _desc_lower for w in ("node.js", "nodejs", " npm ", "javascript", "fastify", "express", "next.js", "nuxt")):
+                _tech_as_hint = "nodejs"
+            elif any(w in _desc_lower for w in ("python", "pypi", "django", "flask", "fastapi", "aiohttp")):
+                _tech_as_hint = "python"
+            elif any(w in _desc_lower for w in ("ruby", " rails", "rubygems", ".gem")):
+                _tech_as_hint = "ruby"
         _cms_pass = _explicit_cms or (_tech_as_hint if _tech_as_hint not in ("php", "unknown", "") else "")
         fr = fetch_source(source, version=version, on_step=step,
                          cms_hint=_cms_pass,

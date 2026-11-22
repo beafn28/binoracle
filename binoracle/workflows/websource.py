@@ -840,17 +840,36 @@ def fetch_git_source(url: str, ref: str = "", dest_dir: str = "",
         return res
     if out.returncode != 0:
         err_text = (out.stderr or "").strip()
-        # Branch/tag not found: retry without --branch (clone default branch)
+        # Branch/tag not found: retry with v-prefix (npm convention) then without --branch
         if ref and ("remote branch" in err_text.lower() or
                     "not found in upstream" in err_text.lower() or
                     "no encontrada" in err_text.lower()):
-            cmd2 = [git, "clone", "--depth", "1", url, dest_dir]
+            import shutil as _sh
+            # 1) try v{version} tag (npm/node packages tag as v1.2.3 not 1.2.3)
+            if ref and not ref.startswith("v"):
+                v_ref = f"v{ref}"
+                dest_dir_v = tempfile.mkdtemp(prefix="binoracle_git_")
+                cmd_v = [git, "clone", "--depth", "1", "--branch", v_ref, url, dest_dir_v]
+                try:
+                    out_v = subprocess.run(cmd_v, capture_output=True,
+                                           text=True, timeout=timeout, env=env)
+                    if out_v.returncode == 0:
+                        res.ok = True
+                        res.local_path = dest_dir_v
+                        res.resolved_version = v_ref
+                        step(f"clonado con tag '{v_ref}' en {dest_dir_v}")
+                        return res
+                    else:
+                        _sh.rmtree(dest_dir_v, ignore_errors=True)
+                except Exception:
+                    _sh.rmtree(dest_dir_v, ignore_errors=True)
+            # 2) fallback: clone default branch (HEAD)
             step(f"rama '{ref}' no existe, reintentando sin --branch ...")
             try:
-                import shutil as _sh
                 _sh.rmtree(dest_dir, ignore_errors=True)
                 dest_dir2 = tempfile.mkdtemp(prefix="binoracle_git_")
-                out = subprocess.run(cmd2 + [dest_dir2], capture_output=True,
+                cmd2 = [git, "clone", "--depth", "1", url, dest_dir2]
+                out = subprocess.run(cmd2, capture_output=True,
                                      text=True, timeout=timeout, env=env)
                 if out.returncode == 0:
                     res.ok = True
@@ -4791,7 +4810,7 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
 
     merged = {
         "cve_id": cve_id,
-        "sources": {k: v.get("ok", False) for k, v in sources.items()},
+        "sources": {k: (v.get("ok", False) if isinstance(v, dict) else False) for k, v in sources.items()},
         "description": "",
         "cwes": [],
         "cvss_score": 0.0,
@@ -4804,14 +4823,14 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
         "poc_available": False,
         "poc_snippets": [],
     }
-    nvd = sources.get("nvd", {})
+    nvd = sources.get("nvd") or {}
     if nvd.get("ok"):
         merged["description"] = nvd.get("description", "")
         merged["cwes"] = nvd.get("cwes", [])
         merged["cvss_score"] = nvd.get("cvss_score", 0.0)
         merged["attack_vector"] = nvd.get("attack_vector", "")
         merged["references"] = nvd.get("references", [])
-    wf = sources.get("wordfence", {})
+    wf = sources.get("wordfence") or {}
     if wf.get("ok"):
         if wf.get("vulnerable_param"):
             merged["vulnerable_param"] = wf["vulnerable_param"]
@@ -4823,13 +4842,13 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
             merged["advisory_notes"] = wf["notes"][:3000]
         if wf.get("attack_vector") and not merged["attack_vector"]:
             merged["attack_vector"] = wf["attack_vector"]
-    ps = sources.get("patchstack", {})
+    ps = sources.get("patchstack") or {}
     if ps.get("ok") and not merged["vulnerable_param"]:
         if ps.get("vulnerable_param"):
             merged["vulnerable_param"] = ps["vulnerable_param"]
         if ps.get("notes") and not merged["advisory_notes"]:
             merged["advisory_notes"] = ps["notes"][:2000]
-    gh = sources.get("github", {})
+    gh = sources.get("github") or {}
     if gh.get("ok"):
         if not merged["description"] and gh.get("description"):
             merged["description"] = gh["description"]
@@ -4838,7 +4857,7 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
         if not merged["affected_function"] and gh.get("affected_function"):
             merged["affected_function"] = gh["affected_function"]
     # WPScan: append advisory notes and PoC URLs
-    ws = sources.get("wpscan", {})
+    ws = sources.get("wpscan") or {}
     if ws.get("ok"):
         if ws.get("notes"):
             if merged["advisory_notes"]:
@@ -4849,7 +4868,7 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
             merged["references"] = list({*merged["references"], *ws["poc_urls"]})
             merged["poc_available"] = True
     # ExploitDB: highest-value intel — public PoC code
-    edb = sources.get("exploitdb", {})
+    edb = sources.get("exploitdb") or {}
     if edb.get("ok"):
         merged["poc_available"] = True
         if edb.get("notes"):
@@ -4857,14 +4876,14 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
         if edb.get("poc_snippets"):
             merged["poc_snippets"] = edb["poc_snippets"]
     # MITRE: fallback description when NVD is empty
-    mitre = sources.get("mitre", {})
+    mitre = sources.get("mitre") or {}
     if mitre.get("ok"):
         if not merged["description"] and mitre.get("description"):
             merged["description"] = mitre["description"]
         if mitre.get("notes"):
             merged["advisory_notes"] += f"\n\nMITRE: {mitre['notes'][:400]}"
     # OSV.dev: affected packages + fix refs (great for non-WP ecosystems)
-    osv = sources.get("osv", {})
+    osv = sources.get("osv") or {}
     if osv.get("ok"):
         if not merged["description"] and osv.get("summary"):
             merged["description"] = osv["summary"]
@@ -4875,7 +4894,7 @@ def gather_cve_intelligence(cve_id: str, plugin_slug: str = "",
         if osv.get("affected_packages"):
             merged["affected_packages"] = osv["affected_packages"]
     # Vulners: PoC references and CVE aggregation
-    vul = sources.get("vulners", {})
+    vul = sources.get("vulners") or {}
     if vul.get("ok"):
         if not merged["description"] and vul.get("description"):
             merged["description"] = vul["description"]
