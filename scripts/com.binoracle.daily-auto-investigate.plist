@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.binoracle.daily-auto-investigate</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/beatrizfresnonaumova/Desktop/binoracle/scripts/daily_auto_investigate.py</string>
+        <string>--max</string>
+        <string>5</string>
+        <string>--days</string>
+        <string>7</string>
+        <string>--min-cvss</string>
+        <string>7.0</string>
+        <string>--budget</string>
+        <string>900</string>
+    </array>
+
+    <!-- Run at 03:17 local time every day (off :00/:30 to avoid fleet collisions) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>17</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/beatrizfresnonaumova/.binoracle/auto_investigate_launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/beatrizfresnonaumova/.binoracle/auto_investigate_launchd.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/beatrizfresnonaumova/Desktop/binoracle</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/beatrizfresnonaumova/Desktop/binoracle</string>
+        <key>HOME</key>
+        <string>/Users/beatrizfresnonaumova</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
