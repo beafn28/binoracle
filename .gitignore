@@ -39,3 +39,13 @@ scripts/node_modules/
 
 # WordPress plugin backup
 unlimited-elements-for-elementor.bak/
+
+# Downloaded plugin sources (temp analysis, not part of binoracle codebase)
+wpo365-login/
+mooberry-book-manager-image-fixer/
+sms-alert/
+front-user-submit/
+event-tickets-manager-for-woocommerce/
+thinkrank-seo/
+yoast-seo/
+lifter-lms/
