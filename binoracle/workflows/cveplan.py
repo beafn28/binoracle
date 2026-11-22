@@ -100,6 +100,10 @@ _CLASSES = [
      "escapa del directorio esperado para leer/escribir ficheros arbitrarios", []),
     ("rce", ("remote code execution", "arbitrary code execution", "ejecucion remota de codigo"),
      "ejecucion de codigo arbitrario en el servidor", []),
+    ("code-injection", ("code injection", "improper control of generation of code",
+                        "php code injection", "php eval", "eval injection",
+                        "arbitrary php", "arbitrary code", "code exec"),
+     "el servidor evalua codigo proporcionado por el atacante (PHP eval, Python exec, etc.)", []),
     ("file-upload", ("unrestricted file upload", "arbitrary file upload", "file upload vulnerability"),
      "sube un fichero con extension/contenido no validado (p.ej. webshell)", []),
     ("deserialization", ("insecure deserialization", "unsafe deserialization", "object injection",
@@ -117,7 +121,8 @@ _CLASSES = [
 # XSS), nunca un script pwntools contra un proceso local. Ver workflows/webexploit.py.
 WEB_CLASSES = frozenset({
     "missing-authorization", "idor", "auth-bypass", "sqli", "xss", "ssrf", "command-injection",
-    "rce", "path-traversal", "lfi", "file-upload", "deserialization", "xxe", "ssti", "csrf", "open-redirect",
+    "rce", "code-injection", "arbitrary-file-upload", "path-traversal", "lfi", "file-upload",
+    "deserialization", "xxe", "ssti", "csrf", "open-redirect", "php-object-injection",
 })
 
 

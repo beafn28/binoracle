@@ -8283,6 +8283,51 @@ def _run_web_investigation(inv: "Investigation", lang: str, step, llm=None,
             # payload hace que el shell remoto CALCULE una suma (ver verify_wordpress_command_injection)
             # y confirma que ese numero -- que no esta en el payload -- aparece en la respuesta.
             elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
+                  and inv.vuln_class in ("code-injection", "arbitrary-code-execution", "php-code-execution")
+                  and notes.get("endpoint")):
+                from .wpverify import verify_wordpress_php_code_injection, _pick_param, _PHP_CODE_HINTS
+                params = notes.get("parameters") or []
+                _params_dict = dict(params) if isinstance(params, dict) else dict.fromkeys(params, "")
+                code_p = notes.get("code_param") or _pick_param(params, _PHP_CODE_HINTS)
+                _json_b = bool(notes.get("json_body") or
+                               (notes.get("http_method") or "").upper() == "POST")
+                step(("intentando verificacion DINAMICA -- PHP code injection (marcador echo) "
+                     "en WordPress+MySQL efimero en Docker..." if es else
+                     "attempting DYNAMIC verification -- PHP code injection (echo marker) "
+                     "in ephemeral WordPress+MySQL in Docker..."))
+                wr = verify_wordpress_php_code_injection(
+                    fr.local_path, plugin_dir, notes.get("endpoint"),
+                    notes.get("http_method") or "POST", _params_dict,
+                    code_param_hint=code_p or "", on_step=step, budget_s=budget_s,
+                    companion_plugins=companion_plugins, json_body=_json_b,
+                    keep_lab_on_failure=keep_lab_on_failure)
+                def _attempt_php_code(ep, pr):
+                    return verify_wordpress_php_code_injection(
+                        fr.local_path, plugin_dir, ep, notes.get("http_method") or "POST",
+                        _params_dict, code_param_hint=pr or "", on_step=step, budget_s=budget_s,
+                        companion_plugins=companion_plugins, json_body=_json_b,
+                        keep_lab_on_failure=keep_lab_on_failure)
+                wr = _retry_or_keep_lab_alive(
+                    keep_lab_on_failure, step, es, wr, lambda: _run_evidence_retry_loop(
+                        llm, step, es, _WP_GENERIC_RETRY_SYS, _WP_GENERIC_RETRY_EVIDENCE_KEYS,
+                        _attempt_php_code, wr, notes.get("endpoint"), code_p,
+                        technique_label="PHP code injection WordPress"))
+                inv.dynamic_verify = {"attempted": True, "available": wr.available,
+                                      "ok": wr.ok, "verified": wr.verified, "detail": wr.detail,
+                                      "logs": wr.logs}
+                inv.attempt_evidence = wr.evidence
+                if wr.verified:
+                    inv.verified = True
+                    inv.verified_detail = wr.detail
+                    inv.verified_evidence = wr.evidence
+                elif not wr.available:
+                    inv.blockers.append(("verificacion dinamica no intentada: " + wr.limitations[0]
+                                         if wr.limitations else "Docker no disponible") if es else
+                                        ("dynamic verification not attempted: " + wr.limitations[0]
+                                         if wr.limitations else "Docker not available"))
+                _apply_wpverify_result(inv, wr, es, llm)
+
+            elif (not is_drupal and not is_joomla and fr.kind in ("wordpress-plugin", "local-zip", "zip-url") and plugin_dir
                   and inv.vuln_class in ("command-injection", "os-command-injection")
                   and notes.get("endpoint")):
                 from .wpverify import verify_wordpress_command_injection, _pick_param, _CMD_HINTS

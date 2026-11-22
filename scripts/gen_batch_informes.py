@@ -199,6 +199,8 @@ for fname in files:
 
     # ── verified_evidence: mapeo desde attempt_evidence ──────────────────────
     params = llm.get("parameters") or []
+    if isinstance(params, dict):
+        params = list(params.keys())
     first_param = params[0] if params else ""
 
     ve = {
