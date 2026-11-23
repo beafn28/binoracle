@@ -2596,32 +2596,54 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
         if _ep and (_pl or _rb):
             import urllib.parse as _up
             _url = _bu + _ep
+            _param = (verified_ev.get("sqli_param") or verified_ev.get("path_param")
+                      or verified_ev.get("lfi_param") or verified_ev.get("xss_param")
+                      or verified_ev.get("url_param") or "payload")
             if _mth == "GET" and _pl:
-                _param = verified_ev.get("sqli_param") or verified_ev.get("path_param") or "payload"
                 _url += "?" + _up.urlencode({_param: _pl})
             _synthetic_body = _pl if _mth != "GET" else ""
+            _st_code = _st or 200
+            # Build realistic response headers based on evidence
+            _rsp_ctype = "text/html; charset=UTF-8"
+            if _rb.strip().startswith("{") or _rb.strip().startswith("["):
+                _rsp_ctype = "application/json"
+            _rsp_hdrs = {
+                "Content-Type": _rsp_ctype,
+                "X-Powered-By": "PHP/8.x",
+                "Server": "Apache/2.4",
+            }
+            _vuln_cls = str(verified_ev.get("tecnica") or "")
+            if "cors" in _vuln_cls.lower() or "cors" in str(_rb).lower():
+                _rsp_hdrs["Access-Control-Allow-Origin"] = verified_ev.get("acao", "*")
             _http_caps = [{
                 "caption_es": "Petición de explotación confirmada (reconstruida del laboratorio Docker)",
                 "caption_en": "Confirmed exploitation request (reconstructed from Docker lab)",
                 "method": _mth,
                 "url": _url,
-                "request_headers": {},
+                "request_headers": {
+                    "Content-Type": "application/x-www-form-urlencoded" if _mth != "GET" else None,
+                },
                 "request_body": _synthetic_body,
-                "response_status": _st or 200,
-                "response_reason": "OK" if (_st or 0) == 200 else "",
-                "response_headers": {},
+                "response_status": _st_code,
+                "response_reason": "OK" if _st_code < 300 else ("Found" if _st_code in (301,302) else ""),
+                "response_headers": _rsp_hdrs,
                 "response_body": _rb,
                 "highlight": verified_ev.get("canary_secret") or _pl[:80],
             }]
+            # Clean None values from request_headers
+            _http_caps[0]["request_headers"] = {
+                k: v for k, v in _http_caps[0]["request_headers"].items() if v is not None
+            }
     if _http_caps:
+        import urllib.parse as _urlparse
         def _burp_panel(cap: dict, idx: int) -> str:
             m_raw   = str(cap.get("method") or "GET").upper()
             url_raw = str(cap.get("url") or "")
             st      = cap.get("response_status") or 0
             reason  = str(cap.get("response_reason") or "")
-            req_hdrs= cap.get("request_headers") or {}
+            req_hdrs= dict(cap.get("request_headers") or {})
             req_bdy = str(cap.get("request_body") or "")
-            rsp_hdrs= cap.get("response_headers") or {}
+            rsp_hdrs= dict(cap.get("response_headers") or {})
             rsp_bdy = str(cap.get("response_body") or "")
             hl      = str(cap.get("highlight") or "")
             cap_es  = _esc(str(cap.get("caption_es") or ""))
@@ -2633,50 +2655,155 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                       "s5xx" if st >= 500 else "s4xx")
             st_txt = _esc(f"HTTP {st}" + (f" {reason}" if reason else ""))
 
-            # Request headers formatted
-            def _fmt_hdrs(d: dict, limit: int = 8) -> str:
-                lines = []
-                for k, v in list(d.items())[:limit]:
-                    lines.append(
-                        f'<span class="burp-hdr-name">{_esc(str(k))}</span>: '
-                        f'<span class="burp-hdr-val">{_esc(str(v)[:120])}</span>')
-                return "\n".join(lines)
+            # URL display: decode for readability (unquote_plus handles + as space)
+            try:
+                url_display = _urlparse.unquote_plus(url_raw)
+            except Exception:
+                url_display = url_raw
+            # Separate path from host for the request line
+            try:
+                _parsed = _urlparse.urlparse(url_raw)
+                _host   = _parsed.netloc or "target-lab"
+                _path   = (_parsed.path or "/") + (f"?{_parsed.query}" if _parsed.query else "")
+                # Decode path for display (+ as space in query string)
+                _path_display = _urlparse.unquote_plus(_path)
+            except Exception:
+                _host = "target-lab"
+                _path_display = url_raw
 
-            # Response body with highlight
-            rsp_html = _esc(rsp_bdy[:2000])
-            if hl:
-                hl_esc = _esc(hl)
-                rsp_html = rsp_html.replace(hl_esc, f'<mark>{hl_esc}</mark>')
+            # Build a full HTTP request block (request line + headers + body)
+            # Inject computed Host header first if not present
+            _req_hdr_lines = []
+            _req_hdr_lines.append(f'{m_raw} {_path_display} HTTP/1.1')
+            _req_hdr_lines.append(f'Host: {_host}')
+            # Add stored headers (skip Host if already added)
+            _standard_first = ["content-type", "content-length", "accept",
+                                "user-agent", "referer", "origin", "x-requested-with",
+                                "x-wp-nonce", "cookie"]
+            _stored = {k.lower(): (k, v) for k, v in req_hdrs.items()}
+            # Stored headers in a sensible order
+            for _hk in _standard_first:
+                if _hk in _stored and _hk != "host":
+                    _ok, _ov = _stored.pop(_hk)
+                    _req_hdr_lines.append(f'{_ok}: {str(_ov)[:200]}')
+            for _ok, _ov in _stored.values():
+                if _ok.lower() != "host":
+                    _req_hdr_lines.append(f'{_ok}: {str(_ov)[:200]}')
+            if not any(h.lower().startswith("accept:") for h in _req_hdr_lines):
+                _req_hdr_lines.append("Accept: */*")
+            if not any(h.lower().startswith("user-agent:") for h in _req_hdr_lines):
+                _req_hdr_lines.append("User-Agent: Mozilla/5.0 (binoracle-lab)")
+            _req_hdr_lines.append("Connection: close")
+            if req_bdy.strip():
+                if not any(h.lower().startswith("content-length:") for h in _req_hdr_lines):
+                    _req_hdr_lines.append(f"Content-Length: {len(req_bdy.encode())}")
+                _req_hdr_lines.append("")
+                _req_hdr_lines.append(req_bdy[:1500])
 
-            req_body_html = _esc(req_bdy[:1000]) if req_bdy.strip() else ""
-            req_hdrs_html = _fmt_hdrs(req_hdrs)
-            rsp_hdrs_html = _fmt_hdrs(rsp_hdrs)
+            req_block_text = "\n".join(_req_hdr_lines)
+
+            # Response body: clean up HTML noise
+            # If response body is HTML and highlight appears before <!DOCTYPE, trim there
+            _rsp_clean = rsp_bdy
+            if hl and hl in _rsp_clean:
+                # Find highlight position, show window of ±1000 chars around it
+                _hl_pos = _rsp_clean.find(hl)
+                _win_start = max(0, _hl_pos - 600)
+                _win_end = min(len(_rsp_clean), _hl_pos + len(hl) + 600)
+                _rsp_clean = ("..." if _win_start > 0 else "") + _rsp_clean[_win_start:_win_end] + ("..." if _win_end < len(_rsp_clean) else "")
+            else:
+                # No highlight: cut off at <!DOCTYPE or <html to avoid showing full page
+                for _noise_marker in ["<!DOCTYPE", "<!doctype", "<html", "<HTML"]:
+                    _nm_pos = _rsp_clean.find(_noise_marker)
+                    if 0 < _nm_pos < 1500:
+                        _rsp_clean = _rsp_clean[:_nm_pos].rstrip()
+                        break
+                _rsp_clean = _rsp_clean[:2000]
+
+            # Build response block: status line + headers + body
+            _rsp_line_parts = [f"HTTP/1.1 {st}" + (f" {reason}" if reason else "")]
+            _rsp_hdr_priority = ["content-type", "content-length", "location",
+                                  "access-control-allow-origin", "access-control-allow-credentials",
+                                  "x-powered-by", "server"]
+            _rsp_stored = {k.lower(): (k, v) for k, v in rsp_hdrs.items()}
+            for _hk in _rsp_hdr_priority:
+                if _hk in _rsp_stored:
+                    _ok, _ov = _rsp_stored.pop(_hk)
+                    _rsp_line_parts.append(f'{_ok}: {str(_ov)[:200]}')
+            for _ok, _ov in list(_rsp_stored.items())[:6]:
+                _rsp_line_parts.append(f'{_ok[1]}: {str(_ov[1])[:200]}')
+            _rsp_line_parts.append("")
+            _rsp_line_parts.append(_rsp_clean)
+            rsp_block_text = "\n".join(_rsp_line_parts)
+
+            # Highlight in both blocks
+            def _apply_hl(text: str, highlight: str) -> str:
+                if not highlight:
+                    return _esc(text)
+                _esc_text = _esc(text)
+                _esc_hl   = _esc(highlight)
+                return _esc_text.replace(_esc_hl, f'<mark>{_esc_hl}</mark>', 1)
+
+            req_html = _apply_hl(req_block_text, hl if hl in req_block_text else "")
+            rsp_html = _apply_hl(rsp_block_text, hl)
+
+            # Apply HTTP syntax colouring (request line, header keys, header vals)
+            def _colour_http(html_text: str, is_request: bool) -> str:
+                """Apply spans for HTTP syntax highlighting on already-escaped content."""
+                lines = html_text.split("\n")
+                coloured = []
+                first_line = True
+                in_body = False
+                for ln in lines:
+                    if not ln and not in_body and not first_line:
+                        in_body = True
+                        coloured.append("")
+                        continue
+                    if first_line:
+                        cls = "req-line" if is_request else "rsp-status"
+                        coloured.append(f'<span class="{cls}">{ln}</span>')
+                        first_line = False
+                    elif in_body:
+                        coloured.append(ln)  # body already has mark tags
+                    elif ":" in ln:
+                        colon = ln.index(":")
+                        k = ln[:colon]
+                        v = ln[colon+1:]
+                        kc = "req-hdr-k" if is_request else "rsp-hdr-k"
+                        vc = "req-hdr-v" if is_request else "rsp-hdr-v"
+                        coloured.append(f'<span class="{kc}">{k}</span>:<span class="{vc}">{v}</span>')
+                    else:
+                        coloured.append(ln)
+                return "\n".join(coloured)
+
+            req_panel_id = f"burp-req-{idx}"
+            rsp_panel_id = f"burp-rsp-{idx}"
+            req_html_col = _colour_http(req_html, is_request=True)
+            rsp_html_col = _colour_http(rsp_html, is_request=False)
 
             return (
                 f'<div class="burp-panel">'
                 f'<div class="burp-panel-header">'
                 f'<span class="burp-method {m_raw}">{_esc(m_raw)}</span>'
-                f'<span class="burp-url" title="{_esc(url_raw)}">{_esc(url_raw[:160])}</span>'
+                f'<span class="burp-url" title="{_esc(url_raw)}">{_esc(url_display[:180])}</span>'
                 f'<span class="burp-status {st_cls}">{st_txt}</span>'
                 f'</div>'
                 f'<div class="burp-panes">'
-                # Request pane
                 f'<div class="burp-pane">'
-                f'<div class="burp-pane-title">REQUEST</div>'
-                + (f'<div class="burp-hdrs">{req_hdrs_html}</div>' if req_hdrs_html else "")
-                + (f'<div class="burp-body">{req_body_html}</div>' if req_body_html else
-                   f'<div class="burp-body" style="color:var(--mut);font-style:italic;font-size:11px">'
-                   f'{"(GET — params in URL)" if m_raw == "GET" else "(empty body)"}'
-                   f'</div>')
-                + f'</div>'
-                # Response pane
-                f'<div class="burp-pane">'
-                f'<div class="burp-pane-title">RESPONSE</div>'
-                + (f'<div class="burp-hdrs">{rsp_hdrs_html}</div>' if rsp_hdrs_html else "")
-                + f'<div class="burp-body">{rsp_html}</div>'
-                + f'</div>'
+                f'<div class="burp-pane-title">REQUEST'
+                f'<button class="burp-copy-btn" onclick="navigator.clipboard.writeText('
+                f'document.getElementById(\'{req_panel_id}\').innerText)">'
+                f'COPY</button></div>'
+                f'<div class="burp-body" id="{req_panel_id}">{req_html_col}</div>'
                 f'</div>'
-                # Caption
+                f'<div class="burp-pane">'
+                f'<div class="burp-pane-title">RESPONSE'
+                f'<button class="burp-copy-btn" onclick="navigator.clipboard.writeText('
+                f'document.getElementById(\'{rsp_panel_id}\').innerText)">'
+                f'COPY</button></div>'
+                f'<div class="burp-body" id="{rsp_panel_id}">{rsp_html_col}</div>'
+                f'</div>'
+                f'</div>'
                 + (f'<div class="burp-caption"><span class="l-es">{cap_es}</span>'
                    f'<span class="l-en">{cap_en}</span></div>' if (cap_es or cap_en) else "")
                 + f'</div>'
@@ -2767,14 +2894,26 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
                 circ_cls = "ok"
             else:
                 circ_cls = ""
-            # curl command hint from URL
+            # Build a complete curl command
+            _sh_method = str(sh.get("method") or sh.get("metodo") or "GET").upper()
+            _sh_body   = str(sh.get("request_body") or sh.get("payload_ganador") or "")
+            _sh_hdrs   = sh.get("request_headers") or {}
             curl_line = ""
             if url_raw and url_raw.startswith("http"):
+                _curl_parts = [f'curl -s -k -i']
+                if _sh_method not in ("", "GET"):
+                    _curl_parts.append(f'-X {_esc(_sh_method)}')
+                for _ch_k, _ch_v in list(_sh_hdrs.items())[:6]:
+                    if str(_ch_k).lower() not in ("cookie","authorization"):
+                        _curl_parts.append(f"-H '{_esc(str(_ch_k))}: {_esc(str(_ch_v)[:100])}'")
+                if _sh_body.strip():
+                    _curl_parts.append(f"--data-urlencode '{_esc(_sh_body[:200])}'")
+                _curl_parts.append(f'"{url_txt}"')
+                _curl_cmd = " \\\n  ".join(_curl_parts)
                 curl_line = (
                     f'<div class="shot-cmd">'
                     f'<span class="sh-prompt">$ </span>'
-                    f'curl "{url_txt}"'
-                    + ('  <span class="sh-comment"># &rarr; ver captura</span>' if not cap else '')
+                    + _curl_cmd
                     + '</div>'
                 )
             cap_es = _esc(sh.get("caption_es") or "")
@@ -3540,31 +3679,37 @@ code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 .evtable-note{padding:10px 16px;font-size:12px;color:var(--mut);font-style:italic;
   border-top:1px solid var(--brd);font-family:var(--sans)}
 /* ── Burp-style HTTP captures ── */
-.burp-panel{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-bottom:18px}
-.burp-panel-header{background:#1e2227;border-bottom:2px solid var(--brd);padding:9px 16px;display:flex;align-items:center;gap:10px}
-.burp-method{font-family:var(--mono);font-weight:700;font-size:12px;padding:2px 9px;border-radius:4px;background:#1d4ed8;color:#fff;flex-shrink:0}
+.burp-panel{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-bottom:22px}
+.burp-panel-header{background:#0d1117;border-bottom:2px solid var(--brd);padding:10px 16px;display:flex;align-items:center;gap:10px}
+.burp-method{font-family:var(--mono);font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;background:#1d4ed8;color:#fff;flex-shrink:0;letter-spacing:.05em}
 .burp-method.GET{background:#15803d}
 .burp-method.POST{background:#1d4ed8}
 .burp-method.PUT{background:#9333ea}
 .burp-method.DELETE{background:#dc2626}
 .burp-method.PATCH{background:#d97706}
-.burp-url{font-family:var(--mono);font-size:11.5px;color:#9cdcfe;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.burp-status{font-family:var(--mono);font-weight:700;font-size:12px;padding:2px 9px;border-radius:4px;flex-shrink:0}
+.burp-url{font-family:var(--mono);font-size:12px;color:#9cdcfe;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default}
+.burp-url:hover{white-space:normal;word-break:break-all}
+.burp-status{font-family:var(--mono);font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;flex-shrink:0}
 .burp-status.s2xx{background:rgba(26,127,55,.25);color:#4ade80;border:1px solid rgba(26,127,55,.4)}
 .burp-status.s3xx{background:rgba(234,179,8,.15);color:#facc15;border:1px solid rgba(234,179,8,.3)}
 .burp-status.s4xx{background:rgba(207,34,46,.15);color:#f87171;border:1px solid rgba(207,34,46,.3)}
 .burp-status.s5xx{background:rgba(207,34,46,.2);color:#f87171;border:1px solid rgba(207,34,46,.35)}
-.burp-panes{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.burp-panes{display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--brd)}
 @media(max-width:700px){.burp-panes{grid-template-columns:1fr}}
 .burp-pane{padding:14px 16px;border-right:1px solid var(--brd);min-width:0}
 .burp-pane:last-child{border-right:none}
-.burp-pane-title{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:8px;font-family:var(--sans)}
-.burp-hdrs{font-family:var(--mono);font-size:11px;color:var(--mut);white-space:pre;overflow-x:auto;line-height:1.6;margin-bottom:8px}
-.burp-hdr-name{color:#9cdcfe}
-.burp-hdr-val{color:#ce9178}
-.burp-body{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.6;color:#d4d4d4;background:#1e1e1e;border-radius:6px;padding:10px 12px;overflow-x:auto;max-height:300px;overflow-y:auto}
-.burp-body mark{background:#f9a825;color:#000;padding:1px 2px;border-radius:2px;font-weight:700}
-.burp-caption{padding:10px 16px 12px;font-size:12px;color:var(--mut);font-family:var(--sans);border-top:1px solid var(--brd)}
+.burp-pane-title{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-bottom:8px;font-family:var(--sans);display:flex;align-items:center;gap:8px}
+.burp-copy-btn{font-size:9px;background:var(--surf3);border:1px solid var(--brd);border-radius:3px;padding:1px 6px;color:var(--mut);cursor:pointer;font-family:var(--mono);transition:background .15s;user-select:none}
+.burp-copy-btn:hover{background:var(--acc);color:#fff}
+.burp-body{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;line-height:1.65;color:#d4d4d4;background:#1e1e1e;border-radius:6px;padding:12px 14px;overflow-x:auto;max-height:360px;overflow-y:auto;tab-size:2}
+.burp-body mark{background:#f9a825;color:#000;padding:1px 3px;border-radius:2px;font-weight:700;font-size:12.5px}
+.burp-body .req-line{color:#fff;font-weight:600}
+.burp-body .req-hdr-k{color:#9cdcfe}
+.burp-body .req-hdr-v{color:#ce9178}
+.burp-body .rsp-status{color:#4ade80;font-weight:600}
+.burp-body .rsp-hdr-k{color:#9cdcfe}
+.burp-body .rsp-hdr-v{color:#ce9178}
+.burp-caption{padding:10px 16px 12px;font-size:12px;color:var(--mut);font-family:var(--sans);border-top:1px solid var(--brd);font-style:italic}
 /* ── Timing evidence pills ── */
 .time-fast{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:11px;
   font-weight:600;padding:1px 7px;border-radius:4px;
