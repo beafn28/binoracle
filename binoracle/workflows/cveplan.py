@@ -143,6 +143,9 @@ def classify_cve(text: str) -> Optional[str]:
     # atajo: si el texto ya es un id de clase canonico (lo que produce classify_binary), usalo tal cual
     if t in {c for c, _k, _p, _r in _CLASSES}:
         return t
+    # atajo: slugs web conocidos que no pasan por _CLASSES (cors, etc.)
+    if t in WEB_CLASSES:
+        return t
     for cls, kws, _prim, _refs in _CLASSES:
         if any(k in t for k in kws):
             return cls
