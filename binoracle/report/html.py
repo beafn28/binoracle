@@ -2871,6 +2871,94 @@ def render_investigation_page(markdown: str, script: str = "", cve: str = "targe
             f'</section>'
         )
 
+    # ── Extraction summary (HTML puro, sin Playwright) ───────────────────────
+    # Bloque adicional con los datos extraídos/prueba clave: siempre visible
+    # aunque los screenshots no muestren el exploit claramente.
+    extraction_section = ""
+    if inv.verified and verified_ev:
+        _vclass = str(getattr(inv, "vuln_class", "") or "").lower()
+        _proof_rows = []
+        def _prow(label_es, label_en, val, highlight=False):
+            _cls = ' class="prow-hl"' if highlight else ''
+            return (f'<div class="prow"{_cls}>'
+                    f'<span class="prow-k"><span class="l-es">{_esc(label_es)}</span>'
+                    f'<span class="l-en">{_esc(label_en)}</span></span>'
+                    f'<span class="prow-v">{_esc(str(val)[:300])}</span>'
+                    f'</div>')
+        # SQLi
+        _mv = verified_ev.get("mysql_version_extraida") or verified_ev.get("postgres_version") or ""
+        _pl = verified_ev.get("payload_ganador") or ""
+        _sp = verified_ev.get("sqli_param") or ""
+        _ep = verified_ev.get("endpoint") or ""
+        _mt = str(verified_ev.get("metodo") or verified_ev.get("method") or "GET").upper()
+        _tc = verified_ev.get("tecnica") or ""
+        if _mv or "sqli" in _vclass or "sql" in _vclass:
+            if _sp: _proof_rows.append(_prow("Parámetro vulnerable", "Vulnerable parameter", _sp))
+            if _mt and _ep: _proof_rows.append(_prow("Endpoint", "Endpoint", f"{_mt} {_ep}"))
+            if _pl: _proof_rows.append(_prow("Payload", "Payload", _pl))
+            if _tc: _proof_rows.append(_prow("Técnica", "Technique", _tc))
+            if _mv: _proof_rows.append(_prow("Versión DB extraída", "DB version extracted", _mv, highlight=True))
+            _rb = verified_ev.get("respuesta_cuerpo_recorte") or ""
+            if _rb:
+                _proof_rows.append(_prow("Fragmento de respuesta", "Response snippet", _rb[:300]))
+        # Path traversal / LFI
+        _canary = verified_ev.get("canary_secret") or verified_ev.get("canary") or ""
+        _tf = verified_ev.get("traversal_payload") or verified_ev.get("lfi_payload") or ""
+        if _canary or "path" in _vclass or "traversal" in _vclass or "lfi" in _vclass:
+            if _sp or verified_ev.get("path_param"): _proof_rows.append(_prow("Parámetro", "Parameter", _sp or verified_ev.get("path_param","")))
+            if _tf: _proof_rows.append(_prow("Traversal payload", "Traversal payload", _tf))
+            if _canary: _proof_rows.append(_prow("Canary en respuesta", "Canary in response", _canary, highlight=True))
+            _rb = verified_ev.get("respuesta_cuerpo_recorte") or ""
+            if _rb: _proof_rows.append(_prow("Fragmento de respuesta", "Response snippet", _rb[:300]))
+        # RCE / command injection
+        _cmd_out = verified_ev.get("command_output") or verified_ev.get("rce_output") or verified_ev.get("canary_secret") or ""
+        if "rce" in _vclass or "command" in _vclass or "injection" in _vclass:
+            _cmd = verified_ev.get("command") or verified_ev.get("payload_ganador") or ""
+            if _sp: _proof_rows.append(_prow("Parámetro", "Parameter", _sp))
+            if _cmd: _proof_rows.append(_prow("Comando inyectado", "Injected command", _cmd))
+            if _cmd_out: _proof_rows.append(_prow("Salida del comando", "Command output", _cmd_out, highlight=True))
+        # XSS
+        _marker = verified_ev.get("xss_marker") or verified_ev.get("marker") or ""
+        if "xss" in _vclass or _marker:
+            _xp = verified_ev.get("xss_param") or _sp or ""
+            if _xp: _proof_rows.append(_prow("Parámetro XSS", "XSS parameter", _xp))
+            _xpl = verified_ev.get("xss_payload") or _pl or ""
+            if _xpl: _proof_rows.append(_prow("Payload XSS", "XSS payload", _xpl))
+            if _marker: _proof_rows.append(_prow("Marcador ejecutado", "Executed marker", _marker, highlight=True))
+        # Auth bypass / privilege escalation
+        _role = (verified_ev.get("user_role") or verified_ev.get("escalated_role")
+                 or verified_ev.get("confirmacion") or "")
+        if "auth" in _vclass or "bypass" in _vclass or "privilege" in _vclass or "authorization" in _vclass:
+            _ap = verified_ev.get("bypass_path") or verified_ev.get("confirm_path") or _ep or ""
+            if _ap: _proof_rows.append(_prow("Ruta de acceso", "Access path", _ap))
+            _bpl = verified_ev.get("bypass_header") or _pl or ""
+            if _bpl: _proof_rows.append(_prow("Payload bypass", "Bypass payload", _bpl))
+            _conf = verified_ev.get("confirmacion") or verified_ev.get("acceso_confirmado") or _role or ""
+            if _conf: _proof_rows.append(_prow("Acceso confirmado", "Access confirmed", _conf, highlight=True))
+        # SSRF
+        _ssrf_hit = verified_ev.get("ssrf_hit") or verified_ev.get("callback_received") or ""
+        if "ssrf" in _vclass or _ssrf_hit:
+            _surl = verified_ev.get("ssrf_url") or _pl or ""
+            if _surl: _proof_rows.append(_prow("URL SSRF", "SSRF URL", _surl))
+            if _ssrf_hit: _proof_rows.append(_prow("Callback recibido", "Callback received", _ssrf_hit, highlight=True))
+        # Generic fallback: show any key with actual data value
+        _shown_keys = {"screenshots","http_captures","login_bajo_privilegio","login_bajo_privilegio_password"}
+        if not _proof_rows:
+            for _k, _v in verified_ev.items():
+                if _k in _shown_keys: continue
+                if isinstance(_v, (str, int, float)) and str(_v).strip():
+                    _proof_rows.append(_prow(_k, _k, str(_v)[:300]))
+                    if len(_proof_rows) >= 10: break
+        if _proof_rows:
+            _h3_es = "DATO EXTRAÍDO — PRUEBA TÉCNICA" if ("sqli" in _vclass or "sql" in _vclass) else "PRUEBA TÉCNICA DE EXPLOTACIÓN"
+            _h3_en = "EXTRACTED DATA — TECHNICAL PROOF" if ("sqli" in _vclass or "sql" in _vclass) else "TECHNICAL EXPLOITATION PROOF"
+            extraction_section = (
+                f'<section id="sec-extraction" style="margin-top:32px">'
+                + _sec_heading("04b", _h3_es, _h3_en, "extraction")
+                + f'<div class="proof-box">{"".join(_proof_rows)}</div>'
+                + f'</section>'
+            )
+
     # ── Galeria de capturas ───────────────────────────────────────────────────
     _all_shots = list(verified_ev.get("screenshots") or []) + \
                  [s for s in (attempt_ev.get("screenshots") or [])
@@ -3679,6 +3767,13 @@ code,pre,kbd{font-family:'JetBrains Mono','Fira Code',ui-monospace,monospace}
 .evtable-note{padding:10px 16px;font-size:12px;color:var(--mut);font-style:italic;
   border-top:1px solid var(--brd);font-family:var(--sans)}
 /* ── Burp-style HTTP captures ── */
+.proof-box{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-top:14px}
+.prow{display:grid;grid-template-columns:220px 1fr;gap:0;border-bottom:1px solid var(--brd);padding:10px 16px;align-items:start}
+.prow:last-child{border-bottom:none}
+.prow-hl{background:rgba(249,168,37,.08);border-left:3px solid #f9a825}
+.prow-k{font-family:var(--sans);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);padding-top:1px}
+.prow-v{font-family:var(--mono);font-size:12.5px;color:var(--fg);word-break:break-all;white-space:pre-wrap}
+.prow-hl .prow-v{color:#f9a825;font-weight:700;font-size:13px}
 .burp-panel{background:var(--surf2);border:2px solid var(--brd);border-radius:12px;overflow:hidden;margin-bottom:22px}
 .burp-panel-header{background:#0d1117;border-bottom:2px solid var(--brd);padding:10px 16px;display:flex;align-items:center;gap:10px}
 .burp-method{font-family:var(--mono);font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;background:#1d4ed8;color:#fff;flex-shrink:0;letter-spacing:.05em}
@@ -3894,6 +3989,7 @@ document.addEventListener('DOMContentLoaded',function(){
         + proof_section
         + burp_section
         + chain_section
+        + extraction_section
         + tech_section
         + inv_steps_section
         + shots_section

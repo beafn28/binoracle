@@ -6116,31 +6116,47 @@ def verify_wordpress_sqli(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="error-based SQLi",
                 description=f"Error-based SQLi on '{sqli_param}': MySQL {mysql_version} leaked via extractvalue(). Replace TARGET with the real host.")
-            # Captura de evidencia de explotacion (GET y POST)
+            # Captura de evidencia de explotacion: HTTP estructurada + terminal shot
             _exploit_body = (r.text or "")[:6000]
-            _exploit_png = _screenshot_response(
-                boot.base_url + endpoint, m, r.status_code, _exploit_body,
-                highlight=mysql_version, lang="es")
-            if _exploit_png:
-                boot.shots.append({
-                    "png_b64": _exploit_png,
-                    "caption_es": (f"Paso 5 (CLAVE): SQL INJECTION CONFIRMADA — respuesta HTTP real "
-                                   f"con la version del motor MySQL ({mysql_version}) filtrada en el "
-                                   f"mensaje de error XPATH/extractvalue. Payload: {sqli_param}={payload_val!r}"),
-                    "caption_en": (f"Step 5 (KEY): SQL INJECTION CONFIRMED — real HTTP response "
-                                   f"with MySQL version ({mysql_version}) leaked via XPATH/extractvalue "
-                                   f"error message. Payload: {sqli_param}={payload_val!r}"),
-                    "url": boot.base_url + endpoint,
-                })
-            # Para GET ademas hacemos captura del navegador (renderiza la pagina completa)
-            if m == "GET":
-                shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
-                           + f"{sqli_param}={payload_val}")
-                boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                       f"Paso 5b: SQL INJECTION (navegador) -- pagina renderizada con el error "
-                       f"de MySQL visible. Version extraida: {mysql_version}.",
-                       f"Step 5b: SQL INJECTION (browser) -- rendered page showing MySQL error. "
-                       f"Version extracted: {mysql_version}.")
+            # 1) HTTP capture (Burp panel) — siempre, con la response real
+            _capture_exploit_shot(
+                boot, m, endpoint, r,
+                highlight=mysql_version,
+                caption_es=(f"Paso 5 (CLAVE): SQL INJECTION — peticion con payload "
+                            f"{sqli_param}={payload_val!r} → error XPATH revela "
+                            f"version() = {mysql_version}"),
+                caption_en=(f"Step 5 (KEY): SQL INJECTION — payload "
+                            f"{sqli_param}={payload_val!r} → XPATH error leaks "
+                            f"version() = {mysql_version}"))
+            # 2) Terminal shot mostrando la extraccion de version — siempre visible sin browser
+            _error_lines = []
+            for _ln in _exploit_body.splitlines():
+                if mysql_version in _ln or "wpdberror" in _ln or "XPATH" in _ln:
+                    _error_lines.append(_ln.strip()[:200])
+                if len(_error_lines) >= 8:
+                    break
+            _error_snippet = "\n".join(_error_lines) or _exploit_body[:400]
+            _term_content = (
+                f"SQL INJECTION CONFIRMADA (error-based)\n"
+                f"{'─'*52}\n"
+                f"Parametro vulnerable : {sqli_param}\n"
+                f"Payload              : {sqli_param}={payload_val}\n"
+                f"Tecnica              : extractvalue(1,concat(0x7e,version()))\n"
+                f"Version MySQL        : {mysql_version}   <-- DATO REAL\n"
+                f"Endpoint             : {m} {endpoint}\n"
+                f"Status HTTP          : {r.status_code}\n"
+                f"{'─'*52}\n"
+                f"Fragmento del error en la respuesta:\n\n"
+                + _error_snippet
+            )
+            _capture_terminal_shot(
+                boot, title="SQL INJECTION — version extraida", content=_term_content,
+                highlight=mysql_version,
+                caption_es=(f"Paso 5b: VERSION MySQL EXTRAIDA — {mysql_version} visible "
+                            f"en el error XPATH de la respuesta. Explotacion confirmada."),
+                caption_en=(f"Step 5b: MySQL VERSION EXTRACTED — {mysql_version} visible "
+                            f"in XPATH error of the response. Exploitation confirmed."),
+                url=boot.base_url + endpoint)
             res.evidence["screenshots"] = boot.shots
             res.evidence["http_captures"] = boot.http_captures
             return res
@@ -6213,28 +6229,44 @@ def verify_wordpress_sqli(
                 base_url=boot.base_url, endpoint=endpoint, method=m,
                 params=_poc_params, json_body=json_body, technique="UNION-based SQLi",
                 description=f"UNION-based SQLi on '{sqli_param}': MySQL {mysql_version} extracted via UNION SELECT. Replace TARGET with the real host.")
-            _exploit_png_u = _screenshot_response(
-                boot.base_url + endpoint, m, r.status_code, (r.text or "")[:6000],
-                highlight=mysql_version, lang="es")
-            if _exploit_png_u:
-                boot.shots.append({
-                    "png_b64": _exploit_png_u,
-                    "caption_es": (f"Paso 5 (CLAVE): SQL INJECTION CONFIRMADA (UNION-based) — "
-                                   f"respuesta HTTP real con version MySQL ({mysql_version}) "
-                                   f"extraida. Payload: {sqli_param}={payload_val!r}"),
-                    "caption_en": (f"Step 5 (KEY): SQL INJECTION CONFIRMED (UNION-based) — "
-                                   f"real HTTP response with MySQL version ({mysql_version}) "
-                                   f"extracted. Payload: {sqli_param}={payload_val!r}"),
-                    "url": boot.base_url + endpoint,
-                })
-            if m == "GET":
-                shot_url = (boot.base_url + endpoint + ("&" if "?" in endpoint else "?")
-                           + f"{sqli_param}={payload_val}")
-                boot.capture(boot.sub_sess, shot_url[len(boot.base_url):],
-                       f"Paso 5b: SQL INJECTION (navegador) -- respuesta con version real "
-                       f"del motor ({mysql_version}) extraida via UNION SELECT.",
-                       f"Step 5b: SQL INJECTION (browser) -- response with real engine version "
-                       f"({mysql_version}) extracted via UNION SELECT.")
+            _exploit_body_u = (r.text or "")[:6000]
+            # 1) HTTP capture (Burp panel)
+            _capture_exploit_shot(
+                boot, m, endpoint, r,
+                highlight=mysql_version,
+                caption_es=(f"Paso 5 (CLAVE): SQL INJECTION UNION-based — payload "
+                            f"{sqli_param}={payload_val!r} → version() = {mysql_version}"),
+                caption_en=(f"Step 5 (KEY): SQL INJECTION UNION-based — payload "
+                            f"{sqli_param}={payload_val!r} → version() = {mysql_version}"))
+            # 2) Terminal shot con la version extraida
+            _u_lines = []
+            for _ln in _exploit_body_u.splitlines():
+                if mysql_version in _ln:
+                    _u_lines.append(_ln.strip()[:200])
+                if len(_u_lines) >= 6:
+                    break
+            _u_snippet = "\n".join(_u_lines) or _exploit_body_u[:400]
+            _term_content_u = (
+                f"SQL INJECTION CONFIRMADA (UNION-based)\n"
+                f"{'─'*52}\n"
+                f"Parametro vulnerable : {sqli_param}\n"
+                f"Payload              : {sqli_param}={payload_val}\n"
+                f"Tecnica              : UNION SELECT version()\n"
+                f"Version MySQL        : {mysql_version}   <-- DATO REAL\n"
+                f"Endpoint             : {m} {endpoint}\n"
+                f"Status HTTP          : {r.status_code}\n"
+                f"{'─'*52}\n"
+                f"version() en la respuesta:\n\n"
+                + _u_snippet
+            )
+            _capture_terminal_shot(
+                boot, title="SQL INJECTION UNION — version extraida", content=_term_content_u,
+                highlight=mysql_version,
+                caption_es=(f"Paso 5b: VERSION MySQL EXTRAIDA (UNION) — {mysql_version} "
+                            f"filtrada en la respuesta HTTP. Explotacion confirmada."),
+                caption_en=(f"Step 5b: MySQL VERSION EXTRACTED (UNION) — {mysql_version} "
+                            f"leaked in HTTP response. Exploitation confirmed."),
+                url=boot.base_url + endpoint)
             res.evidence["screenshots"] = boot.shots
             res.evidence["http_captures"] = boot.http_captures
             return res
