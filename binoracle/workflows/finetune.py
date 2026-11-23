@@ -572,7 +572,11 @@ def push_to_ollama(gguf_path: str, model_name: str,
             "the vulnerable parameter, expected payload, and attack vector."
         )
 
-    modelfile_path = str(Path(gguf_path).parent / "Modelfile")
+    gguf_parent = Path(gguf_path).parent
+    if not gguf_parent.exists():
+        return {"ok": False, "model_name": model_name,
+                "note": f"GGUF directory does not exist: {gguf_parent}"}
+    modelfile_path = str(gguf_parent / "Modelfile")
     modelfile = textwrap.dedent(f"""\
         FROM {gguf_path}
         PARAMETER temperature 0.2
